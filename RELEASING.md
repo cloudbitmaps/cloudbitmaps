@@ -97,8 +97,17 @@ laptop has none. Left there, the **launch artifact** would be the single unattes
 against a project whose supply-chain story is the point. So the bootstrap uses a **throwaway prerelease** to
 create the names, and the real `0.1.0` still ships through the gated, attested pipeline.
 
-The cost is one prerelease sitting on the registry forever. `npm install @cloudbitmaps/roaring` never resolves a
-prerelease by default, so nobody gets it accidentally.
+The cost is one prerelease sitting on the registry forever. Semver range resolution won't pick it — **provided
+the `latest` dist-tag doesn't point at it**, which is the whole subtlety of the next paragraph.
+
+> [!IMPORTANT]
+> **`--tag rc` is not optional on the bootstrap publish.** `npm publish` defaults `--tag` to `latest`
+> *unconditionally* — check `npm config get tag` — and it is **not** semver-aware. "Prereleases aren't installed
+> by default" is a property of *range resolution*, and it only holds because `latest` normally points somewhere
+> else. On a package's **first** publish there is nothing else for it to point at, so an untagged
+> `0.1.0-rc.0` becomes `latest`, and a plain `npm i @cloudbitmaps/roaring` serves the throwaway — the exact
+> outcome the prerelease was chosen to avoid. Publishing under `--tag rc` leaves `latest` unset until the real
+> `0.1.0` claims it.
 
 **The sequence** (each step gates the next — this order is not incidental):
 
@@ -106,14 +115,25 @@ prerelease by default, so nobody gets it accidentally.
    `repository`/`homepage` links resolve and provenance has a public source to attest to.
 2. **Cut the prerelease commit** — set both packages to `0.1.0-rc.0` and remove `"private": true`
    (that flag is the accidental-publish guard; clearing it is what makes any publish real).
-3. **Publish it manually**, with interactive 2FA:
+3. **Publish it manually**, with interactive 2FA. Use the guarded helper rather than typing this by hand — it
+   verifies every precondition below *before* the irreversible step, and requires `--confirm`:
+
    ```sh
-   npm login                      # interactive 2FA
+   npm login                            # interactive 2FA
+   node scripts/bootstrap-publish.cjs   # dry run: checks everything, publishes nothing
+   node scripts/bootstrap-publish.cjs --confirm
+   ```
+
+   Equivalent by hand, if you'd rather:
+
+   ```sh
    pnpm install --frozen-lockfile
    pnpm build
-   pnpm -r --filter './packages/**' publish --access public
+   pnpm -r --filter './packages/**' publish --access public --tag rc
    ```
-   Both names now exist on the registry. This tarball is unattested, by design — nobody installs it.
+
+   Both names now exist on the registry, with **no `latest` tag**. This tarball is unattested, by design —
+   nobody installs it.
 4. **Do the [one-time setup](#one-time-setup)** — now that the packages exist, bind a Trusted Publisher to each
    and set publishing access to *require 2FA and disallow tokens*. From here a token publish is impossible.
 5. **Create the GitHub `release` environment** with yourself as required reviewer.
@@ -147,3 +167,5 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
+| `npm i @cloudbitmaps/roaring` serves a prerelease | The bootstrap publish ran without `--tag`, so `latest` landed on the throwaway (`npm publish` defaults to `latest` and is not semver-aware). Repair with `npm dist-tag rm <pkg> latest`; `bootstrap-publish.cjs` checks for this and fails loudly. |
+| `bootstrap-publish: … already exists on the registry` | Working as intended — the bootstrap is one-time. Ship the version by tag through the pipeline instead. |
