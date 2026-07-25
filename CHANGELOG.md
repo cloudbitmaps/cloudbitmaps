@@ -204,11 +204,15 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   - What remains open is dev-scope only and blocked on upstream majors (`adm-zip` via `cassandra-driver`, `qs`
     via Stryker's `typed-rest-client`, `uuid`); none of it appears in either published tarball, which carry
     **zero** and **two** runtime dependencies respectively.
-- **Both packages are versioned `0.1.0`**, still carrying `private: true` — the last accidental-publish guard,
-  removed only by the release commit. `pnpm publish` *silently skips* a private package (no error, exit 0), which
-  would have turned a real release attempt into a fully green run that published nothing — so the release
-  workflow now **fails loudly** on a still-private package, and the runbook verifies both packages on the
-  registry afterwards rather than trusting a clean log.
+- **Both packages are versioned `0.1.0-rc.0` and are no longer `private`** — the bootstrap prerelease that
+  creates the two names on npm so a Trusted Publisher can be bound to each. It publishes under the `rc`
+  dist-tag, so `latest` stays unset and a plain `npm i` resolves nothing until the real `0.1.0` ships through
+  the attested pipeline. `private: true` was the last accidental-publish guard, and `pnpm publish` *silently
+  skips* a private package (no error, exit 0) — which would have turned a real release attempt into a fully
+  green run that published nothing. That guard is now carried by
+  [`pnpm release:bootstrap`](scripts/bootstrap-publish.cjs) and by the release workflow, both of which **fail
+  loudly** instead, and both of which verify the registry afterwards rather than trusting a clean log. The
+  **root** manifest stays `private` — it is never published.
 - **Both packages gained `prepack`**, so a publish can never ship a stale or absent `dist`.
 
 - **Launch decisions locked** (DECISIONS #60): the public repo will be
