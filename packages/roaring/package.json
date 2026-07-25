@@ -112,8 +112,7 @@
     "NOTICE"
   ],
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "bin": {
     "compact-segments": "./dist/bin/compact-segments.js",

@@ -15,9 +15,13 @@
  * The trap that motivated the --tag handling: `npm publish` defaults --tag to `latest` unconditionally and is
  * NOT semver-aware (`npm config get tag` -> latest). "Prereleases aren't installed by default" is a property of
  * range resolution and only holds while `latest` points elsewhere. On a FIRST publish there is nothing else for
- * it to point at, so an untagged 0.1.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. This
- * script derives the dist-tag from the prerelease identifier (0.1.0-rc.0 -> `rc`) and verifies afterwards that
- * `latest` was not created.
+ * it to point at, so an untagged 0.1.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
+ * dist-tag is therefore derived from the prerelease identifier (0.1.0-rc.0 -> `rc`) rather than left to default.
+ *
+ * That is necessary but NOT sufficient, which was established against a real registry rather than assumed: a
+ * registry may point `latest` at a package's first version anyway, and `npm dist-tag rm … latest` is refused.
+ * So the post-publish check REPORTS which happened instead of failing — the publish already succeeded and is
+ * irreversible, and the condition resolves itself when the real release claims `latest`.
  *
  * Usage (via the pnpm entry, like every other script here — `pnpm audit`, `pnpm leak-scan`):
  *   pnpm release:bootstrap             # dry run — checks everything, publishes nothing
@@ -197,6 +201,18 @@ run('pnpm', ['build'], { stdio: ['ignore', 'inherit', 'inherit'] });
 console.log(`bootstrap-publish: publishing under --tag ${distTag} (expect a 2FA prompt)…`);
 // `--no-git-checks`: the tree state is already verified above, and pnpm's own check rejects a detached HEAD
 // that is otherwise fine here. Interactive stdio so the 2FA prompt actually reaches the terminal.
+//
+// No `--no-provenance` here, deliberately: pnpm does not forward that flag to npm, so it reads as a fix while
+// doing nothing. Provenance is opt-IN at the call site instead — the release workflow passes `--provenance`
+// explicitly — because `publishConfig.provenance: true` in the manifests made every manual publish impossible:
+// npm honoured it, looked for a CI provider to mint the attestation from, found none on a laptop, and aborted
+// with `EUSAGE: Automatic provenance generation not supported for provider: null`. Neither the CLI flag nor
+// `NPM_CONFIG_PROVENANCE=false` could override the manifest. A bootstrap publish is unattested by design (see
+// RELEASING.md), and that is now expressible rather than blocked.
+//
+// This stays `pnpm publish` rather than a per-package `npm publish`: `@cloudbitmaps/roaring` depends on core
+// via `workspace:*`, and pnpm is what rewrites that to a real version range on the way out. npm would publish
+// the protocol string verbatim and ship a package nobody can install.
 run(
   'pnpm',
   [
@@ -217,6 +233,7 @@ run(
 
 console.log('\nbootstrap-publish: verifying the registry…');
 let bad = 0;
+let latestOnPrerelease = false;
 for (const p of packages) {
   const probe = tryRun('npm', ['view', p.json.name, 'dist-tags', '--json']);
   if (!probe.ok) {
@@ -227,21 +244,33 @@ for (const p of packages) {
   const tags = JSON.parse(probe.out);
   const under = tags[distTag];
   if (under !== version) {
+    // A hard failure: the tag we asked for is the one the operator was told to expect.
     console.error(`  ✗ ${p.json.name}: ${distTag} is ${under ?? '(unset)'}, expected ${version}`);
     bad++;
-  } else if (distTag !== 'latest' && tags.latest) {
-    // The exact trap this script exists to catch: a `latest` on a throwaway means plain `npm i` serves it.
-    console.error(
-      `  ✗ ${p.json.name}: latest = ${tags.latest} — a prerelease must not hold latest. ` +
-        `Fix with: npm dist-tag rm ${p.json.name} latest`,
-    );
-    bad++;
-  } else {
-    console.log(`  ✓ ${p.json.name}: ${distTag}=${version}, latest unset`);
+    continue;
+  }
+  console.log(`  ✓ ${p.json.name}: ${distTag}=${version}`);
+  if (distTag !== 'latest' && tags.latest) {
+    // Reported, NOT failed. Whether a registry also points `latest` at a first publish is up to the registry
+    // — verdaccio does it unconditionally — and `--tag` does not override that. Failing here would report a
+    // successful, irreversible publish as an error, and the obvious repair does not exist: npm's registry
+    // refuses to remove the `latest` tag, and verdaccio silently re-adds it. Shipping the real release is the
+    // fix, because that moves `latest` forward.
+    console.log(`    ! latest = ${tags.latest}`);
+    latestOnPrerelease = true;
   }
 }
 
 if (bad > 0) process.exit(1);
+if (latestOnPrerelease) {
+  console.log(
+    `\nbootstrap-publish: NOTE — the registry also pointed \`latest\` at ${version}, so a plain\n` +
+      "`npm i` currently resolves the prerelease. This is the registry's own behaviour for a package's first\n" +
+      'version and `--tag` does not prevent it; `npm dist-tag rm … latest` is rejected, so there is nothing to\n' +
+      'undo. It corrects itself the moment the real release publishes and claims `latest` — so treat the\n' +
+      'remaining steps as time-sensitive rather than optional.',
+  );
+}
 console.log(
   '\nbootstrap-publish: done. Next (RELEASING.md steps 4-6): bind a Trusted Publisher to each package,\n' +
     'set publishing access to "require 2FA and disallow tokens", create the GitHub `release` environment,\n' +

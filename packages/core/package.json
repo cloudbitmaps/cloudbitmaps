@@ -109,8 +109,7 @@
     "NOTICE"
   ],
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "scripts": {
     "prepack": "pnpm run build",

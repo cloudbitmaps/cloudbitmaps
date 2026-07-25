@@ -97,17 +97,21 @@ laptop has none. Left there, the **launch artifact** would be the single unattes
 against a project whose supply-chain story is the point. So the bootstrap uses a **throwaway prerelease** to
 create the names, and the real `0.1.0` still ships through the gated, attested pipeline.
 
-The cost is one prerelease sitting on the registry forever. Semver range resolution won't pick it — **provided
-the `latest` dist-tag doesn't point at it**, which is the whole subtlety of the next paragraph.
+The cost is one prerelease sitting on the registry forever, and a short window where it is what `npm i`
+resolves — see the note below.
 
 > [!IMPORTANT]
-> **`--tag rc` is not optional on the bootstrap publish.** `npm publish` defaults `--tag` to `latest`
+> **`--tag rc` is not optional, and it is also not sufficient.** `npm publish` defaults `--tag` to `latest`
 > *unconditionally* — check `npm config get tag` — and it is **not** semver-aware. "Prereleases aren't installed
-> by default" is a property of *range resolution*, and it only holds because `latest` normally points somewhere
-> else. On a package's **first** publish there is nothing else for it to point at, so an untagged
-> `0.1.0-rc.0` becomes `latest`, and a plain `npm i @cloudbitmaps/roaring` serves the throwaway — the exact
-> outcome the prerelease was chosen to avoid. Publishing under `--tag rc` leaves `latest` unset until the real
-> `0.1.0` claims it.
+> by default" is a property of *range resolution*, and it only holds while `latest` points somewhere else. On a
+> package's **first** publish there is nothing else for it to point at.
+>
+> Passing `--tag rc` states the intent and is what the automation asserts. But a registry may *also* point
+> `latest` at a first publish regardless — verified against a real registry, where it does — and there is no
+> undo: npm refuses to remove the `latest` tag. So the honest position is that the prerelease may briefly be
+> what a plain `npm i @cloudbitmaps/roaring` serves, and **the fix is to finish the remaining steps promptly**,
+> because the real `0.1.0` claims `latest` and the window closes. `pnpm release:bootstrap` reports which of the
+> two happened rather than guessing.
 
 **The sequence** (each step gates the next — this order is not incidental):
 
@@ -167,5 +171,6 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
-| `npm i @cloudbitmaps/roaring` serves a prerelease | The bootstrap publish ran without `--tag`, so `latest` landed on the throwaway (`npm publish` defaults to `latest` and is not semver-aware). Repair with `npm dist-tag rm <pkg> latest`; `bootstrap-publish.cjs` checks for this and fails loudly. |
+| `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
+| `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and made every manual publish impossible. |
 | `bootstrap-publish: … already exists on the registry` | Working as intended — the bootstrap is one-time. Ship the version by tag through the pipeline instead. |

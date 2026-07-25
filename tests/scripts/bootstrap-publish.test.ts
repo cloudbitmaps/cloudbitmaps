@@ -140,23 +140,38 @@ describe('bootstrap-publish', () => {
     expect(out).toMatch(/bootstrap-publish: done/);
   });
 
-  it('publishes under the prerelease dist-tag, never latest', () => {
+  it('publishes under the prerelease dist-tag', () => {
     const { out, calls } = runScript(['--confirm']);
     // Derived from the version (0.1.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
-    // a first publish under `latest` would make the throwaway the default install.
+    // is not semver-aware.
     expect(out).toMatch(/dist-tag: rc/);
-    expect(out).toMatch(/latest unset/);
+    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
     // Assert the argv actually handed to pnpm, not just the plan the script printed — the printed line and
     // the executed command are two different things, and only one of them reaches the registry.
     expect(calls).toMatch(/^pnpm .*\bpublish\b.*--tag rc\b/m);
     expect(calls).toMatch(/--access public/);
+    // `--no-provenance` must NOT be here: pnpm silently drops it, so passing it would read as a safeguard
+    // while doing nothing. Provenance is opt-in at the call site instead (the release workflow passes
+    // `--provenance`), which is what let `publishConfig.provenance` come out of the manifests.
+    expect(calls).not.toMatch(/--no-provenance/);
   });
 
-  it('fails if the prerelease ended up holding the latest tag', () => {
+  it('reports — but does not fail on — latest landing on the prerelease', () => {
     const { status, out } = runScript(['--confirm'], {
       distTags: { rc: VERSION, latest: VERSION },
     });
-    expect(out).toMatch(/must not hold latest/);
+    // Verified against a real registry (verdaccio): a first publish gets `latest` regardless of `--tag`, and
+    // `npm dist-tag rm … latest` is refused. Failing here would report a successful, irreversible publish as
+    // an error and send the operator after a repair that does not exist.
+    expect(out).toMatch(/NOTE — the registry also pointed `latest`/);
+    expect(out).toMatch(/corrects itself the moment the real release publishes/);
+    expect(out).toMatch(/bootstrap-publish: done/);
+    expect(status).toBe(0);
+  });
+
+  it('still fails when the requested dist-tag did not land', () => {
+    const { status, out } = runScript(['--confirm'], { distTags: { latest: '9.9.9' } });
+    expect(out).toMatch(/rc is \(unset\), expected 0\.1\.0-rc\.0/);
     expect(status).toBe(1);
   });
 

@@ -222,6 +222,18 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Fixed
 
+- **`publishConfig.provenance: true` made every manual publish impossible.** npm honoured it off-CI too, went
+  looking for a provider to mint the attestation from, found none on a laptop, and aborted with
+  `EUSAGE: Automatic provenance generation not supported for provider: null` — taking out both the bootstrap
+  and the documented break-glass path. Neither `--no-provenance` nor `NPM_CONFIG_PROVENANCE=false` could
+  override it (and pnpm does not forward `--no-provenance` at all). Provenance is now opt-in at the call site,
+  where [`release.yml`](.github/workflows/release.yml) already passed `--provenance` explicitly, so CI's
+  attestation is unchanged — verified by confirming npm still *attempts* provenance from the flag alone.
+- **The `latest` dist-tag claim was wrong in the safe direction, and the repair for it did not exist.**
+  `--tag rc` states the intent but does not stop a registry from also pointing `latest` at a package's first
+  version, and `npm dist-tag rm … latest` is refused. The tooling now **reports** which happened instead of
+  failing a successful, irreversible publish over a condition that resolves itself when the real release claims
+  `latest`. Established against a real registry rather than reasoned about.
 - **A timing-fragile RNG test could fail the gate under load.** `next() stays in [0, 1)` ran 200,000 `expect()`
   calls inside its loop — ~1.3 s alone, but past the 5 s timeout when scheduled beside the heavier suites. The
   loop now records the first offending draw and asserts once afterwards, which is both stable and a better
