@@ -1,0 +1,171 @@
+{
+  "name": "@cloudbitmaps/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: tiered storage (RAM → warm KV → cold object store), chunk-skipping intersection, the .crbm format, crash-safe compaction, encryption-at-rest, and every storage driver.",
+  "keywords": [
+    "roaring",
+    "bitmap",
+    "roaring-bitmap",
+    "roaring-bitmaps",
+    "croaring",
+    "bitset",
+    "set",
+    "set-intersection",
+    "s3",
+    "dynamodb",
+    "gcs",
+    "azure",
+    "postgres",
+    "redis",
+    "mongodb",
+    "cassandra",
+    "mysql",
+    "mariadb",
+    "serverless",
+    "tiered-storage",
+    "scale-to-zero",
+    "segmentation",
+    "audience",
+    "cloud"
+  ],
+  "license": "Apache-2.0",
+  "author": "Sharvil Kadam",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+  },
+  "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
+  "bugs": {
+    "url": "https://github.com/cloudbitmaps/cloudbitmaps/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./s3": {
+      "types": "./dist/s3/index.d.ts",
+      "import": "./dist/s3/index.js",
+      "require": "./dist/s3/index.cjs"
+    },
+    "./dynamodb": {
+      "types": "./dist/dynamodb/index.d.ts",
+      "import": "./dist/dynamodb/index.js",
+      "require": "./dist/dynamodb/index.cjs"
+    },
+    "./gcs": {
+      "types": "./dist/gcs/index.d.ts",
+      "import": "./dist/gcs/index.js",
+      "require": "./dist/gcs/index.cjs"
+    },
+    "./azure": {
+      "types": "./dist/azure/index.d.ts",
+      "import": "./dist/azure/index.js",
+      "require": "./dist/azure/index.cjs"
+    },
+    "./postgres": {
+      "types": "./dist/postgres/index.d.ts",
+      "import": "./dist/postgres/index.js",
+      "require": "./dist/postgres/index.cjs"
+    },
+    "./redis": {
+      "types": "./dist/redis/index.d.ts",
+      "import": "./dist/redis/index.js",
+      "require": "./dist/redis/index.cjs"
+    },
+    "./mongodb": {
+      "types": "./dist/mongodb/index.d.ts",
+      "import": "./dist/mongodb/index.js",
+      "require": "./dist/mongodb/index.cjs"
+    },
+    "./cassandra": {
+      "types": "./dist/cassandra/index.d.ts",
+      "import": "./dist/cassandra/index.js",
+      "require": "./dist/cassandra/index.cjs"
+    },
+    "./mysql": {
+      "types": "./dist/mysql/index.d.ts",
+      "import": "./dist/mysql/index.js",
+      "require": "./dist/mysql/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "prepack": "pnpm run build",
+    "build": "tsup"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/client-s3": "^3",
+    "@azure/storage-blob": "^12",
+    "@google-cloud/storage": "^7",
+    "cassandra-driver": "^4",
+    "ioredis": "^5",
+    "mongodb": "^6",
+    "mysql2": "^3",
+    "pg": "^8"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-dynamodb": {
+      "optional": true
+    },
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@azure/storage-blob": {
+      "optional": true
+    },
+    "@google-cloud/storage": {
+      "optional": true
+    },
+    "cassandra-driver": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1075.0",
+    "@aws-sdk/client-s3": "^3.1075.0",
+    "@azure/storage-blob": "^12",
+    "@google-cloud/storage": "^7.0.0",
+    "cassandra-driver": "^4",
+    "ioredis": "^5",
+    "mongodb": "^6",
+    "mysql2": "^3.23.1",
+    "pg": "^8",
+    "@types/pg": "^8",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  }
+}

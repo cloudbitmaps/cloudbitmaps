@@ -1,0 +1,12 @@
+{
+  "//": "@cloudbitmaps/core — the codec-agnostic engine + every storage driver. Keeps the repo's long-standing `@/…` self-alias, now scoped to THIS package's own `src` (the drivers use it throughout, e.g. `@/core/errors`). It never resolves outside the package, which is what keeps the dependency arrow one-way: core cannot reach a flavor package even by accident.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

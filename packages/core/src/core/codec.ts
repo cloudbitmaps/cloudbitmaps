@@ -1,0 +1,91 @@
+/**
+ * The **bitmap-codec seam**.
+ *
+ * `core/` is **codec-agnostic**: `SegmentEngine`, compaction, and the `.crbm` read/write helpers only ever
+ * construct and combine bitmaps through the {@link CodecInterface} factory + the {@link CodecBitmap} value type
+ * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, today in
+ * `core/bitmap.ts`; it moves to `@cloudbitmaps/roaring` when the package split lands); `@cloudbitmaps/bitmap`
+ * (plain bitset) and `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes.
+ *
+ * **Homogeneity contract:** a single store uses a single codec, so every {@link CodecBitmap} an operation sees
+ * was produced by the same {@link CodecInterface}. The binary set ops ({@link CodecBitmap.orInPlace} etc.) may
+ * therefore assume `other` is the same concrete type and are not required to interoperate across codecs.
+ * (Corollary: a decoded-chunk HOT cache is codec-specific — never share one `cache` across engines built with
+ * different codecs, or a cached bitmap from codec A could reach codec B's in-place op. The `CloudRoaring` facade
+ * mints the cache per store, so this cannot arise in normal use.)
+ *
+ * **Interface surface = exactly what the engine needs**, kept general enough for the known fast-follow codecs
+ * (positional/rank-select access + raw-bitset interop that `@cloudbitmaps/bitmap` will add live on that
+ * package's own extended value type, not here — the engine never calls them). The one codec-linked concern
+ * this seam intentionally leaves in the format layer is the `.crbm` **serialization id** (`ROARING_PORTABLE_ID`
+ * in `crbm/format.ts`): it is stamped in the footer and validated on read, and generalizes to a per-codec id
+ * *with* the second codec's format work — a documented follow-up, not part of this interface.
+ */
+
+import { ValidationError } from './errors';
+
+/**
+ * The value type a codec produces — a mutable set of `u32` with set algebra and portable (de)serialization.
+ * This is the shape `SafeBitmap` already has; the engine holds these, caches them, and merges tiers with them.
+ */
+export interface CodecBitmap {
+  /** Serialize with the codec's **stable, portable** format (never a frozen/unsafe variant). */
+  serialize(): Uint8Array;
+  add(value: number): void;
+  addMany(values: Iterable<number>): void;
+  remove(value: number): void;
+  removeMany(values: Iterable<number>): void;
+  has(value: number): boolean;
+  /** Cardinality. */
+  readonly size: number;
+  readonly isEmpty: boolean;
+  /** A deep copy — mutating the clone must not touch the original (the HOT cache relies on this). */
+  clone(): CodecBitmap;
+  /** In-place union `this = this ∪ other`. `other` is from the same codec (see the homogeneity contract). */
+  orInPlace(other: CodecBitmap): void;
+  /** In-place difference `this = this \ other`. */
+  andNotInPlace(other: CodecBitmap): void;
+  /** In-place intersection `this = this ∩ other`. */
+  andInPlace(other: CodecBitmap): void;
+  /** Ascending iterator over the set values. */
+  [Symbol.iterator](): IterableIterator<number>;
+  toArray(): number[];
+}
+
+/**
+ * A pluggable bitmap codec — the factory the codec-agnostic engine constructs {@link CodecBitmap}s through.
+ * Implementations **must** size-cap before handing untrusted bytes to any native decoder and use a safe
+ * (never a trusting/frozen) deserializer (threat model S1).
+ */
+export interface CodecInterface {
+  /** An empty set. */
+  empty(): CodecBitmap;
+  /** A set seeded from an iterable of `u32` values. */
+  fromValues(values: Iterable<number>): CodecBitmap;
+  /**
+   * Size-cap (`bytes.length <= maxBytes`) then portable-deserialize. Throws `IntegrityError` when the input
+   * exceeds the cap or fails to decode — the native decoder is never handed unbounded or unsafe-format input.
+   */
+  safeDeserialize(bytes: Uint8Array, maxBytes: number): CodecBitmap;
+}
+
+/**
+ * Resolve a codec that a **public core entry point** was given, failing fast when it is missing.
+ *
+ * Why these entry points take `codec?` rather than a required field: `bulkLoadCrbmGeneration` /
+ * `compactSegment` / `runExport` are call-compatible public API, and core cannot supply a default (the concrete
+ * codec lives in a *flavor* package that depends on core — a default here would invert that arrow). A **flavor**
+ * package binds the codec for its users (`@cloudbitmaps/roaring` re-exports codec-bound wrappers), so an
+ * application never reaches this throw; only someone calling `@cloudbitmaps/core` directly — i.e. a flavor or
+ * driver author — can, and for them the typed error names exactly what to pass.
+ */
+export function requireCodec(codec: CodecInterface | undefined, api: string): CodecInterface {
+  if (codec === undefined) {
+    throw new ValidationError(
+      `${api} needs a bitmap codec: pass \`codec\` (e.g. \`roaringCodec\` from @cloudbitmaps/roaring). ` +
+        `@cloudbitmaps/core is codec-agnostic and has no default — install a flavor package, whose ` +
+        `equivalents bind the codec for you.`,
+    );
+  }
+  return codec;
+}
