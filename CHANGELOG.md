@@ -229,6 +229,13 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   override it (and pnpm does not forward `--no-provenance` at all). Provenance is now opt-in at the call site,
   where [`release.yml`](.github/workflows/release.yml) already passed `--provenance` explicitly, so CI's
   attestation is unchanged — verified by confirming npm still *attempts* provenance from the flag alone.
+- **The post-publish check called a successful publish a failure.** npm ACKs a publish on the write path
+  (`PUT 200`) but serves `npm view` from a replica that lagged **~7 minutes** for these brand-new packages, so
+  probing once immediately afterwards reported `not found after publish` for two packages that were live,
+  public and correct — the worst available wrong answer directly after an irreversible step. It now waits the
+  propagation out (with `--prefer-online`, since npm had also cached the pre-publish 404 from its own
+  precondition probe) and, if it really does time out, says to confirm against the authoritative API rather
+  than assume failure.
 - **The `latest` dist-tag claim was wrong in the safe direction, and the repair for it did not exist.**
   `--tag rc` states the intent but does not stop a registry from also pointing `latest` at a package's first
   version, and `npm dist-tag rm … latest` is refused. The tooling now **reports** which happened instead of

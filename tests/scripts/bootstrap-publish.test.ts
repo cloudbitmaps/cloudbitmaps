@@ -34,6 +34,8 @@ interface Shims {
   npmViewVersionsExitCode?: number;
   /** stdout for `npm view <pkg> dist-tags --json`. */
   distTags?: Record<string, string>;
+  /** How many `view dist-tags` calls 404 before the package shows up, simulating read-replica lag. */
+  distTagsLagCalls?: number;
 }
 
 /**
@@ -77,18 +79,22 @@ function runScript(
 
     const viewExit = shims.npmViewVersionsExitCode ?? 1;
     const tags = JSON.stringify(shims.distTags ?? { rc: VERSION });
+    // Simulates the read replica lagging behind the write: the first N `view dist-tags` calls 404 before the
+    // package appears, which is what really happens and what used to be reported as a failed publish.
+    const lag = shims.distTagsLagCalls ?? 0;
+    const counter = join(dir, 'view-calls');
     shim(
       'npm',
       [
-        'case "$1 $3" in',
-        '  "whoami ") echo tester; exit 0;;',
-        'esac',
         'case "$1" in',
         '  whoami) echo tester; exit 0;;',
         '  view)',
         '    case "$3" in',
         `      versions) exit ${viewExit};;`,
-        `      dist-tags) echo '${tags}'; exit 0;;`,
+        '      dist-tags)',
+        `        n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${counter}"`,
+        `        if [ "$n" -le ${lag} ]; then exit 1; fi`,
+        `        echo '${tags}'; exit 0;;`,
         '    esac;;',
         'esac',
         'exit 0',
@@ -113,7 +119,12 @@ function runScript(
           cwd: dir,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            // Keep the propagation retry exercised but fast; the production default is 15s per attempt.
+            CR_BOOTSTRAP_PROPAGATION_GAP_MS: '50',
+          },
         },
       );
       return { status: 0, out, calls: readCalls() };
@@ -166,6 +177,16 @@ describe('bootstrap-publish', () => {
     expect(out).toMatch(/NOTE — the registry also pointed `latest`/);
     expect(out).toMatch(/corrects itself the moment the real release publishes/);
     expect(out).toMatch(/bootstrap-publish: done/);
+    expect(status).toBe(0);
+  });
+
+  it('waits out read-replica lag instead of calling a good publish failed', () => {
+    // The real bootstrap ACKed with `PUT 200` and then 404'd on `npm view` for ~7 minutes. Reporting that as
+    // "not found after publish" is the worst wrong answer available directly after an irreversible step.
+    const { status, out } = runScript(['--confirm'], { distTagsLagCalls: 1 });
+    expect(out).toMatch(/not on the read path yet — waiting for propagation/);
+    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
+    expect(out).not.toMatch(/not found after publish/);
     expect(status).toBe(0);
   });
 

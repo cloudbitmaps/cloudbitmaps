@@ -232,12 +232,43 @@ run(
 // ---------------------------------------------------------------- verify what actually landed
 
 console.log('\nbootstrap-publish: verifying the registry…');
+
+// npm ACKs a publish on the write path, but `npm view` reads a replica that lags — measured at ~7 minutes for
+// a brand-new package, with the write already returned `PUT 200`. Probing once and calling it a failure told
+// the operator the publish had failed when both packages were live and correct, which is the worst possible
+// wrong answer directly after an irreversible step. `--prefer-online` defeats npm's own cache (which has just
+// cached the pre-publish 404 from the precondition probe); the wait defeats the replica.
+const PROPAGATION_TRIES = 20;
+// Overridable so the regression test can exercise the retry without a 15s wall-clock cost per attempt. Not a
+// knob anyone running a release should touch.
+const PROPAGATION_GAP_MS = Number(process.env.CR_BOOTSTRAP_PROPAGATION_GAP_MS ?? 15_000);
+
+function viewDistTags(name) {
+  for (let attempt = 1; attempt <= PROPAGATION_TRIES; attempt++) {
+    const probe = tryRun('npm', ['view', name, 'dist-tags', '--json', '--prefer-online']);
+    if (probe.ok) return probe;
+    if (attempt === PROPAGATION_TRIES) return probe;
+    if (attempt === 1) {
+      console.log(`    … ${name} not on the read path yet — waiting for propagation`);
+    }
+    // Synchronous sleep: this is a single-shot CLI with nothing else to do, and blocking keeps the output
+    // ordered with the publish above it.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, PROPAGATION_GAP_MS);
+  }
+  return { ok: false, out: '' };
+}
+
 let bad = 0;
 let latestOnPrerelease = false;
 for (const p of packages) {
-  const probe = tryRun('npm', ['view', p.json.name, 'dist-tags', '--json']);
+  const probe = viewDistTags(p.json.name);
   if (!probe.ok) {
-    console.error(`  ✗ ${p.json.name}: not found after publish`);
+    console.error(
+      `  ✗ ${p.json.name}: still not on the read path after ` +
+        `${Math.round((PROPAGATION_TRIES * PROPAGATION_GAP_MS) / 60000)} min. If the publish log shows ` +
+        `\`PUT 200\`, it succeeded and this is replica lag — confirm with \`npm access get status ${p.json.name}\`, ` +
+        `which reads the authoritative API, before assuming anything failed.`,
+    );
     bad++;
     continue;
   }
