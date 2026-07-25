@@ -1,0 +1,13 @@
+# Force the structured forms above (no blank issues), and route the two things that don't belong in a
+# public issue tracker. GitHub requires absolute URLs here, so these carry the repo's current home —
+# rewrite both when the public repo is cut, and enable Discussions there (the launch runbook in
+# carries both steps; Discussions is off on this pre-launch private repo,
+# so the second link only resolves once it's turned on).
+blank_issues_enabled: false
+contact_links:
+  - name: Security report (private)
+    url: https://github.com/cloudbitmaps/cloudbitmaps/security/policy
+    about: Report a vulnerability privately — never open a public issue for it.
+  - name: Questions & ideas
+    url: https://github.com/cloudbitmaps/cloudbitmaps/discussions
+    about: Ask a question or float an idea in Discussions.

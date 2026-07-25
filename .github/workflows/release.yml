@@ -1,0 +1,136 @@
+# Release — publish to npm with build provenance (Phase 8 supply-chain hardening; threat model S9).
+#
+# The MECHANICS land now (Phase 8); the first real publish is the Phase 9 public launch. Until then this runs
+# safely in **dry-run** by default, so the pipeline is proven without pushing a version.
+#
+# Supply-chain guarantees this pipeline enforces:
+#   - **Tokenless auth (npm Trusted Publishing)**: there is **NO long-lived `NPM_TOKEN`**. npm authenticates
+#     the publish from the GitHub OIDC identity of this workflow, so there is no repo secret that can leak,
+#     be exfiltrated by a malicious dependency, or need rotating. Matches the sibling projects (onadiet,
+#     babystack) and is what lets each package be set to *"require 2FA and disallow tokens"* on npm — that
+#     setting REJECTS an automation-token publish outright, so token auth and that hardening are mutually
+#     exclusive. Trusted Publishing is not a token, so it passes.
+#   - **Human gate**: the publish job runs in the protected `release` environment, whose required reviewer is
+#     the approval prompt. Nothing reaches npm without a person clicking approve.
+#   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
+#     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC). Requires `id-token: write` and a
+#     GitHub-hosted runner — so `runs-on` is pinned to `ubuntu-latest`, NOT the self-hosted CI toggle.
+#   - **Frozen, reproducible install**: `pnpm install --frozen-lockfile` (fails if the lockfile is stale).
+#   - **Publish only a fully-verified tree**: the complete CI gate (lint · arch · format · typecheck · test ·
+#     build · smoke) runs here again before the tarball is created — a green `main` is necessary but not
+#     sufficient; the exact commit being published is re-verified.
+#   - **SHA-pinned Actions**: every `uses:` is pinned to a full commit SHA (a moved tag can't inject code).
+#   - **Version/tag agreement**: a `vX.Y.Z` tag must match `package.json` version, or the run fails.
+# Prerequisites (one-time, outside this file — see RELEASING.md):
+#   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`) → Trusted Publisher:
+#      GitHub Actions, repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment `release`.
+#      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so the very first
+#      version is published manually with interactive 2FA to create the names (see RELEASING.md "First
+#      publish"). Every release after that runs through here, tokenless.
+#   2. GitHub → Settings → Environments → `release`, with the maintainer as a **required reviewer**.
+#      That reviewer IS the gate; without it the publish job would run unpaused.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*'] # a real publish is triggered by pushing a version tag (Phase 9)
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Dry run (pack + publish --dry-run, no upload)'
+        type: boolean
+        default: true
+
+# Least privilege: read the repo, mint an OIDC token for provenance. No write scopes.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish (tokenless, provenance)
+    runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — do NOT use the CI_RUNNER toggle
+    environment: release # manual-approval gate (required reviewer on the environment)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: pnpm install --frozen-lockfile
+
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older.
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@latest
+
+      # Re-run the FULL gate against the exact commit being published (defense in depth vs a green-main assumption).
+      - run: pnpm lint
+      - run: pnpm lint:arch
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: node scripts/smoke.cjs
+
+      # A `vX.Y.Z` push must match EVERY publishable package's version exactly (guards a mistagged release).
+      # The repo is a pnpm workspace: the ROOT manifest is private and never published, so the versions that
+      # matter are the per-package ones — the family releases in lockstep, so all must equal the tag.
+      - name: Verify tag matches every package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          fail=0
+          for pkg in packages/*/package.json; do
+            NAME="$(node -p "require('./$pkg').name")"
+            VER="$(node -p "require('./$pkg').version")"
+            if [ "$VER" != "$TAG" ]; then
+              echo "::error::tag v$TAG does not match $NAME version $VER ($pkg)"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch both
+      # packages are deliberately private (the last accidental-publish guard), so a real publish attempt would
+      # otherwise produce a fully GREEN run that published nothing at all. Fail loudly instead: the release
+      # commit that clears `private` is what makes this pass, which is exactly the intended sequencing
+      # (see the launch runbook's publish stage).
+      - name: Refuse to "publish" a still-private package
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
+        run: |
+          fail=0
+          for pkg in packages/*/package.json; do
+            if [ "$(node -p "require('./$pkg').private === true")" = "true" ]; then
+              echo "::error::$pkg still has \"private\": true — pnpm would skip it and report success"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+      # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
+      # `publishConfig.access=public` + `provenance:true` live in package.json; `--provenance` is explicit here too.
+      # `pnpm -r publish` walks the workspace in topological order (core before the flavor that depends on it)
+      # and rewrites each `workspace:*` range to the real version. `--no-git-checks` because the tag/branch state
+      # is already verified above. The root manifest is `private: true`, so it is skipped automatically.
+      - name: Publish (dry-run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dryRun
+        run: pnpm -r --filter './packages/**' publish --provenance --access public --dry-run --no-git-checks
+        env:
+          NPM_CONFIG_PROVENANCE: true
+      # Real, provenance-signed publish — ONLY a pushed vX.Y.Z tag, or an explicit dispatch with dryRun=false.
+      # The tag arm is scoped to `push` so that dispatching a run *from* a tag ref (where github.ref is
+      # refs/tags/v…) can NOT publish for real while dryRun is still true — that would break the dry-run-default
+      # safety contract. NOTE: a dispatch real-publish (dryRun=false) skips the tag↔version guard above and
+      # ships whatever package.json declares — intended only for a deliberate, manual release.
+      - name: Publish (real)
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
+        run: pnpm -r --filter './packages/**' publish --provenance --access public --no-git-checks
+        env:
+          # No NODE_AUTH_TOKEN. npm authenticates from this workflow's OIDC identity (Trusted Publishing);
+          # adding a token back here would re-introduce the long-lived secret AND be rejected outright by the
+          # packages' "require 2FA and disallow tokens" setting.
+          NPM_CONFIG_PROVENANCE: true

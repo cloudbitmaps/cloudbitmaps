@@ -1,0 +1,60 @@
+name: Bug report
+description: Something isn't working as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please include enough to reproduce it.
+        **Security issue? Don't file here** — use the private report link on the previous page (`SECURITY.md`).
+        **Never paste real bitmap contents, IDs, or credentials** — reduce to synthetic values.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead. Include the exact error name/message if one was thrown.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal snippet or command that triggers it. Synthetic IDs only.
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version & install method
+      description: The `@cloudbitmaps/roaring` version you're on and how you installed it (npm / from source).
+    validations:
+      required: true
+  - type: dropdown
+    id: drivers
+    attributes:
+      label: Storage drivers in play
+      description: Which tier drivers were wired up. Pick every one involved.
+      multiple: true
+      options:
+        - Cold — S3
+        - Cold — GCS
+        - Cold — Azure Blob
+        - Warm — DynamoDB
+        - Warm — PostgreSQL
+        - Warm — MySQL / MariaDB
+        - Warm — Redis
+        - Warm — MongoDB
+        - Warm — Cassandra / ScyllaDB
+        - In-memory / no cloud backend
+    validations:
+      required: false
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS + architecture, Node version, and the runtime (server / Lambda or other serverless / container).
+    validations:
+      required: false
