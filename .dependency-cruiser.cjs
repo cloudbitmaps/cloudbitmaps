@@ -3,8 +3,7 @@ module.exports = {
   forbidden: [
     {
       name: 'core-no-cloud-sdk',
-      comment:
-        'core/ is storage-agnostic — it depends on driver interfaces, never a cloud SDK.',
+      comment: 'core/ is storage-agnostic — it depends on driver interfaces, never a cloud SDK.',
       severity: 'error',
       from: { path: '^packages/core/src/core' },
       to: {

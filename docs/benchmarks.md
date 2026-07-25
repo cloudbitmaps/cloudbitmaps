@@ -141,7 +141,7 @@ Line that up against the phases and the whole table decodes:
   Raising concurrency raises throughput near-linearly; the engine is not the limit.
 
 So this run **calibrates the cost claim and does not calibrate the in-region latency claim** — it cannot. The
-[North Star](internal/) target for a warm `has()` is a single-digit-to-~25 ms round trip, and the
+North Star target for a warm `has()` is a single-digit-to-~25 ms round trip, and the
 network floor here is 96 ms, roughly **4× that entire budget**. Nothing in this table contradicts the target;
 nothing in it confirms the target either. Confirming it needs a client inside the region (Lambda/EC2 in
 `us-east-1`), which is a named follow-up, not a claim we make from this data.
@@ -157,7 +157,7 @@ architecture is built around:
   users is a multi-MB upload, not ten million round trips.
 - **Membership checks at query time** are absorbed by the bounded HOT LRU — the 22-GETs-for-2,000-reads result
   above is that effect. The irreducible floor is the warm-delta read that
-  [tier-merging correctness](internal/) requires; callers who can tolerate read-after-write lag
+  tier-merging correctness requires; callers who can tolerate read-after-write lag
   drop it to ~½ RCU with `warmReadConsistency: 'eventual'`.
 - **Audience counts are free.** `count()` on a warm-delta-free segment performs **0 payload reads**, summing
   cardinality from the `.crbm` index — so counting a ten-million-user segment does not scale with N.
@@ -197,7 +197,7 @@ the design docs, and it has not changed.
 - **It is prices × wire-metered ops, plus a reconciliation — not the invoice.** AWS billing lags hours and has no
   per-run granularity, so the run tags its resources (`cloudbitmaps-calibration=<runId>`) and the Cost Explorer
   comparison follows a day later.
-- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put` event — a [known observability gap](internal/)). That is why the meter sits at the AWS
+- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put` event — a known observability gap). That is why the meter sits at the AWS
   SDK layer instead. PUTs bill at 12.5× a GET, so an ingest-heavy workload priced without them is materially
   understated — which is exactly the flaw in the LocalStack figures above.
 - **One run, one region, one client, one workload shape.** Method, safety properties, and the explicit list of
@@ -209,7 +209,7 @@ the design docs, and it has not changed.
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
 > disk and reads across all of it. They're machine-dependent — a point-in-time snapshot, **not** a CI gate.
 
-The [production-readiness audit](internal/) flagged three scale risks — an unbounded
+The production-readiness audit flagged three scale risks — an unbounded
 `.crbm` reader cache, `O(total)` compaction discovery, and intersection unproven under load. Phases C/D/G closed
 them; this is the measured evidence at fleet scale:
 
@@ -232,7 +232,7 @@ _Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the live heap**
   gigabytes of indices while the count looks "in bounds". Peak RSS is shown for context only: it is a **process
   high-water** that also folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after
   GC), so it grows with fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column
-  is the bound. Note: live heap + [the soak's native-memory watch](internal/) prove **no leak**
+  is the bound. Note: live heap + the soak's native-memory watch prove **no leak**
   on the read path; a hard RSS ceiling under a cgroup `--memory` limit **shipped in Phase 8 as `pnpm rss-gate`**
   (a soak under a hard `docker --memory` ceiling with swap off; an OOM-kill → exit 137).
 - **Discovery is `O(total segments)`** per cycle (the registry enumeration) — the near-linear discovery column.
@@ -268,5 +268,5 @@ pnpm calibrate:aws # real-cloud cost/latency. Prints a projection and exits; `--
                    #md
 ```
 
-See the [cost-model spec](internal/) for the formulas and the
+See the cost-model spec for the formulas and the
 [getting-started guide](guide/getting-started.md) for the estimator API.

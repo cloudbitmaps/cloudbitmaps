@@ -8,11 +8,11 @@
 > **Cassandra/ScyllaDB**, and **MySQL/MariaDB**, the **segment registry**, **automatic retry/backoff**, a **crash-safe streaming
 > compaction daemon**, and **encryption-at-rest + crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
 > Phase 7 driver set; the full v1 experience is sketched in
-> the [usage walkthrough](../internal/). Until publish, use it from a local clone. The API may
+> the usage walkthrough. Until publish, use it from a local clone. The API may
 > change before 1.0.
 
 > **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the
-> *roaring flavor* of the [`@cloudbitmaps` family](../internal/) — the roaring codec +
+> *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
 > the `CloudRoaring` facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds
 > every storage driver. Core arrives **transitively**: you never install or name it (each
 > `@cloudbitmaps/roaring/<backend>` subpath re-exports core's driver of the same name, so
@@ -696,7 +696,7 @@ const store = new CloudRoaring({
 ```
 
 Events carry **raw observations** (bytes, counts, ms); turning those into dollars is the cost estimator's job
-(shipped in Phase 5b — see [§11 below](#11-cost-estimate-it-then-ground-it) and the [usage guide §12](../internal/)). Two things to keep in mind:
+(shipped in Phase 5b — see [§11 below](#11-cost-estimate-it-then-ground-it) and the usage guide §12). Two things to keep in mind:
 
 - **`onEvent` runs synchronously on the I/O path** — keep it cheap and non-blocking; offload batching or
   network calls to your own async queue.
@@ -1086,7 +1086,7 @@ loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer sh
 
 - [Roadmap](../ROADMAP.md) — what's shipped, the **validated envelope** (what's proven and what isn't), the
   path to `1.0`, and what we've deliberately said no to.
-- [Usage walkthrough](../internal/) — the full end-to-end user journey.
+- Usage walkthrough — the full end-to-end user journey.
 - Writing your own storage driver? A shared **conformance suite** (`packages/roaring/src/testing/conformance.ts`) is the bar
   every driver must pass. It remains an internal SDK helper (consumed in-repo via the `@/` alias) — it is not
   exported as a public `./testing` package subpath.

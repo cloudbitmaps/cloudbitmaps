@@ -13,5 +13,5 @@ Shipped capabilities — **intersection** (the crown jewel), the **cloud drivers
 and PostgreSQL/Redis/MongoDB/Cassandra/MySQL warm), and encryption, compaction, cost, and observability — are
 covered in [getting started](getting-started.md). Writing your own driver builds on the internal conformance
 suite (`packages/roaring/src/testing/conformance.ts`); it is not yet exported as a public package subpath. For the end-to-end
-usage walkthrough, see the [usage walkthrough](../internal/); for what's shipped, what's proven, and
+usage walkthrough, for what's shipped, what's proven, and
 what's next, the [roadmap](../ROADMAP.md).
