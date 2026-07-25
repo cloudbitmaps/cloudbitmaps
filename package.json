@@ -41,6 +41,7 @@
     "fuzz:crbm": "pnpm run build && node fuzz/seed-corpus.cjs crbm-reader && mkdir -p fuzz/crashes && jazzer fuzz/targets/crbm-reader.mjs fuzz/corpus/crbm-reader --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
     "fuzz:index": "pnpm run build && node fuzz/seed-corpus.cjs crbm-index && mkdir -p fuzz/crashes && jazzer fuzz/targets/crbm-index.mjs fuzz/corpus/crbm-index --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
     "mutation": "stryker run",
+    "release:bootstrap": "node scripts/bootstrap-publish.cjs",
     "audit": "node scripts/audit.cjs",
     "leak-scan": "node scripts/leak-scan.cjs",
     "leak-scan:snapshot": "node scripts/leak-scan.cjs --snapshot --history",

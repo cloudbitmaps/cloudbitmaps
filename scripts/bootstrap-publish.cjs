@@ -19,9 +19,9 @@
  * script derives the dist-tag from the prerelease identifier (0.1.0-rc.0 -> `rc`) and verifies afterwards that
  * `latest` was not created.
  *
- * Usage:
- *   node scripts/bootstrap-publish.cjs             # dry run — checks everything, publishes nothing
- *   node scripts/bootstrap-publish.cjs --confirm   # the irreversible one
+ * Usage (via the pnpm entry, like every other script here — `pnpm audit`, `pnpm leak-scan`):
+ *   pnpm release:bootstrap             # dry run — checks everything, publishes nothing
+ *   pnpm release:bootstrap --confirm   # the irreversible one
  */
 const { execFileSync } = require('node:child_process');
 const { existsSync, readFileSync, readdirSync } = require('node:fs');
@@ -33,7 +33,7 @@ const KNOWN = new Set(['--confirm', '--allow-release']);
 const unknown = argv.filter((a) => !KNOWN.has(a));
 if (unknown.length > 0) {
   console.error(`bootstrap-publish: unknown argument(s): ${unknown.join(', ')}`);
-  console.error('usage: bootstrap-publish.cjs [--confirm] [--allow-release]');
+  console.error('usage: pnpm release:bootstrap [--confirm] [--allow-release]');
   process.exit(2);
 }
 const CONFIRM = argv.includes('--confirm');
@@ -177,7 +177,7 @@ for (const p of packages) console.log(`  publish:  ${p.json.name}`);
 if (!CONFIRM) {
   console.log(
     '\nbootstrap-publish: dry run — every precondition passed and nothing was sent.\n' +
-      'Re-run with --confirm to publish. This is irreversible: npm allows unpublish only within 72 hours,\n' +
+      'Re-run with `pnpm release:bootstrap --confirm` to publish. This is irreversible: npm allows unpublish only within 72 hours,\n' +
       'and the name+version is burned either way.',
   );
   process.exit(0);

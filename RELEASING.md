@@ -119,9 +119,9 @@ the `latest` dist-tag doesn't point at it**, which is the whole subtlety of the 
    verifies every precondition below *before* the irreversible step, and requires `--confirm`:
 
    ```sh
-   npm login                            # interactive 2FA
-   node scripts/bootstrap-publish.cjs   # dry run: checks everything, publishes nothing
-   node scripts/bootstrap-publish.cjs --confirm
+   npm login                            # interactive 2FA — npm's own auth, not something pnpm wraps
+   pnpm release:bootstrap               # dry run: checks everything, publishes nothing
+   pnpm release:bootstrap --confirm
    ```
 
    Equivalent by hand, if you'd rather:
