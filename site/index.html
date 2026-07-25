@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CloudRoaring — distributed, cloud-native Roaring Bitmaps</title>
+    <meta
+      name="description"
+      content="Take the Roaring Bitmap and make it distributed, durable, and cloud-scale — tiered HOT/WARM/COLD storage with serverless chunk-skipping intersection, without giving up the fast in-memory API."
+    />
+    <link rel="stylesheet" href="cloudroaring.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html"
+          ><span class="dot"></span> CloudRoaring <small>v0.1.0 · pre-1.0</small></a
+        >
+        <nav class="jump">
+          <a href="#why">Why</a>
+          <a href="#jewel">Intersection</a>
+          <a href="#how">How it works</a>
+          <a href="#durability">Your data</a>
+          <a href="#quickstart">Quickstart</a>
+          <a href="usage.html">Usage&nbsp;↗</a>
+          <a href="benchmarks.html">Benchmarks&nbsp;↗</a>
+          <a href="architecture.html">Architecture&nbsp;↗</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="hero">
+      <div class="hero-inner">
+        <p class="eyebrow">Distributed Roaring Bitmaps · Apache-2.0 · pre-release</p>
+        <h1>A Roaring Bitmap that <span class="roar">lives in the cloud</span>.</h1>
+        <p class="lede">
+          The Roaring Bitmap — the compressed set structure behind Lucene, ClickHouse, Druid, and
+          Spark — is a brilliant way to hold a billion integer IDs in tiny space. But it's a
+          <strong>local, in-process</strong> data structure: bounded by one machine's RAM, gone when
+          the process dies. CloudRoaring keeps the engine and its familiar in-memory API —
+          <code>add</code>, <code>has</code>, <code>remove</code>, <code>intersect</code> — and puts the
+          <strong>storage</strong> on a tiered, pluggable, cloud-native architecture.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="architecture.html">Read the architecture <span class="arr">→</span></a>
+          <a class="btn btn-ghost" href="../docs/guide/getting-started.md">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        </div>
+        <div class="install">
+          <span class="p">$</span> npm&nbsp;i&nbsp;@cloudbitmaps/roaring
+          <span class="note">— plus only the backend SDK(s) you use</span>
+        </div>
+        <div class="hero-meta">
+          <div><span class="n">3</span><span class="l">storage tiers</span></div>
+          <div><span class="n">∩</span><span class="l">chunk-skipping join</span></div>
+          <div><span class="n">1</span><span class="l">runtime dependency</span></div>
+          <div><span class="n">9</span><span class="l">cloud backends</span></div>
+        </div>
+      </div>
+    </div>
+
+    <main class="wrap">
+      <!-- WHY -->
+      <section id="why">
+        <div class="section-head">
+          <p class="kicker">Why it exists</p>
+          <h2>Stop paying for RAM, 24/7, to hold sets that are mostly read</h2>
+        </div>
+        <div class="prose">
+          <p>
+            If you want big bitmap-backed <strong>audience segments</strong> or
+            <strong>membership / feature-flag sets</strong> that are shared across services and
+            survive restarts, today you reach for an always-on Redis cluster. It's fast — but
+            expensive to keep running, and it forgets everything on restart unless you bolt on
+            persistence.
+          </p>
+          <p>
+            CloudRoaring keeps the bitmap engine and the developer experience, but makes the data
+            <strong>cheap and durable at rest</strong> (cents/month in object storage), fast where it
+            needs to be, and able to answer set queries over enormous bitmaps from
+            <strong>small, stateless functions</strong>. A leaked bucket can reveal nothing; a GDPR
+            erasure can be provable; a crash mid-compaction can't lose a write.
+          </p>
+          <p>
+            The design target wasn't hypothetical: a <strong>bitmap / membership service</strong> for
+            audience segmentation, which has to answer — fast and cheaply — <em>how many</em> users are in a
+            segment, <em>who</em> they are, and <em>what's the overlap</em> with other segments. Every
+            trade-off here is aimed at that shape of workload.
+            <a href="usage.html">See the use cases and flows →</a>
+          </p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- CROWN JEWEL -->
+      <section id="jewel">
+        <div class="crown">
+          <p class="kicker">The crown jewel</p>
+          <h3>Intersect two billion-ID segments in a serverless function</h3>
+          <p>
+            A Roaring Bitmap is already a set of 16-bit <em>chunks</em>. To AND two segments you only
+            need the chunks whose key appears in <strong>both</strong> — a key missing from either
+            side contributes nothing and is <strong>never downloaded</strong>. So two huge segments
+            that barely overlap transfer almost nothing, and the whole join streams under a bounded
+            in-flight window: it runs in a 128&nbsp;MB Lambda regardless of segment size.
+          </p>
+          <figure class="code-fig">
+            <figcaption><span class="fdot"></span> stream the IDs present in every operand, ascending</figcaption>
+            <div class="code has-cap"><pre><span class="k">const</span> shoppers = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);
+<span class="k">const</span> active   = store.<span class="f">segment</span>(<span class="s">'active-this-week'</span>);
+
+<span class="c">// only chunks present in BOTH ever leave cold storage</span>
+<span class="k">for await</span> (<span class="k">const</span> id <span class="k">of</span> shoppers.<span class="f">intersect</span>([active])) { <span class="c">/* … */</span> }
+
+<span class="c">// …or materialize the result straight into a new segment</span>
+<span class="k">await</span> shoppers.<span class="f">intersectInto</span>(store.<span class="f">segment</span>(<span class="s">'campaign-targets'</span>), [active]);</pre></div>
+          </figure>
+        </div>
+      </section>
+
+      <!-- HOW IT WORKS -->
+      <section id="how">
+        <div class="section-head">
+          <p class="kicker">How it works</p>
+          <h2>One bitmap, three temperatures</h2>
+        </div>
+        <div class="prose">
+          <p>
+            Every 32-bit ID splits into a 16-bit <strong>chunk key</strong> (which chunk) and a
+            16-bit <strong>remainder</strong> (which bit inside it). CloudRoaring maps each chunk onto
+            whichever tier its access pattern deserves — and a read merges them.
+          </p>
+        </div>
+
+        <div class="legend">
+          <span class="tier-chip chip-hot">HOT · RAM (LRU)</span>
+          <span class="tier-chip chip-warm">WARM · NoSQL deltas</span>
+          <span class="tier-chip chip-cold">COLD · immutable .crbm</span>
+        </div>
+
+        <div class="diagram" role="img" aria-label="Tiered architecture: an id routes to a chunk served from HOT cache, WARM deltas merged over the COLD base.">
+<pre>
+   id ∈ [0, 2³²)  ──split──▶   <span class="t-accent">chunkKey</span> (16-bit)  ‖  <span class="t-accent">remainder</span> (16-bit)
+                                   │
+  ┌────────────────────────────────▼─────────────────────────────────────┐
+  │  <span class="t-hot">HOT  — bounded LRU of decoded chunks, in process RAM</span>                  │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │  <span class="t-warm">WARM — mutable per-chunk delta rows  { adds, removes }</span>  · OCC          │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │  <span class="t-cold">COLD — immutable, generation-keyed .crbm</span>  · CRC + (optional) AES-GCM   │
+  └──────────────────────────────────────────────────────────────────────┘
+                                   │
+       a read merges the tiers:    ▼
+            <span class="t-good">effective(chunk) = ( COLD ∪ WARM.adds ) \ WARM.removes</span>
+</pre>
+        </div>
+
+        <p class="prose">
+          Everything is <strong>drivers behind interfaces</strong> — in-memory, local-filesystem, and
+          cloud implementations that all pass the same conformance suite — and the
+          <code>core/</code> is a pure function of its inputs (no clock, no randomness, no cloud SDK),
+          so a deterministic simulator can replay any concurrency or crash bug from a single seed.
+          <a href="architecture.html">See the full architecture, phase by phase&nbsp;→</a>
+        </p>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- DURABILITY / PORTABILITY -->
+      <section id="durability">
+        <div class="section-head">
+          <p class="kicker">Your data stays yours</p>
+          <h2>A library over <em>your</em> storage — not a service that holds it hostage</h2>
+        </div>
+        <div class="prose">
+          <p>
+            Betting a billion IDs on a young library is a fair thing to hesitate over — so here's the straight
+            answer. CloudRoaring is a <strong>library, not a service</strong>: your data lives in
+            <strong>your</strong> S3 bucket, <strong>your</strong> DynamoDB table, <strong>your</strong>
+            filesystem — we never see or hold it. If the project vanished tomorrow, nothing is deleted or held
+            hostage; the objects are still sitting in your bucket.
+          </p>
+        </div>
+        <div class="features">
+          <div class="feature">
+            <span class="ic">OPEN</span>
+            <h4>An open, standard format</h4>
+            <p>Cold <code>.crbm</code> objects are a documented container around <strong>standard portable Roaring serialization</strong> — the exact bytes every roaring library (Java, Go, Python, Rust…) already reads. Getting your data out <em>is</em> reading the format.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">IMMUT</span>
+            <h4>Immutable + checksummed</h4>
+            <p>Write-once, generation-numbered objects; a pointer swap makes one "current." A bug can only write a <em>new</em> generation — the old one stays intact and you roll back. Every byte is CRC/SHA-verified before use.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">EXIT</span>
+            <h4>A one-command exit</h4>
+            <p><code>store.exportSegments()</code> (or the <code>export-segments</code> CLI) dumps every segment to a portable file — <code>roaring</code> (loadable by any roaring library) or <code>ndjson</code> (zero-dependency). Leaving is a command, not a research project.</p>
+          </div>
+        </div>
+        <p class="prose">
+          The honest trade-off: the warm/registry tiers use CloudRoaring's own (documented) schema, and it's a
+          young, single-maintainer, pre-1.0 project — so the real risks are <strong>operational and maturity</strong>,
+          not losing the bytes (which are immutable and yours). Pure roaring libraries have zero lock-in only
+          because they manage <em>no</em> storage; bitmap databases manage it but keep your data in their engine.
+          CloudRoaring is the middle — <strong>your storage, your format, our orchestration</strong>.
+        </p>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- FEATURES -->
+      <section id="features">
+        <div class="section-head">
+          <p class="kicker">What you get</p>
+          <h2>A distributed system, not just a data structure</h2>
+        </div>
+        <div class="features">
+          <div class="feature">
+            <span class="ic">TIERS</span>
+            <h4>Tiered by temperature</h4>
+            <p>Hot RAM LRU → warm NoSQL deltas → cold immutable object storage. Cheap at rest, fast where it counts.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">∩</span>
+            <h4>Chunk-skipping intersection</h4>
+            <p>AND across segments while downloading only the chunks that can possibly overlap. Streams in bounded memory.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">DEL</span>
+            <h4>Tombstone-correct deletes</h4>
+            <p>A real <code>remove()</code> over an immutable cold base — one chunk write, no scan, no rebuild.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">2PC</span>
+            <h4>Crash-safe compaction</h4>
+            <p>A background 2-phase commit folds warm deltas into fresh cold generations — version-fenced, constant-memory, recovers from a crash at any step.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">KEY</span>
+            <h4>Encryption + crypto-shred</h4>
+            <p>Opt-in AES-256-GCM (IDs <em>and</em> cardinality hidden), bring-your-own-key with no forced cloud dependency, and provable erasure — even on backups.</p>
+          </div>
+          <div class="feature">
+            <span class="ic">NET</span>
+            <h4>Resilience, on by default</h4>
+            <p>Every warm/cold call retries transient faults with jittered backoff. An outage costs latency, not correctness.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUICKSTART -->
+      <section id="quickstart">
+        <div class="section-head">
+          <p class="kicker">Quickstart</p>
+          <h2>Zero setup: in-memory in six lines</h2>
+        </div>
+        <div class="prose">
+          <p>
+            A store is wired to a <strong>warm</strong> driver (live mutations) and a
+            <strong>cold</strong> source (the immutable archive). The in-memory drivers need no setup
+            — swap in the S3 / DynamoDB drivers later and the code above them doesn't change.
+          </p>
+        </div>
+        <figure class="code-fig">
+          <figcaption><span class="fdot"></span> the same API you'd run against S3 + DynamoDB in production</figcaption>
+          <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
+  warm: <span class="k">new</span> <span class="f">MemoryWarmDriver</span>(),
+  cold: <span class="k">new</span> <span class="f">MemoryColdChunkSource</span>(),
+});
+
+<span class="k">const</span> vips = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);
+<span class="k">await</span> vips.<span class="f">addMany</span>([<span class="n">5</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]); <span class="c">// grouped by chunk → one write per chunk</span>
+<span class="k">await</span> vips.<span class="f">has</span>(<span class="n">1_234_567_890</span>);                 <span class="c">// → true</span>
+<span class="k">await</span> vips.<span class="f">remove</span>(<span class="n">1_234_567_890</span>);              <span class="c">// tombstone — no rebuild</span>
+<span class="k">await</span> vips.<span class="f">count</span>();                           <span class="c">// exact cardinality</span></pre></div>
+        </figure>
+        <p class="prose">
+          From here: persist on the <a href="../docs/guide/getting-started.md">local filesystem</a>, move cold
+          to <strong>S3</strong> (<code>@cloudbitmaps/roaring/s3</code>) and warm to <strong>DynamoDB</strong>
+          (<code>@cloudbitmaps/roaring/dynamodb</code>) — the cloud SDKs are optional peer dependencies, so the
+          core package never pulls them in.
+        </p>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- STATUS -->
+      <section id="status">
+        <div class="section-head">
+          <p class="kicker">Where it is</p>
+          <h2>Status &amp; roadmap</h2>
+        </div>
+        <div class="prose">
+          <p>
+            <code>0.1.0</code>, and deliberately pre-1.0. The engine, nine cloud backends across three tiers,
+            the compaction daemon, encryption, and the compliance surface are built and tested;
+            <code>1.0</code> is earned by real-cloud cost calibration, adoption, and freezing the
+            <code>.crbm</code> on-disk format.
+          </p>
+        </div>
+        <div class="grid2">
+          <div class="mini"><span class="tag">engine · done</span><h4>Tiered core ✓</h4><p>Core engine, <code>.crbm</code> format + deterministic simulator, chunk-skipping intersection, warm OCC, resilience, registry, crash-safe + constant-memory compaction, encryption &amp; crypto-shred.</p></div>
+          <div class="mini"><span class="tag">operations · done</span><h4>Run it for real ✓</h4><p>Observability metrics sink, honest cost estimator + published benchmarks, audit sink, and the compliance &amp; governance layer — <code>PRIVACY.md</code>, subject access &amp; erasure, portable export.</p></div>
+          <div class="mini"><span class="tag">ecosystem · done</span><h4>Nine cloud backends ✓</h4><p>Cold on S3, GCS, and Azure Blob; warm on DynamoDB, Postgres, MySQL, Redis, Mongo, and Cassandra; a registry on DynamoDB or S3 alone — each green against the shared conformance suite on a real backend.</p></div>
+          <div class="mini"><span class="tag">next</span><h4>Toward 1.0</h4><p>Real-AWS cost &amp; latency calibration, the <code>.crbm</code> format freeze, native registries beyond AWS, and the 64-bit / billions-of-IDs axis. Language ports follow the freeze.</p></div>
+        </div>
+        <p class="prose">
+          The <a href="../docs/ROADMAP.md">roadmap</a> has the full picture — including the
+          <strong>validated envelope</strong>: what we've proven, at what scale, and what we haven't. The
+          <a href="architecture.html">architecture deep-dive</a> walks the design with diagrams and the
+          invariant each layer secures.
+        </p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="flinks">
+          <a href="architecture.html">Architecture deep-dive</a>
+          <a href="../docs/guide/getting-started.md">Getting started</a>
+          <a href="../docs/ROADMAP.md">Roadmap</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        </div>
+        <strong>CloudRoaring</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
+        pre-1.0 v0.1.0<br />
+        Maps each 16-bit roaring chunk onto tiered storage — HOT RAM · WARM NoSQL · COLD immutable
+        <code>.crbm</code>. One runtime dependency (<strong>roaring</strong>); cloud SDKs are optional
+        peer deps behind subpath exports.
+      </div>
+    </footer>
+
+    <script>
+      (function () {
+        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        var els = document.querySelectorAll('.feature, .mini, .crown, .diagram, .code-fig');
+        els.forEach(function (el) {
+          el.classList.add('reveal');
+        });
+        if (!('IntersectionObserver' in window)) {
+          els.forEach(function (el) {
+            el.classList.add('in');
+          });
+          return;
+        }
+        var io = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (e) {
+              if (e.isIntersecting) {
+                e.target.classList.add('in');
+                io.unobserve(e.target);
+              }
+            });
+          },
+          { rootMargin: '0px 0px -8% 0px', threshold: 0.06 },
+        );
+        els.forEach(function (el) {
+          io.observe(el);
+        });
+      })();
+    </script>
+  </body>
+</html>
