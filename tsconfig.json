@@ -1,0 +1,20 @@
+{
+  "//": "Root tsconfig — typechecks BOTH packages plus the cross-package test suite in `tests/`. The tests deliberately stay at the repo root because many drive the facade and core internals together (white-box), so the `@/…` aliases below map them onto the two packages and the split needed no test-file churn. Cross-package imports resolve to core's SOURCE here so `pnpm typecheck` works without a prior build; the real build resolves `@cloudbitmaps/core` to its built `dist` through the workspace symlink.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@/index": ["./packages/roaring/src/index.ts"],
+      "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
+      "@/testing/*": ["./packages/roaring/src/testing/*"],
+      "@/bin/*": ["./packages/roaring/src/bin/*"],
+      "@/*": ["./packages/core/src/*"],
+      "@cloudbitmaps/core": ["./packages/core/src/index.ts"],
+      "@cloudbitmaps/roaring": ["./packages/roaring/src/index.ts"],
+      "@cloudbitmaps/core/*": ["./packages/core/src/*"]
+    }
+  },
+  "include": ["packages/core/src", "packages/roaring/src", "tests"],
+  "exclude": ["**/dist", "node_modules"]
+}

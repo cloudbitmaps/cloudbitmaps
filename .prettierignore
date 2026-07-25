@@ -1,0 +1,13 @@
+dist
+packages/*/dist
+fuzz/build
+coverage
+node_modules
+pnpm-lock.yaml
+
+# Markdown is hand-formatted (ASCII diagrams, alignment) — Prettier would mangle it.
+**/*.md
+
+# The site/ pages embed the same hand-aligned ASCII diagrams in <pre> blocks; keep them out of
+# Prettier for the same reason as the Markdown. (The shared stylesheet is formatted normally.)
+site/*.html

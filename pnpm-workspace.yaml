@@ -1,0 +1,10 @@
+# The @cloudbitmaps family monorepo (DECISIONS #58).
+#
+#   packages/core     → @cloudbitmaps/core     the codec-agnostic engine + every storage driver
+#   packages/roaring  → @cloudbitmaps/roaring  the roaring codec + CloudRoaring facade (what users install)
+#
+# `@cloudbitmaps/roaring` depends on `@cloudbitmaps/core` via `workspace:*`, which pnpm resolves to a symlink
+# into `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is
+# one-way — core never imports a flavor package (that would be a cycle).
+packages:
+  - 'packages/*'

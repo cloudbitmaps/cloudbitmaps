@@ -1,0 +1,103 @@
+{
+  "name": "cloudbitmaps-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace root for the @cloudbitmaps family (not published). Packages live in packages/*.",
+  "license": "Apache-2.0",
+  "author": "Sharvil Kadam",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/**\" run build",
+    "smoke": "pnpm run build && node scripts/smoke.cjs",
+    "lambda-smoke": "bash scripts/lambda-smoke.sh",
+    "rss-gate": "bash scripts/rss-gate.sh",
+    "build-lambda-layer": "bash scripts/build-lambda-layer.sh",
+    "typecheck": "tsc --noEmit && pnpm run typecheck:next",
+    "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:arch": "depcruise packages/core/src packages/roaring/src",
+    "bench": "pnpm run build && node bench/run.cjs",
+    "bench:scale": "pnpm run build && node --expose-gc bench/scale.cjs",
+    "soak": "pnpm run build && node --expose-gc bench/soak.cjs",
+    "stress": "pnpm run build && node --expose-gc bench/stress.cjs",
+    "dr-drill": "vitest run tests/dr-drill.test.ts",
+    "load": "pnpm run build && node bench/load-localstack.cjs",
+    "chaos": "pnpm run build && node bench/chaos-localstack.cjs",
+    "calibrate:aws": "pnpm run build && node bench/calibrate-aws.cjs",
+    "fuzz:seed": "node fuzz/seed-corpus.cjs",
+    "fuzz:deser": "pnpm run build && node fuzz/seed-corpus.cjs safe-deserialize && mkdir -p fuzz/crashes && jazzer fuzz/targets/safe-deserialize.mjs fuzz/corpus/safe-deserialize --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
+    "fuzz:crbm": "pnpm run build && node fuzz/seed-corpus.cjs crbm-reader && mkdir -p fuzz/crashes && jazzer fuzz/targets/crbm-reader.mjs fuzz/corpus/crbm-reader --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
+    "fuzz:index": "pnpm run build && node fuzz/seed-corpus.cjs crbm-index && mkdir -p fuzz/crashes && jazzer fuzz/targets/crbm-index.mjs fuzz/corpus/crbm-index --sync --includes fuzz/build -- -max_total_time=${FUZZ_SECONDS:-60} -rss_limit_mb=4096 -print_final_stats=1 -artifact_prefix=fuzz/crashes/",
+    "mutation": "stryker run",
+    "audit": "node scripts/audit.cjs",
+    "leak-scan": "node scripts/leak-scan.cjs",
+    "leak-scan:snapshot": "node scripts/leak-scan.cjs --snapshot --history",
+    "verify-blob-hashes": "node scripts/verify-blob-hashes.cjs",
+    "verify-blob-hashes:strict": "node scripts/verify-blob-hashes.cjs --strict",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1075.0",
+    "@aws-sdk/client-s3": "^3.1075.0",
+    "@aws-sdk/client-sts": "^3.1095.0",
+    "@azure/storage-blob": "^12",
+    "@cloudbitmaps/core": "workspace:*",
+    "@cloudbitmaps/roaring": "workspace:*",
+    "@eslint/js": "^9.0.0",
+    "@google-cloud/storage": "^7.0.0",
+    "@jazzer.js/core": "^4.0.0",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8",
+    "cassandra-driver": "^4",
+    "dependency-cruiser": "^16.0.0",
+    "eslint": "^9.0.0",
+    "fast-check": "^4.8.0",
+    "husky": "^9.0.0",
+    "ioredis": "^5",
+    "lint-staged": "^15.0.0",
+    "mongodb": "^6",
+    "mysql2": "^3.23.1",
+    "pg": "^8",
+    "prettier": "^3.3.0",
+    "roaring": "^2.7.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0",
+    "typescript-next": "npm:typescript@^7",
+    "vitest": "^2.0.0"
+  },
+  "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-w8wr-v893-vjvp",
+        "GHSA-23hp-3jrh-7fpw",
+        "GHSA-8x88-c5mf-7j5w"
+      ]
+    }
+  }
+}

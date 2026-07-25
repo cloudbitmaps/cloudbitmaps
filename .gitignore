@@ -1,0 +1,50 @@
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+*.log
+*.tsbuildinfo
+*.tgz
+.turbo/
+.vitest/
+
+# Fuzzing (T3): generated seed corpus + evolved inputs + crash artifacts + the fuzz-only build are not
+# committed. Crash reproducers are promoted by hand into tests/core/crbm/fuzz-corpus/ as permanent regressions.
+fuzz/corpus/
+fuzz/crashes/
+fuzz/build/
+
+# Mutation testing (T2): the per-mutant HTML/JSON report + Stryker's temp dir are generated, not committed.
+reports/
+.stryker-tmp/
+dist-lambda/
+
+# transient tarball staging for the Lambda deployability checks
+.pack-tmp/
+.rss-stage/
+
+# Leak-scan needles that must never be committed (an employer name, a real address, a former handle).
+# `pnpm leak-scan` reads one case-insensitive regex per line; putting them in the script would be the leak.
+.leak-needles
+
+# libFuzzer/jazzer OOM + crash artifacts land in the CWD as `oom-<sha1>` / `crash-<sha1>`; one was accidentally
+# committed during the RSS-gate work. They are reproducers, not source — promote a real one into
+# tests/core/crbm/fuzz-corpus/ by hand instead.
+oom-*
+crash-*
+
+# Real-cloud calibration: the LocalStack REHEARSAL output is a mechanics check, not published evidence, so it
+# is not committed. `bench/calibrate-aws-results.json` (a real run) IS committed — it is the evidence.
+bench/calibrate-aws-rehearsal.json
