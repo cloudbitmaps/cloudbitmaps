@@ -1,0 +1,156 @@
+# Local integration backends — no real AWS needed.
+# Usage: `docker compose up -d` then `pnpm test:integration`.
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: cloud-roaring-dynamodb
+    ports:
+      - '8000:8000'
+    command: ['-jar', 'DynamoDBLocal.jar', '-inMemory', '-sharedDb']
+
+  minio:
+    image: minio/minio:latest
+    container_name: cloud-roaring-minio
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+
+  # Google Cloud Storage emulator for the GcsColdDriver integration lane (Phase 7). The client reaches it by
+  # passing `apiEndpoint: http://127.0.0.1:4443` (see tests/integration/gcs.test.ts) — no real GCP, no auth.
+  # `-external-url` must match that host so resumable-upload session URLs point back at the emulator.
+  # PINNED (not `:latest`): 1.52.2 is verified to enforce `ifGenerationMatch: 0` on the simple (non-resumable)
+  # upload path the driver uses for small objects — the write-once assertion depends on it. Bump deliberately.
+  fake-gcs:
+    image: fsouza/fake-gcs-server:1.52.2
+    container_name: cloud-roaring-fake-gcs
+    ports:
+      - '4443:4443'
+    command:
+      - '-scheme'
+      - 'http'
+      - '-port'
+      - '4443'
+      - '-public-host'
+      - '127.0.0.1:4443'
+      - '-external-url'
+      - 'http://127.0.0.1:4443'
+      - '-backend'
+      - 'memory'
+
+  # Azure Blob Storage emulator (Azurite) for the AzureBlobColdDriver integration lane (Phase 7). The client
+  # reaches it via the well-known dev connection string (see tests/integration/azure.test.ts) — no real Azure,
+  # no auth. PINNED (not `:latest`): 3.35.0 is a known-good build; `--skipApiVersionCheck` lets a newer SDK
+  # `x-ms-version` through (the SDK ships a more recent API version than a pinned Azurite recognizes).
+  # Write-once (`ifNoneMatch: '*'`) is enforced by Azurite on BOTH upload paths the driver uses (empirically
+  # verified — 409 BlobAlreadyExists); that assertion depends on it. Bump deliberately.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    container_name: cloud-roaring-azurite
+    ports:
+      - '10000:10000'
+    command:
+      - 'azurite-blob'
+      - '--blobHost'
+      - '0.0.0.0'
+      - '--blobPort'
+      - '10000'
+      - '--skipApiVersionCheck'
+      # Memory-only, like fake-gcs's `-backend memory`: state is dropped on restart so a reused container never
+      # accumulates blobs across runs and collides on the write-once `conf/N` keys (the suite assumes a fresh emulator).
+      - '--inMemoryPersistence'
+
+  # PostgreSQL for the PostgresWarmDriver integration lane (Phase 7). A real Postgres (not an emulator) — the
+  # OCC is plain SQL (INSERT … ON CONFLICT / token-fenced UPDATE/DELETE). PINNED to a major (16); the test
+  # creates its table via postgresWarmTableDDL() in beforeAll. `tmpfs` keeps the data dir in RAM (fast, ephemeral).
+  postgres:
+    image: postgres:16
+    container_name: cloud-roaring-postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: cloudroaring
+      POSTGRES_PASSWORD: cloudroaring
+      POSTGRES_DB: cloudroaring
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cloudroaring -d cloudroaring']
+      interval: '2s'
+      timeout: '3s'
+      retries: 20
+
+  # Redis for the RedisWarmDriver integration lane (Phase 7). A real Redis (not an emulator) — the OCC is an
+  # atomic Lua compare-and-set. PINNED to a major (7). No persistence needed (ephemeral test data); the test
+  # FLUSHDBs a fresh keyspace per driver via a unique keyPrefix.
+  redis:
+    image: redis:7
+    container_name: cloud-roaring-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: '2s'
+      timeout: '3s'
+      retries: 20
+
+  # MongoDB for the MongoWarmDriver integration lane (Phase 7). A real MongoDB (not an emulator) — OCC is a
+  # deterministic-`_id` insert (create-if-absent) + token-fenced updateOne/deleteOne. PINNED to a major (7).
+  # A single-node instance is fine for the per-document atomic ops the driver uses (no transactions/replica set).
+  mongodb:
+    image: mongo:7
+    container_name: cloud-roaring-mongodb
+    ports:
+      - '27017:27017'
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.runCommand('ping').ok"]
+      interval: '2s'
+      timeout: '5s'
+      retries: 30
+
+  # Cassandra for the CassandraWarmDriver integration lane (Phase 7). A real Cassandra (also covers ScyllaDB,
+  # same CQL + LWT) — OCC is a lightweight transaction (INSERT IF NOT EXISTS / UPDATE|DELETE IF token=?).
+  # PINNED to a major (5). Heap is tuned small for a faster/lighter single-node boot; the healthcheck gates on
+  # CQL readiness (Cassandra is slow to start, so `--wait` + the in-test poll allow generous time).
+  cassandra:
+    image: cassandra:5
+    container_name: cloud-roaring-cassandra
+    ports:
+      - '9042:9042'
+    environment:
+      MAX_HEAP_SIZE: 1G # small but not tight — 512M risks GC-pause LWT timeouts on a cold node
+      HEAP_NEWSIZE: 256M
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    healthcheck:
+      test: ['CMD-SHELL', 'cqlsh -e "SELECT now() FROM system.local" || exit 1']
+      interval: '5s'
+      timeout: '10s'
+      retries: 40
+      start_period: '60s'
+
+  # MySQL for the MysqlWarmDriver integration lane (Phase 7g). A real MySQL (not an emulator) — the OCC is plain
+  # SQL (INSERT + token-fenced UPDATE/DELETE, affectedRows-checked). PINNED to a major (8); the test creates its
+  # table via mysqlWarmTableDDL() in beforeAll. `tmpfs` keeps the data dir in RAM (fast, ephemeral). First boot
+  # runs the DB init, so the healthcheck gets a generous start_period before it counts failures.
+  mysql:
+    image: mysql:8
+    container_name: cloud-roaring-mysql
+    ports:
+      - '3306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: cloudroaring
+      MYSQL_DATABASE: cloudroaring
+      MYSQL_USER: cloudroaring
+      MYSQL_PASSWORD: cloudroaring
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-u', 'root', '-pcloudroaring']
+      interval: '3s'
+      timeout: '5s'
+      retries: 40
+      start_period: '30s'

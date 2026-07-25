@@ -1,0 +1,208 @@
+{
+  "note": "Measured against real AWS by `pnpm calibrate:aws --run`. Latency is region/instance-dependent; cost is published on-demand pricing applied to WIRE-METERED op counts, with DynamoDB units taken from AWS ConsumedCapacity. Reconcile against Cost Explorer via the tag below.",
+  "rehearsal": false,
+  "region": "us-east-1",
+  "runId": "2026-07-25-60291",
+  "costAllocationTag": "cloudbitmaps-calibration=2026-07-25-60291",
+  "at": "2026-07-25T01:47:04.387Z",
+  "runtime": {
+    "node": "v24.14.1",
+    "platform": "darwin-arm64"
+  },
+  "config": {
+    "segments": 20,
+    "writes": 2000,
+    "reads": 2000,
+    "idsPerSegment": 500,
+    "concurrency": 16
+  },
+  "phases": {
+    "write": {
+      "ops": 2000,
+      "opsPerSec": 73,
+      "p50": 197.72,
+      "p99": 476,
+      "p999": 775.81,
+      "max": 776.79,
+      "billableOps": {
+        "cold.get": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.put": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.list": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.delete": {
+          "n": 0,
+          "bytes": 0
+        },
+        "warm.read": {
+          "n": 2053,
+          "bytes": 0
+        },
+        "warm.write": {
+          "n": 2053,
+          "bytes": 0
+        },
+        "warm.units": {
+          "read": 2053,
+          "write": 2000
+        }
+      }
+    },
+    "publish": {
+      "ops": 20,
+      "opsPerSec": 18,
+      "p50": 633.91,
+      "p99": null,
+      "p999": null,
+      "max": 733.26,
+      "billableOps": {
+        "cold.get": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.put": {
+          "n": 20,
+          "bytes": 22785
+        },
+        "cold.list": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.delete": {
+          "n": 0,
+          "bytes": 0
+        },
+        "warm.read": {
+          "n": 40,
+          "bytes": 0
+        },
+        "warm.write": {
+          "n": 20,
+          "bytes": 0
+        },
+        "warm.units": {
+          "read": 40,
+          "write": 20
+        }
+      }
+    },
+    "read": {
+      "ops": 2000,
+      "opsPerSec": 140,
+      "p50": 95.47,
+      "p99": 309.73,
+      "p999": 378.68,
+      "max": 479.97,
+      "billableOps": {
+        "cold.get": {
+          "n": 22,
+          "bytes": 24817
+        },
+        "cold.put": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.list": {
+          "n": 0,
+          "bytes": 0
+        },
+        "cold.delete": {
+          "n": 0,
+          "bytes": 0
+        },
+        "warm.read": {
+          "n": 2140,
+          "bytes": 0
+        },
+        "warm.write": {
+          "n": 0,
+          "bytes": 0
+        },
+        "warm.units": {
+          "read": 2140,
+          "write": 0
+        }
+      }
+    }
+  },
+  "measuredOps": {
+    "cold.get": {
+      "n": 23,
+      "bytes": 24817
+    },
+    "cold.put": {
+      "n": 22,
+      "bytes": 22785
+    },
+    "cold.list": {
+      "n": 0,
+      "bytes": 0
+    },
+    "cold.delete": {
+      "n": 0,
+      "bytes": 0
+    },
+    "warm.read": {
+      "n": 4233,
+      "bytes": 0
+    },
+    "warm.write": {
+      "n": 2073,
+      "bytes": 0
+    },
+    "warm.units": {
+      "read": 4233,
+      "write": 2020
+    }
+  },
+  "commands": {
+    "HeadBucketCommand": 1,
+    "DescribeTableCommand": 3,
+    "CreateBucketCommand": 1,
+    "PutBucketTaggingCommand": 1,
+    "CreateTableCommand": 1,
+    "GetItemCommand": 2233,
+    "UpdateItemCommand": 2073,
+    "PutObjectCommand": 20,
+    "QueryCommand": 2000,
+    "GetObjectCommand": 22
+  },
+  "attempts": {
+    "HeadBucketCommand": 1,
+    "DescribeTableCommand": 3,
+    "CreateBucketCommand": 1,
+    "PutBucketTaggingCommand": 1,
+    "CreateTableCommand": 1,
+    "GetItemCommand": 2233,
+    "UpdateItemCommand": 2073,
+    "PutObjectCommand": 20,
+    "QueryCommand": 2000,
+    "GetObjectCommand": 22
+  },
+  "failedAttempts": {
+    "HeadBucketCommand": 1,
+    "DescribeTableCommand": 1,
+    "UpdateItemCommand": 53
+  },
+  "cost": {
+    "pricing": "aws-us-east-1-ondemand",
+    "capacityUnits": {
+      "read": 4233,
+      "write": 2020,
+      "source": "ConsumedCapacity"
+    },
+    "s3GetUSD": 0.000009,
+    "s3PutListUSD": 0.00011,
+    "dynamoReadUSD": 0.000529,
+    "dynamoWriteUSD": 0.001263,
+    "totalUSD": 0.001911,
+    "redisAlwaysOnMonthlyUSD": 346
+  }
+}

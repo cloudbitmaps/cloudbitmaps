@@ -1,0 +1,26 @@
+# LocalStack lane for the load + chaos disciplines (test-strategy T7/T8). A single container emulates S3 +
+# DynamoDB behind one edge endpoint (:4566), so the S3ColdDriver + DynamoDbWarmDriver run against an
+# AWS-shaped backend without a real account (per the owner decision: LocalStack, not real AWS). Separate from
+# docker-compose.yml (the MinIO + DynamoDB-Local integration lane) so it can be brought up on demand and so a
+# chaos drill can pause/kill it without touching the integration stack.
+services:
+  localstack:
+    # Pinned to the last freely-runnable community tag: `:latest` now quits (exit 55) without a paid
+    # LOCALSTACK_AUTH_TOKEN, even for the community S3/DynamoDB services. 3.8.1 needs no token.
+    image: localstack/localstack:3.8.1
+    container_name: cloud-roaring-localstack
+    ports:
+      - '4566:4566'
+    environment:
+      - SERVICES=s3,dynamodb
+      - EAGER_SERVICE_LOADING=1
+      - DEBUG=0
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'curl -sf http://localhost:4566/_localstack/health | grep -q ''"s3": "\(available\|running\)"''',
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 20
