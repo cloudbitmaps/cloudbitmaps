@@ -46,13 +46,18 @@ const problems = [];
 const notes = [];
 const fail = (m) => problems.push(m);
 
+// Returns captured stdout, or '' when there is none to capture. `execFileSync` returns NULL — not a string —
+// whenever stdout is inherited rather than piped, which is exactly what the build and publish steps do so the
+// 2FA prompt and pnpm's progress reach the terminal. Calling .trim() on that result unconditionally throws
+// `Cannot read properties of null`, and only on the live path, where the preconditions have already passed.
 function run(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, {
+  const out = execFileSync(cmd, args, {
     cwd: ROOT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     ...opts,
-  }).trim();
+  });
+  return typeof out === 'string' ? out.trim() : '';
 }
 
 /** Run a command whose non-zero exit is a legitimate answer (a 404 probe, a dirty tree). */
