@@ -179,7 +179,7 @@ if (problems.length > 0) {
 
 console.log(`\n  version:  ${version}`);
 console.log(
-  `  dist-tag: ${distTag}${distTag === 'latest' ? '  (this WILL become the default install)' : '  (latest stays unset until the real release)'}`,
+  `  dist-tag: ${distTag}${distTag === 'latest' ? '  (this WILL become the default install)' : '  (a registry may still point latest here on a first publish — reported after)'}`,
 );
 for (const p of packages) console.log(`  publish:  ${p.json.name}`);
 
