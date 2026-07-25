@@ -1,0 +1,13 @@
+{
+  "//": "@cloudbitmaps/roaring — the roaring codec + CloudRoaring facade. `@cloudbitmaps/core` is a real dependency, so it is resolved (and left EXTERNAL by the bundler) through the workspace symlink in node_modules; the `paths` entries below point at core's source so this package typechecks without needing core built first.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "paths": {
+      "@cloudbitmaps/core": ["../core/src/index.ts"],
+      "@cloudbitmaps/core/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

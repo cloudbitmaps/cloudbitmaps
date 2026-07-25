@@ -1,0 +1,860 @@
+/**
+ * CloudRoaring — distributed, cloud-native Roaring Bitmaps.
+ *
+ * The `CloudRoaring` class is the read/write engine over the tiered seams. You wire storage **once**, as a
+ * single config object: a Cold driver (`cold`), a Warm driver (`warm`), and optionally a `registry` (the
+ * authoritative generation pointer — needed to read encrypted segments and to resolve generations without a
+ * cold `list`-scan) and a `keystore` (encryption-at-rest / crypto-shred). Pass a **raw** {@link IColdDriver}
+ * as `cold` (e.g. `S3ColdDriver`, `LocalFsColdDriver`, `MemoryColdDriver`) and the store assembles the `.crbm`
+ * cold source ({@link CrbmColdChunkSource}) for you — so each driver is named exactly once. Or pass an
+ * already-built {@link ColdChunkSource} to control advanced reader options yourself.
+ *
+ * In-process lifecycle helpers — `compact`, `eraseSubject`, `subjectReport` — reuse the store's own drivers, so
+ * you never re-pass them (they need the store built with a raw cold driver + registry). Out-of-process cold
+ * writers (the compaction daemon, the seed/bulk-load CLI, `destroySegment`/`eraseNamespace`) wire their own deps
+ * against the same drivers — they run in separate processes.md + the
+ * getting-started guide.
+ */
+
+import {
+  BoundedLru,
+  CrbmColdChunkSource,
+  DEFAULT_BUDGET,
+  NOOP_METRICS,
+  RetryingColdChunkSource,
+  RetryingWarmDriver,
+  SegmentEngine,
+  UnsupportedError,
+  ValidationError,
+  checkBudget,
+  compactSegment,
+  estimateCost,
+  groundedReport,
+  mapWithConcurrency,
+  resolveBudget,
+  resolvePerOpBudget,
+  runConsistencyCheck,
+  runExport,
+  safeMetrics,
+  splitId,
+  validateCompactionOptions,
+  validateSegmentRef,
+} from '@cloudbitmaps/core';
+import type {
+  Budget,
+  BudgetOption,
+  Clock,
+  CodecBitmap,
+  ColdChunkSource,
+  CompactionDeps,
+  CompactionOptions,
+  CompactionResult,
+  ConsistencyReport,
+  CostReport,
+  EngineDeps,
+  EstimateInput,
+  ExportManifest,
+  ExportOptions,
+  ExportSink,
+  IAuditSink,
+  IColdDriver,
+  IKeystore,
+  IMetricsSink,
+  IRegistryDriver,
+  IWarmDriver,
+  MetricOpName,
+  PricingProfile,
+  RegistryRecord,
+  RetryPolicy,
+  RetryingOptions,
+  Rng,
+  SegmentRef,
+  Topology,
+  Workload,
+} from '@cloudbitmaps/core';
+// This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
+import { roaringCodec } from './roaring-codec';
+
+/** Default real-time clock — lives outside `core/`, so `Date.now()` + `setTimeout` are allowed here. */
+class SystemClock implements Clock {
+  now(): number {
+    return Date.now();
+  }
+
+  sleep(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    // A *ref'd* timer, deliberately. Every `sleep` on this clock backs a caller-awaited, bounded retry — the
+    // engine's OCC read-modify-write backoff and the driver transient-retry loop (`withRetry`). A pending
+    // backoff therefore always means unfinished awaited work, so the timer MUST keep the event loop alive until
+    // it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI, Lambda, a bare script —
+    // whose only remaining handle was the backoff timer exit 0 mid-retry, silently dropping the awaited write
+    // with neither an applied result nor a thrown error (surfaced by the T4 hot-row contention stress; see
+    // DECISIONS #16). Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
+    // extend a process by the small remaining backoff budget of work that is genuinely still in flight.
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+}
+
+/** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
+class SystemRng implements Rng {
+  next(): number {
+    return Math.random();
+  }
+}
+
+const DEFAULT_CACHE_MAX_CHUNKS = 1024;
+/** Default in-flight fan-out for the admin scans (`subjectReport`/`eraseSubject`) — bounded, no thundering herd. */
+const DEFAULT_ADMIN_CONCURRENCY = 8;
+/** Fail fast on a bad admin `concurrency` BEFORE the (potentially huge) registry scan, not after. */
+function validateConcurrency(concurrency: number | undefined): void {
+  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
+    throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
+  }
+}
+
+/**
+ * Tenancy guard for the global-scope admin scans (`subjectReport`/`eraseSubject`, Phase F). Ids live in ONE
+ * global `[0, 2³²)` space shared across namespaces, so a namespace-less scan reaches into *every* tenant's
+ * segments. Require an explicit `namespace`, or a deliberate `{ allNamespaces: true }` ack, so a fleet-wide
+ * sweep is never the accidental default on a shared store.
+ */
+function requireScope(options: { namespace?: string; allNamespaces?: boolean }, op: string): void {
+  if (options.namespace === undefined && options.allNamespaces !== true) {
+    throw new ValidationError(
+      `${op} scans the global id space across all namespaces — pass an explicit \`namespace\`, ` +
+        `or \`{ allNamespaces: true }\` to intentionally sweep the whole fleet`,
+    );
+  }
+}
+
+/**
+ * Wiring for a {@link CloudRoaring} store. **Only `cold` and `warm` are required** — the minimal call is
+ * `new CloudRoaring({ cold, warm })`. Add a `registry` to unlock eject / compaction / encryption and to skip the
+ * cold list-scan (recommended for anything beyond a quick look). Everything else is **optional tuning with
+ * sensible defaults** — resilience/retries are already on, the hot cache is bounded, metrics are a no-op — so
+ * reach for them only when you need to.
+ */
+export interface CloudRoaringOptions {
+  /**
+   * Cold tier. Pass a **raw** {@link IColdDriver} (`S3ColdDriver`, `LocalFsColdDriver`, `MemoryColdDriver`, …)
+   * and the store wraps it in a {@link CrbmColdChunkSource} using `registry`/`keystore` below — the common case,
+   * so you wire each driver **once**. Or pass an already-built {@link ColdChunkSource} (`MemoryColdChunkSource`,
+   * or a `CrbmColdChunkSource` you configured with advanced reader options) to use as-is.
+   */
+  readonly cold: IColdDriver | ColdChunkSource;
+  /** Warm tier: the per-chunk delta store under OCC (`DynamoDbWarmDriver`, `LocalFsWarmDriver`, `MemoryWarmDriver`). */
+  readonly warm: IWarmDriver;
+  /**
+   * Authoritative registry — the per-segment `currentGen` pointer + wrapped-DEK holder. Applies when `cold` is a
+   * **raw driver**: it (a) resolves the current generation with one strong read instead of a cold `list`-scan,
+   * and (b) lets the store read **encrypted** segments (that's where wrapped DEKs live). Optional — a
+   * registry-less store reads the highest generation by list-scanning Cold (cleartext only). When you pass a
+   * pre-built `ColdChunkSource`, that source resolves its own generations, so a top-level `registry` is inert
+   * there and rejected as a wiring mistake — configure it on the source instead.
+   */
+  readonly registry?: IRegistryDriver;
+  /**
+   * Keystore for encryption-at-rest / crypto-shred (Phase 4e). Required to read encrypted segments; needs a
+   * `registry` (that's where wrapped DEKs are stored). Applied only when `cold` is a raw driver — when you pass a
+   * pre-built {@link ColdChunkSource}, configure the keystore on that source instead.
+   */
+  readonly keystore?: IKeystore;
+  /**
+   * Refuse to read a **cleartext** segment — a guard against silently reading data that should be encrypted.
+   * Needs a `registry`; applied only when `cold` is a raw driver. Off by default (encryption is opt-in).
+   */
+  readonly requireEncryption?: boolean;
+  /** Injected for deterministic tests; defaults to a system clock. */
+  readonly clock?: Clock;
+  /** Injected for deterministic tests; defaults to `Math.random`-backed. Drives backoff jitter. */
+  readonly rng?: Rng;
+  /** HOT cache ceiling (decoded Cold chunks). */
+  readonly cacheMaxChunks?: number;
+  /** Optional TTL on cached chunks (ms). */
+  readonly cacheTtlMs?: number;
+  /**
+   * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
+   * (default 2000) — the bound on read staleness after a compaction commits a new generation (gap #4). Applies
+   * only when `cold` is a raw driver **and** a `registry` is wired (the cheap `currentGen` read the refresh
+   * needs; a registry-less store pins per source lifetime). Lazy — no timer; ≤ one registry read per segment per
+   * window, opening a new reader only when the generation actually advanced.
+   */
+  readonly coldGenTtlMs?: number;
+  /**
+   * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
+   * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments
+   * (gap #1). Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail
+   * GET. Applies only when `cold` is a raw driver (a pre-built `ColdChunkSource` manages its own reader cache).
+   */
+  readonly coldReaderCacheMax?: number;
+  /**
+   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte
+   * half of the gap #1 memory bound, complementing the `coldReaderCacheMax` *count* bound. A wide/dense
+   * segment's parsed index can be several MB, so a count-only bound could let the open readers pin ~GBs and
+   * blow a small heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index
+   * footprint would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for
+   * memory-tight deployments that read across wide segments. Applies only when `cold` is a raw driver.
+   */
+  readonly coldReaderCacheMaxBytes?: number;
+  /**
+   * Resilience: by default every warm/cold call retries **transient** faults (throttling, 5xx, dropped
+   * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}), and OCC
+   * conflicts back off between retries. Pass a {@link RetryPolicy} to tune it, or `false` to disable the
+   * transient-retry wrappers entirely (e.g. if your injected client already retries). Deterministic errors
+   * (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this layer.
+   */
+  readonly retry?: RetryPolicy | false;
+  /** Backoff schedule between OCC conflict retries; defaults to a small, tight one. */
+  readonly occBackoff?: RetryPolicy;
+  /** Observability: called before each transient-retry backoff wait. */
+  readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
+  /**
+   * Observability sink (Phase 5a): receives typed metric events (cold GET/bytes, warm read/write, cache
+   * hit/miss, retries, intersection efficiency, op latency). Defaults to a no-op — emission is skipped
+   * entirely when unused (near-zero overhead). Any exception the sink throws is swallowed — metrics can
+   * never break a read/write.
+   */
+  readonly metrics?: IMetricsSink;
+  /**
+   * Warm read consistency for the READ paths (`has`/`count`/`iterate`/`intersect`). Default `'strong'`
+   * (read-your-writes). `'eventual'` trades read-after-write for **~½ the DynamoDB read cost** (a strong read
+   * bills 2× RCU) — a good fit for read-heavy, staleness-tolerant workloads (mirrors the cold tier's bounded
+   * eventual reads). The compaction/OCC write path is always strongly consistent regardless. No effect on the
+   * in-memory/LocalFs drivers (always strong). (Audit gap #9.)
+   */
+  readonly warmReadConsistency?: 'strong' | 'eventual';
+  /**
+   * Max Warm chunk writes in flight per `addMany`/`removeMany` (the bounded flusher). Default **1** (serial —
+   * unchanged). Raise it to fan distinct-chunk writes out for throughput on wide multi-chunk batches; each
+   * chunk is its own OCC row so this is safe, and (as before) a mid-flush failure can leave a partial result.
+   */
+  readonly writeConcurrency?: number;
+  /**
+   * Per-op **denial-of-wallet** budget (Decision #3 / invariant T3): the max backend requests a
+   * single `count`/`iterate`/`intersect`/`subjectReport`/`eraseSubject` may fan out into before it's refused
+   * with {@link BudgetExceededError} — so one runaway op can't drive unbounded RCU/GET cost on a shared backend.
+   * **On by default, generous** ({@link DEFAULT_BUDGET}: 1,000,000 requests — a normal op never hits it). Tune
+   * with `{ maxRequests }`, override per op (on `intersect`/`subjectReport`/`eraseSubject`), or set `false` to
+   * disable. The check is O(1) (before fan-out), so the hot path is untouched; per-request bytes are separately
+   * size-capped, so bounding requests transitively bounds bytes.
+   */
+  readonly budget?: BudgetOption;
+}
+
+export interface SegmentOptions {
+  readonly namespace?: string;
+}
+
+/** A segment reference in a subject report / erasure ledger. */
+export interface SubjectSegmentRef {
+  readonly segment: string;
+  readonly namespace?: string;
+}
+
+/** Result of {@link CloudRoaring.subjectReport} — the segments an id is a member of (over registered segments). */
+export interface SubjectReport {
+  readonly id: number;
+  /** The registered segments the id is currently a member of. */
+  readonly segments: SubjectSegmentRef[];
+  /** How many registered segments were scanned (the completeness denominator). */
+  readonly scannedSegments: number;
+}
+
+/** One segment's entry in an erasure ledger (see {@link EraseSubjectResult}). */
+export interface SubjectErasureEntry {
+  readonly segment: string;
+  readonly namespace?: string;
+  /** The id was present and a logical `remove` tombstone was written. */
+  readonly removed: boolean;
+  /**
+   * True iff *this call* committed a new generation with the segment's tombstones applied — the bit is
+   * physically gone from Cold (assuming no concurrent re-add of the id; see {@link CloudRoaring.eraseSubject}).
+   * `false` is **conservative**: the purge may have been deferred (`note:'leased-by-other'`) or already done by
+   * a concurrent daemon (`note:'clean'`); the logical removal holds regardless.
+   */
+  readonly physicallyPurged: boolean;
+  /** The generation that retired the bit (present when `physicallyPurged`). */
+  readonly toGen?: number;
+  /** Why physical purge wasn't committed by this call (compaction's `reason`, e.g. `'leased-by-other'`, `'clean'`). */
+  readonly note?: string;
+}
+
+/**
+ * The erasure ledger returned by {@link CloudRoaring.eraseSubject} — your proof-of-deletion artifact. It is a
+ * return value only (no library-side persistence): persist it / route it to your audit sink as you see fit.
+ */
+export interface EraseSubjectResult {
+  readonly id: number;
+  /** Per-segment records for the segments the id was erased from (absent segments are not listed). */
+  readonly erasedFrom: SubjectErasureEntry[];
+  /** How many registered segments were scanned. */
+  readonly scannedSegments: number;
+}
+
+/**
+ * Resolve the `cold` option to a {@link ColdChunkSource} at construction (wiring-time only — no hot-path cost).
+ *
+ * `cold` is discriminated **structurally, without a brand**: a raw {@link IColdDriver} exposes `putImmutable`
+ * (the byte-mover seam); a pre-built {@link ColdChunkSource} exposes `getChunk` (the engine's read seam). The
+ * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
+ * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
+ * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
+ *
+ * A raw driver is wrapped into a {@link CrbmColdChunkSource} using the config's `registry`/`keystore`/
+ * `requireEncryption`; a pre-built source is used as-is. Those three options are meaningful **only** on the
+ * raw-driver path (a pre-built source carries its own registry/keystore) — pairing any of them with a source is
+ * a wiring mistake, so reject it rather than silently ignore it. The `CrbmColdChunkSource` constructor enforces
+ * the rest (a keystore / `requireEncryption` needs a registry; the driver needs range reads).
+ *
+ * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
+ * the store keeps the raw driver so its in-process lifecycle helpers (`compact`/`eraseSubject`) can build
+ * {@link CompactionDeps} without you re-passing drivers. `driver` is `undefined` for a pre-built source (there's
+ * no underlying `IColdDriver` to compact through — those callers use the free functions).
+ */
+function resolveColdSource(
+  options: CloudRoaringOptions,
+  clock: Pick<Clock, 'now'>,
+): {
+  source: ColdChunkSource;
+  driver: IColdDriver | undefined;
+} {
+  const cold: unknown = options.cold;
+  if (cold === null || typeof cold !== 'object') {
+    throw new ValidationError('`cold` must be an IColdDriver or a ColdChunkSource');
+  }
+  const hasGetChunk = typeof (cold as Partial<ColdChunkSource>).getChunk === 'function';
+  const hasPutImmutable = typeof (cold as Partial<IColdDriver>).putImmutable === 'function';
+  if (hasGetChunk && hasPutImmutable) {
+    throw new ValidationError(
+      '`cold` exposes both `getChunk` and `putImmutable` — ambiguous; pass an IColdDriver or a ColdChunkSource, not a hybrid',
+    );
+  }
+  if (!hasGetChunk && !hasPutImmutable) {
+    throw new ValidationError('`cold` must be an IColdDriver or a ColdChunkSource');
+  }
+  if (hasGetChunk) {
+    // Already a ColdChunkSource — used as-is. registry/keystore/requireEncryption only apply when the store
+    // builds the source from a raw driver; with a pre-built source they're inert, so reject them rather than
+    // mislead (configure them on the source you passed instead).
+    if (
+      options.registry !== undefined ||
+      options.keystore !== undefined ||
+      options.requireEncryption === true
+    ) {
+      throw new ValidationError(
+        'registry/keystore/requireEncryption apply only when `cold` is a raw IColdDriver; configure them on ' +
+          'the ColdChunkSource you passed instead',
+      );
+    }
+    return { source: cold as ColdChunkSource, driver: undefined };
+  }
+  // A raw IColdDriver → assemble the `.crbm` cold source with the store's registry/keystore; keep the raw
+  // driver for the store's lifecycle helpers.
+  const driver = cold as IColdDriver;
+  return {
+    source: new CrbmColdChunkSource(driver, {
+      registry: options.registry,
+      keystore: options.keystore,
+      requireEncryption: options.requireEncryption,
+      clock,
+      currentGenTtlMs: options.coldGenTtlMs,
+      maxOpenSegments: options.coldReaderCacheMax,
+      maxOpenIndexBytes: options.coldReaderCacheMaxBytes,
+    }),
+    driver,
+  };
+}
+
+export class CloudRoaring {
+  private readonly engine: SegmentEngine;
+  private readonly clock: Clock;
+  private readonly metrics: IMetricsSink;
+  // The store's own drivers, kept so the in-process lifecycle helpers (`compact`/`eraseSubject`/`subjectReport`)
+  // reuse them instead of making you re-pass a CompactionDeps. `coldDriver` is set only when `cold` was a raw
+  // IColdDriver (a pre-built ColdChunkSource has no underlying driver to compact through).
+  private readonly coldDriver: IColdDriver | undefined;
+  private readonly warmDriver: IWarmDriver;
+  private readonly registry: IRegistryDriver | undefined;
+  private readonly keystore: IKeystore | undefined;
+  private readonly requireEncryption: boolean;
+  /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
+  private readonly budget: Budget | null;
+
+  constructor(options: CloudRoaringOptions) {
+    const clock = options.clock ?? new SystemClock();
+    const rng = options.rng ?? new SystemRng();
+    // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).
+    const metrics = safeMetrics(options.metrics ?? NOOP_METRICS);
+    const cache = new BoundedLru<string, CodecBitmap>({
+      maxEntries: options.cacheMaxChunks ?? DEFAULT_CACHE_MAX_CHUNKS,
+      ttlMs: options.cacheTtlMs,
+      clock,
+    });
+    // Resolve the Cold seam to a ColdChunkSource: a raw IColdDriver is wrapped into the `.crbm` cold source
+    // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
+    const resolved = resolveColdSource(options, clock);
+    let cold: ColdChunkSource = resolved.source;
+    // Resilience on by default: wrap the drivers so transient faults retry with jittered backoff. `false`
+    // opts out (e.g. the injected client already retries); a RetryPolicy tunes it. OCC backoff is wired
+    // separately into the engine (it owns the conflict-retry loop).
+    let warm = options.warm;
+    if (options.retry !== false) {
+      const retryOpts: RetryingOptions = {
+        clock,
+        rng,
+        policy: options.retry,
+        // Bridge transient-fault retries into the metrics stream, then call the user's own hook.
+        onRetry: (info) => {
+          metrics.onEvent({
+            kind: 'retry',
+            reason: 'transient',
+            attempt: info.attempt,
+            delayMs: info.delayMs,
+          });
+          options.onRetry?.(info);
+        },
+      };
+      warm = new RetryingWarmDriver(options.warm, retryOpts);
+      cold = new RetryingColdChunkSource(cold, retryOpts);
+    }
+    if (
+      options.writeConcurrency !== undefined &&
+      (!Number.isInteger(options.writeConcurrency) || options.writeConcurrency < 1)
+    ) {
+      throw new ValidationError(
+        `writeConcurrency must be a positive integer; got ${options.writeConcurrency}`,
+      );
+    }
+    // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
+    // engine (count/iterate/intersect) and the facade's admin scans (subjectReport/eraseSubject).
+    this.budget = resolveBudget(options.budget, DEFAULT_BUDGET);
+    const deps: EngineDeps = {
+      warm,
+      cold,
+      cache,
+      codec: roaringCodec, // the facade injects the flagship codec ([DECISIONS #58]); core stays codec-agnostic
+      clock,
+      rng,
+      occBackoff: options.occBackoff,
+      metrics,
+      warmReadConsistency: options.warmReadConsistency,
+      writeConcurrency: options.writeConcurrency,
+      budget: this.budget,
+    };
+    this.engine = new SegmentEngine(deps);
+    this.clock = clock;
+    this.metrics = metrics;
+    // Keep the raw drivers for the lifecycle helpers (see the fields above). Compaction/erasure use raw drivers
+    // exactly like the out-of-process daemon (`bin/compact-segments`) — a one-shot admin op surfaces a transient
+    // fault to the caller rather than retrying under the hood; the daemon re-runs the cycle.
+    this.coldDriver = resolved.driver;
+    this.warmDriver = options.warm;
+    this.registry = options.registry;
+    this.keystore = options.keystore;
+    this.requireEncryption = options.requireEncryption ?? false;
+  }
+
+  /**
+   * Build {@link CompactionDeps} from the store's own drivers, for the in-process lifecycle helpers
+   * ({@link compact} / {@link eraseSubject}). Requires the store to have been constructed with a **raw cold
+   * driver** (a pre-built `ColdChunkSource` has no underlying `IColdDriver` to compact through) and a `registry`
+   * (the authoritative `currentGen` pointer compaction swaps). Out-of-process callers use the `compactSegment`
+   * free function with explicit deps.
+   */
+  private compactionDeps(): CompactionDeps {
+    if (this.coldDriver === undefined) {
+      throw new UnsupportedError(
+        'compact/eraseSubject/checkConsistency need the store built with a raw cold driver (IColdDriver), not ' +
+          'a pre-built ColdChunkSource — or call the compactSegment/runConsistencyCheck free functions with ' +
+          'explicit deps',
+      );
+    }
+    if (this.registry === undefined) {
+      throw new UnsupportedError(
+        'compact/eraseSubject/checkConsistency need a `registry` in the store config',
+      );
+    }
+    return {
+      cold: this.coldDriver,
+      warm: this.warmDriver,
+      registry: this.registry,
+      clock: this.clock,
+      codec: roaringCodec, // facade injects the flagship codec ([DECISIONS #58])
+      keystore: this.keystore,
+      requireEncryption: this.requireEncryption,
+      metrics: this.metrics, // safe-wrapped sink → store.compact/eraseSubject emit `compaction` events (gap #2)
+    };
+  }
+
+  /** Get a handle to a segment. Validates the name/namespace grammar (finding S2). */
+  segment(name: string, options?: SegmentOptions): Segment {
+    const ref: SegmentRef = { segment: name, namespace: options?.namespace };
+    validateSegmentRef(ref);
+    return new Segment(this.engine, ref, this.clock, this.metrics);
+  }
+
+  /**
+   * **Subject access (GDPR Art. 15 / CCPA right-to-know): which segments is this id a member of?** (Phase 6b.)
+   *
+   * Enumerates the **registered** segments (via the store's own `registry`) and does a tier-merging `has(id)` on
+   * each — no drivers to re-pass. Complete only over registered segments (register your segments if you claim
+   * SAR support). There is deliberately **no `id → segments` reverse index** — that would tax every write for a
+   * rare request; this admin scan is `O(registered segments)` and touches no hot path
+   * (phases/06). Requires a `registry` in the store config
+   * (throws {@link UnsupportedError} otherwise).
+   */
+  async subjectReport(
+    id: number,
+    options: {
+      namespace?: string;
+      allNamespaces?: boolean;
+      concurrency?: number;
+      budget?: BudgetOption;
+    } = {},
+  ): Promise<SubjectReport> {
+    if (this.registry === undefined) {
+      throw new UnsupportedError('subjectReport needs a `registry` in the store config');
+    }
+    const registry = this.registry;
+    requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
+    validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
+    const budget = resolvePerOpBudget(options.budget, this.budget); // partial override inherits the store's tightening
+    splitId(id); // fail fast on a non-u32 id even when no segments are registered
+    const recs: RegistryRecord[] = [];
+    for await (const rec of registry.list(options.namespace)) recs.push(rec);
+    checkBudget(budget, recs.length, 'subjectReport'); // refuse a runaway scan before fanning out has()
+    // Bounded fan-out of the tier-merging has() across registered segments (was serial — one read per segment
+    // awaited in-loop). Order-preserving ⇒ deterministic result. Membership is read **strongly** regardless of
+    // the store's `warmReadConsistency` — a legal SAR must be read-your-writes, never miss a just-written add.
+    // A has() fault propagates (a report that can't read a segment must fail loud, not silently under-report).
+    const membership = await mapWithConcurrency(
+      recs,
+      options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
+      async (rec): Promise<SubjectSegmentRef | null> => {
+        if (rec.status === 'destroyed') return null; // already unreadable — never a member
+        const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
+        return (await this.engine.has(ref, id, { consistent: true }))
+          ? { segment: rec.segment, namespace: rec.namespace }
+          : null;
+      },
+    );
+    const segments = membership.filter((m): m is SubjectSegmentRef => m !== null);
+    return { id, segments, scannedSegments: recs.length };
+  }
+
+  /**
+   * **Subject erasure (GDPR Art. 17): remove an id from every segment it's in, with a physical-deletion
+   * guarantee.** (Phase 6b.)
+   *
+   * For each **registered** segment the id is a member of: writes a logical `remove` tombstone (immediate) and
+   * then **force-compacts that segment now** — folding the tombstone into a fresh immutable generation so the
+   * bit is *physically* gone from Cold on return, even for an otherwise-idle/archival segment that organic
+   * compaction would never touch (the P13 fix). The returned per-segment record is your **erasure ledger** —
+   * persist it / route it to your audit sink as the proof of deletion; the physical-purge proof is
+   * compaction's own VERIFY step (a re-`has()` here would be unsound — a pinned cold source can still read the
+   * old generation; take a fresh generation view after erasing, exactly as with the compaction daemon).
+   *
+   * Uses the store's **own** drivers (raw cold + warm + registry), so the old integrator obligation to wire a
+   * matching `CompactionDeps` is gone — the `remove()` and the force-compaction provably run over the same tiers.
+   * Requires the store built with a **raw cold driver + registry** (throws {@link UnsupportedError} otherwise;
+   * a pre-built `ColdChunkSource` store has no `IColdDriver` to compact through — use the `compactSegment` free
+   * function there). **One contract remains** (an integrator obligation the library cannot check): **do not
+   * concurrently re-add the same id while erasing it.** A normal `add(id)` landing between the `remove` and the
+   * compaction clears the tombstone and folds the id back into the new generation
+   * (`effective = (cold ∪ adds) \ removes`); `physicallyPurged` attests only that compaction committed a
+   * generation with the tombstones applied at pin time — quiesce writes for the subject during erasure.
+   *
+   * **A `physicallyPurged:false` entry means the logical removal holds but the physical purge didn't run this
+   * call** — either a daemon held a live lease (`note:'leased-by-other'`; the daemon finishes it), or the
+   * force-compaction hit an isolated fault (`note:'error: …'`; per-segment faults are caught so one segment
+   * can't discard the whole ledger). `physicallyPurged:false` is **conservative** (a concurrent daemon may
+   * already have purged the bit — `'clean'`). **Recovery:** follow up any `physicallyPurged:false` entry with
+   * `store.compact(ref)` (or let the daemon do it) — **re-running `eraseSubject` will NOT re-purge it**, because
+   * `has()` now reads false (the tombstone) so the segment is skipped as a non-member. The physical-purge proof
+   * is compaction's own VERIFY step (a re-`has()` here would be unsound: a pinned cold source can still read the
+   * old generation — take a fresh generation view after erasing, as with the daemon). Admin-only path;
+   * `O(registered segments)`, no hot-path cost. Per-subject crypto-shred is infeasible (a subject's bit is
+   * co-mingled in a shared container), so this is the single-subject erasure route; whole-segment/tenant erasure
+   * is the `destroySegment`/`eraseNamespace` free functions.
+   */
+  async eraseSubject(
+    id: number,
+    options: {
+      owner: string;
+      namespace?: string;
+      allNamespaces?: boolean;
+      audit?: IAuditSink;
+      concurrency?: number;
+      budget?: BudgetOption;
+    },
+  ): Promise<EraseSubjectResult> {
+    const compaction = this.compactionDeps();
+    // Validate the owner BEFORE the fan-out — a bad owner must fail fast, not after a `remove` tombstone is
+    // already written for the first segment (which would strand it: `has()` then reads false, so a retry skips it).
+    validateCompactionOptions({ owner: options.owner });
+    requireScope(options, 'eraseSubject'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
+    validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
+    const budget = resolvePerOpBudget(options.budget, this.budget); // partial override inherits the store's tightening
+    splitId(id); // fail fast on a non-u32 id even when nothing is registered
+    const recs: RegistryRecord[] = [];
+    for await (const rec of compaction.registry.list(options.namespace)) recs.push(rec);
+    checkBudget(budget, recs.length, 'eraseSubject'); // refuse a runaway scan before fanning out compactions
+    // Bounded fan-out (was serial). Each segment is an independent lease + generation, so force-compacting
+    // distinct segments concurrently is exactly what the sharded daemon does. Per-segment faults stay isolated
+    // INSIDE each task — one failure never aborts the ledger (mirrors runCompactionCycle) — and the pool
+    // preserves input order, so the ledger stays deterministic.
+    const entries = await mapWithConcurrency(
+      recs,
+      options.concurrency ?? DEFAULT_ADMIN_CONCURRENCY,
+      async (rec): Promise<SubjectErasureEntry | null> => {
+        if (rec.status === 'destroyed') return null; // already crypto-shredded — nothing to erase
+        const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
+        let removed = false;
+        try {
+          // Membership check INSIDE the isolation: a has() fault (corrupt segment) must become a recorded
+          // ledger entry, not abort the whole erasure. Read **strong** regardless of `warmReadConsistency` —
+          // an Art.17 erasure must never skip a segment because an eventual read hasn't caught up yet.
+          if (!(await this.engine.has(ref, id, { consistent: true }))) return null; // not a member — no tombstone
+          await this.engine.remove(ref, id); // logical erasure, immediate
+          removed = true;
+          // Physical erasure now: fold the tombstone into a fresh generation (fires regardless of the organic
+          // compaction trigger, so an idle/archival segment is still purged this call).
+          const result = await compactSegment(ref, compaction, {
+            owner: options.owner,
+            audit: options.audit,
+          });
+          return {
+            segment: rec.segment,
+            namespace: rec.namespace,
+            removed: true,
+            physicallyPurged: result.compacted,
+            toGen: result.toGen,
+            note: result.compacted ? undefined : result.reason,
+          };
+        } catch (err) {
+          // A thrown fault after the tombstone can't be recovered by re-running eraseSubject (has() now reads
+          // false → skipped). Record it as removed-but-not-purged; the caller recovers with `store.compact(ref)`.
+          return {
+            segment: rec.segment,
+            namespace: rec.namespace,
+            removed,
+            physicallyPurged: false,
+            note: `error: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      },
+    );
+    const erasedFrom = entries.filter((e): e is SubjectErasureEntry => e !== null);
+    return { id, erasedFrom, scannedSegments: recs.length };
+  }
+
+  /**
+   * **Compact one segment now**, in-process, using the store's own drivers — a convenience over the
+   * {@link compactSegment} free function. Merges `(cold ∪ adds) \ removes` into a fresh immutable generation,
+   * swaps `currentGen`, then version-fenced-purges the archived Warm rows. A no-op (`compacted:false`) when the
+   * segment has no dirty rows or a daemon holds a live lease — never throws on the normal contention/lease paths.
+   * Requires the store built with a **raw cold driver + registry** (throws {@link UnsupportedError} otherwise);
+   * like the daemon, it uses the raw drivers directly (a transient fault surfaces to you rather than retrying
+   * under the hood). **Not for the request/hot path** — it reads and rewrites a whole Cold generation (streaming,
+   * constant-memory, but full-segment I/O). Use the `compact-segments` daemon (`runCompactionCycle`) for routine
+   * background compaction; reach for `store.compact()` for occasional/manual one-shots — a maintenance endpoint,
+   * a small daemon-less deployment, or right after a targeted `remove`.
+   */
+  async compact(ref: SegmentRef, options: CompactionOptions): Promise<CompactionResult> {
+    validateSegmentRef(ref);
+    return compactSegment(ref, this.compactionDeps(), options);
+  }
+
+  /**
+   * **Cross-tier DR consistency check (audit gap #11).** After a restore/failover, verify every registered
+   * segment's `currentGen` actually has its `.crbm` present in Cold — catching a **torn restore** where the
+   * registry (`currentGen`) came back ahead of the object store, so a pointer references a generation that
+   * isn't there (reads would then throw). Read-only, bounded fan-out; run it at startup after a restore.
+   * Returns `{ checked, inconsistent }` — `inconsistent` empty ⇒ coherent; otherwise it names the segments to
+   * recover (restore the object store, or roll the registry back to a coherent point). Needs the store built
+   * with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise). `destroyed`
+   * (crypto-shredded) segments are skipped. Pair it with the DR runbook (docs/guide/disaster-recovery.md).
+   */
+  async checkConsistency(
+    options: { namespace?: string; concurrency?: number } = {},
+  ): Promise<ConsistencyReport> {
+    const deps = this.compactionDeps(); // guards raw cold + registry; reuses the store's own drivers
+    return runConsistencyCheck({ cold: deps.cold, registry: deps.registry }, options);
+  }
+
+  /**
+   * **Export ("eject") every registered segment's current effective set** through the injected `sink`, using
+   * only public read APIs — so your data is readable **without CloudRoaring** (the exit path; see the README's
+   * "Your data stays yours"). `format: 'roaring'` (default) writes one **portable RoaringBitmap32** per segment
+   * (loadable by any roaring library); `'ndjson'` writes newline-delimited ids (zero-dependency, streaming).
+   * Enumerates via the store's **own** registry (needs one — throws {@link UnsupportedError} otherwise) so the
+   * enumeration and the read path provably share one registry; an all-warm segment not yet in the registry can be
+   * named via `options.candidates`. Encrypted segments are decrypted transparently **iff** this store was wired
+   * with their keystore — the export is therefore **cleartext**; protect it. Crypto-shredded segments are skipped.
+   * A segment that can't be read is isolated into the manifest's `failed[]` (the run continues), so "a manifest
+   * exists" means the run finished — check `failed`. The `export-segments` CLI wraps this with a filesystem sink.
+   */
+  async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
+    if (this.registry === undefined) {
+      throw new UnsupportedError('exportSegments needs a `registry` in the store config');
+    }
+    // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
+    return runExport(this, this.registry, sink, {
+      ...options,
+      codec: options.codec ?? roaringCodec,
+    });
+  }
+
+  /**
+   * Planning cost estimate (Phase 5b) — pure, no instance/data needed: sizing, sales, what-if. For a real,
+   * grounded report from live segment sizes, use `store.segment(name).costReport()`. See {@link CostReport}.
+   */
+  static estimateCost(input: EstimateInput): CostReport {
+    return estimateCost(input);
+  }
+}
+
+/**
+ * A handle bound to one segment — the seven ops.
+ *
+ * **IDs must be integers in `[0, 2^32)`** (dense 32-bit). A non-integer / negative / out-of-range id
+ * throws {@link ValidationError}.
+ *
+ * **`addMany`/`removeMany`/`intersectInto` are not atomic across chunks**: ids are grouped by chunk and
+ * applied one chunk at a time, so if a later chunk fails (e.g. {@link WriteConflictError} after retries)
+ * earlier chunks are already applied. Within a single chunk the update is atomic.
+ */
+export class Segment {
+  private readonly metricsOn: boolean;
+
+  constructor(
+    private readonly engine: SegmentEngine,
+    private readonly ref: SegmentRef,
+    private readonly clock: Clock,
+    private readonly metrics: IMetricsSink,
+  ) {
+    this.metricsOn = metrics !== NOOP_METRICS;
+  }
+
+  /**
+   * Time an op with the injected clock and emit an `op` metric on completion (success or throw). Skipped
+   * entirely when no sink is wired, so the default path pays nothing.
+   */
+  private async timed<T>(name: MetricOpName, fn: () => Promise<T>): Promise<T> {
+    if (!this.metricsOn) return fn();
+    const startedAt = this.clock.now();
+    try {
+      return await fn();
+    } finally {
+      this.metrics.onEvent({ kind: 'op', name, ms: Math.max(0, this.clock.now() - startedAt) });
+    }
+  }
+
+  /** Add an id (integer in `[0, 2^32)`). Throws {@link ValidationError} on a bad id. */
+  add(id: number): Promise<void> {
+    return this.timed('add', () => this.engine.add(this.ref, id));
+  }
+  /** Add many ids. Not atomic across chunks — see the class note. */
+  addMany(ids: Iterable<number>): Promise<void> {
+    return this.timed('addMany', () => this.engine.addMany(this.ref, ids));
+  }
+  /** Remove an id (integer in `[0, 2^32)`). Throws {@link ValidationError} on a bad id. */
+  remove(id: number): Promise<void> {
+    return this.timed('remove', () => this.engine.remove(this.ref, id));
+  }
+  /** Remove many ids. Not atomic across chunks — see the class note. */
+  removeMany(ids: Iterable<number>): Promise<void> {
+    return this.timed('removeMany', () => this.engine.removeMany(this.ref, ids));
+  }
+  has(id: number): Promise<boolean> {
+    return this.timed('has', () => this.engine.has(this.ref, id));
+  }
+  count(): Promise<number> {
+    return this.timed('count', () => this.engine.count(this.ref));
+  }
+  iterate(): AsyncIterable<number> {
+    return this.engine.iterate(this.ref);
+  }
+
+  /**
+   * Chunk-skipping intersection: stream the ids in **this** segment AND every segment in `others`, ascending.
+   * Fetches only the Cold chunks present in *all* operands (a key absent from any operand contributes nothing
+   * and is never downloaded), streaming under a bounded in-flight window — so the Cold footprint stays small
+   * (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (a positive integer).
+   * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. (Warm state is read
+   * up front, so total memory also carries each operand's Warm size — negligible under Topology-A.) Pass
+   * `budget` to override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
+   */
+  intersect(
+    others: Segment[],
+    options?: { concurrency?: number; budget?: BudgetOption },
+  ): AsyncIterable<number> {
+    return this.engine.intersect([this.ref, ...others.map((o) => o.ref)], options);
+  }
+
+  /**
+   * Materialize `this ∩ others…` **into** `dest` (added, not replaced). Streaming + bounded-memory, but
+   * **not atomic** across chunks — see {@link addMany}.
+   */
+  intersectInto(
+    dest: Segment,
+    others: Segment[],
+    options?: { concurrency?: number; batchSize?: number },
+  ): Promise<void> {
+    return this.timed('intersectInto', () =>
+      this.engine.intersectInto(dest.ref, [this.ref, ...others.map((o) => o.ref)], options),
+    );
+  }
+
+  /**
+   * Grounded cost report for this segment (Phase 5b): storage cost from its **real** `.crbm` size (exact,
+   * no payload reads); request cost from the supplied `workload` rates. A segment with no Cold generation
+   * reports zero storage. See {@link CostReport} — it always includes a verdict (incl. the lose-zone).
+   */
+  async costReport(options?: {
+    pricing?: PricingProfile;
+    workload?: Workload;
+    topology?: Topology;
+  }): Promise<CostReport> {
+    const canMeasure = this.engine.supportsColdSize;
+    const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
+    return groundedReport({
+      coldBytes: size?.sizeBytes ?? 0,
+      grounded: canMeasure,
+      workload: options?.workload,
+      topology: options?.topology,
+      pricing: options?.pricing,
+      extraNotes: canMeasure
+        ? undefined
+        : ['cold source has no sizeOf() — storage not measured, reported as $0.'],
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Re-export the whole codec-agnostic core so `@cloudbitmaps/roaring` stays the one name to know: every driver,
+// error, port, and helper an application needs is reachable from here exactly as it was before the family
+// split. (`@cloudbitmaps/core` arrives transitively — users never install it directly.)
+// ---------------------------------------------------------------------------------------------------
+export * from '@cloudbitmaps/core';
+
+// ...with the codec-bound overrides layered on top. These four core entry points need a bitmap codec, which
+// core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
+// `export *` above, so every signature stays exactly as it was before the family split — e.g.
+// `bulkLoadCrbmGeneration(driver, key, ids)` still works with no options at all.
+export {
+  bulkLoadCrbmGeneration,
+  compactSegment,
+  runCompactionCycle,
+  runExport,
+} from './codec-bound';
+
+// The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /
+// bulk-load path); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
+// can construct a `SegmentEngine` by hand.
+export { SafeBitmap, roaringCodec } from './roaring-codec';
+
+/** Package version marker. Kept in sync with package.json at release. */
+export const VERSION = '0.1.0';
