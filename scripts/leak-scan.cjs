@@ -169,6 +169,21 @@ const EMAIL_OK = new RegExp(
   'i',
 );
 
+/**
+ * Files exempt from MIGRATION findings only (never from HARD). These implement or test the public/private
+ * split itself, so they necessarily contain the private path as data — the scanner's own patterns, the
+ * blob-hash verifier that sorts survivors by tree, and the doc-link tests that assert public pages don't cite
+ * private ones. Without this the launch gate is permanently red on its own tooling, which is how a gate ends
+ * up bypassed with `--force`.
+ */
+const MIGRATION_EXEMPT = new Set([
+  'scripts/leak-scan.cjs',
+  'scripts/verify-blob-hashes.cjs',
+  'tests/docs/links.test.ts',
+  'tests/docs/specifiers.test.ts',
+  'tests/scripts/leak-scan.test.ts',
+]);
+
 const MIGRATION = [
   { name: 'stale old-owner repo URL', re: /github\.com\/sharvilk\/cloud-roaring/ },
   // Both the full path and the `docs/`-relative form a doc inside `docs/` would use.
@@ -340,6 +355,11 @@ for (const { file, line, text } of lines()) {
   // not a leak — only references from public-bound files matter. (HARD findings still apply everywhere: a
   // committed credential is a problem regardless of which tree it sits in.)
   if (file.startsWith('docs/internal/')) continue;
+  // Same reasoning, for the handful of files whose JOB is managing the public/private split: they must name
+  // the private path in order to check for it, so flagging them is the scanner reporting on itself. Scoped to
+  // MIGRATION only — the HARD checks above already ran, so a credential in any of these is still caught.
+  // An exact-path list, never a glob: a stale citation in some *other* script is a real finding.
+  if (MIGRATION_EXEMPT.has(file)) continue;
   for (const p of MIGRATION) {
     // A line that already matched the full path shouldn't also report as a bare doc-name — same defect, and
     // the double count hides how many *genuinely* bare citations exist.

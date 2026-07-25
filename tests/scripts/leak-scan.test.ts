@@ -112,10 +112,15 @@ describe('leak-scan', () => {
     });
   });
 
-  it('warns that no extra needles are configured — the Stage-4 employer-name check', () => {
+  it('always DISCLOSES its needle state, configured or not', () => {
     // `.leak-needles` is gitignored on purpose (committing it would BE the leak), so the scanner has to say
-    // loudly when it is running without them rather than reporting a reassuring all-clear.
+    // which mode it is in rather than reporting a reassuring all-clear either way.
+    //
+    // Asserting only the "no needles" warning made this test depend on whether a developer happens to have a
+    // local `.leak-needles` — green in CI, red on the machine of anyone actually using the feature. The real
+    // invariant is disclosure, and it holds in both states. The stronger guarantee (that `--snapshot` REFUSES
+    // to certify without needles) is enforced by the script itself and exercised at the Stage-4 gate.
     const { out } = scan('export const x = 1;\n');
-    expect(out).toMatch(/no extra needles configured/);
+    expect(out).toMatch(/no extra needles configured|\d+ extra needle\(s\) configured/);
   });
 });
