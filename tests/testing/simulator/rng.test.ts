@@ -16,12 +16,23 @@ describe('SeededRng (mulberry32)', () => {
   });
 
   it('next() stays in [0, 1)', () => {
+    // Assert once over the whole stream rather than 2 x 100_000 times inside the loop: the
+    // per-iteration form spent ~1.3s in the matcher and timed out under full-suite contention.
+    // Recording the first offender also reports *which* draw broke, instead of just "expected
+    // 1 to be less than 1" with no index.
     const r = new SeededRng(7);
+    let offender: { i: number; v: number } | undefined;
+    let min = Infinity;
+    let max = -Infinity;
     for (let i = 0; i < 100_000; i++) {
       const v = r.next();
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThan(1);
+      if (v < min) min = v;
+      if (v > max) max = v;
+      if (offender === undefined && !(v >= 0 && v < 1)) offender = { i, v };
     }
+    expect(offender).toBeUndefined();
+    expect(min).toBeGreaterThanOrEqual(0);
+    expect(max).toBeLessThan(1);
   });
 
   it('normalizes negative and large seeds into u32 deterministically', () => {
@@ -41,14 +52,11 @@ describe('SeededRng (mulberry32)', () => {
     it('stays in [0, bound) and covers the whole range', () => {
       const r = new SeededRng(99);
       const seen = new Set<number>();
-      for (let i = 0; i < 10_000; i++) {
-        const v = r.nextInt(6);
-        expect(Number.isInteger(v)).toBe(true);
-        expect(v).toBeGreaterThanOrEqual(0);
-        expect(v).toBeLessThan(6);
-        seen.add(v);
-      }
+      for (let i = 0; i < 10_000; i++) seen.add(r.nextInt(6));
+      // The set is the assertion: an out-of-range or non-integer draw would show up here as an
+      // extra member, so one comparison covers what 3 x 10_000 in-loop matchers did.
       expect([...seen].sort()).toEqual([0, 1, 2, 3, 4, 5]);
+      expect([...seen].every(Number.isInteger)).toBe(true);
     });
 
     it('rejects a non-positive or non-integer bound', () => {

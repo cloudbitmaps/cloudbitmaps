@@ -93,11 +93,7 @@
   },
   "pnpm": {
     "auditConfig": {
-      "ignoreGhsas": [
-        "GHSA-w8wr-v893-vjvp",
-        "GHSA-23hp-3jrh-7fpw",
-        "GHSA-8x88-c5mf-7j5w"
-      ]
+      "ignoreGhsas": []
     }
   }
 }

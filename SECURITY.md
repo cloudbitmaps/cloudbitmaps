@@ -35,15 +35,20 @@ gate ignores.
 
 ### Triaged (accepted) advisories
 
-| GHSA | Package | Severity | Rationale |
-| --- | --- | --- | --- |
-| `GHSA-23hp-3jrh-7fpw` | `tar` | critical | Reached only via `roaring`'s **install-time** native-build chain (`@mapbox/node-pre-gyp` and `node-gyp`, which use `tar` to extract `roaring`'s own trusted prebuilt binary). `tar` is **never on CloudRoaring's runtime path** — the library ships JS + delegates bit-math to the compiled addon, and never feeds attacker-controlled input to `tar`. The DoS requires parsing a malicious archive, which does not occur. |
-| `GHSA-8x88-c5mf-7j5w` | `tar` | high | Same chain and rationale (`roaring`'s install-time `node-pre-gyp`/`node-gyp` → `tar` extraction of a trusted archive). |
-| `GHSA-w8wr-v893-vjvp` | `tar` | moderate | Same chain and rationale. |
+**Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
 
-**Revisit when:** `roaring` bumps `@mapbox/node-pre-gyp`, or `tar` ships a fixed release that Dependabot pulls
-in (monthly) — at which point these entries become inert and should be removed. If any of these advisories ever
-becomes reachable from a runtime path, the entry must be removed and the advisory addressed, not ignored.
+Three `tar` advisories (`GHSA-23hp-3jrh-7fpw` critical, `GHSA-8x88-c5mf-7j5w` high, `GHSA-w8wr-v893-vjvp`
+moderate) were previously accepted here on reachability grounds: `tar` is pulled in only by `roaring`'s
+**install-time** native-build chain (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s
+own trusted prebuilt binary, and is never on CloudRoaring's runtime path. That entry carried an explicit revisit
+condition — *"`tar` ships a fixed release"* — which upstream met, so the ignores were removed and `tar` upgraded
+to a patched release (2026-07-25) rather than left accepted. Reachability is a reason to **not panic**, never a
+reason to stay unpatched when a patch exists.
+
+**The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
+matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit
+condition is an unmaintained one. If any accepted advisory ever becomes reachable from a runtime path, the entry
+must be removed and the advisory addressed, not ignored.
 
 ## Supply chain (build, publish & provenance)
 

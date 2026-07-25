@@ -193,6 +193,17 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Changed
 
+- **Every open dependency advisory is now patched rather than accepted, and the triage list is empty.**
+  `vitest` `^2` → `^3.2.7` (clearing two criticals in the UI server), and `tar`, `vite`, `postcss`, `js-yaml`,
+  `fast-uri` and `brace-expansion` moved to patched releases within their existing ranges.
+  - **The three accepted `tar` advisories were removed, not re-justified.** They were held on reachability
+    grounds — `tar` reaches the tree only through `roaring`'s *install-time* native-build chain and is never on
+    a runtime path — but the entry carried an explicit revisit condition ("`tar` ships a fixed release"), which
+    upstream met. `pnpm.auditConfig.ignoreGhsas` is now `[]`. Reachability is a reason not to panic; it is not a
+    reason to stay unpatched once a patch exists.
+  - What remains open is dev-scope only and blocked on upstream majors (`adm-zip` via `cassandra-driver`, `qs`
+    via Stryker's `typed-rest-client`, `uuid`); none of it appears in either published tarball, which carry
+    **zero** and **two** runtime dependencies respectively.
 - **Both packages are versioned `0.1.0`**, still carrying `private: true` — the last accidental-publish guard,
   removed only by the release commit. `pnpm publish` *silently skips* a private package (no error, exit 0), which
   would have turned a real release attempt into a fully green run that published nothing — so the release
@@ -207,6 +218,11 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Fixed
 
+- **A timing-fragile RNG test could fail the gate under load.** `next() stays in [0, 1)` ran 200,000 `expect()`
+  calls inside its loop — ~1.3 s alone, but past the 5 s timeout when scheduled beside the heavier suites. The
+  loop now records the first offending draw and asserts once afterwards, which is both stable and a better
+  failure message (*which* draw broke, not "expected 1 to be less than 1"). The file dropped 1,240 ms → 37 ms and
+  the whole suite 19.7 s → 9.3 s; the timeout was left at its default rather than raised to paper over it.
 - **The calibration script's spend ceiling could be silently deleted.** A non-numeric `CR_CALIBRATE_MAX_USD`
   (`1,00`, `$1.00`, `abc`) parses to `NaN`, and `total > NaN` is `false` — so the documented "real bound" wasn't
   one. Now rejected, and regression-tested.
