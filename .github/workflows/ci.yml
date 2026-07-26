@@ -70,8 +70,33 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Pull SERIALLY with backoff before starting anything. `docker compose up` pulls all nine images at once,
+      # and every public registry throttles a shared GitHub-runner IP: Docker Hub answers with a 6-hour quota
+      # (`pull rate limit`), public.ecr.aws with a per-second rate (`Rate exceeded`). The second kind clears in
+      # moments, so the fix that actually works is to stop asking for nine things simultaneously. Failing here
+      # is a real failure — the retries are what make the difference between throttling and a broken image.
+      - name: Pull backend images (serial, with backoff)
+        run: |
+          set -u
+          rc=0
+          for img in $(docker compose config --images); do
+            for attempt in 1 2 3 4 5; do
+              if docker pull -q "$img" >/dev/null 2>&1; then
+                echo "ok    $img"
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "FAILED after 5 attempts: $img" >&2
+                rc=1
+                break
+              fi
+              sleep $((attempt * 10))
+            done
+            sleep 2
+          done
+          exit "$rc"
       # `--wait-timeout` so a stuck backend (e.g. a Cassandra node that never goes healthy) fails the step fast
-      # with a clear signal instead of hanging until the job timeout.
+      # with a clear signal instead of hanging until the job timeout. Images are already local by now.
       - run: docker compose up -d --wait --wait-timeout 300
       - run: pnpm test:integration
       - if: always()
