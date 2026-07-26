@@ -4,13 +4,24 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adopts
 [Semantic Versioning](https://semver.org/) from **v0.1.0**.
 
-> **Pre-release.** Everything accumulates under **[Unreleased]** until the `0.1.0` launch
-> (Phase 9) cuts the first versioned section and begins SemVer. Until then
-> this doubles as the running dev log; for granular per-phase detail see the
-> roadmap and phase docs, and for *why* decisions were made the
-> decision log.
+> **SemVer starts here.** `0.1.0` is the first published release and the first versioned section below.
+> Everything before it accumulated as a running dev log; from now on changes land under **[Unreleased]** and
+> are cut into a version on release. For granular per-phase detail see the roadmap and phase docs, and for
+> *why* decisions were made the decision log.
+>
+> **Pre-1.0 means the format and API can still move.** Breaking changes are possible in a minor bump until
+> `1.0`, at which point the `.crbm` format freezes and normal SemVer guarantees apply.
 
 ## [Unreleased]
+
+_Nothing yet._
+
+## [0.1.0] - 2026-07-26
+
+First public release. Published as
+[`@cloudbitmaps/roaring`](https://www.npmjs.com/package/@cloudbitmaps/roaring) (install this one) and
+[`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core), Apache-2.0, with npm build
+provenance. Everything below is the work that got it here.
 
 ### Added
 
@@ -1135,4 +1146,4 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 - **Public API exports:** `CloudRoaring`, `Segment`, the in-memory + LocalFs drivers, `CrbmColdChunkSource`,
   `writeCrbmGeneration`, `SafeBitmap`, the `.crbm` codec + blob seam, and the typed error classes.
 
-<!-- At v1.0 (Phase 8) the above becomes the first versioned section, e.g. "## [1.0.0] - YYYY-MM-DD". -->
+<!-- The section above is the 0.1.0 release; new work goes under [Unreleased] at the top. -->
