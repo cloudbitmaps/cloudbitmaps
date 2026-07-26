@@ -90,7 +90,8 @@
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.0.0",
     "typescript-next": "npm:typescript@^7",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "auditConfig": {
