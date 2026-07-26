@@ -1,10 +1,10 @@
-# Contributing to CloudRoaring
+# Contributing to CloudBitmaps
 
 How this project is built — the **canonical** record of our conventions and working process, for humans
 *and* for any AI tooling. (The agent operating manual, [`CLAUDE.md`](CLAUDE.md), embeds the engineering
 **principles** and the project's **hard correctness invariants**, and points here for the process below.)
 
-> CloudRoaring is pre-release and built in phases — see the roadmap (the
+> CloudBitmaps is pre-release and built in phases — see the roadmap (the
 > living source of project state).
 
 Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Issues and pull requests use the

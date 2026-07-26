@@ -1,24 +1,24 @@
 # Privacy, data protection & shared responsibility
 
-> **Engineering guidance, not legal advice.** This document explains CloudRoaring's data-handling posture and
+> **Engineering guidance, not legal advice.** This document explains CloudBitmaps' data-handling posture and
 > the controls it gives you, so you (and your privacy counsel / DPO) can place it correctly in your compliance
 > program. Regulatory references (GDPR, CCPA/CPRA, HIPAA, …) are illustrative. Nothing here is a compliance
 > certification — before deploying against personal data, get it reviewed by qualified counsel.
 
 ## TL;DR — the trust boundary
 
-**CloudRoaring is an embedded library.** It runs inside *your* process/function and talks to *your* storage
+**CloudBitmaps is an embedded library.** It runs inside *your* process/function and talks to *your* storage
 accounts (S3, DynamoDB, local disk — whatever drivers you wire). **It has no hosted backend and transmits no
 data to the authors or any third party** — there is no telemetry, no phone-home, no usage ping. The metrics
 and audit sinks are local and off by default; they only go where *you* send them.
 
-Consequently: **you are the data controller (and/or processor); CloudRoaring is not a sub-processor.** There is
+Consequently: **you are the data controller (and/or processor); CloudBitmaps is not a sub-processor.** There is
 no SaaS relationship and no data-processing agreement to sign with us, because no data ever reaches us. What
 the library gives you is a set of *mechanisms* — you own the *policy*.
 
-## What CloudRoaring processes — and why it's usually personal data
+## What CloudBitmaps processes — and why it's usually personal data
 
-CloudRoaring's job is to store, at scale, **the fact that an integer ID belongs to a named set**. The moment
+CloudBitmaps' job is to store, at scale, **the fact that an integer ID belongs to a named set**. The moment
 that ID is (or can be linked to) a natural person — which is the intended use — that membership bit is
 **personal data**. Often it is behavioural/inference data, and **membership alone can be special-category**:
 a segment that means "pregnant", "in HIV outreach", "flagged for fraud", "likely-LGBTQ", or
@@ -53,7 +53,7 @@ posture is "you wire it correctly," documented here.
 
 ## Erasure — what "delete" actually means
 
-CloudRoaring gives you three erasure levers with different guarantees. Use them deliberately:
+CloudBitmaps gives you three erasure levers with different guarantees. Use them deliberately:
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
@@ -73,7 +73,7 @@ re-running `eraseSubject` won't re-purge it.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps every registered segment's effective set to a portable file —
-`roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudRoaring. It's a
+`roaring` (loadable by any roaring library) or `ndjson` (newline ids) — readable without CloudBitmaps. It's a
 **controller-side bulk dump** (all segments, opaque ids), not a per-subject deliverable — the per-subject rights
 are `subjectReport` (Art. 15) / `eraseSubject` (Art. 17). Encrypted segments are decrypted transparently if the
 store has the keystore, so the **export is cleartext — protect it** (the CLI writes owner-only files; also encrypt
@@ -117,7 +117,7 @@ locked Cold object *cannot* be deleted before its retention date by anyone (not 
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 
-CloudRoaring deliberately does **not** ship a native `legalHold` flag: Object Lock is a stronger guarantee than
+CloudBitmaps deliberately does **not** ship a native `legalHold` flag: Object Lock is a stronger guarantee than
 an in-library flag (which our own daemon could respect but a direct caller could bypass), so a flag would be
 advisory where Object Lock is enforced at rest. If a real deployment needs a library-managed hold that the
 daemon refuses to purge, it's a clean fast-follow — but the enforced posture is Object Lock + operational
@@ -138,7 +138,7 @@ segment names for sensitive segments (keeping the human label in your own classi
 
 ## Shared-responsibility matrix
 
-| Concern | CloudRoaring provides | You (the integrator) must |
+| Concern | CloudBitmaps provides | You (the integrator) must |
 |---|---|---|
 | **Controller/processor role** | an embedded library; sends nothing to us | be the controller/processor; run your own DPAs with *your* cloud providers |
 | **Encryption at rest** | AES-256-GCM envelope encryption, BYOK keystore (`InProcessKeystore`), per-segment DEK + active/recovery KEK | hold and protect your keys (KMS/HSM); enable encryption for sensitive segments |
@@ -168,9 +168,9 @@ A minimal Data-Protection-Impact-Assessment outline to adapt:
 
 ## Art. 30 record — mapping template
 
-Map CloudRoaring's processing onto the categories a record of processing needs:
+Map CloudBitmaps' processing onto the categories a record of processing needs:
 
-| Art. 30 field | CloudRoaring mapping |
+| Art. 30 field | CloudBitmaps mapping |
 |---|---|
 | Categories of processing | storage of set-membership; set intersection; compaction; caching |
 | Categories of data subjects / data | your IDs' subjects; membership (possibly special-category) |

@@ -7,12 +7,12 @@ Please report suspected vulnerabilities **privately** via GitHub Security Adviso
 Do not open a public issue for a security report. We aim to acknowledge a report within a few days and will
 coordinate a fix and disclosure timeline with you.
 
-CloudRoaring is pre-1.0; there is no long-term-support branch yet. Fixes land on `main` and in the next
+CloudBitmaps is pre-1.0; there is no long-term-support branch yet. Fixes land on `main` and in the next
 release.
 
 ## Trust boundary (what the library defends)
 
-CloudRoaring treats **all bytes read back from any tier as untrusted input**. Every `.crbm` object and Warm
+CloudBitmaps treats **all bytes read back from any tier as untrusted input**. Every `.crbm` object and Warm
 delta is length-checked and CRC-verified, and deserialized with the **safe** RoaringBitmap reader (never the
 trusting variant) behind a hard size cap, before the native addon sees it. A hostile or corrupted object fails
 closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer. This
@@ -40,7 +40,7 @@ gate ignores.
 Three `tar` advisories (`GHSA-23hp-3jrh-7fpw` critical, `GHSA-8x88-c5mf-7j5w` high, `GHSA-w8wr-v893-vjvp`
 moderate) were previously accepted here on reachability grounds: `tar` is pulled in only by `roaring`'s
 **install-time** native-build chain (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s
-own trusted prebuilt binary, and is never on CloudRoaring's runtime path. That entry carried an explicit revisit
+own trusted prebuilt binary, and is never on CloudBitmaps' runtime path. That entry carried an explicit revisit
 condition — *"`tar` ships a fixed release"* — which upstream met, so the ignores were removed and `tar` upgraded
 to a patched release (2026-07-25) rather than left accepted. Reachability is a reason to **not panic**, never a
 reason to stay unpatched when a patch exists.
@@ -52,7 +52,7 @@ must be removed and the advisory addressed, not ignored.
 
 ## Supply chain (build, publish & provenance)
 
-CloudRoaring is published through a hardened pipeline so that a consumer can verify **exactly what source
+CloudBitmaps is published through a hardened pipeline so that a consumer can verify **exactly what source
 produced the package they installed** (threat model S9, implemented in
 Phase 8). The controls:
 
@@ -78,7 +78,7 @@ Phase 8). The controls:
 - **SHA-pinned GitHub Actions.** Every `uses:` in every workflow is pinned to a **full commit SHA** (with a
   `# vX` comment for readability), so a hijacked or force-moved tag on a third-party Action cannot inject code
   into our build. Bumps are deliberate (Dependabot's `github-actions` ecosystem, monthly + grouped).
-- **The native addon, from source (optional, for the most cautious).** CloudRoaring ships **pure JS/TS** — the
+- **The native addon, from source (optional, for the most cautious).** CloudBitmaps ships **pure JS/TS** — the
   only native code is its runtime dependency **`roaring`** (CRoaring), which the *consumer* installs. Consumers
   who prefer not to trust `roaring`'s prebuilt binary can build it **from source** at install time
   (`npm_config_build_from_source=true npm ci`, given a C/C++ toolchain). CI already proves this exact path works

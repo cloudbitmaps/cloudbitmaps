@@ -1,4 +1,4 @@
-# Releasing CloudRoaring
+# Releasing CloudBitmaps
 
 New versions of `@cloudbitmaps/core` and `@cloudbitmaps/roaring` are published by an **automated, tokenless,
 human-gated** pipeline — you never run `npm publish` by hand. This is the map to that pipeline, which lives in

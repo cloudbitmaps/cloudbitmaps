@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 696" width="760" height="696" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 696" width="760" height="696" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="CloudBitmaps vs flat Redis-HA cost crossover chart">
 <rect x="1" y="1" width="758" height="694" rx="14" fill="#ffffff" stroke="#e4e8ed"/>
 <text x="28" y="34" font-size="17" font-weight="700" fill="#15181e">Where pay-per-use crosses a flat Redis-HA node</text>
 <text x="28" y="56" font-size="12.5" fill="#69737f">aws-us-east-1-ondemand · 8 KiB items · cache off · flat Redis-HA = $346/mo</text>
-<line x1="28" y1="78" x2="44" y2="78" stroke="#34378f" stroke-width="3"/><text x="50" y="82" font-size="12" fill="#3c4450">CloudRoaring (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="#3c4450">Redis HA (flat)</text>
+<line x1="28" y1="78" x2="44" y2="78" stroke="#34378f" stroke-width="3"/><text x="50" y="82" font-size="12" fill="#3c4450">CloudBitmaps (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="#3c4450">Redis HA (flat)</text>
 <g>
 <text x="66" y="122" font-size="13.5" font-weight="600" fill="#15181e">Sustained writes — the metered cost driver</text>
 <rect x="66" y="142" width="390.9" height="200" fill="#1e7a52" opacity="0.06"/>

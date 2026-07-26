@@ -1,7 +1,7 @@
 # Disaster recovery
 
-How to back up CloudRoaring and how to restore it **without silent data corruption**. The one thing that makes
-DR here different from a single-database app: CloudRoaring's state is spread across **independent stores**, and
+How to back up CloudBitmaps and how to restore it **without silent data corruption**. The one thing that makes
+DR here different from a single-database app: CloudBitmaps' state is spread across **independent stores**, and
 they must come back at a **mutually consistent point** — or a read can serve a wrong answer long after the
 restore "succeeded". This runbook covers what to back up, the restore procedure, and the built-in check that
 catches a torn restore before it bites.
@@ -22,7 +22,7 @@ catches a torn restore before it bites.
 
 ## The stores you must protect
 
-A running CloudRoaring is up to four independent, separately-backed-up systems:
+A running CloudBitmaps is up to four independent, separately-backed-up systems:
 
 ```text
   ┌─────────────────┐   the newest writes — adds/removes deltas not yet compacted.
@@ -85,7 +85,7 @@ the registry and warm stores**, coordinated with the object store's versioning:
 
 ## RPO / RTO
 
-CloudRoaring imposes no fixed RPO/RTO — they fall out of how you back the stores. What its architecture tells you:
+CloudBitmaps imposes no fixed RPO/RTO — they fall out of how you back the stores. What its architecture tells you:
 
 | | Driven by | Guidance |
 |---|---|---|

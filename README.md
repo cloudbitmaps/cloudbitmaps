@@ -1,4 +1,4 @@
-# CloudRoaring
+# CloudBitmaps
 
 [![npm](https://img.shields.io/npm/v/@cloudbitmaps/roaring?logo=npm&label=%40cloudbitmaps%2Froaring)](https://www.npmjs.com/package/@cloudbitmaps/roaring)
 [![CI](https://github.com/cloudbitmaps/cloudbitmaps/actions/workflows/ci.yml/badge.svg)](https://github.com/cloudbitmaps/cloudbitmaps/actions/workflows/ci.yml)
@@ -55,7 +55,7 @@ shared across services and survive restarts, you reach for something like an alw
 which is fast, but **expensive to keep running** and **forgets everything on restart** unless you bolt on
 persistence. You're paying for RAM, 24/7, to hold sets that are mostly read.
 
-**CloudRoaring** keeps the bitmap engine and the developer experience, but puts the *storage* on a tiered,
+**CloudBitmaps** keeps the bitmap engine and the developer experience, but puts the *storage* on a tiered,
 pluggable, cloud-native architecture: cheap and durable at rest (cents/month in object storage), fast where
 it needs to be, and able to answer set queries over enormous bitmaps from small, stateless functions.
 
@@ -65,7 +65,7 @@ A fair question before you build on any storage library: *if I put billions of I
 segments into this and the library breaks, am I stuck?* Short answer — **no** — and here's why, by construction:
 
 - **It's a library, not a service.** Your data lives in **your** S3 bucket, **your** DynamoDB table, **your**
-  filesystem — accounts and stores you own. CloudRoaring never sees or holds it (you're the data controller;
+  filesystem — accounts and stores you own. CloudBitmaps never sees or holds it (you're the data controller;
   see [`PRIVACY.md`](PRIVACY.md)). If the project vanished tomorrow, nothing is deleted or held hostage — the
   objects are still in your bucket.
 - **The durable tier is an open, standard format.** Cold `.crbm` objects are a **documented container**
@@ -85,7 +85,7 @@ segments into this and the library breaks, am I stuck?* Short answer — **no** 
   continues, so one bad segment never blocks the dump.
 
 **Honest caveats.** If you'd rather migrate by copying the **raw storage** than by running `exportSegments`
-(which folds warm deltas for you), note the warm-delta rows and the registry are in CloudRoaring's own
+(which folds warm deltas for you), note the warm-delta rows and the registry are in CloudBitmaps' own
 (documented) schema, not a universal interchange format — so that route means first running a **compaction**
 (folds warm deltas into standard cold `.crbm`), then reading the cold. And `exportSegments` enumerates the
 **registry** (segments with a committed cold generation): a brand-new all-warm segment (only ever `add()`-ed,
@@ -95,7 +95,7 @@ never compacted) must be named via `candidates` / `CR_EXPORT_SEGMENTS`, or compa
 case against adopting it too. Contrast the
 alternatives: pure roaring libraries have zero lock-in *because they don't manage storage at all* (you persist
 the bytes; same format as ours); bitmap **databases/services** (FeatureBase/Pilosa, ClickHouse, Doris, Redis)
-manage storage for you but keep your data in *their* engine, exited via *their* export. CloudRoaring is the
+manage storage for you but keep your data in *their* engine, exited via *their* export. CloudBitmaps is the
 unusual middle — a library orchestrating *your own* cloud storage.
 
 ## How it works
@@ -133,7 +133,7 @@ later, lazily, during compaction). GDPR "forget me," unsubscribes, and rolling "
 are all just per-ID `remove`s — never a table scan.
 
 **The crown jewel: serverless, chunk-skipping intersection** *(the engine shipped in Phase 3a; S3-backed Cold in 3c)*. To find the IDs in *both* of two
-billion-ID segments, CloudRoaring reads only the two small chunk **index maps**, aligns their 16-bit keys,
+billion-ID segments, CloudBitmaps reads only the two small chunk **index maps**, aligns their 16-bit keys,
 and fetches **only the chunks present in both** — so two 100 MB segments overlapping in 5% of chunks
 transfer ~10 MB, not 200 MB, and the whole thing runs inside a 128 MB Lambda. This is the capability no
 embeddable OSS bitmap library offers off the shelf.
@@ -155,7 +155,7 @@ on reaching every copy. Rotate keys without re-encrypting data, and wrap under a
 lost key isn't fatal.
 
 **Resilient by default — a blip never loses data.** Cloud storage throttles, returns 5xx, and drops
-connections; CloudRoaring treats that as normal. Every warm/cold call automatically **retries transient
+connections; CloudBitmaps treats that as normal. Every warm/cold call automatically **retries transient
 faults** (throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full
 jitter — on by default, tunable, or `retry: false` to defer to your client's own retry. Crucially, retries
 are **safe**: the optimistic-concurrency token makes a timed-out-but-committed write detectable (no
@@ -229,7 +229,7 @@ you pull one in only for the tier you use.
 > targets (incl. Amazon Linux, which CI proves each run). It has **no musl prebuilt**, so on an Alpine base image
 > it compiles from source at install — add a toolchain first (`apk add --no-cache build-base python3`), or use a
 > glibc image (`node:22-slim`). This is a `roaring` install-time requirement, not a runtime dependency of
-> CloudRoaring.
+> CloudBitmaps.
 
 ## Quick taste (works today)
 
@@ -462,7 +462,7 @@ CLIs). You install one flavor; core arrives transitively.
   local → cloud wiring, the operations, the real flows (seed, match, campaign targeting, compaction,
   encryption), and where cost + observability fit.
 - **[Getting started](docs/guide/getting-started.md)** — the exhaustive, per-tier reference with every signature.
-- **[Benchmarks](docs/benchmarks.md)** — the CloudRoaring-vs-flat-Redis crossover chart + the gated cost/perf anchors.
+- **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.
 - **[Changelog](CHANGELOG.md)** — what's changed (newest first; everything under `[Unreleased]` until v1.0).

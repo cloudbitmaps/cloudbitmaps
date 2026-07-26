@@ -1,6 +1,6 @@
-# CloudRoaring guide
+# CloudBitmaps guide
 
-User-facing documentation — how to actually use CloudRoaring. Kept accurate to what's **shipped**, and
+User-facing documentation — how to actually use CloudBitmaps. Kept accurate to what's **shipped**, and
 grown one capability per phase (so it never describes vapor).
 
 - [**Getting started**](getting-started.md) — install status, the in-memory quick start, the persistent

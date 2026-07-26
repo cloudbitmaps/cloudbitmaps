@@ -1,6 +1,6 @@
 # Dashboards & audit: wiring the three signals
 
-CloudRoaring exposes three independent observability surfaces. They answer different questions and belong on
+CloudBitmaps exposes three independent observability surfaces. They answer different questions and belong on
 different screens — don't collapse them into one:
 
 | Surface | Question it answers | Audience | Where it goes |
@@ -9,7 +9,7 @@ different screens — don't collapse them into one:
 | **Cost** (`costReport()`) | *What is it costing vs. Redis?* — dollars, crossover | you / FinOps | a cost gauge, reviewed weekly |
 | **Audit** (`IAuditSink`) | *Who changed the data, when?* — publish / compact / **erase** | security / compliance | append-only audit log / SIEM |
 
-All three are **off by default**, **vendor-neutral** (CloudRoaring ships no telemetry dependency — you write a
+All three are **off by default**, **vendor-neutral** (CloudBitmaps ships no telemetry dependency — you write a
 short adapter), and **exception-safe** (a throwing sink can never break a read, write, or lifecycle op). This
 guide shows a worked adapter for each. See [getting-started §10–12](./getting-started.md#10-observability-metrics)
 for the API reference.

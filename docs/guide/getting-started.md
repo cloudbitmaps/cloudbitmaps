@@ -375,7 +375,7 @@ Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapsho
 
 ## 6. Reliability: retries, backoff & timeouts
 
-Cloud storage throttles, returns 5xx, and drops connections. CloudRoaring handles that for you: **every
+Cloud storage throttles, returns 5xx, and drops connections. CloudBitmaps handles that for you: **every
 warm/cold call automatically retries transient faults** (throttling, 5xx, dropped connections, request
 timeouts) with bounded exponential backoff + full jitter. It's **on by default** — you don't have to do
 anything:
@@ -403,7 +403,7 @@ can't help or would be wrong): `ValidationError` (bad input), `IntegrityError` (
 `NotFoundError`, and `WriteConflictError` (an optimistic-concurrency conflict, which the engine resolves with
 its own re-read-and-retry loop).
 
-**Set a timeout on your client.** CloudRoaring intentionally has no homegrown timeout (it would abandon
+**Set a timeout on your client.** CloudBitmaps intentionally has no homegrown timeout (it would abandon
 in-flight requests). Instead, give your injected S3/DynamoDB client a request timeout — the resulting timeout
 is treated as transient and retried:
 
@@ -639,7 +639,7 @@ everywhere, including backups**. The segment then reads as empty.
   wrapped DEKs are useless without it.
 - **If you lose every KEK for a segment, its at-rest bytes are gone — by design.** There is no backdoor (that's
   the whole point — a leaked bucket has no backdoor either). This is also what makes crypto-shred *work*.
-- **But it's usually not catastrophic:** CloudRoaring segments are almost always **derived data** (audience /
+- **But it's usually not catastrophic:** CloudBitmaps segments are almost always **derived data** (audience /
   membership sets built from your primary datastore), so a lost KEK means **re-seed the segment from source**
   (`bulkLoadCrbmGeneration`), not permanent business-data loss.
 - **Rotate, don't lose.** Add a new KEK, point `activeKeyId` at it, and **keep the old KEK** — old segments keep
@@ -650,7 +650,7 @@ everywhere, including backups**. The segment then reads as empty.
 
 ## 10. Observability: metrics
 
-CloudRoaring can report what it's doing — cold GETs and bytes, warm reads/writes, cache hit rate, retries,
+CloudBitmaps can report what it's doing — cold GETs and bytes, warm reads/writes, cache hit rate, retries,
 intersection efficiency, and op latency — through an optional **metrics sink**. It's **off by default** (a
 no-op — emission is skipped entirely when unused); pass one and the library pushes typed events to it:
 
@@ -673,7 +673,7 @@ look in dev is one line:
 const store = new CloudRoaring({ warm, cold, metrics: { onEvent: (e) => console.log(e) } });
 ```
 
-**OpenTelemetry** (or Datadog, CloudWatch, …) is a ~12-line adapter you write — CloudRoaring adds no telemetry
+**OpenTelemetry** (or Datadog, CloudWatch, …) is a ~12-line adapter you write — CloudBitmaps adds no telemetry
 dependency of its own:
 
 ```ts
@@ -709,7 +709,7 @@ A sink that throws can never break a read or write — its exceptions are swallo
 
 ## 11. Cost: estimate it, then ground it
 
-CloudRoaring can tell you what a workload *will* cost — and, uniquely, what your **real** segments *are*
+CloudBitmaps can tell you what a workload *will* cost — and, uniquely, what your **real** segments *are*
 costing — because the library owns the storage + cache, so it can ground estimates no external calculator can.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
@@ -879,7 +879,7 @@ See [`PRIVACY.md`](../../PRIVACY.md).
 
 Your data isn't locked in. `store.exportSegments(sink, options)` dumps **every registered segment's current effective
 set** (tier-merged) through an injected sink, using only public read APIs — so it's readable **without
-CloudRoaring**. Two formats:
+CloudBitmaps**. Two formats:
 
 - `roaring` (default) — one **portable RoaringBitmap32** per segment (`<segment>.roaring`), loadable by any
   roaring library (Java/Go/Python/Rust/C++/…).
@@ -912,7 +912,7 @@ const manifest = await store.exportSegments(mySink, {
 // (the CLI's manifest.json also carries a `generatedAt` timestamp.)
 ```
 
-Reading a `.roaring` file back needs **no CloudRoaring** — any roaring library deserializes the portable format:
+Reading a `.roaring` file back needs **no CloudBitmaps** — any roaring library deserializes the portable format:
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -946,7 +946,7 @@ data stays yours".
 ## 15. Cost ceiling: the per-op fan-out budget
 
 On a shared/serverless backend, one pathological call — an `intersect` over two enormous barely-overlapping
-segments, or a fleet-wide `eraseSubject` — can quietly run up a large bill (a "denial-of-wallet"). CloudRoaring
+segments, or a fleet-wide `eraseSubject` — can quietly run up a large bill (a "denial-of-wallet"). CloudBitmaps
 caps the **number of backend calls a single operation may fan out to** (Cold chunk fetches, or segments scanned)
 and refuses (throws `BudgetExceededError`) rather than running away:
 
@@ -989,7 +989,7 @@ lower it on untrusted/multi-tenant surfaces; raise it (or `budget: false`) for t
 
 ## 16. Disaster recovery: check cross-tier consistency
 
-CloudRoaring spans two independent stores — the **object store** (cold `.crbm` generations) and the **registry**
+CloudBitmaps spans two independent stores — the **object store** (cold `.crbm` generations) and the **registry**
 (which generation is current per segment). A restore that brings them back at **different points in time** can
 leave the registry pointing at a cold generation that wasn't restored (its `currentGen` names a `.crbm` that
 isn't there) — a torn restore that otherwise surfaces only as a failed read, much later. `checkConsistency()`
@@ -1062,7 +1062,7 @@ enormous segments in a small/serverless process. `intersect` is commutative: `a.
 
 ## Deploying to AWS Lambda
 
-CloudRoaring's crown jewel is serverless chunk-skipping intersection, so Lambda is a first-class target — with
+CloudBitmaps' crown jewel is serverless chunk-skipping intersection, so Lambda is a first-class target — with
 one thing to know. The bitmap math runs on **`roaring`, a native (C++) addon**, and it ships **no prebuilt
 binary for the Lambda Node runtimes on Linux** (checked: `nodejs20`/`nodejs22`, arm64). So you can't just
 `npm install` on the bare runtime — the addon must be **built for the target platform** (exactly like `sharp`

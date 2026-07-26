@@ -153,7 +153,7 @@ The option / result types the public methods above reference — you import thes
 
 ## Advanced / driver-author surface
 
-You **do not** import these to _use_ CloudRoaring — only to **write a driver**, build tooling against the
+You **do not** import these to _use_ CloudBitmaps — only to **write a driver**, build tooling against the
 on-disk format, or run out-of-process operations. This distinction is **docs-level by design**: a
 separate `advanced` subpath split was considered and **deliberately not built** (marginal payoff, real cost,
 net-new surface — DECISIONS #32), so everything here still imports from the single

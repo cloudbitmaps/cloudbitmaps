@@ -1,17 +1,17 @@
-# CloudRoaring — benchmarks & the Redis crossover
+# CloudBitmaps — benchmarks & the Redis crossover
 
 > **Generated, not hand-written.** The chart and table below are produced by `pnpm bench` from the shipped
 > `estimateCost()` + the default `aws-us-east-1-ondemand` pricing, so they can never drift from the
 > library's own numbers. The polished, shareable version lives on the [site](../site/benchmarks.html)
 
 
-CloudRoaring bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
+CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
 sustained write/read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
 
 ## The crossover chart
 
 <!-- BENCH:CHART:START -->
-![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)
+![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)
 <!-- BENCH:CHART:END -->
 
 <!-- BENCH:STATS:START -->
@@ -163,7 +163,7 @@ architecture is built around:
   cardinality from the `.crbm` index — so counting a ten-million-user segment does not scale with N.
 - **Intersections skip.** Two 2,000,000-id segments intersect by fetching only the shared chunks — [measured
   above](#at-scale--measured-1k--10k--100k-segments) at 100 of 2,000 chunks per segment in 25.3 ms. This is the case where
-  an always-on RAM store has to hold both bitmaps resident and CloudRoaring does not.
+  an always-on RAM store has to hold both bitmaps resident and CloudBitmaps does not.
 
 **The one pattern that does not scale to millions is `add()` in a loop — a routing decision, not a performance
 bug.** At the measured $0.75 per million writes, streaming 10M users in one at a time costs ~$7.50 and, at this

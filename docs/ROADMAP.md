@@ -1,6 +1,6 @@
 # Roadmap
 
-CloudRoaring maps each 16-bit Roaring Bitmap chunk onto tiered, pluggable cloud storage — **hot** RAM LRU,
+CloudBitmaps maps each 16-bit Roaring Bitmap chunk onto tiered, pluggable cloud storage — **hot** RAM LRU,
 **warm** NoSQL/SQL deltas, **cold** immutable `.crbm` objects in an object store — so a set of hundreds of
 millions of IDs lives in S3 at object-store prices instead of in RAM at RAM prices. The centerpiece is
 **chunk-skipping intersection**: an `A ∩ B` fetches only the chunks that can possibly contribute, which is
@@ -98,7 +98,7 @@ dependencies** — arrives transitively and is never installed directly.
 - **Observability without telemetry** — an injected metrics sink and a separate, off-by-default audit sink
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
 - **Honest cost tooling** — `estimateCost` for planning and a grounded per-segment `costReport` from
-  measured op counts, with a pluggable pricing profile that will tell you when CloudRoaring *loses* to flat
+  measured op counts, with a pluggable pricing profile that will tell you when CloudBitmaps *loses* to flat
   Redis. The published crossover chart is in [Benchmarks](benchmarks.md).
 - **An exit path.** `exportSegments` and the `export-segments` CLI dump every segment to portable
   `roaring` / `ndjson` that is readable **without** this library, with per-segment fault isolation. If the
@@ -131,7 +131,7 @@ Two things worth knowing before you pick:
 
 ## The validated envelope — what's proven, and what isn't
 
-We'd rather tell you the boundary than let you discover it. CloudRoaring is **ready within a validated
+We'd rather tell you the boundary than let you discover it. CloudBitmaps is **ready within a validated
 envelope**:
 
 | | Inside the envelope | Outside it (use with your own testing) |
@@ -192,14 +192,14 @@ move it up.
 
 Saying no is part of the design:
 
-- **A hosted/managed CloudRoaring service.** Never — this is a library. Your data stays in your account, in
+- **A hosted/managed CloudBitmaps service.** Never — this is a library. Your data stays in your account, in
   your buckets, under your keys.
 - **Telemetry or phone-home.** Nothing is ever sent to us. Observability is an injected sink you own.
 - **An `id → segments` reverse index.** It would cost roughly 2× write amplification and a second inverted
   copy of all your data — paid on every write, to speed up a rare subject-access request. `subjectReport`
   scans instead. It could return as an opt-in add-on if a real deployment needs sub-second lookups at
   billion scale.
-- **Reimplementing the bit math.** CloudRoaring wraps `roaring-node`/CRoaring. The cloud tiering is the
+- **Reimplementing the bit math.** CloudBitmaps wraps `roaring-node`/CRoaring. The cloud tiering is the
   contribution; the container algorithms are not ours to re-invent.
 - **Any feature that taxes the hot path** (`add` / `has` / `remove` / `count` / `intersect`) to speed up a
   rare operation. If it can't be pushed to wiring time, the daemon, an admin call, or the docs, it doesn't
@@ -207,7 +207,7 @@ Saying no is part of the design:
 
 ## A note on priorities
 
-CloudRoaring is built in the open by one maintainer, so priorities can and will shift, and nothing here is a
+CloudBitmaps is built in the open by one maintainer, so priorities can and will shift, and nothing here is a
 schedule or a commitment. The best way to influence what gets built next is to
 [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) — to discuss a use case, report a bug, or
 tell us something behaved wrong. Contributions are welcome: start with
