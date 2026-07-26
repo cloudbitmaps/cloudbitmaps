@@ -14,6 +14,24 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.1] - 2026-07-26
+
+Documentation-only. No runtime code changed — `dist/` is byte-identical in intent; only the prose that ships
+beside it differs.
+
+### Fixed
+
+- **The shipped docs still called the library CloudRoaring.** `PRIVACY.md` travels *inside* the published
+  tarball and named the old project in 11 places, so this was visible to anyone who had already installed
+  `0.1.0`. Renamed across the shipped `README.md` and `PRIVACY.md` (and 12 more files in the repo), along with
+  the crossover chart's baked-in SVG label.
+  - The rename is **context-aware, not a blunt substitution**: `CloudRoaring` is still the exported class, so
+    fenced blocks and inline code are untouched, and `CloudRoaringOptions`, `CloudRoaringError`,
+    `isCloudRoaringError` and `CloudRoaring.estimateCost()` are all preserved — 34 API references verified
+    individually. Possessives read "CloudBitmaps'", not "CloudBitmaps's".
+
 ### Added
 
 - **The GitHub Release is cut by the pipeline**, not by hand, with notes lifted verbatim from this file — one

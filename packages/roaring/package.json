@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/roaring",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Distributed, cloud-native Roaring Bitmaps — query and intersect billion-scale integer sets over tiered cloud storage (RAM → NoSQL → object store), at a fraction of an always-on cache.",
   "keywords": [
     "roaring",
