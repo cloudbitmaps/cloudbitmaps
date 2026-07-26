@@ -47,14 +47,36 @@ pnpm build >/dev/null
 ROARING_VER="$(node -p "require('./node_modules/roaring/package.json').version")"
 # Repo-local, NOT mktemp: Docker Desktop shares /Users but not /var/folders, and this is bind-mounted.
 STAGE="$ROOT/.rss-stage"
-rm -rf "$STAGE" && mkdir -p "$STAGE"
-trap 'rm -rf "$STAGE"' EXIT
+
+# Not `node:22` from Docker Hub: GitHub-hosted runners share an IP pool that is routinely over Docker Hub's
+# anonymous pull limit, and the gate died on HTTP 429 before running anything. `public.ecr.aws/docker/library`
+# is AWS's official mirror of the same Docker Official Images — same digests, no auth, no rate limit.
+# Overridable so a local run can point at a warm Docker Hub cache instead.
+STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
+
+# The stage is populated by a container running as root. On a Linux bind mount those files really are owned by
+# root, so the host user cannot delete them and a plain `rm -rf` fails with "Permission denied" on every path —
+# which failed the whole gate AFTER the soak had already passed. Docker Desktop on macOS remaps bind-mount
+# ownership to the calling user, so this was invisible locally and only appeared once CI moved off the
+# self-hosted macOS runner. Deleting from inside a container sidesteps it: root in the container can remove
+# what root in the container created. Reuses the stage image, already pulled, so cleanup costs no extra pull.
+clean_stage() {
+  [ -e "$STAGE" ] || return 0
+  rm -rf "$STAGE" 2>/dev/null && return 0
+  docker run --rm -v "$ROOT:/w" "$STAGE_IMAGE" rm -rf /w/.rss-stage >/dev/null 2>&1 || true
+  # Report rather than mask: a leftover stage is a dirty tree for the next run and for `git status`.
+  [ -e "$STAGE" ] && echo "rss-gate: WARNING — could not remove $STAGE (root-owned?); remove it manually" >&2
+  return 0
+}
+clean_stage
+mkdir -p "$STAGE"
+trap clean_stage EXIT
 
 # Stage 1 — build roaring FROM SOURCE + stage dist + soak into a shared dir, UNCONSTRAINED (the compile's peak
-# is not what we gate). node:22 (full) ships the C/C++ toolchain node-gyp needs. Output is kept so a build
+# is not what we gate). The full node image ships the C/C++ toolchain node-gyp needs. Output is kept so a build
 # failure is diagnosable (only piped away on success would hide the error) — `set -e` fails the gate on error.
 echo "rss-gate: stage build (roaring ${ROARING_VER} from source, uncapped)"
-docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage" node:22 bash -lc '
+docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_IMAGE" bash -lc '
   set -e
   cd /stage
   npm init -y >/dev/null 2>&1
@@ -78,7 +100,7 @@ echo "rss-gate: run soak under a hard ${MEM} RSS ceiling (swap off)"
 docker run --rm \
   --memory="$MEM" --memory-swap="$MEM" \
   -e SOAK_SECONDS="$SECONDS_" -e SOAK_SEGMENTS="$SEGMENTS" -e SOAK_CAP="$CAP" \
-  -v "$STAGE:/stage" node:22 bash -lc '
+  -v "$STAGE:/stage" "$STAGE_IMAGE" bash -lc '
     cd /stage
     # NOTE: soak spawns a reader-child; if the child alone were OOM-killed, soak.cjs treats it as a bonus and
     # the parent still runs — so a read-path blowup is caught by the parent hitting the ceiling / the creep
