@@ -14,7 +14,20 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **The GitHub Release is cut by the pipeline**, not by hand, with notes lifted verbatim from this file — one
+  source of truth, so the release page and the changelog cannot drift.
+  [`scripts/changelog-section.cjs`](scripts/changelog-section.cjs) extracts the section and **fails loudly**
+  rather than emitting something plausible: a missing version, an empty section, or a body over GitHub's
+  125,000-character cap all stop the job. It also strips the trailing maintainer comments the last section
+  inevitably absorbs — invisible in rendered Markdown, so a leak there would never be caught by eye.
+  - It runs as a **separate job holding `contents: write`**, which the publish job deliberately does not get.
+    [SECURITY.md](SECURITY.md) promises the publish job carries only the OIDC `id-token` permission, and
+    creating a release needs write — so the write scope goes on a job that cannot publish. (Both sibling
+    projects let `changesets/action` do this inside the publish job; simpler, and it widens the blast radius
+    of the one job worth attacking.) `needs: publish` means a release object only appears for a version that
+    really published.
 
 ## [0.1.0] - 2026-07-26
 

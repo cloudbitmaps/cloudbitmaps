@@ -43,7 +43,8 @@ on:
         type: boolean
         default: true
 
-# Least privilege: read the repo, mint an OIDC token for provenance. No write scopes.
+# Least privilege at the top level: read the repo, mint an OIDC token for provenance. No write scopes.
+# `contents: write` is granted to the github-release job ONLY, never to the job that publishes.
 permissions:
   contents: read
   id-token: write
@@ -122,6 +123,42 @@ jobs:
         run: pnpm -r --filter './packages/**' publish --provenance --access public --dry-run --no-git-checks
         env:
           NPM_CONFIG_PROVENANCE: true
+
+  # Cut the GitHub Release from the same tag, with notes lifted verbatim from CHANGELOG.md.
+  #
+  # A SEPARATE job, deliberately. Creating a release needs `contents: write`, and SECURITY.md's hardening
+  # checklist promises the publish job "carries only the OIDC `id-token` permission" — so the write scope lives
+  # here, on a job that cannot publish, instead of being added to the job that can. (Both sibling projects let
+  # `changesets/action` do this inside the publish job with `contents: write`; that is simpler, and it widens
+  # the blast radius of the one job an attacker would most want to influence.)
+  #
+  # `needs: publish` + the tag condition mean a release object only ever appears for a version that really
+  # published. Nothing here is approval-gated a second time: the human already approved the publish, and this
+  # job cannot ship code.
+  github-release:
+    name: github release (notes from CHANGELOG)
+    needs: publish
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release object; NOT granted to the publish job above
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      # Fails loudly on a missing or empty section rather than publishing blank notes — see
+      # scripts/changelog-section.cjs and its tests.
+      - name: Extract the release notes
+        run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /tmp/notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            --verify-tag
       # Real, provenance-signed publish — ONLY a pushed vX.Y.Z tag, or an explicit dispatch with dryRun=false.
       # The tag arm is scoped to `push` so that dispatching a run *from* a tag ref (where github.ref is
       # refs/tags/v…) can NOT publish for real while dryRun is still true — that would break the dry-run-default
