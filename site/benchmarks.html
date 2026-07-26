@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CloudRoaring — benchmarks &amp; the Redis crossover</title>
+    <title>CloudBitmaps — benchmarks &amp; the Redis crossover</title>
     <meta
       name="description"
-      content="Where CloudRoaring's pay-per-use cost beats a flat Redis-HA node — and where it doesn't. The crossover chart is drawn straight from the shipped estimator, and every claim here is a CI-gated build-breaking assertion."
+      content="Where CloudBitmaps's pay-per-use cost beats a flat Redis-HA node — and where it doesn't. The crossover chart is drawn straight from the shipped estimator, and every claim here is a CI-gated build-breaking assertion."
     />
-    <link rel="stylesheet" href="cloudroaring.css" />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/logo-light.png" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><span class="dot"></span> CloudRoaring <small>benchmarks</small></a
+          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>benchmarks</small></a
         >
         <nav class="jump">
           <a href="index.html">← Overview</a>
@@ -32,7 +34,7 @@
         <p class="eyebrow">Benchmarks · every claim here is CI-gated</p>
         <h1>See exactly where <span class="roar">pay-per-use</span> beats a flat cache — and where it doesn't.</h1>
         <p class="lede">
-          CloudRoaring bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a
+          CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a
           certain sustained write/read rate, pay-per-use is far cheaper; above it, the flat node wins. This
           page draws that crossover straight from the library's own <code>estimateCost()</code> — and the
           numbers behind it are turned into <strong>build-breaking tests</strong>, so the story can never
@@ -55,18 +57,18 @@
         </div>
         <div class="prose">
           <p>
-            The shaded green region is where CloudRoaring costs <em>less</em> than a flat Redis-HA node; the
+            The shaded green region is where CloudBitmaps costs <em>less</em> than a flat Redis-HA node; the
             red region is the honest <strong>lose-zone</strong> where the flat node is cheaper. We never hide
             it.
           </p>
         </div>
         <figure class="bench-figure">
           <!-- BENCH:CHART:START -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 696" width="760" height="696" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 696" width="760" height="696" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="CloudBitmaps vs flat Redis-HA cost crossover chart">
 <rect x="1" y="1" width="758" height="694" rx="14" fill="#ffffff" stroke="#e4e8ed"/>
 <text x="28" y="34" font-size="17" font-weight="700" fill="#15181e">Where pay-per-use crosses a flat Redis-HA node</text>
 <text x="28" y="56" font-size="12.5" fill="#69737f">aws-us-east-1-ondemand · 8 KiB items · cache off · flat Redis-HA = $346/mo</text>
-<line x1="28" y1="78" x2="44" y2="78" stroke="#34378f" stroke-width="3"/><text x="50" y="82" font-size="12" fill="#3c4450">CloudRoaring (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="#3c4450">Redis HA (flat)</text>
+<line x1="28" y1="78" x2="44" y2="78" stroke="#34378f" stroke-width="3"/><text x="50" y="82" font-size="12" fill="#3c4450">CloudBitmaps (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="#3c4450">Redis HA (flat)</text>
 <g>
 <text x="66" y="122" font-size="13.5" font-weight="600" fill="#15181e">Sustained writes — the metered cost driver</text>
 <rect x="66" y="142" width="390.9" height="200" fill="#1e7a52" opacity="0.06"/>
@@ -240,7 +242,7 @@
           <a href="../docs/benchmarks.md">Raw results</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
-        <strong>CloudRoaring</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
+        <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
         pre-1.0 v0.1.0<br />
         The chart and every claim on this page are generated + CI-gated from the shipped estimator.
       </div>

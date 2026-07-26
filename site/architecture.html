@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CloudRoaring — architecture &amp; build walkthrough (Phases 1–4)</title>
+    <title>CloudBitmaps — architecture &amp; build walkthrough (Phases 1–4)</title>
     <meta
       name="description"
-      content="A phase-by-phase walkthrough of CloudRoaring: tiered cloud-native Roaring Bitmaps, with architecture diagrams, code, and the invariant each phase secured."
+      content="A phase-by-phase walkthrough of CloudBitmaps: tiered cloud-native Roaring Bitmaps, with architecture diagrams, code, and the invariant each phase secured."
     />
-    <link rel="stylesheet" href="cloudroaring.css" />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/logo-light.png" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><span class="dot"></span> CloudRoaring <small>architecture</small></a
+          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>architecture</small></a
         >
         <nav class="jump">
           <a href="index.html">← Overview</a>
@@ -35,7 +37,7 @@
         <p class="eyebrow">Build walkthrough · Phases 1–4 complete</p>
         <h1>How it's built, <span class="roar">one chunk at a time</span>.</h1>
         <p class="lede">
-          CloudRoaring splits every bitmap into 16-bit chunks and spreads them across three storage
+          CloudBitmaps splits every bitmap into 16-bit chunks and spreads them across three storage
           tiers by <strong>temperature</strong> — hot RAM, a warm key-value store, and cold immutable
           object storage. This is the whole system, phase by phase: the diagram, a real code example,
           and the invariant each phase secured.
@@ -64,7 +66,7 @@
           <p>
             A Roaring Bitmap is already a set of 16-bit <em>chunks</em>: an ID in <code>[0, 2³²)</code>
             splits into a 16-bit <strong>chunk key</strong> (which chunk) and a 16-bit
-            <strong>remainder</strong> (which bit inside it). CloudRoaring takes that natural seam and
+            <strong>remainder</strong> (which bit inside it). CloudBitmaps takes that natural seam and
             maps each chunk onto whichever storage tier its access pattern deserves.
           </p>
         </div>
@@ -250,8 +252,8 @@
               <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudroaring/warm'</span>),
-  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudroaring/cold'</span>),  <span class="c">// raw driver → reads .crbm generations</span>
+  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudbitmaps/warm'</span>),
+  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudbitmaps/cold'</span>),  <span class="c">// raw driver → reads .crbm generations</span>
 });
 
 <span class="k">await</span> store.<span class="f">segment</span>(<span class="s">'active-this-week'</span>).<span class="f">add</span>(<span class="n">42</span>);
@@ -441,7 +443,7 @@
             </div>
             <figure class="code-fig">
               <figcaption><span class="fdot"></span> seed + publish in one call; reads resolve with no list-scan</figcaption>
-              <div class="code has-cap"><pre><span class="k">const</span> registry = <span class="k">new</span> <span class="f">LocalFsRegistryDriver</span>(<span class="s">'./.cloudroaring/registry'</span>);
+              <div class="code has-cap"><pre><span class="k">const</span> registry = <span class="k">new</span> <span class="f">LocalFsRegistryDriver</span>(<span class="s">'./.cloudbitmaps/registry'</span>);
 
 <span class="c">// seed a generation AND publish it to the registry</span>
 <span class="k">await</span> <span class="f">bulkLoadCrbmGeneration</span>(cold, { segment: <span class="s">'active'</span>, generation: <span class="n">0</span> },
@@ -566,7 +568,7 @@
               <p>
                 <strong>Back up the KEK like a database password.</strong> Lose every KEK for a segment
                 and its at-rest bytes are gone — by design (that's also what makes crypto-shred real).
-                But CloudRoaring segments are almost always <em>derived</em> data, so the recovery is
+                But CloudBitmaps segments are almost always <em>derived</em> data, so the recovery is
                 usually "re-seed from source," not permanent loss. Rotate, keep old keys, and hold a
                 recovery KEK offline.
               </p>
@@ -659,7 +661,7 @@
           <a href="../docs/ROADMAP.md">Roadmap</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
-        <strong>CloudRoaring</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
+        <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
         pre-1.0 v0.1.0<br />
         Maps each 16-bit roaring chunk onto tiered storage — HOT RAM · WARM NoSQL · COLD immutable
         <code>.crbm</code>.

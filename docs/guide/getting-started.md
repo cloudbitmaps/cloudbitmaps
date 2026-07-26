@@ -122,8 +122,8 @@ the store wraps it in the `.crbm` reader for you, so you wire each driver exactl
 import { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } from '@cloudbitmaps/roaring';
 
 const store = new CloudRoaring({
-  warm: new LocalFsWarmDriver('./.cloudroaring/warm'),
-  cold: new LocalFsColdDriver('./.cloudroaring/cold'), // raw driver → reads .crbm generations; empty until seeded
+  warm: new LocalFsWarmDriver('./.cloudbitmaps/warm'),
+  cold: new LocalFsColdDriver('./.cloudbitmaps/cold'), // raw driver → reads .crbm generations; empty until seeded
   cacheMaxChunks: 1024, // optional HOT-cache ceiling
 });
 
@@ -155,7 +155,7 @@ import {
   MemoryWarmDriver,
 } from '@cloudbitmaps/roaring';
 
-const cold = new LocalFsColdDriver('./.cloudroaring/cold');
+const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
 
 // ids can be any sync or async iterable — an array, a generator, a DB cursor, a file stream…
 const res = await bulkLoadCrbmGeneration(cold, { segment: 'active-this-week', generation: 1 }, [
@@ -440,8 +440,8 @@ import {
   LocalFsRegistryDriver,
 } from '@cloudbitmaps/roaring';
 
-const cold = new LocalFsColdDriver('./.cloudroaring/cold');
-const registry = new LocalFsRegistryDriver('./.cloudroaring/registry');
+const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
+const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
 
 // Seed a generation AND publish it to the registry in one call:
 await bulkLoadCrbmGeneration(cold, { segment: 'active', generation: 0 }, [1, 2, 3], { registry });

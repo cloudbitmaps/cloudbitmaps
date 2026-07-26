@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CloudRoaring — usage, flows &amp; use cases</title>
+    <title>CloudBitmaps — usage, flows &amp; use cases</title>
     <meta
       name="description"
-      content="How to use CloudRoaring: the mental model, wiring it up from in-memory to cloud, the operations, the real workflows (batch seed/sweep, real-time matcher, campaign targeting, compaction, encryption), and where it fits."
+      content="How to use CloudBitmaps: the mental model, wiring it up from in-memory to cloud, the operations, the real workflows (batch seed/sweep, real-time matcher, campaign targeting, compaction, encryption), and where it fits."
     />
-    <link rel="stylesheet" href="cloudroaring.css" />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/logo-light.png" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><span class="dot"></span> CloudRoaring <small>usage</small></a
+          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>usage</small></a
         >
         <nav class="jump">
           <a href="index.html">← Overview</a>
@@ -35,7 +37,7 @@
         <h1>Use it like an in-memory <span class="roar">Set</span> — that happens to live in the cloud.</h1>
         <p class="lede">
           You call <code>add</code>, <code>remove</code>, <code>has</code>, <code>count</code>,
-          <code>iterate</code>, and <code>intersect</code> on a named segment. Underneath, CloudRoaring
+          <code>iterate</code>, and <code>intersect</code> on a named segment. Underneath, CloudBitmaps
           routes each ID to its 16-bit chunk and merges the hot / warm / cold tiers for you. This page
           is the working guide: the mental model, wiring, the operations, the real flows, and where it
           fits. For the exhaustive reference, see the
@@ -119,8 +121,8 @@
           <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudroaring/warm'</span>),
-  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudroaring/cold'</span>), <span class="c">// raw driver — wrapped for you</span>
+  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudbitmaps/warm'</span>),
+  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudbitmaps/cold'</span>), <span class="c">// raw driver — wrapped for you</span>
 });</pre></div>
         </figure>
 
@@ -185,7 +187,7 @@
         <div class="prose">
           <p>
             Membership changes two ways: a <strong>bulk re-derivation</strong> (rebuild the set from a
-            query) and an <strong>incremental delta</strong> (flip one bit on an event). CloudRoaring
+            query) and an <strong>incremental delta</strong> (flip one bit on an event). CloudBitmaps
             has a path for each — plus the background compactor and optional encryption.
           </p>
         </div>
@@ -328,7 +330,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
             No lock-in, by construction. <code>store.exportSegments(sink, options)</code> dumps
             <strong>every segment's current effective set</strong> (tier-merged, warm deltas folded in)
             through an injected sink, using only public read APIs — so the dump is readable
-            <strong>without CloudRoaring</strong>. Pick <code>roaring</code> (a portable
+            <strong>without CloudBitmaps</strong>. Pick <code>roaring</code> (a portable
             <code>RoaringBitmap32</code> per segment, loadable by any roaring library in Java/Go/Python/Rust/…)
             or <code>ndjson</code> (newline-delimited ids, zero dependencies to read). A segment it can't read is
             recorded in the manifest's <code>failed[]</code> and the run continues (one bad segment never blocks
@@ -390,7 +392,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
         <div class="prose">
           <p>
             Most segments are refreshed in <strong>batch</strong> ("good-enough fresh"); a high-value
-            subset also needs <strong>real-time</strong> updates. That maps one-to-one onto CloudRoaring's
+            subset also needs <strong>real-time</strong> updates. That maps one-to-one onto CloudBitmaps's
             two write paths — which is why the cold/read path (Topology-A) shipped first and the
             live-write path (Topology-B) followed.
           </p>
@@ -398,7 +400,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
         <div class="table-scroll">
           <table class="status">
             <thead>
-              <tr><th>Mode</th><th>How membership changes</th><th>CloudRoaring path</th></tr>
+              <tr><th>Mode</th><th>How membership changes</th><th>CloudBitmaps path</th></tr>
             </thead>
             <tbody>
               <tr><td><strong>Sweep</strong> (batch)</td><td>re-derive the full set from a query, rebuild the bitmap</td><td><span class="st st-done">bulk-load → new cold generation</span> (Topology-A)</td></tr>
@@ -443,7 +445,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
           <a href="../docs/guide/getting-started.md">Getting started</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
-        <strong>CloudRoaring</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
+        <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
         pre-1.0 v0.1.0<br />
         The API shown here is real and tested; see the getting-started guide for the exhaustive
         reference.

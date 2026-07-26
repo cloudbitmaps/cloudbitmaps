@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CloudRoaring — distributed, cloud-native Roaring Bitmaps</title>
+    <title>CloudBitmaps — distributed, cloud-native Roaring Bitmaps</title>
     <meta
       name="description"
       content="Take the Roaring Bitmap and make it distributed, durable, and cloud-scale — tiered HOT/WARM/COLD storage with serverless chunk-skipping intersection, without giving up the fast in-memory API."
     />
-    <link rel="stylesheet" href="cloudroaring.css" />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/logo-light.png" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><span class="dot"></span> CloudRoaring <small>v0.1.0 · pre-1.0</small></a
+          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>v0.1.0 · pre-1.0</small></a
         >
         <nav class="jump">
           <a href="#why">Why</a>
@@ -38,7 +40,7 @@
           The Roaring Bitmap — the compressed set structure behind Lucene, ClickHouse, Druid, and
           Spark — is a brilliant way to hold a billion integer IDs in tiny space. But it's a
           <strong>local, in-process</strong> data structure: bounded by one machine's RAM, gone when
-          the process dies. CloudRoaring keeps the engine and its familiar in-memory API —
+          the process dies. CloudBitmaps keeps the engine and its familiar in-memory API —
           <code>add</code>, <code>has</code>, <code>remove</code>, <code>intersect</code> — and puts the
           <strong>storage</strong> on a tiered, pluggable, cloud-native architecture.
         </p>
@@ -76,7 +78,7 @@
             persistence.
           </p>
           <p>
-            CloudRoaring keeps the bitmap engine and the developer experience, but makes the data
+            CloudBitmaps keeps the bitmap engine and the developer experience, but makes the data
             <strong>cheap and durable at rest</strong> (cents/month in object storage), fast where it
             needs to be, and able to answer set queries over enormous bitmaps from
             <strong>small, stateless functions</strong>. A leaked bucket can reveal nothing; a GDPR
@@ -129,7 +131,7 @@
         <div class="prose">
           <p>
             Every 32-bit ID splits into a 16-bit <strong>chunk key</strong> (which chunk) and a
-            16-bit <strong>remainder</strong> (which bit inside it). CloudRoaring maps each chunk onto
+            16-bit <strong>remainder</strong> (which bit inside it). CloudBitmaps maps each chunk onto
             whichever tier its access pattern deserves — and a read merges them.
           </p>
         </div>
@@ -177,7 +179,7 @@
         <div class="prose">
           <p>
             Betting a billion IDs on a young library is a fair thing to hesitate over — so here's the straight
-            answer. CloudRoaring is a <strong>library, not a service</strong>: your data lives in
+            answer. CloudBitmaps is a <strong>library, not a service</strong>: your data lives in
             <strong>your</strong> S3 bucket, <strong>your</strong> DynamoDB table, <strong>your</strong>
             filesystem — we never see or hold it. If the project vanished tomorrow, nothing is deleted or held
             hostage; the objects are still sitting in your bucket.
@@ -201,11 +203,11 @@
           </div>
         </div>
         <p class="prose">
-          The honest trade-off: the warm/registry tiers use CloudRoaring's own (documented) schema, and it's a
+          The honest trade-off: the warm/registry tiers use CloudBitmaps's own (documented) schema, and it's a
           young, single-maintainer, pre-1.0 project — so the real risks are <strong>operational and maturity</strong>,
           not losing the bytes (which are immutable and yours). Pure roaring libraries have zero lock-in only
           because they manage <em>no</em> storage; bitmap databases manage it but keep your data in their engine.
-          CloudRoaring is the middle — <strong>your storage, your format, our orchestration</strong>.
+          CloudBitmaps is the middle — <strong>your storage, your format, our orchestration</strong>.
         </p>
       </section>
 
@@ -326,7 +328,7 @@
           <a href="../docs/ROADMAP.md">Roadmap</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
-        <strong>CloudRoaring</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
+        <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
         pre-1.0 v0.1.0<br />
         Maps each 16-bit roaring chunk onto tiered storage — HOT RAM · WARM NoSQL · COLD immutable
         <code>.crbm</code>. One runtime dependency (<strong>roaring</strong>); cloud SDKs are optional

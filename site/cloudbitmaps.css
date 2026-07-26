@@ -86,12 +86,13 @@ body {
   color: var(--ink);
   text-decoration: none;
 }
-.brand .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: linear-gradient(160deg, var(--hot) 0%, var(--warm) 50%, var(--cold) 100%);
+/* The real mark. Replaced a CSS-drawn gradient dot that used the tier palette (hot/warm/cold) — which had
+   nothing to do with the actual brand, whose ramp is blue -> cyan. See docs/internal/SITE-BRIEF.md. */
+.brand .mark {
+  width: 22px;
+  height: 22px;
   align-self: center;
+  display: block;
 }
 .brand small {
   font-family: var(--mono);
