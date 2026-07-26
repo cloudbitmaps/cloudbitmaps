@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # lets the gated native-OS-matrix + lambda-layer jobs be triggered on demand while private
+  workflow_dispatch: # lets the Lambda-layer artifact be built on demand
 
 permissions:
   contents: read
@@ -17,10 +17,10 @@ concurrency:
 jobs:
   build-test:
     name: build & test (node ${{ matrix.node }})
-    # Zero-cost runner toggle: set the `CI_RUNNER` repo variable to `self-hosted` to run on a local runner
-    # (free minutes — private repos ONLY); unset it for GitHub-hosted runners (free on public repos). See the
-    # self-hosted-runner guide.
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted, everywhere. A `CI_RUNNER` variable used to allow a self-hosted runner to save minutes
+    # while the repo was private; that is now both pointless (Actions is free on public repos) and unsafe (a
+    # fork's pull request would execute on the runner's host). The toggle is gone rather than left unset.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,7 @@ jobs:
     name: dependency audit (prod, high)
     # Blocks on a new high/critical advisory in a RUNTIME dependency; triaged build-time advisories are
     # allow-listed in package.json > pnpm.auditConfig.ignoreGhsas with rationale in SECURITY.md (test-strategy T6).
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # zero-cost toggle (see build-test)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -61,7 +61,7 @@ jobs:
 
   integration:
     name: integration (DynamoDB-Local + MinIO + fake-gcs-server + Azurite + Postgres + Redis + Mongo + Cassandra + MySQL)
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # zero-cost toggle (see build-test) — needs Docker on the runner
+    runs-on: ubuntu-latest # needs Docker on the runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -106,9 +106,9 @@ jobs:
     name: lambda deployability (Amazon Linux 2023)
     # Proves the packaged lib deploys to the flagship serverless target: builds the native `roaring` dep for
     # the AL2023 Lambda runtime (no linux prebuilt exists → build-for-target) and loads it under ESM + CJS.
-    # Needs Docker on the runner; the runner's arch decides the arch tested (arm64/Graviton on the self-hosted
-    # Mac, x64 on GitHub-hosted). A full x64 + multi-OS matrix is deferred to the public-launch runners.
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # zero-cost toggle (see build-test)
+    # Needs Docker on the runner, which fixes the arch tested at x64. arm64/Graviton coverage is not claimed
+    # by this job; the cross-OS addon build is covered by `native-os-matrix`.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -126,7 +126,7 @@ jobs:
     # it's OOM-killed (exit 137) — i.e. if any memory bound (HOT LRU / cold-reader cache / intersection window)
     # regressed to unbounded. Includes the roaring addon's off-heap native memory, which a JS-heap sample can't.
     # Needs Docker on the runner (like integration + lambda-smoke).
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # zero-cost toggle (see build-test)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -139,11 +139,11 @@ jobs:
 
   native-os-matrix:
     name: native addon (${{ matrix.os }}, node ${{ matrix.node }})
-    # The `roaring` native addon must build + load across the OSes we claim to support. This burns PAID minutes
-    # on a PRIVATE repo (Windows/macOS runners are billed at 2x/10x), and is FREE once the repo is public — so
-    # it's gated: it runs on manual `workflow_dispatch`, or set-and-forget by defining the repo variable
-    # `OS_MATRIX=true`. At the Phase 9 go-public it should become always-on (drop the `if:`).
-    if: github.event_name == 'workflow_dispatch' || vars.OS_MATRIX == 'true'
+    # The `roaring` native addon must build + load across the OSes we claim to support. This was gated behind
+    # manual dispatch only because Windows/macOS runners bill at 2x/10x on a PRIVATE repo — the gate's own note
+    # said to make it always-on at go-public. The repo is public and those minutes are free, so it now runs on
+    # every push and PR: for a library whose hardest portability risk is a native addon, "we support these
+    # platforms" should be a tested claim, not an on-demand one.
     strategy:
       fail-fast: false
       matrix:
@@ -164,9 +164,10 @@ jobs:
   lambda-layer:
     name: prebuilt Lambda layer (Amazon Linux 2023)
     # Builds a ready-to-attach AWS Lambda layer (roaring compiled for AL2023) and uploads it as a run artifact.
-    # Gated (manual dispatch): it's a release convenience, not a per-PR correctness gate. Needs Docker.
-    if: github.event_name == 'workflow_dispatch' || vars.OS_MATRIX == 'true'
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Still manual-only, and NOT for cost reasons: it produces a release convenience artifact, not a correctness
+    # signal, and `lambda-smoke` already proves the same build works on every push. Needs Docker.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6

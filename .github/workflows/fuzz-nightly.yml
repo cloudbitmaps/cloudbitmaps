@@ -28,7 +28,7 @@ concurrency:
 jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:

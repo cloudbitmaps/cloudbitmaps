@@ -14,7 +14,8 @@
 #     the approval prompt. Nothing reaches npm without a person clicking approve.
 #   - **Provenance**: `NPM_CONFIG_PROVENANCE=true` records a signed, verifiable link from the published tarball
 #     back to THIS workflow + commit (SLSA build provenance via GitHub OIDC). Requires `id-token: write` and a
-#     GitHub-hosted runner — so `runs-on` is pinned to `ubuntu-latest`, NOT the self-hosted CI toggle.
+#     GitHub-hosted runner, so `runs-on` is pinned to `ubuntu-latest`. A self-hosted runner has no OIDC
+#     identity to attest to and would silently cost the attestation.
 #   - **Frozen, reproducible install**: `pnpm install --frozen-lockfile` (fails if the lockfile is stale).
 #   - **Publish only a fully-verified tree**: the complete CI gate (lint · arch · format · typecheck · test ·
 #     build · smoke) runs here again before the tarball is created — a green `main` is necessary but not
@@ -50,7 +51,7 @@ permissions:
 jobs:
   publish:
     name: publish (tokenless, provenance)
-    runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — do NOT use the CI_RUNNER toggle
+    runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
     environment: release # manual-approval gate (required reviewer on the environment)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
