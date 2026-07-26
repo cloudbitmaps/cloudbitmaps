@@ -87,7 +87,7 @@ body {
   text-decoration: none;
 }
 /* The real mark. Replaced a CSS-drawn gradient dot that used the tier palette (hot/warm/cold) — which had
-   nothing to do with the actual brand, whose ramp is blue -> cyan. See docs/internal/SITE-BRIEF.md. */
+   nothing to do with the actual brand, whose ramp is blue -> cyan. */
 .brand .mark {
   width: 22px;
   height: 22px;
