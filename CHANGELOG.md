@@ -14,6 +14,11 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-27
+
+A correctness fix that closes the last gap in "all tier bytes are untrusted", plus release-pipeline and
+public-surface hardening from a three-agent audit sweep. No format change; no breaking API change.
+
 ### Fixed
 
 - **Chunk payloads are now range-checked on read, closing the last gap in "all tier bytes are untrusted".**
@@ -56,6 +61,20 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   cannot be left half-published; the npm upgrade the OIDC publish requires is pinned to a floor
   (`npm@^11.5.1`) rather than `@latest`; and the `packages/*` guards fail closed if the glob ever matches
   nothing instead of looping once over a literal path.
+
+### Documentation
+
+- **Private-doc citations removed from the surfaces consumers actually hit.** JSDoc references of the form
+  `DECISIONS #N` were rendered by tsup into the published `.d.ts` files — where an editor shows them on hover —
+  and embedded in the sourcemaps via `sourcesContent`. They pointed at a document that is not in this
+  repository, so there was nothing a reader could follow. Also removed: bare citations to numbered internal
+  design docs in the API reference and a CI comment, and a markdown link in `cost.ts` to a `DECISIONS.md` that
+  does not exist here at all. The `CHANGELOG` keeps its citations deliberately — it is a historical record and
+  the ids are stable.
+- **The example workload on the site is now written at the level of abstraction the rest of the project uses.**
+  The walkthrough's two maintenance modes are described as *batch rebuild* and *live update*, with neutral
+  example segment names and a generic SQL source. The technical content — which mode maps to which topology,
+  and why — is unchanged.
 
 ## [0.1.2] - 2026-07-27
 

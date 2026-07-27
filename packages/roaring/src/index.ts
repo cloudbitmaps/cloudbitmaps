@@ -857,4 +857,4 @@ export {
 export { SafeBitmap, roaringCodec } from './roaring-codec';
 
 /** Package version marker. Kept in sync with package.json at release. */
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
