@@ -24,10 +24,16 @@ import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '.
 /**
  * Default ceiling on how many registry records one consistency check may hold resident: 250,000.
  *
+ * **Named `maxScanSegments`, not `maxSegments`, on purpose.** Compaction already has a `maxSegments`
+ * (`CR_COMPACT_MAX_SEGMENTS`) that caps how much work one cycle does and then *continues normally*. This one
+ * caps how much a scan may hold and *refuses* past it. Same-sounding names with opposite behaviour at the
+ * limit is a trap; pairing this with `maxWarmScanBytes` instead makes both read as what they are — ceilings on
+ * a scan that fail closed.
+ *
  * Generous — the compaction docs target 100K+ segment fleets — while still bounding a DR drill's memory to
  * something a modest operator box survives. Raisable, because a ceiling you cannot lift is a landmine.
  */
-export const DEFAULT_MAX_CHECK_SEGMENTS = 250_000;
+export const DEFAULT_MAX_SCAN_SEGMENTS = 250_000;
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
 export interface ConsistencyIssue {
@@ -80,17 +86,17 @@ type Outcome =
  */
 export async function runConsistencyCheck(
   deps: { readonly cold: IColdDriver; readonly registry: IRegistryDriver },
-  options: { namespace?: string; concurrency?: number; maxSegments?: number } = {},
+  options: { namespace?: string; concurrency?: number; maxScanSegments?: number } = {},
 ): Promise<ConsistencyReport> {
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     // Fail fast before the (possibly huge) registry scan, not after.
     throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
   }
-  const maxSegments = options.maxSegments ?? DEFAULT_MAX_CHECK_SEGMENTS;
-  if (!Number.isFinite(maxSegments) || maxSegments < 1) {
+  const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
+  if (!Number.isFinite(maxScanSegments) || maxScanSegments < 1) {
     throw new ValidationError(
-      `maxSegments must be a finite number >= 1; got ${String(options.maxSegments)}`,
+      `maxScanSegments must be a finite number >= 1; got ${String(options.maxScanSegments)}`,
     );
   }
   // Bounded enumeration, matching the engine's read paths. The comment above already noted the scan is
@@ -101,10 +107,10 @@ export async function runConsistencyCheck(
   const recs: RegistryRecord[] = [];
   for await (const rec of deps.registry.list(options.namespace)) {
     recs.push(rec);
-    if (recs.length > maxSegments) {
+    if (recs.length > maxScanSegments) {
       throw new BudgetExceededError(
-        `checkConsistency would enumerate more than ${maxSegments} segments — the scan was abandoned there ` +
-          `rather than completed. Narrow it with \`namespace\`, or raise \`maxSegments\` if the fleet really ` +
+        `checkConsistency would enumerate more than ${maxScanSegments} segments — the scan was abandoned there ` +
+          `rather than completed. Narrow it with \`namespace\`, or raise \`maxScanSegments\` if the fleet really ` +
           `is that large and the memory is available.`,
       );
     }
