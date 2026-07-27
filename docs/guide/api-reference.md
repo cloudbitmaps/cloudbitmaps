@@ -200,6 +200,7 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 | `splitId` / `joinId` | the id ⇄ `(chunkKey, remainder)` bit-routing pair |
 | `mapWithConcurrency` | the bounded fan-out primitive (admin scans, write flusher, S3 registry list) |
 | `resolveBudget` / `resolvePerOpBudget` / `checkBudget` | the denial-of-wallet budget plumbing |
+| `DEFAULT_MAX_SCAN_SEGMENTS` | default ceiling (250,000) on registry records one `checkConsistency` holds resident — raise via its `maxScanSegments` option |
 | `DEFAULT_MAX_WARM_SCAN_BYTES` | default ceiling (64 MiB) on the warm-delta bytes one segment scan may hold resident — see `maxWarmScanBytes` |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
@@ -274,7 +275,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `InProcessKeystore` · `NodeAead` · `aadFor` · `SafeBitmap` · `roaringCodec` · `withRetry` · `isTransient` ·
 `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` · `validateCompactionOptions` · `runExport` ·
 `splitId` · `joinId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` ·
-`collectWithinBudget` · `DEFAULT_MAX_WARM_SCAN_BYTES` ·
+`collectWithinBudget` · `DEFAULT_MAX_WARM_SCAN_BYTES` · `DEFAULT_MAX_SCAN_SEGMENTS` ·
 `validateSegmentRef` · `NO_ROW` · `chunkRefKey` · `segmentKey` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
 `RetryingRegistryDriver` · `RetryingColdChunkSource` · `CrbmWriter` · `CrbmReader` ·

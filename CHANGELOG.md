@@ -79,6 +79,16 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Added
 
+- **`checkConsistency` bounds its registry scan** via a new `maxScanSegments` option (default **250,000**, exported
+  as `DEFAULT_MAX_SCAN_SEGMENTS`). It was the last unbounded enumeration in the library: the function's own
+  comment said "fail fast before the (possibly huge) registry scan" and then drained that scan into an array
+  anyway, so memory scaled with total fleet size with no way for the caller to cap it. Operator-invoked rather
+  than request-reachable — which is why it was fixed after the GDPR paths — but "an operator runs it" is not a
+  bound, and a DR drill against a large fleet from a modest box is precisely the case that hurts. The default
+  sits comfortably above the 100K+ fleets the compaction docs target, so no real deployment should meet it.
+
+### Added
+
 - **`maxWarmScanBytes` — a memory ceiling that is deliberately *not* the budget** (default **64 MiB**, exported
   as `DEFAULT_MAX_WARM_SCAN_BYTES`). It caps the warm-delta bytes a single segment scan may hold resident, for
   every read op, and — unlike `budget` — **stays in force when `budget: false`**.
@@ -1099,7 +1109,7 @@ provenance. Everything below is the work that got it here.
     (default 5 min), then retried once; a success clears the streak. One poison segment can no longer wedge a worker.
   - **Shardable, budgeted, urgency-ordered discovery (#3).** Run N workers over disjoint shards (`shard`/`totalShards`;
     CLI `CR_COMPACT_SHARD` / `CR_COMPACT_TOTAL_SHARDS`) partitioned by a stable hash — disjoint and covering the whole
-    fleet, no coordination. `maxSegments` (CLI `CR_COMPACT_MAX_SEGMENTS`) caps work per cycle, compacting the
+    fleet, no coordination. `maxScanSegments` (CLI `CR_COMPACT_MAX_SEGMENTS`) caps work per cycle, compacting the
     most-backed-up segments first (dirty-chunk count, oldest-compacted tiebreak) and deferring the rest so a burst
     can't starve the tail. A change-guarded CAS skips the registry write when nothing moved. `runCompactionCycle`
     now returns `{ candidates, compacted, deferred, results }`.

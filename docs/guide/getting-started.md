@@ -1163,6 +1163,21 @@ operand can legitimately hold far more warm rows than that product while staying
 request budget therefore cannot express a memory bound for it. And `budget: false` is a reasonable choice ("I
 know my fan-out"), which must not silently also mean "unbounded RAM".
 
+**Neither limits how many ids a segment can hold.** That is worth saying plainly, because the names invite the
+opposite reading. A segment holds up to the full 32-bit id space — ~4.29 billion members — and no ceiling here
+changes that.
+
+- `maxScanSegments` counts **segments** (distinct named bitmaps in the registry), not members. 500 audience
+  segments count as 500, whatever their size; you would need a quarter of a million *distinct segments* to
+  reach the default.
+- `maxWarmScanBytes` counts **warm bytes written since the last compaction**, not the segment's size. Measured
+  on randomly distributed ids: 1M members added between compactions is ~3.6 MiB (6% of the default) and 10M is
+  ~20.7 MiB (32%). Once compaction runs, warm is empty and the data lives in Cold, which this ceiling does not
+  touch — a compacted segment with a billion members scans **zero** warm bytes.
+
+So if you ever do hit `maxWarmScanBytes`, read it as **"compaction is not keeping up"** rather than "this
+segment is too large". Check the daemon before raising the number.
+
 Both refuse with `BudgetExceededError`, and both abandon the scan at the ceiling rather than completing it —
 so the error reports the limit rather than an exact total, because computing the total is the cost being
 refused. If you hit the memory ceiling, raise `maxWarmScanBytes`, narrow the segment, or compact it so fewer

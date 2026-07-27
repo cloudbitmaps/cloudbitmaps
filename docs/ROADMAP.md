@@ -51,7 +51,7 @@ dependencies** — arrives transitively and is never installed directly.
   only cold chunks present in *every* operand, with bounded read concurrency and a bounded streaming window.
 - **Bounded memory, always.** A hard LRU ceiling on hot chunks, a byte-aware cold-reader cache, bounded
   fan-out on every admin path, and a default-on per-operation **request budget** that fails with
-  `BudgetExceededError` rather than quietly running up a bill.
+  `BudgetExceededError` rather than quietly running up a bill. Since **0.3.0** that also covers the *enumerations* those bounds feed: a warm scan is capped by `maxWarmScanBytes` (independent of `budget`, and still enforced when `budget: false`), and every registry scan — including the DR consistency check — refuses at its ceiling instead of materialising the fleet. Before that, the per-op budget bounded fan-out but not the list it was computed from, so a tight budget could be exceeded in memory before it could refuse in requests.
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` footer index for chunks
   with no warm delta, so a fully compacted segment counts with **zero payload reads**.
 - **Bulk load** — build a cold generation from an unsorted sync or async ID stream, without holding the

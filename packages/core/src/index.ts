@@ -137,6 +137,7 @@ export type { Budget, BudgetOption } from './core/budget';
 // Cross-tier DR consistency check (Phase F, gap #11): `store.checkConsistency()` (or the free function over your
 // own cold + registry drivers) detects a torn restore where `currentGen` points at a `.crbm` that isn't present.
 export { runConsistencyCheck } from './core/consistency';
+export { DEFAULT_MAX_SCAN_SEGMENTS } from './core/consistency';
 export type {
   ConsistencyReport,
   ConsistencyIssue,
