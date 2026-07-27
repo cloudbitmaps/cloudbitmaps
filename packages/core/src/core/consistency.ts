@@ -17,10 +17,17 @@
  */
 
 import { mapWithConcurrency } from './concurrency';
-import { ValidationError } from './errors';
+import { BudgetExceededError, ValidationError } from './errors';
 import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
+/**
+ * Default ceiling on how many registry records one consistency check may hold resident: 250,000.
+ *
+ * Generous — the compaction docs target 100K+ segment fleets — while still bounding a DR drill's memory to
+ * something a modest operator box survives. Raisable, because a ceiling you cannot lift is a landmine.
+ */
+export const DEFAULT_MAX_CHECK_SEGMENTS = 250_000;
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
 export interface ConsistencyIssue {
@@ -73,15 +80,35 @@ type Outcome =
  */
 export async function runConsistencyCheck(
   deps: { readonly cold: IColdDriver; readonly registry: IRegistryDriver },
-  options: { namespace?: string; concurrency?: number } = {},
+  options: { namespace?: string; concurrency?: number; maxSegments?: number } = {},
 ): Promise<ConsistencyReport> {
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     // Fail fast before the (possibly huge) registry scan, not after.
     throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
   }
+  const maxSegments = options.maxSegments ?? DEFAULT_MAX_CHECK_SEGMENTS;
+  if (!Number.isFinite(maxSegments) || maxSegments < 1) {
+    throw new ValidationError(
+      `maxSegments must be a finite number >= 1; got ${String(options.maxSegments)}`,
+    );
+  }
+  // Bounded enumeration, matching the engine's read paths. The comment above already noted the scan is
+  // "possibly huge" and then drained it into an array regardless: memory scaled with total fleet size, which
+  // the caller had no way to cap. This is operator-invoked rather than request-reachable, so it is less exposed
+  // than the GDPR paths that were fixed first — but "an operator runs it" is not a bound, and a DR drill against
+  // a large fleet from a modest box is exactly when it would bite.
   const recs: RegistryRecord[] = [];
-  for await (const rec of deps.registry.list(options.namespace)) recs.push(rec);
+  for await (const rec of deps.registry.list(options.namespace)) {
+    recs.push(rec);
+    if (recs.length > maxSegments) {
+      throw new BudgetExceededError(
+        `checkConsistency would enumerate more than ${maxSegments} segments — the scan was abandoned there ` +
+          `rather than completed. Narrow it with \`namespace\`, or raise \`maxSegments\` if the fleet really ` +
+          `is that large and the memory is available.`,
+      );
+    }
+  }
   const results = await mapWithConcurrency(recs, concurrency, async (rec): Promise<Outcome> => {
     if (rec.status === 'destroyed') return { kind: 'ok' }; // Cold intentionally gone — not a torn restore
     const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
