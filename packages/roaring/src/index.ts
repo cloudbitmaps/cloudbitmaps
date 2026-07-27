@@ -231,6 +231,19 @@ export interface CloudRoaringOptions {
    */
   readonly writeConcurrency?: number;
   /**
+   * Hard ceiling on the warm-delta bytes one segment scan may hold resident. Default **64 MiB**.
+   *
+   * **A memory bound, deliberately separate from `budget`, and still enforced when `budget: false`.** The
+   * budget limits *cost* (billable requests); this limits *memory*. They are different axes, and treating the
+   * budget as a memory control is what allowed a segment with thousands of warm chunks to materialise ~12 MB
+   * before a `maxRequests: 2` budget could refuse it. It is also the only bound available to `intersect`,
+   * whose budget is `common keys × operands` — a product a single wide operand can legitimately exceed in row
+   * count while remaining entirely within contract.
+   *
+   * Raise it for genuinely large segments; it exists to keep a modest container alive, not to second-guess you.
+   */
+  readonly maxWarmScanBytes?: number;
+  /**
    * Per-op **denial-of-wallet** budget (Decision #3 / invariant T3): the max backend requests a
    * single `count`/`iterate`/`intersect`/`subjectReport`/`eraseSubject` may fan out into before it's refused
    * with {@link BudgetExceededError} — so one runaway op can't drive unbounded RCU/GET cost on a shared backend.
@@ -440,6 +453,7 @@ export class CloudRoaring {
       metrics,
       warmReadConsistency: options.warmReadConsistency,
       writeConcurrency: options.writeConcurrency,
+      maxWarmScanBytes: options.maxWarmScanBytes,
       budget: this.budget,
     };
     this.engine = new SegmentEngine(deps);
