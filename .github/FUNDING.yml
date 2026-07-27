@@ -3,4 +3,8 @@
 # signal this project wants. There is no paid tier and no hosted service — see docs/ROADMAP.md, which rules
 # out a managed offering outright — so this is the only commercial surface the project has, and it is
 # support-the-maintainer, not buy-a-feature.
-github: sharvilk
+# The ORG, not the personal account: the Sponsors listing was enrolled as `cloudbitmaps` (an organization
+# account), and this key must name the account that actually holds the listing or the button 404s. Points at
+# the project rather than a person, which also matches why the site lives on a neutral hostname — the project's
+# identity stays separable from any individual's.
+github: cloudbitmaps

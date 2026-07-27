@@ -14,7 +14,29 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Chunk payloads are now range-checked on read, closing the last gap in "all tier bytes are untrusted".**
+  A chunk payload holds 16-bit **remainders**, and nothing verified it. The size caps bound length, and
+  CRC/AEAD only prove the bytes are the bytes that were written — which anyone able to write your storage
+  satisfies. A value `>= 65536` then reached `joinId`, which masked it and emitted a **fabricated id belonging
+  to a different chunk's id space**: indistinguishable from real data, inflating `count()` and creating
+  spurious `intersect` matches. Compaction was the only path that already failed loudly, which merely turned
+  the same row into a permanently poison segment.
+  - Checked where a payload is interpreted **as a chunk** — the cold-chunk read and both halves of a warm
+    delta — **not** in the codec. The first attempt put it in `safeDeserialize` and broke two tests
+    immediately: that is the codec's *general* entry point, also used by full-segment export, where u32 values
+    are entirely legitimate.
+  - Costs **one check per chunk, not per id**. See the new `maximum()` below.
+
+### Added
+
+- **`CodecBitmap.maximum?()` — an optional method on the codec seam.** Returns the largest value, or
+  `undefined` when empty. The engine uses it for the range assertion above. **Optional by design:** a codec
+  that cannot answer in better than O(n) omits it and the engine skips the check, rather than walking every
+  value on the read path — the one thing this must never cost. Roaring answers it in O(1) from its container
+  index, so `@cloudbitmaps/roaring` implements it. Additive and backwards-compatible: an existing custom codec
+  keeps working untouched.
 
 ## [0.1.2] - 2026-07-27
 

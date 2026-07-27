@@ -6,6 +6,7 @@
  * (de)serialization of a delta to the opaque bytes a Warm driver stores.
  */
 import type { CodecBitmap, CodecInterface } from './codec';
+import { MAX_REMAINDER } from './bit-route';
 import { IntegrityError, UnsupportedError } from './errors';
 
 export interface ChunkDelta {
@@ -97,5 +98,22 @@ export function decodeDelta(
   }
   const adds = codec.safeDeserialize(bytes.subarray(addsStart, addsEnd), maxBitmapBytes);
   const removes = codec.safeDeserialize(bytes.subarray(addsEnd), maxBitmapBytes);
+  // A warm delta is a CHUNK payload: both halves hold 16-bit remainders. Same reasoning as the cold path in
+  // the engine — the length checks above bound size, and CRC/AEAD only prove the bytes are the bytes that were
+  // written, so a corrupt or hostile row can still carry a value >= 65536 that `joinId` would mask into a
+  // fabricated id in another chunk's space. One `maximum()` per half, not per id.
+  assertRemainderRange(adds, 'adds');
+  assertRemainderRange(removes, 'removes');
   return { adds, removes };
+}
+
+/** Shared by both delta halves; `maximum` is optional on the seam, so a codec without it opts out. */
+function assertRemainderRange(bitmap: CodecBitmap, half: 'adds' | 'removes'): void {
+  const max = bitmap.maximum?.();
+  if (max !== undefined && max > MAX_REMAINDER) {
+    throw new IntegrityError(
+      `warm delta ${half} holds value ${max}, outside the 16-bit remainder range [0, ${MAX_REMAINDER}] — ` +
+        `the stored row is corrupt or was not written by this codec`,
+    );
+  }
 }

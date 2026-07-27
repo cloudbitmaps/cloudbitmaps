@@ -53,6 +53,14 @@ export class SafeBitmap implements CodecBitmap {
     return this.bitmap.serialize(SerializationFormat.portable);
   }
 
+  /**
+   * Largest value, or `undefined` when empty. O(1) — roaring reads it off the container index, so the engine's
+   * per-chunk range assertion costs one call per chunk rather than a walk per id.
+   */
+  maximum(): number | undefined {
+    return this.bitmap.isEmpty ? undefined : this.bitmap.maximum();
+  }
+
   add(value: number): void {
     this.bitmap.add(value);
   }

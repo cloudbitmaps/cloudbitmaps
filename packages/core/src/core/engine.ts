@@ -3,7 +3,7 @@
  * ops over the driver interfaces. Storage-agnostic and time/random-free
  * (the determinism seam): all I/O is via injected drivers; the cache carries its own `Clock`.
  */
-import { splitId, joinId, CHUNK_COUNT } from './bit-route';
+import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { emptyDelta, applyAdd, applyRemove, effective, encodeDelta, decodeDelta } from './chunk';
 import type { ChunkDelta } from './chunk';
@@ -507,6 +507,30 @@ export class SegmentEngine {
     }
   }
 
+  /**
+   * The other half of invariant 5, and the one that was missing: a chunk payload holds **remainders** — 16-bit
+   * offsets within one chunk — so every value must be `<= 0xffff`.
+   *
+   * Nothing upstream established that. The byte cap bounds *size*, and CRC/AEAD prove the bytes are the bytes
+   * that were written — which anyone able to write the tier satisfies trivially. A value `>= 65536` then
+   * reaches `joinId`, which masks it (`remainder & 0xffff`) and emits a **fabricated id belonging to a
+   * different chunk's id space**: indistinguishable from real data, inflating `count()` and creating spurious
+   * `intersect` matches. Compaction is the only path that already failed loud (`CrbmWriter` rejects
+   * `cardinality > 65536`), which merely turns the same row into a permanently poison segment.
+   *
+   * Costs one `maximum()` per chunk, not per id — `maximum` is optional on the codec seam precisely so a codec
+   * that cannot answer in O(1) opts out instead of making the read path walk every value.
+   */
+  private assertChunkPayloadInRange(bitmap: CodecBitmap, chunkKey: number): void {
+    const max = bitmap.maximum?.();
+    if (max !== undefined && max > MAX_REMAINDER) {
+      throw new IntegrityError(
+        `chunk ${chunkKey} payload holds value ${max}, outside the 16-bit remainder range ` +
+          `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
+      );
+    }
+  }
+
   private async effectiveChunk(
     seg: SegmentRef,
     chunkKey: number,
@@ -570,6 +594,7 @@ export class SegmentEngine {
     }
     if (!bytes) return null;
     const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
+    this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
     this.cache?.set(cacheKey, bitmap);
     return bitmap;
   }

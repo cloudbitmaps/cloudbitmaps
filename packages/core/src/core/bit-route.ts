@@ -28,6 +28,12 @@ export function splitId(id: number): BitRoute {
  * 16-bit value (tier-derived keys are validated upstream in the engine before reaching here, per
  * invariant 5); `remainder` is masked to 16 bits.
  */
+/**
+ * Largest legal value inside a chunk payload. A chunk covers `CHUNK_COUNT` ids, so remainders run
+ * `[0, CHUNK_COUNT - 1]`. Exported so the engine can assert it on untrusted tier bytes.
+ */
+export const MAX_REMAINDER = CHUNK_COUNT - 1;
+
 export function joinId(chunkKey: number, remainder: number): number {
   return (((chunkKey & LOW_16) << 16) >>> 0) + (remainder & LOW_16);
 }

@@ -50,6 +50,17 @@ export interface CodecBitmap {
   /** Ascending iterator over the set values. */
   [Symbol.iterator](): IterableIterator<number>;
   toArray(): number[];
+  /**
+   * The largest value in the set, or `undefined` when empty.
+   *
+   * **Optional, and deliberately so.** The engine uses it for one thing: asserting that a payload it is about
+   * to interpret **as a chunk** holds only 16-bit remainders (see {@link assertChunkPayload}). A codec that
+   * cannot answer this in better than O(n) should simply omit it — the engine then skips the check rather
+   * than walking every value on the read path, which is the one thing this must never cost.
+   *
+   * Roaring answers it in O(1) from its container index, so the flagship codec implements it.
+   */
+  maximum?(): number | undefined;
 }
 
 /**

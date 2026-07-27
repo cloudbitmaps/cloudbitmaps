@@ -179,7 +179,7 @@ different codec (the `@cloudbitmaps/bitmap` / `@cloudbitmaps/soaring` flavors) �
 | Symbol | What it does |
 |---|---|
 | `CodecInterface` | the factory the engine builds bitmaps through (`empty` / `fromValues` / `safeDeserialize`) |
-| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization |
+| `CodecBitmap` | the value type a codec produces — a `u32` set with set algebra + portable (de)serialization. Optional `maximum?()` lets the engine range-check a chunk payload in O(1); a codec that can't answer cheaply omits it and the check is skipped |
 | `roaringCodec` | the flagship (roaring) `CodecInterface`, delegating to `SafeBitmap`; the facade's default |
 
 ### Flavor-author kit (`@cloudbitmaps/core`)

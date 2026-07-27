@@ -14,7 +14,11 @@ release.
 
 CloudBitmaps treats **all bytes read back from any tier as untrusted input**. Every `.crbm` object and Warm
 delta is length-checked and CRC-verified, and deserialized with the **safe** RoaringBitmap reader (never the
-trusting variant) behind a hard size cap, before the native addon sees it. A hostile or corrupted object fails
+trusting variant) behind a hard size cap, before the native addon sees it. The decoded **values** are then
+range-checked too: a chunk payload holds 16-bit remainders, and one outside `[0, 65535]` is rejected rather
+than silently masked into a fabricated id in another chunk's space. That last check matters because size caps
+and CRCs do not catch it — a CRC proves the bytes are the bytes that were written, which an attacker able to
+write your storage satisfies by construction. A hostile or corrupted object fails
 closed with a typed `IntegrityError` on read — it can neither crash the process nor return a wrong answer. This
 boundary is exercised by coverage-guided fuzzing (`pnpm fuzz:*`, nightly) and the DR drill's byte-corruption
 scenario (`pnpm dr-drill`).
