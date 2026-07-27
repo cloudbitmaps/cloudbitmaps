@@ -68,8 +68,8 @@ public-surface hardening from a three-agent audit sweep. No format change; no br
   `DECISIONS #N` were rendered by tsup into the published `.d.ts` files — where an editor shows them on hover —
   and embedded in the sourcemaps via `sourcesContent`. They pointed at a document that is not in this
   repository, so there was nothing a reader could follow. Also removed: bare citations to numbered internal
-  design docs in the API reference and a CI comment, and a markdown link in `cost.ts` to a `DECISIONS.md` that
-  does not exist here at all. The `CHANGELOG` keeps its citations deliberately — it is a historical record and
+  design docs in the API reference and a CI comment, and a markdown link in `cost.ts` to a decision-log file
+  that does not exist in this repository at all. The `CHANGELOG` keeps its citations deliberately — it is a historical record and
   the ids are stable.
 - **The example workload on the site is now written at the level of abstraction the rest of the project uses.**
   The walkthrough's two maintenance modes are described as *batch rebuild* and *live update*, with neutral
@@ -156,7 +156,7 @@ provenance. Everything below is the work that got it here.
 
 ### Added
 
-- **Release auth is now tokenless** (DECISIONS #64) — `release.yml` carries **no
+- **Release auth is now tokenless** — `release.yml` carries **no
   `NPM_TOKEN`**, publishes from the workflow's GitHub OIDC identity (npm Trusted Publishing), runs behind a
   protected `release` environment whose required reviewer is the approval gate, and sets
   `NPM_CONFIG_PROVENANCE=true`. Root [`RELEASING.md`](RELEASING.md) documents the pipeline, the one-time npm +
@@ -204,7 +204,7 @@ provenance. Everything below is the work that got it here.
   - The scanner also skips its own test file by exact path (that file exists to hold secret-*shaped* fixtures, the
     same reasoning that keeps `.leak-needles` gitignored) — an exact-path allowlist, not a `tests/` glob, because a
     real credential under `tests/` is still a real credential.
-- **Planned: `analyze` — decide before adopting** (Phase 9.5, DECISIONS #63). Not built; scoped on paper. Every cost tool we ship currently
+- **Planned: `analyze` — decide before adopting** (Phase 9.5). Not built; scoped on paper. Every cost tool we ship currently
   presupposes adoption — `costReport()` needs data already in CloudRoaring, `estimateCost()` needs half a dozen
   guessed parameters — so the thing that would *convince* a team to adopt requires them to have adopted. `analyze`
   streams a candidate's own ids through `bulkLoadCrbmGeneration` into a Memory/LocalFs driver (**no cloud account,
@@ -214,7 +214,7 @@ provenance. Everything below is the work that got it here.
   caller-declared and labelled as such. Stage **9.5b** adds the *"do you even need the native addon?"* comparison
   (a plain per-chunk bitset is exactly `chunkCount × 8192` bytes against a measured roaring size — ratio ~1 ⇒ skip
   CRoaring and deploy to edge runtimes), gated on the `bitmap` flavor existing.
-- **`CostReport.advisories` — the estimator now compares you to *us*, not only to Redis** (DECISIONS #62).
+- **`CostReport.advisories` — the estimator now compares you to *us*, not only to Redis**.
   `verdict` has always been Redis-relative, which left a blind spot: feed it the id-at-a-time write shape and it
   returns `'win-big'` — true, and thoroughly misleading, because you can beat the $346/mo baseline by 40× while
   paying ~150× more than *this same library* would charge for the same outcome. `advisories` is a second,
@@ -357,7 +357,7 @@ provenance. Everything below is the work that got it here.
   **root** manifest stays `private` — it is never published.
 - **Both packages gained `prepack`**, so a publish can never ship a stale or absent `dist`.
 
-- **Launch decisions locked** (DECISIONS #60): the public repo will be
+- **Launch decisions locked**: the public repo will be
   **`cloudbitmaps/cloudbitmaps`** — the family monorepo, not a flavor name — with language ports as suffixed
   siblings; and the repo goes **public before the first publish**, so `0.1.0` ships with npm build provenance
   (which requires a public source repo) instead of deferring the attestation.
@@ -477,7 +477,7 @@ provenance. Everything below is the work that got it here.
 - **npm keywords** now include `mysql`/`mariadb` (a shipped driver that was missing) plus `cloud-roaring` and
   `cloudbitmaps` on the flavor, so the retired unscoped name and the family name both still find it.
 - **Split into the `@cloudbitmaps` family: `@cloudbitmaps/core` + `@cloudbitmaps/roaring`**
-  (DECISIONS #58). The repo is now a pnpm workspace of two publishable packages.
+. The repo is now a pnpm workspace of two publishable packages.
   **What you install changes name, not shape:** `npm i @cloudbitmaps/roaring` (plus only the backend SDK(s) you
   use); `@cloudbitmaps/core` arrives **transitively** and is never installed directly. Every import keeps its
   form — `import { CloudRoaring } from '@cloudbitmaps/roaring'`,
@@ -520,7 +520,7 @@ provenance. Everything below is the work that got it here.
 
 ### Added
 
-- **Bitmap-codec seam** (DECISIONS #58) — `core/` is now **codec-agnostic**: the
+- **Bitmap-codec seam** — `core/` is now **codec-agnostic**: the
   `SegmentEngine`, compaction, and the `.crbm` read/write helpers construct and combine bitmaps only through a
   new `CodecInterface` factory + `CodecBitmap` value type (`src/core/codec.ts`), never a concrete implementation.
   Roaring is the flagship codec (`roaringCodec`, delegating to `SafeBitmap`); the `CloudRoaring` facade injects
@@ -591,7 +591,7 @@ provenance. Everything below is the work that got it here.
   **`utf8mb4_bin` collation** makes the key columns compare **byte-exact and case-sensitive** (MySQL's default ci
   collation would alias `A`/`a` — a correctness hole the DDL closes). Column lengths keep the composite primary
   key within InnoDB's 3072-byte index limit under utf8mb4. Ships an idempotent `mysqlWarmTableDDL()` for
-  deploy-time schema. Tokens are never reused across delete→recreate (ABA-safe; DECISIONS #57).
+  deploy-time schema. Tokens are never reused across delete→recreate (ABA-safe).
   Passes the same `warmConformance` suite as the in-memory / LocalFs / DynamoDB / Postgres / Redis / Mongo /
   Cassandra warm drivers (finding V8) against a real MySQL (new docker-compose service + integration lane, incl.
   the engine-e2e tier-merge + wide-segment scale checks), plus a case-sensitivity regression. `mysql2` is MySQL-
@@ -673,7 +673,7 @@ provenance. Everything below is the work that got it here.
   `fake-gcs-server` emulator (new docker-compose service + integration lane). Runs on any major cloud's object
   store: **AWS (S3) + GCP (GCS)**, with Azure Blob next.
 
-- **Byte-aware cold-reader cache bound + native-memory soak proof; production-readiness verdict → READY within a validated envelope (DECISIONS #55).**
+- **Byte-aware cold-reader cache bound + native-memory soak proof; production-readiness verdict → READY within a validated envelope.**
   A fresh 6-lens adversarial re-audit of production readiness (verified against the *current code*) found the
   fixes solid — docs-vs-code honesty **resolved**, correctness clean — with two gaps in the *memory-bound proof*,
   now closed: (1) the cold-reader cache is bounded by aggregate parsed-index **bytes** (new `coldReaderCacheMaxBytes`,
@@ -687,21 +687,21 @@ provenance. Everything below is the work that got it here.
   analytical NOT READY to **READY within a validated envelope** (read-mostly / ≤~100K segments / tens-of-millions
   ids-per-segment / single-tenant / single-region; billions-ids, real-AWS cost calibration, and multi-tenant
   isolation are the named Phase-8 deferrals). Hot path (`add`/`has`/`remove`/`count`/`intersect`) unchanged.
-- **Chaos drills against LocalStack (test-strategy T8; DECISIONS #54) — completes the T1–T8 testing frontier.**
+- **Chaos drills against LocalStack (test-strategy T8) — completes the T1–T8 testing frontier.**
   `pnpm chaos` (`bench/chaos-localstack.cjs`; offline, needs LocalStack + `docker`, not a CI gate) injects real
   faults at the AWS SDK drivers: a **throttle storm** (`ThrottlingException` at ~30% of DynamoDB calls, SDK
   retries off) — the store's retry layer rode out 818 injected throttles with **no lost update** — and a
   **backend outage** (`docker pause` for 2.5 s) — ridden through, every write lands, consistency preserved.
   Daemon-kill-mid-2PC stays with the in-process crash-at-every-step sweep; disk-full is deferred (not injectable
   on ephemeral LocalStack). No product code change.
-- **Load + tail-latency harness against LocalStack (test-strategy T7; DECISIONS #53).**
+- **Load + tail-latency harness against LocalStack (test-strategy T7).**
   `pnpm load` (`bench/load-localstack.cjs`; offline, not a CI gate) drives the **real** S3 + DynamoDB drivers
   against LocalStack (a new on-demand `docker-compose.localstack.yml`) in three timed phases (add → DynamoDB OCC,
   bulk-load → S3 PUT, count → tier-merge), reporting throughput **and p50/p99/p999** tail latency, plus a $
   projection computed from a metrics sink's **measured** op-counts at published AWS prices (vs the always-on
   Redis baseline). Explicitly LocalStack-on-a-laptop numbers, not an AWS SLA. **This workload surfaced the CJS
   cross-bundle identity bug** (see Fixed / ).
-- **Security hardening (test-strategy T6; DECISIONS #51).** Three additions atop
+- **Security hardening (test-strategy T6).** Three additions atop
   the existing crypto/trust-boundary coverage: **external AES-256-GCM known-answer vectors**
   (`tests/crypto-vectors.test.ts` — McGrew–Viega / NIST test cases) pin the AEAD to published answers, not just
   self-referential round-trips; an **end-to-end KEK-rotation test** (`tests/key-rotation.test.ts`) proves old
@@ -710,7 +710,7 @@ provenance. Everything below is the work that got it here.
   guards the supply chain. Adds a **`SECURITY.md`** (private reporting policy, trust boundary, and the three
   triaged build-time `tar` advisories reached only via `roaring`'s install-time `node-pre-gyp` chain — never on
   the runtime path). No product code change.
-- **Executable DR drill (test-strategy T5; DECISIONS #50).** `pnpm dr-drill`
+- **Executable DR drill (test-strategy T5).** `pnpm dr-drill`
   (`tests/dr-drill.test.ts`) turns the [disaster-recovery runbook](docs/guide/disaster-recovery.md) into a
   gated, **on-disk** `backup → corrupt → restore → verify` exercise against the real `LocalFs` cold + registry
   tiers. It injects a **torn restore** (registry recovered ahead of cold) and a **lost `.crbm`** — both detected
@@ -719,7 +719,7 @@ provenance. Everything below is the work that got it here.
   presence-only) but which fails closed on read with `IntegrityError` (per-chunk CRC). Documents and verifies
   why the runbook's post-restore read spot-check exists. No product code change — the DR primitives already
   shipped in Phase F.
-- **Stress harness (test-strategy T4; DECISIONS #49).** An offline `pnpm stress`
+- **Stress harness (test-strategy T4).** An offline `pnpm stress`
   (`bench/stress.cjs`; machine-dependent, **not** a CI gate) pushes three subsystems past their comfort zone,
   each against a deterministic oracle: **S1** a budgeted compaction-backlog drain (1,000 dirty segments drain in
   16 monotonic cycles, ≤ 64 compacted/cycle — the compaction *count* is budget-bounded; discovery stays
@@ -729,7 +729,7 @@ provenance. Everything below is the work that got it here.
   only because roaring is off-heap). **S2 surfaced a real data-loss bug** (the OCC-backoff premature-exit fixed
   in ) — see Fixed. Results persist to
   `bench/stress-results.json` with `STRESS_INJECT=1`.
-- **Mutation testing of the core with Stryker (test-strategy T2; DECISIONS #47).**
+- **Mutation testing of the core with Stryker (test-strategy T2).**
   A [Stryker](https://stryker-mutator.io) pass (`pnpm mutation`) injects mutants into the highest-risk core logic
   — compaction 2PC/OCC, tombstone merge, bounded concurrency, bit routing (~1,115 LOC) — to quantify how well the
   suite catches bugs. **83.4% mutation score on covered code** (79.1% incl. uncovered; 449 killed / 90 survived /
@@ -740,7 +740,7 @@ provenance. Everything below is the work that got it here.
   Residual survivors (concentrated in `compaction.ts`) are error-message strings (unasserted by design),
   observability/metrics-timing mutants, and defensive/edge branches. Offline + on-demand (not a CI gate; re-run
   pre-freeze). Dev-only (`@stryker-mutator/*` devDeps).
-- **Coverage-guided fuzzing of the untrusted-`.crbm` boundary (test-strategy T3; DECISIONS #46).**
+- **Coverage-guided fuzzing of the untrusted-`.crbm` boundary (test-strategy T3).**
   Beyond the seeded property fuzz already in the suite, a [jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js)
   (libFuzzer) campaign (`pnpm fuzz:*`, nightly) evolves adversarial inputs toward unreached branches over three
   targets — the **native** CRoaring portable deserializer (ungated), the hand-written index parser `parseIndex`
@@ -755,7 +755,7 @@ provenance. Everything below is the work that got it here.
     reproducer under `tests/core/crbm/fuzz-corpus/`, replayed by a new test on **every** PR — so the campaign
     stays offline while every fixed bug is guarded. Harness + policy in [`fuzz/README.md`](fuzz/README.md).
   - Dev-only (`@jazzer.js/core` devDep; nothing enters the published bundle).
-- **Soak / endurance harness — no heap creep under sustained load (test-strategy T1; DECISIONS #45).**
+- **Soak / endurance harness — no heap creep under sustained load (test-strategy T1).**
   A new offline endurance harness (`pnpm soak`) runs sustained mixed load — continuous writes + reads across the
   population + compaction (with orphan-generation GC) — and samples **post-GC retained heap over time**, asserting
   the last-third median hasn't grown past the first-third median beyond a **relative** band. Complements G4's
@@ -768,7 +768,7 @@ provenance. Everything below is the work that got it here.
   Measured + machine-dependent, so — like the other benches — **not** a CI gate; a multi-day run is the same
   harness at a larger `SOAK_SECONDS` (nightly). Results in
   the test-strategy doc + `bench/soak-results.json`.
-- **At-scale benchmark — measured readiness at 1K→10K→100K segments (Phase G4; DECISIONS #44).**
+- **At-scale benchmark — measured readiness at 1K→10K→100K segments (Phase G4).**
   A new offline load benchmark (`pnpm bench:scale`) that converts the production-readiness audit's code-read
   conclusions into **measured** evidence at fleet scale, building up to 100K real `.crbm` segments on local disk:
   - **Bounded memory (the headline).** Reading across the _entire_ fleet under the default reader-cache cap holds
@@ -782,7 +782,7 @@ provenance. Everything below is the work that got it here.
   Measured (wall-clock + RSS) and machine-dependent, so — like the cost bench — **not** a CI gate; the
   deterministic claims stay gated in `tests/bench/anchors.test.ts`. Results land in a new "At scale" section of
   [docs/benchmarks.md](docs/benchmarks.md).
-- **Simulator hardening — compaction under concurrency (Phase G3; DECISIONS #43).**
+- **Simulator hardening — compaction under concurrency (Phase G3).**
   The deterministic simulator now runs the **real** engine + `.crbm`/registry path with a compaction actor racing
   each batch's live reads/writes through one seeded scheduler, closing audit gap #12's "simulator half": the 2PC,
   intersection-under-compaction, torn-read, and crash-recovery are proven by a **searched interleaving** rather than
@@ -792,7 +792,7 @@ provenance. Everything below is the work that got it here.
   2PC step** (staged generation + lease-acquire/`currentGen`-swap/lease-release), and **transient faults on cold
   reads** ridden out by the retry decorator. Determinism holds: a disabled fault draws no randomness, so every
   prior seed replays byte-for-byte. Test-only (nothing enters the published bundle).
-- **Zero-cost pre-freeze test/release gates (Phase G2; DECISIONS #42).**
+- **Zero-cost pre-freeze test/release gates (Phase G2).**
   Two release gates that run for **$0** on the self-hosted runner, before the 1.0 format freeze:
   - **Bounded-memory gate (structural).** A deterministic at-scale test proves the cold-reader cache is bounded
     by its cap, not the fleet size (gap #1): reading a fleet far larger than the cap twice re-opens every
@@ -805,7 +805,7 @@ provenance. Everything below is the work that got it here.
     node runtimes, so it must be **built for the target** (container build / SAM `--use-container` / a layer) —
     see [Deploying to AWS Lambda](docs/guide/getting-started.md#deploying-to-aws-lambda). A prebuilt Lambda
     layer for a drop-in experience, and a native windows/ubuntu OS matrix, are deferred to the public launch.
-- **Schema-version stamps on the Warm-delta & registry formats (Phase G1 — pre-1.0 format-freeze prerequisite; DECISIONS #41).**
+- **Schema-version stamps on the Warm-delta & registry formats (Phase G1 — pre-1.0 format-freeze prerequisite).**
   A pre-1.0 format-freeze prerequisite: every persisted format now carries a version discriminator, so a
   future, incompatible writer's bytes **fail closed** on an old reader instead of being silently misparsed
   (the Cold `.crbm` format already had this).
@@ -824,7 +824,7 @@ provenance. Everything below is the work that got it here.
     tolerated as v1 and need no action.
   - Incidental hardening: `parseRegistryEnvelope` now rejects `null`/primitive JSON with a typed
     `IntegrityError` instead of an uncaught `TypeError` (invariant 5).
-- **Tenancy, denial-of-wallet budget & DR consistency (Phase F — audit gaps #8/#11; DECISIONS #40).**
+- **Tenancy, denial-of-wallet budget & DR consistency (Phase F — audit gaps #8/#11).**
   Three pre-1.0 hardening items, scoped lean (the fuller tenancy/crypto/format work is deferred to Phase 7/8 — see below):
   - **Per-op request budget (#8) — the denial-of-wallet ceiling the specs asserted but never built.** A new
     `BudgetExceededError` + a store-level `budget` option (default `{ maxRequests: 1_000_000 }` — on, but
@@ -871,19 +871,19 @@ provenance. Everything below is the work that got it here.
 - **Post-Phase-8 accuracy sweep.** Reconciled all docs against the merged Phase 7–8 state. Launch facts
   corrected everywhere: public launch is **Phase 9 at `0.1.0`** (not "Phase 8"/`1.0.0`); the **`.crbm` format
   freeze gates `1.0`, not the `0.1.0` launch**; the package publishes scoped as **`@cloudbitmaps/roaring`**
-  (umbrella family, DECISIONS #56) and the split is the Phase-9 pre-release gate;
+  (umbrella family) and the split is the Phase-9 pre-release gate;
   trademark search/registration is a Phase-9 task, not "deferred". Added a *partially-superseded* banner to the
   release runbook and fixed its decisions table, publish command, and
   checklist. Marked the **hard cgroup-RSS ceiling gate** as **shipped** (`pnpm rss-gate`, Phase 8) across the
   testing/readiness docs (previously listed as deferred), and the **Lambda layer** as shipped
   (`pnpm build-lambda-layer`). Added **MySQL/MariaDB** to warm-driver enumerations; corrected barrel count to
   **ten**; updated fuzz-PR references (`#92` → `#93`); refreshed roadmap/phase status markers to Phases 1–8
-  complete. Clarified that the conformance suite stays **internal** (no public `./testing` export — the Phase-7-publish note in DECISIONS #9 was deferred).
+  complete. Clarified that the conformance suite stays **internal** (no public `./testing` export — the Phase-7-publish note in was deferred).
 - **Phase 7 driver-doc sweep.** Synced the docs to the shipped driver set now that all six Phase-7 drivers have
   merged. Corrected the `IWarmDriver` OCC-token table in the driver SDK contract — the
   **PostgreSQL** row wrongly described the token as a `version`/`xmin`/counter; all four warm drivers (Postgres,
   Redis, Mongo, Cassandra) use a **per-write random UUID + hard delete**, now recorded as a first-class
-  contract-valid realization alongside the monotonic counter (new DECISIONS #57; reconciled the "recommended implementation" prose and the locked-decision row). Added a **Cassandra/ScyllaDB
+  contract-valid realization alongside the monotonic counter (reconciled the "recommended implementation" prose and the locked-decision row). Added a **Cassandra/ScyllaDB
   operational note** (LWT + `LOCAL_SERIAL` reads + single-partition-per-segment hot-partition guidance).
   Refreshed the stale status/"works today"/driver-list prose in the [README](README.md), the
   [getting-started guide](docs/guide/getting-started.md), and the usage guide; fixed the
@@ -916,7 +916,7 @@ provenance. Everything below is the work that got it here.
     covered by the driver mock (sends `ifGenerationMatch:0`, maps a 412 → `WriteConflictError`) + real GCS,
     because fake-gcs-server does not honor the precondition on resumable finalize — documented in the test.
 
-- **Cross-bundle identity broke the DynamoDB driver + all retry/resilience in the published CJS package (found by the T7 LocalStack load harness; DECISIONS #52).**
+- **Cross-bundle identity broke the DynamoDB driver + all retry/resilience in the published CJS package (found by the T7 LocalStack load harness).**
   The package ships separate bundles (the core entry + the `./s3` / `./dynamodb` subpaths); the CJS output
   inlines its own copy of `core/*` into each, so values compared by **identity across that boundary** broke for
   `require()` consumers. Two symptoms, both invisible to the test suite (one source module graph): (1) the
@@ -930,7 +930,7 @@ provenance. Everything below is the work that got it here.
   `isNotFoundError` · `isIntegrityError` · `isValidationError`** (prefer these over `instanceof` when catching
   errors from a cloud driver) — replacing every cross-boundary `instanceof` in `core/`. Guarded by unit tests +
   a built-bundle cross-check in `scripts/smoke.cjs`. Verified end-to-end against LocalStack.
-- **OCC-backoff premature process exit — silently dropped contended writes (found while developing the T4 hot-row stress; DECISIONS #48).**
+- **OCC-backoff premature process exit — silently dropped contended writes (found while developing the T4 hot-row stress).**
   The default clock's `sleep` **unref'd** its backoff timer. Because that `sleep` only ever backs a
   caller-awaited, bounded retry (the engine's OCC read-modify-write and the driver `withRetry` loop), the
   timer was the sole thing holding a short-lived process open during a retry. Under contention on a hot chunk,
@@ -941,7 +941,7 @@ provenance. Everything below is the work that got it here.
   awaited, bounded retry resolves. Guarded by a regression test (`tests/backoff-liveness.test.ts`); the
   bare-process end-to-end contention scenario that first exposed it lands with the T4 stress PR. No hot-path or
   steady-state cost (retries are bounded).
-- **Read-path cost & admin latency (Phase E — audit gaps #9/#10; DECISIONS #39).**
+- **Read-path cost & admin latency (Phase E — audit gaps #9/#10).**
   Four cost/latency gaps from the readiness audit, kept lean (two heavier sub-items deferred — see below):
   - **Opt-in eventually-consistent warm reads (#9).** Every warm `has()`/`count()`/`iterate()`/`intersect()`
     previously forced a **strongly-consistent** DynamoDB read (2× RCU) with no in-process absorption. A new store
@@ -961,8 +961,8 @@ provenance. Everything below is the work that got it here.
 
   New reusable `mapWithConcurrency` primitive (`core/concurrency.ts`) underpins the fan-out. **Deferred
   (documented):** an in-process short-TTL warm-chunk cache (#9) and compaction's coalesced constant-memory merge
-  GET (#10) — each needs its own focused change; see DECISIONS #39.
-- **Scaled the compaction daemon for the fleet + made it observable (Phase D — audit gaps #2/#3; DECISIONS #38).**
+  GET (#10) — each needs its own focused change.
+- **Scaled the compaction daemon for the fleet + made it observable (Phase D — audit gaps #2/#3).**
   The crash-safe daemon was correct but a single unsharded worker, invisible to monitoring, and could wedge on one
   bad segment. Phase D closes those fleet-scale gaps (kept lean — see the deferred list):
   - **Observability + a dead-man's-switch (#2).** Every compaction attempt now emits a `compaction` metric to your
@@ -983,8 +983,8 @@ provenance. Everything below is the work that got it here.
   Two **optional** registry fields (`lastCompactedAt`, `consecutiveFailures`) carry the daemon state — both optional
   for backward-compatibility with existing rows. **Deferred (documented):** an O(dirty) enumeration seam
   (`Select:COUNT` / GSI / projection) + resumable cursor, lease heartbeat/renewal, and lease-aware publishing (the
-  Phase B #5 residual) — see DECISIONS #38.
-- **Bounded the cold-reader cache — no more unbounded index growth (Phase C — audit gap #1; DECISIONS #37).**
+  Phase B #5 residual).
+- **Bounded the cold-reader cache — no more unbounded index growth (Phase C — audit gap #1).**
   `CrbmColdChunkSource` held opened `.crbm` readers (each carrying a fully-parsed index) in an **unbounded** map,
   so a long-running server that read across many segments grew its footprint with *every distinct segment ever
   read* (tens of GB / OOM at 100K+ segments). The reader cache is now a `BoundedLru` capped by a new
@@ -992,7 +992,7 @@ provenance. Everything below is the work that got it here.
   reader is evicted, and re-reading it later re-opens it in one cheap tail GET (generations are immutable). The
   gap-#4 currentGen TTL is unchanged (orthogonal). Steady-state memory is now bounded by the working set, capped
   at the ceiling.
-- **Correctness holes closed (Phase B — audit gaps #4/#5/#6; DECISIONS #34–#36).**
+- **Correctness holes closed (Phase B — audit gaps #4/#5/#6;–#36).**
   Three silent-wrong-answer bugs outside the well-tested crash paths:
   - **Stale reads after compaction (#4).** A long-lived reader (a Topology-B app server) pinned a segment's
     generation for its lifetime, so after a separate daemon compacted it served the prior generation
@@ -1016,7 +1016,7 @@ provenance. Everything below is the work that got it here.
   the core now takes those runtime values off `roaring`'s default export (Node maps a CJS module's
   `module.exports` to the ESM `default`). A `scripts/smoke.cjs` package smoke test — wired into CI and
   runnable via `pnpm smoke` — loads every published entry (`index`, `s3`, `dynamodb`) under **both** ESM and
-  CJS and exercises the roaring-backed path, so this can't regress (DECISIONS #24).
+  CJS and exercises the roaring-backed path, so this can't regress.
 
 ### Added
 
@@ -1033,7 +1033,7 @@ provenance. Everything below is the work that got it here.
   recorded in the manifest's `failed[]` and the export continues — one bad segment never blocks the rest (the CLI
   exits non-zero when any failed). **Warm-only escape hatch**: all-warm segments not yet in the registry can be
   named via the `candidates` option (CLI: `CR_EXPORT_SEGMENTS`), mirroring the compaction daemon's discovery
-  (DECISIONS #31).
+.
 
 - **Store lifecycle methods reuse the store's own drivers** — `store.compact(ref, { owner })` (new), plus
   `store.eraseSubject(id, { owner })` and `store.subjectReport(id)` now build their compaction/erasure deps from
@@ -1044,7 +1044,7 @@ provenance. Everything below is the work that got it here.
   out-of-process daemons/CLIs. This also removes a footgun: the erasure ledger can no longer report a false purge
   from mismatched deps — the drivers are provably the store's own. `eraseSubject` isolates per-segment faults
   (records `physicallyPurged:false`, `note:'error: …'` and continues, so one segment can't discard the whole
-  ledger) and validates `owner` before writing any tombstone (DECISIONS #30).
+  ledger) and validates `owner` before writing any tombstone.
 
 - **Simpler wiring — one config shape (`cold` / `warm` / `registry` / `keystore`)**: the `CloudRoaring`
   constructor now accepts a **raw `IColdDriver`** as `cold` (`S3ColdDriver`, `LocalFsColdDriver`,
@@ -1055,7 +1055,7 @@ provenance. Everything below is the work that got it here.
   or a source you configured with advanced reader options like `tailBytes`/size caps), so no capability is lost.
   Fail-fast guards reject `registry`/`keystore`/`requireEncryption` paired with a pre-built source (configure
   them on the source), a keystore without a registry, and a `cold` that is nullish, ambiguous, or neither a
-  driver nor a source. Wiring-time only — the hot path is untouched (DECISIONS #29).
+  driver nor a source. Wiring-time only — the hot path is untouched.
 
 - **`S3RegistryDriver` — run the registry on S3, no DynamoDB** (`cloud-roaring/s3`): an `IRegistryDriver`
   backed by one tiny object per segment in the same bucket as your Cold data, using **S3 conditional writes**
@@ -1066,7 +1066,7 @@ provenance. Everything below is the work that got it here.
   `If-Match`, `s3:ListBucket`, and no lifecycle-expiry on the `registry/` prefix (see the driver docs +
   getting-started §7). Also hardened both S3 drivers to treat a **`409 ConditionalRequestConflict`** (S3's
   other concurrent-conditional-write outcome, not just `412`) as a `WriteConflictError`
-  (DECISIONS #28).
+.
 
 - **Phase 6c — legal hold (documented)**: the legal-hold posture is enforced via **S3 Object Lock** (a locked
   Cold object can't be deleted before its retention date — stronger than an in-library flag) plus excluding
@@ -1103,14 +1103,14 @@ provenance. Everything below is the work that got it here.
   `compactSegment` / `runCompactionCycle` / `destroySegment` / `eraseNamespace`; the sink is exception-safe
   (a throwing sink never breaks the op) and vendor-neutral. Also hardens the compaction boundary
   (`owner`/`leaseMs` validated fail-fast). **KEK rotation is not emitted** — it's operator-side keystore
-  reconfiguration with no library hook (see the [dashboards guide](docs/guide/dashboards.md) and DECISIONS #27). Completes **Phase 5 (M4)**.
+  reconfiguration with no library hook (see the [dashboards guide](docs/guide/dashboards.md) and). Completes **Phase 5 (M4)**.
 
 - **Phase 5c — cheap `count()`**: `count()` now sums per-chunk cardinality straight from the `.crbm` index
   for warm-delta-free chunks — **zero payload reads or deserializes** — and merges only the chunks with
   pending Warm deltas. A fully-compacted (Topology-A steady-state) segment counts for free; this is now a
   build-breaking CI anchor (`count()` → 0 payload reads). Adds an optional `cardinalities()` to
   `ColdChunkSource` (the in-memory source omits it and falls back to fetch-and-merge — same answer, just not
-  free); `has` / `iterate` / intersection are unchanged (DECISIONS #25).
+  free); `has` / `iterate` / intersection are unchanged.
 
 - **Phase 5c — benchmark-as-test + published crossover chart**: the verified economics are now
   **build-breaking CI assertions** ([`tests/bench/anchors.test.ts`](tests/bench/anchors.test.ts)) so a
@@ -1122,7 +1122,7 @@ provenance. Everything below is the work that got it here.
   published to `bench/crossover.svg`, `bench/results.json`, [`docs/benchmarks.md`](docs/benchmarks.md), and
   the [site](site/benchmarks.html). Wall-clock latency stays offline (too noisy to gate on shared CI
   runners). The `count()` → 0-payload-reads anchor + the enabling cheap-count optimization land next
-  (DECISIONS #23).
+.
 
 - **Phase 5b — cost estimator**: a first-class cost API. **Planning:** pure
   `CloudRoaring.estimateCost({ segments, workload, topology, pricing? })` — size a workload with no instance
@@ -1137,7 +1137,7 @@ provenance. Everything below is the work that got it here.
   `ColdChunkSource` for grounded size from the index. New
   exports: `estimateCost`, `DEFAULT_PRICING`, `AWS_US_EAST_1_ONDEMAND`, and the `PricingProfile` /
   `CostReport` / `Workload` / `SegmentSizing` / `EstimateInput` / `Topology` / `SegmentSize` types. Deferred:
-  whole-store aggregation + live-metrics-derived request cost (DECISIONS #22).
+  whole-store aggregation + live-metrics-derived request cost.
 
 - **Phase 5a — observability metrics sink**: an optional, injected `IMetricsSink` that receives typed
   `MetricEvent`s — cold GET (+ bytes + latency), warm read/write (+ bytes), cache hit/miss, OCC + transient
@@ -1150,7 +1150,7 @@ provenance. Everything below is the work that got it here.
   `CountingMetricsSink` (tallies events into a `MetricsSnapshot` — handy for tests and the upcoming grounded
   `costReport()`), `NOOP_METRICS`, and `safeMetrics`. New exports: `IMetricsSink`, `MetricEvent`,
   `MetricOpName`, `MetricsSnapshot`, `CountingMetricsSink`, `NOOP_METRICS`
-  (DECISIONS #21).
+.
 
 - **Phase 4f — streaming / constant-memory compaction**: compaction now merges **and writes as a stream**, so
   the daemon streams the **cold** merge in constant memory — flat on the cold side (the dirty warm delta set is still buffered; a deferred fix) (the "runs in a 128 MB Lambda" property,
@@ -1161,7 +1161,7 @@ provenance. Everything below is the work that got it here.
   keep S3-enforced write-once** (a second writer → `WriteConflictError`, never a silent overwrite). In-flight
   uploads are aborted on error and SHA-256 is hashed incrementally; the S3 default object ceiling rises to the
   5 TiB multipart max (`partBytes` tunable). LocalFs already streamed to a temp file; the in-memory cold driver
-  stays buffered (RAM by definition). Encryption composes unchanged. (DECISIONS #20).
+  stays buffered (RAM by definition). Encryption composes unchanged.
 
 - **Phase 4e — encryption-at-rest + crypto-shred**: opt-in **AES-256-GCM** encryption of the Cold `.crbm`
   objects (payloads **and** index, so a leaked object reveals neither ids nor cardinality), with **crypto-shred**
@@ -1177,7 +1177,7 @@ provenance. Everything below is the work that got it here.
   source). Threads through `bulkLoadCrbmGeneration`, `CrbmColdChunkSource`, and the compaction daemon (which
   reuses a segment's DEK across generations). New exports: `InProcessKeystore`, `NodeAead`, `destroySegment`,
   `eraseNamespace`, `aadFor`, `KeyUnavailableError`, and the `Aead`/`IKeystore`/`WrappedDek` types
-  (DECISIONS #19).
+.
 
 - **Phase 4d — crash-safe compaction daemon**: consolidates accumulated Warm deltas into a fresh immutable
   Cold generation via a **2-phase commit** — `compactSegment()` (pin → merge `(cold ∪ adds) \ removes` → stage

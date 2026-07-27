@@ -51,7 +51,7 @@ async function exerciseCore(label, m) {
 }
 
 /*
- * Cross-bundle error identity (DECISIONS #52). A driver subpath (`/dynamodb`, `/s3`) is a SEPARATE bundle with
+ * Cross-bundle error identity. A driver subpath (`/dynamodb`, `/s3`) is a SEPARATE bundle with
  * its OWN copy of the core error classes, so `instanceof` against the core entry's class fails in CJS — which
  * silently defeated OCC/transient retry + compaction race-handling. The brand-based predicates must still
  * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
@@ -69,7 +69,7 @@ function exerciseCrossBundleErrors(label, coreMod, dynamoMod) {
     throw new Error(`${label}: expected a ValidationError from the /dynamodb bundle`);
   if (!coreMod.isValidationError(caught) || !coreMod.isCloudRoaringError(caught)) {
     throw new Error(
-      `${label}: core predicates failed to classify a driver-bundle error — cross-bundle brand broken (DECISIONS #52)`,
+      `${label}: core predicates failed to classify a driver-bundle error — cross-bundle brand broken`,
     );
   }
   console.log(`  cross-bundle error predicates OK: ${label}`);

@@ -15,7 +15,7 @@ import {
 } from '@/core/errors';
 
 /**
- * Bundle-safe error predicates (DECISIONS #52). This pins the classification LOGIC (brand + name matching);
+ * Bundle-safe error predicates. This pins the classification LOGIC (brand + name matching);
  * the actual cross-bundle behaviour against the built subpath bundles is guarded by `scripts/smoke.cjs`.
  */
 describe('error predicates', () => {

@@ -46,8 +46,6 @@
     "leak-scan": "node scripts/leak-scan.cjs",
     "leak-scan:snapshot": "node scripts/leak-scan.cjs --snapshot --history",
     "leak-scan:tarballs": "node scripts/leak-scan-tarballs.cjs",
-    "verify-blob-hashes": "node scripts/verify-blob-hashes.cjs",
-    "verify-blob-hashes:strict": "node scripts/verify-blob-hashes.cjs --strict",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky"

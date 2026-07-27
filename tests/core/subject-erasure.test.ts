@@ -449,7 +449,7 @@ describe('eraseSubject — robustness (fault isolation & fail-fast)', () => {
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     // retry ON: the engine's remove() writes through RetryingWarmDriver; compaction reads/purges through the raw
-    // warm. This passes only because that wrapper is a pass-through over the SAME instance (DECISIONS #30).
+    // warm. This passes only because that wrapper is a pass-through over the SAME instance.
     const res = await new CloudRoaring({ warm, cold, registry }).eraseSubject(1, {
       owner: OWNER,
       allNamespaces: true,

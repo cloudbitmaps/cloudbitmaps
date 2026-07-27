@@ -48,7 +48,7 @@ describe('assertStoredRecordShape — daemon-health field back-compat (Phase D)'
 });
 
 /**
- * Registry-row schema-version stamps (Phase G1 format-freeze prerequisite, DECISIONS #41). The persisted envelope carries a
+ * Registry-row schema-version stamps (Phase G1 format-freeze prerequisite). The persisted envelope carries a
  * `schemaVersion` so a reader can fail-closed on a future, incompatible layout. Policy: absent → legacy v1
  * (tolerated — pre-freeze rows stay readable across the upgrade); higher → UnsupportedError; malformed →
  * IntegrityError. This pins the LocalFs/S3 envelope path; the DynamoDB body path is tested in its own suite.

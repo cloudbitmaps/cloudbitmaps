@@ -50,7 +50,7 @@ module.exports = {
       name: 'core-never-imports-a-flavor',
       severity: 'error',
       comment:
-        'The dependency arrow is ONE-WAY: a flavor package (@cloudbitmaps/roaring, …) depends on core, never the reverse. A core→flavor import is a publish-breaking cycle (DECISIONS #58).',
+        'The dependency arrow is ONE-WAY: a flavor package (@cloudbitmaps/roaring, …) depends on core, never the reverse. A core→flavor import is a publish-breaking cycle.',
       from: { path: '^packages/core/src' },
       // Broad on purpose: depcruise resolves `@cloudbitmaps/roaring` through the pnpm workspace symlink to
       // the REAL path `packages/roaring/…` (dist or src), so match the whole package tree — plus the

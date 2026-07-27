@@ -63,7 +63,7 @@ describe('registry-aware CrbmColdChunkSource (Phase 4c)', () => {
     // Write a newer generation on disk but DON'T publish it — registry-aware reads stay on gen 0.
     await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
     expect(await count(new CrbmColdChunkSource(cold, { registry }))).toBe(3); // pinned to published gen 0
-    // Now publish gen 1; a FRESH source picks it up (pinned per source lifetime, DECISIONS #6).
+    // Now publish gen 1; a FRESH source picks it up (pinned per source lifetime).
     await publishGeneration(registry, { ...SEG, generation: 1 });
     expect(await count(new CrbmColdChunkSource(cold, { registry }))).toBe(5);
   });

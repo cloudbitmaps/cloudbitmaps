@@ -1,5 +1,5 @@
 /**
- * Proves the bitmap-codec seam ([DECISIONS #58]): `SegmentEngine` is genuinely codec-AGNOSTIC — it works with a
+ * Proves the bitmap-codec seam: `SegmentEngine` is genuinely codec-AGNOSTIC — it works with a
  * codec that has nothing to do with roaring. This is the real guard the seam is worth cutting: if the engine
  * had leaked a roaring-specific assumption, this non-roaring codec would break it.
  *

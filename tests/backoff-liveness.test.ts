@@ -2,7 +2,7 @@ import { CloudRoaring, MemoryColdChunkSource, MemoryWarmDriver, WriteConflictErr
 import type { IWarmDriver } from '@/index';
 
 /**
- * Regression for the OCC-backoff *premature-exit* bug (found by the T4 hot-row contention stress; DECISIONS #16).
+ * Regression for the OCC-backoff *premature-exit* bug (found by the T4 hot-row contention stress).
  *
  * The default clock's `sleep` used to `unref()` its backoff timer. Because that `sleep` only ever backs a
  * caller-awaited, bounded retry (the engine's OCC read-modify-write and the driver `withRetry` loop), an

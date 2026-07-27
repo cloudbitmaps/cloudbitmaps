@@ -176,13 +176,7 @@ const EMAIL_OK = new RegExp(
  * private ones. Without this the launch gate is permanently red on its own tooling, which is how a gate ends
  * up bypassed with `--force`.
  */
-const MIGRATION_EXEMPT = new Set([
-  'scripts/leak-scan.cjs',
-  'scripts/verify-blob-hashes.cjs',
-  'tests/docs/links.test.ts',
-  'tests/docs/specifiers.test.ts',
-  'tests/scripts/leak-scan.test.ts',
-]);
+const MIGRATION_EXEMPT = new Set(['scripts/leak-scan.cjs', 'tests/docs/links.test.ts']);
 
 const MIGRATION = [
   { name: 'stale old-owner repo URL', re: /github\.com\/sharvilk\/cloud-roaring/ },
@@ -192,9 +186,9 @@ const MIGRATION = [
   // still dangles. Matches the `NN-SCREAMING-CASE` shape every internal design doc uses.
   //
   // `.md` is OPTIONAL, and that is the whole point of this rule's second revision. The first version required
-  // the extension, so it caught `07-THREAT-MODEL.md` and sailed straight past `96-PRODUCTION-READINESS` — which
-  // is how people actually cite these docs in prose. Seven such citations sat in public files (four of them in
-  // CHANGELOG.md, the most-read file in the repo) while the gate reported clean. Verified against the whole
+  // the extension, so a citation written `NN-SOME-DOC.md` was caught while the bare `NN-SOME-DOC` sailed past
+  // — which is how people actually cite these docs in prose. Seven such citations sat in public files (four of
+  // them in CHANGELOG.md, the most-read file in the repo) while the gate reported clean. Verified against the whole
   // tree when it was widened: every single match was a real internal doc name, zero false positives, because
   // `NN-` followed by a SCREAMING-KEBAB run of 3+ characters is not a shape ordinary prose produces.
   { name: 'bare private-doc name', re: /\b\d{2}-[A-Z][A-Z0-9-]{2,}(?:\.md)?\b/ },
@@ -360,10 +354,6 @@ for (const { file, line, text } of lines()) {
   for (const m of text.matchAll(EMAIL_RE)) {
     if (!EMAIL_OK.test(m[0])) hard.push({ p: 'email address', file, line, text: m[0] });
   }
-  // `docs/internal/` is dropped wholesale from the public snapshot, so a private-doc reference *inside* it is
-  // not a leak — only references from public-bound files matter. (HARD findings still apply everywhere: a
-  // committed credential is a problem regardless of which tree it sits in.)
-  if (file.startsWith('docs/internal/')) continue;
   // Same reasoning, for the handful of files whose JOB is managing the public/private split: they must name
   // the private path in order to check for it, so flagging them is the scanner reporting on itself. Scoped to
   // MIGRATION only — the HARD checks above already ran, so a credential in any of these is still caught.

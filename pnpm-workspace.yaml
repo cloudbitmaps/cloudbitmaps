@@ -1,4 +1,4 @@
-# The @cloudbitmaps family monorepo (DECISIONS #58).
+# The @cloudbitmaps family monorepo.
 #
 #   packages/core     → @cloudbitmaps/core     the codec-agnostic engine + every storage driver
 #   packages/roaring  → @cloudbitmaps/roaring  the roaring codec + CloudRoaring facade (what users install)
