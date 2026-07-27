@@ -14,16 +14,36 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
-### Documentation
+## [0.3.0] - 2026-07-27
 
-- **In-region latency is now measured, closing the last deferred claim on the benchmarks page.** A warm `has()`
-  runs at **p50 5.27 ms · p90 6.36 · p95 7.15 · p99 12.71** (n=2,000) from a client inside `us-east-1`, against
-  a North Star target of single-digit-to-~25 ms. The previously-published cost run measured from ~96 ms outside
-  the region — roughly 4× the entire latency budget — so it could neither confirm nor contradict the target;
-  that caveat is replaced with the figure rather than deleted. Two independent runs agree on every percentile to
-  within ~0.5 ms. Stated precisely: the claim is **p99 inside budget**, not *always* inside budget, since `max`
-  was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
-  against the **published package**, not a local build.
+A production-safety release. An adversarial audit round found that the per-op budget bounded **fan-out** but
+not the **enumeration** that fed it — so the documented denial-of-wallet control could be exceeded in memory
+before it could refuse in requests. Every enumeration in the library is now bounded, and three hot paths got
+measurably faster along the way. No format change; two new options, both additive.
+
+### Added
+
+- **`checkConsistency` bounds its registry scan** via a new `maxScanSegments` option (default **250,000**, exported
+  as `DEFAULT_MAX_SCAN_SEGMENTS`). It was the last unbounded enumeration in the library: the function's own
+  comment said "fail fast before the (possibly huge) registry scan" and then drained that scan into an array
+  anyway, so memory scaled with total fleet size with no way for the caller to cap it. Operator-invoked rather
+  than request-reachable — which is why it was fixed after the GDPR paths — but "an operator runs it" is not a
+  bound, and a DR drill against a large fleet from a modest box is precisely the case that hurts. The default
+  sits comfortably above the 100K+ fleets the compaction docs target, so no real deployment should meet it.
+
+- **`maxWarmScanBytes` — a memory ceiling that is deliberately *not* the budget** (default **64 MiB**, exported
+  as `DEFAULT_MAX_WARM_SCAN_BYTES`). It caps the warm-delta bytes a single segment scan may hold resident, for
+  every read op, and — unlike `budget` — **stays in force when `budget: false`**.
+  - Two controls because there are two axes. `budget` bounds **cost** (backend requests); this bounds
+    **memory**. Treating one as the other is what allowed a segment to materialise ~12 MB before a
+    `maxRequests: 2` budget could refuse it, and then caused a first attempt at that fix to wrongly tighten
+    `intersect`.
+  - **It is the only bound `intersect` can have.** Its budget is `common keys × operands`, a product a single
+    wide operand can legitimately exceed in row count while remaining entirely within contract — so a request
+    budget cannot express a memory limit for it. `intersect` was the last unbounded read path; it no longer is.
+  - **Always on, and raisable.** A ceiling that `budget: false` switches off is missing exactly when it is
+    needed; one you cannot raise is a landmine for a legitimately large segment. Invalid values (including the
+    `NaN` you get from an unset `Number(process.env.X)`) are rejected at construction, not on the first read.
 
 ### Changed
 
@@ -77,34 +97,6 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   - Bulk-load remains a **batch primitive** — it is still hundreds of milliseconds for large inputs and still
     belongs in a job or worker, never a request handler. See the guide's event-loop section.
 
-### Added
-
-- **`checkConsistency` bounds its registry scan** via a new `maxScanSegments` option (default **250,000**, exported
-  as `DEFAULT_MAX_SCAN_SEGMENTS`). It was the last unbounded enumeration in the library: the function's own
-  comment said "fail fast before the (possibly huge) registry scan" and then drained that scan into an array
-  anyway, so memory scaled with total fleet size with no way for the caller to cap it. Operator-invoked rather
-  than request-reachable — which is why it was fixed after the GDPR paths — but "an operator runs it" is not a
-  bound, and a DR drill against a large fleet from a modest box is precisely the case that hurts. The default
-  sits comfortably above the 100K+ fleets the compaction docs target, so no real deployment should meet it.
-
-### Added
-
-- **`maxWarmScanBytes` — a memory ceiling that is deliberately *not* the budget** (default **64 MiB**, exported
-  as `DEFAULT_MAX_WARM_SCAN_BYTES`). It caps the warm-delta bytes a single segment scan may hold resident, for
-  every read op, and — unlike `budget` — **stays in force when `budget: false`**.
-  - Two controls because there are two axes. `budget` bounds **cost** (backend requests); this bounds
-    **memory**. Treating one as the other is what allowed a segment to materialise ~12 MB before a
-    `maxRequests: 2` budget could refuse it, and then caused a first attempt at that fix to wrongly tighten
-    `intersect`.
-  - **It is the only bound `intersect` can have.** Its budget is `common keys × operands`, a product a single
-    wide operand can legitimately exceed in row count while remaining entirely within contract — so a request
-    budget cannot express a memory limit for it. `intersect` was the last unbounded read path; it no longer is.
-  - **Always on, and raisable.** A ceiling that `budget: false` switches off is missing exactly when it is
-    needed; one you cannot raise is a landmine for a legitimately large segment. Invalid values (including the
-    `NaN` you get from an unset `Number(process.env.X)`) are rejected at construction, not on the first read.
-
-### Performance
-
 - **CRC32C is now slicing-by-8 — ~1.5× faster, and it runs on every cold reader open.** The `.crbm` index is
   checksummed in full when a reader opens, which happens on a cold-start, an LRU eviction, or a real generation
   change. The byte-at-a-time implementation measured ~3.3 ms/MiB, so a maximally-sized 8 MiB index cost ~27 ms
@@ -120,6 +112,17 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
     index cap; making the checksum itself faster helps every caller instead, needs no new configuration, and
     leaves the pure-core determinism seam untouched (a yield would have required a timer, which `core/`
     lint-bans).
+
+### Documentation
+
+- **In-region latency is now measured, closing the last deferred claim on the benchmarks page.** A warm `has()`
+  runs at **p50 5.27 ms · p90 6.36 · p95 7.15 · p99 12.71** (n=2,000) from a client inside `us-east-1`, against
+  a North Star target of single-digit-to-~25 ms. The previously-published cost run measured from ~96 ms outside
+  the region — roughly 4× the entire latency budget — so it could neither confirm nor contradict the target;
+  that caveat is replaced with the figure rather than deleted. Two independent runs agree on every percentile to
+  within ~0.5 ms. Stated precisely: the claim is **p99 inside budget**, not *always* inside budget, since `max`
+  was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
+  against the **published package**, not a local build.
 
 ## [0.2.0] - 2026-07-27
 
