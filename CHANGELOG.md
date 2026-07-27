@@ -93,6 +93,24 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
     needed; one you cannot raise is a landmine for a legitimately large segment. Invalid values (including the
     `NaN` you get from an unset `Number(process.env.X)`) are rejected at construction, not on the first read.
 
+### Performance
+
+- **CRC32C is now slicing-by-8 — ~1.5× faster, and it runs on every cold reader open.** The `.crbm` index is
+  checksummed in full when a reader opens, which happens on a cold-start, an LRU eviction, or a real generation
+  change. The byte-at-a-time implementation measured ~3.3 ms/MiB, so a maximally-sized 8 MiB index cost ~27 ms
+  of synchronous stall; it is now ~18 ms, and a typical wide segment's index drops from ~5.5 ms to ~3.7 ms.
+  (Not the 3–4× slicing-by-8 achieves in C — JS bounds-checking and the absence of native 32-bit loads take
+  most of that back.)
+  - **Byte-identical output, which is the only thing that matters here** — this is a wire-format checksum, and
+    a deviation would make every existing `.crbm` unreadable. Verified against the previous implementation over
+    6,001 cases: every length from 0 to 2,000 (covering all eight tail remainders and the empty input), 4,000
+    random buffers, non-zero seeds for the streaming path, and the published CRC-32C known-answer vector for
+    `"123456789"` (`0xe3069283`).
+  - Note this was **not** the audit's suggested fix. The proposal was to yield around the CRC or shrink the
+    index cap; making the checksum itself faster helps every caller instead, needs no new configuration, and
+    leaves the pure-core determinism seam untouched (a yield would have required a timer, which `core/`
+    lint-bans).
+
 ## [0.2.0] - 2026-07-27
 
 **Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported
