@@ -37,6 +37,30 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 - **`dependency-cruiser` 16 → 18**, which requires `^22 || ^24` and was therefore blocked until the Node floor
   moved in this release. Architecture lint still passes (120 modules, 389 dependencies cruised).
 
+### Fixed
+
+- **The per-op budget now bounds the enumeration, not just the fan-out it feeds.** Every affected call site
+  drained an async iterable in full and only then called `checkBudget(budget, items.length, op)`. That refuses
+  the fan-out, but only *after* materialising the list — so `budget.maxRequests`, the documented
+  denial-of-wallet control, provided **no memory protection at all**. Measured against the previous release: a
+  store configured with `budget: { maxRequests: 2 }` still buffered 3,000 warm chunk rows (~12 MB) before
+  `count()` threw, and `subjectReport` buffered 20,000 registry records. That contradicts the bounded-memory
+  invariant, and on a small container it is an OOM rather than a refusal.
+  - Fixed on the read path (`count`, `iterate`) and on the GDPR paths (`subjectReport`, `eraseSubject`), which
+    are reachable from ordinary end-user traffic. Resident memory during these scans is now `O(budget)` rather
+    than `O(segment)` / `O(fleet size)`.
+  - **`intersect` is deliberately unchanged.** Its budget is `common keys × operands`, a product — one wide
+    operand can legitimately hold far more warm rows than that product, so applying the row count as a ceiling
+    would refuse work the documented contract allows. An existing budget test caught exactly this. Bounding
+    `intersect`'s per-operand warm snapshot needs an explicit memory ceiling rather than a reinterpretation of
+    the budget, and is tracked separately.
+  - **`runConsistencyCheck` is also unchanged**: it accepts no `budget` option at all, so bounding it means
+    adding public API. It is operator-invoked rather than request-reachable, so it is tracked rather than
+    rushed.
+- **New: `collectWithinBudget`** — the shared helper the above is built on. Its error message deliberately says
+  "more than N" instead of an exact total, because an exact total requires finishing the scan, which is the
+  cost being refused.
+
 ## [0.2.0] - 2026-07-27
 
 **Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported

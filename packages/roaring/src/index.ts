@@ -26,7 +26,7 @@ import {
   SegmentEngine,
   UnsupportedError,
   ValidationError,
-  checkBudget,
+  collectWithinBudget,
   compactSegment,
   estimateCost,
   groundedReport,
@@ -64,7 +64,6 @@ import type {
   IWarmDriver,
   MetricOpName,
   PricingProfile,
-  RegistryRecord,
   RetryPolicy,
   RetryingOptions,
   Rng,
@@ -522,9 +521,15 @@ export class CloudRoaring {
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
     const budget = resolvePerOpBudget(options.budget, this.budget); // partial override inherits the store's tightening
     splitId(id); // fail fast on a non-u32 id even when no segments are registered
-    const recs: RegistryRecord[] = [];
-    for await (const rec of registry.list(options.namespace)) recs.push(rec);
-    checkBudget(budget, recs.length, 'subjectReport'); // refuse a runaway scan before fanning out has()
+    // Bounded INCREMENTALLY: the previous spelling drained the whole registry and only then checked the
+    // budget, so a tight budget refused the work after paying for the list — measured at 20,000 records
+    // buffered under `maxRequests: 2`. This is a GDPR Art. 15 entry point plausibly wired to end-user
+    // traffic, so resident memory must be O(budget), not O(fleet size).
+    const recs = await collectWithinBudget(
+      registry.list(options.namespace),
+      budget,
+      'subjectReport',
+    );
     // Bounded fan-out of the tier-merging has() across registered segments (was serial — one read per segment
     // awaited in-loop). Order-preserving ⇒ deterministic result. Membership is read **strongly** regardless of
     // the store's `warmReadConsistency` — a legal SAR must be read-your-writes, never miss a just-written add.
@@ -598,9 +603,13 @@ export class CloudRoaring {
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
     const budget = resolvePerOpBudget(options.budget, this.budget); // partial override inherits the store's tightening
     splitId(id); // fail fast on a non-u32 id even when nothing is registered
-    const recs: RegistryRecord[] = [];
-    for await (const rec of compaction.registry.list(options.namespace)) recs.push(rec);
-    checkBudget(budget, recs.length, 'eraseSubject'); // refuse a runaway scan before fanning out compactions
+    // Bounded incrementally — see subjectReport above. Art. 17 erasure is likewise reachable from ordinary
+    // "delete my account" traffic, so the enumeration itself has to respect the budget.
+    const recs = await collectWithinBudget(
+      compaction.registry.list(options.namespace),
+      budget,
+      'eraseSubject',
+    );
     // Bounded fan-out (was serial). Each segment is an independent lease + generation, so force-compacting
     // distinct segments concurrently is exactly what the sharded daemon does. Per-segment faults stay isolated
     // INSIDE each task — one failure never aborts the ledger (mirrors runCompactionCycle) — and the pool

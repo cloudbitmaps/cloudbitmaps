@@ -12,6 +12,7 @@ import type { Budget, BudgetOption } from './budget';
 import { mapWithConcurrency } from './concurrency';
 import type { Clock, Rng } from './determinism';
 import {
+  BudgetExceededError,
   IntegrityError,
   ValidationError,
   WriteConflictError,
@@ -174,7 +175,7 @@ export class SegmentEngine {
   }
 
   async count(seg: SegmentRef): Promise<number> {
-    const warmRows = await this.collectWarm(seg);
+    const warmRows = await this.collectWarm(seg, 'count', this.budget?.maxRequests ?? null);
     // Cheap count (Phase 5c): when the Cold source can serve per-chunk cardinality from its `.crbm` index,
     // a warm-delta-free chunk is counted straight from the index — no payload fetch/decode — and only the
     // dirty chunks (those with a Warm delta) are merged. A source without that capability, or a segment with
@@ -229,7 +230,7 @@ export class SegmentEngine {
   }
 
   async *iterate(seg: SegmentRef): AsyncGenerator<number> {
-    const warmRows = await this.collectWarm(seg);
+    const warmRows = await this.collectWarm(seg, 'iterate', this.budget?.maxRequests ?? null);
     const chunkKeys = await this.chunkKeys(seg, warmRows);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one cold fetch per effective chunk (before fan-out)
     const gen = await this.currentGen(seg); // after the shape read (see `count`) — avoids a first-publish undercount
@@ -285,7 +286,8 @@ export class SegmentEngine {
     // ONCE here (not per chunk) so the fan-out below adds no per-chunk generation re-resolve. Only metadata so far.
     const operands = await Promise.all(
       segs.map(async (seg) => {
-        const warmRows = await this.collectWarm(seg);
+        // see collectWarm: the intersect budget is a product, not a row count;
+        const warmRows = await this.collectWarm(seg, 'intersect', null);
         const keys = await this.chunkKeys(seg, warmRows);
         const gen = await this.currentGen(seg);
         return { seg, warmRows, keys: new Set(keys), gen };
@@ -471,13 +473,44 @@ export class SegmentEngine {
     return row;
   }
 
-  private async collectWarm(seg: SegmentRef): Promise<Map<number, Uint8Array>> {
+  private async collectWarm(
+    seg: SegmentRef,
+    op: string,
+    rowCeiling: number | null,
+  ): Promise<Map<number, Uint8Array>> {
     const rows = new Map<number, Uint8Array>();
     let bytes = 0;
     // Read path (count/iterate/intersect): honor warmReadConsistency (gap #9).
+    //
+    // The budget is enforced HERE, per row, not after the drain. Every caller below used to check it only once
+    // this Map was complete, which bounded the fan-out but not the enumeration: a segment can hold up to 65,536
+    // chunks, each row individually capped by `decodeDelta` but the aggregate capped nowhere. Measured, a
+    // `budget: { maxRequests: 2 }` store still materialised 3,000 chunks / 12 MB before `count()` threw — i.e.
+    // the advertised denial-of-wallet protection could only refuse *after* paying the memory cost, which
+    // contradicts the bounded-memory invariant. Checking inside the loop makes resident memory O(budget).
     for await (const row of this.warm.listChunks(seg, this.readOpts)) {
       rows.set(row.chunkKey, row.bytes);
       bytes += row.bytes.length;
+      // `>` and `rows.size` (not a raw counter): a duplicate chunkKey overwrites rather than growing the Map,
+      // so the size is the true resident row count and matches what the post-drain check used to compare.
+      //
+      // `rowCeiling` is passed per-op rather than read from `this.budget`, because the budget means different
+      // quantities per operation and applying it blindly TIGHTENS the contract:
+      //   - count / iterate: their eventual check is against `chunkKeys.length`, and warm keys are a SUBSET of
+      //     chunkKeys — so if warm rows alone exceed the budget, the existing check was going to fail too.
+      //     Checking early is therefore equivalent-or-earlier, never stricter. Safe to pass the budget.
+      //   - intersect: its eventual check is `common.length × operands.length`, a PRODUCT over the keys common
+      //     to every operand. One wide operand can hold far more warm rows than the product while still being
+      //     legal — so passing the budget here would refuse work the documented contract allows. It gets `null`
+      //     and remains unbounded pending a decision on an explicit memory ceiling. An existing budget test
+      //     caught exactly this, which is why the distinction is spelled out rather than assumed.
+      if (rowCeiling !== null && rows.size > rowCeiling) {
+        throw new BudgetExceededError(
+          `${op} would read more than ${rowCeiling} warm chunk rows, over the per-op budget — ` +
+            `the scan was abandoned at that point rather than completed, so no exact total is available. ` +
+            `Raise \`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+        );
+      }
     }
     if (this.metricsOn) {
       this.metrics.onEvent({
