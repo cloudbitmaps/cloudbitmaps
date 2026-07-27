@@ -25,6 +25,18 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
   against the **published package**, not a local build.
 
+### Changed
+
+- **Four development-only advisories are now fixed rather than tolerated**, via `pnpm.overrides`: `adm-zip`
+  (high, via `cassandra-driver`), `qs` (via Stryker), `uuid` (via `@google-cloud/storage`) and `esbuild`. The
+  production-scoped audit gate correctly ignored all four and CI was green, but "correctly ignored" is not
+  "fine". Upstream cannot resolve the first one — `cassandra-driver@4.9.0`, the latest, still pins
+  `adm-zip ~0.5.10`, a range that cannot reach the patched 0.6.0 — so an override is the only route. Verified
+  against the full nine-backend integration suite, since the `adm-zip` and `uuid` paths are ones the unit tests
+  never touch. **No consumer impact:** these are dev dependencies; `core` ships zero runtime dependencies.
+- **`dependency-cruiser` 16 → 18**, which requires `^22 || ^24` and was therefore blocked until the Node floor
+  moved in this release. Architecture lint still passes (120 modules, 389 dependencies cruised).
+
 ## [0.2.0] - 2026-07-27
 
 **Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported

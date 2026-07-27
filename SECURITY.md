@@ -39,6 +39,29 @@ commit at all: an advisory disclosed after `main` went green makes that unchange
 `package.json` → `pnpm.auditConfig.ignoreGhsas`, each with its rationale below, and are the **only** ones the
 gate ignores.
 
+### Forced transitive versions (`pnpm.overrides`)
+
+Four advisories sat in **development-only** transitive dependencies, so the blocking gate above — scoped to
+production dependencies — correctly ignored them and CI was green. They still generated alerts, and "correctly
+ignored" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
+`pnpm.overrides` forces each to a patched version.
+
+| forced | reached us via | advisory fixed in |
+| --- | --- | --- |
+| `adm-zip >=0.6.0` | `cassandra-driver` | 0.6.0 (high) |
+| `qs >=6.15.2` | `@stryker-mutator/core` | 6.15.2 |
+| `uuid ^11.1.1` | `@google-cloud/storage` | 11.1.1 |
+| `esbuild >=0.28.1` | the tsup/vitest toolchain | 0.28.1 |
+
+An override is a **claim that the forced version still works**, which is only worth making if it is tested: all
+four were verified against the full `pnpm test:integration` suite (152 tests, nine real backends in containers),
+because the two that matter most — `adm-zip` under `cassandra-driver` and `uuid` under `@google-cloud/storage` —
+are on paths the unit suite never exercises.
+
+`uuid` is deliberately pinned to `^11.1.1` rather than left open: the advisory is fixed at 11.1.1, and an
+unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit. **None of these
+reach consumers** — `@cloudbitmaps/core` has zero runtime dependencies and `@cloudbitmaps/roaring` has two.
+
 ### Triaged (accepted) advisories
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
