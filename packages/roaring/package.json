@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/roaring",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Distributed, cloud-native Roaring Bitmaps — query and intersect billion-scale integer sets over tiered cloud storage (RAM → NoSQL → object store), at a fraction of an always-on cache.",
   "keywords": [
     "roaring",
@@ -46,7 +46,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "sideEffects": false,
   "main": "./dist/index.cjs",
