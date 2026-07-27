@@ -118,6 +118,12 @@ interface Snapshot {
 
 /** Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-compaction read staleness. */
 const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
+/**
+ * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
+ * transient JS-side buffer to ~8 MB (numbers) irrespective of input size, while keeping batches large enough
+ * that the per-id JS↔native crossing is amortised away.
+ */
+const BULK_FLUSH_IDS = 1 << 20;
 
 /** Default ceiling on cached segment readers (each holds a parsed `.crbm` index) — the steady-state count bound. */
 const DEFAULT_MAX_OPEN_SEGMENTS = 1024;
@@ -553,15 +559,44 @@ export async function bulkLoadCrbmGeneration(
   }
   const codec = requireCodec(options.codec, 'bulkLoadCrbmGeneration');
   const byChunk = new Map<number, CodecBitmap>();
+  // Batched per chunk, not one native `add()` per id.
+  //
+  // The obvious loop — `bitmap.add(remainder)` for every id — crosses the JS↔native boundary once per id, and
+  // measured **1,679 ms for 1M ids** with no yield point anywhere in it. Since this is a synchronous stretch on
+  // Node's only thread, a caller who wires it to a request handler stalls every other request on that instance
+  // for over a second (measured separately: a 0.7 ms health check took 275 ms).
+  //
+  // Buffering the remainders and inserting them per chunk in one `fromValues`/`addMany` call amortises that
+  // boundary crossing across the whole batch.
+  //
+  // WHY THE BUFFER IS CAPPED. Bucketing *everything* first and inserting once per chunk at the end is faster
+  // still, but it holds every remainder as a JS number before any bitmap compression happens — and with up to
+  // 65,536 chunks in play that is unbounded in exactly the way this library refuses to be. So the buffer is
+  // flushed whenever the total pending count crosses `BULK_FLUSH_IDS`, bounding the extra memory to that many
+  // numbers (~8 MB) regardless of input size or key distribution, while still getting the batching win.
+  const pendingByChunk = new Map<number, number[]>();
+  let pending = 0;
+  const flushPending = (): void => {
+    for (const [chunkKey, rems] of pendingByChunk) {
+      if (rems.length === 0) continue;
+      const existingBitmap = byChunk.get(chunkKey);
+      if (existingBitmap === undefined) byChunk.set(chunkKey, codec.fromValues(rems));
+      else existingBitmap.addMany(rems);
+      rems.length = 0;
+    }
+    pending = 0;
+  };
   for await (const id of toAsyncIterable(ids)) {
     const { chunkKey, remainder } = splitId(id); // validates the u32 range
-    let bitmap = byChunk.get(chunkKey);
-    if (bitmap === undefined) {
-      bitmap = codec.empty();
-      byChunk.set(chunkKey, bitmap);
+    let bucket = pendingByChunk.get(chunkKey);
+    if (bucket === undefined) {
+      bucket = [];
+      pendingByChunk.set(chunkKey, bucket);
     }
-    bitmap.add(remainder);
+    bucket.push(remainder);
+    if (++pending >= BULK_FLUSH_IDS) flushPending();
   }
+  flushPending();
 
   let cardinality = 0;
   const chunks: Array<{ chunkKey: number; bitmap: CodecBitmap }> = [];

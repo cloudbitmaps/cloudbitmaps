@@ -61,6 +61,22 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   "more than N" instead of an exact total, because an exact total requires finishing the scan, which is the
   cost being refused.
 
+### Performance
+
+- **`bulkLoadCrbmGeneration` inserts per chunk instead of once per id — measured 1,344 ms → 879 ms for 1M ids**
+  (identical input, same harness; ~35% off). The old loop crossed the JS↔native boundary once per id, and did
+  it in one unbroken synchronous stretch: on Node's single thread that stalls every other request on the
+  instance, measured separately as a 0.7 ms health check taking 275 ms. Fewer, larger inserts cut both the
+  wall-clock and the length of that stall.
+  - The buffer is **capped** rather than accumulating the whole input. Bucketing everything first is faster
+    still, but holds every remainder as an uncompressed JS number across up to 65,536 chunks — unbounded in
+    exactly the way this library refuses to be. Flushing at a fixed pending count bounds the transient buffer
+    to ~8 MB regardless of input size or key distribution.
+  - Note this is a **35% improvement, not the 3–9× an isolated insert microbenchmark suggests**: end-to-end,
+    serialization, per-chunk CRC and driver writes account for the rest of the time.
+  - Bulk-load remains a **batch primitive** — it is still hundreds of milliseconds for large inputs and still
+    belongs in a job or worker, never a request handler. See the guide's event-loop section.
+
 ## [0.2.0] - 2026-07-27
 
 **Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported
