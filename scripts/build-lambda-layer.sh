@@ -24,6 +24,12 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
+# Same implicit-pull trap as lambda-smoke.sh and rss-gate.sh: `docker run` pulls on a cache miss, and a
+# registry rate limit then fails the build with nothing produced. Pull explicitly, with backoff.
+# shellcheck source=scripts/lib/docker-pull.sh
+. "$ROOT/scripts/lib/docker-pull.sh"
+docker_pull_with_backoff "$IMAGE"
+
 echo "build-lambda-layer: build + pack"
 pnpm build >/dev/null
 # Pack both workspace packages (pnpm rewrites `workspace:*` to a concrete version, so these are publish-shaped)

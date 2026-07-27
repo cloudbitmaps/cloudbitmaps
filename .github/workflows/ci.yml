@@ -78,21 +78,13 @@ jobs:
       - name: Pull backend images (serial, with backoff)
         run: |
           set -u
+          # One implementation of the retry, shared with rss-gate.sh and lambda-smoke.sh. It used to be inlined
+          # here only, which is precisely why those two scripts kept dying on a throttle this loop absorbs.
+          . scripts/lib/docker-pull.sh
           rc=0
           for img in $(docker compose config --images); do
-            for attempt in 1 2 3 4 5; do
-              if docker pull -q "$img" >/dev/null 2>&1; then
-                echo "ok    $img"
-                break
-              fi
-              if [ "$attempt" = 5 ]; then
-                echo "FAILED after 5 attempts: $img" >&2
-                rc=1
-                break
-              fi
-              sleep $((attempt * 10))
-            done
-            sleep 2
+            docker_pull_with_backoff "$img" || rc=1
+            sleep 2 # still serial: nine simultaneous pulls is what provokes the rate limit in the first place
           done
           exit "$rc"
       # `--wait-timeout` so a stuck backend (e.g. a Cassandra node that never goes healthy) fails the step fast

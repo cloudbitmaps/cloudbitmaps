@@ -23,6 +23,13 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
+# `docker run` below pulls implicitly on a cache miss, and a registry rate limit then fails the whole smoke
+# test before it has run anything. Pull explicitly, with backoff, so a transient throttle costs seconds rather
+# than a red build. See scripts/lib/docker-pull.sh for why the two throttle shapes need different responses.
+# shellcheck source=scripts/lib/docker-pull.sh
+. "$ROOT/scripts/lib/docker-pull.sh"
+docker_pull_with_backoff "$IMAGE"
+
 echo "lambda-smoke: build + pack both workspace packages"
 pnpm build >/dev/null
 # Pack each package separately. `pnpm pack` rewrites the `workspace:*` dependency to a concrete version, so the

@@ -54,6 +54,13 @@ STAGE="$ROOT/.rss-stage"
 # Overridable so a local run can point at a warm Docker Hub cache instead.
 STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
 
+# Even AWS's mirror throttles: `toomanyrequests: Rate exceeded` killed this gate on `main` twice in one day.
+# That is a per-second RATE, not a quota, so it clears in moments — but `docker run` pulls implicitly on a cache
+# miss and gives the pull no retry, so the gate died 36s in having tested nothing. Pull explicitly first.
+# shellcheck source=scripts/lib/docker-pull.sh
+. "$ROOT/scripts/lib/docker-pull.sh"
+docker_pull_with_backoff "$STAGE_IMAGE"
+
 # The stage is populated by a container running as root. On a Linux bind mount those files really are owned by
 # root, so the host user cannot delete them and a plain `rm -rf` fails with "Permission denied" on every path —
 # which failed the whole gate AFTER the soak had already passed. Docker Desktop on macOS remaps bind-mount
