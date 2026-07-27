@@ -14,6 +14,17 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Documentation
+
+- **In-region latency is now measured, closing the last deferred claim on the benchmarks page.** A warm `has()`
+  runs at **p50 5.27 ms · p90 6.36 · p95 7.15 · p99 12.71** (n=2,000) from a client inside `us-east-1`, against
+  a North Star target of single-digit-to-~25 ms. The previously-published cost run measured from ~96 ms outside
+  the region — roughly 4× the entire latency budget — so it could neither confirm nor contradict the target;
+  that caveat is replaced with the figure rather than deleted. Two independent runs agree on every percentile to
+  within ~0.5 ms. Stated precisely: the claim is **p99 inside budget**, not *always* inside budget, since `max`
+  was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
+  against the **published package**, not a local build.
+
 ## [0.1.3] - 2026-07-27
 
 A correctness fix that closes the last gap in "all tier bytes are untrusted", plus release-pipeline and

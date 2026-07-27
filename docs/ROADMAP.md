@@ -152,10 +152,13 @@ never publish a figure we haven't measured, and laptop/emulator numbers are labe
 `1.0` is a commitment to the on-disk format, so it waits for evidence rather than a date. What stands
 between here and there:
 
-1. **Real-cloud calibration** — **the cost half is done** ([published](benchmarks.md#real-cloud-calibration--aws):
-   $0.001911 measured for 2,000 writes + 20 publishes + 2,000 reads on real S3 + DynamoDB). What remains is an
-   **in-region** run: the first client sat ~96 ms of internet away, so its p50/p99/p999 measure network transit
-   rather than the engine, and the single-digit-ms warm-read target is still unconfirmed either way.
+1. **Real-cloud calibration — done, both halves.** Cost:
+   [$0.001911 measured](benchmarks.md#real-cloud-calibration--aws) for 2,000 writes + 20 publishes + 2,000 reads
+   on real S3 + DynamoDB. Latency: the first client sat ~96 ms of internet away, so its figures measured network
+   transit rather than the engine; a
+   [second run from inside `us-east-1`](benchmarks.md#in-region-latency--measured-2026-07-27) puts a warm
+   `has()` at **p50 5.27 ms / p99 12.71 ms** (n=2,000), inside the single-digit-to-~25 ms target. What remains
+   here is narrower than it was: a **Lambda** run, for the serverless figure with cold-start and init included.
 2. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version
    on warm deltas and the registry; freezing it is what makes cross-language ports and long-lived data safe.
 3. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
