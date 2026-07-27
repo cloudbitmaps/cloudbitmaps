@@ -190,6 +190,15 @@ export class DynamoDbRegistryDriver implements IRegistryDriver {
               pkPrefix !== undefined ? SCAN_NAMES : { '#sk': 'SK', '#del': 'del' },
             ExpressionAttributeValues: values,
             ExclusiveStartKey: startKey,
+            // Strong, to match `get()` on the same table. A Scan defaults to eventually consistent, and every
+            // caller here treats the result as the COMPLETE segment set: `eraseSubject` builds its erasure
+            // ledger from it (a segment registered seconds earlier would be silently absent — a GDPR Art. 17
+            // miss with no error), `subjectReport` answers Art. 15 from it, and `runExport` writes its
+            // manifest from it (a missed segment lands in neither the manifest nor `failed[]`, so "a manifest
+            // exists ⇒ the run finished" would be false). `runConsistencyCheck` already re-read each row
+            // strongly for exactly this reason; this makes the enumeration itself trustworthy instead.
+            // Doubles this Scan's RCU cost, which is the correct trade for a correctness-critical enumeration.
+            ConsistentRead: true,
           }),
         );
       } catch (err) {

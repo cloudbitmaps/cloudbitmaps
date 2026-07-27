@@ -16,6 +16,46 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 _Nothing yet._
 
+## [0.1.2] - 2026-07-27
+
+Correctness fixes found by an adversarial audit of the shipped source, plus the documentation defects the same
+sweep turned up. No format change; no API change.
+
+### Fixed
+
+- **`withRetry` could skip the operation entirely and reject with `undefined`.** `Math.max(1, maxAttempts)`
+  guards `0` and negatives but **not `NaN`** — `Math.max(1, NaN)` is `NaN`, and `1 <= NaN` is `false`, so the
+  retry loop body never ran. The wrapped operation was **never invoked**, and the call rejected with the
+  literal `undefined` rather than an `Error`, so every typed-error branch in the caller's stack fell through.
+  With the retrying drivers on (the default), that means writes silently no-op **without ever touching the
+  backend**. Reachable from ordinary wiring: `retry: { maxAttempts: Number(process.env.X) }` is `NaN` when the
+  variable is unset. Now rejected with a `ValidationError` naming the value, and a fractional `maxAttempts` is
+  floored so it can no longer sleep toward an attempt that never happens.
+- **The DynamoDB registry enumerated segments with an eventually-consistent `Scan`** while `get()` on the same
+  table was strong. Every caller treats `list()` as the *complete* segment set, so a segment registered
+  moments earlier could be missing from: `eraseSubject`'s erasure ledger (**a GDPR Art. 17 miss, reported as
+  success**), `subjectReport`'s Art. 15 answer, and `runExport`'s manifest — where the segment lands in
+  neither the manifest nor `failed[]`, making "a manifest exists ⇒ the run finished" untrue. Now
+  `ConsistentRead: true`, matching `get()` and the warm driver's `listChunks`. Costs 2× RCU on that Scan,
+  which is the right trade for a correctness-critical enumeration.
+
+### Documentation
+
+- **`PRIVACY.md` — which ships inside the tarball — showed two calls that throw.** `subjectReport(id)` and
+  `eraseSubject(id, { owner })` both hit a tenancy guard requiring an explicit `namespace` (or an
+  `{ allNamespaces: true }` acknowledgement), because ids live in one global space shared across namespaces.
+  Installed users were reading a GDPR compliance document whose examples fail. Corrected there and in
+  `README.md`.
+- **`PRIVACY.md` credited `subjectReport` with returning the erasure ledger.** It returns membership only; the
+  ledger comes from `eraseSubject`. This sat in the Art. 30 accountability section.
+- **The README overstated the integrity guarantee.** It read "every object a SHA-256, verified before use".
+  The digest is computed at write and handed back to the caller — it is **not stored and never re-compared on
+  read**. The read-path guarantee is the CRC32C, which *is* verified before the bytes reach the deserializer.
+  Reworded to say exactly that, and to say what the SHA-256 is actually for.
+- **`api-reference` documented a `keep` option on `store.compact`** that `CompactionOptions` does not have;
+  `keep` exists only on `gcOrphanGenerations`/`runCompactionCycle`. Replaced with the real options.
+- **Status lines still said pre-publish** and told readers to use a local clone, two releases after publishing.
+
 ## [0.1.1] - 2026-07-26
 
 Documentation-only. No runtime code changed — `dist/` is byte-identical in intent; only the prose that ships

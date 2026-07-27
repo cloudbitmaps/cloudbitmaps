@@ -14,7 +14,7 @@
  * because each retry must re-read and re-apply, not blindly replay the same call.
  */
 import type { Clock, Rng } from './determinism';
-import { isTransientError } from './errors';
+import { isTransientError, ValidationError } from './errors';
 
 export interface RetryPolicy {
   /** Total attempts including the first (so `maxAttempts: 4` = 1 try + 3 retries). Must be ≥ 1. */
@@ -94,7 +94,18 @@ export async function withRetry<T>(
   deps: RetryDeps,
 ): Promise<T> {
   const retryable = deps.isRetryable ?? isTransient;
-  const attempts = Math.max(1, policy.maxAttempts);
+  // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
+  // so the loop below would never execute: `op()` never called, and the function rejects with the literal
+  // `undefined` from `lastErr`. Every write would silently no-op without touching the backend, and callers
+  // would catch a non-Error. Reachable from ordinary wiring — `maxAttempts: Number(process.env.X)` with the
+  // var unset is NaN. Fail loudly instead, and floor it so a fractional value can't sleep on a final attempt
+  // that never happens.
+  if (!Number.isFinite(policy.maxAttempts) || policy.maxAttempts < 1) {
+    throw new ValidationError(
+      `retry.maxAttempts must be a finite number >= 1 (got ${String(policy.maxAttempts)})`,
+    );
+  }
+  const attempts = Math.floor(policy.maxAttempts);
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
