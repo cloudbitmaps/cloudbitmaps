@@ -1084,6 +1084,34 @@ loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer sh
 
 ## Troubleshooting
 
+### `Cannot find module './build/Release/roaring.node'` after a successful install
+
+If you install with **`--ignore-scripts`** — a common hardening default in CI — the install **exits 0** and the
+package is then unusable at runtime:
+
+```
+$ npm i --ignore-scripts @cloudbitmaps/roaring
+$ node -e "require('@cloudbitmaps/roaring')"
+Error: Cannot find module './build/Release/roaring.node'
+```
+
+**Why.** The native dependency `roaring` publishes an npm tarball containing **no** compiled binary; it ships an
+`install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Disable install
+scripts and that download never happens, so there is nothing for the addon loader to find. npm reports success
+because the *install* did succeed — only the post-install step was skipped.
+
+**Fixes, in order of preference:**
+
+1. **Allow the install script for that one package.** Both npm and pnpm let you narrow the exception rather than
+   re-enabling scripts globally — pnpm's `onlyBuiltDependencies`, or an npm install run scoped to it.
+2. **`npm rebuild roaring`** after the ignore-scripts install; it runs the skipped step.
+3. **Build from source** — `npm_config_build_from_source=true npm i` with a C/C++ toolchain present. Also the
+   route on **Alpine/musl**, where no prebuilt binary is published at all.
+
+**Check it at install time, not at 3am.** Because npm's exit code cannot tell you about this, add a startup or CI
+assertion that the addon actually loads — `node -e "require('@cloudbitmaps/roaring')"` — so a broken install
+fails your pipeline instead of your first request.
+
 ### `DEP0169 DeprecationWarning: url.parse() behavior is not standardized`
 
 You will see this on stderr the first time the package is loaded:
@@ -1119,6 +1147,23 @@ that flag, either drop it for the process that loads CloudBitmaps or allow this 
 
 **What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
 about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
+
+## What blocks the event loop, and where to run it
+
+Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
+is network-bound and irrelevant here — a warm `has()` spends ~0.04% of its time on bit math — but two paths are
+genuinely CPU-heavy, and measured on an M3 Pro they are not subtle:
+
+| path | cost | where it belongs |
+| --- | --- | --- |
+| `bulkLoadCrbmGeneration` (1M ids) | **~800–1,400 ms** | a batch job or worker, **never** a request handler |
+| a compaction cycle | ~22 ms of bit math | the `compact-segments` **daemon**, which is a separate process for exactly this reason |
+| `add` / `remove` / `has` / `count` / `intersect` | microseconds of CPU; dominated by network | anywhere |
+
+**The rule:** anything that touches a whole generation belongs out of the request path. The compaction daemon
+already is a separate process — run it that way rather than calling `runCompactionCycle` inline in a server.
+For bulk-load, use a job runner, a queue consumer, or a short-lived task; a 1M-id load inside an HTTP handler
+freezes that instance for over a second.
 
 ## Where next
 
