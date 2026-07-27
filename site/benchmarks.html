@@ -233,7 +233,7 @@
               capacity taken from AWS&rsquo;s own <code>ConsumedCapacity</code> rather than estimated &mdash; so
               the op costs are measured, not assumed. It is still not an <em>invoice</em>: request tiers and
               storage-class transitions are unmeasured, and the tagged Cost Explorer reconciliation is blocked
-              on the account the run used. In-region latency is separately <strong>not</strong> calibrated.
+              on the account the run used. In-region latency is calibrated separately &mdash; a 2026-07-27 run from inside <code>us-east-1</code> puts a warm <code>has()</code> at <strong>p50 5.27&nbsp;ms / p99 12.71&nbsp;ms</strong> (n=2,000), inside the single-digit-to-~25&nbsp;ms target. Two independent runs agreed on every percentile to within ~0.5&nbsp;ms; <code>max</code> (39.61&nbsp;ms) is above the target, so the claim is &ldquo;p99 inside budget&rdquo;, not &ldquo;always&rdquo;.
             </li>
             <li>
               <strong>Cost, not latency.</strong> Wall-clock latency/throughput are measured offline (too

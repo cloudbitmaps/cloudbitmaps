@@ -143,8 +143,36 @@ Line that up against the phases and the whole table decodes:
 So this run **calibrates the cost claim and does not calibrate the in-region latency claim** — it cannot. The
 North Star target for a warm `has()` is a single-digit-to-~25 ms round trip, and the
 network floor here is 96 ms, roughly **4× that entire budget**. Nothing in this table contradicts the target;
-nothing in it confirms the target either. Confirming it needs a client inside the region (Lambda/EC2 in
-`us-east-1`), which is a named follow-up, not a claim we make from this data.
+nothing in it confirms the target either. Confirming it needed a client inside the region — which is what the
+next section does.
+
+### In-region latency — measured 2026-07-27
+
+Run from **AWS CloudShell in `us-east-1`**, so the 96 ms transit floor above is gone. The workload seeds
+**warm-only** and never compacts, so no Cold generation exists and every `has()` must reach DynamoDB; the HOT
+cache holds decoded *Cold* chunks, so it cannot mask a warm read. The **published npm package** is installed
+rather than a local build, so this measures what you get from `npm i`.
+
+| warm `has()` | n = 2,000 | n = 300 (independent run) |
+| --- | --- | --- |
+| min | 2.04 ms | 2.22 ms |
+| **p50** | **5.27 ms** | 4.83 ms |
+| p90 | 6.36 ms | 6.29 ms |
+| p95 | 7.15 ms | 7.23 ms |
+| p99 | **12.71 ms** | 12.55 ms |
+| max | 39.61 ms | 224.95 ms |
+
+**The target is met: p50 5.27 ms and p99 12.71 ms both sit inside the single-digit-to-~25 ms budget.** The
+in-region p50 is roughly **20× below run 1's network floor alone**, which is why that run could say nothing
+either way. Two independent runs agree on every percentile to within ~0.5 ms — that agreement, not either run
+by itself, is the reason to believe the distribution rather than a single sample.
+
+**What this does not claim.** The `max` is **above** the budget, so the honest statement is *"p99 inside
+budget"*, not *"always inside budget"*. The 224.95 ms outlier in the smaller run did **not** recur at 6.7× the
+sample count, so it was a one-off transient — an SDK retry, a GC pause, a DynamoDB hiccup; one occurrence cannot
+distinguish them — rather than a tail shape. **p999 is not published**: at n=2,000 it is ~2 samples deep, which
+is not a number anyone should plan against. And CloudShell measures the **engine**; a Lambda run would measure
+the *serverless* story with cold-start and init included, which is a different figure and a separate follow-up.
 
 ### Is that acceptable for a segmentation engine?
 
@@ -253,9 +281,11 @@ _Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the live heap**
   shared runners are too noisy); and the real-cloud section is _measured AWS cost + latency_ (owner-run against a
   real account, 2026-07-25). Only the third is cloud-calibrated, and even then the dollars are published prices
   applied to wire-metered requests plus an invoice reconciliation, not the invoice itself.
-- **The real-cloud latency figures are client-outside-the-region.** They are dominated by a measured 96 ms
-  internet round trip and so calibrate the **cost** claim, not the in-region latency claim — see
-  [Real-cloud calibration](#what-it-cost-in-latency--and-why-the-number-is-what-it-is).
+- **Two different latency measurements, do not mix them.** The 2026-07-25 cost run's latency figures are
+  **client-outside-the-region**, dominated by a measured 96 ms internet round trip, and calibrate the **cost**
+  claim only. The **in-region** figures (p50 5.27 ms, p99 12.71 ms) come from a separate 2026-07-27 run inside
+  `us-east-1` — see [In-region latency](#in-region-latency--measured-2026-07-27). Neither is an SLA: both are
+  single-region, single-account samples, and `max` exceeds the target in the in-region run.
 
 ## Reproduce
 
