@@ -30,7 +30,7 @@ Every command runs from the **repo root** — it is a pnpm workspace, and the ro
 
 ## Repo layout (a pnpm workspace of two packages)
 
-The `@cloudbitmaps` family split (DECISIONS #58) makes this repo a workspace
+The `@cloudbitmaps` family split makes this repo a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |

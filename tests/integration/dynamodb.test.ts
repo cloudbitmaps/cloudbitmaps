@@ -84,7 +84,7 @@ warmConformance(
   () => new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: `conf${n++}` }),
 );
 
-// Registry rows co-locate with warm rows in the same single table (DECISIONS #15); a unique keyPrefix per
+// Registry rows co-locate with warm rows in the same single table; a unique keyPrefix per
 // driver isolates each conformance run. A monotonic clock keeps updatedAt advancing.
 const ticking = (): (() => number) => {
   let t = 1_000;

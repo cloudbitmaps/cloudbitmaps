@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 // Guards that no user-facing file still tells a reader to install or import the RETIRED unscoped package name.
 //
-// `cloud-roaring` survives on npm only as a non-functional `0.0.0` placeholder ([DECISIONS #58]); the real
+// `cloud-roaring` survives on npm only as a non-functional `0.0.0` placeholder; the real
 // packages are `@cloudbitmaps/roaring` (+ `/s3`, `/dynamodb`, …) and `@cloudbitmaps/core`. A doc or site page
 // that says `npm i cloud-roaring` or `from 'cloud-roaring'` hands the reader an empty package and a
 // `Cannot find module`, and it is the *most* copy-pasted content we publish.
@@ -23,19 +23,6 @@ const SKIP_DIRS = new Set([
   'build',
   '.pack-tmp',
   '.rss-stage',
-]);
-
-/**
- * Two files are immutable historical records, both private (dropped from the public snapshot), and both
- * legitimately quote the old specifier as it stood at the time:
- *   - `DECISIONS.md` — ADRs carry stable IDs and are *superseded*, never rewritten (its own stated rule), so
- *     an ADR that discussed `npm i cloud-roaring` must keep saying that.
- *   - `research/00-ORIGIN-CONVERSATION.md` — a verbatim archived transcript; editing it would falsify it.
- * Everything else — including every other internal design doc — is held to the current name.
- */
-const HISTORICAL = new Set([
-  'docs/internal/DECISIONS.md',
-  'docs/internal/research/00-ORIGIN-CONVERSATION.md',
 ]);
 
 /** User-facing files: the root docs, both package READMEs, everything under `docs/`, and every site page. */
@@ -62,12 +49,14 @@ function publicFacingFiles(): string[] {
       else if (match(entry)) out.push(childRel);
     }
   };
-  // `docs/internal/` is included deliberately: a stale specifier in a design doc is still a wrong instruction
-  // to the next contributor, and CHANGELOG history is exempted below rather than by skipping whole trees.
+  // Everything under `docs/` is in scope. There is no allowlist: this repo contains only public-bound docs,
+  // so every one of them is an instruction a reader will follow, and a stale specifier in any of them is
+  // simply wrong. (An earlier version carried two exemptions for immutable historical records that lived in a
+  // separate, private tree — dead weight here, and removed with it.)
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));
-  return out.filter((rel) => !HISTORICAL.has(rel));
+  return out;
 }
 
 /**

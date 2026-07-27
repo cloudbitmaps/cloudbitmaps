@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 // Guards that every relative link in the repo's docs and in the shareable `site/` pages actually resolves on
 // disk. Dead links are cheap to introduce (a doc moves, a page is renamed) and invisible until a reader hits a
-// 404 — and `site/` deploys publicly at launch, so a broken link there is outward-facing. This caught five
-// `site/` links pointing into `docs/internal/`, which is stripped from the public snapshot.
+// 404 — and `site/` deploys publicly, so a broken link there is outward-facing. It also enforces the harder
+// rule below: no file in this repository may reference a document that only exists in the private one.
 //
 // Scope: relative targets only. Absolute `http(s)://` URLs need the network and would make the gate flaky;
 // `mailto:` and pure `#anchor` fragments carry no path.
@@ -145,32 +145,31 @@ describe('docs & site links', () => {
     );
   });
 
-  // Existence on disk is NOT the launch invariant. `docs/internal/` exists locally, so a public page linking
-  // into it resolves here and 404s only after the snapshot drops that directory — which is why five such links
-  // survived the package split unnoticed. Assert it directly, for the two surfaces that must already be clean:
-  // `site/`, which deploys as standalone static HTML, and the public roadmap. Every other public-bound file
-  // still cites internal docs legitimately pre-launch; those are `pnpm leak-scan --snapshot`'s job to gate at
-  // curation time, not a permanently-red test.
-  const publicSurface = files.filter(
-    (f) => f.startsWith('site/') || f === join('docs', 'ROADMAP.md'),
-  );
-  it.each(publicSurface)(
-    '%s — links nothing under docs/internal (dropped from the snapshot)',
-    (rel) => {
-      const src = readFileSync(join(ROOT, rel), 'utf8');
-      const internal = linkTargets(src)
-        .filter(isRelative)
-        .filter((raw) => {
-          const path = raw.split('#')[0]?.split('?')[0] ?? '';
-          if (path === '') return false;
-          const abs = path.startsWith('/')
-            ? join(ROOT, normalize(path))
-            : resolve(ROOT, dirname(rel), path);
-          return abs.startsWith(join(ROOT, 'docs', 'internal'));
-        });
-      expect(internal).toEqual([]);
-    },
-  );
+  // THE INVARIANT: no file in this repository references a document that lives only in the private repo.
+  //
+  // Existence on disk was never the test — a link into a tree that is not published resolves for whoever has
+  // both repos checked out and 404s for everyone else, which is exactly how five such links survived the
+  // package split unnoticed. So this asserts the absence of the reference itself, not whether it resolves.
+  //
+  // The scope used to be just `site/` and the public roadmap, on the stated grounds that "every other
+  // public-bound file still cites internal docs legitimately pre-launch". That premise is now retired: the
+  // citations are gone from every file — the CHANGELOG's included — so the guard covers everything it can see.
+  // Narrowing it again would mean a reference reappearing somewhere this test deliberately isn't looking.
+  const publicSurface = files;
+  it.each(publicSurface)('%s — references no document outside this repository', (rel) => {
+    const src = readFileSync(join(ROOT, rel), 'utf8');
+    const internal = linkTargets(src)
+      .filter(isRelative)
+      .filter((raw) => {
+        const path = raw.split('#')[0]?.split('?')[0] ?? '';
+        if (path === '') return false;
+        const abs = path.startsWith('/')
+          ? join(ROOT, normalize(path))
+          : resolve(ROOT, dirname(rel), path);
+        return abs.startsWith(join(ROOT, 'docs', 'internal'));
+      });
+    expect(internal).toEqual([]);
+  });
 
   it.each(files)('%s — every relative link resolves', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
@@ -190,9 +189,9 @@ describe('docs & site links', () => {
 
   // Resolving the *path* was never the whole invariant. `[x](docs/benchmarks.md#renamed-heading)` passes the
   // check above and still lands the reader at the top of the page with no indication anything is wrong — which
-  // is how a stale table-of-contents entry in `07-THREAT-MODEL.md` and six links to a phase-doc heading that
-  // had since gained a `*(gate — ☑ SHIPPED)*` suffix all survived. Headings drift; fragments pointing at them
-  // must fail loudly when they do.
+  // is how a stale table-of-contents entry, and six links to a heading that had since gained a
+  // `*(gate — ☑ SHIPPED)*` suffix, all survived. Headings drift; fragments pointing at them must fail loudly
+  // when they do.
   //
   // Only `.md` targets are checked: `site/*.html` fragments resolve against hand-authored `id=`s, and a
   // `#L997-L1015` line range is a GitHub blob-view convention, not a heading.
