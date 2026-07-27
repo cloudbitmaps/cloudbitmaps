@@ -74,7 +74,7 @@
     "@types/node": "^22.0.0",
     "@types/pg": "^8",
     "cassandra-driver": "^4",
-    "dependency-cruiser": "^16.0.0",
+    "dependency-cruiser": "^18.1.0",
     "eslint": "^9.0.0",
     "fast-check": "^4.8.0",
     "husky": "^9.0.0",
@@ -95,6 +95,12 @@
   "pnpm": {
     "auditConfig": {
       "ignoreGhsas": []
+    },
+    "overrides": {
+      "adm-zip": ">=0.6.0",
+      "qs": ">=6.15.2",
+      "uuid": "^11.1.1",
+      "esbuild": ">=0.28.1"
     }
   }
 }
