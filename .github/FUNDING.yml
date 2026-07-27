@@ -1,0 +1,6 @@
+# Renders the "Sponsor" button on the repo. Deliberately ONE channel: a single, obvious way to support the
+# project reads as maintained; a wall of donation badges reads as a funnel, which is the opposite of the
+# signal this project wants. There is no paid tier and no hosted service — see docs/ROADMAP.md, which rules
+# out a managed offering outright — so this is the only commercial surface the project has, and it is
+# support-the-maintainer, not buy-a-feature.
+github: sharvilk
