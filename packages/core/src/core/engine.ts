@@ -60,6 +60,16 @@ class ZeroRng implements Rng {
   }
 }
 
+/**
+ * Default ceiling on resident warm-delta bytes for a single segment scan: 64 MiB.
+ *
+ * Chosen to be generous enough that no realistic segment trips it — a maximally-wide segment of 65,536 chunks
+ * would need ~1 KiB of warm delta per chunk to reach it — while still being small enough to keep a modest
+ * container (a 512 MiB Lambda, say) alive rather than OOM-killed when a pathological segment or a hostile
+ * caller shows up.
+ */
+export const DEFAULT_MAX_WARM_SCAN_BYTES = 64 * 1024 * 1024;
+
 export interface EngineDeps {
   readonly warm: IWarmDriver;
   readonly cold: ColdChunkSource;
@@ -94,6 +104,19 @@ export interface EngineDeps {
    */
   readonly writeConcurrency?: number;
   /**
+   * Hard ceiling on the bytes one warm scan may hold resident, in bytes. Default {@link DEFAULT_MAX_WARM_SCAN_BYTES}.
+   *
+   * **Separate from `budget`, and enforced even when `budget: false`.** The budget bounds *cost* — billable
+   * requests — which is a different axis from memory, and conflating the two is what let a segment with
+   * thousands of warm chunks materialise ~12 MB before a `maxRequests: 2` budget could refuse it. It is also
+   * why `intersect` cannot use the budget as a memory bound: its budget is `common keys × operands`, a product
+   * that one wide operand can legitimately exceed in row count while staying entirely legal.
+   *
+   * Always on, because a ceiling that `budget: false` switches off is missing at exactly the moment it is
+   * needed. Configurable, because a ceiling you cannot raise is a landmine for a legitimately large segment.
+   */
+  readonly maxWarmScanBytes?: number;
+  /**
    * Per-op denial-of-wallet budget (07 Decision #3 / T3), already resolved by the facade: a {@link Budget} to
    * enforce, or `null` to disable. Undefined ⇒ {@link DEFAULT_BUDGET} (a direct engine construction still gets
    * the generous default). Read ops refuse before fan-out if they'd exceed it.
@@ -118,6 +141,7 @@ export class SegmentEngine {
   /** Consistency for READ-path Warm fetches (precomputed; OCC RMW passes strong explicitly, see `warmGet`). */
   private readonly readOpts: WarmReadOptions;
   private readonly writeConcurrency: number;
+  private readonly maxWarmScanBytes: number;
   /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. See {@link checkBudget}. */
   private readonly budget: Budget | null;
 
@@ -133,6 +157,12 @@ export class SegmentEngine {
     this.occBackoff = deps.occBackoff ?? DEFAULT_OCC_BACKOFF;
     this.readOpts = { consistent: (deps.warmReadConsistency ?? 'strong') !== 'eventual' };
     this.writeConcurrency = deps.writeConcurrency ?? 1;
+    this.maxWarmScanBytes = deps.maxWarmScanBytes ?? DEFAULT_MAX_WARM_SCAN_BYTES;
+    if (!Number.isFinite(this.maxWarmScanBytes) || this.maxWarmScanBytes < 1) {
+      throw new ValidationError(
+        `maxWarmScanBytes must be a finite number >= 1 (got ${String(deps.maxWarmScanBytes)})`,
+      );
+    }
     // undefined ⇒ the generous default; null ⇒ explicitly disabled (must not be re-defaulted by `??`).
     this.budget = deps.budget === undefined ? DEFAULT_BUDGET : deps.budget;
     // Wrap for defense-in-depth (idempotent for the no-op) so even a direct engine construction with a
@@ -491,6 +521,17 @@ export class SegmentEngine {
     for await (const row of this.warm.listChunks(seg, this.readOpts)) {
       rows.set(row.chunkKey, row.bytes);
       bytes += row.bytes.length;
+      // The byte ceiling applies to EVERY read op, including intersect, and ignores `budget` entirely — see
+      // `maxWarmScanBytes`. This is the bound that makes `budget: false` safe and that covers intersect, whose
+      // product-shaped budget cannot express a memory limit.
+      if (bytes > this.maxWarmScanBytes) {
+        throw new BudgetExceededError(
+          `${op} would hold more than ${this.maxWarmScanBytes} bytes of warm deltas resident for one segment ` +
+            `— the scan was abandoned there rather than completed. Raise \`maxWarmScanBytes\`, narrow the ` +
+            `segment, or compact it so fewer chunks carry warm deltas. (This ceiling is independent of ` +
+            `\`budget\` and stays in force when \`budget: false\`.)`,
+        );
+      }
       // `>` and `rows.size` (not a raw counter): a duplicate chunkKey overwrites rather than growing the Map,
       // so the size is the true resident row count and matches what the post-drain check used to compare.
       //

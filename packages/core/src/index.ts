@@ -20,6 +20,7 @@
 // which is precisely core's audience.
 // ---------------------------------------------------------------------------------------------------
 export { SegmentEngine } from './core/engine';
+export { DEFAULT_MAX_WARM_SCAN_BYTES } from './core/engine';
 export type { EngineDeps } from './core/engine';
 export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';

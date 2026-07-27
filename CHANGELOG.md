@@ -77,6 +77,22 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   - Bulk-load remains a **batch primitive** — it is still hundreds of milliseconds for large inputs and still
     belongs in a job or worker, never a request handler. See the guide's event-loop section.
 
+### Added
+
+- **`maxWarmScanBytes` — a memory ceiling that is deliberately *not* the budget** (default **64 MiB**, exported
+  as `DEFAULT_MAX_WARM_SCAN_BYTES`). It caps the warm-delta bytes a single segment scan may hold resident, for
+  every read op, and — unlike `budget` — **stays in force when `budget: false`**.
+  - Two controls because there are two axes. `budget` bounds **cost** (backend requests); this bounds
+    **memory**. Treating one as the other is what allowed a segment to materialise ~12 MB before a
+    `maxRequests: 2` budget could refuse it, and then caused a first attempt at that fix to wrongly tighten
+    `intersect`.
+  - **It is the only bound `intersect` can have.** Its budget is `common keys × operands`, a product a single
+    wide operand can legitimately exceed in row count while remaining entirely within contract — so a request
+    budget cannot express a memory limit for it. `intersect` was the last unbounded read path; it no longer is.
+  - **Always on, and raisable.** A ceiling that `budget: false` switches off is missing exactly when it is
+    needed; one you cannot raise is a landmine for a legitimately large segment. Invalid values (including the
+    `NaN` you get from an unset `Number(process.env.X)`) are rejected at construction, not on the first read.
+
 ## [0.2.0] - 2026-07-27
 
 **Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported

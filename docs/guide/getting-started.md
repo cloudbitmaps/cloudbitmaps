@@ -1148,6 +1148,26 @@ that flag, either drop it for the process that loads CloudBitmaps or allow this 
 **What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
 about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
 
+### Two different limits: `budget` (cost) and `maxWarmScanBytes` (memory)
+
+They are separate on purpose, and it is worth knowing which one you just hit.
+
+| | `budget` | `maxWarmScanBytes` |
+| --- | --- | --- |
+| bounds | **cost** — backend requests a single op may fan out into | **memory** — warm-delta bytes one segment scan holds resident |
+| default | generous; `budget: false` disables it | **64 MiB**, and **`budget: false` does not disable it** |
+| covers | `count` · `iterate` · `intersect` · `subjectReport` · `eraseSubject` | every read op, `intersect` included |
+
+Why not one control? Because `intersect`'s budget is `common keys × operands` — a *product* — and a single wide
+operand can legitimately hold far more warm rows than that product while staying entirely within contract. A
+request budget therefore cannot express a memory bound for it. And `budget: false` is a reasonable choice ("I
+know my fan-out"), which must not silently also mean "unbounded RAM".
+
+Both refuse with `BudgetExceededError`, and both abandon the scan at the ceiling rather than completing it —
+so the error reports the limit rather than an exact total, because computing the total is the cost being
+refused. If you hit the memory ceiling, raise `maxWarmScanBytes`, narrow the segment, or compact it so fewer
+chunks carry warm deltas; raising `budget` will not help.
+
 ## What blocks the event loop, and where to run it
 
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
