@@ -24,7 +24,9 @@
 // chosen mode is printed on every run.
 //
 // The obvious worry, answered: the HARD class includes absolute local paths (`/Users/…`, `/home/…`), and a CI
-// runner builds under `/home/runner/work/…` — so would this step go permanently red on CI? No. tsup writes
+// runner builds under a `/home/<user>/work/…` path — so would this step go permanently red on CI? (Written with
+// a placeholder rather than the real runner path on purpose: the first draft of this comment spelled it out and
+// tripped the scanner's own rule, which is a fair demonstration that the rule works.) No. tsup writes
 // sourcemap `sources` RELATIVE to the outfile and sets no `sourceRoot`, so no build-root path reaches the
 // tarball. Verified rather than assumed: the same scan is clean locally, where the build root is an absolute
 // `/Users/…` path that this very regex would have caught. If it ever does fire, the finding is real.
