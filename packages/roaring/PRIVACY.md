@@ -61,13 +61,14 @@ CloudBitmaps gives you three erasure levers with different guarantees. Use them 
 | **Physical purge** | `store.compact(ref, { owner })` on demand, or the compaction daemon (`compact-segments` / `runCompactionCycle`) on a schedule | A compaction folds the tombstone into a fresh generation and **physically drops** the bit. | meeting a physical-deletion deadline — *run compaction (the daemon on a schedule, or `store.compact` on demand) inside your SLA* |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
-**Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is `store.eraseSubject(id, { owner })`:
+**Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
+`store.eraseSubject(id, { owner, namespace })`:
 it removes the id from every **registered** segment it's in *and* force-compacts those segments on the spot, so
 the bit is physically gone from Cold on return — even for idle/archival segments organic compaction would never
 touch. It reuses the store's own drivers (so build the store with a raw cold driver + a registry). It returns an
 **erasure ledger** (per-segment: removed / physically-purged / which generation retired the bit) as your proof
-of deletion; persist it or route it to your audit sink. `store.subjectReport(id)` answers the read side (Art. 15
-— which segments an id is in). Run erasure without concurrently re-adding the same id; any ledger entry with
+of deletion; persist it or route it to your audit sink. `store.subjectReport(id, { namespace })` answers the read side
+(Art. 15 — which segments an id is in). Run erasure without concurrently re-adding the same id; any ledger entry with
 `physicallyPurged:false` (a held compaction lease, or an isolated fault) needs a follow-up `store.compact(ref)` —
 re-running `eraseSubject` won't re-purge it.
 
@@ -129,7 +130,8 @@ Wire the **audit sink** (`IAuditSink`) to get an append-only, vendor-neutral rec
 state changes — `segment.publish`, `segment.compact`, `segment.erase` (a genuine crypto-shred), and
 `namespace.erase` — for your audit log / SIEM. It is off by default and exception-safe. See the
 [dashboards guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/dashboards.md). An erasure *ledger* — per-subject-request proof of physical
-deletion — is returned by `subjectReport` / `eraseSubject` (shipped in Phase 6b).
+deletion — is returned by **`eraseSubject`** (shipped in Phase 6b). `subjectReport` is the read side and
+returns only which segments an id is in; it performs no deletion and issues no ledger.
 
 **Log hygiene:** `segment` / `namespace` are *your* strings and may encode sensitive purpose; IDs are personal
 data. The library never logs bitmap contents or raw IDs, but **you** should treat segment names and IDs as PII

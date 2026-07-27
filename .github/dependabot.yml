@@ -1,27 +1,38 @@
 # Keep dependencies current — monthly + grouped (weekly is too noisy) with a short cooldown so brand-new
 # releases settle before we pick them up. Monthly + grouped, per our dependency-bot baseline.
+#
+# MAJORS ARE NEVER GROUPED. A grouped PR is meant to be a routine, low-attention merge; bundling a
+# major-version jump into one turns "bump the github-actions group with 2 updates" into an
+# actions/upload-artifact v4 -> v7 upgrade wearing a chore label. Minor+patch batch into a single monthly PR;
+# each major arrives on its own, so the title names the risk and the diff is the only thing you review.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     cooldown:
       default-days: 7
     groups:
       npm-dependencies:
         patterns:
           - '*'
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     cooldown:
       default-days: 7
     groups:
       github-actions:
         patterns:
           - '*'
+        update-types:
+          - minor
+          - patch

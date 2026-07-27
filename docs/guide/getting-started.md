@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.1.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.1.1` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
@@ -8,7 +8,7 @@
 > **Cassandra/ScyllaDB**, and **MySQL/MariaDB**, the **segment registry**, **automatic retry/backoff**, a **crash-safe streaming
 > compaction daemon**, and **encryption-at-rest + crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
 > Phase 7 driver set; the full v1 experience is sketched in
-> the usage walkthrough. Until publish, use it from a local clone. The API may
+> the usage walkthrough. The API may
 > change before 1.0.
 
 > **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the

@@ -91,7 +91,7 @@ That's the whole daily surface: **1 constructor + pick 3 drivers + these 7 verbs
 |---|---|
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `SubjectReport` | GDPR Art. 15 — which registered segments is this id in? (needs an explicit namespace or an `allNamespaces` ack) |
 | `store.eraseSubject(id, { owner, namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `EraseSubjectResult` | GDPR Art. 17 — remove an id everywhere + physically purge; returns a proof ledger |
-| `store.compact(ref, { owner, keep? })` → `CompactionResult` | fold warm deltas into a fresh cold generation (usually the daemon does this) |
+| `store.compact(ref, { owner, leaseMs?, audit? })` → `CompactionResult` | fold warm deltas into a fresh cold generation (usually the daemon does this) |
 | `store.checkConsistency({ namespace?, concurrency? })` → `ConsistencyReport` | DR: verify every segment's `currentGen` `.crbm` is present (catch a torn cross-tier restore) |
 | `store.exportSegments(sink, { format?, namespace?, candidates? })` → `ExportManifest` | eject every segment to portable `roaring`/`ndjson` |
 | `seg.costReport({ pricing?, workload?, topology? })` → `CostReport` | grounded $ cost for this segment (from its real cold size) |

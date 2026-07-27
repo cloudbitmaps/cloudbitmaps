@@ -28,10 +28,13 @@ interface Step {
 interface Job {
   needs?: string | string[];
   permissions?: Record<string, string>;
+  environment?: string;
+  'runs-on'?: string;
   steps: Step[];
 }
 
 const wf = parse(readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8')) as {
+  permissions?: Record<string, string>;
   jobs: Record<string, Job>;
 };
 
@@ -40,6 +43,10 @@ function job(name: string): Job {
   const j = wf.jobs[name];
   if (!j) throw new Error(`release.yml has no "${name}" job`);
   return j;
+}
+/** Permissions as GitHub actually resolves them: job-level block wins, else the workflow-level one. */
+function effectivePermissions(name: string): Record<string, string> {
+  return job(name).permissions ?? wf.permissions ?? {};
 }
 const stepNames = (j: Job) => j.steps.map((s) => s.name ?? s.uses ?? s.run ?? '');
 const hasStep = (j: Job, name: string) => stepNames(j).some((n) => n === name);
@@ -63,11 +70,30 @@ describe('release workflow shape', () => {
     expect(publishesElsewhere).toEqual([]);
   });
 
-  it('keeps contents:write off the job that publishes', () => {
-    // SECURITY.md promises the publish job carries only the OIDC token. If that stops being true the
-    // statement in the docs becomes false, which is worse than never having claimed it.
-    expect(job('publish').permissions?.contents).not.toBe('write');
-    expect(job('github-release').permissions?.contents).toBe('write');
+  it('keeps contents:write off the job that publishes — EFFECTIVE, not just job-level', () => {
+    // The first version of this test read `job('publish').permissions?.contents`, which is `undefined`
+    // because the publish job declares no job-level block — so `.not.toBe('write')` passed without
+    // inspecting anything. A `contents: write` added at the WORKFLOW level would be inherited by the
+    // publish job and this test would still have been green, which is the exact opposite of its purpose.
+    // Permissions resolve job-level first, falling back to workflow-level, so the assertion must too.
+    expect(effectivePermissions('publish').contents).not.toBe('write');
+    expect(effectivePermissions('github-release').contents).toBe('write');
+    // The publish job's whole justification is that it holds the OIDC token and nothing else.
+    expect(effectivePermissions('publish')['id-token']).toBe('write');
+  });
+
+  it('keeps the human approval gate wired to the publish job', () => {
+    // `environment: release` is the single line that makes a publish require a reviewer, and RELEASING.md
+    // calls it "the last point at which a release can be stopped". Deleting it fails SILENTLY: every other
+    // test stays green, CI is green, and the next tag publishes with no prompt — and a run that never
+    // pauses is indistinguishable from one whose reviewer approved quickly. Worse than a red job.
+    expect(job('publish').environment).toBe('release');
+  });
+
+  it('publishes only from a GitHub-hosted runner, because provenance needs its OIDC identity', () => {
+    // A self-hosted runner has no OIDC identity to attest to, so the publish would succeed and silently
+    // lose the attestation — RELEASING.md lists exactly this as a symptom.
+    expect(job('publish')['runs-on']).toBe('ubuntu-latest');
   });
 
   it('every job that runs pnpm also installs pnpm', () => {

@@ -89,8 +89,13 @@ Phase 8). The controls:
   install regardless — provision a toolchain (`apk add --no-cache build-base python3`) or use a glibc base
   image. The from-source path is currently CI-proven on glibc (AL2023); a musl/Alpine lane is a tracked
   follow-up (the guarantee is documented, not yet gated).
-- **Least-privilege CI.** Workflows declare minimal `permissions:` (the default CI job is `contents: read`;
-  only the release job adds `id-token: write` for provenance). No workflow has write access to repo contents.
+- **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
+  `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
+  `contents: write`** — `github-release`, which creates the GitHub Release object and cannot publish. The job
+  that *does* publish never holds it, which is the point of splitting them: the write scope lives on the job
+  an attacker gains least from. Enforced, not merely stated —
+  [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) resolves **effective** permissions
+  (job-level, falling back to workflow-level) and fails if the publish job can ever write to the repo.
 
 Releases run through the workflow only. It can also be dispatched in **dry-run**
 (`workflow_dispatch` with `dryRun: true`), which exercises the **full gate + tarball pack** without

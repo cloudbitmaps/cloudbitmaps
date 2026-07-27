@@ -14,7 +14,7 @@
 > giving up the fast, familiar in-memory API. Bitmaps too big for one machine's RAM live across tiered
 > cloud storage; you still just call `add`, `has`, `remove`, and `intersect`.
 
-> **Status: `0.1.0` — the first public release, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
+> **Status: `0.1.1` — published, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
 > tests — unit, property-vs-oracle, a deterministic fault-injecting simulator, conformance suites run
@@ -76,8 +76,11 @@ segments into this and the library breaks, am I stuck?* Short answer — **no** 
 - **Immutable + versioned + checksummed — a bug can't quietly eat your data.** Cold objects are write-once and
   generation-numbered; the registry's `currentGen` pointer is the only thing that makes one "live." The worst a
   compaction bug can do is write a *new* bad generation — the previous one is intact, and you roll the pointer
-  back. Every chunk/index/footer carries a CRC32C (every object a SHA-256), verified before use, so corruption
-  is **detected and rejected, never served as a wrong answer**.
+  back. Every chunk, index and footer carries a **CRC32C that is verified before the bytes reach the
+  deserializer**, so corruption is **detected and rejected, never served as a wrong answer**. A write also
+  returns the object's **SHA-256** for you to record if you want an end-to-end check of your own — but be
+  clear on the scope: that digest is *not* stored by the library and *not* re-checked on read. The read-path
+  integrity guarantee is the CRC32C.
 - **A one-command exit.** `store.exportSegments(sink)` (and the `export-segments` CLI) dumps every registered
   segment's current effective set to a portable file — `roaring` (loadable by any roaring library) or `ndjson`
   (zero-dependency) — so leaving is a command, not a research project (and it's a building block for a
@@ -257,7 +260,7 @@ for await (const id of seg.iterate()) {
 Swap the in-memory drivers for the local-filesystem ones (`LocalFsWarmDriver` + `LocalFsColdDriver`, passed
 straight in — the store wraps the cold driver in its `.crbm` reader for you) and the same code persists to disk
 and survives a restart — see the **[getting-started guide](docs/guide/getting-started.md)** for that and the
-full operation reference. (Pre-publish, use it from a local clone.)
+full operation reference.
 
 For the cloud, you pass **raw drivers** and wire each once — e.g. read-mostly on **S3 alone** (cold + registry
 on S3, warm in RAM; no DynamoDB):
@@ -317,8 +320,8 @@ new CloudRoaring({
 | Method | Does |
 |---|---|
 | `store.compact(ref, { owner })` | fold Warm deltas into a fresh Cold generation, in-process |
-| `store.eraseSubject(id, { owner })` | GDPR Art. 17 — remove an id everywhere + physical purge + erasure ledger |
-| `store.subjectReport(id)` | GDPR Art. 15 — which segments an id is in |
+| `store.eraseSubject(id, { owner, namespace })` | GDPR Art. 17 — remove an id everywhere + physical purge + erasure ledger |
+| `store.subjectReport(id, { namespace })` | GDPR Art. 15 — which segments an id is in |
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
