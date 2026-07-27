@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: tiered storage (RAM → warm KV → cold object store), chunk-skipping intersection, the .crbm format, crash-safe compaction, encryption-at-rest, and every storage driver.",
   "keywords": [
     "roaring",
