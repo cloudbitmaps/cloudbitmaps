@@ -38,6 +38,25 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   index, so `@cloudbitmaps/roaring` implements it. Additive and backwards-compatible: an existing custom codec
   keeps working untouched.
 
+### Security
+
+- **The release pipeline now scans the artifact it publishes, not just the source that produced it.** Every
+  package is packed, unpacked and leak-scanned before the publish
+  (`pnpm leak-scan:tarballs`). `dist/` is gitignored, so the existing source and git-history scans
+  structurally could not see the majority of the published bytes — and the sourcemaps carry every `src`
+  comment verbatim through `sourcesContent`. Verified against a planted string: the new gate catches a comment
+  that reaches the tarball *only* by that route.
+- **Every recoverable check now runs before the irreversible one.** An npm tarball is immutable outside a
+  72-hour window, so the release-notes extraction and the dependency audit moved ahead of `pnpm publish`
+  instead of after it (notes were previously only read by the `github-release` job, i.e. once nothing could be
+  done about a missing section). The audit specifically must re-run here because it is the one gate whose
+  verdict changes with no commit at all. `tests/ci/release-workflow.test.ts` now fails if any precondition is
+  ever moved after the publish.
+- **A release is never cancelled in flight** (`concurrency.cancel-in-progress: false`), so the two packages
+  cannot be left half-published; the npm upgrade the OIDC publish requires is pinned to a floor
+  (`npm@^11.5.1`) rather than `@latest`; and the `packages/*` guards fail closed if the glob ever matches
+  nothing instead of looping once over a literal path.
+
 ## [0.1.2] - 2026-07-27
 
 Correctness fixes found by an adversarial audit of the shipped source, plus the documentation defects the same
