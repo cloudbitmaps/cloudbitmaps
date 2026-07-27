@@ -2,14 +2,14 @@
  * `DynamoDbWarmDriver` — an {@link IWarmDriver} over DynamoDB (Phase 4a).
  *
  * The production warm tier: real **cross-process** optimistic concurrency via DynamoDB conditional writes
- * (unlike the LocalFs driver's in-process mutex). Each chunk is one item in a **single table** (DECISIONS
- * #15): `PK = ns#…|seg#…`, `SK = chunk#<key>`, with attributes `v` (the OCC token — a monotonic counter),
+ * (unlike the LocalFs driver's in-process mutex). Each chunk is one item in a **single table**:
+ * `PK = ns#…|seg#…`, `SK = chunk#<key>`, with attributes `v` (the OCC token — a monotonic counter),
  * `b` (the delta payload), `del` (tombstone flag). Every mutation is a conditional `UpdateItem` that does
  * the compare-and-set server-side: `ADD v :one` makes the counter strictly increasing and **never reused**,
  * even across delete→recreate (ABA-safe, D3), because a delete *tombstones* (`del=true`, counter advances)
  * rather than removing the item.
  *
- * `@aws-sdk/client-dynamodb` is an **optional peer dependency** (DECISIONS #13) — only consumers of
+ * `@aws-sdk/client-dynamodb` is an **optional peer dependency** — only consumers of
  * `cloud-roaring/dynamodb` install it; the client is injected. Drivers may use cloud SDKs; only `core/` is
  * SDK-free (lint-enforced).
  */

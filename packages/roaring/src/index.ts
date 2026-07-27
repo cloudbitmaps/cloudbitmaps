@@ -88,8 +88,8 @@ class SystemClock implements Clock {
     // backoff therefore always means unfinished awaited work, so the timer MUST keep the event loop alive until
     // it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI, Lambda, a bare script —
     // whose only remaining handle was the backoff timer exit 0 mid-retry, silently dropping the awaited write
-    // with neither an applied result nor a thrown error (surfaced by the T4 hot-row contention stress; see
-    // DECISIONS #16). Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
+    // with neither an applied result nor a thrown error (surfaced by the T4 hot-row contention stress).
+    // Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
     // extend a process by the small remaining backoff budget of work that is genuinely still in flight.
     return new Promise((resolve) => {
       setTimeout(resolve, ms);
@@ -434,7 +434,7 @@ export class CloudRoaring {
       warm,
       cold,
       cache,
-      codec: roaringCodec, // the facade injects the flagship codec ([DECISIONS #58]); core stays codec-agnostic
+      codec: roaringCodec, // the facade injects the flagship codec; core stays codec-agnostic
       clock,
       rng,
       occBackoff: options.occBackoff,
@@ -481,7 +481,7 @@ export class CloudRoaring {
       warm: this.warmDriver,
       registry: this.registry,
       clock: this.clock,
-      codec: roaringCodec, // facade injects the flagship codec ([DECISIONS #58])
+      codec: roaringCodec, // facade injects the flagship codec
       keystore: this.keystore,
       requireEncryption: this.requireEncryption,
       metrics: this.metrics, // safe-wrapped sink → store.compact/eraseSubject emit `compaction` events (gap #2)
@@ -501,8 +501,8 @@ export class CloudRoaring {
    * Enumerates the **registered** segments (via the store's own `registry`) and does a tier-merging `has(id)` on
    * each — no drivers to re-pass. Complete only over registered segments (register your segments if you claim
    * SAR support). There is deliberately **no `id → segments` reverse index** — that would tax every write for a
-   * rare request; this admin scan is `O(registered segments)` and touches no hot path
-   * (phases/06). Requires a `registry` in the store config
+   * rare request; this admin scan is `O(registered segments)` and touches no hot path.
+   * Requires a `registry` in the store config
    * (throws {@link UnsupportedError} otherwise).
    */
   async subjectReport(

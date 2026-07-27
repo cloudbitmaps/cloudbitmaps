@@ -18,7 +18,7 @@
  * NOT covered here, honestly: kill-daemon-mid-2PC is proven by the in-process crash-at-every-step sweep
  * (DECISIONS #18 / sim), which pins an exact step a real-backend kill can't; disk-full isn't cleanly injectable
  * on ephemeral LocalStack S3 (the analogous write-failure path is exercised by C1/C2 + the write-once
- * conditional-PUT tests). See 95-TEST-STRATEGY.
+ * conditional-PUT tests).
  *
  * Offline + needs LocalStack + `docker` on PATH — NOT a CI gate. Bring LocalStack up first:
  * `docker compose -f docker-compose.localstack.yml up -d --wait`. Run: `pnpm chaos`.

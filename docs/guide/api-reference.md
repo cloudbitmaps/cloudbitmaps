@@ -22,8 +22,8 @@ CloudRoaring            store.segment('name')    add / has / remove / count / in
 
 ## Entry points
 
-You install **one flavor package** — `@cloudbitmaps/roaring` — and `@cloudbitmaps/core` arrives transitively
-([DECISIONS #58). Everything below is reachable from the flavor:
+You install **one flavor package** — `@cloudbitmaps/roaring` — and `@cloudbitmaps/core` arrives transitively.
+Everything below is reachable from the flavor:
 
 ```
 @cloudbitmaps/roaring            the store + memory/localfs drivers + every function & type
@@ -156,7 +156,7 @@ The option / result types the public methods above reference — you import thes
 You **do not** import these to _use_ CloudBitmaps — only to **write a driver**, build tooling against the
 on-disk format, or run out-of-process operations. This distinction is **docs-level by design**: a
 separate `advanced` subpath split was considered and **deliberately not built** (marginal payoff, real cost,
-net-new surface — DECISIONS #32), so everything here still imports from the single
+net-new surface), so everything here still imports from the single
 `@cloudbitmaps/roaring` barrel.
 
 ### `.crbm` on-disk format
@@ -170,7 +170,7 @@ net-new surface — DECISIONS #32), so everything here still imports from the si
 | `BufferSink` · `BufferReader` · `BlobSink` · `BlobReader` | byte sink/reader impls + interfaces |
 | `SafeBitmap` | size-capped wrapper over `RoaringBitmap32` (the roaring codec's `CodecBitmap`) |
 
-### Bitmap-codec seam (DECISIONS #58)
+### Bitmap-codec seam
 
 The engine is **codec-agnostic** behind these; roaring is the flagship codec. You only touch them to plug in a
 different codec (the `@cloudbitmaps/bitmap` / `@cloudbitmaps/soaring` flavors) — the `CloudRoaring` facade injects
@@ -184,7 +184,7 @@ different codec (the `@cloudbitmaps/bitmap` / `@cloudbitmaps/soaring` flavors) �
 
 ### Flavor-author kit (`@cloudbitmaps/core`)
 
-**Added by the family split** (DECISIONS #58). These are the pieces a **flavor** package (codec +
+**Added by the family split**. These are the pieces a **flavor** package (codec +
 facade) or a **driver** author composes — `@cloudbitmaps/core`'s actual audience. An application never calls them:
 it uses the flavor's `CloudRoaring` facade, which wires all of this for you. They are reachable from
 `@cloudbitmaps/roaring` too, because the flavor re-exports core wholesale.
@@ -255,7 +255,7 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 `isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
 errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/dynamodb`): those subpaths are
 separate bundles, so a driver-thrown error is not `instanceof` the class object from the core entry in CJS. The
-predicates match a `Symbol.for` brand + the runtime `name`, so they hold across bundles (DECISIONS #52).
+predicates match a `Symbol.for` brand + the runtime `name`, so they hold across bundles.
 
 ---
 
@@ -347,7 +347,7 @@ returns the deploy-time `CREATE TABLE`.
 (peer: `mysql2`). Inject a `mysql2` promise `Pool`; OCC via plain SQL (`INSERT` for create-if-absent →
 `ER_DUP_ENTRY` on conflict; token-fenced `UPDATE`/`DELETE … AND token = ?` with an `affectedRows` check).
 `mysqlWarmTableDDL(table?)` returns the deploy-time `CREATE TABLE` (pinned `utf8mb4_bin` so keys match
-case-sensitively — see 05-DRIVER-SDK).
+case-sensitively — see the driver SDK contract in CONTRIBUTING).
 
 ---
 

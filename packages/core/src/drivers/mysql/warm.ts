@@ -29,7 +29,7 @@
  * Tokens are not reused across delete→recreate (ABA-safe, D3): a delete removes the row and a recreate mints a
  * fresh random UUID, so a token from before the delete won't match. (Probabilistic — a random 122-bit UUIDv4,
  * collision odds negligible — vs the DynamoDB driver's structural monotonic counter; the hard-delete model
- * can't offer the latter, and conformance D3 pins the behavior. See DECISIONS #57.) Reads are strongly
+ * can't offer the latter, and conformance D3 pins the behavior. Reads are strongly
  * consistent (single primary), so the optional `WarmReadOptions` consistency hint is a no-op, like the
  * in-memory / LocalFs / Postgres drivers. Drivers may use `node:crypto`; only `core/` is determinism-bound.
  */

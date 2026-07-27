@@ -1,6 +1,5 @@
 /**
- * `@cloudbitmaps/core` — the codec-agnostic cloud engine behind the @cloudbitmaps family
- * (DECISIONS #58).
+ * `@cloudbitmaps/core` — the codec-agnostic cloud engine behind the @cloudbitmaps family.
  *
  * Everything here is **independent of any bitmap codec**: the tiered engine, every storage driver, the `.crbm`
  * format, crash-safe compaction, encryption/crypto-shred, the registry, the budget/consistency/eject machinery.
@@ -76,7 +75,7 @@ export type {
   DiscoveryOptions,
   CompactionCandidate,
 } from './core/compaction';
-// The bitmap-codec seam ([DECISIONS #58]) — the engine is codec-agnostic behind these; roaring is the flagship.
+// The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.
 export type { CodecInterface, CodecBitmap } from './core/codec';
 export type { Clock, Rng } from './core/determinism';
 export type {

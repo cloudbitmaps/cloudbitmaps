@@ -143,7 +143,7 @@ await seg.add(42);
 
 ## 3. (Optional) bulk-load a Cold generation
 
-The batch "seed/sweep" path: build an immutable Cold archive directly from a (possibly huge, unsorted)
+The batch "seed/rebuild" path: build an immutable Cold archive directly from a (possibly huge, unsorted)
 stream of ids with `bulkLoadCrbmGeneration`. It folds ids into per-chunk bitmaps as they stream — input is
 consumed lazily and deduped, so you can pipe a query result or a file of billions of ids through it:
 

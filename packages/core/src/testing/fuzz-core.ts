@@ -12,7 +12,7 @@ export { CrbmReader, parseIndex } from '../core/crbm/reader';
 export { BufferReader } from '../core/blob';
 // Export the BRAND PREDICATE, not just the class: the harness is two bundles (core internals here, the codec in
 // the flavor's `fuzz-codec.js`), so each has its own copy of the error classes and `instanceof` across them is
-// false — the cross-bundle identity trap of DECISIONS #52. `isCloudRoaringError` matches a `Symbol.for` brand and
+// false — the cross-bundle identity trap. `isCloudRoaringError` matches a `Symbol.for` brand and
 // is therefore copy-independent; fuzz targets MUST use it to classify a typed rejection.
 export { CloudRoaringError, isCloudRoaringError } from '../core/errors';
 export { DEFAULT_MAX_PAYLOAD_BYTES } from '../core/crbm/format';

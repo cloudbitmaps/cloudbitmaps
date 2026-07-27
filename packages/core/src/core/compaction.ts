@@ -26,7 +26,7 @@
  * **Correctness without a lock:** the commit is the conditional `currentGen` swap; write-once generations +
  * version-fenced purge make even two concurrent compactions safe (the loser's staged generation is an orphan
  * GC'd later; no torn read — readers are pinned to a committed generation, **I5**). The lease only avoids that
- * wasted duplicate work (see DECISIONS #18).
+ * wasted duplicate work.
  *
  * Pure orchestration over the injected driver interfaces + an injected {@link Clock} (timer-free; the daemon
  * layer owns scheduling/heartbeat). A crash at *any* step is recoverable: nothing is destructive until after
@@ -78,7 +78,7 @@ export interface CompactionDeps {
   readonly clock: Pick<Clock, 'now'>;
   readonly maxBitmapBytes?: number;
   /**
-   * Bitmap codec ([DECISIONS #58]) — compaction only merges bitmaps through it. Optional in the type so this
+   * Bitmap codec — compaction only merges bitmaps through it. Optional in the type so this
    * stays call-compatible public API; a **flavor** package binds it (see {@link requireCodec}).
    */
   readonly codec?: CodecInterface;

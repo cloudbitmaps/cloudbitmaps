@@ -1,7 +1,7 @@
 /**
  * Logical-ref → DynamoDB key mapping for {@link DynamoDbWarmDriver} (Phase 4a).
  *
- * **Single-table design** (DECISIONS #15): every item is partitioned by segment (`PK`), and the sort key
+ * **Single-table design**: every item is partitioned by segment (`PK`), and the sort key
  * (`SK`) prefix distinguishes entity types — `chunk#<key>` for warm chunk rows, `reg#…` for registry rows
  * (Phase 4b). Pure string logic, no SDK dependency, so it's unit-testable without DynamoDB-Local. Names are
  * re-validated at the boundary (defense in depth — S2); the absent namespace maps to `_default`, which can't
@@ -58,7 +58,7 @@ export function chunkSortKeyPrefix(): string {
   return CHUNK_SK_PREFIX;
 }
 
-/** Sort key of a segment's single registry row — co-located with its chunk rows (DECISIONS #15). */
+/** Sort key of a segment's single registry row — co-located with its chunk rows. */
 const REGISTRY_SK = 'reg#';
 export function registrySortKey(): string {
   return REGISTRY_SK;

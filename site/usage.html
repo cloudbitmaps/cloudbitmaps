@@ -6,7 +6,7 @@
     <title>CloudBitmaps — usage, flows &amp; use cases</title>
     <meta
       name="description"
-      content="How to use CloudBitmaps: the mental model, wiring it up from in-memory to cloud, the operations, the real workflows (batch seed/sweep, real-time matcher, campaign targeting, compaction, encryption), and where it fits."
+      content="How to use CloudBitmaps: the mental model, wiring it up from in-memory to cloud, the operations, the real workflows (batch rebuild, live updates, campaign targeting, compaction, encryption), and where it fits."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -204,7 +204,7 @@
           </p>
         </div>
 
-        <h3>1 · Batch seed / sweep — build a generation from a query</h3>
+        <h3>1 · Batch rebuild — build a generation from a query</h3>
         <div class="prose">
           <p>
             The batch path: fold a (possibly huge, unsorted) ID stream into a fresh immutable cold
@@ -214,17 +214,17 @@
           </p>
         </div>
         <figure class="code-fig">
-          <figcaption><span class="fdot"></span> rebuild a segment from the source of truth (the "sweep")</figcaption>
+          <figcaption><span class="fdot"></span> rebuild a segment from the source of truth</figcaption>
           <div class="code has-cap"><pre><span class="k">import</span> { bulkLoadCrbmGeneration } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="c">// ids: any sync/async iterable — an Athena cursor, a file stream, an array…</span>
-<span class="k">const</span> ids = <span class="f">queryEntityStore</span>(segmentSql);        <span class="c">// dense integer _ids that match the rule</span>
+<span class="c">// ids: any sync/async iterable — a SQL cursor, a file stream, an array…</span>
+<span class="k">const</span> ids = <span class="f">runSegmentQuery</span>(segmentSql);        <span class="c">// dense integer ids that match the rule</span>
 <span class="k">await</span> <span class="f">bulkLoadCrbmGeneration</span>(
   cold, { segment: <span class="s">'active-us'</span>, generation: <span class="n">2</span> }, ids, { registry },
 ); <span class="c">// → new gen published; readers pick it up, warm deltas merge on top</span></pre></div>
         </figure>
 
-        <h3>2 · Real-time matcher — flip one bit per event</h3>
+        <h3>2 · Live updates — flip one bit per event</h3>
         <div class="prose">
           <p>
             The live path: on each change event, evaluate the rule for that one user and set or clear a
@@ -232,8 +232,8 @@
           </p>
         </div>
         <figure class="code-fig">
-          <figcaption><span class="fdot"></span> per-event membership update (the "matcher")</figcaption>
-          <div class="code has-cap"><pre><span class="k">const</span> seg = store.<span class="f">segment</span>(<span class="s">'opened-push-7d'</span>);
+          <figcaption><span class="fdot"></span> per-event membership update</figcaption>
+          <div class="code has-cap"><pre><span class="k">const</span> seg = store.<span class="f">segment</span>(<span class="s">'trial-active'</span>);
 
 <span class="c">// on an attribute-change event for one user:</span>
 <span class="k">if</span> (<span class="f">matchesRule</span>(user)) <span class="k">await</span> seg.<span class="f">add</span>(user.id);
@@ -251,7 +251,7 @@
         <figure class="code-fig">
           <figcaption><span class="fdot"></span> who is in the audience AND eligible</figcaption>
           <div class="code has-cap"><pre><span class="k">const</span> audience = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);
-<span class="k">const</span> eligible = store.<span class="f">segment</span>(<span class="s">'notifications-enabled'</span>);
+<span class="k">const</span> eligible = store.<span class="f">segment</span>(<span class="s">'email-verified'</span>);
 
 <span class="k">for await</span> (<span class="k">const</span> id <span class="k">of</span> audience.<span class="f">intersect</span>([eligible])) { <span class="c">/* send to id */</span> }
 
@@ -415,8 +415,8 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
               <tr><th>Mode</th><th>How membership changes</th><th>CloudBitmaps path</th></tr>
             </thead>
             <tbody>
-              <tr><td><strong>Sweep</strong> (batch)</td><td>re-derive the full set from a query, rebuild the bitmap</td><td><span class="st st-done">bulk-load → new cold generation</span> (Topology-A)</td></tr>
-              <tr><td><strong>Matcher</strong> (real-time)</td><td>evaluate one user on an event, flip one bit</td><td><span class="st st-done">add / remove → warm + compaction</span> (Topology-B)</td></tr>
+              <tr><td><strong>Batch rebuild</strong></td><td>re-derive the full set from a query, rebuild the bitmap</td><td><span class="st st-done">bulk-load → new cold generation</span> (Topology-A)</td></tr>
+              <tr><td><strong>Live update</strong></td><td>evaluate one user on an event, flip one bit</td><td><span class="st st-done">add / remove → warm + compaction</span> (Topology-B)</td></tr>
             </tbody>
           </table>
         </div>
@@ -433,7 +433,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
    launch ─▶ <span class="t-accent">count()</span>                  ─▶ audience size in the UI
           ─▶ <span class="t-accent">intersect(</span>audience, eligible<span class="t-accent">)</span> ─▶ who to send to
           ─▶ <span class="t-accent">iterate()</span> paged members     ─▶ push / email delivery
-          ─▶ opens / clicks feed back      ─▶ new attributes ─▶ next sweep
+          ─▶ opens / clicks feed back      ─▶ new attributes ─▶ next rebuild
 </pre>
         </div>
 
