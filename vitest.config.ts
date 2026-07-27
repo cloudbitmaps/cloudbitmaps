@@ -21,6 +21,7 @@ export default defineConfig({
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
+      { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },
       { find: /^@\/(.*)$/, replacement: CORE + '/$1' },

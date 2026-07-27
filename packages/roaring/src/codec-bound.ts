@@ -20,15 +20,28 @@ import {
   runExport as coreRunExport,
 } from '@cloudbitmaps/core';
 import { roaringCodec } from './roaring-codec';
+import { SystemClock } from './system-clock';
 
 type BulkLoad = typeof coreBulkLoad;
 type CompactSegment = typeof coreCompactSegment;
 type RunCompactionCycle = typeof coreRunCompactionCycle;
 type RunExport = typeof coreRunExport;
 
-/** {@link coreBulkLoad} with the roaring codec pre-bound. */
+/**
+ * {@link coreBulkLoad} with the roaring codec **and a real clock** pre-bound.
+ *
+ * The clock is what makes a large load **cooperative**: bulk-load yields the event loop periodically instead of
+ * stalling the process for its whole duration (measured at 819 ms for 1M ids before this). `core/` cannot
+ * default it — it is timer-free by lint, which is precisely why waiting goes through the `Clock` seam — so the
+ * flavor package supplies it, exactly as it supplies the codec. A caller who passes their own clock (a virtual
+ * one in a simulation, say) keeps it.
+ */
 export const bulkLoadCrbmGeneration: BulkLoad = (driver, key, ids, options = {}) =>
-  coreBulkLoad(driver, key, ids, { ...options, codec: options.codec ?? roaringCodec });
+  coreBulkLoad(driver, key, ids, {
+    ...options,
+    codec: options.codec ?? roaringCodec,
+    clock: options.clock ?? new SystemClock(),
+  });
 
 /** {@link coreCompactSegment} with the roaring codec pre-bound. */
 export const compactSegment: CompactSegment = (ref, deps, options) =>

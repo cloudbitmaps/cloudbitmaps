@@ -35,4 +35,17 @@ export class SimClock implements Clock {
   sleep(): Promise<void> {
     return Promise.resolve();
   }
+
+  /**
+   * A no-op, and it must be implemented rather than left to the interface's default handling.
+   *
+   * `yieldNow` is optional on {@link Clock}, and a caller that finds it absent falls back to `sleep(1)` — a real
+   * macrotask, which is the right thing under real wiring and the wrong thing here twice over: it would schedule
+   * wall-clock timers inside a simulation that exists to have none, and it would interleave loop turns into a
+   * run whose whole value is being byte-identical on replay. Yielding is a scheduling courtesy to *other* work,
+   * and under the simulator there is no other work — the scheduler gates at driver-call boundaries.
+   */
+  yieldNow(): Promise<void> {
+    return Promise.resolve();
+  }
 }

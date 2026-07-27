@@ -19,6 +19,21 @@ export interface Clock {
    * replayable. `ms <= 0` resolves on a microtask without scheduling a timer.
    */
   sleep(ms: number): Promise<void>;
+  /**
+   * Hand the event loop back once, without asking for any elapsed time.
+   *
+   * This is **not** `sleep(0)`, and the difference is the reason the member exists. `sleep(0)` resolves on a
+   * microtask, and microtasks drain before the loop advances a phase — so awaiting it inside a CPU-bound loop
+   * yields to nothing at all, and a co-resident server stays blocked for the loop's full duration. A real yield
+   * needs a macrotask. `sleep(1)` is one, but it buys the relief at ~1 ms of dead wall-clock per yield.
+   *
+   * **Optional**, so every `Clock` written before this member still satisfies the interface. Callers must
+   * therefore degrade rather than assume: `clock.yieldNow?.() ?? clock.sleep(1)` — correct on any clock, cheap
+   * on one that implements this. `core/` cannot supply it itself (it is timer-free, lint-enforced); production
+   * wiring backs it with `setImmediate`, and a simulator can make it a no-op so virtual time is not perturbed
+   * by what is purely a scheduling courtesy.
+   */
+  yieldNow?(): Promise<void>;
 }
 
 /** Injected randomness. `core/` must never call `Math.random()` directly. Seedable for simulation. */
