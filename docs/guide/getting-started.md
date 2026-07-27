@@ -1082,6 +1082,44 @@ CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring`
 loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer ships too: `pnpm build-lambda-layer`
 (Phase 8) produces `dist-lambda/cloud-roaring-lambda-layer.zip`.)*
 
+## Troubleshooting
+
+### `DEP0169 DeprecationWarning: url.parse() behavior is not standardized`
+
+You will see this on stderr the first time the package is loaded:
+
+```
+(node:1234) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors
+  at node_modules/@mapbox/node-pre-gyp/lib/util/versioning.js:338
+  at node_modules/roaring/index.js:32
+```
+
+**Nothing is wrong, and it is not CloudBitmaps code.** The chain is `@cloudbitmaps/roaring` → `roaring` (the
+CRoaring binding, the only native code involved) → `@mapbox/node-pre-gyp`, which locates the prebuilt binary for
+your platform. Finding it also computes the URL the binary *would* be downloaded from, using Node's legacy
+`url.resolve()`; that URL is then discarded, because the binary is already installed. So the warning is emitted
+for a computation whose result is never used.
+
+Specifics, so you can decide whether to care:
+
+- **Emitted once per process**, on **stderr**, and the process exits normally.
+- **Building from source does not avoid it.** `roaring` calls node-pre-gyp's lookup first and only falls back to
+  a locally-built binary if that throws `MODULE_NOT_FOUND`, so the lookup — and the warning — happens either way.
+- **It is not a stale dependency.** `@mapbox/node-pre-gyp` is at its latest published version; there is no
+  upgrade that removes this. The real fix is upstream in `roaring`, migrating to a resolver that reads the
+  filesystem without constructing URLs. Nothing in CloudBitmaps calls `url.parse()`.
+- **Security:** the inputs are `roaring`'s own `package.json` fields, not runtime or user-controlled data, and no
+  network request happens at load. The vulnerability class that motivated this deprecation — trusting a host
+  parsed out of untrusted input — does not apply here.
+
+**The one case where it actually matters.** If you run Node with **`--throw-deprecation`**, warnings become
+thrown errors and **your process will exit non-zero**. The import itself still succeeds — deprecation warnings
+are emitted asynchronously, so the throw lands after the module has loaded — but the process dies. If you use
+that flag, either drop it for the process that loads CloudBitmaps or allow this one deprecation.
+
+**What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
+about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
+
 ## Where next
 
 - [Roadmap](../ROADMAP.md) — what's shipped, the **validated envelope** (what's proven and what isn't), the
