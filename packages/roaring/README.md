@@ -31,9 +31,9 @@ line of **$346/month, standing**. DynamoDB capacity is taken from AWS's own `Con
 estimated. `count()` on a published segment does **0 payload reads**, and intersecting two 2,000,000-id segments
 fetches only the shared chunks.
 
-The trade is stated plainly rather than buried: in-region, a RAM store answers a single membership check 10–20×
-faster than a warm-tier round trip. If you need a sub-millisecond p99 on a working set that won't fit a bounded
-hot cache, use Redis. If your sets are large, mostly read, and shouldn't cost $346/month to keep warm, use this.
+The trade is stated plainly rather than buried: a membership check that misses the hot cache costs a network
+round trip to your warm tier, where an in-process RAM store costs a memory read. If you need a sub-millisecond
+p99 on a working set that fits a bounded hot cache, use Redis. If your sets are large, mostly read, and shouldn't cost $346/month to keep warm, use this.
 
 Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
 the method and what the numbers do *not* establish), and the design corpus live in the

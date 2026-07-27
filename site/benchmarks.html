@@ -6,7 +6,7 @@
     <title>CloudBitmaps — benchmarks &amp; the Redis crossover</title>
     <meta
       name="description"
-      content="Where CloudBitmaps's pay-per-use cost beats a flat Redis-HA node — and where it doesn't. The crossover chart is drawn straight from the shipped estimator, and every claim here is a CI-gated build-breaking assertion."
+      content="Where CloudBitmaps's pay-per-use cost beats a flat Redis-HA node — and where it doesn't. The crossover chart is drawn straight from the shipped estimator, and its headline anchors are CI-gated build-breaking assertions."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <link rel="canonical" href="https://cloudbitmaps.pages.dev/benchmarks" />
@@ -42,7 +42,7 @@
 
     <div class="hero">
       <div class="hero-inner">
-        <p class="eyebrow">Benchmarks · every claim here is CI-gated</p>
+        <p class="eyebrow">Benchmarks · estimator anchors are CI-gated</p>
         <h1>See exactly where <span class="roar">pay-per-use</span> beats a flat cache — and where it doesn't.</h1>
         <p class="lede">
           CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a
@@ -227,8 +227,12 @@
               <code>estimateCost()</code>.
             </li>
             <li>
-              <strong>Model, not a cloud bill.</strong> Dollars come from the cost formulas + published rates,
-              not a live AWS invoice. Real-cloud dollar calibration is offline / launch-time.
+              <strong>Published rates &times; wire-metered ops &mdash; not a cloud bill.</strong> The real-cloud
+              calibration <em>has</em> run (2026-07-25, <code>us-east-1</code>, $0.001911), with DynamoDB
+              capacity taken from AWS&rsquo;s own <code>ConsumedCapacity</code> rather than estimated &mdash; so
+              the op costs are measured, not assumed. It is still not an <em>invoice</em>: request tiers and
+              storage-class transitions are unmeasured, and the tagged Cost Explorer reconciliation is blocked
+              on the account the run used. In-region latency is separately <strong>not</strong> calibrated.
             </li>
             <li>
               <strong>Cost, not latency.</strong> Wall-clock latency/throughput are measured offline (too
@@ -254,8 +258,10 @@
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
         <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
-        pre-1.0 v0.1.0<br />
-        The chart and every claim on this page are generated + CI-gated from the shipped estimator.
+        pre-1.0 v0.1.2<br />
+        The chart and its headline anchors are generated from the shipped estimator and CI-gated as
+        build-breaking assertions. The at-scale table and the real-AWS run are <em>measured snapshots</em>, not
+        gates — wall-clock and RSS on shared runners are too noisy to assert on.
       </div>
     </footer>
     <!-- Cloudflare Web Analytics -->

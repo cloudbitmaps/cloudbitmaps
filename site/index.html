@@ -27,7 +27,7 @@
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>v0.1.0 · pre-1.0</small></a
+          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>v0.1.2 · pre-1.0</small></a
         >
         <nav class="jump">
           <a href="#why">Why</a>
@@ -249,7 +249,7 @@
           <div class="feature">
             <span class="ic">2PC</span>
             <h4>Crash-safe compaction</h4>
-            <p>A background 2-phase commit folds warm deltas into fresh cold generations — version-fenced, constant-memory, recovers from a crash at any step.</p>
+            <p>A background 2-phase commit folds warm deltas into fresh cold generations — version-fenced, flat on the cold side, recovers from a crash at any step. (The warm delta set is still buffered; the un-buffered external-merge path is planned.)</p>
           </div>
           <div class="feature">
             <span class="ic">KEY</span>
@@ -317,7 +317,7 @@
           </p>
         </div>
         <div class="grid2">
-          <div class="mini"><span class="tag">engine · done</span><h4>Tiered core ✓</h4><p>Core engine, <code>.crbm</code> format + deterministic simulator, chunk-skipping intersection, warm OCC, resilience, registry, crash-safe + constant-memory compaction, encryption &amp; crypto-shred.</p></div>
+          <div class="mini"><span class="tag">engine · done</span><h4>Tiered core ✓</h4><p>Core engine, <code>.crbm</code> format + deterministic simulator, chunk-skipping intersection, warm OCC, resilience, registry, crash-safe compaction (flat on the cold side), encryption &amp; crypto-shred.</p></div>
           <div class="mini"><span class="tag">operations · done</span><h4>Run it for real ✓</h4><p>Observability metrics sink, honest cost estimator + published benchmarks, audit sink, and the compliance &amp; governance layer — <code>PRIVACY.md</code>, subject access &amp; erasure, portable export.</p></div>
           <div class="mini"><span class="tag">ecosystem · done</span><h4>Nine cloud backends ✓</h4><p>Cold on S3, GCS, and Azure Blob; warm on DynamoDB, Postgres, MySQL, Redis, Mongo, and Cassandra; a registry on DynamoDB or S3 alone — each green against the shared conformance suite on a real backend.</p></div>
           <div class="mini"><span class="tag">next</span><h4>Toward 1.0</h4><p>Real-AWS cost &amp; latency calibration, the <code>.crbm</code> format freeze, native registries beyond AWS, and the 64-bit / billions-of-IDs axis. Language ports follow the freeze.</p></div>
@@ -340,7 +340,7 @@
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
         <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
-        pre-1.0 v0.1.0<br />
+        pre-1.0 v0.1.2<br />
         Maps each 16-bit roaring chunk onto tiered storage — HOT RAM · WARM NoSQL · COLD immutable
         <code>.crbm</code>. One runtime dependency (<strong>roaring</strong>); cloud SDKs are optional
         peer deps behind subpath exports.

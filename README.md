@@ -421,9 +421,11 @@ millions of users per segment, because the operations that govern it don't scale
   each, 25.3 ms). This is the case an always-on RAM store pays for by keeping both bitmaps resident.
 
 It is **not** a general database, a full-text index, or a replacement for Redis as a low-latency cache —
-it's a specialized engine for big, durable, cloud-resident bitmaps. In-region, a RAM store answers a single
-membership check **10–20× faster** than a warm-tier round trip, and if you need a sub-millisecond p99 on a
-working set that won't fit the hot cache, that's the right tool and this isn't. Honest cost/performance
+it's a specialized engine for big, durable, cloud-resident bitmaps. A single membership check that misses the
+hot cache costs a **network round trip to your warm tier**, where an in-process RAM store costs a memory read —
+so if you need a sub-millisecond p99 on a working set that fits a bounded hot cache, that's the right tool and
+this isn't. (We deliberately publish no in-region latency *figure* until an in-region run measures one — see
+[benchmarks](docs/benchmarks.md#what-it-cost-in-latency--and-why-the-number-is-what-it-is).) Honest cost/performance
 trade-offs (and where Redis or a columnar store wins instead) are documented as part of the design, not buried.
 
 ## Status & where it's headed

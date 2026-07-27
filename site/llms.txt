@@ -21,8 +21,8 @@ million segment publishes, against an always-on Redis-HA line of $346/month stan
 
 ## When NOT to use it
 
-If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: in-region, a RAM
-store answers a single membership check 10–20× faster than a warm-tier round trip. CloudBitmaps is for sets
+If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: a check that
+misses the hot cache costs a network round trip, where an in-process RAM store costs a memory read. CloudBitmaps is for sets
 that are large, mostly read, and shouldn't cost $346/month to keep warm. In-region latency is not yet
 calibrated and no in-region figure is published.
 
