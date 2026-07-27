@@ -25,6 +25,33 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   was 39.61 ms; **p999 is deliberately not published**, being ~2 samples deep at this sample size. Measured
   against the **published package**, not a local build.
 
+## [0.2.0] - 2026-07-27
+
+**Minimum Node is now 22.** A minor bump rather than a patch, because dropping a runtime narrows the supported
+surface even when the dropped runtime is end-of-life. No format change; no API change.
+
+### Changed
+
+- **`engines.node` is now `>=22` (was `>=20`) on both published packages.** Node 20 reached **end-of-life on
+  2026-04-30**, so the packages were advertising support for a major that receives no security patches — and
+  that nobody was developing against: the repo's own version file already said `22`, and only the manifests
+  disagreed. Shipping an EOL runtime is a security liability and a tooling one; the toolchain is already moving
+  past it (dependency-cruiser 18 declares `^22 || ^24`).
+  - **If you are on Node 20:** stay on `0.1.3`, which is unaffected and remains installable, and upgrade Node
+    when you can. Node 20 receives no upstream security fixes, so this is worth doing regardless of this
+    package.
+  - The CI matrix moves to **22 + 24** — the active LTS plus the current release — so the floor is exercised
+    rather than merely declared, and the next major is tested before it becomes the floor.
+
+### Added
+
+- **A test pinning the runtime floor across all three places it is declared.** The floor lives in `engines`, the
+  version file, and the CI matrix, and it had already drifted: the version file said `22` while all three
+  manifests said `>=20`. Each file is individually plausible, so only the *disagreement* is wrong and no single
+  file can see it. It was noticed by accident — an unrelated AWS SDK warning during a latency run mentioned Node
+  20 — which is not a detection strategy. `tests/ci/runtime-version-policy.test.ts` now fails if the three
+  disagree, if a CI job pins a Node below the floor, or if the matrix stops exercising the floor.
+
 ## [0.1.3] - 2026-07-27
 
 A correctness fix that closes the last gap in "all tier bytes are untrusted", plus release-pipeline and
