@@ -49,6 +49,15 @@ permissions:
   contents: read
   id-token: write
 
+# One release at a time, and NEVER cancel one in flight. `cancel-in-progress: false` is the opposite of the
+# CI workflow's setting, deliberately: cancelling a build is free, but cancelling a release is not — kill a run
+# between `pnpm publish` of core and of roaring and npm holds a half-published family that cannot be unpublished
+# back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
+# race for the same version pointers.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: publish (tokenless, provenance)
@@ -65,9 +74,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older.
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1; the runner's bundled npm is older. A FLOOR, not
+      # `@latest`: `@latest` silently makes every release depend on whatever npm shipped that morning, so a
+      # regression in a brand-new npm becomes a broken release with no change on our side and nothing in the
+      # diff to point at. `^11.5.1` still takes the fixes inside npm 11 while making a major bump a deliberate,
+      # reviewable edit to this line.
       - name: Upgrade npm for Trusted Publishing
-        run: npm install -g npm@latest
+        run: npm install -g 'npm@^11.5.1'
 
       # Re-run the FULL gate against the exact commit being published (defense in depth vs a green-main assumption).
       - run: pnpm lint
@@ -75,6 +88,11 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test
+      # The audit belongs HERE and not only in CI, because it is the one gate whose result changes with no
+      # commit at all: an advisory published against a runtime dependency after `main` went green makes this
+      # tree newly-vulnerable without touching a byte of it. Re-running the rest of the gate on the release
+      # commit and trusting a days-old audit would leave exactly that hole.
+      - run: node scripts/audit.cjs
       - run: pnpm build
       - run: node scripts/smoke.cjs
 
@@ -85,8 +103,18 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG="${GITHUB_REF_NAME#v}"
+          # `nullglob` + a count check, because the default shell behaviour here fails in the wrong direction:
+          # an unmatched glob expands to the LITERAL string `packages/*/package.json`, so the loop below would
+          # run exactly once on a path that does not exist. Guard the count explicitly instead of relying on
+          # what a `require()` of a nonexistent file happens to do.
+          shopt -s nullglob
+          pkgs=(packages/*/package.json)
+          if [ "${#pkgs[@]}" -lt 2 ]; then
+            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+            exit 1
+          fi
           fail=0
-          for pkg in packages/*/package.json; do
+          for pkg in "${pkgs[@]}"; do
             NAME="$(node -p "require('./$pkg').name")"
             VER="$(node -p "require('./$pkg').version")"
             if [ "$VER" != "$TAG" ]; then
@@ -104,14 +132,47 @@ jobs:
       - name: Refuse to "publish" a still-private package
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
         run: |
+          shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
+          pkgs=(packages/*/package.json)
+          if [ "${#pkgs[@]}" -lt 2 ]; then
+            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+            exit 1
+          fi
           fail=0
-          for pkg in packages/*/package.json; do
+          for pkg in "${pkgs[@]}"; do
             if [ "$(node -p "require('./$pkg').private === true")" = "true" ]; then
               echo "::error::$pkg still has \"private\": true — pnpm would skip it and report success"
               fail=1
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
+
+      # Everything that can still be FIXED must be checked before the one step that cannot be undone.
+      #
+      # This is the mirror image of the bug that produced a GitHub Release for a version that never reached npm:
+      # there, an irreversible-ish artifact was created before the thing it describes succeeded. Here the notes
+      # are extracted in the `github-release` job, which by construction runs AFTER `pnpm publish` — so a missing
+      # or empty CHANGELOG section surfaces at the one moment nothing can be done about it. npm tarballs are
+      # immutable outside a 72-hour window; a changelog is a two-line edit. Check the cheap thing first.
+      #
+      # `> /dev/null` because this is purely a precondition — github-release does the real extraction against
+      # the same script, so the two cannot disagree.
+      - name: Require release notes to exist before publishing
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/changelog-section.cjs "${GITHUB_REF_NAME}" > /dev/null
+
+      # Scan what actually ships. The tracked-file and history modes cannot see `dist/` (gitignored), which is
+      # most of the published bytes and carries every `src` comment through the sourcemaps' `sourcesContent`.
+      # See scripts/leak-scan-tarballs.cjs. Runs on dry-runs too — a dry run whose whole job is to prove the
+      # pipeline should exercise the gates, not skip them.
+      - name: Leak-scan the packed tarballs
+        env:
+          # Optional. Set the repo secret to check the employer-name class of needle too; with it the scan runs
+          # in the strict SNAPSHOT mode, without it the HARD class (credentials, keys, real addresses, absolute
+          # local paths) still fails the build. The script prints which mode it chose, so the weaker mode can
+          # never be mistaken for the stronger one.
+          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
+        run: node scripts/leak-scan-tarballs.cjs
 
       # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
       # `publishConfig.access=public` + `provenance:true` live in package.json; `--provenance` is explicit here too.

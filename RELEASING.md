@@ -34,16 +34,41 @@ The approval prompt is the last point at which a release can be stopped. Nothing
 A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order:
 
 - **Re-runs the entire gate** against the exact commit being published — `lint · lint:arch · format:check ·
-  typecheck · test · build · smoke`. A green `main` is necessary but not sufficient; the tagged commit is
-  re-verified from scratch on a clean runner with `--frozen-lockfile`.
+  typecheck · test · audit · build · smoke`. A green `main` is necessary but not sufficient; the tagged commit
+  is re-verified from scratch on a clean runner with `--frozen-lockfile`. The **dependency audit** is repeated
+  here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an
+  advisory published after `main` went green makes the same tree newly vulnerable.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
 - **Refuses a still-private package.** `pnpm publish` *silently skips* a package with `"private": true` and
   exits 0, so before launch a real publish attempt would otherwise produce a fully green run that published
   nothing at all. The workflow fails loudly instead. Clearing `private` is what makes the release commit real.
+- **Refuses to publish without release notes** — `scripts/changelog-section.cjs` must find a non-empty section
+  for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
+  publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
+  gap next to an immutable tarball.
+- **Leak-scans the packed tarballs** (`pnpm leak-scan:tarballs`) — the built `.tgz` for each package is packed,
+  unpacked and scanned. This is a different surface from the everyday `pnpm leak-scan`: `dist/` is gitignored,
+  so the tracked-file and history modes structurally cannot see the bytes a consumer downloads, and the
+  sourcemaps carry every `src` comment verbatim via `sourcesContent`. Set the optional `LEAK_SCAN_EXTRA` repo
+  secret to include the private needle list and run in strict snapshot mode; without it the scan still fails on
+  credentials, private keys, real email addresses and absolute local paths. The run prints which mode it chose.
 - **Publishes tokenlessly with provenance**, then the attestation is verifiable on npm.
 
+**The ordering is the design, not an accident.** Everything above the publish is recoverable; the publish is
+not — an npm tarball is immutable outside a 72-hour unpublish window. So every check that can still be *fixed*
+runs before the one step that cannot be undone. (The inverse mistake has already been made here once: the
+GitHub Release object was briefly created before the publish it describes had succeeded, and a run produced a
+release for a version that never reached npm.
+[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) now asserts this ordering.)
+
+The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
+free; cancelling a release between the publish of `core` and of `roaring` leaves npm holding a half-published
+family that cannot be taken back.
+
 Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. Dependabot bumps the SHA and
-the human-readable version comment together, monthly.
+the human-readable version comment together, monthly. The npm upgrade the OIDC publish needs is pinned to a
+**floor** (`npm@^11.5.1`), not `@latest`, so a regression in a same-morning npm release can't break a release
+with nothing in our diff to point at.
 
 ## Why tokenless
 

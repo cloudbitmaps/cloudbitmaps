@@ -32,7 +32,9 @@ Keys and plaintext bitmap contents are never logged.
 
 CI runs a blocking dependency audit — [`node scripts/audit.cjs`](scripts/audit.cjs), a thin wrapper over
 `pnpm audit --prod --json` — scoped to **production** dependencies at the **high** severity bar. A brand-new
-advisory in a runtime dependency breaks the build. (It is invoked as `node scripts/audit.cjs`, not bare
+advisory in a runtime dependency breaks the build. The **release workflow re-runs it** on the exact commit
+being published rather than trusting CI's result, because this is the one gate whose verdict changes with no
+commit at all: an advisory disclosed after `main` went green makes that unchanged tree newly vulnerable. (It is invoked as `node scripts/audit.cjs`, not bare
 `pnpm audit`, which is pnpm's own built-in command.) Advisories that have been triaged as not-applicable are listed in
 `package.json` → `pnpm.auditConfig.ignoreGhsas`, each with its rationale below, and are the **only** ones the
 gate ignores.
@@ -93,6 +95,19 @@ Phase 8). The controls:
   install regardless — provision a toolchain (`apk add --no-cache build-base python3`) or use a glibc base
   image. The from-source path is currently CI-proven on glibc (AL2023); a musl/Alpine lane is a tracked
   follow-up (the guarantee is documented, not yet gated).
+- **The published tarball is scanned, not just the source.** Before publishing, the release workflow packs each
+  package, unpacks the `.tgz` and scans **what actually ships**
+  ([`scripts/leak-scan-tarballs.cjs`](scripts/leak-scan-tarballs.cjs)) for credentials, private keys, real email
+  addresses and absolute local machine paths. This is deliberately a different surface from scanning the repo:
+  `dist/` is gitignored, so a source-tree or git-history scan cannot see the majority of the published bytes —
+  and the sourcemaps carry every `src` comment verbatim in `sourcesContent`. It runs **before** the publish
+  because an npm tarball is immutable outside the 72-hour unpublish window; there is no fixing a string that
+  has already shipped.
+- **Recoverable checks run before the irreversible one.** Every gate above — the re-run test suite, the audit,
+  the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`, and
+  [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if any of them is ever moved
+  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the two packages
+  cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds
   `contents: write`** — `github-release`, which creates the GitHub Release object and cannot publish. The job
