@@ -28,7 +28,7 @@ export { validateCompactionOptions } from './core/compaction';
 export { runExport } from './export';
 export { splitId, joinId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
-export { resolveBudget, resolvePerOpBudget, checkBudget } from './core/budget';
+export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { validateSegmentRef } from './core/validate';
 // Driver-kit: the sentinel + row/token shapes you need to IMPLEMENT a warm driver (and the key helper the
 // conformance/simulator fakes use). `NO_ROW` in particular is the create-if-absent sentinel every `IWarmDriver`

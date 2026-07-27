@@ -69,3 +69,46 @@ export function checkBudget(budget: Budget | null, projectedRequests: number, op
     );
   }
 }
+
+/**
+ * Drain an async iterable into an array, refusing **as soon as** the budget is exceeded.
+ *
+ * This exists because the obvious spelling is wrong in a way that is easy to miss:
+ *
+ * ```ts
+ * for await (const rec of registry.list(ns)) recs.push(rec);
+ * checkBudget(budget, recs.length, op);   // ← too late; the memory is already spent
+ * ```
+ *
+ * That pattern bounds the **fan-out** but not the **enumeration**, so a tight budget refuses the work only
+ * after paying for the list — which defeats the purpose. It was measured buffering 20,000 registry records
+ * under `budget: { maxRequests: 2 }` before throwing. Draining incrementally bounds resident memory to
+ * `O(budget)` instead of `O(fleet)`.
+ *
+ * **The error message is deliberately vaguer than `checkBudget`'s.** It reports "more than N" rather than an
+ * exact total, because knowing the exact total requires finishing the scan — which is precisely the cost being
+ * refused. An honest approximation beats an expensive exact number.
+ *
+ * A `null` budget (`budget: false`) means the caller has explicitly opted out of fan-out limits, so this
+ * degrades to a plain drain.
+ */
+export async function collectWithinBudget<T>(
+  source: AsyncIterable<T>,
+  budget: Budget | null,
+  op: string,
+): Promise<T[]> {
+  const out: T[] = [];
+  for await (const item of source) {
+    out.push(item);
+    // Checked INSIDE the loop, and `>` not `>=`, so the threshold matches `checkBudget` exactly: a budget of N
+    // admits exactly N units and refuses the N+1'th.
+    if (budget !== null && out.length > budget.maxRequests) {
+      throw new BudgetExceededError(
+        `${op} would fan out to more than ${budget.maxRequests} units, over the per-op budget — the scan was ` +
+          `abandoned at that point rather than completed, so no exact total is available. Raise ` +
+          `\`budget.maxRequests\`, override it per-op, or set \`budget: false\``,
+      );
+    }
+  }
+  return out;
+}
