@@ -39,7 +39,7 @@ export function effective(cold: CodecBitmap, delta: ChunkDelta): CodecBitmap {
 }
 
 /**
- * Current Warm-row delta schema version — a pre-1.0 format-freeze prerequisite (Phase G, DECISIONS #41). The delta is
+ * Current Warm-row delta schema version — a pre-1.0 format-freeze prerequisite (Phase G). The delta is
  * an internal cross-tier transport, not a user-facing format, but a **1-byte version prefix** lets a reader
  * fail-closed on bytes written by a future, incompatible writer instead of misparsing them — the pre-1.0
  * format-freeze guarantee. Bump only on a backward-incompatible layout change; a reader rejects any version

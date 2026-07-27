@@ -1,7 +1,7 @@
 /**
  * `DynamoDbRegistryDriver` — an {@link IRegistryDriver} over DynamoDB (Phase 4c).
  *
- * One item per segment, **co-located with that segment's warm rows** in the single table (DECISIONS #15):
+ * One item per segment, **co-located with that segment's warm rows** in the single table:
  * `PK = ns#…|seg#…`, `SK = reg#`. OCC mirrors the warm tier — a conditional `UpdateItem` with `ADD v :one`
  * gives a monotonic, never-reused token; a delete **tombstones** (`del=true`, counter advances) so a
  * recreate's token is always greater (ABA-safe). The record body is stored as a JSON string (`r`); the OCC
@@ -13,7 +13,7 @@
  *
  * `list` is a `Scan` with a `reg#` filter (discovery is infrequent — the compaction daemon, Phase 4d). On a
  * large shared table that reads every partition; a namespace-keyed GSI is the scale-up, deferred until a
- * deployment needs it (YAGNI). `@aws-sdk/client-dynamodb` is an optional peer dependency (DECISIONS #13).
+ * deployment needs it (YAGNI). `@aws-sdk/client-dynamodb` is an optional peer dependency.
  */
 import {
   ConditionalCheckFailedException,

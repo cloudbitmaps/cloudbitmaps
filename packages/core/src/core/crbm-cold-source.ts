@@ -515,14 +515,14 @@ export interface BulkLoadResult {
 }
 
 /**
- * **Bulk-load** a whole immutable generation from a flat id source — the batch "seed/sweep" entry point.
+ * **Bulk-load** a whole immutable generation from a flat id source — the batch "seed/rebuild" entry point.
  * Unlike {@link writeCrbmGeneration} (which takes pre-grouped bitmaps), this
  * consumes an arbitrary, **unsorted** stream of u32 ids (sync or async) and routes each into its chunk's
  * Roaring bitmap as it goes. The input is consumed lazily and ids dedup on insert, so memory is bounded by
  * the **built generation** — the in-memory Roaring representation of the *distinct* set (≤ one bitmap per
  * non-empty chunk) — not by the input length: you can stream a billion duplicate-heavy ids and hold only the
  * distinct result. Note this is `O(distinct set)`, **not** window-bounded like {@link SegmentEngine.intersect}:
- * bulk-load holds the whole generation in RAM, which suits batch seed/sweep jobs but not an
+ * bulk-load holds the whole generation in RAM, which suits batch seed/rebuild jobs but not an
  * unbounded-cardinality stream (a segment larger than RAM needs external-merge / pre-sorted input — later phase).
  *
  * Each id must be an integer in `[0, 2³²)` ({@link splitId} throws {@link ValidationError} otherwise) — the
@@ -544,7 +544,7 @@ export async function bulkLoadCrbmGeneration(
     keystore?: IKeystore;
     requireEncryption?: boolean;
     audit?: IAuditSink;
-    /** Bitmap codec ([DECISIONS #58]). Optional in the type; a **flavor** package binds it ({@link requireCodec}). */
+    /** Bitmap codec. Optional in the type; a **flavor** package binds it ({@link requireCodec}). */
     codec?: CodecInterface;
   } = {},
 ): Promise<BulkLoadResult> {

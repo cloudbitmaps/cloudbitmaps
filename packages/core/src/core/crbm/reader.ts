@@ -160,7 +160,7 @@ export class CrbmReader {
       throw new UnsupportedError(`.crbm has unknown flag bits set: 0x${flags.toString(16)}`);
     }
 
-    // Payload-decoding contract (DECISIONS #34): the
+    // Payload-decoding contract: the
     // reader must decode with the *same* element width, roaring serialization, and container codec the writer
     // stamped — a mismatch means the payloads are a format this v1 (32-bit, portable, uncompressed) reader can't
     // safely deserialize, so reject up front rather than feed them to the 32-bit deserializer and mis-count

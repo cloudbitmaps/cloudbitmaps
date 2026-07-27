@@ -189,8 +189,17 @@ const MIGRATION = [
   // Both the full path and the `docs/`-relative form a doc inside `docs/` would use.
   { name: 'private-doc path', re: /(?:docs\/)?internal\/[0-9A-Za-z]/ },
   // Bare doc-names: the internal docs are numbered `NN-NAME.md`, so a citation that dropped the directory
-  // still dangles. Matches the `NN-SCREAMING-CASE.md` shape every internal design doc uses.
-  { name: 'bare private-doc name', re: /\b\d{2}-[A-Z][A-Z0-9-]*\.md\b/ },
+  // still dangles. Matches the `NN-SCREAMING-CASE` shape every internal design doc uses.
+  //
+  // `.md` is OPTIONAL, and that is the whole point of this rule's second revision. The first version required
+  // the extension, so it caught `07-THREAT-MODEL.md` and sailed straight past `96-PRODUCTION-READINESS` — which
+  // is how people actually cite these docs in prose. Seven such citations sat in public files (four of them in
+  // CHANGELOG.md, the most-read file in the repo) while the gate reported clean. Verified against the whole
+  // tree when it was widened: every single match was a real internal doc name, zero false positives, because
+  // `NN-` followed by a SCREAMING-KEBAB run of 3+ characters is not a shape ordinary prose produces.
+  { name: 'bare private-doc name', re: /\b\d{2}-[A-Z][A-Z0-9-]{2,}(?:\.md)?\b/ },
+  // The private docs also live in numbered `phases/NN` directories, cited the same dangling way.
+  { name: 'private phase-doc reference', re: /\bphases\/\d/ },
   { name: 'private handbook repo', re: /sharvilk\/meta-standards/ },
 ];
 

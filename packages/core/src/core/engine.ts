@@ -66,7 +66,7 @@ export interface EngineDeps {
   readonly cache?: BoundedLru<string, CodecBitmap>;
   readonly maxBitmapBytes?: number;
   /**
-   * The bitmap codec (DECISIONS #58) — **required**. `core/` is
+   * The bitmap codec — **required**. `core/` is
    * codec-agnostic: it can have no default, because the concrete codec lives in a *flavor* package that depends
    * on core (a default here would invert that arrow). A flavor's facade injects it — `@cloudbitmaps/roaring`
    * passes `roaringCodec` — so applications never see this.

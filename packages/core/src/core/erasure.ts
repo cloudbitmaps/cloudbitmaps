@@ -1,5 +1,5 @@
 /**
- * Crypto-shred erasure (Phase 4e, [DECISIONS #19]).
+ * Crypto-shred erasure (Phase 4e).
  *
  * GDPR "right to erasure" on immutable/backed-up Cold storage: you can't delete a `.crbm` object from every
  * backup, but you can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from the registry

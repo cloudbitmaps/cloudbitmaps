@@ -132,7 +132,7 @@ export interface RegistryEnvelope {
 }
 
 /**
- * Current registry-row schema version — a pre-1.0 format-freeze prerequisite (Phase G, DECISIONS #41). Every persistent
+ * Current registry-row schema version — a pre-1.0 format-freeze prerequisite (Phase G). Every persistent
  * registry driver — the LocalFs/S3 `{ deleted, record }` envelope and the DynamoDB body — stamps its rows
  * with this so a reader can fail-closed on a future, incompatible layout instead of misparsing it. Bump only
  * on a backward-incompatible change. Policy: a **higher** stamp than this build knows → `UnsupportedError`

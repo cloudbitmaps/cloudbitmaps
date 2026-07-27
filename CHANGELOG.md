@@ -251,7 +251,7 @@ provenance. Everything below is the work that got it here.
     rather than any engine ceiling. Since the North Star warm-`has()` target is
     single-digit-to-~25 ms and the floor here is ~4× that whole budget, run 1 neither confirms nor contradicts it.
     An **in-region run** (Lambda/EC2 in `us-east-1`) is recorded as the named follow-up in
-    96-PRODUCTION-READINESS, and no in-region figure is published until
+    the production-readiness review, and no in-region figure is published until
     it happens.
   - **One honest floor:** AWS bills a failed conditional write at 1 WCU, but the 53
     `ConditionalCheckFailedException` responses carried no `ConsumedCapacity`, so the meter could not recover those
@@ -664,7 +664,7 @@ provenance. Everything below is the work that got it here.
   a flat heap alone was not evidence the native footprint is bounded. Scope stated honestly: these prove *no leak*
   on the read path, not a hard RSS ceiling (the cgroup `--memory` gate stays deferred to the public launch). Also:
   the reference `compact-segments` daemon can emit per-attempt `MetricEvent`s on stdout via `CR_COMPACT_METRICS=1`.
-  The 96-PRODUCTION-READINESS verdict is upgraded from the original
+  The the production-readiness review verdict is upgraded from the original
   analytical NOT READY to **READY within a validated envelope** (read-mostly / ≤~100K segments / tens-of-millions
   ids-per-segment / single-tenant / single-region; billions-ids, real-AWS cost calibration, and multi-tenant
   isolation are the named Phase-8 deferrals). Hot path (`add`/`has`/`remove`/`count`/`intersect`) unchanged.
@@ -845,7 +845,7 @@ provenance. Everything below is the work that got it here.
     · Mongo oplog/snapshot · Cassandra snapshot · Redis AOF+RDB; cold: S3/GCS/Azure versioning) — warm sets your
     RPO, and Redis-warm is the only live copy; the `checkConsistency` **Case-A honesty note** (detects the torn/dangling-pointer case, not the #35 silent lost-update); and a **no manual
     publish during active compaction** caveat.
-  - **96-PRODUCTION-READINESS** §2.2 re-scopes the validated envelope to **DynamoDB + S3 (fully documented)**,
+  - **the production-readiness review** §2.2 re-scopes the validated envelope to **DynamoDB + S3 (fully documented)**,
     with the other 8 drivers labeled **conformance-passing + correctness-clean**; roadmap updated.
   - **README + SECURITY**: Alpine/musl install note (`roaring` has no musl prebuilt → needs a build toolchain).
 
@@ -854,20 +854,20 @@ provenance. Everything below is the work that got it here.
   freeze gates `1.0`, not the `0.1.0` launch**; the package publishes scoped as **`@cloudbitmaps/roaring`**
   (umbrella family, DECISIONS #56) and the split is the Phase-9 pre-release gate;
   trademark search/registration is a Phase-9 task, not "deferred". Added a *partially-superseded* banner to the
-  11-RELEASE runbook and fixed its decisions table, publish command, and
+  release runbook and fixed its decisions table, publish command, and
   checklist. Marked the **hard cgroup-RSS ceiling gate** as **shipped** (`pnpm rss-gate`, Phase 8) across the
   testing/readiness docs (previously listed as deferred), and the **Lambda layer** as shipped
   (`pnpm build-lambda-layer`). Added **MySQL/MariaDB** to warm-driver enumerations; corrected barrel count to
   **ten**; updated fuzz-PR references (`#92` → `#93`); refreshed roadmap/phase status markers to Phases 1–8
   complete. Clarified that the conformance suite stays **internal** (no public `./testing` export — the Phase-7-publish note in DECISIONS #9 was deferred).
 - **Phase 7 driver-doc sweep.** Synced the docs to the shipped driver set now that all six Phase-7 drivers have
-  merged. Corrected the `IWarmDriver` OCC-token table in 05-DRIVER-SDK — the
+  merged. Corrected the `IWarmDriver` OCC-token table in the driver SDK contract — the
   **PostgreSQL** row wrongly described the token as a `version`/`xmin`/counter; all four warm drivers (Postgres,
   Redis, Mongo, Cassandra) use a **per-write random UUID + hard delete**, now recorded as a first-class
   contract-valid realization alongside the monotonic counter (new DECISIONS #57; reconciled the "recommended implementation" prose and the locked-decision row). Added a **Cassandra/ScyllaDB
   operational note** (LWT + `LOCAL_SERIAL` reads + single-partition-per-segment hot-partition guidance).
   Refreshed the stale status/"works today"/driver-list prose in the [README](README.md), the
-  [getting-started guide](docs/guide/getting-started.md), and 98-USAGE; fixed the
+  [getting-started guide](docs/guide/getting-started.md), and the usage guide; fixed the
   "three barrel files" → nine count and completed the driver-option-types index in
   [the API reference](docs/guide/api-reference.md); corrected the `tsup.config.ts` entry comment
   ("AWS SDK" → the per-driver backend SDKs). Marked **Phase 7 complete** in the roadmap and phase doc.

@@ -2,8 +2,7 @@
  * Encryption seams — the **pure** interfaces `core/` depends on so the codec can encrypt/decrypt without
  * importing `node:crypto` (lint-banned here, like `Clock`/`Rng`/drivers). Concrete AES-256-GCM lives outside
  * `core/` (`src/drivers/crypto.ts`) and is injected. The envelope scheme: a per-segment DEK wrapped under an
- * operator-held KEK, so discarding the DEK crypto-shreds the segment,
- * [DECISIONS #19]. Per-chunk AEAD over the `.crbm` payloads + index; a per-segment **DEK** wrapped (envelope
+ * operator-held KEK, so discarding the DEK crypto-shreds the segment. Per-chunk AEAD over the `.crbm` payloads + index; a per-segment **DEK** wrapped (envelope
  * encryption) under one or more **KEK**s by an {@link IKeystore}; the wrapped DEK(s) live in the registry, so
  * crypto-shred = delete them.
  */

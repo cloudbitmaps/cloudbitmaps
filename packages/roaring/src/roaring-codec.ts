@@ -124,7 +124,7 @@ export class SafeBitmap implements CodecBitmap {
 /**
  * The roaring {@link CodecInterface} — the flagship codec, delegating to {@link SafeBitmap}'s statics. This is
  * the default the `CloudRoaring` facade injects into the engine; `core/` itself never hard-references it once a
- * caller supplies a codec. Moves to `@cloudbitmaps/roaring` when the package split lands ([DECISIONS #58]).
+ * caller supplies a codec. Moves to `@cloudbitmaps/roaring` when the package split lands.
  */
 export const roaringCodec: CodecInterface = {
   empty: () => SafeBitmap.empty(),

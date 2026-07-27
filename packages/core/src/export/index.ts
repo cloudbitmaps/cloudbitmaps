@@ -58,7 +58,7 @@ export interface ExportOptions {
   /** Output format; defaults to `'roaring'`. */
   readonly format?: ExportFormat;
   /**
-   * Bitmap codec used to build the exported bitmap for the `'roaring'` format ([DECISIONS #58]). Optional in the
+   * Bitmap codec used to build the exported bitmap for the `'roaring'` format. Optional in the
    * type so this stays call-compatible public API; a **flavor** package binds it (see `requireCodec`). Not needed
    * for `'ndjson'`, which streams plain ids.
    */

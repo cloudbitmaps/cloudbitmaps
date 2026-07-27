@@ -5,7 +5,7 @@
  * - {@link estimateCost} — **planning** mode: pure what-if from segment sizes + a workload (sizing/sales).
  * - `segment.costReport()` (wired in `index.ts`) — **grounded** mode: the segment's real size from the
  *   `.crbm` index (free + exact, no payload reads) + a supplied workload for request rates. (Whole-store
- *   aggregation is a later phase — see [DECISIONS #22](../DECISIONS.md).)
+ *   aggregation is a later phase.)
  *
  * Guiding split (08 decision #3): **formulas are the spec; rates are a pluggable {@link PricingProfile}.**
  * The report always emits a {@link CostReport.verdict} that includes the lose-zone — it never hides where an

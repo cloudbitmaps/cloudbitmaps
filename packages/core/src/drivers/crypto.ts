@@ -4,7 +4,7 @@
  * **BYOK** keystore that envelope-wraps a per-segment DEK under one or more operator-held KEKs.
  *
  * Default, dependency-free key management: you bring 32-byte KEK(s); we never call a cloud service. KMS/Vault
- * are future optional adapters against the same {@link IKeystore} interface (DECISIONS #19). **The KEK is the
+ * are future optional adapters against the same {@link IKeystore} interface. **The KEK is the
  * one secret to back up** — lose it and that segment's at-rest bytes are unrecoverable by design (re-seed the
  * segment from your source of truth); see the getting-started "Encryption" section.
  */
