@@ -28,7 +28,7 @@
 > (`/cassandra`), and **MySQL/MariaDB** (`/mysql`); a **segment registry**
 > (memory / LocalFs / DynamoDB / **S3** — so a read-mostly deployment runs on **S3 alone**), and a
 > **crash-safe compaction daemon** (`compact-segments`) — `add` / `addMany` /
-> `remove` / `removeMany` / `has` / `count` / `iterate` / **`intersect` (chunk-skipping)**, tombstone-correct
+> `remove` / `removeMany` / `has` / `count` / `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, tombstone-correct
 > deletes, bulk-load, the `.crbm` archive format, a bounded HOT cache, real cross-process optimistic-concurrency
 > writes, **automatic retry with backoff** that rides out transient cloud faults without losing data,
 > registry-resolved generation pointers (no per-read scan), **2-phase-commit compaction** that folds warm
@@ -312,7 +312,9 @@ new CloudRoaring({
 |---|---|
 | `add` · `addMany` · `remove` · `removeMany` | mutate (grouped by chunk; single-chunk atomic) |
 | `has` · `count` · `iterate` | read (tier-merged; `count` = 0 payload reads on compacted chunks) |
-| `intersect(others)` · `intersectInto(dest, others)` | chunk-skipping set intersection, streamed |
+| `intersect(others, { exclude? })` · `intersectInto(dest, …)` | chunk-skipping set intersection, streamed. `exclude` subtracts suppression segments **in the same pass** — no intermediate segment |
+| `union(others, { exclude? })` · `unionInto(dest, …)` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `andNot(excludes)` · `andNotInto(dest, excludes)` | set difference. Reads all of `this`, but each suppression list **only where it overlaps** |
 | `costReport({ workload, pricing })` | grounded cost from the segment's real `.crbm` size |
 
 **Store admin** (reuse the store's own drivers; need a raw cold driver + registry):

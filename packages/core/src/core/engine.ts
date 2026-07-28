@@ -187,6 +187,14 @@ export interface EngineDeps {
 
 type Mutator = (delta: ChunkDelta, ids: CodecBitmap) => void;
 
+/** One resolved operand of a chunk-aligned combine: its key set + warm deltas + pinned generation. */
+interface Operand {
+  readonly seg: SegmentRef;
+  readonly warmRows: Map<number, Uint8Array>;
+  readonly keys: Set<number>;
+  readonly gen: number | null | undefined;
+}
+
 export class SegmentEngine {
   private readonly warm: IWarmDriver;
   private readonly cold: ColdChunkSource;
@@ -356,12 +364,69 @@ export class SegmentEngine {
    * re-resolves fresh (bypassing the TTL), which can hop generations even sub-TTL — still whole/immutable per
    * read, never torn. Full intra-op snapshot isolation is deferred (gap #4).
    */
-  async *intersect(
+  /**
+   * `segs[0] ∩ segs[1] ∩ …`, minus every id in `options.exclude` — streamed ascending.
+   *
+   * The `exclude` operands are what make suppression **compose without materialising**. Applying suppression
+   * afterwards (intersect into a temp segment, then remove) writes an intermediate segment that nobody wants;
+   * applying it here folds it into the same chunk-aligned pass. It is also cheaper than it looks: an exclude
+   * operand is read **only at the keys that survived the intersection**, so a 61,000-chunk global opt-out list
+   * intersected against a narrow audience costs a handful of reads, not 61,000.
+   */
+  intersect(
     segs: readonly SegmentRef[],
+    options?: { concurrency?: number; budget?: BudgetOption; exclude?: readonly SegmentRef[] },
+  ): AsyncGenerator<number> {
+    return this.combine(segs, options?.exclude ?? [], 'all', 'intersect', options);
+  }
+
+  /**
+   * `segs[0] ∪ segs[1] ∪ …`, minus every id in `options.exclude` — streamed ascending.
+   *
+   * **Union is the one composite read with no chunk-skipping**, and that is a property of the operation rather
+   * than of this implementation: an id in *any* operand belongs to the result, so every chunk of every operand
+   * has to be read. `intersect` can prune a key absent from any operand; union cannot prune anything. It is
+   * budgeted exactly like `intersect` so a wide union is refused rather than quietly billed.
+   */
+  union(
+    segs: readonly SegmentRef[],
+    options?: { concurrency?: number; budget?: BudgetOption; exclude?: readonly SegmentRef[] },
+  ): AsyncGenerator<number> {
+    return this.combine(segs, options?.exclude ?? [], 'any', 'union', options);
+  }
+
+  /**
+   * `seg \ (excludes[0] ∪ excludes[1] ∪ …)` — streamed ascending. Suppression on its own.
+   *
+   * Reads every chunk of `seg` (any of them may survive) but each exclude **only where it overlaps `seg`**, so
+   * the cost scales with the segment being filtered rather than with the size of the suppression list.
+   */
+  andNot(
+    seg: SegmentRef,
+    excludes: readonly SegmentRef[],
     options?: { concurrency?: number; budget?: BudgetOption },
   ): AsyncGenerator<number> {
+    return this.combine([seg], excludes, 'all', 'andNot', options);
+  }
+
+  private async *combine(
+    segs: readonly SegmentRef[],
+    excludeSegs: readonly SegmentRef[],
+    mode: 'all' | 'any',
+    op: 'intersect' | 'union' | 'andNot',
+    options?: { concurrency?: number; budget?: BudgetOption },
+  ): AsyncGenerator<number> {
+    // Validated HERE rather than in the public wrappers, deliberately. `combine` is an async generator, so a
+    // throw surfaces when the caller first iterates — which is the behaviour `intersect` has always had, and
+    // `await expect(collect(engine.intersect([]))).rejects` in the suite depends on it. Guarding in the
+    // wrappers would make them throw synchronously instead, a silent breaking change for anyone whose
+    // try/catch sits around the iteration. Delegating through `yield*` would restore it at the cost of a
+    // microtask per id on the hottest streaming path, which is not a trade worth making for an error case.
     if (segs.length === 0) {
-      throw new ValidationError('intersect requires at least one segment');
+      throw new ValidationError(`${op} requires at least one segment`);
+    }
+    if (op === 'andNot' && excludeSegs.length === 0) {
+      throw new ValidationError('andNot requires at least one segment to subtract');
     }
     const limit = options?.concurrency ?? DEFAULT_INTERSECT_CONCURRENCY;
     if (!Number.isInteger(limit) || limit < 1) {
@@ -375,28 +440,53 @@ export class SegmentEngine {
 
     // ① Index-map extraction: each operand's effective key set (Warm ∪ Cold) + its current generation, resolved
     // ONCE here (not per chunk) so the fan-out below adds no per-chunk generation re-resolve. Only metadata so far.
-    const operands = await Promise.all(
-      segs.map(async (seg) => {
-        // see collectWarm: the intersect budget is a product, not a row count;
-        const warmRows = await this.collectWarm(seg, 'intersect', null);
-        const keys = await this.chunkKeys(seg, warmRows);
-        const gen = await this.currentGen(seg);
-        return { seg, warmRows, keys: new Set(keys), gen };
-      }),
-    );
+    const extract = async (seg: SegmentRef) => {
+      // see collectWarm: this budget is a product, not a row count;
+      const warmRows = await this.collectWarm(seg, op, null);
+      const keys = await this.chunkKeys(seg, warmRows);
+      const gen = await this.currentGen(seg);
+      return { seg, warmRows, keys: new Set(keys), gen };
+    };
+    const [operands, excludes] = await Promise.all([
+      Promise.all(segs.map(extract)),
+      Promise.all(excludeSegs.map(extract)),
+    ]);
 
-    // ② Key alignment: keys present in ALL operands. Start from the smallest set to minimize the scan.
-    const pivot = operands.reduce((a, b) => (a.keys.size <= b.keys.size ? a : b));
-    const common: number[] = [];
-    for (const k of pivot.keys) {
-      if (operands.every((op) => op.keys.has(k))) common.push(k);
+    // ② Key alignment. Candidate keys come from the INCLUDE operands only — an exclude can subtract ids from a
+    // chunk but can never introduce one, so a key no include holds cannot appear in the result however large
+    // the suppression list is. That asymmetry is what makes suppression cheap here.
+    //
+    //   'all' (intersect / andNot): keys present in EVERY include. Start from the smallest set to minimize the
+    //                               scan — a key missing from any operand cannot survive the AND.
+    //   'any' (union):              keys present in ANY include. No pruning is possible; see `union`'s note.
+    const candidates: number[] = [];
+    if (mode === 'all') {
+      const pivot = operands.reduce((a, b) => (a.keys.size <= b.keys.size ? a : b));
+      for (const k of pivot.keys) {
+        if (operands.every((o) => o.keys.has(k))) candidates.push(k);
+      }
+    } else {
+      const seen = new Set<number>();
+      for (const o of operands) for (const k of o.keys) seen.add(k);
+      for (const k of seen) candidates.push(k);
     }
-    common.sort((a, b) => a - b); // defensive: `chunkKeys` already returns sorted; don't rely on it
+    candidates.sort((a, b) => a - b); // defensive: `chunkKeys` already returns sorted; don't rely on it
+    const common = candidates;
 
     // Denial-of-wallet budget (before the fan-out AND before we emit a "work done" metric): the heavy cost is
     // one cold fetch per surviving key per operand — refuse up front if that would exceed the budget (07
     // Decision #3 / T3). Placed above the metric so a refused intersect doesn't report chunks it never fetched.
-    checkBudget(budget, common.length * operands.length, 'intersect');
+    //
+    // Units are the chunk reads this will actually issue, counted per key: every include present at that key
+    // (all of them under 'all'), plus only those excludes that hold the key. Counting excludes as always-present
+    // would refuse work that costs nothing — the whole point of the asymmetry above. For a plain `intersect`
+    // with no excludes this reduces to `common.length * operands.length`, exactly as before.
+    let units = 0;
+    for (const key of common) {
+      for (const o of operands) if (mode === 'all' || o.keys.has(key)) units += 1;
+      for (const e of excludes) if (e.keys.has(key)) units += 1;
+    }
+    checkBudget(budget, units, op);
 
     // Emit the chunk-skipping efficiency: `fetched` = shared keys we'll read, `skipped` = distinct keys
     // pruned across all operands (never fetched — the core saving). Bounded metadata work, no extra I/O.
@@ -405,10 +495,14 @@ export class SegmentEngine {
       for (const op of operands) {
         for (const k of op.keys) distinctKeys.add(k);
       }
+      for (const e of excludes) for (const k of e.keys) distinctKeys.add(k);
       this.metrics.onEvent({
         kind: 'intersect',
-        operands: segs.length,
+        op,
+        operands: segs.length + excludes.length,
         fetchedChunks: common.length,
+        // Never negative: under 'any' every candidate key came from some operand, so `distinctKeys` is a
+        // superset of `common`; excludes only ever add keys here.
         skippedChunks: distinctKeys.size - common.length,
       });
     }
@@ -419,7 +513,7 @@ export class SegmentEngine {
     // promises unhandled — we surface it, in key order, when its slot is drained.
     type Slot = { key: number; result: CodecBitmap | null; error?: unknown };
     const startAt = (key: number): Promise<Slot> =>
-      this.intersectChunk(operands, key).then(
+      this.combineChunk(operands, excludes, mode, key).then(
         (result) => ({ key, result }),
         (error: unknown) => ({ key, result: null, error }),
       );
@@ -443,23 +537,44 @@ export class SegmentEngine {
    * first operand's effective chunk and mutates it in place — safe because `effectiveChunk` always returns
    * a FRESH bitmap (never a cached/shared Cold instance), so this can't poison the HOT cache.
    */
-  private async intersectChunk(
-    operands: ReadonlyArray<{
-      seg: SegmentRef;
-      warmRows: Map<number, Uint8Array>;
-      gen: number | null | undefined;
-    }>,
+  private async combineChunk(
+    operands: ReadonlyArray<Operand>,
+    excludes: ReadonlyArray<Operand>,
+    mode: 'all' | 'any',
     chunkKey: number,
   ): Promise<CodecBitmap | null> {
+    // Under 'any' an include may simply not hold this key; skip it rather than fetching a certainly-empty
+    // chunk. Under 'all' every include holds every candidate key by construction, so the filter is a no-op.
+    const present = mode === 'all' ? operands : operands.filter((o) => o.keys.has(chunkKey));
+    if (present.length === 0) return null;
     const chunks = await Promise.all(
-      operands.map((op) => this.effectiveChunk(op.seg, chunkKey, op.warmRows, op.gen)),
+      present.map((op) => this.effectiveChunk(op.seg, chunkKey, op.warmRows, op.gen)),
     );
     const acc = chunks[0]!; // fresh, owned (see method note)
     for (let i = 1; i < chunks.length; i++) {
-      acc.andInPlace(chunks[i]!);
-      if (acc.isEmpty) return null; // once empty, the remaining operands can't revive it
+      if (mode === 'all') {
+        acc.andInPlace(chunks[i]!);
+        if (acc.isEmpty) return null; // once empty, the remaining operands can't revive it
+      } else {
+        acc.orInPlace(chunks[i]!);
+      }
     }
-    return acc.isEmpty ? null : acc;
+    if (acc.isEmpty) return null;
+
+    // Suppression, folded into the same pass. Only excludes that actually hold this key are fetched — this is
+    // where a large global opt-out list stops being expensive. Fetched lazily rather than alongside the
+    // includes above, because an AND that collapsed to empty means there is nothing left to suppress.
+    const relevant = excludes.filter((e) => e.keys.has(chunkKey));
+    if (relevant.length > 0) {
+      const cuts = await Promise.all(
+        relevant.map((e) => this.effectiveChunk(e.seg, chunkKey, e.warmRows, e.gen)),
+      );
+      for (const cut of cuts) {
+        acc.andNotInPlace(cut);
+        if (acc.isEmpty) return null;
+      }
+    }
+    return acc;
   }
 
   /**
@@ -470,11 +585,58 @@ export class SegmentEngine {
   async intersectInto(
     dest: SegmentRef,
     segs: readonly SegmentRef[],
-    options?: { concurrency?: number; batchSize?: number },
+    options?: {
+      concurrency?: number;
+      batchSize?: number;
+      budget?: BudgetOption;
+      exclude?: readonly SegmentRef[];
+    },
   ): Promise<void> {
-    const batchSize = Math.max(1, options?.batchSize ?? 4096);
+    await this.drainInto(dest, this.intersect(segs, options), options?.batchSize);
+  }
+
+  /**
+   * Materialize `segs[0] ∪ segs[1] ∪ …` (minus `options.exclude`) into `dest`. **Not atomic**, like
+   * {@link intersectInto}. See {@link union} for why this one cannot skip any chunk.
+   */
+  async unionInto(
+    dest: SegmentRef,
+    segs: readonly SegmentRef[],
+    options?: {
+      concurrency?: number;
+      batchSize?: number;
+      budget?: BudgetOption;
+      exclude?: readonly SegmentRef[];
+    },
+  ): Promise<void> {
+    await this.drainInto(dest, this.union(segs, options), options?.batchSize);
+  }
+
+  /** Materialize `seg \ (excludes…)` into `dest`. **Not atomic**, like {@link intersectInto}. */
+  async andNotInto(
+    dest: SegmentRef,
+    seg: SegmentRef,
+    excludes: readonly SegmentRef[],
+    options?: { concurrency?: number; batchSize?: number; budget?: BudgetOption },
+  ): Promise<void> {
+    await this.drainInto(dest, this.andNot(seg, excludes, options), options?.batchSize);
+  }
+
+  /**
+   * Stream a combine's results into `dest` in bounded batches.
+   *
+   * `dest` is **added to, not replaced**, and this is **not atomic** — ids land chunk-by-chunk, so a failure
+   * mid-stream leaves a partial result, exactly as `addMany` does. Batching keeps memory bounded no matter how
+   * large the result is.
+   */
+  private async drainInto(
+    dest: SegmentRef,
+    source: AsyncIterable<number>,
+    batchSizeOption?: number,
+  ): Promise<void> {
+    const batchSize = Math.max(1, batchSizeOption ?? 4096);
     let batch: number[] = [];
-    for await (const id of this.intersect(segs, options)) {
+    for await (const id of source) {
       batch.push(id);
       if (batch.length >= batchSize) {
         await this.addMany(dest, batch);

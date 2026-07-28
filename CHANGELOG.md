@@ -16,6 +16,38 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Added
 
+- **`union` / `andNot` and an `exclude` option on `intersect`** — set composition without materialising an
+  intermediate segment.
+
+  ```ts
+  // (audience ∩ in-market) minus every suppression list, in ONE chunk-aligned pass:
+  await audience.intersectInto(dest, [inMarket], { exclude: [optOut, churned] });
+
+  for await (const id of audience.union([lookalikes], { exclude: [optOut] })) { … }
+  for await (const id of audience.andNot([optOut])) { … }
+  ```
+
+  - **`exclude` is the part that delivers "suppression composes".** Chaining would not: `andNot` applied after
+    `intersectInto(tmp, …)` still writes `tmp`. Folding suppression into the intersect pass is what removes the
+    intermediate — so the two standalone operations alone would not have solved the request they came from.
+  - **The cost model is a property of the set operation, not of this implementation**, and the guide now states
+    it plainly:
+
+    | | chunks read | can skip? |
+    | --- | --- | --- |
+    | `intersect` | keys present in **every** operand | yes — the crown jewel |
+    | `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly |
+    | `union` | every chunk of **every** operand | no |
+
+  - An `exclude` operand can only subtract, never introduce a key, so candidate keys come from the includes
+    alone — and a suppression chunk is fetched only at keys that list actually holds. Subtracting a
+    61,000-chunk global opt-out list from a 40-chunk audience costs **1** extra read, not 40 and not 61,000.
+  - All three are charged against the same per-op budget, and only for chunks actually read, so a wide `union`
+    is refused rather than quietly billed while cheap suppression is not penalised.
+  - New: `unionInto` / `andNotInto`; exported option types `BaseCombineOptions`, `CombineOptions`,
+    `CombineIntoOptions`; `MetricOpName` gains `'unionInto'` / `'andNotInto'`; the `intersect` metric event
+    gains an optional `op` discriminator (absent ⇒ `'intersect'`, so existing consumers are unaffected).
+
 - **`addMany`/`removeMany` accept an `AsyncIterable`**, so a database cursor streams straight in —
   `addMany(athenaCursor())` instead of hand-batching `page → addMany(page)`. `bulkLoadCrbmGeneration` already
   did; this closes the gap.

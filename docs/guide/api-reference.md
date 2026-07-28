@@ -76,10 +76,27 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 | `seg.has(id)` → `Promise<boolean>` | membership test |
 | `seg.count()` → `Promise<number>` | exact cardinality (cheap — from the cold index) |
 | `seg.iterate()` → `AsyncIterable<number>` | stream all ids, ascending |
-| `seg.intersect([other, …], { concurrency? })` → `AsyncIterable<number>` | **the crown jewel** — chunk-skipping intersection, streamed |
-| `seg.intersectInto(dest, [other, …], { concurrency?, batchSize? })` → `Promise<void>` | materialize `this ∩ others` **into** another segment |
+| `seg.intersect([other, …], { concurrency?, exclude? })` → `AsyncIterable<number>` | **the crown jewel** — chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass** |
+| `seg.union([other, …], { concurrency?, exclude? })` → `AsyncIterable<number>` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read |
+| `seg.andNot([sup, …], { concurrency? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, but each exclude **only where it overlaps** |
+| `seg.intersectInto` · `seg.unionInto` · `seg.andNotInto` `(dest, …, { batchSize? })` → `Promise<void>` | materialize the result **into** another segment |
 
-That's the whole daily surface: **1 constructor + pick 3 drivers + these 7 verbs.**
+That's the whole daily surface: **1 constructor + pick 3 drivers + these 10 verbs.**
+
+**Which chunks each combine has to read** — this is the cost model, and it is a property of the set operation
+rather than of the implementation:
+
+| | chunks read | can skip? |
+| --- | --- | --- |
+| `intersect` | keys present in **every** operand | **yes** — the crown jewel |
+| `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly — the suppression side |
+| `union` | every chunk of **every** operand | no — an id in any operand belongs to the result |
+
+All three are charged against the same per-op budget, so a wide union is refused rather than quietly billed.
+
+> **To suppress the result of an intersection, do not chain.** `a.intersect([b], { exclude: [s] })` folds the
+> subtraction into one pass; `intersectInto` a temp segment followed by `andNot` materializes an intermediate
+> nobody wants — and reads `s` in full rather than only where it overlaps.
 
 ---
 
@@ -147,7 +164,7 @@ The option / result types the public methods above reference — you import thes
 ### The tier interfaces (used to type `cold` / `warm` / `registry`)
 
 `IColdDriver` · `IWarmDriver` · `IRegistryDriver` · `ColdChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy`
-· `Clock` · `Rng`
+· `Clock` · `Rng` · `BaseCombineOptions` · `CombineOptions` · `CombineIntoOptions`
 
 ---
 
