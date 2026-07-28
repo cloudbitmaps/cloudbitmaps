@@ -14,6 +14,40 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bulk-load no longer blocks the event loop for the whole load.** `bulkLoadCrbmGeneration` was a single
+  synchronous stretch: a 1M-id load (~62,000 chunks) measured **442 ms wall with 450 ms during which the event
+  loop did not turn once**. Wired into a request handler that stalls every other request on the instance —
+  health checks included — for the duration, which is the difference between a slow endpoint and one that looks
+  dead to its load balancer. The load now hands the loop back periodically: **worst stall 450 ms → 19 ms**.
+  - Applies to the four loops that dominate a load — id ingest, the per-chunk flush, the cardinality tally, and
+    the serialize/CRC/frame pass — plus `writeCrbmGenerationStream`, which compaction runs over whole segments.
+  - **The obvious fixes do not work, and this is worth knowing before you write your own.** Making the work
+    async is a **7x regression** (636 ms vs 92 ms): handing each chunk's insert to the threadpool costs ~9 µs of
+    dispatch against ~1.5 µs of work. And `await Promise.resolve()` — equivalently `Clock.sleep(0)` — yields
+    *nothing*, because microtasks drain before the loop advances a phase; measured at 555 ms of starvation
+    against a 568 ms unyielded baseline. The yield has to be a macrotask, and it has to be periodic.
+  - Users of `@cloudbitmaps/roaring` get this automatically — the flavor pre-binds a real clock, exactly as it
+    pre-binds the codec. Calling `@cloudbitmaps/core` directly with no `clock` keeps the old behaviour
+    unchanged, so this is purely additive.
+
+- **Bulk-load is 42% faster on sync input** (1M ids: **442 ms → 256 ms**), independent of the fix above. Both
+  sync and async sources were normalised through one async generator, which forces a microtask per id: 224 ms
+  against 11 ms for a plain `for..of` over the same array — 55% of a whole load spent on iteration protocol
+  rather than work. The two ingest paths are now separate.
+
+### Added
+
+- **`Clock.yieldNow?()`** — an optional member on the determinism seam meaning "hand the event loop back once",
+  as distinct from `sleep(0)`, which is contractually a microtask and yields nothing. Optional, so every
+  existing `Clock` implementation stays valid; callers degrade to `sleep(1)`, which yields correctly at ~1 ms of
+  dead wall-clock apiece. Production wiring backs it with `setImmediate`; the simulator makes it a no-op so a
+  replayable run is not perturbed by what is purely a scheduling courtesy.
+
+- **`writeCrbmGeneration` and `writeCrbmGenerationStream` accept `clock`**, so a caller driving them directly
+  gets the same cooperative behaviour.
+
 ## [0.3.0] - 2026-07-27
 
 A production-safety release. An adversarial audit round found that the per-op budget bounded **fan-out** but

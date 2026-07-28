@@ -107,6 +107,10 @@ dependencies** — arrives transitively and is never installed directly.
   end-to-end as a gated drill against the [DR runbook](guide/disaster-recovery.md).
 - **Serverless-ready** — a hard cgroup-RSS ceiling in CI, an AWS Lambda / Amazon Linux 2023 deployability
   smoke test, and a prebuilt Lambda layer builder.
+- **A co-operative bulk-load.** Node has one thread, and building a generation is the one operation here that
+  genuinely occupies it for a while. It hands the event loop back periodically, so a 1M-id load runs in ~19 ms
+  slices instead of blocking everything on the instance for 450 ms straight — a co-resident server keeps
+  answering. On by default; see [what blocks the event loop](guide/getting-started.md#what-blocks-the-event-loop-and-where-to-run-it).
 
 ## Storage drivers
 

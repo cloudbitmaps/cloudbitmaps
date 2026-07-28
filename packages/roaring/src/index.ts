@@ -73,28 +73,7 @@ import type {
 } from '@cloudbitmaps/core';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { roaringCodec } from './roaring-codec';
-
-/** Default real-time clock — lives outside `core/`, so `Date.now()` + `setTimeout` are allowed here. */
-class SystemClock implements Clock {
-  now(): number {
-    return Date.now();
-  }
-
-  sleep(ms: number): Promise<void> {
-    if (ms <= 0) return Promise.resolve();
-    // A *ref'd* timer, deliberately. Every `sleep` on this clock backs a caller-awaited, bounded retry — the
-    // engine's OCC read-modify-write backoff and the driver transient-retry loop (`withRetry`). A pending
-    // backoff therefore always means unfinished awaited work, so the timer MUST keep the event loop alive until
-    // it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI, Lambda, a bare script —
-    // whose only remaining handle was the backoff timer exit 0 mid-retry, silently dropping the awaited write
-    // with neither an applied result nor a thrown error (surfaced by the T4 hot-row contention stress).
-    // Retries are bounded (`maxAttempts`/`maxRetries` + `maxDelayMs`), so a ref'd timer can only
-    // extend a process by the small remaining backoff budget of work that is genuinely still in flight.
-    return new Promise((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  }
-}
+import { SystemClock } from './system-clock';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {

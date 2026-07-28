@@ -1186,19 +1186,29 @@ chunks carry warm deltas; raising `budget` will not help.
 ## What blocks the event loop, and where to run it
 
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
-is network-bound and irrelevant here — a warm `has()` spends ~0.04% of its time on bit math — but two paths are
-genuinely CPU-heavy, and measured on an M3 Pro they are not subtle:
+is network-bound and irrelevant here — a warm `has()` spends ~0.04% of its time on bit math — but bulk-load and
+compaction are genuinely CPU-heavy. Measured on an M3 Pro:
 
-| path | cost | where it belongs |
-| --- | --- | --- |
-| `bulkLoadCrbmGeneration` (1M ids) | **~800–1,400 ms** | a batch job or worker, **never** a request handler |
-| a compaction cycle | ~22 ms of bit math | the `compact-segments` **daemon**, which is a separate process for exactly this reason |
-| `add` / `remove` / `has` / `count` / `intersect` | microseconds of CPU; dominated by network | anywhere |
+| path | cost | longest single stall | where it belongs |
+| --- | --- | --- | --- |
+| `bulkLoadCrbmGeneration` (1M ids) | ~256 ms | **~19 ms** | a batch job or worker; survivable off the request path |
+| a compaction cycle | ~22 ms of bit math | ~19 ms | the `compact-segments` **daemon**, a separate process for exactly this reason |
+| `add` / `remove` / `has` / `count` / `intersect` | microseconds of CPU; dominated by network | — | anywhere |
 
-**The rule:** anything that touches a whole generation belongs out of the request path. The compaction daemon
-already is a separate process — run it that way rather than calling `runCompactionCycle` inline in a server.
-For bulk-load, use a job runner, a queue consumer, or a short-lived task; a 1M-id load inside an HTTP handler
-freezes that instance for over a second.
+The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
+cost. Bulk-load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
+in between — other requests interleave rather than queueing behind the whole load. Before that fix the two
+columns were the same number: a 1M-id load blocked the loop for **450 ms straight**, long enough for a health
+check to time out and the instance to be pulled from its load balancer.
+
+Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
+which the flavor package pre-binds. If you call `@cloudbitmaps/core` directly, pass one (`clock`) or the load
+runs uninterrupted as it did before.
+
+**The rule is unchanged:** anything that touches a whole generation belongs out of the request path. Yielding
+makes a load a well-behaved neighbour, not a cheap one — it still burns a core for a quarter-second and holds
+the whole generation in memory. Use a job runner, a queue consumer, or a short-lived task, and run the
+compaction daemon as the separate process it is meant to be.
 
 ## Where next
 
