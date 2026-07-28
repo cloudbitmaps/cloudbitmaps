@@ -767,16 +767,28 @@ export class Segment {
   add(id: number): Promise<void> {
     return this.timed('add', () => this.engine.add(this.ref, id));
   }
-  /** Add many ids. Not atomic across chunks — see the class note. */
-  addMany(ids: Iterable<number>): Promise<void> {
+  /**
+   * Add many ids, from a **sync or async** iterable. Not atomic across chunks — see the class note.
+   *
+   * An async source means a database cursor streams straight in — `addMany(athenaCursor())` rather than
+   * hand-batching `page → addMany(page)`. Ids are grouped by chunk and each chunk is written **exactly once**,
+   * however long the stream: pending ids are held compressed, not buffered-and-flushed, so a long stream costs
+   * no more backend writes than a short one. Peak memory is the roaring representation of the ids you pass.
+   *
+   * **For a very large set, reach for `bulkLoadCrbmGeneration` instead.** `addMany` expresses a *delta* and
+   * writes one warm row per touched chunk — around 61,000 of them for a set spread across the whole id space.
+   * Bulk-load *replaces* the segment with one immutable Cold object. See the guide's cost comparison; picking
+   * the wrong one of these is the most expensive mistake available in this library.
+   */
+  addMany(ids: Iterable<number> | AsyncIterable<number>): Promise<void> {
     return this.timed('addMany', () => this.engine.addMany(this.ref, ids));
   }
   /** Remove an id (integer in `[0, 2^32)`). Throws {@link ValidationError} on a bad id. */
   remove(id: number): Promise<void> {
     return this.timed('remove', () => this.engine.remove(this.ref, id));
   }
-  /** Remove many ids. Not atomic across chunks — see the class note. */
-  removeMany(ids: Iterable<number>): Promise<void> {
+  /** Remove many ids, from a **sync or async** iterable. Not atomic across chunks — see {@link addMany}. */
+  removeMany(ids: Iterable<number> | AsyncIterable<number>): Promise<void> {
     return this.timed('removeMany', () => this.engine.removeMany(this.ref, ids));
   }
   has(id: number): Promise<boolean> {

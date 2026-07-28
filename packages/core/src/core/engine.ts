@@ -5,11 +5,21 @@
  */
 import { splitId, joinId, CHUNK_COUNT, MAX_REMAINDER } from './bit-route';
 import type { CodecBitmap, CodecInterface } from './codec';
-import { emptyDelta, applyAdd, applyRemove, effective, encodeDelta, decodeDelta } from './chunk';
+import {
+  emptyDelta,
+  applyAdd,
+  applyRemove,
+  applyAddAll,
+  applyRemoveAll,
+  effective,
+  encodeDelta,
+  decodeDelta,
+} from './chunk';
 import type { ChunkDelta } from './chunk';
 import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
 import { mapWithConcurrency } from './concurrency';
+import { yieldEvery } from './cooperative';
 import type { Clock, Rng } from './determinism';
 import {
   BudgetExceededError,
@@ -39,6 +49,18 @@ const DEFAULT_MAX_BITMAP_BYTES = 1 << 20; // 1 MiB per bitmap — generous; real
 const DEFAULT_MAX_RETRIES = 16;
 /** Max overlapping-chunk intersections in flight — bounds memory + concurrent reads (invariant 6). */
 const DEFAULT_INTERSECT_CONCURRENCY = 8;
+/**
+ * Ids staged as uncompressed numbers before `mutateMany` folds them into per-chunk bitmaps.
+ *
+ * Caps the *transient* uncompressed overhead regardless of stream length — **measured ~28 MB** at this value
+ * (1M ids spread across ~65,000 chunks; not the ~8 MB a naive 8-bytes-per-number estimate suggests, because the
+ * cost is dominated by per-array and Map overhead across tens of thousands of small arrays). What persists
+ * across the whole call is the compressed bitmaps this folds into, which for the same 5M ids measured **11 MB
+ * against 212 MB** held as JS numbers. Matches bulk-load's `BULK_FLUSH_IDS`, which has the same shape.
+ */
+const MUTATE_STAGE_IDS = 1 << 20;
+/** Ids between cooperative yields while ingesting — see `cooperative.ts` and bulk-load's matching constant. */
+const YIELD_EVERY_IDS = 1 << 14;
 
 /**
  * Pure no-wait clock / zero RNG used when the engine is constructed without a time source (e.g. unit tests
@@ -163,7 +185,7 @@ export interface EngineDeps {
   readonly budget?: Budget | null;
 }
 
-type Mutator = (delta: ChunkDelta, remainder: number) => void;
+type Mutator = (delta: ChunkDelta, ids: CodecBitmap) => void;
 
 export class SegmentEngine {
   private readonly warm: IWarmDriver;
@@ -220,12 +242,12 @@ export class SegmentEngine {
     return this.readModifyWrite(seg, chunkKey, (d) => applyRemove(d, remainder));
   }
 
-  addMany(seg: SegmentRef, ids: Iterable<number>): Promise<void> {
-    return this.mutateMany(seg, ids, applyAdd);
+  addMany(seg: SegmentRef, ids: Iterable<number> | AsyncIterable<number>): Promise<void> {
+    return this.mutateMany(seg, ids, applyAddAll);
   }
 
-  removeMany(seg: SegmentRef, ids: Iterable<number>): Promise<void> {
-    return this.mutateMany(seg, ids, applyRemove);
+  removeMany(seg: SegmentRef, ids: Iterable<number> | AsyncIterable<number>): Promise<void> {
+    return this.mutateMany(seg, ids, applyRemoveAll);
   }
 
   async has(seg: SegmentRef, id: number, opts?: WarmReadOptions): Promise<boolean> {
@@ -462,20 +484,89 @@ export class SegmentEngine {
     if (batch.length > 0) await this.addMany(dest, batch);
   }
 
-  private async mutateMany(seg: SegmentRef, ids: Iterable<number>, apply: Mutator): Promise<void> {
-    const byChunk = new Map<number, number[]>();
-    for (const id of ids) {
-      const { chunkKey, remainder } = splitId(id);
-      const rems = byChunk.get(chunkKey) ?? [];
+  /**
+   * Group ids by chunk, then apply each chunk's whole batch in a single OCC read-modify-write.
+   *
+   * Accepts a **sync or async** iterable, so an Athena/BigQuery cursor streams straight in without the caller
+   * hand-batching `page → addMany(page)`.
+   *
+   * **The pending ids are held as BITMAPS, not as JS numbers, and that is the load-bearing choice.** Streaming
+   * input is unbounded by definition, so something has to give. The obvious answer — buffer N ids, flush them to
+   * the backend, repeat — bounds memory and is quietly catastrophic on cost: with ids arriving in arbitrary
+   * order, every flush touches nearly every chunk again, so an 11M-id stream at a 1M-id buffer would issue
+   * **11x** the OCC round-trips of a single pass. In a library whose headline claim is honest cost, silently
+   * multiplying someone's write bill by the size of their input is not a bounded-memory strategy; it is a
+   * different bug.
+   *
+   * So the staging buffer is capped, but it folds into per-chunk **compressed bitmaps** rather than being
+   * written out. Peak memory is the roaring representation of the ids seen so far — which is what the segment
+   * itself costs, and the floor for any implementation that writes each chunk exactly once — while the backend
+   * still sees exactly one read-modify-write per distinct chunk regardless of stream length. This is strictly
+   * less memory than the previous sync-only version, which held every remainder as an uncompressed JS number.
+   *
+   * There is no way to do better without a sorted stream: a chunk can only be written once it is known that no
+   * further ids for it will arrive, and unsorted input never gives that guarantee. Callers streaming *very*
+   * large sets want `bulkLoadCrbmGeneration` instead — it writes one immutable Cold object rather than tens of
+   * thousands of warm rows. The crossover is documented in the guide.
+   */
+  private async mutateMany(
+    seg: SegmentRef,
+    ids: Iterable<number> | AsyncIterable<number>,
+    apply: Mutator,
+  ): Promise<void> {
+    const byChunk = new Map<number, CodecBitmap>();
+    const staged = new Map<number, number[]>();
+    let pending = 0;
+    const tickId = yieldEvery(this.clock, YIELD_EVERY_IDS);
+
+    /** Fold the staged remainders into their chunks' bitmaps, releasing the uncompressed buffers. */
+    const compact = (): void => {
+      for (const [chunkKey, rems] of staged) {
+        if (rems.length === 0) continue;
+        const existing = byChunk.get(chunkKey);
+        if (existing === undefined) byChunk.set(chunkKey, this.codec.fromValues(rems));
+        else existing.addMany(rems);
+        rems.length = 0;
+      }
+      pending = 0;
+    };
+
+    const stage = (id: number): void => {
+      const { chunkKey, remainder } = splitId(id); // validates the u32 range
+      let rems = staged.get(chunkKey);
+      if (rems === undefined) {
+        rems = [];
+        staged.set(chunkKey, rems);
+      }
       rems.push(remainder);
-      byChunk.set(chunkKey, rems);
+      pending += 1;
+    };
+
+    // Two loops rather than one over a normalising wrapper: routing a sync source through an async generator
+    // forces a microtask per id and measured 20x on the bulk-load path. Arrays and Sets are the common input.
+    if (Symbol.asyncIterator in ids) {
+      for await (const id of ids as AsyncIterable<number>) {
+        stage(id);
+        if (pending >= MUTATE_STAGE_IDS) compact();
+        const pause = tickId();
+        if (pause !== null) await pause;
+      }
+    } else {
+      for (const id of ids as Iterable<number>) {
+        stage(id);
+        if (pending >= MUTATE_STAGE_IDS) compact();
+        const pause = tickId();
+        if (pause !== null) await pause;
+      }
     }
-    // Bounded flusher: one OCC read-modify-write per distinct chunk, at most `writeConcurrency` in flight
-    // (default 1 ⇒ serial, unchanged). Distinct chunks are independent OCC rows, so fanning them out is safe;
-    // as before, a mid-flush failure can leave a partial result (`addMany`/`removeMany` are not atomic).
-    await mapWithConcurrency([...byChunk], this.writeConcurrency, ([chunkKey, rems]) =>
+    compact();
+
+    // Bounded flusher: one OCC read-modify-write per distinct chunk, at most `writeConcurrency` in flight.
+    // Distinct chunks are independent OCC rows, so fanning them out is safe; as before, a mid-flush failure can
+    // leave a partial result (`addMany`/`removeMany` are not atomic).
+    await mapWithConcurrency([...byChunk], this.writeConcurrency, ([chunkKey, bitmap]) =>
       this.readModifyWrite(seg, chunkKey, (d) => {
-        for (const r of rems) apply(d, r);
+        apply(d, bitmap);
       }),
     );
   }

@@ -71,7 +71,7 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 
 | Call | Does |
 |---|---|
-| `seg.add(id)` · `seg.addMany(ids)` | add member(s); `addMany` groups by chunk (one write per chunk) |
+| `seg.add(id)` · `seg.addMany(ids)` | add member(s); `addMany` takes a **sync or async** iterable and groups by chunk (one write per chunk, however long the stream) |
 | `seg.remove(id)` · `seg.removeMany(ids)` | remove member(s) — single-chunk tombstone, no scan |
 | `seg.has(id)` → `Promise<boolean>` | membership test |
 | `seg.count()` → `Promise<number>` | exact cardinality (cheap — from the cold index) |

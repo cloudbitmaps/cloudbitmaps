@@ -99,6 +99,20 @@ for await (const id of vips.iterate()) {
 IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-bit remainder; `addMany`
 groups by chunk first, so 10,000 ids spanning 12 chunks become **12 writes, not 10,000**.
 
+`addMany`/`removeMany` accept a **sync or async iterable**, so a database cursor streams straight in:
+
+```ts
+async function* activeUsers() {
+  for await (const page of athena.paginate(query)) for (const row of page) yield row.user_id;
+}
+await store.segment('active').addMany(activeUsers()); // no hand-batching page → addMany(page)
+```
+
+Streaming is an **input-shape** choice, never a cost choice. Ids are grouped by chunk and each chunk is written
+**exactly once** however long the stream — pending ids are held compressed rather than buffered-and-flushed, so
+a stream costs no more backend writes than the equivalent array. (Measured: 5M pending ids occupy ~11 MB as
+bitmaps against ~212 MB held as plain numbers, which is what makes writing-once affordable.)
+
 > **Batch whenever you have more than one id — it is the difference between cents and dollars.** A chunk covers
 > 65,536 ids, and `addMany` issues one read-modify-write **per distinct chunk**, however many of that chunk's ids
 > you set. `add()` is handed a single id, so it must do one read-modify-write every time. Writing ten million ids
@@ -112,6 +126,12 @@ groups by chunk first, so 10,000 ids spanning 12 chunks become **12 writes, not 
 > rather than in your logs. Use `add()` for a single id, `addMany()` for a batch, and bulk-load when you are
 > replacing a segment rather than amending it — bulk-load rewrites the whole segment, so it cannot express "one
 > more user" or a removal at all.
+>
+> **Streaming does not move this crossover.** Both `addMany` and bulk-load take an async iterable, so the same
+> 11M-row cursor pipes into either — and the choice between them is unchanged by that. Amending a segment is
+> `addMany`; *defining* one is bulk-load. Ids spread across the id space touch ~61,000 chunks, so `addMany`
+> writes ~61,000 warm rows where bulk-load writes one immutable object. The convenience of streaming is exactly
+> the situation in which it is easiest to reach for the wrong one.
 
 ## 2. Persistent: the local filesystem
 
@@ -1025,7 +1045,7 @@ why the registry must be point-in-time-recoverable alongside the object store.
 | Method | Returns | Notes |
 |---|---|---|
 | `add(id)` / `remove(id)` | `Promise<void>` | single id; `ValidationError` if `id ∉ [0, 2³²)`. One read-modify-write per call — **never loop this over a batch** ([why](#1-the-simplest-thing-in-memory)) |
-| `addMany(ids)` / `removeMany(ids)` | `Promise<void>` | grouped by chunk ⇒ **one write per chunk, not per id**; **not atomic across chunks** |
+| `addMany(ids)` / `removeMany(ids)` | `Promise<void>` | `ids` is a **sync or async** iterable; grouped by chunk ⇒ **one write per chunk, not per id**, however long the stream; **not atomic across chunks** |
 | `has(id)` | `Promise<boolean>` | |
 | `count()` | `Promise<number>` | exact cardinality; `budget`-guarded ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
 | `iterate()` | `AsyncIterable<number>` | ascending; `budget`-guarded |

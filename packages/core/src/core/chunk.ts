@@ -30,6 +30,25 @@ export function applyRemove(delta: ChunkDelta, remainder: number): void {
   delta.adds.remove(remainder);
 }
 
+/**
+ * `add` for a whole batch at once — set-wise, not id-by-id.
+ *
+ * Identical in meaning to calling {@link applyAdd} for every remainder in `ids`, including the disjoint
+ * invariant (I1): everything added leaves `removes`. It exists because the streaming `addMany` path already
+ * holds its pending ids as a bitmap, and folding that in with two native set operations rather than 2N of them
+ * is the difference between one call and millions.
+ */
+export function applyAddAll(delta: ChunkDelta, ids: CodecBitmap): void {
+  delta.adds.orInPlace(ids);
+  delta.removes.andNotInPlace(ids);
+}
+
+/** {@link applyAddAll}'s mirror: `remove` for a whole batch, preserving the same disjoint invariant. */
+export function applyRemoveAll(delta: ChunkDelta, ids: CodecBitmap): void {
+  delta.removes.orInPlace(ids);
+  delta.adds.andNotInPlace(ids);
+}
+
 /** The effective set of a chunk: `(cold ∪ adds) \ removes`. Does not mutate its inputs. */
 export function effective(cold: CodecBitmap, delta: ChunkDelta): CodecBitmap {
   const out = cold.clone();
