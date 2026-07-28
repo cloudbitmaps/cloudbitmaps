@@ -14,6 +14,16 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+The release the first real consumer asked for: **set composition** and **streaming batch writes**, plus the
+production-safety follow-through that 0.3.0 started. `bulkLoadCrbmGeneration` no longer blocks the event loop
+for the duration of a load, which was the last way this library could take an instance out of service.
+
+Both features arrived with a measurement that contradicted the obvious implementation — the async codec variants
+that looked like a free win are a **7x regression**, and the obvious way to accept a stream would have
+multiplied a caller's write bill by the length of their input. Neither shipped.
+
 ### Added
 
 - **`union` / `andNot` and an `exclude` option on `intersect`** — set composition without materialising an
