@@ -36,6 +36,10 @@ jobs:
       - run: pnpm lint
       - run: pnpm lint:arch
       - run: pnpm format:check
+      # The /demo page claims to replay a MEASURED benchmark run. This fails if site-final/assets/replay.json
+      # or the page's own numbers have drifted from bench/scale-results.json — including a figure the
+      # benchmark cannot account for at all, which is how an invented number got onto a page once already.
+      - run: pnpm site:replay:check
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

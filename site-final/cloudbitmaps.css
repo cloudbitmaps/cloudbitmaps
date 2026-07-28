@@ -1447,3 +1447,459 @@ em {
     border-top: 1px solid var(--cb-rule);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   THE /demo REPLAY
+
+   Presentation rules this figure is built around:
+
+   · The badge is cyan-bordered and sits ABOVE the headline. What this page is
+     matters more than what it shows, and a provenance note in a footer is a
+     provenance note nobody reads.
+   · The key axis is PROPORTIONAL BANDS, not cells. 4,000 keys across ~1,176px is
+     a third of a pixel each; drawing them individually would misrepresent the
+     resolution. The inset draws real cells at a scale where a cell means one key.
+   · Every state the script drives has a resting appearance here. With no
+     JavaScript the stage renders in its final state and all four beats are
+     visible — `.is-interactive` is what narrows that down, so the enhancement is
+     additive and its absence is not a broken page.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.replay-badge {
+  display: inline-block;
+  margin: 0 0 20px;
+  padding: 5px 10px;
+  border: 1px solid var(--cb-cyan);
+  font-family: var(--cb-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-cyan);
+}
+
+.replay {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+/* ── the beat rail ─────────────────────────────────────────────────────────── */
+.replay-rail {
+  display: flex;
+  border-bottom: 1px solid var(--cb-rule);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.replay-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.beat-tab {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 16px;
+  background: none;
+  border: 0;
+  border-right: 1px solid var(--cb-rule);
+  border-bottom: 2px solid transparent;
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.beat-tab:last-child {
+  border-right: 0;
+}
+
+.beat-tab:hover {
+  color: var(--cb-ink);
+}
+
+/* The active beat is marked by BOTH a rule and full-ink text, never colour alone. */
+.beat-tab.is-on {
+  color: var(--cb-ink);
+  border-bottom-color: var(--cb-cyan);
+}
+
+.beat-n {
+  color: var(--cb-faint);
+}
+
+.beat-tab.is-on .beat-n {
+  color: var(--cb-cyan);
+}
+
+/* The rail is a stepper, so it is only meaningful once the script runs. */
+.replay:not(.is-interactive) .replay-rail {
+  display: none;
+}
+
+.replay-stage {
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* ── the key axis ──────────────────────────────────────────────────────────── */
+.axis {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.axis-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.axis-tag {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.axis-track {
+  position: relative;
+  display: block;
+  height: 22px;
+  background: var(--cb-surface-2);
+  border: 1px solid var(--cb-rule);
+}
+
+.band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: block;
+}
+
+.b-a,
+.b-b {
+  background: var(--cb-muted);
+}
+
+/* The shared sliver starts flat and only reads as "the answer" once the keys have
+   actually been compared — before beat 02 the page has not claimed anything. */
+.b-shared {
+  background: var(--cb-faint);
+  z-index: 1;
+}
+
+.replay.is-compared .b-shared {
+  background: var(--cb-cyan);
+}
+
+.b-none {
+  background: var(--cb-surface-2);
+  border: 1px solid var(--cb-rule);
+}
+
+/* The playhead. A full-track-width element translated by transform — never a
+   `left` offset, which would force layout on every frame of the sweep. */
+.axis-head {
+  position: absolute;
+  left: 28px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.axis-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--cb-ink);
+}
+
+.axis-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 14px 0 0;
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.axis-legend span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.swatch {
+  width: 9px;
+  height: 9px;
+  display: block;
+  flex: none;
+}
+
+.axis-legend .b-shared {
+  position: static;
+  background: var(--cb-faint);
+}
+
+.replay.is-compared .axis-legend .b-shared {
+  background: var(--cb-cyan);
+}
+
+/* ── the check-it-yourself inset ───────────────────────────────────────────── */
+.inset {
+  border-top: 1px solid var(--cb-rule-soft);
+  padding-top: 22px;
+}
+
+.inset-grid {
+  display: grid;
+  grid-template-columns: repeat(40, 1fr);
+  gap: 2px;
+  margin-top: 12px;
+}
+
+.icell {
+  aspect-ratio: 1;
+  display: block;
+  background: var(--cb-surface-2);
+  border: 1px solid var(--cb-rule);
+  /* Only `opacity` and `transform` animate anywhere on this site, so the arrival
+     of a cell is a transform — and it is a transition rather than a keyframe
+     because the script drives it, not a loop. */
+  transition:
+    transform 160ms ease-out,
+    opacity 160ms ease-out;
+  transform: scale(0.82);
+  opacity: 0.5;
+}
+
+.icell.is-seen {
+  transform: scale(1);
+  opacity: 1;
+}
+
+.icell.is-shared {
+  background: var(--cb-cyan);
+  border-color: var(--cb-cyan);
+}
+
+.icell.is-a {
+  background: var(--cb-muted);
+  border-color: var(--cb-muted);
+}
+
+/* No script: the cells have never been "reached", so they must not sit at the
+   half-opacity waiting state — they rest as the final, informative frame. */
+.replay:not(.is-interactive) .icell {
+  transform: scale(1);
+  opacity: 1;
+}
+
+.inset-foot {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--cb-faint);
+  max-width: 74ch;
+}
+
+/* ── the counters ──────────────────────────────────────────────────────────── */
+.tally {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border: 1px solid var(--cb-rule);
+}
+
+.tally-cell {
+  padding: 16px 18px;
+  border-right: 1px solid var(--cb-rule);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tally-cell:last-child {
+  border-right: 0;
+}
+
+/* Mono, and wide enough for the largest value each cell can hold, so a climbing
+   number cannot reflow the row it sits in. */
+.tally-fig {
+  font-family: var(--cb-mono);
+  font-size: 22px;
+  line-height: normal;
+  color: var(--cb-ink);
+  min-width: 7ch;
+}
+
+.tally-fig.is-live {
+  color: var(--cb-cyan);
+}
+
+.tally-note {
+  font-family: var(--cb-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--cb-faint);
+}
+
+/* ── the beat copy ─────────────────────────────────────────────────────────── */
+.beats {
+  border-top: 1px solid var(--cb-rule);
+}
+
+.beat {
+  padding: 22px 26px;
+  border-bottom: 1px solid var(--cb-rule-soft);
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--cb-muted);
+  max-width: 82ch;
+}
+
+.beat:last-child {
+  border-bottom: 0;
+}
+
+.beat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-ink);
+}
+
+/* With the script running, one beat at a time. Without it, all four — which is
+   the whole reason the copy lives in the markup rather than in a JSON payload. */
+.replay.is-interactive .beat {
+  display: none;
+  border-bottom: 0;
+}
+
+.replay.is-interactive .beat.is-on {
+  display: block;
+}
+
+/* ── controls ──────────────────────────────────────────────────────────────── */
+/* `[hidden]` first: a bare `display: flex` below silently beats the UA's `[hidden] { display: none }`, which
+   left the Play button on screen for readers with no JavaScript to drive it. */
+.replay-controls[hidden] {
+  display: none;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 18px 26px;
+  border-top: 1px solid var(--cb-rule);
+}
+
+.replay-controls .btn {
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  background: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+/* btn-primary carries its own fill, and it must win over the reset above. */
+.replay-controls .btn.btn-primary {
+  background: var(--cb-signal-fill);
+}
+
+.replay-hint {
+  margin-left: auto;
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+/* ── the limits panel ─────────────────────────────────────────────────────────
+   Same bezel and padding as the tier cards. What a demo cannot prove is content,
+   not an apology, so it is not styled down. */
+.limits {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.limit {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+  padding: 20px;
+}
+
+.limit p:not(.label) {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.58;
+  color: var(--cb-muted);
+}
+
+@media (max-width: 1000px) {
+  .limits,
+  .tally {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .tally-cell:nth-child(2) {
+    border-right: 0;
+  }
+
+  .tally-cell:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--cb-rule);
+  }
+
+  .replay-stage {
+    padding: 18px;
+  }
+
+  /* 40 cells at 2px gaps stops meaning anything below roughly 600px, and a grid
+     that has become a smear is worse than no grid. */
+  .inset {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .limits,
+  .tally {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tally-cell {
+    border-right: 0;
+    border-bottom: 1px solid var(--cb-rule);
+  }
+
+  .tally-cell:last-child {
+    border-bottom: 0;
+  }
+}
