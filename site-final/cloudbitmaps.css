@@ -1431,6 +1431,17 @@ em {
   color: var(--cb-faint);
 }
 
+.install-alt {
+  border-top: 1px solid var(--cb-rule-soft);
+  padding: 16px 16px 4px;
+}
+
+.install-alt pre {
+  padding: 10px 0 14px;
+  font-size: 11.5px;
+  color: var(--cb-muted);
+}
+
 /* ── the flow figure, narrow ──────────────────────────────────────────────────
    Stacked, with the pipes rotated a quarter turn so they still point from one stage
    to the next. The rail keeps its direction because it is a separate row. */
