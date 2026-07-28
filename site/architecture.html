@@ -91,233 +91,108 @@
       </div>
     </div>
 
-    <main class="wrap">
-      <!-- ARCHITECTURE -->
-      <section id="arch">
-        <div class="section-head">
-          <p class="kicker">The whole picture</p>
-          <h2>One bitmap, three temperatures</h2>
+        <nav class="contents" aria-label="On this page">
+          <a href="#flow"><b>01</b> The data path</a>
+          <a href="#moat"><b>02</b> The intersection</a>
+          <a href="#tiers"><b>03</b> The three tiers</a>
+          <a href="#deletes"><b>04</b> Deletes are real</a>
+          <a href="#durable"><b>05</b> Durability</a>
+          <a href="#hardening"><b>06</b> Hardening</a>
+          <a href="#invariants">The invariants</a>
+        </nav>
+
+      <section class="section" id="flow">
+        <div class="slot-head">
+          <span class="slot-eyebrow">The data path</span>
+          <h2>One write in, one read out — the whole system in one pass</h2>
         </div>
         <div class="prose">
-          <p>
-            A Roaring Bitmap is already a set of 16-bit <em>chunks</em>: an ID in <code>[0, 2³²)</code>
-            splits into a 16-bit <strong>chunk key</strong> (which chunk) and a 16-bit
-            <strong>remainder</strong> (which bit inside it). CloudBitmaps takes that natural seam and
-            maps each chunk onto whichever storage tier its access pattern deserves.
-          </p>
+          <p>Every 32-bit id splits into a 16-bit <strong>chunk key</strong> and a 16-bit <strong>remainder</strong>. That split is what everything else here is downstream of: it turns a segment into a sparse map of chunks, and a chunk is the unit that gets cached, staged, archived and skipped.</p>
         </div>
-
-        <div class="legend">
-          <span class="tier-chip chip-hot">HOT · RAM (LRU)</span>
-          <span class="tier-chip chip-warm">WARM · NoSQL deltas</span>
-          <span class="tier-chip chip-cold">COLD · immutable .crbm</span>
-        </div>
-
-        <div class="diagram" role="img" aria-label="Tiered architecture: a 32-bit id routes to a chunk, served from HOT cache, WARM deltas merged over the COLD base.">
-<pre>
-   id ∈ [0, 2³²)  ──split──▶   <span class="t-accent">chunkKey</span> (16-bit)  ‖  <span class="t-accent">remainder</span> (16-bit)
-                                   │
-                                   ▼  routes to one chunk
-  ┌──────────────────────────────────────────────────────────────────────┐
-  │  <span class="t-hot">HOT  — bounded LRU of decoded chunks, in process RAM</span>                  │
-  │       hard ceiling (cacheMaxChunks, default 1024) · optional TTL       │
-  ├──────────────────────────────────────────────────────────────────────┤
-  │  <span class="t-warm">WARM — mutable per-chunk delta rows  { adds, removes }</span>                │
-  │       every add/remove lands here · OCC tokens · cross-process         │
-  ├──────────────────────────────────────────────────────────────────────┤
-  │  <span class="t-cold">COLD — immutable, generation-keyed .crbm archives</span>                    │
-  │       segment.&lt;gen&gt;.crbm · write-once · CRC + (optional) AES-256-GCM    │
-  └──────────────────────────────────────────────────────────────────────┘
-                                   │
-       a read merges the tiers:    ▼
-            <span class="t-good">effective(chunk) = ( COLD ∪ WARM.adds ) \ WARM.removes</span>
-</pre>
-        </div>
-
-        <div class="prose">
-          <p>Two design rules hold the whole thing together, and every phase below respects them:</p>
-          <ul class="clean">
-            <li>
-              <strong>Tombstones are first-class.</strong> A delete isn't "rebuild the bitmap without
-              this ID" — it's a <code>removes</code> entry in the warm delta. The effective set
-              subtracts it at read time. That's what makes <code>remove()</code> O(one chunk write)
-              over an immutable cold base.
-            </li>
-            <li>
-              <strong>The core is pure.</strong> <code>core/</code> touches no clock, no randomness,
-              and no cloud SDK — time, entropy, and all I/O are <em>injected</em>. A lint rule fails
-              the build if that's ever violated. This is what lets a deterministic simulator replay
-              any concurrency or crash bug from a single seed.
-            </li>
-          </ul>
-          <p>
-            Everything else is <strong>drivers behind interfaces</strong>. <code>IWarmDriver</code>,
-            <code>IColdDriver</code>, and <code>IRegistryDriver</code> each have in-memory,
-            local-filesystem, and cloud implementations that all pass the <em>same</em> conformance
-            suite — so you swap storage backends without the engine noticing.
-          </p>
-        </div>
-
-        <figure class="code-fig">
-          <figcaption><span class="fdot"></span> the engine is wired once, from drivers</figcaption>
-          <div class="code has-cap"><pre><span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm: <span class="k">new</span> <span class="f">DynamoDbWarmDriver</span>({ client: dynamo, tableName: <span class="s">'cloudbitmaps'</span> }),
-  cold: s3Cold, <span class="c">// raw driver — the store builds the .crbm cold source</span>
-  registry,
-  keystore,
-});
-<span class="c">// retries, backoff and the HOT cache are on by default — nothing else to wire.</span>
-<span class="k">const</span> seg = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);</pre></div>
-        </figure>
-      </section>
-
-      <hr class="rule" />
-
-      <!-- PHASE 1 -->
-      <section id="p1">
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">P1</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <div class="section-head" style="padding-top: 46px">
-              <p class="kicker">Milestone M1 · local</p>
-              <h2>The in-memory engine <span class="milestone-tag">routing · tombstones · LRU · OCC</span></h2>
+        <!-- 01's figure: the whole system in one pass. Pipes are drawn permanently so direction is never
+             inferred; the three payload squares recur in the key grid and the tiers, so one write can be
+             followed the whole way across. -->
+        <div class="pipeline" aria-hidden="true">
+          <div class="pstage">
+            <div class="pstage-label"><span>Your call</span></div>
+            <div class="pstage-body">
+              <p class="pstage-code">addMany([75,&nbsp;99_999,&nbsp;1_234_567_890])</p>
+              <ul class="ids">
+                <li><i class="pk b1"></i><span>75</span><em>&rarr; key 0x0000</em></li>
+                <li><i class="pk b4"></i><span>99_999</span><em>&rarr; key 0x0001</em></li>
+                <li><i class="pk b7"></i><span>1_234_567_890</span><em>&rarr; key 0x4996</em></li>
+              </ul>
+              <p class="pstage-note">3 ids · 1 segment · grouped by key before any write</p>
             </div>
-            <div class="prose">
-              <p>
-                Phase 1 is the brain with no storage yet — just the in-memory drivers. It establishes
-                the data model every later tier has to honor: route an ID to its chunk, keep deletes
-                as tombstones, cache decoded chunks under a hard ceiling, and guard concurrent writers
-                with optimistic concurrency.
-              </p>
-              <p>
-                <code>SafeBitmap</code> wraps the native <code>roaring</code> addon but only ever uses
-                its <em>safe</em> deserializer behind a size cap — every byte from any tier is treated
-                as untrusted input. The warm row for a chunk is a delta <code>{ adds, removes }</code>;
-                writes carry an opaque, never-reused OCC token, so two writers to the same chunk can't
-                silently lose an update (one gets a <code>WriteConflictError</code> and re-reads).
-              </p>
+          </div>
+          <div class="pipe p1">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b1"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Chunk keys</span><b>3 of 2,000</b></div>
+            <div class="pstage-body">
+              <div class="keygrid">
+                <i class="k"></i><i></i><i></i><i class="k k2"></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ><i class="k k3"></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p class="pstage-note">32-bit id &rarr; 16-bit key + 16-bit remainder</p>
             </div>
-
-            <div class="diagram" role="img" aria-label="A delete becomes a tombstone in the warm delta, subtracted at read time.">
-<pre>
-  vips.<span class="t-accent">remove</span>(1_234_567_890)         vips.<span class="t-accent">has</span>(1_234_567_890)
-            │                                  │
-            ▼                                  ▼
-  <span class="t-warm">WARM delta</span>: removes += {id}        read merges tiers:
-  (one chunk write — no scan,        <span class="t-cold">COLD</span> has it? yes
-   no rebuild of the bitmap)         <span class="t-warm">WARM.removes</span> has it? yes
-                                     ⇒ effective = <span class="t-good">false</span>  ✓ immediately
-</pre>
-            </div>
-
-            <figure class="code-fig">
-              <figcaption><span class="fdot"></span> zero-setup in-memory store — ideal for a first look or tests</figcaption>
-              <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-
-<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm: <span class="k">new</span> <span class="f">MemoryWarmDriver</span>(),
-  cold: <span class="k">new</span> <span class="f">MemoryColdChunkSource</span>(),
-});
-
-<span class="k">const</span> vips = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);
-
-<span class="k">await</span> vips.<span class="f">add</span>(<span class="n">1_234_567_890</span>);
-<span class="k">await</span> vips.<span class="f">addMany</span>([<span class="n">5</span>, <span class="n">99_999</span>, <span class="n">2_000_000_000</span>]); <span class="c">// grouped by chunk → one write per chunk</span>
-<span class="k">await</span> vips.<span class="f">has</span>(<span class="n">1_234_567_890</span>);             <span class="c">// → true</span>
-
-<span class="k">await</span> vips.<span class="f">remove</span>(<span class="n">1_234_567_890</span>);          <span class="c">// single-chunk tombstone</span>
-<span class="k">await</span> vips.<span class="f">has</span>(<span class="n">1_234_567_890</span>);             <span class="c">// → false, immediately</span>
-<span class="k">await</span> vips.<span class="f">count</span>();                       <span class="c">// exact cardinality</span></pre></div>
-            </figure>
-
-            <div class="secured">
-              <p class="lbl">Invariant secured</p>
-              <p>
-                <strong>OR-merge can't delete — so deletes are tombstones, not rebuilds.</strong>
-                <code>addMany</code> of 10,000 IDs spanning 12 chunks becomes 12 writes, not 10,000.
-                Concurrent writers never lose an acknowledged update (OCC). Named property + concurrency
-                tests pin both.
-              </p>
+          </div>
+          <div class="pipe p2">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b4"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Where the bytes land</span></div>
+            <div class="pstage-body">
+              <div class="trow r-hot">
+                <span class="tkey">Hot · RAM</span>
+                <span class="tfill"><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                <p class="tnote">bounded LRU · never grows</p>
+              </div>
+              <div class="trow r-warm">
+                <span class="tkey">Warm</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i
+                ></span>
+                <p class="tnote">delta rows · adds + removes · conditional</p>
+              </div>
+              <div class="trow r-cold">
+                <span class="tkey">Cold</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i
+                  ><i class="f"></i><i class="f"></i><i class="f"></i
+                ></span>
+                <p class="tnote">immutable, generation-keyed</p>
+              </div>
+              <span class="gen-chip">compaction &rarr; segment.7.crbm</span>
             </div>
           </div>
         </div>
-      </section>
-
-      <!-- PHASE 2 -->
-      <section id="p2">
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">P2</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <div class="section-head" style="padding-top: 46px">
-              <p class="kicker">Milestone M1 · local</p>
-              <h2>Disk, the <code>.crbm</code> format &amp; the simulator <span class="milestone-tag">durability · CRC · determinism</span></h2>
-            </div>
-            <div class="prose">
-              <p>
-                Phase 2 makes state survive a restart and defines the on-disk cold format. A
-                <code>.crbm</code> archive is a sequence of per-chunk roaring blobs followed by a footer
-                index — every chunk, the index, and the footer each carry a <strong>CRC32C</strong>, so
-                corruption is caught before a byte reaches the native decoder. Cold objects are
-                <strong>generation-keyed and immutable</strong>: <code>segment.&lt;gen&gt;.crbm</code>,
-                never overwritten in place.
-              </p>
-              <p>
-                This phase also builds the correctness moat: a
-                <strong>FoundationDB-style deterministic simulator</strong> that runs the real
-                <code>core/</code> against fake in-memory drivers under a seeded scheduler, injecting
-                latency, errors, reordering and crashes — and checks every result against an
-                <strong>oracle</strong> (a trivial <code>Set</code>). A mismatch prints the seed; the
-                seed replays the failure byte-for-byte.
-              </p>
-            </div>
-
-            <div class="diagram" role="img" aria-label="The .crbm on-disk layout: chunk blobs then a footer index, each CRC-protected.">
-<pre>
-  segment.0.crbm
-  ┌───────────────┬───────────────┬─────┬──────────────┬───────────────┐
-  │ <span class="t-cold">chunk blob</span>    │ <span class="t-cold">chunk blob</span>    │ ... │ <span class="t-accent">FOOTER INDEX</span> │ <span class="t-accent">FOOTER</span> (104B) │
-  │ roaring+<span class="t-good">crc</span>   │ roaring+<span class="t-good">crc</span>   │     │ offsets +<span class="t-good">crc</span> │ magic +<span class="t-good">crc</span>   │
-  └───────────────┴───────────────┴─────┴──────────────┴───────────────┘
-        every layer checksum-verified before the native decoder sees it
-                  ↑ reserved space for crypto fields (filled in Phase 4e)
-</pre>
-            </div>
-
-            <figure class="code-fig">
-              <figcaption><span class="fdot"></span> same API, now durable on the local filesystem</figcaption>
-              <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-
-<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudbitmaps/warm'</span>),
-  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudbitmaps/cold'</span>),  <span class="c">// raw driver → reads .crbm generations</span>
-});
-
-<span class="k">await</span> store.<span class="f">segment</span>(<span class="s">'active-this-week'</span>).<span class="f">add</span>(<span class="n">42</span>);
-<span class="c">// a fresh process pointed at the same dirs sees 42 again — writes are durable.</span></pre></div>
-            </figure>
-
-            <div class="secured">
-              <p class="lbl">Invariant secured</p>
-              <p>
-                <strong>Byte-exact round-trip, and no corrupt byte reaches the decoder.</strong>
-                Property tests fuzz the codec against the oracle; golden files pin the v1 bytes; the
-                simulator turns "zero data loss" from a hope into a seed-reproducible test.
-              </p>
-            </div>
-          </div>
+        <div class="rail" aria-hidden="true">
+          <span class="rail-line"></span><span class="rail-head"></span>
+          <span class="rail-car rc1"><i></i></span>
+          <span class="rail-car rc2"><i></i></span>
+          <span class="rail-car rc3"><i></i></span>
+          <p class="rail-cap">
+            <b>The read comes back out</b>
+            <span class="rail-fig">intersect(shoppers, active)</span>
+            <span>fetches <span class="rail-fig">100 / 2,000</span> chunks —</span>
+            <span><span class="rail-fig">1,900</span> are never requested</span>
+            <span class="rail-result">&rarr; 41,208 ids</span>
+          </p>
         </div>
       </section>
 
-      <!-- PHASE 3 -->
-      <section id="p3">
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">P3</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <div class="section-head" style="padding-top: 46px">
-              <p class="kicker">Milestone M2 · Topology-A</p>
-              <h2>S3 cold &amp; the crown jewel: chunk-skipping intersection <span class="milestone-tag">serverless ∩</span></h2>
-            </div>
-            <!-- The centrepiece: three synchronised views of one true statement — intersecting two
+      <section class="section" id="moat">
+        <div class="slot-head">
+          <span class="slot-eyebrow">The intersection</span>
+          <h2>The crown jewel: chunk-skipping <span class="milestone-tag">serverless ∩</span></h2>
+        </div>
+<!-- The centrepiece: three synchronised views of one true statement — intersecting two
                  2,000,000-id segments fetches only the ~100 shared chunks of 2,000, in 25.3 ms. Codec-
                  independent, so it stays true when a second flavor ships. Each view answers a different
                  question (which chunks · from which tier · prove it) and each holds a readable final frame
@@ -414,21 +289,6 @@
               </p>
             </div>
 
-            <div class="diagram" role="img" aria-label="Chunk-skipping intersection downloads only the chunk keys present in both segments.">
-<pre>
-  segment A keys:  <span class="t-cold">[ 3   7   12      40   91 ]</span>
-  segment B keys:  <span class="t-cold">[     7       19  40      ]</span>
-                       │            │
-        intersection of keys ──▶ <span class="t-good">{ 7, 40 }</span>   ← only these chunks fetched
-                                              keys 3,12,19,91 are
-                                              <span class="t-dim">SKIPPED — zero bytes transferred</span>
-  ┌─ bounded window ─────────────────────────────────────────────┐
-  │  fetch chunk 7 (A∩B) ─▶ emit ascending ids ─▶ fetch chunk 40  │
-  │  ≤ `concurrency` chunks in RAM at once — Lambda-friendly      │
-  └──────────────────────────────────────────────────────────────┘
-</pre>
-            </div>
-
             <figure class="code-fig">
               <figcaption><span class="fdot"></span> cold on S3, then stream the intersection of two segments</figcaption>
               <div class="code has-cap"><pre><span class="k">import</span> { S3Client } <span class="k">from</span> <span class="s">'@aws-sdk/client-s3'</span>;
@@ -447,41 +307,100 @@
 <span class="c">// or materialize the result straight into a new segment</span>
 <span class="k">await</span> shoppers.<span class="f">intersectInto</span>(store.<span class="f">segment</span>(<span class="s">'campaign-targets'</span>), [active]);</pre></div>
             </figure>
-
-            <div class="secured">
-              <p class="lbl">Invariant secured</p>
-              <p>
-                <strong>Bounded memory and bounded transfer, always.</strong> Only chunks present in
-                every operand are fetched; only a small window is resident. <code>intersect</code> is
-                commutative — <code>a.intersect([b]) ≡ b.intersect([a])</code> — and verified so by
-                test.
-              </p>
-            </div>
-          </div>
-        </div>
       </section>
 
-      <!-- PHASE 4 -->
-      <section id="p4">
-        <div class="section-head">
-          <p class="kicker">Milestone M3 · Topology-B · the production cluster</p>
-          <h2>Phase 4 — making it a real distributed system</h2>
+      <section class="section" id="tiers">
+        <div class="slot-head">
+          <span class="slot-eyebrow">The three tiers</span>
+          <h2>Hot, warm, cold — and why a chunk moves between them</h2>
         </div>
-        <div class="prose">
+        <!-- 03's figure. Placement is a consequence of access, which is the thing a static diagram cannot
+             say: the chunk falls as it goes untouched and a has() hauls it straight back. -->
+        <div class="tiers" aria-hidden="true">
+          <div class="tier t-hot">
+            <span class="tier-name">Hot · RAM</span>
+            <span class="tier-track"
+              ><span class="carriage c-hot"><i class="chunkbox b-hot"></i></span
+              ><span class="carriage c-back"><i class="chunkbox b-back"></i></span
+            ></span>
+            <span class="tier-cost">bounded LRU</span>
+          </div>
+          <div class="tier t-warm">
+            <span class="tier-name">Warm · deltas</span>
+            <span class="tier-track"
+              ><span class="carriage c-warm"><i class="chunkbox b-warm"></i></span
+            ></span>
+            <span class="tier-cost">per-chunk rows</span>
+          </div>
+          <div class="tier t-cold">
+            <span class="tier-name">Cold · .crbm</span>
+            <span class="tier-track"
+              ><span class="carriage c-cold"><i class="chunkbox b-cold"></i></span
+            ></span>
+            <span class="tier-cost">$0.03/mo · 1.2 GiB</span>
+          </div>
+          <p class="tier-cap">
+            <span class="fswap e1">untouched &rarr; demoted</span>
+            <span class="fswap e2">compacted into the archive</span>
+            <span class="fswap e3"><b>has() promotes it straight back to RAM</b></span>
+          </p>
+        </div>
+<div class="prose">
           <p>
-            Topology-A proved the idea. Phase 4 is six sub-phases that turn it into something you'd run
-            in production: a real multi-writer warm tier, resilience to flaky networks, a registry so
-            reads don't scan, a crash-safe background compactor, encryption with crypto-shred, and
-            finally constant-memory streaming so segment size never bounds RAM.
+            A Roaring Bitmap is already a set of 16-bit <em>chunks</em>: an ID in <code>[0, 2³²)</code>
+            splits into a 16-bit <strong>chunk key</strong> (which chunk) and a 16-bit
+            <strong>remainder</strong> (which bit inside it). CloudBitmaps takes that natural seam and
+            maps each chunk onto whichever storage tier its access pattern deserves.
           </p>
         </div>
 
-        <!-- 4a -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4a</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <h3 style="margin-top: 18px">DynamoDB warm tier — real cross-process OCC</h3>
-            <div class="prose">
+        <div class="legend">
+          <span class="tier-chip chip-hot">HOT · RAM (LRU)</span>
+          <span class="tier-chip chip-warm">WARM · NoSQL deltas</span>
+          <span class="tier-chip chip-cold">COLD · immutable .crbm</span>
+        </div>
+
+        <div class="prose">
+          <p>Two design rules hold the whole thing together, and every phase below respects them:</p>
+          <ul class="clean">
+            <li>
+              <strong>Tombstones are first-class.</strong> A delete isn't "rebuild the bitmap without
+              this ID" — it's a <code>removes</code> entry in the warm delta. The effective set
+              subtracts it at read time. That's what makes <code>remove()</code> O(one chunk write)
+              over an immutable cold base.
+            </li>
+            <li>
+              <strong>The core is pure.</strong> <code>core/</code> touches no clock, no randomness,
+              and no cloud SDK — time, entropy, and all I/O are <em>injected</em>. A lint rule fails
+              the build if that's ever violated. This is what lets a deterministic simulator replay
+              any concurrency or crash bug from a single seed.
+            </li>
+          </ul>
+          <p>
+            Everything else is <strong>drivers behind interfaces</strong>. <code>IWarmDriver</code>,
+            <code>IColdDriver</code>, and <code>IRegistryDriver</code> each have in-memory,
+            local-filesystem, and cloud implementations that all pass the <em>same</em> conformance
+            suite — so you swap storage backends without the engine noticing.
+          </p>
+        </div>
+
+        <figure class="code-fig">
+          <figcaption><span class="fdot"></span> the engine is wired once, from drivers</figcaption>
+          <div class="code has-cap"><pre><span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
+  warm: <span class="k">new</span> <span class="f">DynamoDbWarmDriver</span>({ client: dynamo, tableName: <span class="s">'cloudbitmaps'</span> }),
+  cold: s3Cold, <span class="c">// raw driver — the store builds the .crbm cold source</span>
+  registry,
+  keystore,
+});
+<span class="c">// retries, backoff and the HOT cache are on by default — nothing else to wire.</span>
+<span class="k">const</span> seg = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);</pre></div>
+        </figure>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- PHASE 1 -->
+<div class="prose">
               <p>
                 The warm tier moves to DynamoDB (subpath <code>@cloudbitmaps/roaring/dynamodb</code>, optional
                 peer dep). A single table — <code>PK = ns#…|seg#…</code>, <code>SK = chunk#…</code> —
@@ -499,16 +418,260 @@
 <span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({ warm, cold });
 <span class="k">await</span> store.<span class="f">segment</span>(<span class="s">'active-this-week'</span>).<span class="f">add</span>(<span class="n">42</span>);  <span class="c">// safe under N concurrent writers</span></pre></div>
             </figure>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>No lost updates under N writers</strong> (driver invariant D4), proven in the concurrency simulator. The same conformance suite that LocalFs passes runs against DynamoDB-Local in CI.</p></div>
+      </section>
+
+      <section class="section" id="deletes">
+        <div class="slot-head">
+          <span class="slot-eyebrow">Deletes are real</span>
+          <h2>Tombstones, not an OR-merge</h2>
+        </div>
+        <div class="prose">
+          <p>A chunk carries <strong>adds</strong> and <strong>removes</strong>. The effective set is <code>(Cold ∪ Warm.adds) \ Warm.removes</code>, so a delete is a fact recorded rather than an absence hoped for — which is the hole that sinks the naive design.</p>
+        </div>
+        <!-- 04's figure: the formula happening. It answers "an OR-merge can only ever grow, so how do you
+             delete?" before the reader finishes forming the objection. -->
+        <div class="merge" aria-hidden="true">
+          <span class="merge-label">cold</span>
+          <span class="bits r1">
+            <i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i></i
+            ><i class="on"></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i></i
+            ><i class="on"></i><i></i><i></i><i class="on"></i>
+          </span>
+          <span class="merge-label op">&cup; warm.adds</span>
+          <span class="bits r2">
+            <i></i><i class="add"></i><i></i><i></i><i class="add"></i><i></i><i></i><i></i><i></i
+            ><i class="add"></i><i></i><i></i><i></i><i></i><i></i><i class="add"></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span class="merge-label op">&#xFF3C; warm.removes</span>
+          <span class="bits r3">
+            <i></i><i></i><i class="rm"></i><i></i><i></i><i></i><i></i><i></i><i class="rm"></i><i></i
+            ><i></i><i></i><i></i><i class="rm"></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span class="merge-rule"></span>
+          <span class="merge-label res">effective set</span>
+          <span class="bits res">
+            <i class="on"></i><i class="add"></i><i></i><i></i><i class="add"></i><i class="on"></i><i></i><i></i
+            ><i></i><i class="add"></i><i class="on"></i><i></i><i></i><i></i><i></i><i class="add"></i
+            ><i class="on"></i><i></i><i></i><i class="on"></i>
+          </span>
+        </div>
+        <p class="merge-formula">
+          effective = <b>(cold &cup; warm.adds) &#xFF3C; warm.removes</b> — the outlined cells are tombstones,
+          and they win.
+        </p>
+
+            <div class="diagram" role="img" aria-label="A delete becomes a tombstone in the warm delta, subtracted at read time.">
+<pre>
+  vips.<span class="t-accent">remove</span>(1_234_567_890)         vips.<span class="t-accent">has</span>(1_234_567_890)
+            │                                  │
+            ▼                                  ▼
+  <span class="t-warm">WARM delta</span>: removes += {id}        read merges tiers:
+  (one chunk write — no scan,        <span class="t-cold">COLD</span> has it? yes
+   no rebuild of the bitmap)         <span class="t-warm">WARM.removes</span> has it? yes
+                                     ⇒ effective = <span class="t-good">false</span>  ✓ immediately
+</pre>
+            </div>
+
+            <figure class="code-fig">
+              <figcaption><span class="fdot"></span> zero-setup in-memory store — ideal for a first look or tests</figcaption>
+              <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
+  warm: <span class="k">new</span> <span class="f">MemoryWarmDriver</span>(),
+  cold: <span class="k">new</span> <span class="f">MemoryColdChunkSource</span>(),
+});
+
+<span class="k">const</span> vips = store.<span class="f">segment</span>(<span class="s">'high-value-shoppers'</span>);
+
+<span class="k">await</span> vips.<span class="f">add</span>(<span class="n">1_234_567_890</span>);
+<span class="k">await</span> vips.<span class="f">addMany</span>([<span class="n">5</span>, <span class="n">99_999</span>, <span class="n">2_000_000_000</span>]); <span class="c">// grouped by chunk → one write per chunk</span>
+<span class="k">await</span> vips.<span class="f">has</span>(<span class="n">1_234_567_890</span>);             <span class="c">// → true</span>
+
+<span class="k">await</span> vips.<span class="f">remove</span>(<span class="n">1_234_567_890</span>);          <span class="c">// single-chunk tombstone</span>
+<span class="k">await</span> vips.<span class="f">has</span>(<span class="n">1_234_567_890</span>);             <span class="c">// → false, immediately</span>
+<span class="k">await</span> vips.<span class="f">count</span>();                       <span class="c">// exact cardinality</span></pre></div>
+            </figure>
+      </section>
+
+      <section class="section" id="durable">
+        <div class="slot-head">
+          <span class="slot-eyebrow">Durability</span>
+          <h2>Immutable generations, and a compactor you can kill at any step</h2>
+        </div>
+        <!-- 05's figure. Watch 0x0001 v5: it arrives DURING the scan and survives the purge, which is the
+             whole crash-safety story and the hardest thing here to say in words. -->
+        <div class="gen" aria-hidden="true">
+          <div class="gen-row">
+            <span class="gen-key">Warm deltas</span>
+            <span class="gen-track">
+              <span class="delta d1">0x0001 v4</span><span class="delta d2">0x4996 v2</span
+              ><span class="delta d3">0x8f10 v9</span><span class="delta late">0x0001 v5 &larr; post-scan</span>
+            </span>
+          </div>
+          <div class="gen-row">
+            <span class="gen-key">Compaction scan</span>
+            <span class="gen-track"><span class="gen-bar"><i></i></span></span>
+          </div>
+          <div class="gen-row">
+            <span class="gen-key">Cold objects</span>
+            <span class="gen-track">
+              <span class="gen-obj">segment.6.crbm</span><span class="gen-obj g7">segment.7.crbm</span>
+            </span>
+          </div>
+          <div class="gen-row">
+            <span class="gen-key">LATEST</span>
+            <span class="gen-track ptr">
+              &rarr; <span class="old">segment.6.crbm</span><span class="new">segment.7.crbm</span>
+            </span>
           </div>
         </div>
+<div class="prose">
+              <p>
+                Phase 2 makes state survive a restart and defines the on-disk cold format. A
+                <code>.crbm</code> archive is a sequence of per-chunk roaring blobs followed by a footer
+                index — every chunk, the index, and the footer each carry a <strong>CRC32C</strong>, so
+                corruption is caught before a byte reaches the native decoder. Cold objects are
+                <strong>generation-keyed and immutable</strong>: <code>segment.&lt;gen&gt;.crbm</code>,
+                never overwritten in place.
+              </p>
+              <p>
+                This phase also builds the correctness moat: a
+                <strong>FoundationDB-style deterministic simulator</strong> that runs the real
+                <code>core/</code> against fake in-memory drivers under a seeded scheduler, injecting
+                latency, errors, reordering and crashes — and checks every result against an
+                <strong>oracle</strong> (a trivial <code>Set</code>). A mismatch prints the seed; the
+                seed replays the failure byte-for-byte.
+              </p>
+            </div>
 
-        <!-- 4b -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4b</span><span class="phase-line"></span></div>
+            <div class="diagram" role="img" aria-label="The .crbm on-disk layout: chunk blobs then a footer index, each CRC-protected.">
+<pre>
+  segment.0.crbm
+  ┌───────────────┬───────────────┬─────┬──────────────┬───────────────┐
+  │ <span class="t-cold">chunk blob</span>    │ <span class="t-cold">chunk blob</span>    │ ... │ <span class="t-accent">FOOTER INDEX</span> │ <span class="t-accent">FOOTER</span> (104B) │
+  │ roaring+<span class="t-good">crc</span>   │ roaring+<span class="t-good">crc</span>   │     │ offsets +<span class="t-good">crc</span> │ magic +<span class="t-good">crc</span>   │
+  └───────────────┴───────────────┴─────┴──────────────┴───────────────┘
+        every layer checksum-verified before the native decoder sees it
+                  ↑ reserved space for crypto fields (filled in Phase 4e)
+</pre>
+            </div>
+
+            <figure class="code-fig">
+              <figcaption><span class="fdot"></span> same API, now durable on the local filesystem</figcaption>
+              <div class="code has-cap"><pre><span class="k">import</span> { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
+  warm: <span class="k">new</span> <span class="f">LocalFsWarmDriver</span>(<span class="s">'./.cloudbitmaps/warm'</span>),
+  cold: <span class="k">new</span> <span class="f">LocalFsColdDriver</span>(<span class="s">'./.cloudbitmaps/cold'</span>),  <span class="c">// raw driver → reads .crbm generations</span>
+});
+
+<span class="k">await</span> store.<span class="f">segment</span>(<span class="s">'active-this-week'</span>).<span class="f">add</span>(<span class="n">42</span>);
+<span class="c">// a fresh process pointed at the same dirs sees 42 again — writes are durable.</span></pre></div>
+            </figure>
+<div class="prose">
+              <p>
+                Cold is a series of immutable, numbered generations; a reader needs to know which one
+                is current. Without a registry, the cold source <em>lists</em> every generation and
+                takes the max — a storage scan per segment. The registry replaces that with a single
+                authoritative record (<code>currentGen</code>) you read once. It's optional (omit it,
+                fall back to the scan), with memory / LocalFs / DynamoDB implementations. The record
+                also reserves the slots later phases fill: <code>status</code>,
+                <code>dirtyChunkCount</code>, and the wrapped-DEK list.
+              </p>
+            </div>
+            <figure class="code-fig">
+              <figcaption><span class="fdot"></span> seed + publish in one call; reads resolve with no list-scan</figcaption>
+              <div class="code has-cap"><pre><span class="k">const</span> registry = <span class="k">new</span> <span class="f">LocalFsRegistryDriver</span>(<span class="s">'./.cloudbitmaps/registry'</span>);
+
+<span class="c">// seed a generation AND publish it to the registry</span>
+<span class="k">await</span> <span class="f">bulkLoadCrbmGeneration</span>(cold, { segment: <span class="s">'active'</span>, generation: <span class="n">0</span> },
+                             ids, { registry });
+
+<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
+  warm, cold, registry, <span class="c">// no scan</span>
+});</pre></div>
+            </figure>
+<div class="prose">
+              <p>
+                Every add/remove grows the warm tier; left alone, reads slow down as more deltas merge.
+                <strong>Compaction</strong> folds the warm deltas into a fresh immutable cold generation
+                and clears the warm rows — in a separate background process that never touches your app
+                path. The hard part is doing it without ever losing a write that lands mid-compaction.
+                The answer is a 2-phase commit, fenced on the per-chunk version it archived, that
+                recovers cleanly from a crash at <em>any</em> step.
+              </p>
+            </div>
+            <figure class="code-fig">
+              <figcaption><span class="fdot"></span> a Lambda handler that runs one compaction cycle</figcaption>
+              <div class="code has-cap"><pre><span class="k">import</span> { runCompactionCycle } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> deps = { cold, warm, registry, clock: { now: () =&gt; <span class="f">Date.now</span>() } };
+
+<span class="k">export const</span> handler = <span class="k">async</span> (_e, ctx) =&gt; {
+  <span class="k">const</span> { results } = <span class="k">await</span> <span class="f">runCompactionCycle</span>(deps,
+      { owner: <span class="s">`lambda:</span>${ctx.awsRequestId}<span class="s">`</span>, keep: <span class="n">1</span> });
+  <span class="k">return</span> results;
+};
+<span class="c">// or the bundled CLI: CR_COMPACT_MODE=loop npx compact-segments</span></pre></div>
+            </figure>
+<div class="phase">
+          <div class="phase-rail"><span class="phase-num">4f</span><span class="phase-line"></span></div>
           <div class="phase-body">
-            <h3 style="margin-top: 18px">Resilience — retries, backoff &amp; jitter, on by default</h3>
             <div class="prose">
+              <p>
+                The final piece closes the project's founding promise: compaction must not buffer a
+                whole segment in RAM. The merge became an <strong>async generator</strong> feeding a
+                <strong>streaming cold sink</strong>; on S3 that's <strong>multipart upload</strong>
+                with at most one part buffered (default 8 MiB). Peak write memory is ~one part whether
+                the segment is 2 GiB or 50 GiB.
+              </p>
+              <p>
+                Write-once survived the rewrite: a small object is a single conditional
+                <code>PutObject</code>; a large one finishes with a conditional
+                <code>CompleteMultipartUpload</code> (<code>If-None-Match:*</code>). And the object
+                ceiling is honest — S3 caps multipart at 10,000 parts, so the cap is
+                <code>partBytes × 10,000</code> (≈80 GiB at the default, growing via
+                <code>partBytes</code> up to S3's 5 TiB), enforced with a typed error rather than a
+                silent overflow.
+              </p>
+            </div>
+            <div class="diagram" role="img" aria-label="Streaming merge feeds a multipart sink with at most one part buffered.">
+<pre>
+  <span class="t-cold">COLD</span> ∪ <span class="t-warm">WARM</span> ──async generator──▶  merge, chunk by chunk
+                                       │  (never the whole segment in RAM)
+                                       ▼
+   ┌─ multipart sink — buffers ≤ <span class="t-accent">one part</span> (8 MiB default) ─┐
+   │  fill part ─▶ UploadPart ─▶ free ─▶ fill part ─▶ …       │
+   └──────────────────────────────────┬───────────────────────┘
+                                       ▼
+   small  → single conditional <span class="t-good">PutObject</span>          (write-once)
+   large  → conditional <span class="t-good">CompleteMultipartUpload</span>   (If-None-Match:*)
+
+   peak RAM ≈ one part   ·   regardless of 2 GiB or 50 GiB segment
+</pre>
+            </div>
+            <div class="prose">
+              <p>
+                There's no new API to call — it's the same <code>runCompactionCycle</code> and the same
+                <code>S3ColdDriver</code> from §4d/§3. Large objects simply upload via multipart
+                automatically.
+              </p>
+            </div>
+            </div>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <!-- NEXT -->
+      </section>
+
+      <section class="section" id="hardening">
+        <div class="slot-head">
+          <span class="slot-eyebrow">Hardening</span>
+          <h2>What it does when the network and the bucket misbehave</h2>
+        </div>
+<div class="prose">
               <p>
                 Cloud storage throttles, returns 5xx, and drops connections. Every warm/cold call now
                 automatically retries <strong>transient</strong> faults with bounded exponential
@@ -536,96 +699,7 @@
   <span class="c">// …or `retry: false` to defer entirely to your client's own retries.</span>
 });</pre></div>
             </figure>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>Transient ≠ deterministic.</strong> Only infrastructure faults retry; correctness errors fail fast. No double-apply, no torn read across an outage.</p></div>
-          </div>
-        </div>
-
-        <!-- 4c -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4c</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <h3 style="margin-top: 18px">The segment registry — resolve the current generation in one read</h3>
-            <div class="prose">
-              <p>
-                Cold is a series of immutable, numbered generations; a reader needs to know which one
-                is current. Without a registry, the cold source <em>lists</em> every generation and
-                takes the max — a storage scan per segment. The registry replaces that with a single
-                authoritative record (<code>currentGen</code>) you read once. It's optional (omit it,
-                fall back to the scan), with memory / LocalFs / DynamoDB implementations. The record
-                also reserves the slots later phases fill: <code>status</code>,
-                <code>dirtyChunkCount</code>, and the wrapped-DEK list.
-              </p>
-            </div>
-            <figure class="code-fig">
-              <figcaption><span class="fdot"></span> seed + publish in one call; reads resolve with no list-scan</figcaption>
-              <div class="code has-cap"><pre><span class="k">const</span> registry = <span class="k">new</span> <span class="f">LocalFsRegistryDriver</span>(<span class="s">'./.cloudbitmaps/registry'</span>);
-
-<span class="c">// seed a generation AND publish it to the registry</span>
-<span class="k">await</span> <span class="f">bulkLoadCrbmGeneration</span>(cold, { segment: <span class="s">'active'</span>, generation: <span class="n">0</span> },
-                             ids, { registry });
-
-<span class="k">const</span> store = <span class="k">new</span> <span class="f">CloudRoaring</span>({
-  warm, cold, registry, <span class="c">// no scan</span>
-});</pre></div>
-            </figure>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>One authoritative pointer, forward-only.</strong> <code>publishGeneration</code> never regresses <code>currentGen</code>; the registry round-trip is conformance-tested across all three backends.</p></div>
-          </div>
-        </div>
-
-        <!-- 4d -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4d</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <h3 style="margin-top: 18px">Crash-safe compaction — a 2-phase commit you can kill at any step</h3>
-            <div class="prose">
-              <p>
-                Every add/remove grows the warm tier; left alone, reads slow down as more deltas merge.
-                <strong>Compaction</strong> folds the warm deltas into a fresh immutable cold generation
-                and clears the warm rows — in a separate background process that never touches your app
-                path. The hard part is doing it without ever losing a write that lands mid-compaction.
-                The answer is a 2-phase commit, fenced on the per-chunk version it archived, that
-                recovers cleanly from a crash at <em>any</em> step.
-              </p>
-            </div>
-            <div class="diagram" role="img" aria-label="The compaction 2-phase commit: lease, stage, verify, swap, fenced purge, GC.">
-<pre>
-  <span class="t-accent">LEASE</span>   take a per-segment lease (stealable if a worker died)
-    │
-  <span class="t-accent">STAGE</span>   merge COLD ∪ WARM → write segment.&lt;gen+1&gt;.crbm   (write-once)
-    │
-  <span class="t-accent">VERIFY</span>  re-read the new generation, check it against the tally
-    │
-  <span class="t-good">SWAP</span> ◀── the commit point: conditional currentGen → gen+1
-    │            (a crash before here changes nothing visible)
-  <span class="t-accent">PURGE</span>   delete warm rows <span class="t-warm">conditionally on the archived version</span>
-    │            ← any write that arrived after STAGE survives untouched
-  <span class="t-accent">GC</span>      drop superseded generations, keeping a grace window
-              for in-flight readers (pinned-gen safe re-resolve)
-</pre>
-            </div>
-            <figure class="code-fig">
-              <figcaption><span class="fdot"></span> a Lambda handler that runs one compaction cycle</figcaption>
-              <div class="code has-cap"><pre><span class="k">import</span> { runCompactionCycle } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-
-<span class="k">const</span> deps = { cold, warm, registry, clock: { now: () =&gt; <span class="f">Date.now</span>() } };
-
-<span class="k">export const</span> handler = <span class="k">async</span> (_e, ctx) =&gt; {
-  <span class="k">const</span> { results } = <span class="k">await</span> <span class="f">runCompactionCycle</span>(deps,
-      { owner: <span class="s">`lambda:</span>${ctx.awsRequestId}<span class="s">`</span>, keep: <span class="n">1</span> });
-  <span class="k">return</span> results;
-};
-<span class="c">// or the bundled CLI: CR_COMPACT_MODE=loop npx compact-segments</span></pre></div>
-            </figure>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>Merge-preservation + fenced purge + no torn reads.</strong> A write landing mid-compaction is never lost; the swap is the single atomic commit point; a reader pinned to a GC'd generation re-resolves rather than failing. Verified by crash-at-every-step injection.</p></div>
-          </div>
-        </div>
-
-        <!-- 4e -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4e</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <h3 style="margin-top: 18px">Encryption at rest &amp; crypto-shred</h3>
-            <div class="prose">
+<div class="prose">
               <p>
                 Encrypt the cold objects so a leaked bucket reveals
                 <strong>neither IDs nor cardinality</strong> (payloads <em>and</em> the chunk index are
@@ -688,69 +762,123 @@
                 recovery KEK offline.
               </p>
             </div>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>A leaked bucket leaks nothing; erasure is provable.</strong> No IDs, no cardinality, no cross-context blob reuse. Crypto-shred works on immutable and backed-up storage — the property no overwrite-based deletion can offer.</p></div>
-          </div>
-        </div>
-
-        <!-- 4f -->
-        <div class="phase">
-          <div class="phase-rail"><span class="phase-num">4f</span><span class="phase-line"></span></div>
-          <div class="phase-body">
-            <h3 style="margin-top: 18px">Streaming compaction — constant memory at any segment size</h3>
-            <div class="prose">
-              <p>
-                The final piece closes the project's founding promise: compaction must not buffer a
-                whole segment in RAM. The merge became an <strong>async generator</strong> feeding a
-                <strong>streaming cold sink</strong>; on S3 that's <strong>multipart upload</strong>
-                with at most one part buffered (default 8 MiB). Peak write memory is ~one part whether
-                the segment is 2 GiB or 50 GiB.
-              </p>
-              <p>
-                Write-once survived the rewrite: a small object is a single conditional
-                <code>PutObject</code>; a large one finishes with a conditional
-                <code>CompleteMultipartUpload</code> (<code>If-None-Match:*</code>). And the object
-                ceiling is honest — S3 caps multipart at 10,000 parts, so the cap is
-                <code>partBytes × 10,000</code> (≈80 GiB at the default, growing via
-                <code>partBytes</code> up to S3's 5 TiB), enforced with a typed error rather than a
-                silent overflow.
-              </p>
-            </div>
-            <div class="diagram" role="img" aria-label="Streaming merge feeds a multipart sink with at most one part buffered.">
-<pre>
-  <span class="t-cold">COLD</span> ∪ <span class="t-warm">WARM</span> ──async generator──▶  merge, chunk by chunk
-                                       │  (never the whole segment in RAM)
-                                       ▼
-   ┌─ multipart sink — buffers ≤ <span class="t-accent">one part</span> (8 MiB default) ─┐
-   │  fill part ─▶ UploadPart ─▶ free ─▶ fill part ─▶ …       │
-   └──────────────────────────────────┬───────────────────────┘
-                                       ▼
-   small  → single conditional <span class="t-good">PutObject</span>          (write-once)
-   large  → conditional <span class="t-good">CompleteMultipartUpload</span>   (If-None-Match:*)
-
-   peak RAM ≈ one part   ·   regardless of 2 GiB or 50 GiB segment
-</pre>
-            </div>
-            <div class="prose">
-              <p>
-                There's no new API to call — it's the same <code>runCompactionCycle</code> and the same
-                <code>S3ColdDriver</code> from §4d/§3. Large objects simply upload via multipart
-                automatically.
-              </p>
-            </div>
-            <div class="secured"><p class="lbl">Invariant secured</p><p><strong>Bounded memory regardless of segment size — and write-once on both paths.</strong> The advertised object ceiling is actually achievable (part-count enforced); an overflow is a typed <code>ValidationError</code>, never opaque truncation.</p></div>
-          </div>
-        </div>
       </section>
 
-      <hr class="rule" />
+      <!-- The seven invariants, which used to be six panels scattered down the page. One table: they are a
+           set, and a reader checking them wants them next to each other. -->
+      <section class="section" id="invariants">
+        <div class="slot-head">
+          <span class="slot-eyebrow">Invariants</span>
+          <h2>The nine things that must stay true</h2>
+        </div>
+        <div class="prose">
+          <p>
+            Each of these reshaped the data model, and each came out of an adversarial review before a line was
+            written. Every one has named tests; the compaction and OCC paths get property and concurrency tests
+            on top.
+          </p>
+        </div>
+        <div class="data-table-wrap">
+          <div class="label-strip label-split">
+            <span>Hard correctness invariants</span><span>Scrolls horizontally on narrow screens</span>
+          </div>
+          <div class="data-table-scroll">
+            <table class="data-table table-invariants">
+              <thead>
+                <tr>
+                  <th scope="col">Invariant</th>
+                  <th scope="col">What it rules out</th>
+                  <th scope="col" class="verdict">Proven by</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Tombstones are first-class</th>
+                  <td>An OR-merge that can only ever grow. There is a real <code>remove()</code>.</td>
+                  <td class="verdict">Differential vs a Set oracle</td>
+                </tr>
+                <tr>
+                  <th scope="row">Generation + version fencing</th>
+                  <td>
+                    A write landing mid-compaction being purged, and a torn read across a compaction. Cold
+                    objects are immutable and generation-keyed; the purge is conditional on the version it
+                    archived.
+                  </td>
+                  <td class="verdict">Concurrency simulator</td>
+                </tr>
+                <tr>
+                  <th scope="row">No lost updates under N writers</th>
+                  <td>
+                    Two processes mutating one chunk and one silently winning. Every warm write is
+                    conditional, so the loser gets a <code>WriteConflictError</code> and re-reads —
+                    driver invariant <strong>D4</strong>.
+                  </td>
+                  <td class="verdict">Simulator + the driver conformance suite, run against DynamoDB-Local in CI</td>
+                </tr>
+                <tr>
+                  <th scope="row">One authoritative pointer, forward-only</th>
+                  <td>
+                    A generation pointer going backwards. <code>publishGeneration</code> never regresses
+                    <code>currentGen</code>, so a stale writer cannot un-publish a newer archive.
+                  </td>
+                  <td class="verdict">Registry round-trip, conformance-tested on all three backends</td>
+                </tr>
+                <tr>
+                  <th scope="row">Compaction merges cold ∪ warm</th>
+                  <td>Rebuilding from the warm tier alone, which would silently drop the archive.</td>
+                  <td class="verdict">Merge-preservation tests</td>
+                </tr>
+                <tr>
+                  <th scope="row">Reads are tier-merging</th>
+                  <td>
+                    A single-tier fast path answering from stale bytes. Allowed only where provably safe.
+                  </td>
+                  <td class="verdict">Property tests</td>
+                </tr>
+                <tr>
+                  <th scope="row">All tier bytes are untrusted</th>
+                  <td>
+                    A malicious or corrupt payload reaching the native addon. Safe deserializer plus a hard
+                    size cap, always.
+                  </td>
+                  <td class="verdict">Fuzz corpus + golden files</td>
+                </tr>
+                <tr>
+                  <th scope="row">Bounded memory and cost</th>
+                  <td>
+                    A segment's size bounding RAM, or an enumeration running up a bill. Hard LRU ceiling,
+                    bounded fan-out, per-op budgets.
+                  </td>
+                  <td class="verdict">cgroup RSS ceiling in CI</td>
+                </tr>
+                <tr>
+                  <th scope="row">Storage-agnostic core</th>
+                  <td>
+                    A cloud SDK leaking into the engine. <code>packages/core/src/core/</code> imports no
+                    driver and no SDK.
+                  </td>
+                  <td class="verdict"><code>pnpm lint:arch</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="table-caption">
+          ↳ Two more that are not correctness but are held to the same standard. <strong>Transient ≠
+          deterministic:</strong> only infrastructure faults retry, a correctness error fails fast rather than
+          in a loop, so there is no double-apply. And a <strong>leaked bucket leaks nothing</strong> — no ids,
+          no cardinality, no cross-context blocks — with erasure provable by destroying the key rather than the
+          objects.
+        </p>
+      </section>
 
-      <!-- NEXT -->
       <section id="next">
-        <div class="section-head">
-          <p class="kicker">Status</p>
+        <div class="slot-head">
+          <span class="slot-eyebrow">Status</span>
           <h2>Where this leaves us</h2>
         </div>
-        <div class="grid2">
+        
+<div class="grid2">
           <div class="mini"><span class="tag">M1 · local</span><h4>Phases 1–2 ✓</h4><p>The engine, tombstone data model, durable disk tier, <code>.crbm</code> format, and the deterministic simulator.</p></div>
           <div class="mini"><span class="tag">M2 · Topology-A</span><h4>Phase 3 ✓</h4><p>S3 cold tier and serverless chunk-skipping intersection — the crown jewel.</p></div>
           <div class="mini"><span class="tag">M3 · Topology-B</span><h4>Phase 4a–4f ✓</h4><p>DynamoDB warm, resilience, registry, crash-safe + constant-memory compaction, encryption &amp; crypto-shred.</p></div>
