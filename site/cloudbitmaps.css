@@ -831,34 +831,6 @@ ul.clean li::marker {
 }
 
 /* ---------- status table ---------- */
-.table-scroll {
-  overflow-x: auto;
-  margin: 22px 0;
-}
-table.status {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 14.5px;
-}
-table.status th,
-table.status td {
-  text-align: left;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--hair);
-  vertical-align: top;
-}
-table.status th {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  font-weight: 600;
-}
-table.status td .st {
-  font-family: var(--mono);
-  font-weight: 700;
-}
 .st-done {
   color: var(--good);
 }
