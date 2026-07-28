@@ -128,11 +128,21 @@ export default tseslint.config(
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
-    // ESM tooling scripts (e.g. the Lambda deployability smoke) run on Node with its globals + createRequire.
+    // ESM tooling scripts (the Lambda deployability smoke, the site screenshotter) run on Node with its
+    // globals. Timers and `fetch`/`WebSocket` are listed because these are *tooling*, outside the timer-free
+    // rule that governs `core/` — a screenshotter that cannot wait for a page to paint is not a screenshotter.
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       sourceType: 'module',
-      globals: { process: 'readonly', console: 'readonly' },
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        fetch: 'readonly',
+        WebSocket: 'readonly',
+        Buffer: 'readonly',
+      },
     },
   },
   {
