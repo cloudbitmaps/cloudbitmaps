@@ -13,6 +13,7 @@ export default tseslint.config(
       'node_modules',
       '.stryker-tmp',
       'reports',
+      'site2',
     ],
   },
   js.configs.recommended,
@@ -146,9 +147,9 @@ export default tseslint.config(
     },
   },
   {
-    // The site's one script. Browser globals, not Node — and `site/` is hand-written static HTML, so this is
-    // plain ES5-compatible JS rather than anything that goes through the build.
-    files: ['site/**/*.js'],
+    // The site's one script. Browser globals, not Node — and `site/` and `site-final/` are hand-written
+    // static HTML, so this is plain ES5-compatible JS rather than anything that goes through the build.
+    files: ['site/**/*.js', 'site-final/**/*.js'],
     languageOptions: {
       sourceType: 'script',
       globals: {

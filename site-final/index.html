@@ -184,14 +184,99 @@
       </section>
 
       <!-- ── THREE TIERS ────────────────────────────────────────────────────
-           Replaces an ASCII diagram and three paragraphs. -->
+           The animation and the cards tell one story, in motion and at rest. Merged rather than given a
+           section of its own: the figure carries the movement, the cards below stay as its legend, and the
+           page gains a moment without gaining a section. -->
       <section>
         <h2>Three tiers, one API</h2>
         <p class="lede">
           A segment lives in all three places at once. You call <span class="m">has()</span>; the store
           decides where the answer comes from.
         </p>
-        <div class="tiers">
+
+        <!-- One write, followed the whole way across. `aria-hidden` because every id, key and tier in it is
+             stated in the lede and the cards — a screen reader gets the content, not a diagram it cannot
+             see. -->
+        <div class="pipeline" aria-hidden="true">
+          <div class="pstage">
+            <div class="pstage-label"><span>Your call</span></div>
+            <div class="pstage-body">
+              <p class="pstage-code">addMany([75,&nbsp;99_999,&nbsp;1_234_567_890])</p>
+              <ul class="ids">
+                <li><i class="pk b1"></i><span>75</span><em>&rarr; key 0x0000</em></li>
+                <li><i class="pk b4"></i><span>99_999</span><em>&rarr; key 0x0001</em></li>
+                <li><i class="pk b7"></i><span>1_234_567_890</span><em>&rarr; key 0x4996</em></li>
+              </ul>
+              <p class="pstage-note">3 ids · 1 segment · grouped by key before any write</p>
+            </div>
+          </div>
+          <div class="pipe p1">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b1"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Chunk keys</span><b>3 of 2,000</b></div>
+            <div class="pstage-body">
+              <div class="keygrid">
+                <i class="k"></i><i></i><i></i><i class="k k2"></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ><i class="k k3"></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p class="pstage-note">32-bit id &rarr; 16-bit key + 16-bit remainder</p>
+            </div>
+          </div>
+          <div class="pipe p2">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b4"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Where the bytes land</span></div>
+            <div class="pstage-body">
+              <div class="trow r-hot">
+                <span class="tkey">Hot · RAM</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ></span>
+                <p class="tnote">bounded LRU · never grows</p>
+              </div>
+              <div class="trow r-warm">
+                <span class="tkey">Warm</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i
+                  ><i></i
+                ></span>
+                <p class="tnote">delta rows · adds + removes · conditional</p>
+              </div>
+              <div class="trow r-cold">
+                <span class="tkey">Cold</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i
+                  ><i class="f"></i><i class="f"></i><i class="f"></i
+                ></span>
+                <p class="tnote">immutable, generation-keyed</p>
+              </div>
+              <span class="gen-chip">compaction &rarr; segment.7.crbm</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- The read climbing back out, right to left, so the round trip is one figure rather than two. -->
+        <div class="rail" aria-hidden="true">
+          <span class="rail-line"></span><span class="rail-head"></span>
+          <span class="rail-car rc1"><i></i></span>
+          <span class="rail-car rc2"><i></i></span>
+          <span class="rail-car rc3"><i></i></span>
+          <p class="rail-cap">
+            <b>The read comes back out</b>
+            <span class="rail-fig">intersect(shoppers, active)</span>
+            <span>fetches <span class="rail-fig">100 / 2,000</span> chunks —</span>
+            <span><span class="rail-fig">1,900</span> are never requested</span>
+            <span class="rail-result">&rarr; 41,208 ids</span>
+          </p>
+        </div>
+
+        <div class="tiers is-legend">
           <div class="tier">
             <span class="tier-chip t-hot">HOT · RAM</span>
             <p>
@@ -253,6 +338,122 @@
 <span class="k">await</span> vips.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
 <span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
             <p class="code-link"><a href="usage.html">Full usage, drivers and API →</a></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── WHY NOT BUILD IT ───────────────────────────────────────────────
+           Placed AFTER the moat on purpose: the argument only lands once the reader has seen what the hard
+           part actually is. Note the left column is not Redis — the trade pair two sections up already
+           argues that case, and repeating it would read as making one point twice. The honest alternative
+           for someone who has already ruled Redis out is rolling this themselves on object storage. -->
+      <section>
+        <h2>You could build this yourself. Here's the part that takes a year.</h2>
+        <p class="lede">
+          Sharding a bitmap across object storage is a weekend. Making it correct under concurrent writes,
+          deletes and compaction is not.
+        </p>
+        <div class="ba">
+          <div class="ba-half ba-no">
+            <p class="label">Rolling it yourself</p>
+            <ul class="ba-list">
+              <li>
+                <i>✕</i
+                ><span
+                  >A chunking scheme <strong>only your code can read</strong>, undocumented and
+                  unversioned</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >Whole-blob <strong>GET, decode, modify, PUT</strong> — the write cost scales with the
+                  segment, not the change</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >An OR-merge that <strong>cannot express a delete</strong>, so removals need a full
+                  rebuild</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >Two concurrent compactions that <strong>silently drop</strong> whichever writes landed
+                  mid-scan</span
+                >
+              </li>
+            </ul>
+          </div>
+          <div class="ba-half ba-yes">
+            <p class="label">With CloudBitmaps</p>
+            <ul class="ba-list">
+              <li>
+                <i>✓</i
+                ><span
+                  >A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
+                  one-command export</span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at
+                  all when idle</span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Tombstones are first-class — <strong>a real remove()</strong>, merged as
+                  <span class="m">(cold ∪ adds) \ removes</span></span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan
+                  writes survive</span
+                >
+              </li>
+            </ul>
+          </div>
+          <p class="ba-foot">
+            Every row on the right is a <strong>hard invariant with named tests</strong>, not a design
+            intention — <strong>1,156</strong> of them run on every commit.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────────
+           The page used to end on a code block, which left a reader who had scrolled the whole way with
+           nowhere obvious to go. Same two-column proportion as the hero, so the page opens and shuts on the
+           same shape. -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Six lines, one bucket.</h2>
+            <p class="lede" style="margin: 0">
+              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at
+              all — the quickstart above runs as-is, so you can see the shape before you point it at a
+              bucket.
+            </p>
+            <div class="btns">
+              <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
+              <a class="btn" href="usage.html#api">Browse the API</a>
+              <a class="btn" href="benchmarks.html">See the benchmarks</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.4.1 · 1 runtime dependency · 10 storage drivers</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Install</span><span>One flavor</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring
+
+<span class="c"># plus only the backends you actually use</span>
+npm i @aws-sdk/client-s3 @aws-sdk/client-dynamodb</code></pre>
+            <p class="link-row"><a href="flavors.html">Every driver and its peer deps →</a></p>
           </div>
         </div>
       </section>
