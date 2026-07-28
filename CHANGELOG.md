@@ -14,6 +14,68 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-27
+
+A correctness release from **audit round 4** — four independent adversarial review passes over the 0.4.0 diff
+(correctness, cost, test quality, docs fidelity). Every finding below survived my own mutation testing and was
+caught only by an outside pass; two of them are claims this project had already published as true.
+
+### Fixed
+
+- **`addMany`/`removeMany` could silently drop ids from a synchronous input.** *(Regression introduced in
+  0.4.0.)* An async function body runs synchronously to its first `await`, so a sync input had always been
+  effectively **snapshotted** at call time — a caller could pass a scratch buffer and immediately reuse it.
+  0.4.0's cooperative yield sat inside that loop and voided the guarantee: a 40,000-id buffer recycled before
+  the promise was awaited landed exactly **16,384 ids with no error thrown**. Size-dependent, so nothing under
+  the yield cadence would have shown it. The yield is removed from the sync path (it bought ~11 ms per 1M ids
+  against OCC round-trips that dominate the operation); the async path, which never promised a snapshot,
+  keeps it.
+
+- **The per-op budget did not bound memory in the default wiring.** `RetryingWarmDriver.listChunks` drained the
+  entire warm scan into an array before yielding its first row, so the engine's per-row ceiling — the whole
+  point of 0.3.0's bounding work — only saw rows *after* the segment was already resident. Measured on a
+  500-row segment under `budget: { maxRequests: 3 }`: **500 rows materialised with the default wiring, 4 with
+  `retry: false`.** Both threw the same `BudgetExceededError`, which is why no test caught it: the error was
+  never the distinguishing observable, the row count was. Present in **0.3.0 and 0.4.0**.
+  - The wrapper now retries only while *establishing* the scan (each attempt builds a fresh iterator, so no row
+    can be yielded twice) and streams from there. **Trade-off:** a transient fault *mid-stream* now propagates
+    instead of being retried. It cannot be retried honestly — rows are already with the consumer and the driver
+    interface exposes no resumption token — and bounded memory is a hard invariant where mid-scan retry is not.
+
+- **Compaction never actually yielded the event loop.** `writeCrbmGenerationStream` gained a `clock` in 0.4.0
+  and no caller passed one; `CompactionDeps.clock` was typed `Pick<Clock, 'now'>`, so callers *could not*. The
+  0.4.0 notes claimed compaction was covered. It now is: the clock type accepts optional `sleep`/`yieldNow`
+  (still only `now` required, so no caller breaks), it is threaded to both write sites, and the
+  `compact-segments` daemon supplies a real clock.
+
+- **`InstantClock` now declares its no-op yield explicitly** instead of silently falling back to a `sleep(1)`
+  that its own `sleep` resolves on a microtask.
+
+### Changed
+
+- **Docs corrected across the board.** The site said union and difference were "on the roadmap" on the same
+  page whose badge read v0.4.0; the guide's operations table omitted the new ops while the README called it
+  exhaustive; the exclude cost claim said "1 extra read" where the bound is one per *surviving key* (never
+  scaling with the suppression list's size); "strictly less memory" held only above the 1M staging cap; the
+  `writeConcurrency` sweep is now described as **modelled** (an in-process fake, not a real DynamoDB); the
+  three separate yield experiments are labelled so their baselines stop being spliced together; and
+  `intersect`'s memory/generation contract — orphaned into an unattached JSDoc block — is reattached.
+
+- **`fetchedChunks` documentation clarified** (the metric is unchanged): it counts distinct chunk **keys**, not
+  requests, which is why it reads lower than the budget's charge for the same call. Deliberately not redefined
+  — silently changing a published observability field in a patch release would break dashboards built on it.
+
+### Tests
+
+Five test files were hardened after an independent pass showed each had a **surviving mutation** — assertions
+that could not fail. Worst cases: the cooperative bulk-load file counted total loop turns against a bound of
+`> 20` when the real figure was ~119, so any *one* of its several yield sites satisfied the whole file; a
+"no cross-chunk bleed" test asserted an algebraic identity of `bit-route` and compared a call to itself,
+passing against a `union` that returned nothing; and a "no silent partial write" assertion was tautological
+because the fake incremented its counter *after* the throw it was measuring. Each is now pinned to a
+per-site or absolute observable, and every fix in this release ships with a regression that fails against the
+pre-fix code.
+
 ## [0.4.0] - 2026-07-27
 
 The release the first real consumer asked for: **set composition** and **streaming batch writes**, plus the
@@ -25,7 +87,6 @@ that looked like a free win are a **7x regression**, and the obvious way to acce
 multiplied a caller's write bill by the length of their input. Neither shipped.
 
 ### Added
-
 - **`union` / `andNot` and an `exclude` option on `intersect`** — set composition without materialising an
   intermediate segment.
 
@@ -50,8 +111,9 @@ multiplied a caller's write bill by the length of their input. Neither shipped.
     | `union` | every chunk of **every** operand | no |
 
   - An `exclude` operand can only subtract, never introduce a key, so candidate keys come from the includes
-    alone — and a suppression chunk is fetched only at keys that list actually holds. Subtracting a
-    61,000-chunk global opt-out list from a 40-chunk audience costs **1** extra read, not 40 and not 61,000.
+    alone — and a suppression chunk is fetched only at keys that list actually holds. **The cost is bounded by
+    the surviving key count and never scales with the size of the suppression list:** subtracting a
+    61,000-chunk global opt-out list from a 40-chunk audience costs at most 40 extra reads, not 61,000.
   - All three are charged against the same per-op budget, and only for chunks actually read, so a wide `union`
     is refused rather than quietly billed while cheap suppression is not penalised.
   - New: `unionInto` / `andNotInto`; exported option types `BaseCombineOptions`, `CombineOptions`,
@@ -68,15 +130,43 @@ multiplied a caller's write bill by the length of their input. Neither shipped.
     nearly every chunk again — an 11M-id stream at a 1M-id buffer would issue **11x** the round-trips of a
     single pass. Instead the staging buffer folds into per-chunk **compressed bitmaps** and the backend is
     touched once at the end. Measured: 5M pending ids occupy **11 MB as bitmaps against 212 MB as JS numbers**,
-    which is what makes writing-once affordable — and is *less* memory than the previous sync-only path used.
+    which is what makes writing-once affordable. Above the 1M staging cap this holds less than the previous
+    sync-only path; below it the two are comparable — the guarantee is that a stream of *any* length stays
+    bounded, not that every call got smaller.
   - This does not move the `addMany` ↔ `bulkLoad` crossover, and the guide now says so explicitly: both take a
     stream, so the same cursor pipes into either, and streaming is exactly the situation in which it is easiest
     to reach for the wrong one. Amending a segment is `addMany`; defining one is bulk-load.
   - Internally a batch is now applied to a chunk's delta **set-wise** (`orInPlace`/`andNotInPlace`) rather than
     id-by-id, so the adds/removes disjoint invariant is enforced by set algebra instead of by a loop.
 
-### Fixed
 
+- **`Clock.yieldNow?()`** — an optional member on the determinism seam meaning "hand the event loop back once",
+  as distinct from `sleep(0)`, which is contractually a microtask and yields nothing. Optional, so every
+  existing `Clock` implementation stays valid; callers degrade to `sleep(1)`, which yields correctly at ~1 ms of
+  dead wall-clock apiece. Production wiring backs it with `setImmediate`; the simulator makes it a no-op so a
+  replayable run is not perturbed by what is purely a scheduling courtesy.
+
+- **`writeCrbmGeneration` and `writeCrbmGenerationStream` accept `clock`**, so a caller driving them directly
+  gets the same cooperative behaviour.
+
+### Changed
+- **`writeConcurrency` now defaults to 4 instead of 1.** The bounded flusher behind `addMany`/`removeMany` was
+  serial by default, so a 100-chunk batch against a backend with ~10 ms round-trips spent a full second doing
+  nothing but waiting — one round-trip at a time, on work with no ordering requirement between chunks. Distinct
+  chunks are independent OCC rows.
+  - **The bound exists for the backend, not for correctness.** A provisioned-capacity store answers a burst by
+    throttling, which is free only while the transient-retry path absorbs it. Swept against a **modelled**
+    backend — an in-process fake that throttles on concurrent requests in flight, not a real DynamoDB — that
+    throttles on concurrent requests in flight (64 chunks, 5 trials, a lost id or surfaced error counting as a
+    failure): 4, 8 and 16 were clean at every capacity tested; the first failures appeared at **32** against a
+    capacity-1 backend. 4 sits 8x below that, leaving the headroom for the multiplier a single-call sweep
+    cannot show — many concurrent `addMany` calls sharing one backend.
+  - Set `writeConcurrency: 1` to restore the previous strictly-serial behaviour. `addMany`/`removeMany` remain
+    non-atomic either way; concurrency changes only *how much* of a batch may already have landed when the
+    first error surfaces, since the flusher stops scheduling on first failure but in-flight writes still settle.
+  - Exported as `DEFAULT_WRITE_CONCURRENCY`.
+
+### Fixed
 - **Bulk-load no longer blocks the event loop for the whole load.** `bulkLoadCrbmGeneration` was a single
   synchronous stretch: a 1M-id load (~62,000 chunks) measured **442 ms wall with 450 ms during which the event
   loop did not turn once**. Wired into a request handler that stalls every other request on the instance —
@@ -97,34 +187,6 @@ multiplied a caller's write bill by the length of their input. Neither shipped.
   sync and async sources were normalised through one async generator, which forces a microtask per id: 224 ms
   against 11 ms for a plain `for..of` over the same array — 55% of a whole load spent on iteration protocol
   rather than work. The two ingest paths are now separate.
-
-### Changed
-
-- **`writeConcurrency` now defaults to 4 instead of 1.** The bounded flusher behind `addMany`/`removeMany` was
-  serial by default, so a 100-chunk batch against a backend with ~10 ms round-trips spent a full second doing
-  nothing but waiting — one round-trip at a time, on work with no ordering requirement between chunks. Distinct
-  chunks are independent OCC rows.
-  - **The bound exists for the backend, not for correctness.** A provisioned-capacity store answers a burst by
-    throttling, which is free only while the transient-retry path absorbs it. Swept against a backend that
-    throttles on concurrent requests in flight (64 chunks, 5 trials, a lost id or surfaced error counting as a
-    failure): 4, 8 and 16 were clean at every capacity tested; the first failures appeared at **32** against a
-    capacity-1 backend. 4 sits 8x below that, leaving the headroom for the multiplier a single-call sweep
-    cannot show — many concurrent `addMany` calls sharing one backend.
-  - Set `writeConcurrency: 1` to restore the previous strictly-serial behaviour. `addMany`/`removeMany` remain
-    non-atomic either way; concurrency changes only *how much* of a batch may already have landed when the
-    first error surfaces, since the flusher stops scheduling on first failure but in-flight writes still settle.
-  - Exported as `DEFAULT_WRITE_CONCURRENCY`.
-
-### Added
-
-- **`Clock.yieldNow?()`** — an optional member on the determinism seam meaning "hand the event loop back once",
-  as distinct from `sleep(0)`, which is contractually a microtask and yields nothing. Optional, so every
-  existing `Clock` implementation stays valid; callers degrade to `sleep(1)`, which yields correctly at ~1 ms of
-  dead wall-clock apiece. Production wiring backs it with `setImmediate`; the simulator makes it a no-op so a
-  replayable run is not perturbed by what is purely a scheduling courtesy.
-
-- **`writeCrbmGeneration` and `writeCrbmGenerationStream` accept `clock`**, so a caller driving them directly
-  gets the same cooperative behaviour.
 
 ## [0.3.0] - 2026-07-27
 

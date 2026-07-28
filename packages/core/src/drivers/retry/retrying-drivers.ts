@@ -102,20 +102,47 @@ export class RetryingWarmDriver implements IWarmDriver {
     return withRetry(() => this.inner.deleteConditional(ref, expected), this.policy, this.deps);
   }
 
+  /**
+   * Stream the inner driver's rows, retrying only until the first one arrives.
+   *
+   * **This used to buffer the whole scan** — `for await (…) out.push(row)` inside `withRetry`, then
+   * `yield* out` — which made the retry trivially safe and quietly defeated every bound above it. The engine's
+   * `collectWarm` refuses *during* enumeration precisely so resident memory is `O(ceiling)` rather than
+   * `O(segment)`; with the buffering wrapper in place (and it is wired by default) it saw its first row only
+   * after the entire segment was already in memory. Measured on a 500-row segment under
+   * `budget: { maxRequests: 3 }`: **500 rows materialised with the default wiring, 4 with `retry: false`**.
+   * Both paths threw the same `BudgetExceededError`, which is why no test caught it — the error was never the
+   * distinguishing observable, the row count was.
+   *
+   * **The trade this makes.** A mid-stream fault now propagates instead of being retried. It cannot be retried
+   * honestly: rows have already been handed to the consumer, so restarting the iterator would re-yield them,
+   * and the driver interface exposes no resumption token to continue from. Retry is kept where it pays —
+   * establishing the scan, which is where transient connect/throttle failures actually land — and bounded
+   * memory wins the conflict, because invariant 6 ("bounded memory & cost, always") is a hard invariant and
+   * mid-scan retry is not. A caller who needs whole-scan retry can wrap the operation at their own level,
+   * where re-reading from the start is safe.
+   */
   async *listChunks(
     ref: SegmentRef,
     opts?: WarmReadOptions,
   ): AsyncIterable<{ chunkKey: number } & WarmRow> {
-    const rows = await withRetry(
+    // Each attempt builds a FRESH iterator, so a retried establishment cannot duplicate rows.
+    const started = await withRetry(
       async () => {
-        const out: Array<{ chunkKey: number } & WarmRow> = [];
-        for await (const row of this.inner.listChunks(ref, opts)) out.push(row);
-        return out;
+        const iterator = this.inner.listChunks(ref, opts)[Symbol.asyncIterator]();
+        const first = await iterator.next();
+        return { iterator, first };
       },
       this.policy,
       this.deps,
     );
-    yield* rows;
+    if (started.first.done === true) return;
+    yield started.first.value;
+    for (;;) {
+      const next = await started.iterator.next();
+      if (next.done === true) return;
+      yield next.value;
+    }
   }
 }
 

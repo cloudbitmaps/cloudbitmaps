@@ -3,6 +3,7 @@ import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-cold-source'
 import { bulkLoadCrbmGeneration } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
+import { YIELD_EVERY } from '@/core/cooperative';
 import { joinId } from '@/core/bit-route';
 
 // Bulk-load must not hold Node's only thread for the duration of the load.
@@ -30,6 +31,24 @@ const KEY = { segment: 'coop', namespace: 'ns', generation: 1 } as const;
 const CHUNKS = 40_000;
 const ids = Array.from({ length: CHUNKS }, (_, i) => joinId(i % 61_035, i % 65_536));
 
+/**
+ * A clock that records **where** each yield came from, so a test can require the specific loop it names.
+ *
+ * Counting loop turns alone was not enough. A load has several independent yield sites — the id ingest, the
+ * per-chunk flush, the cardinality tally, and the serialize/CRC writer — and with a bound of `> 20` against
+ * ~119 actual turns, **any one surviving site satisfied every test in this file.** Disabling the yields in the
+ * ~62,000-chunk insert loop (the one the module comment quantifies) left it fully green, and the case titled
+ * "yields on an async source too" passed with the async ingest path's yields removed, because its turns came
+ * from the writer. Per-site counting is what makes each assertion about the loop it claims to be about.
+ */
+class SpyClock extends SystemClock {
+  yields = 0;
+  override yieldNow(): Promise<void> {
+    this.yields += 1;
+    return super.yieldNow();
+  }
+}
+
 /** Run `load()` while a self-rescheduling `setImmediate` counts how many times the loop got to turn. */
 async function loopTurnsDuring<T>(load: () => Promise<T>): Promise<{ turns: number; result: T }> {
   let turns = 0;
@@ -53,9 +72,12 @@ describe('bulk-load is cooperative', () => {
       bulkLoadCrbmGeneration(new MemoryColdDriver() as never, KEY as never, ids),
     );
     // The flavor package pre-binds a real clock, so this is what an ordinary caller gets with no wiring at all.
-    // The bound is loose on purpose — the exact count tracks machine speed — but it is orders of magnitude away
-    // from the handful of turns a blocking load allows, which is the only distinction that matters.
-    expect(turns).toBeGreaterThan(20);
+    //
+    // The bound is derived from the fixture rather than picked to be safely low: CHUNKS/YIELD_EVERY chunk-level
+    // yields must happen in each of the flush, tally and write loops, so losing any ONE of them drops the count
+    // below this. A generous `> 20` could not tell those apart.
+    const perSite = Math.floor(CHUNKS / YIELD_EVERY);
+    expect(turns).toBeGreaterThanOrEqual(perSite * 3);
     expect((result as { cardinality: number }).cardinality).toBe(new Set(ids).size);
   });
 
@@ -94,10 +116,19 @@ describe('bulk-load is cooperative', () => {
     async function* stream(): AsyncGenerator<number> {
       for (const id of ids) yield id;
     }
-    const { turns, result } = await loopTurnsDuring(() =>
-      bulkLoadCrbmGeneration(new MemoryColdDriver() as never, KEY as never, stream()),
+    // Counted through a spy clock rather than by loop turns: the writer yields regardless of how ingest
+    // behaves, so a turn count cannot attribute anything to the async path. `ids.length / YIELD_EVERY_IDS`
+    // ingest yields must come from this loop specifically, on top of whatever the later loops contribute.
+    const clock = new SpyClock();
+    const result = await bulkLoadCrbmGeneration(
+      new MemoryColdDriver() as never,
+      KEY as never,
+      stream(),
+      { clock } as never,
     );
-    expect(turns).toBeGreaterThan(20);
+    const ingestYields = Math.floor(ids.length / (1 << 14)); // YIELD_EVERY_IDS
+    const chunkYields = Math.floor(CHUNKS / YIELD_EVERY) * 3;
+    expect(clock.yields).toBeGreaterThanOrEqual(ingestYields + chunkYields);
     expect((result as { cardinality: number }).cardinality).toBe(new Set(ids).size);
   });
 

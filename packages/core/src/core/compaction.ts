@@ -38,6 +38,7 @@ import { requireCodec } from './codec';
 import { decodeDelta, effective, emptyDelta } from './chunk';
 import type { ChunkDelta } from './chunk';
 import type { BlobReader } from './blob';
+import type { Yielder } from './cooperative';
 import type { Clock } from './determinism';
 import type { IMetricsSink } from './metrics';
 import {
@@ -74,8 +75,16 @@ export interface CompactionDeps {
   readonly cold: IColdDriver;
   readonly warm: IWarmDriver;
   readonly registry: IRegistryDriver;
-  /** Injected time source for lease expiry (the determinism seam — `core/` never reads ambient time). */
-  readonly clock: Pick<Clock, 'now'>;
+  /**
+   * Injected time source for lease expiry (the determinism seam — `core/` never reads ambient time).
+   *
+   * `now` is required; `sleep`/`yieldNow` are **optional and used only for cooperative yielding** while writing
+   * a generation. Supplying a full {@link Clock} (the facade does) makes compaction hand the event loop back
+   * periodically instead of blocking it for the whole write; supplying a bare `{ now }` keeps the previous
+   * uninterrupted behaviour. Optional rather than required because every existing caller passes `{ now }`, and
+   * requiring more would be a breaking change — the reason the yield below shipped unreachable the first time.
+   */
+  readonly clock: Pick<Clock, 'now'> & Partial<Pick<Clock, 'sleep' | 'yieldNow'>>;
   readonly maxBitmapBytes?: number;
   /**
    * Bitmap codec — compaction only merges bitmaps through it. Optional in the type so this
@@ -293,6 +302,7 @@ async function compactSegmentInner(
     let tally: { chunkKeys: number[]; cardinality: number } | undefined;
     try {
       tally = await writeCrbmGenerationStream(deps.cold, gen0, stream, {
+        clock: deps.clock, // cooperative if the caller's clock can yield; a no-op if it only tells the time
         crypto: cryptoAt(aead, 0),
       });
     } catch (err) {
@@ -452,6 +462,7 @@ async function compactSegmentInner(
       { namespace: ref.namespace, segment: ref.segment, generation: newGen },
       stream,
       cryptoAt(aead, newGen),
+      deps.clock,
     );
 
     // SWAP (commit) — conditional on the lease token. If our lease was stolen/expired-and-taken, this fails and
@@ -600,10 +611,12 @@ async function stageGeneration(
   key: GenKey,
   chunks: AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   crypto: CrbmCrypto | undefined,
+  /** Threaded purely so the write can yield the event loop; see {@link CompactionDeps.clock}. */
+  clock: Yielder | undefined,
 ): Promise<void> {
   // The normal path deletes orphan generations > g first, so a write-conflict here is a real race (a
   // concurrent compaction beat us to this generation) — let it surface as the staging conflict it is.
-  const tally = await writeCrbmGenerationStream(cold, key, chunks, { crypto });
+  const tally = await writeCrbmGenerationStream(cold, key, chunks, { crypto, clock });
   await verifyGeneration(cold, key, tally, crypto);
 }
 

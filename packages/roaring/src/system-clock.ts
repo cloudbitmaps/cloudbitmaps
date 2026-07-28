@@ -35,7 +35,9 @@ export class SystemClock implements Clock {
    * `setImmediate`, and it has to be — this is the one place where the choice of primitive is the whole feature.
    *
    * A long CPU-bound loop in `core/` (bulk-load is the one that matters) periodically hands the loop back so a
-   * co-resident HTTP server keeps answering. Measured over a 61,035-chunk load, yielding every 1,024 chunks:
+   * co-resident HTTP server keeps answering. Measured on the **synthetic yield-primitive benchmark** — a
+   * 61,035-iteration loop yielding every 1,024, isolating the primitive rather than timing a real load (the
+   * end-to-end figures are 450 ms → 19 ms; see `cooperative.ts`, which lists all three experiments):
    *
    * ```text
    *   no yield         568 ms wall   568.0 ms worst event-loop gap

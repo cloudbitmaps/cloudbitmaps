@@ -18,15 +18,35 @@
  * 1. **`await Promise.resolve()` — and equally `Clock.sleep(0)` — do nothing.** Both resolve on a microtask, and
  *    the microtask queue drains to empty before the event loop advances a single phase. A loop awaiting them
  *    yields to other *microtasks* and to nothing else; no pending I/O callback runs. Measured: 555 ms of
- *    starvation against a 568 ms unyielded baseline. The yield must be a **macrotask** — hence
- *    {@link Clock.yieldNow}, backed by `setImmediate` in production wiring.
+ *    starvation against a 568 ms unyielded baseline **on the synthetic yield-primitive benchmark below** —
+ *    a different, smaller workload than the 442 ms end-to-end load above, which is why the two baselines
+ *    differ. The yield must be a **macrotask** — hence
+ *    `Clock.yieldNow`, backed by `setImmediate` in production wiring.
  * 2. **Yielding per unit of work costs more than the work.** The yield has to be periodic, and `everyN` has to be
  *    large enough that its cost disappears into the batch it interrupts.
  *
- * At `everyN = 1024` over that same workload the trade is close to free: 569 ms wall against a 568 ms baseline,
- * with the worst event-loop gap down from 568 ms to 13.8 ms.
+ * At `everyN = 1024` over that same synthetic workload the trade is close to free: 569 ms wall against a 568 ms
+ * baseline, with the worst event-loop gap down from 568 ms to 13.8 ms.
+ *
+ * **Three experiments, three sets of numbers — do not mix them.** (a) The end-to-end 1M-id bulk load:
+ * 442 ms wall / 450 ms blocked before, 256 ms / 19 ms after. (b) This synthetic yield-primitive comparison:
+ * 568 ms / 568 ms unyielded, 569 ms / 13.8 ms with `setImmediate`. (c) A per-chunk insert microbenchmark:
+ * 92 ms sync versus 636 ms via the threadpool. Quoting a baseline from one against a result from another is
+ * how this file previously published a 92 ms operation with 819 ms of starvation inside it.
  */
-import type { Clock } from './determinism';
+/**
+ * The only part of a `Clock` that yielding actually needs.
+ *
+ * Deliberately looser than `Clock` so the compaction path can opt in: `CompactionDeps.clock` is declared as
+ * `Pick<Clock, 'now'>` plus optional yield members, because its callers (including the `compact-segments` CLI)
+ * have always supplied a bare `{ now }`. Requiring a full `Clock` there would have been a breaking change for
+ * every one of them — which is exactly why the compaction yield shipped as dead code: the type could not carry
+ * a clock capable of yielding.
+ */
+export interface Yielder {
+  yieldNow?(): Promise<void>;
+  sleep?(ms: number): Promise<void>;
+}
 
 /**
  * How many units of work pass between yields. Sized so the yield is unmeasurable against the batch it interrupts
@@ -59,16 +79,25 @@ export const YIELD_EVERY = 1024;
  * so `@cloudbitmaps/roaring` pre-binds a real one and flavor users get this with no wiring at all.
  */
 export function yieldEvery(
-  clock: Clock | undefined,
+  clock: Yielder | undefined,
   everyN: number = YIELD_EVERY,
 ): () => Promise<void> | null {
   if (clock === undefined) return () => null;
-  // A clock predating `yieldNow` still yields correctly, just at ~1 ms of dead wall-clock apiece (measured:
-  // +10% on the load above). Resolved once here rather than re-tested every yield.
+  // Resolved once here rather than re-tested every yield.
+  //
+  // A clock predating `yieldNow` falls back to `sleep(1)`, which yields on a *timer-backed* clock at ~1 ms of
+  // dead wall-clock apiece (measured: +10% on the load above). It does NOT yield on a clock whose `sleep`
+  // ignores its argument and resolves on a microtask — `InstantClock` and `SimClock` both do, deliberately.
+  // Those are non-production wirings where yielding is meaningless, and both now say so by implementing
+  // `yieldNow` as an explicit no-op rather than arriving here by accident.
+  const sleep = clock.sleep;
   const pause =
     clock.yieldNow !== undefined
       ? (): Promise<void> => clock.yieldNow!()
-      : (): Promise<void> => clock.sleep(1);
+      : sleep !== undefined
+        ? (): Promise<void> => sleep.call(clock, 1)
+        : undefined;
+  if (pause === undefined) return () => null; // a clock that can neither yield nor sleep: nothing to do
   let n = 0;
   return () => {
     if (++n < everyN) return null;

@@ -141,14 +141,54 @@ describe('union / andNot / intersect(exclude)', () => {
   });
 
   it('never lets an exclude introduce a key the includes do not have', async () => {
-    // An exclude can only subtract. If candidate keys were drawn from the excludes too, a suppression list
-    // could make the engine fetch — and potentially emit — chunks no operand contributes to.
-    const store = makeStore();
+    // An exclude can only subtract. If candidate keys were drawn from the excludes too, the engine would fetch
+    // chunks no include contributes to — pure waste.
+    //
+    // The RESULT cannot show this: under mode 'all' the `operands.every(...)` filter is a second independent
+    // guard, and even a wrongly-admitted key returns null from an empty AND. Adding exclude keys to
+    // `candidates` therefore leaves the ids unchanged and only costs money — so this asserts on FETCHES.
+    const cold = new CountingCold();
+    const store = makeStore(cold);
     const [a, b, s] = [store.segment('a'), store.segment('b'), store.segment('s')];
     await a.addMany(spread([1]));
     await b.addMany(spread([1]));
     await s.addMany(spread([2, 3, 4])); // disjoint from the result entirely
+
+    cold.fetched = [];
     expect(await collect(a.intersect([b], { exclude: [s] }))).toEqual(spread([1]));
+    expect(cold.fetchedFor('a')).toBe(1); // positive control: the counter is live
+    expect(cold.fetchedFor('s')).toBe(0); // the claim: a disjoint suppression list is never touched
+  });
+
+  it('applies exclude on the UNION path too — the mode with no chunk-skipping', async () => {
+    // `union` accepts `exclude` and nothing exercised it. It is also the mode where a wrongly-admitted exclude
+    // key WOULD change the result, since 'any' has no second guard to catch it.
+    const cold = new CountingCold();
+    const store = makeStore(cold);
+    const [a, b, s] = [store.segment('a'), store.segment('b'), store.segment('s')];
+    await a.addMany(spread([1, 2]));
+    await b.addMany(spread([3]));
+    await s.addMany([...spread([2]), ...spread([9])]); // overlaps key 2; key 9 is in neither include
+
+    cold.fetched = [];
+    expect(await collect(a.union([b], { exclude: [s] }))).toEqual(spread([1, 3]));
+    expect(cold.fetchedFor('s')).toBe(1); // only key 2 — never key 9, which no include holds
+  });
+
+  it('union reads every chunk of every operand — the cost model it publishes', async () => {
+    // The file header calls this one of the two properties it exists to pin, and nothing asserted it. Union
+    // cannot prune: an id in ANY operand belongs to the result, so every operand is read at every key it holds.
+    const cold = new CountingCold();
+    const store = makeStore(cold);
+    const a = store.segment('a');
+    const b = store.segment('b');
+    await a.addMany(spread([1, 2, 3])); // 3 keys
+    await b.addMany(spread([3, 4])); // 2 keys, overlapping on one
+
+    cold.fetched = [];
+    await collect(a.union([b]));
+    expect(cold.fetchedFor('a')).toBe(3);
+    expect(cold.fetchedFor('b')).toBe(2);
   });
 
   it('union is budgeted like intersect, so a wide one is refused rather than billed', async () => {
@@ -221,21 +261,26 @@ describe('union / andNot / intersect(exclude)', () => {
     await expect(collect(a.andNot([]))).rejects.toThrow(/andNot requires/);
   });
 
-  it('keeps every id inside its own chunk — no cross-chunk bleed from in-place ops', async () => {
-    // `combineChunk` mutates the first operand's bitmap in place. If it ever mutated a cached/shared instance,
-    // the corruption would surface as ids appearing under the wrong chunk key. Round-tripping the split is a
-    // cheap standing check on that.
+  it('keeps every id inside its own chunk, and re-reads identically — operands are not consumed', async () => {
+    // REWRITTEN. The first version asserted `joinId(splitId(id)) === id` — an algebraic identity of
+    // `bit-route` that holds for every u32 no matter what the engine did — and then compared `union()` to
+    // `union()`. It had zero live assertions: replacing `union`'s body with an empty generator left it green.
+    //
+    // What it should check is that the output IS the expected set, and that the chunk keys present are
+    // exactly the ones written — that is what a cross-chunk bleed would disturb.
     const store = makeStore();
     const a = store.segment('a');
     const b = store.segment('b');
     const ids = spread([100, 200, 300], 5);
     await a.addMany(ids);
     await b.addMany(ids);
-    for (const id of await collect(a.union([b]))) {
-      const { chunkKey, remainder } = splitId(id);
-      expect(joinId(chunkKey, remainder)).toBe(id);
-    }
-    // ...and reading again must give the same answer (no operand was consumed or mutated).
-    expect(await collect(a.union([b]))).toEqual(await collect(a.union([b])));
+
+    const first = await collect(a.union([b]));
+    expect(first).toEqual(ids); // the actual set, not a self-comparison
+    expect([...new Set(first.map((id) => splitId(id).chunkKey))].sort((x, y) => x - y)).toEqual([
+      100, 200, 300,
+    ]);
+    // `combineChunk` mutates the first operand's chunk in place, so a second read must be unaffected.
+    expect(await collect(a.union([b]))).toEqual(ids);
   });
 });
