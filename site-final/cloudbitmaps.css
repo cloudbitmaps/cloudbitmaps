@@ -948,6 +948,19 @@ em {
   color: var(--cb-faint);
 }
 
+/* ── the payload markers ───────────────────────────────────────────────────────
+   Three markers, and the reader is meant to follow WHICH id went where — so this
+   is identity, not semantics, and the cyan-vs-neutral pairing that fixed /demo's
+   axis does not apply: all three are equally "the payload".
+
+   They were distinguished by hue alone, three stops of a blue-to-cyan ramp that
+   measured 31 apart in dark and 33 in light against a floor of 60. The whole ramp
+   only spans ~87, so no choice of three stops from it helps, and widening the ramp
+   would be a brand change to solve a legibility problem.
+
+   SHAPE instead: solid, hollow, diamond. Unmistakable at 9px, works for a reader
+   who cannot separate the two hues at all, and the colour stays as a second cue
+   rather than the only one. */
 .pk {
   width: 9px;
   height: 9px;
@@ -956,16 +969,22 @@ em {
   background: var(--cb-cyan);
 }
 
+/* 01 · solid */
 .pk.b1 {
   background: var(--cb-bit-1);
 }
 
+/* 02 · hollow. A 2px ring at 9px leaves a 5px void, which reads as clearly open. */
 .pk.b4 {
-  background: var(--cb-bit-4);
+  background: none;
+  border: 2px solid var(--cb-bit-4);
 }
 
+/* 03 · diamond. Scaled to 0.8 so the rotated diagonal stays inside the 9px pipe it
+   travels — a marker that pokes out of its own rail looks like a rendering fault. */
 .pk.b7 {
   background: var(--cb-bit-7);
+  transform: rotate(45deg) scale(0.8);
 }
 
 /* The pipes. Drawn permanently - direction is never inferred from motion,
