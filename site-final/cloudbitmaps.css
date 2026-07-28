@@ -496,6 +496,25 @@ em {
   color: var(--cb-cyan);
 }
 
+/* A row holding a label and its value, pushed to opposite edges. Without this the two
+   run together — `Storage drivers10` — which no contrast or overflow check can see,
+   because nothing is unreadable and nothing escapes its box. */
+.panel-row.is-pair {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.panel-row.is-pair > :first-child {
+  color: var(--cb-muted);
+}
+
+.panel-row.is-pair > :last-child {
+  color: var(--cb-ink);
+  text-align: right;
+}
+
 /* ── the trade: two halves, deliberately identical ───────────────────────────
    Same bezel, same 26px padding, same weight. The ONLY difference is that the left label is cyan and the
    right is muted. If a future change makes the right half a warning colour, or smaller, or moves it below the
@@ -2241,5 +2260,60 @@ em {
   .sout + .sout {
     border-left: 0;
     border-top: 1px solid var(--cb-rule-soft);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   FLAVOR STATUS — a WORD in a bezel, never a colour alone. Whether a package can
+   be installed today is the single most load-bearing fact in that table, and
+   encoding it in hue would put it out of reach of exactly the readers who most
+   need it unambiguous. The colour is a second cue; all three are AA text.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.status {
+  display: inline-block;
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: normal;
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.status.is-shipped {
+  color: var(--cb-cyan);
+}
+
+.status.is-coming {
+  color: var(--cb-warm);
+}
+
+/* Faint, deliberately: this row cannot be acted on, and it should not look like it
+   can. It is on the page for shape, not for choosing. */
+.status.is-spec {
+  color: var(--cb-faint);
+}
+
+/* The second line of a table's first cell — what the thing IS, under its name. */
+.row-sub {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cb-muted);
+}
+
+/* Four cards, two by two. Reuses `.limit` for the card itself rather than
+   declaring a near-identical box: same bezel, same padding, same label. */
+.matters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 900px) {
+  .matters {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

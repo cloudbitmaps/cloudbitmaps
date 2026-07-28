@@ -28,6 +28,7 @@
     "site:screenshots": "node scripts/site-screenshots.mjs",
     "site:replay": "node scripts/site-replay.cjs",
     "site:replay:check": "node scripts/site-replay.cjs --check",
+    "site:check": "python3 scripts/site-classes.py && python3 scripts/site-links.py",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:arch": "depcruise packages/core/src packages/roaring/src",
