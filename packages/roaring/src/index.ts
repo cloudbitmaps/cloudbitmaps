@@ -737,6 +737,32 @@ export class CloudRoaring {
  * applied one chunk at a time, so if a later chunk fails (e.g. {@link WriteConflictError} after retries)
  * earlier chunks are already applied. Within a single chunk the update is atomic.
  */
+/** Options common to every chunk-aligned combine (`intersect` / `union` / `andNot`). */
+export interface BaseCombineOptions {
+  /** Max chunk keys resolved concurrently — bounds the Cold footprint. A positive integer. */
+  readonly concurrency?: number;
+  /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
+  readonly budget?: BudgetOption;
+}
+
+/**
+ * A combine that can also subtract.
+ *
+ * `exclude` is why suppression does not need an intermediate segment: applied here it folds into the same
+ * chunk-aligned pass, and each exclude is read **only at the keys that survived** — so a large global opt-out
+ * list costs reads proportional to the audience, not to itself.
+ */
+export interface CombineOptions extends BaseCombineOptions {
+  /** Segments whose ids are subtracted from the result. */
+  readonly exclude?: Segment[];
+}
+
+/** {@link CombineOptions} plus the write batching used by the `*Into` variants. */
+export interface CombineIntoOptions extends CombineOptions {
+  /** Ids buffered per `addMany` while materializing into `dest`. */
+  readonly batchSize?: number;
+}
+
 export class Segment {
   private readonly metricsOn: boolean;
 
@@ -810,24 +836,93 @@ export class Segment {
    * up front, so total memory also carries each operand's Warm size — negligible under Topology-A.) Pass
    * `budget` to override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
    */
-  intersect(
-    others: Segment[],
-    options?: { concurrency?: number; budget?: BudgetOption },
-  ): AsyncIterable<number> {
-    return this.engine.intersect([this.ref, ...others.map((o) => o.ref)], options);
+  /**
+   * Map the facade's `Segment` handles in `exclude` down to the plain refs `core` takes. A method rather than
+   * a module function because `ref` is class-private — the encapsulation is worth more than the free function.
+   */
+  private refsIn(
+    options?: CombineIntoOptions,
+  ): (BaseCombineOptions & { batchSize?: number; exclude?: SegmentRef[] }) | undefined {
+    if (options === undefined) return undefined;
+    const { exclude, ...rest } = options;
+    return exclude === undefined ? rest : { ...rest, exclude: exclude.map((o) => o.ref) };
+  }
+
+  intersect(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+    return this.engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
   /**
-   * Materialize `this ∩ others…` **into** `dest` (added, not replaced). Streaming + bounded-memory, but
-   * **not atomic** across chunks — see {@link addMany}.
+   * Materialize `this ∩ others…` (minus `exclude`) **into** `dest` (added, not replaced). Streaming +
+   * bounded-memory, but **not atomic** across chunks — see {@link addMany}.
    */
-  intersectInto(
-    dest: Segment,
-    others: Segment[],
-    options?: { concurrency?: number; batchSize?: number },
-  ): Promise<void> {
+  intersectInto(dest: Segment, others: Segment[], options?: CombineIntoOptions): Promise<void> {
     return this.timed('intersectInto', () =>
-      this.engine.intersectInto(dest.ref, [this.ref, ...others.map((o) => o.ref)], options),
+      this.engine.intersectInto(
+        dest.ref,
+        [this.ref, ...others.map((o) => o.ref)],
+        this.refsIn(options),
+      ),
+    );
+  }
+
+  /**
+   * `this ∪ others…`, minus `options.exclude` — streamed ascending.
+   *
+   * **The one composite read with no chunk-skipping,** and that is inherent to union rather than a limitation
+   * here: an id in *any* operand belongs to the result, so every chunk of every operand must be read.
+   * `intersect` prunes any key missing from any operand; union has nothing to prune. It is charged against the
+   * same per-op budget, so a wide union is refused rather than quietly billed — pass `budget` to raise it
+   * deliberately. If you find yourself unioning the same segments on every read, materializing the combined
+   * segment once (`unionInto`, or a bulk-load rebuild) is the cheaper shape.
+   */
+  union(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+    return this.engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
+  }
+
+  /** Materialize `this ∪ others…` (minus `exclude`) **into** `dest`. **Not atomic** — see {@link addMany}. */
+  unionInto(dest: Segment, others: Segment[], options?: CombineIntoOptions): Promise<void> {
+    return this.timed('unionInto', () =>
+      this.engine.unionInto(
+        dest.ref,
+        [this.ref, ...others.map((o) => o.ref)],
+        this.refsIn(options),
+      ),
+    );
+  }
+
+  /**
+   * `this \ (excludes…)` — streamed ascending. Suppression on its own.
+   *
+   * Reads every chunk of `this` (any of them may survive the subtraction) but each exclude **only where it
+   * overlaps this segment**, so the cost tracks the segment being filtered rather than the size of the
+   * suppression list. Subtracting a 61,000-chunk global opt-out list from a narrow audience costs a handful of
+   * reads, not 61,000.
+   *
+   * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
+   * the suppression folds into the same pass rather than materializing an intermediate segment first.
+   */
+  andNot(excludes: Segment[], options?: BaseCombineOptions): AsyncIterable<number> {
+    return this.engine.andNot(
+      this.ref,
+      excludes.map((o) => o.ref),
+      options,
+    );
+  }
+
+  /** Materialize `this \ (excludes…)` **into** `dest`. **Not atomic** — see {@link addMany}. */
+  andNotInto(
+    dest: Segment,
+    excludes: Segment[],
+    options?: BaseCombineOptions & { batchSize?: number },
+  ): Promise<void> {
+    return this.timed('andNotInto', () =>
+      this.engine.andNotInto(
+        dest.ref,
+        this.ref,
+        excludes.map((o) => o.ref),
+        options,
+      ),
     );
   }
 

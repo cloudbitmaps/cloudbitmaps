@@ -23,7 +23,9 @@ export type MetricOpName =
   | 'removeMany'
   | 'has'
   | 'count'
-  | 'intersectInto';
+  | 'intersectInto'
+  | 'unionInto'
+  | 'andNotInto';
 
 /**
  * One observability event. A discriminated union on `kind` — new variants can be added over time without
@@ -69,8 +71,18 @@ export type MetricEvent =
     }
   | {
       readonly kind: 'intersect';
+      /**
+       * Which chunk-aligned combine this was. **Optional for backward compatibility** — absent means
+       * `'intersect'`, which is all this event reported before `union`/`andNot` existed.
+       *
+       * `skippedChunks` is only ever non-zero for `'intersect'` and `'andNot'`: union has to read every chunk
+       * of every operand, so there is nothing it can prune. A steady stream of `op: 'union'` events with
+       * `skippedChunks: 0` is the expected shape, not a regression.
+       */
+      readonly op?: 'intersect' | 'union' | 'andNot';
+      /** Operand count, including any `exclude` (suppression) operands. */
       readonly operands: number;
-      /** Shared **distinct** chunk-keys selected to fetch (present in every operand). */
+      /** Distinct chunk-keys selected to fetch (for `'intersect'`, those present in every operand). */
       readonly fetchedChunks: number;
       /**
        * **Distinct** chunk-keys pruned — never fetched (the chunk-skipping saving). Counts distinct keys,
