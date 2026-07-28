@@ -121,8 +121,8 @@ interface Snapshot {
 const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
 /**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
- * transient JS-side buffer to ~8 MB (numbers) irrespective of input size, while keeping batches large enough
- * that the per-id JS↔native crossing is amortised away.
+ * transient JS-side buffer to **~28 MB measured** irrespective of input size, while keeping batches large
+ * enough that the per-id JS↔native crossing is amortised away.
  */
 const BULK_FLUSH_IDS = 1 << 20;
 /**
@@ -602,8 +602,10 @@ export async function bulkLoadCrbmGeneration(
   // WHY THE BUFFER IS CAPPED. Bucketing *everything* first and inserting once per chunk at the end is faster
   // still, but it holds every remainder as a JS number before any bitmap compression happens — and with up to
   // 65,536 chunks in play that is unbounded in exactly the way this library refuses to be. So the buffer is
-  // flushed whenever the total pending count crosses `BULK_FLUSH_IDS`, bounding the extra memory to that many
-  // numbers (~8 MB) regardless of input size or key distribution, while still getting the batching win.
+  // flushed whenever the total pending count crosses `BULK_FLUSH_IDS`, bounding the extra memory regardless of
+  // input size or key distribution while still getting the batching win. That bound is **~28 MB measured** at
+  // 1M staged ids across ~65,000 chunks — not the ~8 MB a naive 8-bytes-per-number estimate gives, because the
+  // cost is dominated by per-array and Map overhead across tens of thousands of small arrays.
   const pendingByChunk = new Map<number, number[]>();
   let pending = 0;
   // Yield periodically, NOT per chunk — see {@link yieldEvery} for why per-unit async is a 7x regression here.

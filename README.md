@@ -340,7 +340,17 @@ available in this library, so it's worth thirty seconds:
 | Cost scales with | **the number of calls** | **chunks touched**, not ids | the segment's **compressed size** |
 | Writes to | warm tier (delta) | warm tier (deltas) | a fresh immutable cold generation + pointer flip |
 | Expresses a delta? | yes | yes | **no** — it replaces the whole segment |
+| Takes a stream? | — | **yes** — sync *or* async iterable | **yes** — sync *or* async iterable |
 | Reach for it when | one id changed — a user just qualified | you have a batch of ids in hand | you're building or refreshing a segment |
+
+Both batch entry points accept an **`AsyncIterable`**, so a database cursor goes straight in — no hand-batching
+`page → addMany(page)`. That is an ergonomic change only: ids are grouped by chunk and each chunk is written
+**exactly once** however long the stream, so streaming never costs more than passing an array.
+
+Which one to stream *into* is still the expensive decision, and it does not change with the stream length. If
+you are **amending** a segment, `addMany`. If you are **rebuilding** one — the 11M-row query that defines the
+whole segment — `bulkLoadCrbmGeneration`, because `addMany` would write one warm row per touched chunk (~61,000
+of them for ids spread across the id space) where bulk-load writes a single immutable object.
 
 #### Why batching matters so much
 

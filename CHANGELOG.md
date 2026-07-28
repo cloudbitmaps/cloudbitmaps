@@ -14,6 +14,25 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **`addMany`/`removeMany` accept an `AsyncIterable`**, so a database cursor streams straight in —
+  `addMany(athenaCursor())` instead of hand-batching `page → addMany(page)`. `bulkLoadCrbmGeneration` already
+  did; this closes the gap.
+  - **Streaming is an input-shape choice, never a cost choice.** Each chunk is written **exactly once** however
+    long the stream, so a stream costs no more backend writes than the equivalent array.
+  - That property is the whole design problem, and the obvious implementation destroys it. "Buffer N ids, flush
+    to the backend, repeat" bounds memory and, because ids arrive in arbitrary order, makes every flush touch
+    nearly every chunk again — an 11M-id stream at a 1M-id buffer would issue **11x** the round-trips of a
+    single pass. Instead the staging buffer folds into per-chunk **compressed bitmaps** and the backend is
+    touched once at the end. Measured: 5M pending ids occupy **11 MB as bitmaps against 212 MB as JS numbers**,
+    which is what makes writing-once affordable — and is *less* memory than the previous sync-only path used.
+  - This does not move the `addMany` ↔ `bulkLoad` crossover, and the guide now says so explicitly: both take a
+    stream, so the same cursor pipes into either, and streaming is exactly the situation in which it is easiest
+    to reach for the wrong one. Amending a segment is `addMany`; defining one is bulk-load.
+  - Internally a batch is now applied to a chunk's delta **set-wise** (`orInPlace`/`andNotInPlace`) rather than
+    id-by-id, so the adds/removes disjoint invariant is enforced by set algebra instead of by a loop.
+
 ### Fixed
 
 - **Bulk-load no longer blocks the event loop for the whole load.** `bulkLoadCrbmGeneration` was a single
