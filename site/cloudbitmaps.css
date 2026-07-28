@@ -2537,6 +2537,15 @@ a:focus-visible,
   overflow: hidden;
 }
 
+/* A carriage spanning the whole track, moved by `transform`. The handoff animates `left` here — the only
+   non-composited keyframe in the bundle — which costs a layout pass per packet per frame, and there are five
+   packets. Translating a full-width carriage is pixel-identical and the compositor handles it alone. */
+.carriage {
+  position: absolute;
+  inset: 0;
+  animation: cb-packet 4s linear infinite;
+}
+
 .packet {
   position: absolute;
   top: 0;
@@ -2545,30 +2554,35 @@ a:focus-visible,
   height: 9px;
   border-radius: 2px;
   background: var(--cb-cyan);
-  animation: cb-packet 4s linear infinite;
 }
 
-.packet.p2 {
-  background: var(--cb-bit-3);
+.carriage.p2 {
   animation-delay: 1.1s;
 }
 
-.packet.p3 {
-  background: var(--cb-bit-4);
+.carriage.p2 .packet {
+  background: var(--cb-bit-3);
+}
+
+.carriage.p3 {
   animation-delay: 0.5s;
 }
 
-.packet.p4 {
+.carriage.p3 .packet {
+  background: var(--cb-bit-4);
+}
+
+.carriage.p4 {
   animation-delay: 1.8s;
 }
 
-.packet.p5 {
+.carriage.p5 {
   animation-delay: 2.6s;
 }
 
 @keyframes cb-packet {
   0% {
-    left: 0;
+    transform: translateX(0);
     opacity: 0;
   }
   8% {
@@ -2578,7 +2592,7 @@ a:focus-visible,
     opacity: 1;
   }
   100% {
-    left: 100%;
+    transform: translateX(calc(100% - 9px));
     opacity: 0;
   }
 }
@@ -2720,8 +2734,8 @@ a:focus-visible,
     display: none;
   }
 
-  .packet {
-    left: 62%;
+  .carriage {
+    transform: translateX(62%);
   }
 
   /* The measure bars are the whole content of stage 03 — at their .02 start they are invisible, so with
