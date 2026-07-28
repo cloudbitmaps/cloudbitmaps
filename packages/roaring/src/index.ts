@@ -204,9 +204,18 @@ export interface CloudRoaringOptions {
    */
   readonly warmReadConsistency?: 'strong' | 'eventual';
   /**
-   * Max Warm chunk writes in flight per `addMany`/`removeMany` (the bounded flusher). Default **1** (serial —
-   * unchanged). Raise it to fan distinct-chunk writes out for throughput on wide multi-chunk batches; each
-   * chunk is its own OCC row so this is safe, and (as before) a mid-flush failure can leave a partial result.
+   * Max Warm chunk writes in flight per `addMany`/`removeMany` (the bounded flusher). Default **4**
+   * (`DEFAULT_WRITE_CONCURRENCY`); set it to `1` for strictly serial writes.
+   *
+   * Distinct chunks are independent OCC rows, so fanning them out cannot make them conflict with each other.
+   * The bound exists for the *backend*: a provisioned-capacity store answers a burst by throttling, and 4 stays
+   * comfortably inside what the transient-retry path absorbs (measured 8x below the first observed failure).
+   * Raise it if your backend is provisioned for the fan-out — on-demand DynamoDB, or a connection pool sized to
+   * match. A pool *smaller* than this needs no action: `pg` and `mysql2` both queue rather than reject, so the
+   * flusher simply degrades toward serial.
+   *
+   * As before, a mid-flush failure can leave a **partial result**; `addMany`/`removeMany` are not atomic. What
+   * concurrency changes is only how much of the batch may already have landed when the first error surfaces.
    */
   readonly writeConcurrency?: number;
   /**

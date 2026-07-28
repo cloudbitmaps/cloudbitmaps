@@ -37,6 +37,23 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   against 11 ms for a plain `for..of` over the same array — 55% of a whole load spent on iteration protocol
   rather than work. The two ingest paths are now separate.
 
+### Changed
+
+- **`writeConcurrency` now defaults to 4 instead of 1.** The bounded flusher behind `addMany`/`removeMany` was
+  serial by default, so a 100-chunk batch against a backend with ~10 ms round-trips spent a full second doing
+  nothing but waiting — one round-trip at a time, on work with no ordering requirement between chunks. Distinct
+  chunks are independent OCC rows.
+  - **The bound exists for the backend, not for correctness.** A provisioned-capacity store answers a burst by
+    throttling, which is free only while the transient-retry path absorbs it. Swept against a backend that
+    throttles on concurrent requests in flight (64 chunks, 5 trials, a lost id or surfaced error counting as a
+    failure): 4, 8 and 16 were clean at every capacity tested; the first failures appeared at **32** against a
+    capacity-1 backend. 4 sits 8x below that, leaving the headroom for the multiplier a single-call sweep
+    cannot show — many concurrent `addMany` calls sharing one backend.
+  - Set `writeConcurrency: 1` to restore the previous strictly-serial behaviour. `addMany`/`removeMany` remain
+    non-atomic either way; concurrency changes only *how much* of a batch may already have landed when the
+    first error surfaces, since the flusher stops scheduling on first failure but in-flight writes still settle.
+  - Exported as `DEFAULT_WRITE_CONCURRENCY`.
+
 ### Added
 
 - **`Clock.yieldNow?()`** — an optional member on the determinism seam meaning "hand the event loop back once",
