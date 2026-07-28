@@ -25,7 +25,7 @@
   --cb-muted: #9ba3ae;
   --cb-faint: #8a929e; /* labels are small, so this still has to pass AA — 6.2:1 on --cb-bg */
   --cb-signal: #176fff; /* borders, soft fills, the mark. NEVER under white text. */
-  --cb-signal-fill: #0f62e8; /* the only fill allowed under #fff at 13px/700 — #176fff gives just 4.42:1 */
+  --cb-signal-fill: #0f62e8; /* the only fill allowed under WHITE label text at 13px/700 — #176fff gives just 4.42:1 */
   --cb-cyan: #19c5f4;
   --cb-cyan-soft: rgba(25, 197, 244, 0.1);
   --cb-signal-soft: rgba(23, 111, 255, 0.1);
@@ -160,9 +160,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(244, 246, 248, 0.86);
-  backdrop-filter: saturate(1.2) blur(10px);
-  border-bottom: 1px solid var(--hair);
+  background: var(--cb-bg);
+  border-bottom: 1px solid var(--cb-rule);
 }
 .topbar-inner {
   max-width: var(--maxw);
@@ -171,12 +170,26 @@ body {
   display: flex;
   align-items: center;
   gap: 18px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 /* The nav takes the slack so the theme toggle sits hard right at every width. */
+/* The nav takes the slack so the toggle sits hard right, and it scrolls rather than wrapping the toggle onto a
+   second line — which is what a long nav plus `flex-wrap` was doing. */
 .topbar-inner .jump {
   margin-right: auto;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.topbar-inner .jump::-webkit-scrollbar {
+  display: none;
+}
+
+.topbar-inner .theme-toggle {
+  flex: 0 0 auto;
 }
 
 .brand {
@@ -209,24 +222,28 @@ nav.jump {
   margin-left: auto;
   display: flex;
   gap: 3px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
 }
 nav.jump a {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--muted);
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
   text-decoration: none;
   padding: 4px 8px;
-  border-radius: 0;
+  border-bottom: 0;
 }
+
 nav.jump a:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--cb-ink);
+  background: none;
 }
+
+/* The current page is ink and not a link — the nav states where you are rather than colouring it. */
 nav.jump a.active {
-  color: var(--accent);
+  color: var(--cb-ink);
 }
 
 /* ---------- buttons ---------- */
@@ -249,12 +266,17 @@ nav.jump a.active {
 .btn:active {
   transform: translateY(1px);
 }
+/* `--cb-signal-fill`, not `--cb-signal`: the latter gives white only 4.42:1, which fails AA at 13px/700. That
+   is the entire reason two signal tokens exist, and it is why the text here is literal white rather than a
+   theme token — on this fill, white is the accessible choice in both themes. */
 .btn-primary {
-  background: var(--accent);
-  color: #fff;
+  background: var(--cb-signal-fill);
+  border-color: var(--cb-signal-fill);
+  color: #ffffff;
 }
 .btn-primary:hover {
-  background: var(--accent-2);
+  background: var(--cb-signal);
+  border-color: var(--cb-signal);
 }
 .btn-ghost {
   background: transparent;
@@ -262,8 +284,8 @@ nav.jump a.active {
   border-color: var(--dark-line);
 }
 .btn-ghost:hover {
-  border-color: var(--on-dark-dim);
-  color: #fff;
+  border-color: var(--cb-ink);
+  color: var(--cb-ink);
 }
 .btn-ghost-light {
   background: var(--panel);
@@ -300,12 +322,9 @@ a {
 
 /* ---------- hero ---------- */
 .hero {
-  background: var(--dark);
-  color: var(--on-dark);
-  border-bottom: 1px solid var(--dark-line);
-  background-image:
-    radial-gradient(60% 120% at 12% 0%, rgba(217, 72, 15, 0.16), transparent 60%),
-    radial-gradient(50% 120% at 92% 10%, rgba(11, 110, 153, 0.2), transparent 60%);
+  background: var(--cb-bg);
+  color: var(--cb-ink);
+  border-bottom: 1px solid var(--cb-rule);
 }
 .hero-inner {
   max-width: var(--maxw);
@@ -326,15 +345,15 @@ h1 {
   letter-spacing: -0.025em;
   font-weight: 720;
   margin: 0 0 20px;
-  color: #f4f7fa;
+  color: var(--cb-ink);
   text-wrap: balance;
   max-width: 17ch;
 }
+/* Was a hot-orange → amber → blue gradient: the old tier ramp used as a brand colour, and the main reason the
+   mark looked pasted on. The lockup sets "Cloud" in ink and "Bitmaps" in cyan, so the headline does the same —
+   one accent word, no ramp anywhere near type. */
 h1 .roar {
-  color: transparent;
-  background: linear-gradient(96deg, #f58a4e, #e9c063 46%, #3fb6e0);
-  -webkit-background-clip: text;
-  background-clip: text;
+  color: var(--cb-cyan);
 }
 .lede {
   font-size: 19px;
@@ -344,7 +363,7 @@ h1 .roar {
   margin: 0 0 28px;
 }
 .lede strong {
-  color: #fff;
+  color: var(--cb-ink);
   font-weight: 620;
 }
 .hero-actions {
@@ -370,7 +389,7 @@ h1 .roar {
   font-family: var(--mono);
   font-size: 26px;
   font-weight: 600;
-  color: #fff;
+  color: var(--cb-cyan);
   font-variant-numeric: tabular-nums;
 }
 .hero-meta .l {
@@ -389,7 +408,7 @@ h1 .roar {
   font-family: var(--mono);
   font-size: 14px;
   background: var(--dark-2);
-  color: #e6edf4;
+  color: var(--cb-ink);
   border: 1px solid var(--dark-line);
   border-radius: 0;
   padding: 10px 16px;
@@ -464,7 +483,7 @@ hr.rule {
 .chip-hot {
   color: var(--hot);
   background: var(--hot-bg);
-  border-color: #efcdbc;
+  border-color: var(--cb-hot);
 }
 .chip-hot::before {
   background: var(--hot);
@@ -472,7 +491,7 @@ hr.rule {
 .chip-warm {
   color: var(--warm);
   background: var(--warm-bg);
-  border-color: #ead9b0;
+  border-color: var(--cb-warm);
 }
 .chip-warm::before {
   background: var(--warm);
@@ -480,7 +499,7 @@ hr.rule {
 .chip-cold {
   color: var(--cold);
   background: var(--cold-bg);
-  border-color: #bfd9e4;
+  border-color: var(--cb-cold);
 }
 .chip-cold::before {
   background: var(--cold);
@@ -508,22 +527,22 @@ hr.rule {
   white-space: pre;
 }
 .diagram .t-hot {
-  color: #f49161;
+  color: var(--cb-hot);
 }
 .diagram .t-warm {
-  color: #e2b257;
+  color: var(--cb-warm);
 }
 .diagram .t-cold {
-  color: #5cc0e6;
+  color: var(--cb-cold);
 }
 .diagram .t-dim {
   color: var(--on-dark-dim);
 }
 .diagram .t-accent {
-  color: #9aa0ff;
+  color: var(--cb-cyan);
 }
 .diagram .t-good {
-  color: #5fd39b;
+  color: var(--cb-cyan);
 }
 
 /* code */
@@ -532,7 +551,7 @@ figure.code-fig {
 }
 .code {
   background: var(--dark-2);
-  color: #d6dee8;
+  color: var(--cb-ink);
   padding: 18px 20px;
   border: 1px solid var(--dark-line);
   border-radius: 0;
@@ -566,28 +585,28 @@ figcaption .fdot {
   white-space: pre;
 }
 .code .c {
-  color: #6e7a88;
+  color: var(--cb-faint);
   font-style: italic;
 }
 .code .k {
-  color: #c792ea;
+  color: var(--cb-cyan);
 }
 .code .s {
-  color: #ecc48d;
+  color: var(--cb-muted);
 }
 .code .f {
-  color: #82aaff;
+  color: var(--cb-cyan);
 }
 .code .n {
-  color: #f78c6c;
+  color: var(--cb-muted);
 }
 
 /* inline code */
 code {
   font-family: var(--mono);
   font-size: 0.86em;
-  background: #eef0f3;
-  color: #2a2f3a;
+  background: var(--cb-surface-2);
+  color: var(--cb-ink);
   padding: 1px 5px;
   border-radius: 0;
   border: 1px solid var(--hair);
@@ -600,7 +619,7 @@ code {
 .footer code,
 .diagram code {
   background: rgba(255, 255, 255, 0.09);
-  color: #e7edf4;
+  color: var(--cb-ink);
   border-color: rgba(255, 255, 255, 0.16);
 }
 
@@ -653,10 +672,10 @@ code {
   background-image: radial-gradient(70% 120% at 100% 0%, rgba(11, 110, 153, 0.22), transparent 62%);
 }
 .crown .kicker {
-  color: #8fe0ff;
+  color: var(--cb-cyan);
 }
 .crown h3 {
-  color: #f4f7fa;
+  color: var(--cb-ink);
   margin-top: 0;
   font-size: 24px;
 }
@@ -675,7 +694,7 @@ code {
 }
 .card.dark-note {
   background: var(--accent-soft);
-  border-color: #d4d6ec;
+  border-color: var(--cb-rule);
 }
 .grid2 {
   display: grid;
@@ -840,7 +859,7 @@ table.status td .st {
 }
 
 .warnbox {
-  border: 1px solid #ead9b0;
+  border: 1px solid var(--cb-warm);
   background: var(--warm-bg);
   border-radius: 0;
   padding: 14px 18px;
@@ -863,9 +882,10 @@ table.status td .st {
 
 /* ---------- footer ---------- */
 .footer {
-  background: var(--dark);
-  color: var(--on-dark-dim);
-  margin-top: 64px;
+  background: var(--cb-surface);
+  color: var(--cb-faint);
+  border-top: 1px solid var(--cb-rule);
+  margin-top: 96px;
 }
 .footer-inner {
   max-width: var(--maxw);
@@ -880,7 +900,7 @@ table.status td .st {
   font-weight: 600;
 }
 .footer a {
-  color: #9aa0ff;
+  color: var(--cb-cyan);
   text-decoration: none;
 }
 .footer a:hover {
@@ -1630,4 +1650,28 @@ a:focus-visible,
   .hero-flavors h1 {
     font-size: 30px;
   }
+}
+
+/* The flavor's own row in the stack panel — the one layer a flavor replaces. */
+.panel-row.is-codec {
+  background: var(--cb-cyan-soft);
+}
+
+.panel-row.is-codec .k {
+  color: var(--cb-cyan);
+}
+
+/* The two new pages' footer is the same bar as everywhere else. */
+.foot {
+  background: var(--cb-surface);
+  border-top: 1px solid var(--cb-rule);
+  margin-top: 96px;
+  padding: 32px 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+.foot .wrap {
+  padding-top: 0;
+  padding-bottom: 0;
 }
