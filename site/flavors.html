@@ -49,7 +49,7 @@
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
-  <body>
+  <body class="page-flavors">
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
@@ -76,10 +76,10 @@
     <main class="wrap">
       <section class="hero-flavors">
         <div>
-          <p class="kicker">Flavors · one engine, pluggable codecs</p>
+          <p class="hero-kicker">Flavors · one engine, pluggable codecs</p>
           <h1>Pick the codec that matches your ids. The rest of the system is identical.</h1>
           <p class="prose">
-            <code>@cloudbitmaps/core</code> is codec-agnostic: tiering, chunk-skipping intersection,
+            <span class="pkg">@cloudbitmaps/core</span> is codec-agnostic: tiering, chunk-skipping intersection,
             compaction, encryption and the ten storage drivers live there and do not change. A flavor
             decides one thing — how a chunk of ids is represented on the wire and at rest. Choose on the
             shape of your id space, not on a benchmark.
@@ -110,7 +110,9 @@
 
       <section class="section">
         <div class="data-table-wrap">
-          <div class="label-strip">Choose one · scrolls horizontally on narrow screens</div>
+          <div class="label-strip label-split">
+            <span>Choose one</span><span>Scrolls horizontally on narrow screens</span>
+          </div>
           <div class="data-table-scroll">
             <table class="data-table table-flavors">
               <thead>
@@ -168,7 +170,10 @@
       </section>
 
       <section class="section">
-        <h2 class="section-head"><span class="section-num">01</span> Where the choice does <em>not</em> matter</h2>
+        <div class="slot-head">
+          <span class="slot-eyebrow" aria-hidden="true">↳</span>
+          <h2>Where the choice does <em>not</em> matter</h2>
+        </div>
         <div class="grid-3">
           <div class="panel panel-pad">
             <div class="panel-label">Cost</div>
@@ -206,52 +211,58 @@
         </div>
       </section>
 
+      <!-- No heading here, deliberately: the label strip names the section and the bezel holds both halves.
+           A second <h2> would announce a topic the two labels already state. -->
       <section class="section">
-        <h2 class="section-head"><span class="section-num">02</span> The engine underneath</h2>
-        <p class="prose">
-          Every flavor is a codec plugged into the same store. Swapping one is an import change and a
-          re-publish of your segments — the drivers, the tier policy, the compaction daemon and the on-disk
-          container format around the payload all stay put.
-        </p>
-        <div class="grid-2">
-          <div class="panel">
-            <div class="panel-label">The stack</div>
-            <div class="panel-rows">
-              <div class="panel-row is-codec">
-                <span class="k">codec · roaring</span><span class="v is-live">the flavor</span>
+        <div class="split-bezel">
+          <div class="split-cell">
+            <div class="cell-label">The engine underneath</div>
+            <p class="cell-prose">
+              Every flavor is a codec plugged into the same store. Swapping one is an import change and a
+              re-publish of your segments — the drivers, the tier policy, the compaction daemon and the on-disk
+              container format around the payload all stay put.
+            </p>
+            <!-- Three separate bezels rather than one panel with dividers: the layers are substitutable
+                 components, not rows of a single record. Only the codec layer is tinted, because it is the only
+                 one this page is asking you to choose. -->
+            <div class="stack">
+              <div class="stack-row is-codec">
+                <span class="stack-layer">codec</span><span class="stack-value">roaring</span
+                ><span class="stack-note">the flavor</span>
               </div>
-              <div class="panel-row">
-                <span class="k">core</span><span class="v">chunks · tiering · ∩ · compaction</span>
+              <div class="stack-row">
+                <span class="stack-layer">core</span
+                ><span class="stack-value">chunks · tiering · ∩ · compaction</span>
               </div>
-              <div class="panel-row">
-                <span class="k">drivers</span><span class="v">S3 · GCS · Azure · DynamoDB · Postgres …</span>
+              <div class="stack-row">
+                <span class="stack-layer">drivers</span
+                ><span class="stack-value">S3 · GCS · Azure · DynamoDB · Postgres …</span>
               </div>
             </div>
           </div>
-          <div class="panel">
-            <div class="panel-label">Switching flavor</div>
+          <div class="split-cell">
+            <div class="cell-label">Switching flavor</div>
             <pre class="code"><code><span class="c">// today</span>
 <span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="c">// when bitmap ships — same store, same drivers</span>
 <span class="k">import</span> { CloudBitset }  <span class="k">from</span> <span class="s">'@cloudbitmaps/bitmap'</span>;</code></pre>
+            <p class="cell-note">
+              Segments written by one codec are readable by that codec only — the container header names it, so
+              a mixed fleet fails loudly instead of silently.
+            </p>
           </div>
         </div>
-        <p class="table-caption">
-          Segments written by one codec are readable by that codec only — the container header names it, so a
-          mixed fleet fails loudly instead of silently.
-        </p>
       </section>
     </main>
 
     <footer class="foot">
-      <div class="wrap">
-        <p>
-          CloudBitmaps · distributed, cloud-native Roaring Bitmaps ·
-          <a href="flavors-roaring.html">/flavors/roaring</a> ·
-          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
-        </p>
-        <p class="foot-meta">Apache-2.0 · pre-1.0 v0.4.1</p>
+      <div class="foot-inner">
+        <span>CloudBitmaps · distributed, cloud-native Roaring Bitmaps</span>
+        <a href="flavors-roaring.html">/flavors/roaring</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        <span class="foot-meta">Apache-2.0 · pre-1.0 v0.4.1</span>
       </div>
     </footer>
     <script src="theme.js"></script>

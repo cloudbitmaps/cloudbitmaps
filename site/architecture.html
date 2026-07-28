@@ -315,6 +315,85 @@
               <p class="kicker">Milestone M2 · Topology-A</p>
               <h2>S3 cold &amp; the crown jewel: chunk-skipping intersection <span class="milestone-tag">serverless ∩</span></h2>
             </div>
+            <!-- The centrepiece: three synchronised views of one true statement — intersecting two
+                 2,000,000-id segments fetches only the ~100 shared chunks of 2,000, in 25.3 ms. Codec-
+                 independent, so it stays true when a second flavor ships. Each view answers a different
+                 question (which chunks · from which tier · prove it) and each holds a readable final frame
+                 under prefers-reduced-motion. -->
+            <div class="moat">
+              <figure class="moat-view">
+                <div class="moat-head">
+                  <span>A · Key-alignment sweep</span><span class="is-live">6s loop</span>
+                </div>
+                <!-- One cursor spans BOTH key rows, because the whole point is that the two lists are walked
+                     together: it is the alignment that decides, not either list alone. -->
+                <div class="moat-body is-sweep">
+                  <span class="sweep" aria-hidden="true"></span>
+                  <p class="keyrow-label">Segment A</p>
+                  <div class="keyrow" aria-hidden="true">
+                    <i class="lit b1"></i><i></i><i></i><i class="lit b2"></i><i></i><i></i><i></i
+                    ><i class="lit b3"></i><i></i><i></i><i></i><i></i><i class="lit b4"></i><i></i><i></i><i></i>
+                  </div>
+                  <p class="keyrow-label">Segment B</p>
+                  <div class="keyrow" aria-hidden="true">
+                    <i class="lit b1"></i><i></i><i></i><i class="lit b2"></i><i></i><i></i><i></i
+                    ><i class="lit b3"></i><i></i><i></i><i></i><i></i><i class="lit b4"></i><i></i><i></i><i></i>
+                  </div>
+                </div>
+                <figcaption class="moat-caption">
+                  A cursor walks both key lists once; only keys in <em>both</em> ignite. Answers “which
+                  chunks”.
+                </figcaption>
+              </figure>
+
+              <figure class="moat-view">
+                <div class="moat-head"><span>B · Tier lanes</span><span class="is-live">4s loop</span></div>
+                <div class="moat-body">
+                  <div class="lane">
+                    <span class="lane-label t-hot">Hot · RAM</span>
+                    <span class="lane-track" aria-hidden="true"
+                      ><i class="packet p1"></i><i class="packet p2"></i
+                    ></span>
+                  </div>
+                  <div class="lane">
+                    <span class="lane-label t-warm">Warm · deltas</span>
+                    <span class="lane-track" aria-hidden="true"><i class="packet p3"></i></span>
+                  </div>
+                  <div class="lane">
+                    <span class="lane-label t-cold">Cold · .crbm</span>
+                    <span class="lane-track" aria-hidden="true"
+                      ><i class="packet p4"></i><i class="packet p5"></i
+                    ></span>
+                  </div>
+                  <p class="moat-figures">
+                    <span>1,900 never requested</span><span class="is-live">100 / 2,000</span>
+                  </p>
+                </div>
+                <figcaption class="moat-caption">
+                  Where the bytes physically are, and how few of them move. Answers “from which tier”.
+                </figcaption>
+              </figure>
+
+              <figure class="moat-view">
+                <div class="moat-head">
+                  <span>C · Stepped trace</span><span class="is-live">7s loop</span>
+                </div>
+                <div class="moat-body">
+                  <ol class="trace">
+                    <li class="s1"><em>01</em> keys(A) ∩ keys(B) <b>→ 100 / 2,000</b></li>
+                    <li class="s2"><em>02</em> plan fetch <b>→ 1,900 skipped</b></li>
+                    <li class="s3"><em>03</em> merge warm deltas <b>→ 1 read</b></li>
+                    <li class="s4"><em>04</em> stream AND <b>→ 128 MiB window</b></li>
+                  </ol>
+                  <p class="trace-elapsed">
+                    <span class="trace-elapsed-label">Elapsed</span><span class="figure">25.3 ms</span>
+                  </p>
+                </div>
+                <figcaption class="moat-caption">
+                  Four auditable steps with the counters as payload. Answers “prove it”.
+                </figcaption>
+              </figure>
+            </div>
             <div class="prose">
               <p>
                 Phase 3 puts the cold tier on S3 (or any S3-compatible store like MinIO) and delivers
@@ -703,35 +782,6 @@
       </div>
     </footer>
 
-    <script>
-      (function () {
-        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-        var els = document.querySelectorAll('.phase, .card, .grid2, .diagram, .code-fig');
-        els.forEach(function (el) {
-          el.classList.add('reveal');
-        });
-        if (!('IntersectionObserver' in window)) {
-          els.forEach(function (el) {
-            el.classList.add('in');
-          });
-          return;
-        }
-        var io = new IntersectionObserver(
-          function (entries) {
-            entries.forEach(function (e) {
-              if (e.isIntersecting) {
-                e.target.classList.add('in');
-                io.unobserve(e.target);
-              }
-            });
-          },
-          { rootMargin: '0px 0px -8% 0px', threshold: 0.06 },
-        );
-        els.forEach(function (el) {
-          io.observe(el);
-        });
-      })();
-    </script>
     <!-- Cloudflare Web Analytics -->
     <script
       type="module"

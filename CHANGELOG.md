@@ -14,6 +14,29 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **The site adopts a designed visual language, and gains a `/flavors` hub and a `/flavors/roaring` page.** One
+  engine, pluggable codecs — the hub is a single choose-one table (including a *cost of choosing it* column), and
+  the flavor page is also the template a second flavor fills in. The library itself is untouched.
+  - Two themes, both **designed**: light is not an inversion — the mark's cyan cannot hold 4.5:1 on paper, so
+    both accents are re-picked for their ground. The toggle is applied before first paint, so there is no flash.
+  - Three explainers move and nothing else does: the chunk-skipping centrepiece on `/architecture` (three views
+    of one statement — which chunks · from which tier · prove it) and one codec animation per flavor page. Every
+    one holds a readable final frame, so `prefers-reduced-motion` loses the motion and none of the information.
+  - The **counter-case is staged as a peer of the pitch** throughout — "Use Redis instead." sits in the same grid
+    row, bezel, padding and weight as the cost figure, and the two crossover rows where a flat Redis node is
+    simply cheaper are in the same table at the same weight as the four rows above them. No alert colour
+    anywhere.
+
+### Fixed
+
+- **`llms.txt` had been advertising `v0.1.0` for three releases.** The site-version gate only read `*.html`, so
+  nothing caught it. Gate widened to every file that carries a version string.
+- **The site's reveal-on-scroll script is gone.** It held whole sections at `opacity: 0` until an
+  IntersectionObserver fired — invisible to anyone with JavaScript disabled, and it left the new
+  `/architecture` centrepiece blank in every static render.
+
 ## [0.4.1] - 2026-07-27
 
 A correctness release from **audit round 4** — four independent adversarial review passes over the 0.4.0 diff

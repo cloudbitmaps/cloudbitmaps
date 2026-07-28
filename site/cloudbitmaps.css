@@ -560,7 +560,19 @@ figure.code-fig {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
-figcaption {
+
+/* The install line sits directly on the panel it lives in — no second border, no second background. A nested
+   bezel inside a bezel reads as two things where there is one. */
+.code-install {
+  background: none;
+  border: 0;
+  padding: 16px;
+  font-size: 13px;
+}
+/* Scoped to `.code-fig`, deliberately. As a bare element selector this claimed every `<figcaption>` on the
+   site and set them in mono flex rows — which silently wrecked the centrepiece captions, whose figures came
+   later. A component's look belongs to the component's class. */
+.code-fig figcaption {
   font-family: var(--mono);
   font-size: 11.5px;
   letter-spacing: 0.05em;
@@ -574,7 +586,7 @@ figcaption {
   align-items: center;
   gap: 8px;
 }
-figcaption .fdot {
+.code-fig figcaption .fdot {
   width: 9px;
   height: 9px;
   border-radius: 0;
@@ -610,6 +622,16 @@ code {
   padding: 1px 5px;
   border-radius: 0;
   border: 1px solid var(--hair);
+}
+
+/* On the two designed pages inline mono is UNBOXED — a different family in ink, and nothing else. A bordered
+   chip inside a sentence reads as a control rather than a name. The four original pages keep their chips: they
+   inherit the tokens, not the components. */
+.page-flavors code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 0.9em;
 }
 
 /* inline code on dark surfaces (hero, crown, footer, diagrams) — subtle, so it reads as part of the
@@ -942,20 +964,6 @@ a:focus-visible,
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .reveal {
-    opacity: 0;
-    transform: translateY(14px);
-    transition:
-      opacity 0.6s ease,
-      transform 0.6s ease;
-  }
-  .reveal.in {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 /* ── Benchmarks (Phase 5c): the crossover chart + stats table ──────────────────────── */
 .bench-figure {
   margin: 0;
@@ -1081,6 +1089,14 @@ a:focus-visible,
   border-bottom: 1px solid var(--cb-rule);
 }
 
+/* A label strip with a second, right-aligned half — used where the strip both names the thing and states a
+   behaviour of it ("Choose one" · "Scrolls horizontally on narrow screens"). */
+.label-split {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .panel-rows {
   display: grid;
 }
@@ -1170,20 +1186,34 @@ a:focus-visible,
   border-bottom: 0;
 }
 
-.data-table .num {
+/* The figure is the thing the eye should land on in a data row, so it is larger than the prose around it and
+   cyan — cyan means "this is the number". On the crossover rows below it drops to ink, because there the
+   number is the comparison rather than the win. */
+.data-table td.num {
   font-family: var(--cb-font-mono);
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
+  color: var(--cb-cyan);
 }
 
-.data-table .verdict {
+.data-table th.num {
+  text-align: right;
+}
+
+.data-table td.verdict {
   font-family: var(--cb-font-mono);
   font-size: 10.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   text-align: right;
   white-space: nowrap;
+  color: var(--cb-cyan);
+}
+
+.data-table th.verdict {
+  text-align: right;
 }
 
 /*
@@ -1195,6 +1225,17 @@ a:focus-visible,
  */
 .data-table tr.is-crossover td {
   background: var(--cb-surface-2);
+}
+
+.data-table tr.is-crossover th {
+  background: var(--cb-surface-2);
+}
+
+/* Ink, not cyan: on these two rows the figure is the limit, not the win. That is the ONLY thing that changes —
+   same table, same type, same weight, same position. */
+.data-table tr.is-crossover td.num,
+.data-table tr.is-crossover td.verdict {
+  color: var(--cb-ink);
 }
 
 .pill {
@@ -1271,6 +1312,48 @@ a:focus-visible,
   gap: 20px;
 }
 
+/* Two cells sharing one bezel and one internal rule — the "panels butt against each other" rule, rather than
+   two floating cards with a gap between them. */
+.split-bezel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.split-cell {
+  padding: 24px;
+  min-width: 0;
+}
+
+.split-cell:first-child {
+  border-right: 1px solid var(--cb-rule);
+}
+
+.cell-label {
+  font-family: var(--cb-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+  margin-bottom: 14px;
+}
+
+.cell-prose {
+  margin: 0 0 16px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--cb-muted);
+  text-wrap: pretty;
+}
+
+.cell-note {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--cb-faint);
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1320,7 +1403,29 @@ a:focus-visible,
   align-items: start;
 }
 
+/* The page-level kicker is FAINT, not the signal blue that `.kicker` uses on the four original pages. There it
+   names a build phase and earns an accent; here it only describes the page. */
+.hero-kicker {
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+  margin: 0 0 18px;
+}
+
+/* A package name inside prose: mono at the surrounding size, in ink. No border — a bordered chip in running
+   text reads as a UI control rather than a name. */
+.pkg {
+  font-family: var(--cb-font-mono);
+  font-size: 15px;
+  color: var(--cb-ink);
+}
+
+/* No `max-width` here: the global h1 caps at 17ch, which is right for the four original pages' headlines and
+   wrong for this one — it forced a four-line wrap where the design sets three. */
 .hero-flavors h1 {
+  max-width: none;
   font-size: 52px;
   line-height: 1.02;
   font-weight: 700;
@@ -1333,37 +1438,130 @@ a:focus-visible,
   padding: 0 0 56px;
 }
 
-.section-head {
+/* A slot heading is an eyebrow and a title on one baseline. Deliberately NOT called `.section-head` — that
+   name is already a spacing <div> on the four original pages, and reusing it made the two classes fight over
+   padding, which is why these sections had twice the intended rhythm.
+
+   The eyebrow names the slot in the flavor template (CODEC, USAGE, NUMBERS) rather than numbering it. Numbers
+   appear in exactly two places on these pages, both of which are genuinely ordered: the template-contract
+   strip, and the enumerated caveats. */
+.slot-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 20px;
+}
+
+.slot-head h2 {
   font-size: 28px;
   line-height: 1.1;
   font-weight: 700;
   letter-spacing: -0.03em;
-  margin: 0 0 16px;
+  margin: 0;
 }
 
-/* Every section number is mono and cyan — the through-line that makes the page read as instrumented. */
-.section-num {
+.slot-head h2 em {
+  font-style: normal;
+  color: var(--cb-muted);
+}
+
+.slot-eyebrow {
   font-family: var(--cb-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
   color: var(--cb-cyan);
-  font-size: 0.6em;
-  letter-spacing: 0;
-  margin-right: 10px;
-  vertical-align: 0.2em;
+  flex: none;
 }
 
 .pkg-name {
   font-family: var(--cb-font-mono);
   font-size: 15px;
   font-weight: 700;
-  margin: 0 0 10px;
+  color: var(--cb-ink);
+}
+
+/* The breadcrumb states where you are in the hub-and-spoke, so the hub half is a link and the current spoke is
+   plain text rather than a link to itself. */
+.crumb {
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+  margin: 0 0 24px;
+}
+
+.crumb a {
+  color: var(--cb-muted);
+  border-bottom: 0;
+}
+
+.crumb a:hover {
+  color: var(--cb-ink);
+}
+
+/* Four independent readings off one instrument. Cells share their rules; nothing floats. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--cb-rule);
+}
+
+.stat {
+  padding: 14px 16px;
+  border-right: 1px solid var(--cb-rule-soft);
+  border-bottom: 1px solid var(--cb-rule-soft);
+}
+
+.stat:nth-child(2n) {
+  border-right: 0;
+}
+
+.stat:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.stat-label {
+  font-family: var(--cb-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+}
+
+.stat-value {
+  font-family: var(--cb-font-mono);
+  font-size: 22px;
+  margin-top: 5px;
+  color: var(--cb-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-value em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--cb-muted);
+}
+
+/* "npm audit signatures" is a command, not a measurement — it takes the label's size, not the figure's. */
+.stat-value.is-text {
+  font-size: 12px;
+  margin-top: 9px;
+  color: var(--cb-muted);
 }
 
 .pill-row,
 .chip-row {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 20px;
+  gap: 12px;
+  margin: 0 0 18px;
+}
+
+.chip-row {
+  gap: 6px;
 }
 
 .panel-pad {
@@ -1442,12 +1640,30 @@ a:focus-visible,
   margin-top: 20px;
 }
 
+/* The caveats live in the same kind of bezel as everything that quotes a figure — the point being that the
+   limits are published in the same furniture as the claims, not in smaller type below them. */
 .caveats {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  gap: 20px;
-  border-top: 1px solid var(--cb-rule);
-  padding-top: 20px;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.caveats-head {
+  padding: 24px;
+  border-right: 1px solid var(--cb-rule);
+}
+
+.caveats-head h2 {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.caveat-list {
+  padding: 24px 24px 24px 46px;
 }
 
 .caveats-intro {
@@ -1458,8 +1674,7 @@ a:focus-visible,
 
 .caveat-list {
   margin: 0;
-  padding-left: 22px;
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.58;
   color: var(--cb-muted);
 }
@@ -1504,59 +1719,83 @@ a:focus-visible,
 }
 
 /* --------------------------------------------------------------------------
-   The codec animation
+   The codec animation — slot 03 of a flavor page
    --------------------------------------------------------------------------
    Four stages on one 12s loop, offset 3s apart. The active stage sits at full opacity and the rest at .34, so
    the whole pipeline stays legible and only attention moves — there is no state in which information is
-   hidden. That is also what makes the reduced-motion stop (defined globally, above) safe: with animation off
-   every stage simply rests at its authored opacity and the figure still reads.
+   hidden. That is what makes the global reduced-motion stop lose the motion and none of the information:
+   with animation off every stage rests at its authored opacity and the figure still reads top to bottom.
 
-   Stages 01, 02 and 04 belong to the engine and are identical for every flavor. Only 03 differs, which is
-   exactly the thing the reader is choosing between — so adding the next flavor is filling one row. */
+   Keyframes are the handoff's verbatim. Stages 01, 02 and 04 belong to the engine and are identical for every
+   flavor; only 03 differs, which is exactly the thing the reader is choosing between — so adding the next
+   flavor is filling one row.
 
-.codec-anim {
+   The right-hand `.stage-rule` column is not decoration: it states the rule each stage applies, which is the
+   part a skeptic checks. It keeps a fixed width so the four rules line up as a readable column of their own. */
+
+.codec-figure {
   display: grid;
-  gap: 1px;
-  background: var(--cb-rule-soft);
+  grid-template-columns: minmax(0, 1fr) 320px;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
 }
 
-.codec-anim .stage {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
+.codec-main {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  align-items: baseline;
-  padding: 14px;
-  background: var(--cb-surface);
+  padding: 24px;
+  border-right: 1px solid var(--cb-rule);
+  min-width: 0;
+}
+
+.codec-anim {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 150px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--cb-rule-soft);
   opacity: 0.34;
   animation: cb-stage 12s ease-in-out infinite;
 }
 
-.codec-anim .stage-1 {
+.stage-3 {
+  align-items: start;
+}
+
+.stage-1 {
   animation-delay: 0s;
 }
 
-.codec-anim .stage-2 {
+.stage-2 {
   animation-delay: 3s;
 }
 
-.codec-anim .stage-3 {
+.stage-3 {
   animation-delay: 6s;
 }
 
-.codec-anim .stage-4 {
+.stage-4 {
   animation-delay: 9s;
 }
 
 @keyframes cb-stage {
   0%,
-  0.9% {
+  1% {
     opacity: 0.34;
   }
-  2%,
-  23% {
+  5%,
+  22% {
     opacity: 1;
   }
-  26%,
+  27%,
   100% {
     opacity: 0.34;
   }
@@ -1565,84 +1804,307 @@ a:focus-visible,
 .stage-num {
   font-family: var(--cb-font-mono);
   font-size: 10px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--cb-faint);
+  color: var(--cb-cyan);
 }
 
 .stage-body {
   display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: baseline;
-  font-size: 13px;
+  min-width: 0;
 }
 
-.stage-body code {
+.stage-body.is-measures {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.stage-rule {
   font-family: var(--cb-font-mono);
-  font-size: 12.5px;
-  border: 1px solid var(--cb-rule);
-  padding: 2px 7px;
-  color: var(--cb-ink);
-}
-
-.stage-body em {
-  font-style: normal;
-  font-size: 12px;
+  font-size: 10.5px;
+  line-height: 1.5;
   color: var(--cb-faint);
+  text-align: right;
 }
 
-.measure {
-  display: block;
-  width: 100%;
-  font-size: 12.5px;
-  color: var(--cb-muted);
+.mono-fig {
+  font-family: var(--cb-font-mono);
+  font-size: 13px;
+  color: var(--cb-ink);
+  font-variant-numeric: tabular-nums;
 }
 
-/* Track widths are proportional to the cost being compared, so the winner is legible before the label is. */
-.measure::after {
-  content: '';
-  display: block;
-  height: 4px;
-  margin-top: 5px;
-  background: var(--cb-rule);
-}
-
-.measure:nth-of-type(1)::after {
-  width: 75%;
-}
-
-.measure:nth-of-type(2)::after {
-  width: 33%;
-  background: var(--cb-cyan);
-}
-
-.measure:nth-of-type(3)::after {
-  width: 100%;
-}
-
-.measure.is-winner {
+.stage-body .arrow {
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
   color: var(--cb-cyan);
 }
 
+.chip {
+  font-family: var(--cb-font-mono);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--cb-rule);
+  color: var(--cb-muted);
+}
+
+.chip b {
+  font-weight: 400;
+  color: var(--cb-ink);
+}
+
+.slide-1,
+.slide-2 {
+  animation: cb-slide 12s ease-in-out infinite;
+}
+
+.slide-1 b,
+.slide-2 b {
+  color: var(--cb-cyan);
+}
+
+.slide-2 {
+  animation-delay: 0.25s;
+}
+
+@keyframes cb-slide {
+  0%,
+  4% {
+    transform: translateX(-6px);
+    opacity: 0.4;
+  }
+  12%,
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* The three candidate encodings, measured against each other. Track widths are authored in px and are
+   proportional to the byte cost being compared (18 / 8 / 24 KiB), so the winner is legible before its label
+   is read — the number and the length say the same thing. */
+.measure {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.measure-name {
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  color: var(--cb-muted);
+  width: 52px;
+  flex: none;
+}
+
+.measure-track {
+  height: 16px;
+  border: 1px solid var(--cb-rule);
+  position: relative;
+  overflow: hidden;
+  flex: none;
+}
+
+.measure-track.w-array {
+  width: 84px;
+}
+
+.measure-track.w-bitset {
+  width: 40px;
+}
+
+.measure-track.w-run {
+  width: 112px;
+}
+
+/* Each fill's texture encodes what the container actually stores: dashes for an array of 2-byte values, a
+   dense grid for a flat bitset, two solid blocks for runs with a gap between them. */
+.measure-track .fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left;
+  animation: cb-measure 12s ease-in-out infinite;
+}
+
+.fill-array {
+  background: repeating-linear-gradient(90deg, var(--cb-cyan) 0 3px, transparent 3px 9px);
+}
+
+.fill-bitset {
+  background: repeating-linear-gradient(90deg, var(--cb-cyan) 0 4px, var(--cb-cyan-soft) 4px 7px);
+}
+
+.fill-run {
+  background: linear-gradient(
+    90deg,
+    var(--cb-cyan) 0 34%,
+    transparent 34% 44%,
+    var(--cb-cyan) 44% 100%
+  );
+}
+
+@keyframes cb-measure {
+  0%,
+  50% {
+    transform: scaleX(0.02);
+  }
+  60%,
+  74% {
+    transform: scaleX(1);
+  }
+  80%,
+  100% {
+    transform: scaleX(0.02);
+  }
+}
+
+.measure-cost {
+  font-family: var(--cb-font-mono);
+  font-size: 10.5px;
+  color: var(--cb-muted);
+}
+
+.measure.is-winner .measure-cost {
+  color: var(--cb-ink);
+}
+
+.measure.is-winner .measure-cost b {
+  font-weight: 400;
+  color: var(--cb-cyan);
+}
+
+.measure:first-child .measure-cost {
+  color: var(--cb-cyan);
+}
+
+/* One segment, four adjacent containers, widths proportional to how much of it each type holds. */
+.containers {
+  display: flex;
+  gap: 3px;
+  align-items: stretch;
+  width: 100%;
+}
+
+.containers span {
+  height: 24px;
+  background: var(--cb-cyan-soft);
+  border: 1px solid var(--cb-cyan);
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  color: var(--cb-cyan);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.codec-note {
+  margin: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--cb-rule-soft);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--cb-muted);
+  text-wrap: pretty;
+}
+
+.codec-side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+}
+
+.split-map {
+  margin: 8px 0 0;
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cb-muted);
+}
+
+.split-map b {
+  font-weight: 400;
+  color: var(--cb-ink);
+}
+
+.split-map .indent {
+  margin-left: 66px;
+  display: inline-block;
+}
+
+.codec-side-block {
+  border-top: 1px solid var(--cb-rule-soft);
+  padding-top: 16px;
+}
+
+.codec-side-prose {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.58;
+  color: var(--cb-muted);
+}
+
+.codec-side-prose em {
+  font-style: normal;
+  color: var(--cb-ink);
+}
+
+.codec-side-link {
+  font-family: var(--cb-font-mono);
+  font-size: 11.5px;
+  margin-top: auto;
+}
+
 @media (max-width: 900px) {
-  .hero-flavors,
-  .caveats {
+  .codec-figure {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .codec-main {
+    border-right: 0;
+    border-bottom: 1px solid var(--cb-rule);
+  }
+  /* The rule column stops being a column: it moves under the body and stays left-aligned with it, because at
+     this width a 150px right-aligned strip would be two words per line. */
+  .stage {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+  .stage-rule {
+    grid-column: 2;
+    text-align: left;
+  }
+  .stage-rule br {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero-flavors {
     grid-template-columns: minmax(0, 1fr);
     gap: 32px;
+  }
+
+  .caveats,
+  .split-bezel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .caveats-head,
+  .split-cell:first-child {
+    border-right: 0;
+    border-bottom: 1px solid var(--cb-rule);
   }
 
   .hero-flavors h1 {
     font-size: 36px;
   }
 
-  .section-head {
+  .slot-head h2 {
     font-size: 24px;
-  }
-
-  .codec-anim .stage {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
   }
 }
 
@@ -1652,13 +2114,48 @@ a:focus-visible,
   }
 }
 
-/* The flavor's own row in the stack panel — the one layer a flavor replaces. */
-.panel-row.is-codec {
+/* The layer stack. Three SEPARATE bezels with a 3px gap, not rows of one panel: these are substitutable
+   components, and the gap is what says so. Only the codec layer is tinted, because it is the only one this page
+   asks you to choose. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stack-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--cb-rule);
+  padding: 10px 12px;
+  font-family: var(--cb-font-mono);
+}
+
+.stack-row.is-codec {
   background: var(--cb-cyan-soft);
 }
 
-.panel-row.is-codec .k {
+.stack-layer {
+  font-size: 11px;
+  color: var(--cb-muted);
+  width: 74px;
+  flex: none;
+}
+
+.stack-row.is-codec .stack-layer {
   color: var(--cb-cyan);
+}
+
+.stack-value {
+  font-size: 12px;
+  color: var(--cb-ink);
+}
+
+.stack-note {
+  font-size: 10.5px;
+  color: var(--cb-faint);
+  margin-left: auto;
 }
 
 /* The two new pages' footer is the same bar as everywhere else. */
@@ -1674,4 +2171,438 @@ a:focus-visible,
 .foot .wrap {
   padding-top: 0;
   padding-bottom: 0;
+}
+
+/* One line, mono, everything baseline-aligned; the licence/version is pushed hard right. */
+.foot-inner {
+  max-width: var(--cb-measure);
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+}
+
+.foot-inner > span:first-child {
+  color: var(--cb-muted);
+}
+
+.foot-inner .foot-meta {
+  margin-left: auto;
+}
+
+/* ==========================================================================
+   The centrepiece — chunk-skipping intersection over tiered storage
+   ==========================================================================
+   Three views of ONE true statement: intersecting two 2,000,000-id segments fetches only the ~100 shared chunks
+   of 2,000, in 25.3 ms. Codec-independent, so it stays true when a second flavor ships — which is why it lives
+   here on /architecture and not on a flavor page.
+
+   Each view answers a different question and says so in its own caption: which chunks · from which tier ·
+   prove it. Keyframes are the handoff's verbatim. Every view holds a readable final frame with animation off —
+   lit cells stay lit, packets rest mid-lane, trace rows stay legible, the measure of the claim survives — which
+   is what makes the global prefers-reduced-motion stop lose the motion and none of the meaning. */
+
+.moat {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  margin: 24px 0 32px;
+}
+
+.moat-view {
+  margin: 0;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+  display: flex;
+  flex-direction: column;
+}
+
+.moat-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  font-family: var(--cb-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+}
+
+.moat-head .is-live {
+  color: var(--cb-cyan);
+}
+
+.moat-body {
+  padding: 18px 16px;
+  flex: 1;
+}
+
+/* The caption is a peer of the figure, not a footnote inside it: pinned to the bottom edge behind its own
+   rule, so the three answers line up across the row and read as a set. */
+.moat-caption {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--cb-rule-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--cb-muted);
+}
+
+.moat-caption em {
+  font-style: normal;
+  color: var(--cb-ink);
+}
+
+/* ── View A · key-alignment sweep ──────────────────────────────────────────
+   One cursor spans BOTH key rows. That is the argument: neither list decides alone, the alignment does. */
+
+.moat-body.is-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  opacity: 0.7;
+  background: linear-gradient(var(--cb-cyan), transparent);
+  animation: cb-scan 6s linear infinite;
+}
+
+@keyframes cb-scan {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.keyrow-label {
+  margin: 0 0 7px;
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+}
+
+.keyrow {
+  display: grid;
+  grid-template-columns: repeat(16, 1fr);
+  gap: 3px;
+}
+
+.keyrow + .keyrow-label {
+  margin-top: 14px;
+}
+
+.keyrow i {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--cb-rule);
+}
+
+/* The mark's bits used as what they are — a sequential ordinal scale over chunk keys, never decoration. The
+   two rows share colours position-for-position, which is how a reader sees that these are the SAME keys. */
+.keyrow i.lit {
+  animation: cb-bit 6s ease-in-out infinite;
+}
+
+.keyrow i.b1 {
+  background: var(--cb-bit-1);
+  animation-delay: 0.4s;
+}
+
+.keyrow i.b2 {
+  background: var(--cb-bit-3);
+  animation-delay: 1.3s;
+}
+
+.keyrow i.b3 {
+  background: var(--cb-bit-5);
+  animation-delay: 2.4s;
+}
+
+.keyrow i.b4 {
+  background: var(--cb-bit-7);
+  animation-delay: 3.6s;
+}
+
+@keyframes cb-bit {
+  0%,
+  12% {
+    opacity: 0.16;
+    transform: scale(0.86);
+  }
+  22%,
+  66% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  80%,
+  100% {
+    opacity: 0.16;
+    transform: scale(0.86);
+  }
+}
+
+/* ── View B · tier lanes ───────────────────────────────────────────────────
+   A lane is a bezel with the tier named inside it, so a packet is unambiguously *in* a tier rather than
+   floating beside a legend. */
+
+.lane {
+  height: 34px;
+  border: 1px solid var(--cb-rule);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+}
+
+.lane + .lane {
+  margin-top: 9px;
+}
+
+.lane-label {
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  flex: none;
+}
+
+.lane-label.t-hot {
+  color: var(--cb-hot);
+}
+
+.lane-label.t-warm {
+  color: var(--cb-warm);
+}
+
+.lane-label.t-cold {
+  color: var(--cb-cold);
+}
+
+.lane-track {
+  position: relative;
+  flex: 1;
+  height: 9px;
+  overflow: hidden;
+}
+
+.packet {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--cb-cyan);
+  animation: cb-packet 4s linear infinite;
+}
+
+.packet.p2 {
+  background: var(--cb-bit-3);
+  animation-delay: 1.1s;
+}
+
+.packet.p3 {
+  background: var(--cb-bit-4);
+  animation-delay: 0.5s;
+}
+
+.packet.p4 {
+  animation-delay: 1.8s;
+}
+
+.packet.p5 {
+  animation-delay: 2.6s;
+}
+
+@keyframes cb-packet {
+  0% {
+    left: 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+.moat-figures {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding-top: 5px;
+  margin-top: 9px;
+  border-top: 1px solid var(--cb-rule-soft);
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  color: var(--cb-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.moat-figures .is-live {
+  color: var(--cb-cyan);
+}
+
+/* ── View C · stepped trace ────────────────────────────────────────────────
+   The near-static view, and the one a skeptic can audit line by line: four steps, each with the counter it
+   produced. It is also what the other two views reduce to when motion is off. */
+
+.trace {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  color: var(--cb-muted);
+}
+
+.trace li {
+  animation: cb-row 7s ease-in-out infinite;
+}
+
+.trace li em {
+  font-style: normal;
+  color: var(--cb-cyan);
+}
+
+.trace li b {
+  font-weight: 400;
+  color: var(--cb-ink);
+}
+
+.trace li.s1 {
+  animation-delay: 0s;
+}
+
+.trace li.s2 {
+  animation-delay: 0.9s;
+}
+
+.trace li.s3 {
+  animation-delay: 1.8s;
+}
+
+.trace li.s4 {
+  animation-delay: 2.7s;
+}
+
+@keyframes cb-row {
+  0%,
+  8% {
+    opacity: 0.2;
+  }
+  20%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.2;
+  }
+}
+
+.trace-elapsed {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 9px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--cb-rule-soft);
+}
+
+.trace-elapsed-label {
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
+}
+
+.trace-elapsed .figure {
+  margin: 0;
+  font-family: var(--cb-font-mono);
+  font-size: 19px;
+  color: var(--cb-cyan);
+  font-variant-numeric: tabular-nums;
+  animation: cb-tick 7s ease-in-out infinite;
+}
+
+@keyframes cb-tick {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/*
+ * With motion off, a cell that rests at .16 opacity would read as "not part of the answer" — the opposite of
+ * what the figure says. So every animated element is pinned to its INFORMATIVE final state, not its start.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .keyrow i.lit,
+  .trace li,
+  .stage,
+  .slide-1,
+  .slide-2 {
+    opacity: 1;
+  }
+
+  .keyrow i.lit {
+    transform: scale(1);
+  }
+
+  .sweep {
+    display: none;
+  }
+
+  .packet {
+    left: 62%;
+  }
+
+  /* The measure bars are the whole content of stage 03 — at their .02 start they are invisible, so with
+     motion off they rest fully drawn. The comparison is then made by the three authored track widths, which
+     is how the figure argues even when nothing moves. */
+  .measure-track .fill {
+    transform: scaleX(1);
+  }
+
+  .slide-1,
+  .slide-2 {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .moat {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

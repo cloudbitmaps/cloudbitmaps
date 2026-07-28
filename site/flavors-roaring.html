@@ -49,7 +49,7 @@
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
-  <body>
+  <body class="page-flavors">
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand flavor-lockup" href="index.html"
@@ -77,9 +77,11 @@
       <!-- 01 IDENTITY — authored per flavor -->
       <section class="hero-flavors">
         <div>
-          <p class="kicker"><a href="flavors.html">Flavors</a> / Roaring</p>
-          <p class="pkg-name"><code>@cloudbitmaps/roaring</code></p>
+          <p class="crumb"><a href="flavors.html">Flavors</a> / Roaring</p>
+          <!-- Name and provenance on one line: what it is called, what version shipped, its licence, and how
+               the release was signed. Someone deciding whether to install this reads all four together. -->
           <p class="pill-row">
+            <span class="pkg-name">@cloudbitmaps/roaring</span>
             <span class="pill pill-shipped">Shipped 0.4.1</span>
             <span class="pill">Apache-2.0</span>
             <span class="pill">OIDC + SLSA</span>
@@ -98,22 +100,33 @@
         <aside class="panel">
           <div class="panel-label">Install</div>
           <pre class="code code-install"><code><span class="c">$</span> npm i @cloudbitmaps/roaring</code></pre>
-          <div class="panel-rows">
-            <div class="panel-row"><span class="k">Runtime deps</span><span class="v">1</span></div>
-            <div class="panel-row">
-              <span class="k">Cloud SDKs</span><span class="v">0 <em>optional peers</em></span>
+          <!-- Four cells rather than four rows: these are independent readings off one instrument, not a list.
+               The 2x2 also puts the two numbers that matter most (deps, SDKs) on the same line. -->
+          <div class="stat-grid">
+            <div class="stat">
+              <div class="stat-label">Runtime deps</div>
+              <div class="stat-value">1</div>
             </div>
-            <div class="panel-row"><span class="k">Drivers</span><span class="v">10</span></div>
-            <div class="panel-row">
-              <span class="k">Verify</span><span class="v">npm audit signatures</span>
+            <div class="stat">
+              <div class="stat-label">Cloud SDKs</div>
+              <div class="stat-value">0 <em>optional peers</em></div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Drivers</div>
+              <div class="stat-value">10</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Verify</div>
+              <div class="stat-value is-text">npm audit signatures</div>
             </div>
           </div>
         </aside>
       </section>
 
-      <!-- 02 THE TRADE — one box, split by a single shared rule. The right column is NOT a warning. -->
+      <!-- SLOT 02 · the trade. No heading, deliberately: the two label strips ARE the heading, and the
+           columns are identical in bezel, padding and type. The only difference is that the left strip is cyan
+           and the right is muted. Restyling the right column as a warning would invert the whole point. -->
       <section class="section">
-        <h2 class="section-head"><span class="section-num">02</span> The trade</h2>
         <div class="split-box">
           <div class="split-half">
             <div class="panel-label label-take">Take this flavor when</div>
@@ -139,65 +152,130 @@
 
       <!-- 03 CODEC ANIMATION — the only animation on a flavor page, and it explains only the codec. -->
       <section class="section">
-        <h2 class="section-head">
-          <span class="section-num">03</span> Codec · how a chunk picks its representation
-        </h2>
+        <div class="slot-head">
+          <span class="slot-eyebrow">Codec</span>
+          <h2>How a chunk picks its representation</h2>
+        </div>
         <p class="prose">
           This is the only animation on a flavor page, and it explains only the codec — the tiering and
           chunk-skipping story lives once, on <a href="architecture.html">/architecture</a>, because it is
           codec-independent. A second flavor drops its own version into this slot and changes nothing else.
         </p>
-        <div class="panel">
-          <div class="panel-label">Encode · write path <span class="label-right">12s loop · 4 stages</span></div>
-          <div class="codec-anim">
-            <div class="stage stage-1">
-              <span class="stage-num">01 Split</span>
-              <span class="stage-body"
-                ><code>1,234,567,890</code> → <code>key 0x4996</code> <code>rem 0x02D2</code>
-                <em>16 bits + 16 bits</em></span
-              >
+        <!-- Four stages on one 12s loop, 3s apart. Every stage rests at .34 rather than hiding, so the whole
+             pipeline is always readable and only attention moves — which is what makes the global
+             reduced-motion stop lose the motion and none of the information. The right-hand column is not
+             decoration: it carries the rule each stage is applying. -->
+        <div class="codec-figure">
+          <div class="codec-main">
+            <div class="panel-label">
+              Encode · write path <span class="label-right is-live">12s loop · 4 stages</span>
             </div>
-            <div class="stage stage-2">
-              <span class="stage-num">02 Group</span>
-              <span class="stage-body"
-                ><code>0x0000 · 2 ids</code> <code>0x0001 · 61,904 ids</code>
-                <code>0x4996 · 9,001 ids</code> <em>one chunk = 2¹⁶ ids</em></span
-              >
+            <div class="codec-anim">
+              <div class="stage stage-1">
+                <span class="stage-num">01 Split</span>
+                <span class="stage-body">
+                  <span class="mono-fig">1,234,567,890</span>
+                  <span class="arrow">→</span>
+                  <span class="chip slide-1">key <b>0x4996</b></span>
+                  <span class="chip slide-2">rem <b>0x02D2</b></span>
+                </span>
+                <span class="stage-rule">16 bits + 16 bits</span>
+              </div>
+              <div class="stage stage-2">
+                <span class="stage-num">02 Group</span>
+                <span class="stage-body">
+                  <span class="chip">0x0000 · <b>2 ids</b></span>
+                  <span class="chip">0x0001 · <b>61,904 ids</b></span>
+                  <span class="chip">0x4996 · <b>9,001 ids</b></span>
+                </span>
+                <span class="stage-rule">one chunk = 2¹⁶ ids</span>
+              </div>
+              <div class="stage stage-3">
+                <span class="stage-num">03 Choose</span>
+                <span class="stage-body is-measures">
+                  <span class="measure">
+                    <span class="measure-name">array</span>
+                    <span class="measure-track w-array" aria-hidden="true"
+                      ><i class="fill fill-array"></i
+                    ></span>
+                    <span class="measure-cost">18 KiB — 2 B × 9,001</span>
+                  </span>
+                  <span class="measure is-winner">
+                    <span class="measure-name">bitset</span>
+                    <span class="measure-track w-bitset" aria-hidden="true"
+                      ><i class="fill fill-bitset"></i
+                    ></span>
+                    <span class="measure-cost">8 KiB — flat, always <b>← winner</b></span>
+                  </span>
+                  <span class="measure">
+                    <span class="measure-name">run</span>
+                    <span class="measure-track w-run" aria-hidden="true"
+                      ><i class="fill fill-run"></i
+                    ></span>
+                    <span class="measure-cost">24 KiB — 4 B × 6,102 runs</span>
+                  </span>
+                </span>
+                <span class="stage-rule">smallest encoding wins,<br />per chunk, on write</span>
+              </div>
+              <div class="stage stage-4">
+                <span class="stage-num">04 Store</span>
+                <span class="stage-body">
+                  <!-- Widths are proportional to how much of a real segment each container type holds, so the
+                       mix reads before the labels do. -->
+                  <span class="containers" aria-hidden="true">
+                    <span style="flex: 2">ARR</span>
+                    <span style="flex: 5">BITSET</span>
+                    <span style="flex: 3">RUN</span>
+                    <span style="flex: 2">ARR</span>
+                  </span>
+                </span>
+                <span class="stage-rule">one segment,<br />mixed containers</span>
+              </div>
             </div>
-            <div class="stage stage-3">
-              <span class="stage-num">03 Choose</span>
-              <span class="stage-body">
-                <span class="measure"><code>array</code> 18 KiB — 2 B × 9,001</span>
-                <span class="measure is-winner"><code>bitset</code> 8 KiB — flat, always ← winner</span>
-                <span class="measure"><code>run</code> 24 KiB — 4 B × 6,102 runs</span>
-                <em>smallest encoding wins, per chunk, on write</em>
-              </span>
-            </div>
-            <div class="stage stage-4">
-              <span class="stage-num">04 Store</span>
-              <span class="stage-body"
-                ><code>ARR</code> <code>BITSET</code> <code>RUN</code> <code>ARR</code>
-                <em>one segment, mixed containers</em></span
-              >
-            </div>
+            <p class="codec-note">
+              No configuration, no hint, no tuning knob — the container is decided per chunk by whichever
+              encoding measures smallest. A real segment routinely holds all three at once, and the chunk key
+              above the payload is what lets two segments intersect without downloading either.
+            </p>
           </div>
+          <aside class="codec-side">
+            <div>
+              <div class="panel-label">Id split</div>
+              <p class="split-map">
+                id &lt; 2³² <span class="is-live">→</span> chunkKey <b>16-bit</b><br /><span class="indent"
+                  >remainder <b>16-bit</b></span
+                >
+              </p>
+            </div>
+            <div class="codec-side-block">
+              <div class="panel-label">Why it matters here</div>
+              <p class="codec-side-prose">
+                The chunk key is what makes intersection cheap across tiers: two segments only exchange chunks
+                whose keys appear in both. The codec decides the bytes <em>inside</em> a chunk; the key
+                alignment is the engine's.
+              </p>
+            </div>
+            <a class="codec-side-link" href="architecture.html#p3">See the tiered ∩ animation →</a>
+          </aside>
         </div>
-        <p class="table-caption">
-          No configuration, no hint, no tuning knob — the container is decided per chunk by whichever encoding
-          measures smallest. A real segment routinely holds all three at once, and the chunk key above the
-          payload is what lets two segments intersect without downloading either.
-          <a href="architecture.html">See the tiered ∩ animation →</a>
-        </p>
       </section>
 
       <!-- 04 USAGE — authored per flavor -->
       <section class="section" id="usage">
-        <h2 class="section-head">
-          <span class="section-num">04</span> Usage · zero setup, in-memory in six lines
-        </h2>
+        <div class="slot-head">
+          <span class="slot-eyebrow">Usage</span>
+          <h2>Zero setup: in-memory in six lines</h2>
+        </div>
+        <p class="prose">
+          A store is wired to a warm driver for live mutations and a cold source for the immutable archive. The
+          in-memory drivers need no setup — swap in the S3 and DynamoDB drivers later and the code above them
+          does not change.
+        </p>
         <div class="grid-2 grid-usage">
           <div class="panel">
-            <div class="panel-label">quickstart.ts</div>
+            <div class="panel-label label-split">
+              <span>quickstart.ts</span><span>Same API in production</span>
+            </div>
             <pre class="code"><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
@@ -237,18 +315,14 @@
             </div>
           </div>
         </div>
-        <p class="table-caption">
-          A store is wired to a warm driver for live mutations and a cold source for the immutable archive. The
-          in-memory drivers need no setup — swap in the S3 and DynamoDB drivers later and the code above them
-          does not change.
-        </p>
       </section>
 
       <!-- 05 NUMBERS — engine-level, identical across flavors -->
       <section class="section">
-        <h2 class="section-head">
-          <span class="section-num">05</span> Numbers · what it costs, and where it stops paying
-        </h2>
+        <div class="slot-head">
+          <span class="slot-eyebrow">Numbers</span>
+          <h2>What it costs, and where it stops paying</h2>
+        </div>
         <p class="prose">
           Measured on real S3 + DynamoDB in <code>us-east-1</code> — not an emulator — with DynamoDB capacity
           taken from AWS's own <code>ConsumedCapacity</code>. Every anchor below is asserted in CI: a
@@ -315,13 +389,13 @@
 
       <!-- 06 CAVEATS — engine-level, identical across flavors, verbatim -->
       <section class="section">
-        <h2 class="section-head">
-          <span class="section-num">06</span> What these numbers do not establish
-        </h2>
         <div class="caveats">
-          <p class="caveats-intro">
-            Published on every page that quotes a figure, in the same panel as the figure.
-          </p>
+          <div class="caveats-head">
+            <h2>What these numbers do not establish</h2>
+            <p class="caveats-intro">
+              Published on every page that quotes a figure, in the same panel as the figure.
+            </p>
+          </div>
           <ol class="caveat-list">
             <li>
               <strong>Published rates × wire-metered ops — not a cloud bill.</strong> Request tiers and
@@ -366,13 +440,12 @@
     </main>
 
     <footer class="foot">
-      <div class="wrap">
-        <p>
-          <code>@cloudbitmaps/roaring</code> · 0.4.1 · Apache-2.0 ·
-          <a href="flavors.html">All flavors</a> ·
-          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
-        </p>
-        <p class="foot-meta">Published tokenlessly via OIDC · SLSA provenance</p>
+      <div class="foot-inner">
+        <span>@cloudbitmaps/roaring · 0.4.1 · Apache-2.0</span>
+        <a href="flavors.html">All flavors</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        <span class="foot-meta">Published tokenlessly via OIDC · SLSA provenance</span>
       </div>
     </footer>
     <script src="theme.js"></script>
