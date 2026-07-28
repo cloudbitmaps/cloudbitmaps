@@ -31,6 +31,21 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Fixed
 
+- **The light theme's label colour failed WCAG AA.** `--cb-faint` — used for every label, caption and column
+  head, and the one token the design explicitly holds to AA *because it carries information* — shipped as
+  `#7A8393`, which gives **3.60:1** on the light ground where AA needs 4.5:1. Both the design bundle's
+  `tokens.css` and its README stated 4.6:1 for that value; measured, neither was right. Corrected to
+  `#666E7B` (**4.84:1**), the value in the design-language specimen, whose own stated contrast figures all
+  reproduce to two significant figures.
+- **The favicon's progressive bit reduction never reached a browser.** The mark's nine bits turn to mud below
+  64px, so the design ships simplified 32px (five bits) and 16px (three bits) art. Both files were in
+  `site/assets/` and neither was ever referenced — every page declared only the full 64px icon. Now declared
+  by size.
+- **The site's own logo mark rendered with no letterform in dark mode.** It was loaded via `<img src>`, and an
+  SVG referenced that way is an isolated document, so its `fill="currentColor"` resolved against *itself* —
+  i.e. to black — leaving only the coloured bits visible on the graphite ground. The mark is now inlined, so
+  `currentColor` and the bit tokens resolve against the page and one file serves both themes. Favicons, which
+  browser chrome always fetches standalone, carry their own `prefers-color-scheme` instead.
 - **`llms.txt` had been advertising `v0.1.0` for three releases.** The site-version gate only read `*.html`, so
   nothing caught it. Gate widened to every file that carries a version string.
 - **The site's reveal-on-scroll script is gone.** It held whole sections at `opacity: 0` until an

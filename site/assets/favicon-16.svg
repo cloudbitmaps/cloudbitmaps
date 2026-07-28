@@ -1,5 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="253 210 798 798" width="16" height="16" role="img" aria-label="CloudBitmaps">
-  <path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"></path>
+  <style>
+    /* A favicon is loaded as its own document and cannot see the page's theme, so the letterform
+       switches on the OS preference — the only signal that reaches here. Without this it renders
+       black, which is invisible in every dark browser chrome. */
+    .glyph { fill: #12151A; }
+    @media (prefers-color-scheme: dark) {
+      .glyph { fill: #E6E9EE; }
+    }
+  </style>
+
+  <path class="glyph" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"></path>
   <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF"></rect>
   <rect x="404" y="703" width="112" height="112" rx="8" fill="#176FFF"></rect>
   <rect x="600" y="690" width="98" height="98" rx="8" fill="#19C5F4"></rect>

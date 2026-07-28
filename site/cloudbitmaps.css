@@ -88,7 +88,12 @@
   --cb-rule-soft: #e9ecf1;
   --cb-ink: #12151a;
   --cb-muted: #4b5361;
-  --cb-faint: #7a8393; /* 4.6:1 on the light ground, and a full step away from --cb-muted */
+  /* #666E7B, not the #7A8393 in the handoff's tokens.css and README. Both of those claim 4.6:1; measured,
+     they give 3.60:1 and FAIL AA — on the one token the design explicitly holds to AA because it carries
+     information (labels, captions, column heads at 9.5-12px). The Design Language specimen's value computes
+     to 4.84:1 against its own stated 4.8:1, and every other contrast figure in that specimen checks out to
+     two significant figures, so the specimen is the authored source and the other two drifted from it. */
+  --cb-faint: #666e7b; /* 4.84:1 on the light ground */
   --cb-signal: #0b4fcc;
   --cb-signal-fill: #0b4fcc; /* 7.4:1 with white — light theme needs no second value */
   --cb-cyan: #0a6c90;
@@ -166,7 +171,7 @@ body {
 .topbar-inner {
   max-width: var(--maxw);
   margin: 0 auto;
-  padding: 11px 24px;
+  padding: 11px 32px;
   display: flex;
   align-items: center;
   gap: 18px;
@@ -304,7 +309,14 @@ nav.jump a.active {
 .wrap {
   max-width: var(--maxw);
   margin: 0 auto;
-  padding: 0 24px;
+  /* 32px gutters on the 1240px measure, 20px below 720px — the specimen's layout section. */
+  padding: 0 32px;
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 20px;
+  }
 }
 section {
   scroll-margin-top: 72px;
@@ -342,7 +354,9 @@ a {
 h1 {
   font-size: clamp(34px, 5.2vw, 60px);
   line-height: 1.03;
-  letter-spacing: -0.025em;
+  /* -0.035em is the specimen's display tracking. The 52px hero on the two designed pages keeps the README's
+     -0.04em, which is the value attached to that exact size. */
+  letter-spacing: -0.035em;
   font-weight: 720;
   margin: 0 0 20px;
   color: var(--cb-ink);
@@ -423,8 +437,12 @@ h1 .roar {
 }
 
 /* ---------- section headings ---------- */
+/* "Section rule above each heading" — the specimen's prose-density spec. The rule is the section break; it is
+   why these pages need no other divider furniture. */
 .section-head {
-  padding: 60px 0 8px;
+  border-top: 1px solid var(--cb-rule);
+  padding: 34px 0 8px;
+  margin-top: 26px;
 }
 h2 {
   font-size: clamp(26px, 3.4vw, 34px);
@@ -435,9 +453,9 @@ h2 {
   text-wrap: balance;
 }
 h3 {
-  font-size: 20px;
-  letter-spacing: -0.01em;
-  font-weight: 660;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  font-weight: 700;
   margin: 32px 0 10px;
 }
 .kicker {
@@ -1551,17 +1569,12 @@ a:focus-visible,
   color: var(--cb-muted);
 }
 
-.pill-row,
-.chip-row {
+.pill-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
   margin: 0 0 18px;
-}
-
-.chip-row {
-  gap: 6px;
 }
 
 .panel-pad {
@@ -1621,19 +1634,6 @@ a:focus-visible,
 
 .trade-list strong {
   color: var(--cb-ink);
-}
-
-.api-chip {
-  font-family: var(--cb-font-mono);
-  font-size: 12px;
-  padding: 4px 9px;
-  border: 1px solid var(--cb-rule);
-  color: var(--cb-muted);
-}
-
-.api-chip.is-moat {
-  border-color: var(--cb-cyan);
-  color: var(--cb-cyan);
 }
 
 .tier-map {
@@ -2194,6 +2194,128 @@ a:focus-visible,
   margin-left: auto;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+   Components from the Design Language specimen §05 that had no implementation
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── The cost figure ───────────────────────────────────────────────────────────
+   TWO figures at identical size, and only the colour differs: the win in cyan, the thing it is measured
+   against in ink. Burying "$346" inside a caption as bold text — which is what this was — quietly makes the
+   comparison subordinate to the pitch, and the peer-weight rule is the one thing this design will not bend
+   on. A rule-soft footer carries the supporting number. */
+.cost-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 20px 16px;
+}
+
+.cost-fig .n {
+  display: block;
+  font-family: var(--cb-font-mono);
+  font-size: 34px;
+  letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.cost-fig.is-win .n {
+  color: var(--cb-cyan);
+}
+
+.cost-fig.is-compare .n {
+  color: var(--cb-ink);
+}
+
+.cost-fig .c {
+  display: block;
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--cb-muted);
+}
+
+.cost-fig .c small {
+  display: block;
+  font-size: inherit;
+  color: var(--cb-faint);
+}
+
+/* The supporting number, and the same strip the counter-case uses — which is what makes them read as peers. */
+.fig-foot {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--cb-rule-soft);
+  padding-top: 12px;
+  margin: 0;
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  color: var(--cb-muted);
+}
+
+.fig-foot .is-live {
+  color: var(--cb-cyan);
+}
+
+.fig-foot .is-ink {
+  color: var(--cb-ink);
+}
+
+/* ── Operation icons ──────────────────────────────────────────────────────────
+   Five 20px marks for the five calls. Each one draws what the operation does — two overlapping corners for
+   an intersection, a plus for add, a minus for remove, three tier bars, three rising bars for a count — so
+   the icon carries the meaning rather than decorating the word beside it. */
+.op-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.op {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.op svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.op span {
+  font-family: var(--cb-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--cb-muted);
+}
+
+.op.is-moat span {
+  color: var(--cb-cyan);
+}
+
+/* ── The quiet button ─────────────────────────────────────────────────────────
+   The specimen's third variant: mono, muted, transparent border. For the link that is present but is not
+   what you came to click — an outbound repo link beside a primary action. */
+.btn-quiet {
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  padding: 9px 12px;
+  color: var(--cb-muted);
+  border-color: transparent;
+  background: none;
+}
+
+.btn-quiet:hover {
+  color: var(--cb-ink);
+  border-color: var(--cb-rule);
+}
+
 /* ==========================================================================
    The centrepiece — chunk-skipping intersection over tiered storage
    ==========================================================================
@@ -2219,6 +2341,20 @@ a:focus-visible,
   background: var(--cb-surface);
   display: flex;
   flex-direction: column;
+}
+
+/* The single-view variant on the landing page. It sits inside `.crown`, which is a darker inset panel, so it
+   takes the page ground rather than `--cb-surface` — otherwise a panel-on-panel reads as two boxes. */
+.moat-solo {
+  margin: 24px 0 0;
+  background: var(--cb-bg);
+}
+
+/* 32 keys here, not the three-view panel's 16: the extra width is available, and holding the cell at the
+   design's ~17px keeps the grid reading as chunk keys rather than as buttons. */
+.moat-solo .keyrow {
+  grid-template-columns: repeat(32, 1fr);
+  max-width: 640px;
 }
 
 .moat-head {

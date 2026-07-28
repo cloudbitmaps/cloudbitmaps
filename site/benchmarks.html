@@ -37,22 +37,27 @@
     <meta name="twitter:title" content="CloudBitmaps — benchmarks & the Redis crossover" />
     <meta name="twitter:description" content="Measured against real S3 + DynamoDB in us-east-1: $0.75 per million writes against an always-on Redis-HA line of $346/month." />
     <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
-    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="assets/logo-light.png" />
+    <!-- Progressive bit reduction, per the specimen: the mark's nine bits survive at 64px and turn to mud
+         below it, so 32 carries five and 16 carries three, enlarged and re-spaced. Declared by size so the
+         browser picks; without these two links the simplified art shipped but never reached anyone. -->
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><img class="mark" src="assets/logo-mark.svg" alt="" width="22" height="22" /> CloudBitmaps <small>benchmarks</small></a
+          ><svg class="mark" viewBox="253 210 798 798" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"/><rect x="336" y="376" width="39" height="39" rx="5" fill="var(--cb-bit-4)"/><rect x="421" y="433" width="97" height="91" rx="7" fill="var(--cb-bit-5)"/><rect x="273" y="541" width="130" height="127" rx="7" fill="var(--cb-bit-3)"/><rect x="425" y="562" width="78" height="78" rx="6" fill="var(--cb-bit-2)"/><rect x="416" y="703" width="89" height="90" rx="6" fill="var(--cb-bit-1)"/><rect x="538" y="732" width="55" height="56" rx="6" fill="var(--cb-bit-6)"/><rect x="616" y="705" width="68" height="68" rx="6" fill="var(--cb-bit-7)"/><rect x="332" y="816" width="50" height="51" rx="6" fill="var(--cb-bit-1)"/><rect x="414" y="900" width="72" height="74" rx="6" fill="var(--cb-bit-1)"/></svg> CloudBitmaps <small>benchmarks</small></a
         >
         <nav class="jump">
-          <a href="index.html">← Overview</a>
-          <a href="#chart">The crossover</a>
-          <a href="#honest">How it stays honest</a>
-          <a href="#caveats">Caveats</a>
-          <a href="usage.html">Usage&nbsp;↗</a>
-          <a href="architecture.html">Architecture&nbsp;↗</a>
+          <a href="index.html">Overview</a>
+          <a href="usage.html">Usage</a>
+          <a href="architecture.html">Architecture</a>
+          <a class="active" href="benchmarks.html" aria-current="page">Benchmarks</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </nav>
         <div class="theme-toggle" role="group" aria-label="Colour theme">
           <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
