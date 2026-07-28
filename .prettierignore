@@ -11,3 +11,7 @@ pnpm-lock.yaml
 # The site/ pages embed the same hand-aligned ASCII diagrams in <pre> blocks; keep them out of
 # Prettier for the same reason as the Markdown. (The shared stylesheet is formatted normally.)
 site/*.html
+
+# site-final/ pages are matched pixel-for-pixel against the delivered design; Prettier reflows the
+# <i> runs in the chunk-key grid and the <pre> code sample, which changes what renders.
+site-final/*.html
