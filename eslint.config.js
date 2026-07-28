@@ -146,6 +146,20 @@ export default tseslint.config(
     },
   },
   {
+    // The site's one script. Browser globals, not Node — and `site/` is hand-written static HTML, so this is
+    // plain ES5-compatible JS rather than anything that goes through the build.
+    files: ['site/**/*.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
+      },
+    },
+    rules: { 'no-empty': 'off', '@typescript-eslint/no-unused-vars': 'off' },
+  },
+  {
     files: ['**/*.test.ts'],
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
   },

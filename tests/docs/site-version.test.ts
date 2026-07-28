@@ -44,11 +44,33 @@ function badgeVersions(html: string): string[] {
 
 const pages = readdirSync(SITE).filter((f) => f.endsWith('.html'));
 
+/**
+ * Non-HTML files that also name the release.
+ *
+ * `llms.txt` is the machine-readable summary served to crawlers and assistants, and it sat at `v0.1.0` through
+ * three releases — invisible because this suite only ever read `*.html`. A version gate that covers some of the
+ * files carrying a version is a gate with a hole in it, and this is what fell through.
+ */
+const VERSIONED_TEXT_FILES = ['llms.txt'];
+
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
     // Without this, moving or renaming site/ leaves zero pages, every it.each below generates zero cases,
     // and the file passes while checking nothing — the vacuous-guard failure mode.
     expect(pages.length).toBeGreaterThan(0);
+  });
+
+  it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
+    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)].map(
+      (m) => m[1] as string,
+    );
+    expect(
+      found.length,
+      `${file} names no version at all — did its wording change?`,
+    ).toBeGreaterThan(0);
+    for (const v of found) {
+      expect(v, `${file} names v${v}, but the packages are at ${version}`).toBe(version);
+    }
   });
 
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {

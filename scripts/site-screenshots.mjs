@@ -21,7 +21,15 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(process.argv[2] ?? `${ROOT}/.site-screenshots`);
-const PAGES = ['index', 'usage', 'architecture', 'benchmarks'];
+const PAGES = ['index', 'usage', 'architecture', 'benchmarks', 'flavors', 'flavors-roaring'];
+/**
+ * Both themes, every time.
+ *
+ * Light is a designed theme rather than an inversion, so a change that looks right on the graphite ground can
+ * be unreadable on paper — and nobody would notice from a dark-only screenshot set. Captured by seeding
+ * `localStorage` before the page loads, which is the same path a returning visitor takes.
+ */
+const THEMES = ['dark', 'light'];
 /** Desktop width a reviewer actually uses; height only seeds the viewport before the full-page override. */
 const WIDTH = 1440;
 const PORT = 9222;
@@ -147,7 +155,7 @@ const proc = spawn(
 
 try {
   await waitForDevtools();
-  for (const page of PAGES) {
+  for (const { page, theme } of PAGES.flatMap((page) => THEMES.map((theme) => ({ page, theme })))) {
     // Open a BLANK target and navigate over CDP rather than passing the URL to `/json/new?<url>`. That query
     // form does not reliably honour a `file://` URL, and the failure is silent: the target exists, the socket
     // opens, `Page.enable` succeeds, and then `Page.getLayoutMetrics` simply never returns because the page is
@@ -159,6 +167,11 @@ try {
     const cdp = connect(target.webSocketDebuggerUrl);
     await cdp.ready;
     await cdp.send('Page.enable');
+    // Seed the stored preference before any document loads, so the page's own head script picks it up and
+    // paints the right theme first time — exactly as it would for a returning visitor.
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `try { localStorage.setItem('cb-theme', '${theme}'); } catch (e) {}`,
+    });
     const loaded = cdp.once('Page.loadEventFired');
     await cdp.send('Page.navigate', { url: `file://${ROOT}/site/${page}.html` });
     await loaded;
@@ -183,9 +196,9 @@ try {
     // add — and asking for both made `Page.captureScreenshot` hang on a tall page. Generous deadline because a
     // ~5,000px surface genuinely takes a few seconds to encode.
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, 60_000);
-    const file = `${OUT}/${page}.png`;
+    const file = `${OUT}/${page}-${theme}.png`;
     writeFileSync(file, Buffer.from(data, 'base64'));
-    console.log(`${page.padEnd(13)} ${WIDTH}x${height}  →  ${file}`);
+    console.log(`${`${page}-${theme}`.padEnd(24)} ${WIDTH}x${height}  →  ${file}`);
     cdp.close();
     await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
   }

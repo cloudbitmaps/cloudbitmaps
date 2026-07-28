@@ -3,6 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // Applied BEFORE first paint, deliberately inline and unminified: a deferred or external script would
+      // let the default dark ground paint and then flip, which is the flash this exists to prevent.
+      // `prefers-color-scheme` is consulted only when nothing has been stored — an explicit choice wins.
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     <title>CloudBitmaps — usage, flows &amp; use cases</title>
     <meta
       name="description"
@@ -28,7 +44,7 @@
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html"
-          ><img class="mark" src="assets/logo-light-transparent.svg" alt="" width="22" height="22" /> CloudBitmaps <small>usage</small></a
+          ><img class="mark" src="assets/logo-mark.svg" alt="" width="22" height="22" /> CloudBitmaps <small>usage</small></a
         >
         <nav class="jump">
           <a href="index.html">← Overview</a>
@@ -40,6 +56,12 @@
           <a href="benchmarks.html">Benchmarks&nbsp;↗</a>
           <a href="architecture.html">Architecture&nbsp;↗</a>
         </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
       </div>
     </header>
 
@@ -460,6 +482,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
           <a href="index.html">Overview</a>
           <a href="architecture.html">Architecture deep-dive</a>
           <a href="../docs/guide/getting-started.md">Getting started</a>
+          <a href="flavors.html">Flavors&nbsp;↗</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
         <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
@@ -505,5 +528,6 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
       data-cf-beacon='{"token": "1cf9f5f5103e41f3aa9d194f4989dfa0"}'
     ></script>
     <!-- End Cloudflare Web Analytics -->
+      <script src="theme.js"></script>
   </body>
 </html>
