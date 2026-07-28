@@ -168,7 +168,7 @@
             </thead>
             <tbody>
               <tr><td><code>add(id)</code> / <code>remove(id)</code></td><td><code>Promise&lt;void&gt;</code></td><td>single ID; <code>ValidationError</code> if <code>id ∉ [0, 2³²)</code></td></tr>
-              <tr><td><code>addMany(ids)</code> / <code>removeMany(ids)</code></td><td><code>Promise&lt;void&gt;</code></td><td>grouped by chunk (one write per chunk); <strong>not atomic across chunks</strong></td></tr>
+              <tr><td><code>addMany(ids)</code> / <code>removeMany(ids)</code></td><td><code>Promise&lt;void&gt;</code></td><td><code>ids</code> is a <strong>sync or async</strong> iterable; grouped by chunk (one write per chunk, however long the stream); <strong>not atomic across chunks</strong></td></tr>
               <tr><td><code>has(id)</code></td><td><code>Promise&lt;boolean&gt;</code></td><td>membership test</td></tr>
               <tr><td><code>count()</code></td><td><code>Promise&lt;number&gt;</code></td><td>exact cardinality</td></tr>
               <tr><td><code>iterate()</code></td><td><code>AsyncIterable&lt;number&gt;</code></td><td>ascending IDs</td></tr>
@@ -183,7 +183,9 @@
             <code>WriteConflictError</code>, <code>IntegrityError</code>, <code>KeyUnavailableError</code>,
             …), never thrown strings — so callers can branch on <em>why</em> something failed.
             <code>addMany</code> groups IDs by chunk first, so 10,000 IDs spanning 12 chunks become
-            <strong>12 writes, not 10,000</strong>.
+            <strong>12 writes, not 10,000</strong>. It also takes an <code>AsyncIterable</code>, so a database
+            cursor streams straight in — and each chunk is still written <strong>exactly once</strong> however
+            long the stream, so streaming is an input-shape choice, never a cost choice.
           </p>
         </div>
       </section>

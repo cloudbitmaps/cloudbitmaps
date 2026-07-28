@@ -54,6 +54,10 @@ dependencies** — arrives transitively and is never installed directly.
   `BudgetExceededError` rather than quietly running up a bill. Since **0.3.0** that also covers the *enumerations* those bounds feed: a warm scan is capped by `maxWarmScanBytes` (independent of `budget`, and still enforced when `budget: false`), and every registry scan — including the DR consistency check — refuses at its ceiling instead of materialising the fleet. Before that, the per-op budget bounded fan-out but not the list it was computed from, so a tight budget could be exceeded in memory before it could refuse in requests.
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` footer index for chunks
   with no warm delta, so a fully compacted segment counts with **zero payload reads**.
+- **Streaming batch writes** — `addMany`/`removeMany` take a sync **or async** iterable, so a database cursor
+  goes straight in. Each chunk is written exactly once however long the stream: pending ids are held as
+  compressed bitmaps rather than buffered and flushed, so streaming never costs more backend writes than
+  passing an array (5M pending ids: ~11 MB as bitmaps against ~212 MB as plain numbers).
 - **Bulk load** — build a cold generation from an unsorted sync or async ID stream, without holding the
   *input* in memory. Memory is bounded by the distinct result set, not the input length; a segment larger than
   RAM wants the external-merge bulk load listed under [Planned](#planned--exploring).
