@@ -65,6 +65,33 @@ for (const k of need) {
   if (typeof m[k] !== 'number') fail(`\`intersect.${k}\` missing or not a number`);
 }
 
+/**
+ * The page also states figures that belong to the FORMAT rather than to this run — the size of the chunk key
+ * space, and where an array container stops being smaller than a bitset. Those are read or derived here for
+ * the same reason the benchmark numbers are: so nothing on the page is a figure with no stated origin.
+ *
+ * CHUNK_COUNT is parsed out of the source rather than restated, because a constant copied into a second file
+ * is a constant that can disagree with the first.
+ */
+function formatConstants() {
+  const src = fs.readFileSync(
+    path.join(ROOT, 'packages', 'core', 'src', 'core', 'bit-route.ts'),
+    'utf8',
+  );
+  const found = /export const CHUNK_COUNT = (0x[0-9a-f_]+|\d+)/i.exec(src);
+  if (!found)
+    fail('CHUNK_COUNT is no longer declared where this script looks for it (core/bit-route.ts)');
+  const chunkCount = Number(found[1].replace(/_/g, ''));
+  if (chunkCount !== 65536)
+    fail(`CHUNK_COUNT is ${chunkCount}; the /demo copy assumes a 16-bit split`);
+  // A bitset container is one bit per possible remainder. An array is two bytes per id present. The two costs
+  // cross where `ids * 2 === bitsetBytes` — arithmetic, not a claim about any codec's source.
+  const bitsetBytes = chunkCount / 8;
+  const arrayCrossoverIds = bitsetBytes / 2;
+  return { chunkCount, bitsetBytes, arrayCrossoverIds };
+}
+const fc = formatConstants();
+
 const chunks = m.chunksPerSegment;
 const shared = m.sharedChunks;
 // Not read from the file: the benchmark records ids-per-segment, and density follows from it. Deriving it
@@ -128,6 +155,12 @@ const out = {
     coldBytesRead: m.coldBytesRead,
     intersectMs: m.intersectMs,
     resultCount: m.resultCount,
+  },
+  format: {
+    note: 'From the format, not from this run. CHUNK_COUNT is read out of core/bit-route.ts.',
+    chunkCount: fc.chunkCount,
+    bitsetBytesPerChunk: fc.bitsetBytes,
+    arrayCrossoverIds: fc.arrayCrossoverIds,
   },
   derived: {
     density,
@@ -233,6 +266,9 @@ function checkPage() {
       m.coldBytesRead,
       m.skippedChunks,
       m.resultCount,
+      // format constants, sourced above rather than allow-listed
+      fc.chunkCount,
+      fc.arrayCrossoverIds,
     ].map((n) => n.toLocaleString('en-US')),
   );
   const visible = html

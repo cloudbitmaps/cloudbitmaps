@@ -12,6 +12,12 @@
     "intersectMs": 25.3,
     "resultCount": 100000
   },
+  "format": {
+    "note": "From the format, not from this run. CHUNK_COUNT is read out of core/bit-route.ts.",
+    "chunkCount": 65536,
+    "bitsetBytesPerChunk": 8192,
+    "arrayCrossoverIds": 4096
+  },
   "derived": {
     "density": 1000,
     "bytesPerFetchedChunk": 4032,

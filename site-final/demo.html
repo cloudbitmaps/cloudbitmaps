@@ -108,6 +108,95 @@
         </p>
       </section>
 
+      <!-- ── WHAT ROARING DOES ──────────────────────────────────────────────
+           Before the replay, not after. The replay's whole vocabulary is "chunk key", and a reader who does
+           not know what one is cannot follow beat 02 — which is the beat carrying the argument. This is the
+           smallest figure that makes the word mean something: the 32 bits, the cut, and what each half is
+           for. The fuller treatment of the containers lives on /flavors. -->
+      <section>
+        <h2>First, what Roaring actually does</h2>
+        <p class="lede">
+          A plain bitset over the 32-bit id space is <strong>512 MiB</strong>, allocated whether you store
+          five ids or five million. Roaring cuts every id in two and never allocates a chunk nobody has
+          written to.
+        </p>
+
+        <figure class="split">
+          <div class="split-head">
+            <span class="label">One id, two halves</span><span class="label">32 bits, cut at 16</span>
+          </div>
+          <div class="split-body">
+            <p class="split-id">1_234_567_890 <span>= 0x499602D2</span></p>
+            <div class="split-bits" aria-hidden="true">
+              <span class="bhalf bhi">0100 1001 1001 0110</span>
+              <span class="bhalf blo">0000 0010 1101 0010</span>
+            </div>
+            <div class="split-out">
+              <div class="sout">
+                <span class="label">High 16 &rarr; chunk key</span>
+                <span class="sfig">0x4996</span>
+                <p>
+                  <em>Which</em> chunk. One of 65,536 &mdash; and the only thing compared when two segments
+                  are intersected.
+                </p>
+              </div>
+              <div class="sout">
+                <span class="label">Low 16 &rarr; remainder</span>
+                <span class="sfig">0x02D2</span>
+                <p>
+                  <em>Which bit</em> inside that chunk. One of 65,536 &mdash; and never looked at unless the
+                  chunk is fetched.
+                </p>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <p class="note" style="max-width: 82ch">
+          That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
+          replay below compares 4,000 keys and fetches 100 payloads.
+        </p>
+
+        <h3 style="margin-top: 44px">Then each chunk picks its own shape</h3>
+        <p class="lede">
+          A chunk holds up to 65,536 remainders, and how it stores them depends on how many there are. All
+          three shapes answer the same question &mdash; <span class="m">is this id present?</span> &mdash; so
+          nothing above the container ever knows which one it got.
+        </p>
+        <div class="tiers">
+          <div class="tier">
+            <span class="tier-chip t-c">Array</span>
+            <p>
+              A sorted list of 16-bit remainders. Two bytes per id and nothing wasted, so it wins while a
+              chunk stays sparse.
+            </p>
+            <span class="cbytes">2 bytes &times; ids present</span>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-c">Bitset</span>
+            <p>
+              One bit per possible remainder, 65,536 of them. Flat cost whatever the count, which is what
+              makes it the cheaper shape once a chunk fills up.
+            </p>
+            <span class="cbytes">8 KiB, always</span>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-c">Run</span>
+            <p>
+              Start-and-length pairs. A contiguous stretch of ids becomes a couple of numbers instead of
+              one entry each &mdash; the shape that beats both others on ranges.
+            </p>
+            <span class="cbytes">4 bytes &times; runs</span>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          The two costs cross at <strong>4,096 ids</strong>, and that is arithmetic rather than a tuning
+          choice: 4,096 &times; 2 bytes is <strong>8 KiB</strong>, exactly what a bitset costs. Below it an
+          array is smaller; above it a bitset is. <a href="flavors.html">The flavors page</a> walks all three
+          shapes and the conversions between them.
+        </p>
+      </section>
+
       <!-- ── THE REPLAY ─────────────────────────────────────────────────────
            One figure, four states. Geometry and counters come from data attributes rather than a fetch, so
            the page works from `file://`, needs no network, and — most importantly — still says everything
@@ -160,7 +249,7 @@
             <!-- The key axis. Proportional bands, not cells: 4,000 keys across 1,176px is a third of a pixel
                  each, so drawing them individually would be a lie about resolution. The inset below draws
                  real cells at a scale where a cell means something. -->
-            <div class="axis-wrap">
+            <div>
               <p class="label">Chunk-key space · 4,000 keys · both segments</p>
               <div class="axis" aria-hidden="true">
                 <div class="axis-row">
@@ -282,105 +371,119 @@
       </section>
 
       <!-- ── PROVENANCE ─────────────────────────────────────────────────────
-           A demo's provenance is not a footnote, so it gets a section. Split measured from derived, because
-           conflating the two is how a page ends up asserting a number nobody measured. -->
+           Two panels, side by side, because the distinction between them is the point: one column of numbers
+           was OBSERVED and the other is ARITHMETIC. Conflating the two is how a page ends up asserting a
+           figure nobody measured. Each panel names its own kind in its head strip. -->
       <section>
         <h2>Where every number came from</h2>
         <p class="lede">
-          Two kinds of number appear above, and they are not equally strong. These were
-          <strong>observed</strong> by the benchmark:
+          Two kinds of number appear above and they are not equally strong. Both panels are cross-checked
+          against each other by a build gate, so neither can quietly stop being true.
         </p>
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Measured</th>
-                <th>Value</th>
-                <th>Reported by</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Chunk keys per segment</td>
-                <td class="is-fig">2,000</td>
-                <td>benchmark parameter</td>
-              </tr>
-              <tr>
-                <td>Ids per segment</td>
-                <td class="is-fig">2,000,000</td>
-                <td>benchmark parameter</td>
-              </tr>
-              <tr>
-                <td>Chunks fetched</td>
-                <td class="is-fig">100</td>
-                <td>metrics sink</td>
-              </tr>
-              <tr>
-                <td>Chunk reads skipped</td>
-                <td class="is-fig">3,800</td>
-                <td>metrics sink</td>
-              </tr>
-              <tr>
-                <td>Cold bytes read</td>
-                <td class="is-fig">403,200</td>
-                <td>metrics sink</td>
-              </tr>
-              <tr>
-                <td>Wall time</td>
-                <td class="is-fig">25.3 ms</td>
-                <td>timer around the drained stream</td>
-              </tr>
-              <tr>
-                <td>Ids returned</td>
-                <td class="is-fig">100,000</td>
-                <td>counted while draining</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">Measured</span><span class="label">Observed by the run</span>
+            </div>
+            <div class="tscroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Quantity</th>
+                    <th class="num">Value</th>
+                    <th>Reported by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Chunk keys per segment</td>
+                    <td class="num">2,000</td>
+                    <td class="from">benchmark parameter</td>
+                  </tr>
+                  <tr>
+                    <td>Ids per segment</td>
+                    <td class="num">2,000,000</td>
+                    <td class="from">benchmark parameter</td>
+                  </tr>
+                  <tr>
+                    <td>Chunks fetched</td>
+                    <td class="num">100</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Chunk reads skipped</td>
+                    <td class="num">3,800</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Cold bytes read</td>
+                    <td class="num">403,200</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Wall time</td>
+                    <td class="num">25.3 ms</td>
+                    <td class="from">timer around the drained stream</td>
+                  </tr>
+                  <tr>
+                    <td>Ids returned</td>
+                    <td class="num">100,000</td>
+                    <td class="from">counted while draining</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tpanel-foot">Source: <strong>bench/scale-results.json</strong></p>
+          </div>
+
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">Derived</span><span class="label">Arithmetic, not observation</span>
+            </div>
+            <div class="tscroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Quantity</th>
+                    <th class="num">Value</th>
+                    <th>From</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Ids per chunk key</td>
+                    <td class="num">1,000</td>
+                    <td class="from">2,000,000 ids &divide; 2,000 keys</td>
+                  </tr>
+                  <tr>
+                    <td>Bytes per fetched chunk</td>
+                    <td class="num">4,032</td>
+                    <td class="from">403,200 bytes &divide; 100 chunks</td>
+                  </tr>
+                  <tr>
+                    <td>Key-space extent</td>
+                    <td class="num">4,000</td>
+                    <td class="from">B&rsquo;s tail is offset past A&rsquo;s range</td>
+                  </tr>
+                  <tr>
+                    <td>Keys in neither segment</td>
+                    <td class="num">100</td>
+                    <td class="from">the offset leaves a gap of that width</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tpanel-foot">
+              A derived number is only as good as the construction behind it &mdash;
+              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.
+            </p>
+          </div>
         </div>
-        <p class="note" style="max-width: 80ch">
-          And these are <strong>derived</strong> from how the benchmark builds its two segments — arithmetic,
-          not observation. They are stated separately because a derived number is only as good as the
-          construction behind it, and you should be able to check that construction yourself.
-        </p>
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Derived</th>
-                <th>Value</th>
-                <th>From</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Ids per chunk key</td>
-                <td class="is-fig">1,000</td>
-                <td>2,000,000 ids &divide; 2,000 keys</td>
-              </tr>
-              <tr>
-                <td>Bytes per fetched chunk</td>
-                <td class="is-fig">4,032</td>
-                <td>403,200 bytes &divide; 100 chunks</td>
-              </tr>
-              <tr>
-                <td>Key-space extent</td>
-                <td class="is-fig">4,000</td>
-                <td>B's tail is offset past A's range</td>
-              </tr>
-              <tr>
-                <td>Keys in neither segment</td>
-                <td class="is-fig">100</td>
-                <td>the offset leaves a gap of exactly that width</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="note" style="max-width: 80ch">
-          The two sets are cross-checked against each other, and the check is a build gate rather than a
-          promise: <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
-          <em>reported</em> stop matching what its construction <em>implies</em>, and fails again if this
-          page drifts from either. A number here cannot quietly stop being true.
+        <p class="note" style="max-width: 82ch">
+          The check is a build gate rather than a promise:
+          <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
+          <em>reported</em> stop matching what its construction <em>implies</em>, fails if this page drifts
+          from either, and fails if the page states any figure the benchmark cannot account for at all.
         </p>
       </section>
 
@@ -427,7 +530,7 @@
               The benchmark is in the repository and needs no cloud account — it runs against the in-memory
               drivers, which is exactly why the numbers above are reproducible.
             </p>
-            <div class="btns">
+            <div class="actions">
               <a class="btn btn-primary" href="architecture.html">How the skipping works →</a>
               <a class="btn" href="benchmarks.html">Real-backend numbers</a>
             </div>

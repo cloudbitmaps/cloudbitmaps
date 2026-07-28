@@ -270,6 +270,16 @@ h2 {
   letter-spacing: -0.032em;
 }
 
+/* A subhead INSIDE a section, one step under h2. Sized so the gap between it and h2 is unmistakable —
+   two headings a couple of pixels apart read as a mistake rather than a hierarchy. */
+h3 {
+  margin: 0 0 12px;
+  font-size: 19px;
+  line-height: normal;
+  font-weight: 700;
+  letter-spacing: -0.024em;
+}
+
 p {
   margin: 0;
   text-wrap: pretty;
@@ -1901,5 +1911,305 @@ em {
 
   .tally-cell:last-child {
     border-bottom: 0;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TABLES — lifted from the delivery's own treatment, which is a bordered PANEL
+   with a mono head strip rather than a bare `<table>`. The panel is what makes a
+   table read as a figure instead of as leftover markup; without it the rows float
+   in the page with nothing holding them, which is exactly how /demo's provenance
+   section shipped when this component did not exist.
+
+   Figures go in the right-hand column: mono, tabular, cyan, right-aligned, so a
+   reader scans the values down a single edge instead of hunting across ragged
+   text.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.tpanel {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.tpanel-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* The scroll container, not the table: a wide table has to scroll inside its own
+   panel so the page body never moves sideways. */
+.tscroll {
+  overflow-x: auto;
+}
+
+.tpanel table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  font-size: 14px;
+  text-align: left;
+}
+
+.tpanel th {
+  padding: 12px 16px;
+  font-family: var(--cb-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: normal;
+  font-weight: 400;
+  color: var(--cb-faint);
+  border-bottom: 1px solid var(--cb-rule);
+  white-space: nowrap;
+}
+
+.tpanel td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--cb-rule-soft);
+  line-height: 1.5;
+  color: var(--cb-ink);
+}
+
+.tpanel tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* The value column. `tabular-nums` earns its place here, unlike in the mono-only
+   figures where the face is already fixed-width — this column mixes 25.3 ms with
+   403,200 and the digits have to line up. */
+.tpanel .num {
+  text-align: right;
+  font-family: var(--cb-mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cb-cyan);
+  white-space: nowrap;
+}
+
+.tpanel th.num {
+  text-align: right;
+  font-size: 10px;
+  color: var(--cb-faint);
+}
+
+/* The last column is provenance, not data — it should not compete with either. */
+.tpanel .from {
+  color: var(--cb-muted);
+  font-size: 13px;
+}
+
+.tpanel-foot {
+  border-top: 1px solid var(--cb-rule);
+  padding: 14px 16px;
+  font-family: var(--cb-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cb-faint);
+}
+
+.tpanel-foot strong {
+  color: var(--cb-ink);
+  font-weight: 400;
+}
+
+/* Two provenance panels side by side at full width, stacked when the columns would
+   force either table to scroll. */
+.prov {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .prov {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   THE SPLIT FIGURE — one id becoming a chunk key and a remainder.
+
+   This exists because /demo's whole vocabulary is "chunk key", and a reader who
+   does not know what one is cannot follow beat 02. It is deliberately the smallest
+   figure that makes the word mean something: the 32 bits, the cut, and what each
+   half is FOR.
+
+   The animation opens the gap rather than closing it — the halves begin as one
+   continuous string and separate, because that is the direction the operation
+   actually runs. Both halves and both outputs animate `transform`/`opacity` only,
+   and every element rests at its final appearance, so reduced-motion loses the cut
+   and keeps the figure.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.split {
+  margin: 0;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.split-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.split-body {
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-items: center;
+}
+
+.split-id {
+  font-family: var(--cb-mono);
+  font-size: 17px;
+  line-height: normal;
+  color: var(--cb-ink);
+  text-align: center;
+}
+
+.split-id span {
+  color: var(--cb-faint);
+  font-size: 13px;
+}
+
+/* The 32 bits, as two halves with a gap the animation opens. */
+.split-bits {
+  display: flex;
+  gap: 18px;
+  align-items: stretch;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.bhalf {
+  font-family: var(--cb-mono);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  line-height: normal;
+  padding: 10px 14px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.bhi {
+  color: var(--cb-cyan);
+  animation: cb-split-hi 12s ease-in-out infinite;
+}
+
+.blo {
+  color: var(--cb-muted);
+  animation: cb-split-lo 12s ease-in-out infinite;
+}
+
+/* Half the gap each, so the pair stays centred while it opens. */
+@keyframes cb-split-hi {
+  0%,
+  14% {
+    transform: translateX(9px);
+  }
+  26%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes cb-split-lo {
+  0%,
+  14% {
+    transform: translateX(-9px);
+  }
+  26%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.split-out {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  width: 100%;
+  border-top: 1px solid var(--cb-rule-soft);
+  margin-top: 4px;
+}
+
+.sout {
+  padding: 20px 16px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: center;
+  text-align: center;
+  animation: cb-split-out 12s ease-in-out infinite;
+}
+
+.sout + .sout {
+  border-left: 1px solid var(--cb-rule-soft);
+  animation-delay: 0.45s;
+}
+
+@keyframes cb-split-out {
+  0%,
+  24% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  34%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sfig {
+  font-family: var(--cb-mono);
+  font-size: 26px;
+  line-height: normal;
+  color: var(--cb-ink);
+}
+
+.sout:first-child .sfig {
+  color: var(--cb-cyan);
+}
+
+.sout p {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+  max-width: 34ch;
+}
+
+/* Container cards reuse the tier grid — it is a three-up card grid, and a second
+   one would be the same CSS under a different name. Only the chip's colour differs,
+   because a container is not a storage temperature. */
+.tier-chip.t-c {
+  color: var(--cb-cyan);
+}
+
+.tier .cbytes {
+  display: block;
+  margin-top: 12px;
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+@media (max-width: 700px) {
+  .split-out {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sout + .sout {
+    border-left: 0;
+    border-top: 1px solid var(--cb-rule-soft);
   }
 }
