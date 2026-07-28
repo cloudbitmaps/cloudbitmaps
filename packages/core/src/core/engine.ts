@@ -70,6 +70,38 @@ class ZeroRng implements Rng {
  */
 export const DEFAULT_MAX_WARM_SCAN_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Default number of Warm chunk writes in flight per `addMany`/`removeMany`: **4**.
+ *
+ * The flusher was serial by default, which meant a 100-chunk `addMany` against a backend with ~10 ms of
+ * round-trip latency spent a full second doing nothing but waiting — one round-trip at a time, on work that has
+ * no ordering requirement between chunks. Distinct chunks are independent OCC rows.
+ *
+ * **Why 4 and not more.** The number is chosen against the *backend's* tolerance, not the client's appetite. A
+ * write here is a read-modify-write, so 4 in flight is up to 8 concurrent requests per `addMany` call — and a
+ * server handling many concurrent calls multiplies that again. Provisioned-capacity backends answer a burst
+ * with throttling, which is free only while retries can absorb it (4 attempts, exponential backoff, full
+ * jitter). Swept against a backend that throttles on concurrent requests in flight, 64 chunks, 5 trials each,
+ * counting a lost id or a surfaced error as a failure:
+ *
+ * ```text
+ *   backend capacity:      1      2      4      8
+ *   writeConcurrency  4:  0/5    0/5    0/5    0/5
+ *   writeConcurrency  8:  0/5    0/5    0/5    0/5
+ *   writeConcurrency 16:  0/5    0/5    0/5    0/5
+ *   writeConcurrency 32:  3/5    0/5    0/5    0/5   ← retry budget exhausted
+ * ```
+ *
+ * So the retry machinery holds far past 4; 4 is deliberately conservative, sitting 8x below the first observed
+ * failure against the harshest backend modelled. The remaining headroom is spent on the multiplier this table
+ * does not capture — many concurrent `addMany` calls sharing one backend — rather than on more throughput per
+ * call. A caller who knows their capacity can raise it.
+ *
+ * Raise it if your backend is provisioned for it (on-demand DynamoDB, or a Postgres pool sized to match); set
+ * it to `1` for the previous strictly-serial behaviour.
+ */
+export const DEFAULT_WRITE_CONCURRENCY = 4;
+
 export interface EngineDeps {
   readonly warm: IWarmDriver;
   readonly cold: ColdChunkSource;
@@ -98,9 +130,16 @@ export interface EngineDeps {
    */
   readonly warmReadConsistency?: 'strong' | 'eventual';
   /**
-   * Max Warm chunk writes in flight per `addMany`/`removeMany` (the bounded flusher). Default **1** (serial —
-   * unchanged behavior). Higher values fan out distinct-chunk writes for throughput; each chunk is its own OCC
-   * row, so bounded concurrency is safe (`addMany` is already non-atomic on partial failure).
+   * Max Warm chunk writes in flight per `addMany`/`removeMany` (the bounded flusher).
+   * Default {@link DEFAULT_WRITE_CONCURRENCY}.
+   *
+   * Each chunk is its own OCC row, so distinct chunks never conflict with each other and fanning them out is
+   * safe. Raise it for more throughput against a backend with capacity to spare; set it to `1` for strictly
+   * serial writes.
+   *
+   * As before, `addMany`/`removeMany` are **not atomic**: a mid-flush failure can leave a partial result. What
+   * concurrency changes is only *how much* of the batch may already have landed when the first error surfaces —
+   * the flusher stops scheduling on the first failure, but writes already in flight still settle.
    */
   readonly writeConcurrency?: number;
   /**
@@ -156,7 +195,7 @@ export class SegmentEngine {
     this.rng = deps.rng ?? new ZeroRng();
     this.occBackoff = deps.occBackoff ?? DEFAULT_OCC_BACKOFF;
     this.readOpts = { consistent: (deps.warmReadConsistency ?? 'strong') !== 'eventual' };
-    this.writeConcurrency = deps.writeConcurrency ?? 1;
+    this.writeConcurrency = deps.writeConcurrency ?? DEFAULT_WRITE_CONCURRENCY;
     this.maxWarmScanBytes = deps.maxWarmScanBytes ?? DEFAULT_MAX_WARM_SCAN_BYTES;
     if (!Number.isFinite(this.maxWarmScanBytes) || this.maxWarmScanBytes < 1) {
       throw new ValidationError(

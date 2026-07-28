@@ -370,8 +370,10 @@ Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapsho
 > `new CloudRoaring({ warm, cold, warmReadConsistency: 'eventual' })` — warm reads then bill **~½ the DynamoDB
 > RCU** (a strong read costs 2× an eventual one), at the price of read-after-write. The compaction/OCC **write**
 > path stays strongly consistent regardless, so correctness is unaffected; the in-memory/LocalFs drivers ignore
-> it (always strong). **Write throughput knob — `writeConcurrency`** (default 1): raise it to flush the distinct
-> chunks of a wide `addMany`/`removeMany` in parallel (each chunk is its own conflict-safe row).
+> it (always strong). **Write throughput knob — `writeConcurrency`** (default **4**): the distinct chunks of a
+> wide `addMany`/`removeMany` are flushed in parallel, each being its own conflict-safe row. Set it to `1` for
+> strictly serial writes, or higher if your backend is provisioned for the fan-out — 4 is chosen to stay well
+> inside what the transient-retry path absorbs when a provisioned-capacity backend throttles the burst.
 
 ## 6. Reliability: retries, backoff & timeouts
 
