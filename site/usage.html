@@ -262,10 +262,13 @@
         </figure>
         <div class="prose">
           <p>
-            <em>Intersection</em> is the shipped set operation (commutative, streaming). Whole-segment
-            <em>union</em> and <em>difference</em> operators are on the roadmap; today you compose with
-            <code>intersect</code> and apply suppression at the ID level via
-            <code>removeMany</code> / <code>intersectInto</code>.
+            <em>Intersection</em>, <em>union</em> and <em>difference</em> are all shipped set operations,
+            streaming and chunk-aligned. Suppression composes without an intermediate segment: pass
+            <code>exclude</code> to <code>intersect</code> and the subtraction folds into the same pass.
+            What each can skip differs, and that is a property of the set operation rather than of the
+            implementation — <code>intersect</code> prunes any key missing from an operand,
+            <code>andNot</code> reads the suppression side only where it overlaps, and <code>union</code>
+            must read every chunk of every operand.
           </p>
         </div>
 
@@ -460,7 +463,7 @@ console.<span class="f">log</span>(metrics.<span class="f">snapshot</span>()); <
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </div>
         <strong>CloudBitmaps</strong> · distributed, cloud-native Roaring Bitmaps · Apache-2.0 ·
-        pre-1.0 v0.4.0<br />
+        pre-1.0 v0.4.1<br />
         The API shown here is real and tested; see the getting-started guide for the exhaustive
         reference.
       </div>

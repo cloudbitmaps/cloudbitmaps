@@ -29,6 +29,7 @@
  *                         JSON line on stdout — pipe to your metrics pipeline. Off by default (cycle summaries
  *                         still print regardless); the library's `IMetricsSink` seam is what this wires.
  */
+import { SystemClock } from '../system-clock';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -104,7 +105,9 @@ export function localFsDeps(root: string, metrics?: IMetricsSink): CompactionDep
     cold: new LocalFsColdDriver(join(root, 'cold')),
     warm: new LocalFsWarmDriver(join(root, 'warm')),
     registry: new LocalFsRegistryDriver(join(root, 'registry')),
-    clock: { now: () => Date.now() }, // the bin is outside core/, so ambient time is allowed here
+    // A real clock, not `{ now }`: outside `core/` ambient time is allowed, and a full clock is what lets
+    // the generation write hand the event loop back instead of blocking the daemon for its whole duration.
+    clock: new SystemClock(),
     ...(metrics ? { metrics } : {}),
   };
 }

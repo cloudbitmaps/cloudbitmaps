@@ -728,12 +728,12 @@ export class CloudRoaring {
 }
 
 /**
- * A handle bound to one segment — the seven ops.
+ * A handle bound to one segment — the read/write ops.
  *
  * **IDs must be integers in `[0, 2^32)`** (dense 32-bit). A non-integer / negative / out-of-range id
  * throws {@link ValidationError}.
  *
- * **`addMany`/`removeMany`/`intersectInto` are not atomic across chunks**: ids are grouped by chunk and
+ * **`addMany`/`removeMany`/`intersectInto`/`unionInto`/`andNotInto` are not atomic across chunks**: ids are grouped by chunk and
  * applied one chunk at a time, so if a later chunk fails (e.g. {@link WriteConflictError} after retries)
  * earlier chunks are already applied. Within a single chunk the update is atomic.
  */
@@ -896,8 +896,8 @@ export class Segment {
    *
    * Reads every chunk of `this` (any of them may survive the subtraction) but each exclude **only where it
    * overlaps this segment**, so the cost tracks the segment being filtered rather than the size of the
-   * suppression list. Subtracting a 61,000-chunk global opt-out list from a narrow audience costs a handful of
-   * reads, not 61,000.
+   * suppression list: at most one read per surviving key of `this`, so subtracting a 61,000-chunk global
+   * opt-out list from a 40-chunk audience costs at most 40 reads, not 61,000.
    *
    * To filter the *result of an intersection*, do not chain — pass `exclude` to {@link intersect} instead, so
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
@@ -975,4 +975,4 @@ export {
 export { SafeBitmap, roaringCodec } from './roaring-codec';
 
 /** Package version marker. Kept in sync with package.json at release. */
-export const VERSION = '0.4.0';
+export const VERSION = '0.4.1';

@@ -75,14 +75,22 @@ export type MetricEvent =
        * Which chunk-aligned combine this was. **Optional for backward compatibility** — absent means
        * `'intersect'`, which is all this event reported before `union`/`andNot` existed.
        *
-       * `skippedChunks` is only ever non-zero for `'intersect'` and `'andNot'`: union has to read every chunk
-       * of every operand, so there is nothing it can prune. A steady stream of `op: 'union'` events with
-       * `skippedChunks: 0` is the expected shape, not a regression.
+       * For `'union'` over its *include* operands alone, `skippedChunks` is 0 by construction — union reads
+       * every chunk of every operand, so there is nothing to prune. It can still be non-zero when a union
+       * carries `exclude` operands, because a suppression list may hold keys no include does and those are
+       * legitimately never fetched. So: 0 is the expected shape for a plain union, not a guarantee.
        */
       readonly op?: 'intersect' | 'union' | 'andNot';
       /** Operand count, including any `exclude` (suppression) operands. */
       readonly operands: number;
-      /** Distinct chunk-keys selected to fetch (for `'intersect'`, those present in every operand). */
+      /**
+       * Distinct chunk **keys** selected to fetch — for `'intersect'`, those present in every operand.
+       *
+       * **Keys, not requests.** The actual cold GETs are roughly `fetchedChunks × operands`, plus one per
+       * `exclude` that holds a given key, which is why this number is smaller than what the per-op budget
+       * charges for the same call. The two are different units by design; if you are reconciling a bill, the
+       * budget's accounting is the one that models requests.
+       */
       readonly fetchedChunks: number;
       /**
        * **Distinct** chunk-keys pruned — never fetched (the chunk-skipping saving). Counts distinct keys,

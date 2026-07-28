@@ -18,6 +18,7 @@ import {
 } from './errors';
 import type { BlobReader } from './blob';
 import { yieldEvery } from './cooperative';
+import type { Yielder } from './cooperative';
 import type { Clock } from './determinism';
 import { BoundedLru } from './lru';
 import { splitId } from './bit-route';
@@ -418,7 +419,7 @@ export function writeCrbmGeneration(
   driver: IColdDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Clock } = {},
+  options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
 ): Promise<{ size: number; sha256: string }> {
   const sorted = [...chunks].sort((a, b) => a.chunkKey - b.chunkKey);
   // The single longest blocking stretch in a bulk load: serialize + CRC32C + frame, once per chunk, ~62,000
@@ -459,7 +460,7 @@ export async function writeCrbmGenerationStream(
   driver: IColdDriver,
   key: GenKey,
   chunks: AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>,
-  options: { crypto?: CrbmCrypto; clock?: Clock } = {},
+  options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
 ): Promise<StreamWriteResult> {
   const chunkKeys: number[] = [];
   let cardinality = 0;
@@ -615,8 +616,10 @@ export async function bulkLoadCrbmGeneration(
   // (`fromArrayAsync`) costs ~9 µs of dispatch against ~1.5 µs of actual work once ids are spread across
   // ~61,000 chunks — 636 ms versus 92 ms, a 7x regression that would have undone the per-chunk batching this
   // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
-  // starvation fix without the cost: 88 ms wall against a 92 ms baseline, and event-loop starvation down from
-  // 819 ms to ~4 ms.
+  // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
+  // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
+  // `cooperative.ts`; an earlier version of this comment spliced the two, pairing a 92 ms operation with
+  // 819 ms of starvation, which is impossible on its face.
   //
   // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
   // is the trap that makes naive "just await something" fixes measure as no change at all.

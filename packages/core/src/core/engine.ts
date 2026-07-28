@@ -1,5 +1,5 @@
 /**
- * SegmentEngine — the in-memory core: routing + tombstone merge + the HOT cache, exposing the seven
+ * SegmentEngine — the in-memory core: routing + tombstone merge + the HOT cache, exposing the read/write
  * ops over the driver interfaces. Storage-agnostic and time/random-free
  * (the determinism seam): all I/O is via injected drivers; the cache carries its own `Clock`.
  */
@@ -75,6 +75,17 @@ class InstantClock implements Clock {
   sleep(): Promise<void> {
     return Promise.resolve();
   }
+  /**
+   * An explicit no-op, so the intent is stated rather than inferred.
+   *
+   * Without it, `yieldEvery` would fall back to `sleep(1)` — and this clock's `sleep` ignores its argument and
+   * resolves on a microtask, so the "yield" would silently do nothing while every doc comment claimed it did
+   * something. This wiring has no real event loop to be courteous to (it is the clock used when nobody injects
+   * one), so no-op is the right behaviour; it just has to be a decision rather than an accident.
+   */
+  yieldNow(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 class ZeroRng implements Rng {
   next(): number {
@@ -103,8 +114,8 @@ export const DEFAULT_MAX_WARM_SCAN_BYTES = 64 * 1024 * 1024;
  * write here is a read-modify-write, so 4 in flight is up to 8 concurrent requests per `addMany` call — and a
  * server handling many concurrent calls multiplies that again. Provisioned-capacity backends answer a burst
  * with throttling, which is free only while retries can absorb it (4 attempts, exponential backoff, full
- * jitter). Swept against a backend that throttles on concurrent requests in flight, 64 chunks, 5 trials each,
- * counting a lost id or a surfaced error as a failure:
+ * jitter). Swept against a **modelled** backend — an in-process fake that throttles on concurrent requests in
+ * flight, not a real DynamoDB — 64 chunks, 5 trials each, counting a lost id or a surfaced error as a failure:
  *
  * ```text
  *   backend capacity:      1      2      4      8
@@ -340,6 +351,17 @@ export class SegmentEngine {
   }
 
   /**
+   * `segs[0] ∩ segs[1] ∩ …`, minus every id in `options.exclude` — streamed ascending.
+   *
+   * The `exclude` operands are what make suppression **compose without materialising**. Applying suppression
+   * afterwards (intersect into a temp segment, then remove) writes an intermediate segment that nobody wants;
+   * applying it here folds it into the same chunk-aligned pass. It is also cheaper than it looks: an exclude
+   * operand is read **only at the keys that survived the intersection** — the cost is bounded by the
+   * audience's surviving key count and **never scales with the size of the suppression list**. Subtracting a
+   * 61,000-chunk global opt-out list costs at most one read per surviving key, not 61,000.
+   *
+   * ---
+   *
    * Chunk-skipping intersection. Computes
    * `seg[0] ∩ seg[1] ∩ …` and streams the result ids ascending. It aligns each segment's *effective*
    * chunk-key set (Warm ∪ Cold), keeps only keys present in **all** operands (a key missing from any
@@ -363,15 +385,6 @@ export class SegmentEngine {
    * is unaffected **unless the reader cache evicts an operand mid-call** (`maxOpenSegments`, gap #1): the re-read
    * re-resolves fresh (bypassing the TTL), which can hop generations even sub-TTL — still whole/immutable per
    * read, never torn. Full intra-op snapshot isolation is deferred (gap #4).
-   */
-  /**
-   * `segs[0] ∩ segs[1] ∩ …`, minus every id in `options.exclude` — streamed ascending.
-   *
-   * The `exclude` operands are what make suppression **compose without materialising**. Applying suppression
-   * afterwards (intersect into a temp segment, then remove) writes an intermediate segment that nobody wants;
-   * applying it here folds it into the same chunk-aligned pass. It is also cheaper than it looks: an exclude
-   * operand is read **only at the keys that survived the intersection**, so a 61,000-chunk global opt-out list
-   * intersected against a narrow audience costs a handful of reads, not 61,000.
    */
   intersect(
     segs: readonly SegmentRef[],
@@ -496,6 +509,11 @@ export class SegmentEngine {
         for (const k of op.keys) distinctKeys.add(k);
       }
       for (const e of excludes) for (const k of e.keys) distinctKeys.add(k);
+      // `fetchedChunks` counts **distinct chunk keys**, not per-operand reads — its long-standing documented
+      // unit, asserted by the bench anchors and the metrics tests. Deliberately NOT changed to match the
+      // budget's request count: they measure different things on purpose (keys vs billable requests), and
+      // silently redefining a published observability field in a patch release would break every dashboard
+      // built on it. The relationship is documented on the event instead.
       this.metrics.onEvent({
         kind: 'intersect',
         op,
@@ -663,8 +681,10 @@ export class SegmentEngine {
    * So the staging buffer is capped, but it folds into per-chunk **compressed bitmaps** rather than being
    * written out. Peak memory is the roaring representation of the ids seen so far — which is what the segment
    * itself costs, and the floor for any implementation that writes each chunk exactly once — while the backend
-   * still sees exactly one read-modify-write per distinct chunk regardless of stream length. This is strictly
-   * less memory than the previous sync-only version, which held every remainder as an uncompressed JS number.
+   * still sees exactly one read-modify-write per distinct chunk regardless of stream length. Above the staging cap
+   * this holds less than the previous sync-only version, which kept every remainder as an uncompressed JS
+   * number; below it — the common `addMany` — nothing is compacted until the end and the two are comparable.
+   * The guarantee is that a stream of *any* length stays bounded, not that every call got smaller.
    *
    * There is no way to do better without a sorted stream: a chunk can only be written once it is known that no
    * further ids for it will arrive, and unsorted input never gives that guarantee. Callers streaming *very*
@@ -679,7 +699,7 @@ export class SegmentEngine {
     const byChunk = new Map<number, CodecBitmap>();
     const staged = new Map<number, number[]>();
     let pending = 0;
-    const tickId = yieldEvery(this.clock, YIELD_EVERY_IDS);
+    const tickId = yieldEvery(this.clock, YIELD_EVERY_IDS); // async ingest only — see the sync loop's note
 
     /** Fold the staged remainders into their chunks' bitmaps, releasing the uncompressed buffers. */
     const compact = (): void => {
@@ -714,11 +734,19 @@ export class SegmentEngine {
         if (pause !== null) await pause;
       }
     } else {
+      // A SYNC source is drained with no `await` inside the loop, and that is a correctness requirement rather
+      // than an optimisation. An async function body runs synchronously up to its first `await`, so a sync
+      // input has always been effectively **snapshotted** at call time — `addMany(buf)` without awaiting, then
+      // mutating `buf`, could not lose ids. Yielding mid-loop silently broke that: with a yield every
+      // `YIELD_EVERY_IDS`, a caller who recycled a 40,000-id scratch buffer before awaiting landed exactly
+      // 16,384 ids and got **no error**. Size-dependent, so no small test would ever show it.
+      //
+      // Nothing is lost by draining eagerly here. The input is already fully in memory (that is what makes it
+      // sync), the loop costs ~11 ms per 1M ids, and the operation's real time is the OCC round-trips below,
+      // which yield naturally. Streaming callers who want cooperative ingest pass an async iterable.
       for (const id of ids as Iterable<number>) {
         stage(id);
         if (pending >= MUTATE_STAGE_IDS) compact();
-        const pause = tickId();
-        if (pause !== null) await pause;
       }
     }
     compact();

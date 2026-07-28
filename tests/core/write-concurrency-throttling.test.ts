@@ -29,16 +29,23 @@ class ThrottlingWarm implements IWarmDriver {
   peakInFlight = 0;
   throttled = 0;
   writes = 0;
+  attempts = 0;
 
   constructor(
     private readonly capacity: number,
-    private readonly inner: MemoryWarmDriver = new MemoryWarmDriver(),
+    readonly inner: MemoryWarmDriver = new MemoryWarmDriver(),
   ) {}
 
   /** Model one backend call: count it, throttle if over capacity, and take a real tick so overlap is real. */
   private async gate<T>(run: () => Promise<T>, isWrite: boolean): Promise<T> {
     this.inFlight += 1;
     if (this.inFlight > this.peakInFlight) this.peakInFlight = this.inFlight;
+    // Counted BEFORE the capacity check, so `attempts` reflects what the engine tried to do rather than what
+    // this fake permitted. `writes` is counted after, and at capacity 0 that made the old assertion
+    // tautological — no implementation could have made it non-zero. (Note a read-modify-write starts with a
+    // GET, so at capacity 0 the read throttles and a PUT is never even attempted: only a counter over ALL
+    // backend calls can show the engine tried at all.)
+    this.attempts += 1;
     try {
       if (this.inFlight > this.capacity) {
         this.throttled += 1;
@@ -152,21 +159,42 @@ describe('write concurrency absorbs backend throttling', () => {
   });
 
   it('removeMany is absorbed too — it uses the same flusher', async () => {
+    // This asserted only `count()`, so it passed at `writeConcurrency: 1` — the very regression the file
+    // guards — despite the header claiming both load-bearing assertions appear in every case. Now it holds
+    // itself to that standard: throttling happened, writes overlapped, and the right ids survived.
     const warm = new ThrottlingWarm(2);
     const store = storeOn(warm);
     await store.segment(SEG).addMany(IDS);
+    warm.throttled = 0;
+    warm.peakInFlight = 0;
     await store.segment(SEG).removeMany(IDS.slice(0, 12));
+
+    expect(warm.throttled).toBeGreaterThan(0);
+    expect(warm.peakInFlight).toBeGreaterThan(1);
     await expect(store.segment(SEG).count()).resolves.toBe(IDS.length - 12);
+    for (const id of IDS.slice(0, 12))
+      await expect(store.segment(SEG).has(id)).resolves.toBe(false);
+    for (const id of IDS.slice(12)) await expect(store.segment(SEG).has(id)).resolves.toBe(true);
   });
 
   it('still fails closed when throttling outlasts the retry budget', async () => {
     // The inverse guarantee, and the more important one. Retries absorbing throttling must never shade into
     // *hiding* a backend that is genuinely refusing work. A capacity-0 backend refuses everything; the caller
     // must get a TransientError, not a silent partial write reported as success.
+    //
+    // `writes` alone could not establish that: the fake increments it only after the capacity check, so at
+    // capacity 0 it is unreachable by construction. The real observable is the SEGMENT — nothing landed —
+    // plus proof the engine genuinely tried, which is what `attemptedWrites` is for.
     const warm = new ThrottlingWarm(0);
     const store = storeOn(warm);
     await expect(store.segment(SEG).addMany(IDS)).rejects.toBeInstanceOf(TransientError);
-    expect(warm.writes).toBe(0);
+    expect(warm.attempts).toBeGreaterThan(0); // the engine really did call the backend
+    expect(warm.writes).toBe(0); // and none got through
+    const readable = new CloudRoaring({
+      warm: new (class extends ThrottlingWarm {})(999, warm.inner) as unknown as IWarmDriver,
+      cold: new MemoryColdChunkSource(),
+    } as never);
+    await expect(readable.segment(SEG).count()).resolves.toBe(0); // nothing landed
   });
 
   it('rejects a nonsensical concurrency at construction, not at write time', async () => {

@@ -31,7 +31,8 @@ type RunExport = typeof coreRunExport;
  * {@link coreBulkLoad} with the roaring codec **and a real clock** pre-bound.
  *
  * The clock is what makes a large load **cooperative**: bulk-load yields the event loop periodically instead of
- * stalling the process for its whole duration (measured at 819 ms for 1M ids before this). `core/` cannot
+ * stalling the process for its whole duration (measured end-to-end at 450 ms of unbroken blocking for a 1M-id
+ * load, now ~19 ms worst case). `core/` cannot
  * default it — it is timer-free by lint, which is precisely why waiting goes through the `Clock` seam — so the
  * flavor package supplies it, exactly as it supplies the codec. A caller who passes their own clock (a virtual
  * one in a simulation, say) keeps it.

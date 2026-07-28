@@ -1049,8 +1049,22 @@ why the registry must be point-in-time-recoverable alongside the object store.
 | `has(id)` | `Promise<boolean>` | |
 | `count()` | `Promise<number>` | exact cardinality; `budget`-guarded ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
 | `iterate()` | `AsyncIterable<number>` | ascending; `budget`-guarded |
-| `intersect(others)` | `AsyncIterable<number>` | ascending; chunk-skipping; `concurrency` + `budget` options |
-| `intersectInto(dest, others)` | `Promise<void>` | materialize the result into `dest`; **not atomic** |
+| `intersect(others, { exclude? })` | `AsyncIterable<number>` | ascending; chunk-skipping; `concurrency` + `budget` options. `exclude` subtracts suppression segments **in the same pass** |
+| `union(others, { exclude? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `andNot(excludes)` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
+| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<void>` | materialize the result into `dest`; **not atomic** |
+
+**What each combine has to read** — a property of the set operation, not of the implementation:
+
+| | chunks read | can skip? |
+| --- | --- | --- |
+| `intersect` | keys present in **every** operand | yes — the crown jewel |
+| `andNot` (`a \ s`) | every chunk of `a`; `s` **only where it overlaps `a`** | partly |
+| `union` | every chunk of **every** operand | no |
+
+All three are charged against the same per-op budget, so a wide `union` is refused rather than quietly billed.
+To suppress the result of an intersection, pass `exclude` rather than chaining — chaining materializes an
+intermediate segment and reads the suppression list in full.
 
 Failures are **typed errors** (`ValidationError`, `WriteConflictError`, `IntegrityError`, …), never thrown
 strings — so callers can branch on *why* something failed.

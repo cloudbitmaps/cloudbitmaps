@@ -81,7 +81,7 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 | `seg.andNot([sup, …], { concurrency? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, but each exclude **only where it overlaps** |
 | `seg.intersectInto` · `seg.unionInto` · `seg.andNotInto` `(dest, …, { batchSize? })` → `Promise<void>` | materialize the result **into** another segment |
 
-That's the whole daily surface: **1 constructor + pick 3 drivers + these 10 verbs.**
+That's the whole daily surface: **1 constructor + pick 3 drivers + these verbs.**
 
 **Which chunks each combine has to read** — this is the cost model, and it is a property of the set operation
 rather than of the implementation:
@@ -164,7 +164,11 @@ The option / result types the public methods above reference — you import thes
 ### The tier interfaces (used to type `cold` / `warm` / `registry`)
 
 `IColdDriver` · `IWarmDriver` · `IRegistryDriver` · `ColdChunkSource` · `SegmentRef` · `IKeystore` · `RetryPolicy`
-· `Clock` · `Rng` · `BaseCombineOptions` · `CombineOptions` · `CombineIntoOptions`
+· `Clock` · `Rng`
+
+### Combine options (used to type `intersect` / `union` / `andNot`)
+
+`BaseCombineOptions` · `CombineOptions` · `CombineIntoOptions`
 
 ---
 
