@@ -18,8 +18,8 @@ sustained write/read rate, pay-per-use is far cheaper; above it, the flat node w
 | Scenario | Value | Basis | Verdict |
 | --- | --- | --- | --- |
 | At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of Redis | win-big |
-| Write crossover | **26.33 writes/s** | 8 KiB items | past here Redis wins |
-| Read crossover | **526.64 reads/s** | Topology-B, cache off | past here Redis wins |
+| Write crossover | **26.33 writes/s** | 8 KiB items | past here a flat tier is cheaper |
+| Read crossover | **526.64 reads/s** | Topology-B, cache off | past here a flat tier is cheaper |
 | Redis-HA baseline | **$346/mo** | flat | the comparison line |
 <!-- BENCH:STATS:END -->
 

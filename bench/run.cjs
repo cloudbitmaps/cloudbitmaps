@@ -249,13 +249,13 @@ const rows = [
     'Write crossover',
     `${results.writeCrossoverPerSec} writes/s`,
     '8 KiB items',
-    'past here Redis wins',
+    'past here a flat tier is cheaper',
   ],
   [
     'Read crossover',
     `${results.readCrossoverPerSec} reads/s`,
     'Topology-B, cache off',
-    'past here Redis wins',
+    'past here a flat tier is cheaper',
   ],
   ['Redis-HA baseline', `$${REDIS}/mo`, 'flat', 'the comparison line'],
 ];
