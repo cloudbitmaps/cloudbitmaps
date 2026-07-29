@@ -31,7 +31,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-const PAGE = path.join(ROOT, 'site', 'benchmarks.html');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
 const DOC = path.join(ROOT, 'docs', 'benchmarks.md');
 
@@ -156,14 +155,33 @@ const anchors = [
   ]),
 ];
 
-let html;
-try {
-  html = fs.readFileSync(PAGE, 'utf8');
-} catch {
-  fail(`${path.relative(ROOT, PAGE)} is missing`);
-}
+// ── the inverse check now covers HOME as well as /benchmarks ───────────────────────────────────────────────
+// The rebuilt home page states, in its own words, that "every money figure and rate on this site is checked in
+// CI against the sources that produced it — in both directions". That was FALSE the moment it was written: this
+// script only ever read benchmarks.html, and Home quotes eight money figures of its own.
+//
+// A page claiming our rigour while nothing enforces it is the specific failure this script was created to fix
+// (the designed benchmarks page said its anchors were CI-asserted when nothing asserted them). Shipping the same
+// error again, on the home page, would be worse than the first time. So the claim is made true instead.
+//
+// Home is checked for the INVERSE direction only. It is a summary: it is expected to quote a subset, and
+// requiring every anchor to appear on it would force the estimator's p50, the calibration run id and the
+// crossover topologies onto a page whose job is not to carry them. What must never happen is Home stating a
+// figure no source accounts for.
+const PAGES = [
+  { rel: 'site/benchmarks.html', requireAll: true },
+  { rel: 'site/index.html', requireAll: false },
+];
 
-if (html) {
+for (const page of PAGES) {
+  const PAGE_PATH = path.join(ROOT, page.rel);
+  let html;
+  try {
+    html = fs.readFileSync(PAGE_PATH, 'utf8');
+  } catch {
+    fail(`${page.rel} is missing`);
+  }
+  if (!html) continue;
   // The inlined crossover chart is stripped out before the prose scan, and then checked separately below.
   //
   // Why: its y-axis ticks are $0/$200/$400/$600 and its curve labels restate the crossovers, so leaving it in
@@ -183,11 +201,11 @@ if (html) {
   // Mirrors bench/run.cjs's own rounding: one decimal below 100/s, none above.
   const chartLabel = (n) => `crossover ≈ ${n.toFixed(n < 100 ? 1 : 0)} /s`;
   const chart = svgs.find((s) => s.includes('crossover'));
-  if (!chart) {
+  if (page.requireAll && !chart) {
     fail(
       'benchmarks.html no longer inlines the crossover chart — run `pnpm bench` to refill BENCH:CHART',
     );
-  } else {
+  } else if (chart) {
     for (const [what, want] of [
       ['the write crossover', chartLabel(results.writeCrossoverPerSec)],
       ['the read crossover', chartLabel(results.readCrossoverPerSec)],
@@ -199,10 +217,12 @@ if (html) {
     }
   }
 
-  // 1 · every anchor must be stated
-  for (const [name, want] of anchors) {
-    if (want === null) continue;
-    if (!visible.includes(want)) fail(`benchmarks.html never states ${name} (${want})`);
+  // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them
+  if (page.requireAll) {
+    for (const [name, want] of anchors) {
+      if (want === null) continue;
+      if (!visible.includes(want)) fail(`${page.rel} never states ${name} (${want})`);
+    }
   }
 
   // 2 · and nothing else that looks like money or a rate may appear
@@ -215,11 +235,15 @@ if (html) {
     '2,000', // chunks per segment — same
     '25.3 ms', // intersect wall time — same
     '1,900', // chunks skipped per segment — same
+    // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
+    // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
+    // one figure that needs no evidence.
+    '$0',
   ]);
   const money = visible.match(/\$[\d,]+(?:\.\d+)?/g) || [];
   for (const m of new Set(money)) {
     if (!allowed.has(m) && !alsoAllowed.has(m)) {
-      fail(`benchmarks.html states ${m}, which no source accounts for`);
+      fail(`${page.rel} states ${m}, which no source accounts for`);
     }
   }
 }

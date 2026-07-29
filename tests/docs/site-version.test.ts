@@ -34,11 +34,22 @@ const VERSION_RE = /\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  * release. A guard that fires on correct content trains people to ignore it, so the match is anchored on what
  * actually distinguishes a badge: both shapes the site uses — the header `CloudBitmaps v0.1.3 · pre-1.0` and
  * the footer `pre-1.0 v0.1.3` — carry `pre-1.0` on the same line. Third-party versions never do.
+ *
+ * UPDATE — that anchor turned out to reach exactly ONE of the seven pages. Every page displays the release
+ * twice, in a header eyebrow and a footer line, and only benchmarks.html happened to put `pre-1.0` on the same
+ * line as one of them. So the guard written because "the site pages carry the same number in two places each,
+ * guarded by nothing" was itself guarding one place out of fourteen. A gate with that little reach reports
+ * coverage it does not have, which is worse than no gate at all — it is the reason nobody re-checks.
+ *
+ * `Apache-2.0` joins it as a second anchor. It sits on every footer line that names the version, it is OUR
+ * licence rather than a dependency's, and it preserves the property that made `pre-1.0` the right pick: a
+ * third-party version never appears beside it. Verified against the whole tree — the Node version in the
+ * benchmarks methodology (`v24.14.1`) matches neither anchor. Coverage went from 1 page to 7.
  */
 function badgeVersions(html: string): string[] {
   return html
     .split('\n')
-    .filter((line) => line.includes('pre-1.0'))
+    .filter((line) => line.includes('pre-1.0') || line.includes('Apache-2.0'))
     .flatMap((line) => [...line.matchAll(VERSION_RE)].map((m) => m[1] as string));
 }
 

@@ -3371,3 +3371,197 @@ em {
     gap: 6px;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   HOME — components introduced by the rebuilt overview page
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── the codec picker, with NO JavaScript ──────────────────────────────────────
+   The delivery built this as a reactive widget, and with scripting disabled ten
+   `{{ flavorPkg }}`-style bindings rendered as literal text on the page. Measured: 0 leaks
+   with JS, 10 without.
+
+   Radios instead. Every variant's copy is in the markup and CSS reveals the checked one, so
+   there is no state to hydrate and no way for a placeholder to escape — the failure mode is
+   removed rather than mitigated. It is also a real radio group: arrow keys work, it is
+   announced as a group, and it needs no ARIA beyond the label.
+
+   This is the pattern .theme-toggle already uses, so it is precedent rather than invention.
+   The radios sit at the top of the section so that everything that switches — layer 01's
+   panes AND layer 03's scope caption, which are in different panels — is reachable by the
+   `:checked ~ *` sibling combinator. */
+.codec-pick input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pick {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+  margin-bottom: 28px;
+}
+
+.pick-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+}
+
+.pick-tabs {
+  display: flex;
+  border: 1px solid var(--cb-rule);
+}
+
+.pick-tabs label {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  line-height: normal;
+  padding: 5px 11px;
+  cursor: pointer;
+  color: var(--cb-muted);
+}
+
+.pick-tabs label + label {
+  border-left: 1px solid var(--cb-rule);
+}
+
+.pick-body {
+  padding: 16px;
+}
+
+/* Panes are hidden by default so that a browser which somehow applies no :checked rule shows
+   the FIRST pane's content rather than all three stacked. Roaring is checked in the markup. */
+.pane {
+  display: none;
+}
+
+#cb-codec-roaring:checked ~ * .pane.for-roaring,
+#cb-codec-bitset:checked ~ * .pane.for-bitset,
+#cb-codec-soaring:checked ~ * .pane.for-soaring {
+  display: block;
+}
+
+#cb-codec-roaring:checked ~ * .pick-tabs label[for='cb-codec-roaring'],
+#cb-codec-bitset:checked ~ * .pick-tabs label[for='cb-codec-bitset'],
+#cb-codec-soaring:checked ~ * .pick-tabs label[for='cb-codec-soaring'] {
+  background: var(--cb-surface-2);
+  color: var(--cb-ink);
+}
+
+/* Focus has to be visible on the LABEL, since the input it belongs to is off-screen. */
+.codec-pick input:focus-visible + input + input + .pick .pick-tabs label,
+.pick-tabs label:hover {
+  color: var(--cb-ink);
+}
+
+.codec-pick input:focus-visible ~ * .pick-tabs label[for='cb-codec-roaring'],
+.codec-pick input:focus-visible ~ * .pick-tabs label[for='cb-codec-bitset'],
+.codec-pick input:focus-visible ~ * .pick-tabs label[for='cb-codec-soaring'] {
+  outline: 2px solid var(--cb-cyan);
+  outline-offset: -2px;
+}
+
+.pick-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .pick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── a measured figure with its caption ────────────────────────────────────────
+   Used a dozen times on Home. .bill-fig exists but is money-specific; this one carries a
+   unit and a caption and does not imply currency. */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+}
+
+.metric-fig {
+  display: block;
+  font-family: var(--cb-mono);
+  font-size: 30px;
+  line-height: 1.05;
+  color: var(--cb-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-fig .u {
+  font-size: 15px;
+  color: var(--cb-muted);
+}
+
+.metric-what {
+  display: block;
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--cb-ink);
+}
+
+.metric-cap {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--cb-muted);
+}
+
+/* ── the five operations ───────────────────────────────────────────────────────
+   The API surface as pills. Deliberately not .status chips: those carry a verdict, these are
+   just names, and reusing a verdict component for a neutral list is how two meanings end up
+   sharing one hook. */
+.ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.ops li {
+  font-family: var(--cb-mono);
+  font-size: 13px;
+  padding: 5px 11px;
+  border: 1px solid var(--cb-rule);
+  color: var(--cb-ink);
+}
+
+/* ── where to go next ──────────────────────────────────────────────────────────*/
+.next-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1px;
+  background: var(--cb-rule);
+  border: 1px solid var(--cb-rule);
+}
+
+.next-item {
+  display: block;
+  padding: 16px;
+  background: var(--cb-surface);
+  color: var(--cb-ink);
+  text-decoration: none;
+}
+
+.next-item:hover {
+  background: var(--cb-surface-2);
+}
+
+.next-item .next-path {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  color: var(--cb-cyan);
+}
