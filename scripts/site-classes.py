@@ -1,12 +1,18 @@
 """Every class used in markup must be defined in the stylesheet.
 
+Scoped to `site/`. `site-old/` is deliberately out of scope: it carries 32 undefined class references of its own
+(29 on its architecture page, where the tombstone and generation diagrams render as bare markup), which is
+precisely why it was superseded rather than fixed.
+
 This is the `.table` bug generalised: markup referencing a class the sheet never
 declares renders as bare HTML and nothing complains. Both instances of it on
 /demo were found by eye, in a screenshot, after shipping.
 """
 import re, sys, glob, os
 
-css = open('site-final/cloudbitmaps.css').read()
+ROOT = 'site'
+
+css = open(f'{ROOT}/cloudbitmaps.css').read()
 css_no_comments = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
 defined = set(re.findall(r'\.([A-Za-z][\w-]*)', css_no_comments))
 
@@ -16,7 +22,7 @@ defined = set(re.findall(r'\.([A-Za-z][\w-]*)', css_no_comments))
 INTENTIONAL = {'rc1'}
 
 bad = {}
-for page in sorted(glob.glob('site-final/*.html')):
+for page in sorted(glob.glob(f'{ROOT}/*.html')):
     html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
     used = set()
     for m in re.finditer(r'class="([^"]*)"', html):

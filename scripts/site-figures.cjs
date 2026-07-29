@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gates the cost anchors on `site-final/benchmarks.html` against their sources.
+ * Gates the cost anchors on `site/benchmarks.html` against their sources.
  *
  * WHY THIS SCRIPT EXISTS
  *
@@ -31,7 +31,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-const PAGE = path.join(ROOT, 'site-final', 'benchmarks.html');
+const PAGE = path.join(ROOT, 'site', 'benchmarks.html');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
 const DOC = path.join(ROOT, 'docs', 'benchmarks.md');
 

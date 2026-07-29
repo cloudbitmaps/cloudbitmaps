@@ -48,7 +48,3 @@ crash-*
 # Real-cloud calibration: the LocalStack REHEARSAL output is a mechanics check, not published evidence, so it
 # is not committed. `bench/calibrate-aws-results.json` (a real run) IS committed — it is the evidence.
 bench/calibrate-aws-rehearsal.json
-
-# site2/ is a local copy of the design delivery, kept only to diff site-final/ against with Playwright.
-# It is their build output with a design-tool harness, not our source.
-site2/

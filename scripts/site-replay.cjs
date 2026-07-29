@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Generates `site-final/assets/replay.json` — the data the /demo page replays.
+ * Generates `site/assets/replay.json` — the data the /demo page replays.
  *
  * WHY THIS IS A GENERATOR AND NOT A HAND-WRITTEN FILE
  *
@@ -40,7 +40,7 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
 const SOURCE = path.join(ROOT, 'bench', 'scale-results.json');
-const TARGET = path.join(ROOT, 'site-final', 'assets', 'replay.json');
+const TARGET = path.join(ROOT, 'site', 'assets', 'replay.json');
 
 function fail(msg) {
   console.error(`site-replay: ${msg}`);
@@ -217,7 +217,7 @@ const text = JSON.stringify(out, null, 2) + '\n';
  * benchmark disagree, the gate fails rather than the argument.
  */
 function checkPage() {
-  const PAGE = path.join(ROOT, 'site-final', 'demo.html');
+  const PAGE = path.join(ROOT, 'site', 'demo.html');
   let html;
   try {
     html = fs.readFileSync(PAGE, 'utf8');
@@ -351,7 +351,7 @@ if (process.argv.includes('--check')) {
   }
   const pageProblems = checkPage();
   if (pageProblems.length) {
-    fail(`site-final/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
+    fail(`site/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
   }
   console.log('site-replay: replay.json and demo.html are current.');
   process.exit(0);

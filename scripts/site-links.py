@@ -1,4 +1,4 @@
-"""Every internal link and asset reference in site-final/ must resolve.
+"""Every internal link and asset reference in site/ must resolve.
 
 Cross-links accumulate while pages are built one at a time, and a link to a page that does not exist yet is
 indistinguishable from a typo unless something enumerates them. This prints outstanding targets rather than
@@ -6,7 +6,7 @@ only failing, so the list doubles as the build queue.
 """
 import re, sys, glob, os
 
-ROOT = 'site-final'
+ROOT = 'site'
 pages = sorted(glob.glob(f'{ROOT}/*.html'))
 missing = {}
 for page in pages:

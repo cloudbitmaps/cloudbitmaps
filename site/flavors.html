@@ -4,9 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script>
-      // Applied BEFORE first paint, deliberately inline and unminified: a deferred or external script would
-      // let the default dark ground paint and then flip, which is the flash this exists to prevent.
-      // `prefers-color-scheme` is consulted only when nothing has been stored — an explicit choice wins.
       (function () {
         try {
           var stored = localStorage.getItem('cb-theme');
@@ -19,54 +16,63 @@
         }
       })();
     </script>
-    <title>Flavors — CloudBitmaps</title>
+    <title>CloudBitmaps flavors — one engine, pluggable codecs</title>
     <meta
       name="description"
-      content="One engine, pluggable codecs. Pick the codec that matches your ids — @cloudbitmaps/roaring ships today; the tiering, chunk-skipping intersection and ten storage drivers are identical whichever you choose."
+      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. Tiering, chunk-skipping intersection, compaction and the ten storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
-    <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
-         the tag silently un-verifies the property, which drops the sitemap and coverage reports with no
-         warning. Not a secret (it is public HTML) and it identifies the property, not an account. -->
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
     <link rel="canonical" href="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="CloudBitmaps" />
-    <meta property="og:title" content="Flavors — CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       property="og:description"
-      content="Pick the codec that matches your ids. The rest of the system is identical."
+      content="A flavor decides how a chunk of ids is represented. Everything else — tiering, chunk-skipping, compaction, ten drivers — is codec-agnostic."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Flavors — CloudBitmaps" />
+    <meta name="twitter:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       name="twitter:description"
-      content="Pick the codec that matches your ids. The rest of the system is identical."
+      content="A flavor decides how a chunk of ids is represented. Everything else is codec-agnostic."
     />
     <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
-    <!-- Progressive bit reduction, per the specimen: the mark's nine bits survive at 64px and turn to mud
-         below it, so 32 carries five and 16 carries three, enlarged and re-spaced. Declared by size so the
-         browser picks; without these two links the simplified art shipped but never reached anyone. -->
     <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
     <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
     <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
-  <body class="page-flavors">
+  <body>
     <header class="topbar">
       <div class="topbar-inner">
-        <a class="brand" href="index.html"
-          ><svg class="mark" viewBox="253 210 798 798" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"/><rect x="336" y="376" width="39" height="39" rx="5" fill="var(--cb-bit-4)"/><rect x="421" y="433" width="97" height="91" rx="7" fill="var(--cb-bit-5)"/><rect x="273" y="541" width="130" height="127" rx="7" fill="var(--cb-bit-3)"/><rect x="425" y="562" width="78" height="78" rx="6" fill="var(--cb-bit-2)"/><rect x="416" y="703" width="89" height="90" rx="6" fill="var(--cb-bit-1)"/><rect x="538" y="732" width="55" height="56" rx="6" fill="var(--cb-bit-6)"/><rect x="616" y="705" width="68" height="68" rx="6" fill="var(--cb-bit-7)"/><rect x="332" y="816" width="50" height="51" rx="6" fill="var(--cb-bit-1)"/><rect x="414" y="900" width="72" height="74" rx="6" fill="var(--cb-bit-1)"/></svg> CloudBitmaps
-          <small>v0.4.1 · pre-1.0</small></a
-        >
-        <nav class="jump">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
           <a href="index.html">Overview</a>
-          <a href="usage.html">Usage</a>
-          <a href="architecture.html">Architecture</a>
-          <a href="benchmarks.html">Benchmarks</a>
+          <a href="demo.html">Demo</a>
           <a class="active" href="flavors.html" aria-current="page">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </nav>
         <div class="theme-toggle" role="group" aria-label="Colour theme">
@@ -79,194 +85,181 @@
     </header>
 
     <main class="wrap">
-      <section class="hero-flavors">
-        <div>
-          <p class="hero-kicker">Flavors · one engine, pluggable codecs</p>
-          <h1>Pick the codec that matches your ids. The rest of the system is identical.</h1>
-          <p class="prose">
-            <span class="pkg">@cloudbitmaps/core</span> is codec-agnostic: tiering, chunk-skipping intersection,
-            compaction, encryption and the ten storage drivers live there and do not change. A flavor
-            decides one thing — how a chunk of ids is represented on the wire and at rest. Choose on the
-            shape of your id space, not on a benchmark.
-          </p>
-          <p class="hero-actions">
-            <a class="btn btn-primary" href="flavors-roaring.html">Go to /flavors/roaring →</a>
-            <a class="btn btn-ghost" href="architecture.html">Architecture</a>
-          </p>
-        </div>
-        <aside class="panel">
-          <div class="panel-label">Shared by every flavor</div>
-          <div class="panel-rows">
-            <div class="panel-row"><span class="k">Storage drivers</span><span class="v">10</span></div>
-            <div class="panel-row">
-              <span class="k">Tiers</span><span class="v">RAM · warm · cold</span>
-            </div>
-            <div class="panel-row">
-              <span class="k">API surface</span><span class="v">add has remove count intersect</span>
-            </div>
-            <div class="panel-row">
-              <span class="k">Chunk-skipping ∩</span
-              ><span class="v is-live">yes, codec-independent</span>
-            </div>
-            <div class="panel-row"><span class="k">Runtime deps</span><span class="v">1</span></div>
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The headline is an instruction, not a description: a reader arriving here has a choice to make and
+           the page exists to make it for them in one line. The panel beside it lists what does NOT vary,
+           because the most useful thing to know before choosing is how little the choice touches. -->
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Flavors · one engine, pluggable codecs</p>
+            <h1>Pick the codec that matches your ids.</h1>
+            <p class="hero-lede">
+              <span class="m">@cloudbitmaps/core</span> is codec-agnostic. Tiering, chunk-skipping
+              intersection, compaction, encryption and the ten storage drivers live there and do not change. A
+              flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
+            </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="flavors-roaring.html">How Roaring works →</a>
+              <a class="btn" href="usage.html">Six-line quickstart</a>
+            </p>
+            <p class="meta">Choose on the shape of your id space, not on a benchmark.</p>
           </div>
-        </aside>
+
+          <aside class="panel">
+            <div class="panel-head label">Shared by every flavor</div>
+            <p class="panel-row is-pair"><span>Storage drivers</span><span class="is-live">10</span></p>
+            <p class="panel-row is-pair"><span>Tiers</span><span>RAM · warm · cold</span></p>
+            <p class="panel-row is-pair">
+              <span>API surface</span
+              ><span class="m">add has remove count intersect</span>
+            </p>
+            <p class="panel-row is-pair"><span>Chunk-skipping intersect</span><span>codec-independent</span></p>
+            <p class="panel-row is-pair"><span>Runtime deps</span><span class="is-live">1</span></p>
+          </aside>
+        </div>
       </section>
 
-      <section class="section">
-        <div class="data-table-wrap">
-          <div class="label-strip label-split">
-            <span>Choose one</span><span>Scrolls horizontally on narrow screens</span>
+      <!-- ── CHOOSE ONE ─────────────────────────────────────────────────────
+           A table, not cards: these rows are meant to be COMPARED, and three cards of equal visual weight
+           invite reading them as three equally available options when two of them cannot be installed. The
+           status column carries that, and it is a word rather than a colour. -->
+      <section>
+        <h2>Choose one</h2>
+        <p class="lede">
+          One of these ships. The other two are on this page so the shape of the plan is visible — there is no
+          page for a package you cannot install, and a row becomes a link the day it publishes.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Flavors</span><span class="label">Scrolls sideways on narrow screens</span>
           </div>
-          <div class="data-table-scroll">
-            <table class="data-table table-flavors">
+          <div class="tscroll">
+            <table>
               <thead>
                 <tr>
-                  <th scope="col">Flavor</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Take it when</th>
-                  <th scope="col">Cost of choosing it</th>
+                  <th>Flavor</th>
+                  <th>Status</th>
+                  <th>Take it when</th>
+                  <th>Cost of choosing it</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <th scope="row">
-                    <a href="flavors-roaring.html"><code>@cloudbitmaps/roaring</code></a>
-                    <span class="row-sub">Adaptive containers — array, bitset, run</span>
-                  </th>
-                  <td><span class="pill pill-shipped">Shipped 0.4.1</span></td>
                   <td>
-                    Ids are sparse or clustered and adaptive containers do real compression work. The
-                    default: if you are moving off Redis sets, start here.
+                    <a href="flavors-roaring.html" class="m">@cloudbitmaps/roaring</a>
+                    <span class="row-sub">Adaptive containers — array, bitset, run</span>
                   </td>
-                  <td>A native dependency and its platform matrix.</td>
+                  <td><span class="status is-shipped">Shipped 0.4.1</span></td>
+                  <td class="from">
+                    Ids are sparse or clustered and adaptive containers do real compression work. The default:
+                    if you are moving off Redis sets, start here.
+                  </td>
+                  <td class="from">A native dependency and its platform matrix.</td>
                 </tr>
                 <tr>
-                  <th scope="row">
-                    <code>@cloudbitmaps/bitmap</code>
-                    <span class="row-sub">Plain bitset — one bit per id, no branches</span>
-                  </th>
-                  <td><span class="pill pill-coming">Coming</span></td>
                   <td>
+                    <span class="m">@cloudbitmaps/bitmap</span>
+                    <span class="row-sub">Plain bitset — one bit per id, no branches</span>
+                  </td>
+                  <td><span class="status is-coming">Coming</span></td>
+                  <td class="from">
                     Ids are dense, or you want zero native dependency — edge runtimes, no platform matrix,
                     nothing to compile.
                   </td>
-                  <td>Sparse sets pay full width per chunk.</td>
+                  <td class="from">Sparse sets pay full width per chunk.</td>
                 </tr>
-                <tr class="row-speculative">
-                  <th scope="row">
-                    <code>@cloudbitmaps/soaring</code>
-                    <span class="row-sub">Separate algorithm, unproven</span>
-                  </th>
-                  <td><span class="pill pill-speculative">Speculative</span></td>
+                <tr>
                   <td>
-                    Nothing yet. It ships only if the algorithm proves out against roaring on real workloads.
+                    <span class="m">@cloudbitmaps/soaring</span>
+                    <span class="row-sub">A separate algorithm, unproven</span>
                   </td>
-                  <td>—</td>
+                  <td><span class="status is-research">Research</span></td>
+                  <td class="from">
+                    Under research, with nothing to install. It ships only if the algorithm proves out against
+                    roaring on real workloads — and if it does not, this row goes away.
+                  </td>
+                  <td class="from">&mdash;</td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <p class="tpanel-foot">
+            Adding a flavor is <strong>one row here and one figure on its own page</strong>. Nothing else on
+            the site changes, because nothing else depends on the codec.
+          </p>
         </div>
-        <p class="table-caption">
-          ↳ There is no page for a package you cannot install. <code>bitmap</code> gets a row here and a page
-          the day it publishes; the row becomes a link and nothing else on this page changes.
+      </section>
+
+      <!-- ── WHERE IT DOES NOT MATTER ───────────────────────────────────────
+           Four things the choice cannot affect. This is the section that makes the decision low-stakes, and a
+           low-stakes decision is one a reader will actually make. -->
+      <section>
+        <h2>Where the choice does not matter</h2>
+        <p class="lede">
+          Every flavor is a codec plugged into the same store. Swapping one is an import change and a
+          re-publish of your segments — the drivers, the tier policy, the compaction daemon and the container
+          format around the payload all stay put.
         </p>
-      </section>
-
-      <section class="section">
-        <div class="slot-head">
-          <span class="slot-eyebrow" aria-hidden="true">↳</span>
-          <h2>Where the choice does <em>not</em> matter</h2>
-        </div>
-        <div class="grid-3">
-          <div class="panel panel-pad">
-            <div class="panel-label">Cost · the case for</div>
-            <!-- Two figures, identical size, only the colour differs. $346 is not a caption. -->
-            <div class="cost-pair">
-              <p class="cost-fig is-win">
-                <span class="n">$0.75</span>
-                <span class="c">per 1M incremental writes<small>metered, pay-per-use</small></span>
-              </p>
-              <p class="cost-fig is-compare">
-                <span class="n">$346</span>
-                <span class="c">per month, Redis-HA<small>standing, whether read or not</small></span>
-              </p>
-              <p class="fig-foot">
-                $0.03/mo at rest · 1.2 GiB, no traffic · <span class="is-live">0.008% of Redis</span>
-              </p>
-            </div>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">Cost</p>
+            <p>
+              <strong>$0.75</strong> per million incremental writes, against <strong>$346/mo</strong> standing
+              for a Redis-HA node. Billed by the request either way — a codec changes bytes, not the pricing
+              model.
+            </p>
           </div>
-          <div class="panel panel-pad">
-            <div class="panel-label">The moat</div>
-            <div class="panel-body">
-              <p class="figure">100 / 2,000</p>
-              <p class="figure-caption">
-                chunks fetched when intersecting two 2,000,000-id segments — the shared keys only, the rest
-                skipped by key alignment. Codec-independent, so it survives every flavor.
-              </p>
-            </div>
+          <div class="limit">
+            <p class="label">The moat</p>
+            <p>
+              <strong>100 of 2,000</strong> chunks fetched when intersecting two 2,000,000-id segments — the
+              shared keys only. Key alignment happens above the codec, so it survives every flavor.
+              <a href="demo.html">Step through it</a>.
+            </p>
           </div>
-          <!-- The counter-case, staged as a peer of the two panels beside it: same bezel, same padding, same
-               grid position, same title weight. The ONLY difference is that its label strip is cyan. -->
-          <div class="panel panel-pad panel-counter">
-            <div class="panel-label">Counter-case · same weight, same bezel</div>
-            <div class="panel-body">
-              <p class="panel-title">Use Redis instead.</p>
-              <p class="figure-caption">
-                No flavor fixes this. Sub-millisecond p99 on a working set that fits a bounded hot cache is a
-                different machine; a RAM store answers a single membership check 10–20× faster than any
-                warm-tier round trip.
-              </p>
-              <p class="fig-foot">
-                crossover published: <span class="is-ink">26.33 writes/s</span> ·
-                <span class="is-ink">526.64 reads/s</span>
-              </p>
-            </div>
+          <div class="limit">
+            <p class="label">When to walk away</p>
+            <p>
+              <strong>No flavor fixes this.</strong> Sub-millisecond p99 on a working set that fits a bounded
+              hot cache is a different machine; a RAM store answers a single membership check 10–20× faster
+              than any warm-tier round trip. Use Redis.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">The engine underneath</p>
+            <p>
+              Ten storage drivers, three tiers, one API surface, one runtime dependency. A flavor sits inside
+              that as a <span class="m">CodecInterface</span> implementation and touches none of it.
+            </p>
           </div>
         </div>
       </section>
 
-      <!-- No heading here, deliberately: the label strip names the section and the bezel holds both halves.
-           A second <h2> would announce a topic the two labels already state. -->
-      <section class="section">
-        <div class="split-bezel">
-          <div class="split-cell">
-            <div class="cell-label">The engine underneath</div>
-            <p class="cell-prose">
-              Every flavor is a codec plugged into the same store. Swapping one is an import change and a
-              re-publish of your segments — the drivers, the tier policy, the compaction daemon and the on-disk
-              container format around the payload all stay put.
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Start with roaring.</h2>
+            <p class="lede" style="margin: 0">
+              It is the one that ships, and it is the right default unless you already know your ids are
+              dense. The memory drivers need no configuration, so the quickstart runs before you decide
+              anything about storage.
             </p>
-            <!-- Three separate bezels rather than one panel with dividers: the layers are substitutable
-                 components, not rows of a single record. Only the codec layer is tinted, because it is the only
-                 one this page is asking you to choose. -->
-            <div class="stack">
-              <div class="stack-row is-codec">
-                <span class="stack-layer">codec</span><span class="stack-value">roaring</span
-                ><span class="stack-note">the flavor</span>
-              </div>
-              <div class="stack-row">
-                <span class="stack-layer">core</span
-                ><span class="stack-value">chunks · tiering · ∩ · compaction</span>
-              </div>
-              <div class="stack-row">
-                <span class="stack-layer">drivers</span
-                ><span class="stack-value">S3 · GCS · Azure · DynamoDB · Postgres …</span>
-              </div>
+            <div class="actions">
+              <a class="btn btn-primary" href="flavors-roaring.html">How Roaring works →</a>
+              <a class="btn" href="architecture.html">The engine underneath</a>
             </div>
+            <p class="meta">Apache-2.0 · v0.4.1 · 1 runtime dependency · 10 storage drivers</p>
           </div>
-          <div class="split-cell">
-            <div class="cell-label">Switching flavor</div>
-            <pre class="code"><code><span class="c">// today</span>
-<span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+          <div class="install">
+            <div class="install-head label"><span>Install</span><span>One flavor</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring
 
-<span class="c">// when bitmap ships — same store, same drivers</span>
-<span class="k">import</span> { CloudBitset }  <span class="k">from</span> <span class="s">'@cloudbitmaps/bitmap'</span>;</code></pre>
-            <p class="cell-note">
-              Segments written by one codec are readable by that codec only — the container header names it, so
-              a mixed fleet fails loudly instead of silently.
-            </p>
+<span class="c"># the memory drivers need nothing else</span>
+<span class="c"># add an SDK only for a real backend:</span>
+npm i @aws-sdk/client-s3</code></pre>
+            <p class="link-row"><a href="usage.html">Every driver and its peer deps →</a></p>
           </div>
         </div>
       </section>
@@ -274,13 +267,15 @@
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>CloudBitmaps · distributed, cloud-native Roaring Bitmaps</span>
-        <a href="flavors-roaring.html">/flavors/roaring</a>
-        <a href="architecture.html">Architecture</a>
-        <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
-        <span class="foot-meta">Apache-2.0 · pre-1.0 v0.4.1</span>
+        <p class="meta">
+          CloudBitmaps · v0.4.1 · Apache-2.0 <a href="demo.html">Demo</a>
+          <a href="architecture.html">Architecture</a> <a href="usage.html">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
+        </p>
+        <p class="meta">Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></p>
       </div>
     </footer>
+
     <script src="theme.js"></script>
   </body>
 </html>

@@ -4,9 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script>
-      // Applied BEFORE first paint, deliberately inline and unminified: a deferred or external script would
-      // let the default dark ground paint and then flip, which is the flash this exists to prevent.
-      // `prefers-color-scheme` is consulted only when nothing has been stored — an explicit choice wins.
       (function () {
         try {
           var stored = localStorage.getItem('cb-theme');
@@ -19,54 +16,63 @@
         }
       })();
     </script>
-    <title>@cloudbitmaps/roaring — CloudBitmaps</title>
+    <title>The roaring flavor — containers that pick themselves</title>
     <meta
       name="description"
-      content="Sparse or clustered ids, compressed by containers that pick themselves. The Roaring flavor of CloudBitmaps: adaptive per-chunk encoding over tiered cloud storage, with the cost table and the crossover where Redis wins."
+      content="How a chunk picks its representation: array, bitset or run, decided per chunk by whichever encoding measures smallest. No configuration, no hint, no tuning knob — and one segment routinely holds all three at once."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
-    <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
-         the tag silently un-verifies the property, which drops the sitemap and coverage reports with no
-         warning. Not a secret (it is public HTML) and it identifies the property, not an account. -->
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
     <link rel="canonical" href="https://cloudbitmaps.pages.dev/flavors/roaring" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="CloudBitmaps" />
-    <meta property="og:title" content="@cloudbitmaps/roaring — CloudBitmaps" />
+    <meta property="og:title" content="The roaring flavor — containers that pick themselves" />
     <meta
       property="og:description"
-      content="Sparse or clustered ids, compressed by containers that pick themselves."
+      content="Array, bitset or run, decided per chunk by whichever encoding measures smallest. No tuning knob, and one segment holds all three at once."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors/roaring" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="@cloudbitmaps/roaring — CloudBitmaps" />
+    <meta name="twitter:title" content="The roaring flavor — containers that pick themselves" />
     <meta
       name="twitter:description"
-      content="Sparse or clustered ids, compressed by containers that pick themselves."
+      content="Array, bitset or run, decided per chunk by whichever encoding measures smallest."
     />
     <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
-    <!-- Progressive bit reduction, per the specimen: the mark's nine bits survive at 64px and turn to mud
-         below it, so 32 carries five and 16 carries three, enlarged and re-spaced. Declared by size so the
-         browser picks; without these two links the simplified art shipped but never reached anyone. -->
     <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
     <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
     <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
-  <body class="page-flavors">
+  <body>
     <header class="topbar">
       <div class="topbar-inner">
-        <a class="brand flavor-lockup" href="index.html"
-          ><svg class="mark" viewBox="253 210 798 798" width="22" height="22" aria-hidden="true" focusable="false"><path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"/><rect x="336" y="376" width="39" height="39" rx="5" fill="var(--cb-bit-4)"/><rect x="421" y="433" width="97" height="91" rx="7" fill="var(--cb-bit-5)"/><rect x="273" y="541" width="130" height="127" rx="7" fill="var(--cb-bit-3)"/><rect x="425" y="562" width="78" height="78" rx="6" fill="var(--cb-bit-2)"/><rect x="416" y="703" width="89" height="90" rx="6" fill="var(--cb-bit-1)"/><rect x="538" y="732" width="55" height="56" rx="6" fill="var(--cb-bit-6)"/><rect x="616" y="705" width="68" height="68" rx="6" fill="var(--cb-bit-7)"/><rect x="332" y="816" width="50" height="51" rx="6" fill="var(--cb-bit-1)"/><rect x="414" y="900" width="72" height="74" rx="6" fill="var(--cb-bit-1)"/></svg>
-          <span>CloudBitmaps <span class="suffix">/roaring</span></span></a
-        >
-        <nav class="jump">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
           <a href="index.html">Overview</a>
-          <a href="usage.html">Usage</a>
+          <a href="demo.html">Demo</a>
+          <a class="active" href="flavors.html">Flavors</a>
           <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
           <a href="benchmarks.html">Benchmarks</a>
-          <a class="active" href="flavors.html" aria-current="page">Flavors</a>
           <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
         </nav>
         <div class="theme-toggle" role="group" aria-label="Colour theme">
@@ -79,209 +85,233 @@
     </header>
 
     <main class="wrap">
-      <!-- 01 IDENTITY — authored per flavor -->
-      <section class="hero-flavors">
-        <div>
-          <p class="crumb"><a href="flavors.html">Flavors</a> / Roaring</p>
-          <!-- Name and provenance on one line: what it is called, what version shipped, its licence, and how
-               the release was signed. Someone deciding whether to install this reads all four together. -->
-          <p class="pill-row">
-            <span class="pkg-name">@cloudbitmaps/roaring</span>
-            <span class="pill pill-shipped">Shipped 0.4.1</span>
-            <span class="pill">Apache-2.0</span>
-            <span class="pill">OIDC + SLSA</span>
-          </p>
-          <h1>Sparse or clustered ids, compressed by containers that pick themselves.</h1>
-          <p class="prose">
-            The Roaring format splits a 32-bit id into a 16-bit chunk key and a 16-bit remainder, then stores
-            each chunk in whichever representation is smallest — a sorted array, a dense bitset, or a
-            run-length list. It is the right default for id spaces with holes in them, which is most of them.
-          </p>
-          <p class="hero-actions">
-            <a class="btn btn-primary" href="#usage">Six-line quickstart ↓</a>
-            <a class="btn btn-ghost" href="flavors.html">← Compare flavors</a>
-          </p>
-        </div>
-        <aside class="panel">
-          <div class="panel-label">Install</div>
-          <pre class="code code-install"><code><span class="c">$</span> npm i @cloudbitmaps/roaring</code></pre>
-          <!-- Four cells rather than four rows: these are independent readings off one instrument, not a list.
-               The 2x2 also puts the two numbers that matter most (deps, SDKs) on the same line. -->
-          <div class="stat-grid">
-            <div class="stat">
-              <div class="stat-label">Runtime deps</div>
-              <div class="stat-value">1</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Cloud SDKs</div>
-              <div class="stat-value">0 <em>optional peers</em></div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Drivers</div>
-              <div class="stat-value">10</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Verify</div>
-              <div class="stat-value is-text">npm audit signatures</div>
-            </div>
-          </div>
-        </aside>
-      </section>
-
-      <!-- SLOT 02 · the trade. No heading, deliberately: the two label strips ARE the heading, and the
-           columns are identical in bezel, padding and type. The only difference is that the left strip is cyan
-           and the right is muted. Restyling the right column as a warning would invert the whole point. -->
-      <section class="section">
-        <div class="split-box">
-          <div class="split-half">
-            <div class="panel-label label-take">Take this flavor when</div>
-            <ul class="trade-list">
-              <li>Ids are <strong>sparse or clustered</strong> — user ids, event ids, anything with gaps.</li>
-              <li>You want the strongest compression per chunk without tuning anything.</li>
-              <li>You are moving off Redis sets and want the closest thing to a drop-in.</li>
-            </ul>
-          </div>
-          <div class="split-half">
-            <div class="panel-label">Take something else when</div>
-            <ul class="trade-list">
-              <li>
-                You need <strong>sub-millisecond p99</strong> on a bounded working set — that is Redis, not
-                this library, and not any flavor of it.
-              </li>
-              <li>You cannot take a native dependency — wait for <code>@cloudbitmaps/bitmap</code>.</li>
-              <li>Your ids are dense and contiguous; adaptive containers buy you nothing there.</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <!-- 03 CODEC ANIMATION — the only animation on a flavor page, and it explains only the codec. -->
-      <section class="section">
-        <div class="slot-head">
-          <span class="slot-eyebrow">Codec</span>
-          <h2>How a chunk picks its representation</h2>
-        </div>
-        <p class="prose">
-          This is the only animation on a flavor page, and it explains only the codec — the tiering and
-          chunk-skipping story lives once, on <a href="architecture.html">/architecture</a>, because it is
-          codec-independent. A second flavor drops its own version into this slot and changes nothing else.
-        </p>
-        <!-- Four stages on one 12s loop, 3s apart. Every stage rests at .34 rather than hiding, so the whole
-             pipeline is always readable and only attention moves — which is what makes the global
-             reduced-motion stop lose the motion and none of the information. The right-hand column is not
-             decoration: it carries the rule each stage is applying. -->
-        <div class="codec-figure">
-          <div class="codec-main">
-            <div class="panel-label">
-              Encode · write path <span class="label-right is-live">12s loop · 4 stages</span>
-            </div>
-            <div class="codec-anim">
-              <div class="stage stage-1">
-                <span class="stage-num">01 Split</span>
-                <span class="stage-body">
-                  <span class="mono-fig">1,234,567,890</span>
-                  <span class="arrow">→</span>
-                  <span class="chip slide-1">key <b>0x4996</b></span>
-                  <span class="chip slide-2">rem <b>0x02D2</b></span>
-                </span>
-                <span class="stage-rule">16 bits + 16 bits</span>
-              </div>
-              <div class="stage stage-2">
-                <span class="stage-num">02 Group</span>
-                <span class="stage-body">
-                  <span class="chip">0x0000 · <b>2 ids</b></span>
-                  <span class="chip">0x0001 · <b>61,904 ids</b></span>
-                  <span class="chip">0x4996 · <b>9,001 ids</b></span>
-                </span>
-                <span class="stage-rule">one chunk = 2¹⁶ ids</span>
-              </div>
-              <div class="stage stage-3">
-                <span class="stage-num">03 Choose</span>
-                <span class="stage-body is-measures">
-                  <span class="measure">
-                    <span class="measure-name">array</span>
-                    <span class="measure-track w-array" aria-hidden="true"
-                      ><i class="fill fill-array"></i
-                    ></span>
-                    <span class="measure-cost">18 KiB — 2 B × 9,001</span>
-                  </span>
-                  <span class="measure is-winner">
-                    <span class="measure-name">bitset</span>
-                    <span class="measure-track w-bitset" aria-hidden="true"
-                      ><i class="fill fill-bitset"></i
-                    ></span>
-                    <span class="measure-cost">8 KiB — flat, always <b>← winner</b></span>
-                  </span>
-                  <span class="measure">
-                    <span class="measure-name">run</span>
-                    <span class="measure-track w-run" aria-hidden="true"
-                      ><i class="fill fill-run"></i
-                    ></span>
-                    <span class="measure-cost">24 KiB — 4 B × 6,102 runs</span>
-                  </span>
-                </span>
-                <span class="stage-rule">smallest encoding wins,<br />per chunk, on write</span>
-              </div>
-              <div class="stage stage-4">
-                <span class="stage-num">04 Store</span>
-                <span class="stage-body">
-                  <!-- Widths are proportional to how much of a real segment each container type holds, so the
-                       mix reads before the labels do. -->
-                  <span class="containers" aria-hidden="true">
-                    <span style="flex: 2">ARR</span>
-                    <span style="flex: 5">BITSET</span>
-                    <span style="flex: 3">RUN</span>
-                    <span style="flex: 2">ARR</span>
-                  </span>
-                </span>
-                <span class="stage-rule">one segment,<br />mixed containers</span>
-              </div>
-            </div>
-            <p class="codec-note">
-              No configuration, no hint, no tuning knob — the container is decided per chunk by whichever
-              encoding measures smallest. A real segment routinely holds all three at once, and the chunk key
-              above the payload is what lets two segments intersect without downloading either.
+      <!-- ── HERO ─────────────────────────────────────────────────────────── -->
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">
+              <a href="flavors.html">Flavors</a> · roaring · shipped v0.4.1
+            </p>
+            <h1>Containers that pick themselves.</h1>
+            <p class="hero-lede">
+              Every chunk of ids is stored in whichever of three encodings measures smallest — and that is
+              measured on write, per chunk, with no configuration and no tuning knob. A real segment routinely
+              holds all three at once.
+            </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
+              <a class="btn" href="demo.html">See the intersection</a>
+            </p>
+            <p class="meta">
+              npm i @cloudbitmaps/roaring · 1 runtime dependency · wraps CRoaring via roaring-node
             </p>
           </div>
-          <aside class="codec-side">
-            <div>
-              <div class="panel-label">Id split</div>
-              <p class="split-map">
-                id &lt; 2³² <span class="is-live">→</span> chunkKey <b>16-bit</b><br /><span class="indent"
-                  >remainder <b>16-bit</b></span
-                >
-              </p>
-            </div>
-            <div class="codec-side-block">
-              <div class="panel-label">Why it matters here</div>
-              <p class="codec-side-prose">
-                The chunk key is what makes intersection cheap across tiers: two segments only exchange chunks
-                whose keys appear in both. The codec decides the bytes <em>inside</em> a chunk; the key
-                alignment is the engine's.
-              </p>
-            </div>
-            <a class="codec-side-link" href="architecture.html#p3">See the tiered ∩ animation →</a>
+
+          <aside class="panel">
+            <div class="panel-head label">This flavor decides</div>
+            <p class="panel-row is-pair"><span>Bytes inside a chunk</span><span class="is-live">yes</span></p>
+            <p class="panel-row is-pair"><span>Chunk keys</span><span>engine, not codec</span></p>
+            <p class="panel-row is-pair"><span>Tiering</span><span>engine, not codec</span></p>
+            <p class="panel-row is-pair"><span>Intersection</span><span>engine, not codec</span></p>
+            <p class="panel-row is-pair"><span>Storage drivers</span><span>engine, not codec</span></p>
+            <p class="link-row"><a href="architecture.html">What the engine does →</a></p>
           </aside>
         </div>
       </section>
 
-      <!-- 04 USAGE — authored per flavor -->
-      <section class="section" id="usage">
-        <div class="slot-head">
-          <span class="slot-eyebrow">Usage</span>
-          <h2>Zero setup: in-memory in six lines</h2>
-        </div>
-        <p class="prose">
-          A store is wired to a warm driver for live mutations and a cold source for the immutable archive. The
-          in-memory drivers need no setup — swap in the S3 and DynamoDB drivers later and the code above them
-          does not change.
+      <!-- ── WHY NOT ONE BIG BITSET ─────────────────────────────────────────
+           The baseline question, first. A reader who has not had it answered spends the whole codec figure
+           wondering why any of this is necessary. Two numbers settle it. -->
+      <section>
+        <h2>Why not one big bitset?</h2>
+        <p class="lede">
+          Because the id space is 2<sup>32</sup> wide and almost all of it is empty. The bitset does not care:
+          it costs the same whether you store five ids or five million.
         </p>
-        <div class="grid-2 grid-usage">
-          <div class="panel">
-            <div class="panel-label label-split">
-              <span>quickstart.ts</span><span>Same API in production</span>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">One flat bitset over all 32 bits</p>
+            <p>
+              4,294,967,296 possible ids, one bit each, is <strong>512 MiB</strong> — allocated up front and
+              paid in full for a segment holding five ids. Nothing about it scales with what you actually
+              stored.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Roaring, same id space</p>
+            <p>
+              The space is cut into 65,536 chunks of 65,536 ids. A chunk nobody has written to
+              <strong>does not exist</strong>, and a chunk that does exist is stored in whichever encoding is
+              smallest for its own contents.
+            </p>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          That is the entire idea, and everything below is how the second half of it works. The
+          <a href="flavors.html">bitmap flavor</a> will offer the flat bitset on purpose — for dense id spaces
+          it is the right shape, and it needs no native dependency.
+        </p>
+      </section>
+
+      <!-- ── THE CODEC FIGURE ───────────────────────────────────────────────
+           The only animation on this page, and it explains only the codec. The tiering and chunk-skipping
+           story lives once, on /architecture, because it is codec-independent — which is also why a second
+           flavor drops its own version of THIS figure into THIS slot and changes nothing else.
+
+           All four stages stay fully legible at all times and only a marker moves. The delivery dims inactive
+           stages to .34 to cycle attention; full opacity is strictly better here, because dimmed body text
+           stops clearing AA and a figure has no business hiding information to direct attention. -->
+      <section>
+        <h2>How a chunk picks its representation</h2>
+        <p class="lede">
+          Four stages on the write path. The measurement in stage 03 is the whole mechanism: three encodings
+          are costed for the same chunk and the smallest one is what gets stored.
+        </p>
+
+        <figure class="codec">
+          <div class="codec-head">
+            <span class="label">Encode · write path</span><span class="label">Worked example, not a measurement</span>
+          </div>
+          <div class="codec-stages">
+            <div class="cstage">
+              <p class="cstage-label"><span class="cstage-n">01</span> Split</p>
+              <div class="cstage-body">
+                <p class="cstage-fig">1_234_567_890</p>
+                <ul class="cpair">
+                  <li><span>key</span><b>0x4996</b></li>
+                  <li><span>rem</span><b>0x02D2</b></li>
+                </ul>
+                <p class="cstage-note">16 bits + 16 bits</p>
+              </div>
             </div>
-            <pre class="code"><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+            <div class="cstage">
+              <p class="cstage-label"><span class="cstage-n">02</span> Group</p>
+              <div class="cstage-body">
+                <ul class="cpair">
+                  <li><span>0x0000</span><b>2 ids</b></li>
+                  <li><span>0x0001</span><b>61,904 ids</b></li>
+                  <li><span>0x4996</span><b>9,001 ids</b></li>
+                </ul>
+                <p class="cstage-note">one chunk holds up to 65,536 ids</p>
+              </div>
+            </div>
+
+            <div class="cstage is-focus">
+              <p class="cstage-label"><span class="cstage-n">03</span> Choose</p>
+              <div class="cstage-body">
+                <!-- Chunk 0x4996, the 9,001-id one. Bars are proportional to the cost, so the winner is the
+                     shortest bar rather than only the labelled one — the ranking is visible before it is
+                     read. scaleX from the left, which is composited. -->
+                <ul class="cmeasure">
+                  <li>
+                    <span class="cm-name">array</span>
+                    <span class="cm-cost">17.6 KiB</span>
+                    <span class="cm-track"><i class="cm-bar" style="--cm: 0.74"></i></span>
+                    <span class="cm-how">2 B × 9,001 ids</span>
+                  </li>
+                  <li class="is-win">
+                    <span class="cm-name">bitset</span>
+                    <span class="cm-cost">8.0 KiB</span>
+                    <span class="cm-track"><i class="cm-bar" style="--cm: 0.34"></i></span>
+                    <span class="cm-how">65,536 bits, flat</span>
+                  </li>
+                  <li>
+                    <span class="cm-name">run</span>
+                    <span class="cm-cost">23.8 KiB</span>
+                    <span class="cm-track"><i class="cm-bar" style="--cm: 1"></i></span>
+                    <span class="cm-how">4 B × 6,102 runs</span>
+                  </li>
+                </ul>
+                <p class="cstage-note">smallest encoding wins, per chunk, on write</p>
+              </div>
+            </div>
+
+            <div class="cstage">
+              <p class="cstage-label"><span class="cstage-n">04</span> Store</p>
+              <div class="cstage-body">
+                <ul class="cstore">
+                  <li><span>0x0000</span><b class="c-arr">array</b></li>
+                  <li><span>0x0001</span><b class="c-bit">bitset</b></li>
+                  <li><span>0x4996</span><b class="c-bit">bitset</b></li>
+                </ul>
+                <p class="cstage-note">one segment, mixed containers</p>
+              </div>
+            </div>
+          </div>
+          <figcaption class="codec-foot">
+            No configuration, no hint, no tuning knob — and nothing above the container ever learns which one
+            it got. All three answer <span class="m">has(id)</span> identically.
+          </figcaption>
+        </figure>
+
+        <p class="note" style="max-width: 82ch">
+          The numbers above are a <strong>worked example</strong> on a stated premise — a chunk holding 9,001
+          ids across 6,102 runs — not a measurement of your data. Every cost is the arithmetic beside it, so
+          you can check all three. The <a href="demo.html">demo</a> is where the measured figures live.
+        </p>
+      </section>
+
+      <!-- ── WHERE IT STOPS PAYING ─────────────────────────────────────────── -->
+      <section>
+        <h2>Where it stops paying</h2>
+        <p class="lede">
+          Adaptive containers do real work on sparse or clustered ids. They do nothing for you in two cases,
+          and one of them is a reason to pick a different flavor rather than a different library.
+        </p>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">Uniformly dense ids</p>
+            <p>
+              If nearly every chunk is dense, every chunk picks bitset and you have paid for a decision engine
+              that always returns the same answer. That is what
+              <a href="flavors.html">@cloudbitmaps/bitmap</a> is for — same engine, no native dependency.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">A native dependency</p>
+            <p>
+              This flavor wraps CRoaring through <span class="m">roaring-node</span>, so it brings a platform
+              matrix and something to compile. On an edge runtime that is disqualifying, and it is the honest
+              cost of choosing this row.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Sub-millisecond p99</p>
+            <p>
+              No codec fixes this. A RAM store answers a single membership check 10–20× faster than any
+              warm-tier round trip. <strong>Use Redis.</strong>
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Very small segments</p>
+            <p>
+              A few thousand ids fit in a single cache entry anywhere. The tiering, the compaction and the key
+              alignment are all overhead you do not need until a segment stops fitting in memory.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Six lines, no configuration.</h2>
+            <p class="lede" style="margin: 0">
+              The container choice needs nothing from you, and neither do the memory drivers. This runs as
+              written.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="usage.html">Full usage and API →</a>
+              <a class="btn" href="demo.html">Step through an intersection</a>
+              <a class="btn" href="flavors.html">Compare flavors</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.4.1 · 1 runtime dependency · 10 storage drivers</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
   warm: <span class="k">new</span> MemoryWarmDriver(),
@@ -289,206 +319,25 @@
 });
 
 <span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
-<span class="k">await</span> vips.addMany([<span class="s">75</span>, <span class="s">99_999</span>, <span class="s">1_234_567_890</span>]); <span class="c">// grouped by chunk</span>
-<span class="k">await</span> vips.has(<span class="s">1_234_567_890</span>);                    <span class="c">// true</span>
-<span class="k">await</span> vips.count();                                <span class="c">// exact cardinality, 0 payload reads</span></code></pre>
+<span class="k">await</span> vips.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
+<span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
+            <p class="link-row"><a href="usage.html">Every driver and its peer deps →</a></p>
           </div>
-          <div>
-            <div class="panel panel-pad">
-              <div class="panel-label">The API is the one you know</div>
-              <ul class="op-row">
-                <li class="op">
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="1" y="8" width="18" height="4" rx="1" fill="var(--cb-cyan)" />
-                    <rect x="8" y="1" width="4" height="18" rx="1" fill="var(--cb-cyan)" />
-                  </svg>
-                  <span>add</span>
-                </li>
-                <li class="op">
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="1" y="1" width="7" height="7" rx="1.5" fill="var(--cb-cyan)" />
-                    <rect x="12" y="1" width="7" height="7" rx="1.5" fill="var(--cb-rule)" />
-                    <rect x="1" y="12" width="7" height="7" rx="1.5" fill="var(--cb-rule)" />
-                    <rect x="12" y="12" width="7" height="7" rx="1.5" fill="var(--cb-rule)" />
-                  </svg>
-                  <span>has</span>
-                </li>
-                <li class="op">
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="1" y="8" width="18" height="4" rx="1" fill="var(--cb-muted)" />
-                  </svg>
-                  <span>remove</span>
-                </li>
-                <li class="op">
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="1" y="14" width="4" height="5" rx="1" fill="var(--cb-cyan)" />
-                    <rect x="8" y="8" width="4" height="11" rx="1" fill="var(--cb-cyan)" />
-                    <rect x="15" y="1" width="4" height="18" rx="1" fill="var(--cb-cyan)" />
-                  </svg>
-                  <span>count</span>
-                </li>
-                <li class="op is-moat">
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <rect x="1" y="1" width="7" height="7" rx="1.5" fill="var(--cb-cyan)" />
-                    <rect x="12" y="1" width="7" height="7" rx="1.5" fill="var(--cb-rule)" />
-                    <rect x="1" y="12" width="7" height="7" rx="1.5" fill="var(--cb-rule)" />
-                    <rect x="12" y="12" width="7" height="7" rx="1.5" fill="var(--cb-cyan)" />
-                  </svg>
-                  <span>intersect</span>
-                </li>
-              </ul>
-              <p class="figure-caption">
-                Deliberately the in-memory <code>Set</code> surface. What is new is where the bytes live, not
-                what you call.
-              </p>
-            </div>
-            <div class="panel panel-pad tier-map">
-              <div class="panel-label">Tier map</div>
-              <p class="legend">
-                <span class="tier-chip chip-hot">Hot · RAM</span> bounded LRU of decoded chunks
-              </p>
-              <p class="legend">
-                <span class="tier-chip chip-warm">Warm · NoSQL</span> per-chunk delta rows, adds + removes
-              </p>
-              <p class="legend">
-                <span class="tier-chip chip-cold">Cold · .crbm</span> immutable, generation-keyed objects
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 05 NUMBERS — engine-level, identical across flavors -->
-      <section class="section">
-        <div class="slot-head">
-          <span class="slot-eyebrow">Numbers</span>
-          <h2>What it costs, and where it stops paying</h2>
-        </div>
-        <p class="prose">
-          Measured on real S3 + DynamoDB in <code>us-east-1</code> — not an emulator — with DynamoDB capacity
-          taken from AWS's own <code>ConsumedCapacity</code>. Every anchor below is asserted in CI: a
-          regression or an overclaim breaks the build.
-        </p>
-        <div class="data-table-wrap">
-          <div class="label-strip">Measured · scrolls horizontally on narrow screens</div>
-          <div class="data-table-scroll">
-            <table class="data-table table-numbers">
-              <thead>
-                <tr>
-                  <th scope="col">Scenario</th>
-                  <th scope="col" class="num">Value</th>
-                  <th scope="col">Basis</th>
-                  <th scope="col" class="verdict">Verdict</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th scope="row">1M incremental writes</th>
-                  <td class="num">$0.75</td>
-                  <td>metered, pay-per-use</td>
-                  <td class="verdict">Win</td>
-                </tr>
-                <tr>
-                  <th scope="row">1M <code>count()</code>s</th>
-                  <td class="num">$0.14</td>
-                  <td>zero payload reads — index only</td>
-                  <td class="verdict">Win</td>
-                </tr>
-                <tr>
-                  <th scope="row">1M segment publishes</th>
-                  <td class="num">$5.88</td>
-                  <td>full generation rewrite</td>
-                  <td class="verdict">Batch it</td>
-                </tr>
-                <tr>
-                  <th scope="row">1.2 GiB at rest, no traffic</th>
-                  <td class="num">$0.03/mo</td>
-                  <td>0.008% of a Redis-HA node</td>
-                  <td class="verdict">Win big</td>
-                </tr>
-                <tr class="is-crossover">
-                  <th scope="row">Sustained writes above crossover</th>
-                  <td class="num">26.33 /s</td>
-                  <td>8 KiB items, flat Redis-HA = $346/mo</td>
-                  <td class="verdict">Past here Redis wins</td>
-                </tr>
-                <tr class="is-crossover">
-                  <th scope="row">Sustained reads above crossover</th>
-                  <td class="num">526.64 /s</td>
-                  <td>Topology-B warm, cache off</td>
-                  <td class="verdict">Past here Redis wins</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <p class="table-caption">
-          The last two rows are in the same table, the same type and the same weight as the first four. They
-          are the crossover, and past it a flat node is simply cheaper.
-        </p>
-      </section>
-
-      <!-- 06 CAVEATS — engine-level, identical across flavors, verbatim -->
-      <section class="section">
-        <div class="caveats">
-          <div class="caveats-head">
-            <h2>What these numbers do not establish</h2>
-            <p class="caveats-intro">
-              Published on every page that quotes a figure, in the same panel as the figure.
-            </p>
-          </div>
-          <ol class="caveat-list">
-            <li>
-              <strong>Published rates × wire-metered ops — not a cloud bill.</strong> Request tiers and
-              storage-class transitions are unmeasured; Cost Explorer reconciliation is blocked on the account.
-            </li>
-            <li>
-              <strong>Cost, not latency.</strong> Wall-clock throughput is too noisy to gate on shared CI
-              runners. The one latency claim we make is scoped: a 2026-07-27 in-region run puts a warm
-              <code>has()</code> at p50 5.27 ms / p99 12.71 ms (n=2,000) — “p99 inside budget”, not “always”.
-            </li>
-            <li>
-              <strong>Your region and workload move the crossover.</strong> Feed your own
-              <code>PricingProfile</code> into the shipped <code>estimateCost()</code> — the same function the
-              chart is generated from, so the page cannot drift ahead of the library.
-            </li>
-            <li>
-              <strong>It is pre-1.0 and single-maintainer.</strong> The real risk is operational maturity, not
-              losing the bytes — they are immutable, documented, and in your bucket.
-              <code>exportSegments()</code> is a one-command exit.
-            </li>
-          </ol>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="template-contract">
-          <div class="panel-label">Template contract — what a second flavor fills in</div>
-          <div class="contract-slots">
-            <span><em>01</em> identity · name · status · install</span>
-            <span><em>02</em> the trade · take / don't take</span>
-            <span><em>03</em> codec anim · one, small, own</span>
-            <span><em>04</em> usage · same six lines</span>
-            <span class="is-shared"><em>05</em> numbers · shared table shape</span>
-            <span class="is-shared"><em>06</em> caveats · verbatim, shared</span>
-          </div>
-          <p class="figure-caption">
-            Slots 05 and 06 are engine-level and identical across flavors. Only 01–04 are authored per package,
-            which is what keeps a third flavor from becoming a redesign.
-          </p>
         </div>
       </section>
     </main>
 
     <footer class="foot">
       <div class="foot-inner">
-        <span>@cloudbitmaps/roaring · 0.4.1 · Apache-2.0</span>
-        <a href="flavors.html">All flavors</a>
-        <a href="architecture.html">Architecture</a>
-        <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
-        <span class="foot-meta">Published tokenlessly via OIDC · SLSA provenance</span>
+        <p class="meta">
+          CloudBitmaps · v0.4.1 · Apache-2.0 <a href="flavors.html">Flavors</a>
+          <a href="demo.html">Demo</a> <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+        </p>
+        <p class="meta">Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></p>
       </div>
     </footer>
+
     <script src="theme.js"></script>
   </body>
 </html>

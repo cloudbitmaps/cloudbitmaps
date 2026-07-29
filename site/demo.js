@@ -7,7 +7,7 @@
  * information, which is why the controls are `hidden` in the markup and revealed here: a Play button that
  * cannot play is worse than no button.
  *
- * Written as plain ES5-compatible script (no modules, no build step) to match `site/` and `site-final/`.
+ * Written as plain ES5-compatible script (no modules, no build step) to match `site/` and `site/`.
  *
  * Two rules it has to honour, both from the site's animation contract:
  *   · Only `opacity` and `transform` are animated. The playhead is a transform-translated element, never a
