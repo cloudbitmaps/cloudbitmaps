@@ -111,7 +111,10 @@
 
           <aside class="panel">
             <div class="panel-head label">The comparison</div>
-            <p class="panel-row is-pair"><span>Redis-HA, standing</span><span>$346 /mo</span></p>
+            <!-- "Reserved RAM", not "Redis": the axis is the billing shape and Redis is only the legible
+                 example of it. Any always-on node crosses any per-request meter somewhere. Naming the axis also
+                 stops this row reading as an opponent, which matters on a page that ships a Redis DRIVER. -->
+            <p class="panel-row is-pair"><span>Reserved RAM, standing</span><span>$346 /mo</span></p>
             <p class="panel-row is-pair">
               <span>1.2 GiB at rest, no traffic</span><span class="is-live">$0.03 /mo</span>
             </p>
@@ -212,9 +215,20 @@
               </tbody>
             </table>
           </div>
+          <!-- The baseline's SPEC belongs in the assumptions footnote, because that is what it is: an
+               assumption, and until now the least examinable one on the page. $346 appeared eight times across
+               the site without ever saying what it buys, which makes it unauditable — a reader cannot tell
+               whether the node is sized for this dataset or five times larger than it.
+
+               The instance class and node count come from the pricing profile's own comment in
+               core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
+               rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
             Assumptions, stated rather than buried: <strong>8 KiB</strong> average item, hot-cache hit rate
-            <strong>0</strong>, topology <strong>B</strong>. Change any of them and the crossover moves.
+            <strong>0</strong>, topology <strong>B</strong>, and the reserved-RAM baseline is an ElastiCache HA
+            cluster — <strong>1 primary + 2 replicas</strong> on
+            <span class="m">cache.m7g.large</span>, about $115/mo single-node. Change any of them and the
+            crossover moves; <a href="#crossover">four of them are how far</a>.
           </p>
         </div>
       </section>
@@ -341,9 +355,11 @@
             <span class="rl-note">
               Redis is on this page twice, doing two different jobs, and the distinction matters: the
               <strong>baseline</strong> is someone holding the whole dataset in a Redis node's RAM, while
-              <strong>the warm driver</strong> is Redis holding our chunk deltas. “Use a flat tier” can mean
-              pointing this library at a node you already run — you keep the tiering and the skipping, and stop
-              paying per request. <a href="flavors.html">Ten drivers</a>, one engine.
+              <strong>the warm driver</strong> is Redis holding our chunk deltas. And it is a
+              <strong>warm</strong> driver only — the corpus stays in cold object storage, so the node has to
+              hold your recent writes rather than your whole history. That is a far smaller node than the one
+              the baseline prices. “Use a flat tier” can mean pointing this library at something you already
+              run. <a href="usage.html#drivers">Ten drivers</a>, warm and cold chosen separately.
             </span>
           </li>
         </ul>

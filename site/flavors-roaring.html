@@ -151,6 +151,74 @@
           <a href="flavors.html">bitset flavor</a> will offer the flat bitset on purpose — for dense id spaces
           it is the right shape, and it needs no native dependency.
         </p>
+
+        <!-- This section argued against "one big bitset" in the abstract for its whole life, when a Redis
+             bitmap IS one big bitset — a String with SETBIT/BITCOUNT/BITOP over it. Naming that turns an
+             abstract argument into a concrete comparison, and it is the answer to the question every reader
+             arrives with: "why not just use Redis for this?"
+
+             DELIBERATELY NO BYTE COMPARISON. Everything here is either a documented property of Redis's data
+             types or a fact about our own codec. A bytes-per-id figure against a Redis Set or Bitmap would be
+             a measurement, we do not own one, and this project does not publish numbers it has not measured.
+             When that benchmark exists, its figures belong here. -->
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">And this is why “just use Redis” is a different question</span>
+            <span class="label">Structure, not price</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>If your set lives in</th>
+                  <th>You get</th>
+                  <th>Which is</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Redis <span class="m">SETBIT</span> / <span class="m">BITOP</span></td>
+                  <td class="from">
+                    A String treated as a bit array. That is all a Redis “bitmap” is.
+                  </td>
+                  <td class="from">
+                    <strong>One big bitset</strong> — the shape this section just argued against. Always the
+                    bitset container, for every chunk, dense or nearly empty.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Redis <span class="m">SADD</span> / <span class="m">SINTER</span></td>
+                  <td class="from">
+                    A hash table of members. Small all-integer sets get a packed encoding, but that converts
+                    away as the set grows.
+                  </td>
+                  <td class="from">
+                    Per-member overhead rather than packed bits — the cost scales with cardinality, with no
+                    encoding decision anywhere.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Roaring</td>
+                  <td class="from">
+                    A per-chunk decision between array, bitset and run — the figure below.
+                  </td>
+                  <td class="from">
+                    <strong>Adaptive.</strong> The two rows above are each <em>one</em> of these three, chosen
+                    permanently and in advance.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            Redis has no Roaring type of its own — there is a third-party module that wraps CRoaring, but a
+            managed Redis service generally will not load arbitrary modules. So the honest comparison is not
+            <em>us versus Redis</em>: it is Roaring versus a fixed representation. And because Redis is one of
+            our <a href="usage.html#drivers">warm drivers</a>, you can have the adaptive one
+            <strong>inside</strong> Redis — the node then holds compressed chunk deltas instead of an
+            uncompressed bit array, and your history stays in cold object storage rather than in RAM.
+          </p>
+        </div>
       </section>
 
       <!-- ── THE CODEC FIGURE ───────────────────────────────────────────────

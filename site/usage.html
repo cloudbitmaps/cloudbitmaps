@@ -284,6 +284,16 @@ npm audit signatures</code></pre>
           cheap small writes works as warm. Each backend's SDK is an <strong>optional peer</strong> — install
           only the ones you use.
         </p>
+        <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
+             seen that page can reasonably fail to notice that Redis is ALSO in the table below as a driver.
+             Two roles, one product name; the ambiguity is ours to remove, not theirs to resolve. -->
+        <p class="note" style="max-width: 82ch">
+          Redis is in this table, and choosing it is a real answer to the
+          <a href="benchmarks.html#crossover">write crossover</a>: a flat node you already run has no
+          per-request meter to cross. It is a <strong>warm</strong> driver, so it holds recent chunk deltas
+          while the corpus stays in cold object storage — which is a much smaller node than one sized to keep
+          your whole history in RAM.
+        </p>
         <div class="tpanel">
           <div class="tpanel-head">
             <span class="label">Drivers</span><span class="label">Warm · cold · registry</span>

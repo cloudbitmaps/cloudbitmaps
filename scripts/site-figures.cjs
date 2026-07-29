@@ -94,6 +94,31 @@ if (calRows.length < 5) {
   );
 }
 
+// ── the reserved-RAM baseline's SPEC ──────────────────────────────────────────────────────────────────────
+// $346 appeared eight times across the site without ever saying what it buys, which made the single most
+// load-bearing comparison on the page unauditable: a reader could not tell whether the node was sized for this
+// dataset or several times larger than it. The spec is now published, so it gets gated like every other claim.
+//
+// Source is the pricing profile's own trailing comment in core/cost.ts — the same literal the $346 comes from,
+// so the prose cannot drift from the number it describes. Parsed, not transcribed.
+const COST = path.join(ROOT, 'packages', 'core', 'src', 'core', 'cost.ts');
+const baseline =
+  /redis:\s*\{\s*monthlyUSD:\s*(\d+)\s*\}\s*,?\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
+    fs.readFileSync(COST, 'utf8'),
+  );
+if (!baseline) {
+  fail(
+    'core/cost.ts no longer states the Redis baseline in the expected "ElastiCache HA: <topology>; ~$N single-node" form',
+  );
+} else if (Number(baseline[1]) !== results.redisBaselineUSD) {
+  fail(
+    `core/cost.ts says $${baseline[1]}/mo but bench/results.json says $${results.redisBaselineUSD} — re-run \`pnpm bench\``,
+  );
+}
+// e.g. "1 primary + 2 replicas (cache.m7g.large)" -> the node count and the instance class must both be on the page.
+const baselineTopology = baseline ? baseline[2].replace(/\s*\([^)]*\)\s*$/, '').trim() : null;
+const baselineInstance = baseline ? /\(([\w.]+)\)/.exec(baseline[2])?.[1] : null;
+
 // ── at-rest rounds for display, and the rounding is stated rather than assumed ─────────────────────────────
 const atRestExact = results.atRest.monthlyUSD; // 0.0276
 const atRestShown = atRestExact.toFixed(2); // "0.03"
@@ -113,6 +138,9 @@ const anchors = [
   ['warm has() p50', p50 ? `${p50[1]} ms` : null],
   ['warm has() p99', p99 ? `${p99[1]} ms` : null],
   ['estimator accuracy (K3)', k3 ? `±${k3[1]}%` : null],
+  ['baseline topology', baselineTopology],
+  ['baseline instance class', baselineInstance],
+  ['baseline single-node', baseline ? `$${baseline[3]}` : null],
   ['calibration date', calDate ? calDate[1] : null],
   ['calibration run id', calRun ? calRun[1] : null],
   // Every calibration line item and the total, so the receipt cannot be quietly retyped.

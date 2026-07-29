@@ -76,8 +76,15 @@ figure as measured if they fall short; the check passed at 99.2% (6,253 units ac
 | `count()` on a published segment | **$0.14 per million** |
 | Segment publish (bulk-load → one S3 PUT) | **$5.88 per million** |
 
-For contrast, the always-on Redis-HA line this project exists to undercut is **$346/mo** — standing, whether or
-not you send it traffic.
+For contrast, the reserved-RAM line this project exists to undercut is **$346/mo** — standing, whether or not
+you send it traffic. Specifically: an ElastiCache HA cluster of **1 primary + 2 replicas on `cache.m7g.large`**
+(~$115/mo single-node). The spec is stated because the number is otherwise unauditable — a reader cannot judge a
+baseline without knowing whether it is sized for the reference dataset or several times larger than it. Look up
+the instance class and check us.
+
+"Redis" is the legible example of the axis, not the opponent: the axis is **reserved capacity vs metered
+requests**, and any always-on node crosses any per-request meter somewhere. Redis is also one of our own Warm
+drivers — see below.
 
 **One honest floor.** AWS bills a failed conditional write at 1 WCU, but the 53
 `ConditionalCheckFailedException` responses carried no `ConsumedCapacity`, so the meter could not recover those
