@@ -156,6 +156,20 @@ section:last-of-type {
   border-bottom: 1px solid var(--cb-rule);
 }
 
+/* Every in-page anchor target has to clear the sticky bar above, or following a #link parks the section's own
+   heading behind it and the reader lands mid-sentence with no idea what they jumped to.
+
+   This was already broken for all five existing anchors — the two hero CTAs on /benchmarks ("The cost anchors →",
+   "What they do not establish") and the three on /usage — and it stayed invisible because nothing about the
+   layout looks wrong until you actually click one. A sticky header and a fragment link are each individually
+   fine; the defect only exists in their interaction, which is why no static check would find it.
+
+   57px is the bar (56px inner + its 1px rule); the rest is breathing room so the heading is not flush against
+   it. Scoped to `main` so it cannot reach the header's own toggle inputs. */
+main [id] {
+  scroll-margin-top: 76px;
+}
+
 .topbar-inner {
   max-width: var(--cb-measure);
   margin: 0 auto;

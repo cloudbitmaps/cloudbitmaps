@@ -184,17 +184,30 @@
                   <td class="from">A full generation rewrite. Batch it; do not publish per write.</td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
+                <!-- These two rows name their AXIS — "write throughput", "read throughput" — because a reader
+                     scanning the verdict column will otherwise generalise a threshold on one axis into a
+                     verdict on the library. The chip is advice rather than a defeat for the same reason, and
+                     because what loses here is per-request billing, not this engine: point it at a flat warm
+                     tier and the line disappears entirely. See #crossover directly below.
+
+                     Still .is-counter, still --cb-hot: this page's whole stance is that the counter-case gets a
+                     DIFFERENT colour, never a quieter one. Relabelling it does not demote it. -->
                 <tr>
-                  <td>Sustained writes above</td>
+                  <td>Sustained write throughput above</td>
                   <td class="num">26.33 /s</td>
-                  <td class="from">8 KiB items against a flat Redis-HA node at $346 /mo.</td>
-                  <td><span class="status is-counter">Redis wins</span></td>
+                  <td class="from">
+                    8 KiB items, billed per KiB, against a flat Redis-HA node at $346 /mo.
+                    <a href="#crossover">What moves this line</a>.
+                  </td>
+                  <td><span class="status is-counter">Use a flat tier</span></td>
                 </tr>
                 <tr>
-                  <td>Sustained reads above</td>
+                  <td>Sustained read throughput above</td>
                   <td class="num">526.64 /s</td>
-                  <td class="from">Topology-B warm tier with the hot cache off — the pessimal case.</td>
-                  <td><span class="status is-counter">Redis wins</span></td>
+                  <td class="from">
+                    Topology-B warm tier with the hot cache off — the pessimal case, chosen deliberately.
+                  </td>
+                  <td><span class="status is-counter">Use a flat tier</span></td>
                 </tr>
               </tbody>
             </table>
@@ -204,6 +217,136 @@
             <strong>0</strong>, topology <strong>B</strong>. Change any of them and the crossover moves.
           </p>
         </div>
+      </section>
+
+      <!-- ── PAST THE CROSSOVER ──────────────────────────────────────────────
+           This section exists because the page was publishing a threshold and calling it a verdict.
+
+           Four inputs produce the 26.33 figure, THREE of them set to their worst plausible value on purpose,
+           and TWO of them able to remove the crossover altogether — `wruPerMillion: 0` (the cost model's own
+           comment: "0 models a provisioned/flat tier") and Topology A (no per-op write charge at all). Both
+           make estimateCost's writesCross return Infinity. None of that appeared anywhere on the site: a grep
+           of all seven pages for wruPerMillion / provisioned / flat tier / Topology A returned nothing, so the
+           only place a reader could learn the line is movable was getting-started.md.
+
+           Publishing the most pessimistic supported configuration is the right instinct. Publishing it without
+           saying it IS a configuration is what turned an honest disclosure into a dead end.
+
+           Every figure here is an already-gated anchor. Deliberately NO new money figure — the first draft of
+           this section wanted to say "78 GiB of cold objects for $1.79/mo", but 78 GiB is S3's multipart
+           CEILING (architecture.html), not a stored volume, so that sentence would have been an invented claim
+           resting on a misread number. -->
+      <section id="crossover">
+        <h2>Past the crossover</h2>
+        <p class="lede">
+          Those two rows are thresholds on <em>one axis</em> — sustained throughput — and that axis is the only
+          one where a flat node competes. Three of the four inputs behind them are set to their worst plausible
+          value on purpose. Two of them can remove the crossover entirely.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">What moves this line</span>
+            <span class="label">All four are inputs, not constants</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Input</th>
+                  <th>Published as</th>
+                  <th>Change it and</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Average item size</td>
+                  <td class="num">8 KiB</td>
+                  <td class="from">
+                    DynamoDB bills writes per KiB <strong>rounded up</strong>, so an 8 KiB chunk costs eight
+                    write units rather than one. That single rounding rule is most of the 26.33. Narrower delta
+                    rows move the line by the same factor.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Hot-cache hit rate</td>
+                  <td class="num">0</td>
+                  <td class="from">
+                    Every read billed — the pessimal value, chosen so the figure cannot flatter us. A cache that
+                    actually works moves the read line by the reciprocal of the miss rate.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Warm write pricing</td>
+                  <td class="num">on-demand</td>
+                  <td class="from">
+                    Set the profile's per-write rate to zero and you have modelled a provisioned or flat warm
+                    tier. <strong>The write crossover disappears</strong> — there is no per-request meter left to
+                    cross.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Write topology</td>
+                  <td class="num">B</td>
+                  <td class="from">
+                    Topology B is live warm writes. Topology A takes writes by bulk-load instead, so it carries
+                    no per-write charge at all. <strong>The write crossover disappears.</strong>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            The estimator will also tell you this itself: a <span class="m">batchable-writes</span> advisory
+            fires when the modelled write count far exceeds the number of distinct warm rows the data can
+            occupy, because that means the same row is being rewritten repeatedly and
+            <span class="m">addMany()</span> would collapse it.
+          </p>
+        </div>
+
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">What you give up going flat</span>
+            <span class="rl-fig">the idle price</span>
+            <span class="rl-note">
+              One property, and it is the headline one: paying nothing while nobody is asking.
+              <strong>$0.03 /mo</strong> for 1.2 GiB at rest is <strong>0.008%</strong> of a Redis node. A flat
+              tier bills you the same whether the traffic arrives or not.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">What no pricing choice can take away</span>
+            <span class="rl-fig">100 / 2,000</span>
+            <span class="rl-note">
+              Chunk-skipping happens <em>above</em> the driver and above the codec — it is key arithmetic, not a
+              storage feature. Crossing a throughput threshold does not affect it.
+              <a href="demo.html">Step through it</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">And a flat node still is not RAM for everything</span>
+            <span class="rl-fig">three tiers</span>
+            <span class="rl-note">
+              Cold objects stay in object storage; only the working set occupies the warm tier. A node sized for
+              your working set is a much smaller node than one sized for your whole history — which is the
+              comparison a single flat number hides.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">The flat tier can be one of ours</span>
+            <span class="rl-fig">Redis · Postgres · MySQL</span>
+            <span class="rl-note">
+              Redis is on this page twice, doing two different jobs, and the distinction matters: the
+              <strong>baseline</strong> is someone holding the whole dataset in a Redis node's RAM, while
+              <strong>the warm driver</strong> is Redis holding our chunk deltas. “Use a flat tier” can mean
+              pointing this library at a node you already run — you keep the tiering and the skipping, and stop
+              paying per request. <a href="flavors.html">Ten drivers</a>, one engine.
+            </span>
+          </li>
+        </ul>
       </section>
 
       <!-- ── THE CROSSOVER, AS A SHAPE ───────────────────────────────────────
@@ -373,10 +516,18 @@
             <span class="rl-mark">03</span>
             <span class="rl-what">What gets worse</span>
             <span class="rl-fig">discovery time</span>
+            <!-- The first draft of this row said only "a cursor would bound it, and has not been built", which
+                 understated what is shipped: sharding IS built, and a reader was left to conclude nothing had
+                 been done. But it is worth being exact about WHAT sharding bounds — the shard filter runs after
+                 the registry enumeration, so every worker still reads every row and only the per-segment warm
+                 scan is divided. The enumeration is the part still unbounded, and it is the part the measured
+                 12.9 s is mostly made of. -->
             <span class="rl-note">
-              Finding compactable segments enumerates the registry, so it is O(total) and climbs with the fleet.
-              That is a real floor, disclosed rather than buried — a cursor would bound it, and has not been
-              built.
+              Only the compaction daemon pays this — <span class="m">add</span>, <span class="m">has</span>,
+              <span class="m">count</span> and <span class="m">intersect</span> never call it. Discovery can
+              already be <strong>sharded across workers</strong>, which divides the per-segment warm scan; but
+              the shard filter is applied <em>after</em> the registry enumeration, so each worker still walks
+              every row and that walk stays O(total). A resumable cursor would bound it, and has not been built.
             </span>
           </li>
         </ul>
