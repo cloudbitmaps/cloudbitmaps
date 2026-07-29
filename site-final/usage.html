@@ -424,32 +424,57 @@ npm audit signatures</code></pre>
         </div>
       </section>
 
-      <!-- ── BEFORE YOU COMMIT ──────────────────────────────────────────────
-           The risk statement, in our own words rather than a reader's. It belongs on the page where somebody
-           decides to adopt, not on one they would have to go looking for. -->
+      <!-- ── THE EXIT ───────────────────────────────────────────────────────
+           This was two cards, one of which led with "the real risk is operational maturity". That disclosure
+           belongs on the site — an evaluator finds pre-1.0 and single-maintainer from the version number and
+           the contributor count whether we say it or not, and saying it first is the difference between being
+           told and finding out. But it is ALREADY on this page in the footer, and /benchmarks carries the
+           caveats in full. A third statement of it, framed as a risk, at the moment somebody is about to
+           install, is redundant weight in the worst possible place.
+
+           So the section is the exit instead, which is the load-bearing reassurance and is three facts rather
+           than one. -->
       <section>
-        <h2>Before you commit</h2>
-        <div class="matters">
-          <div class="limit">
-            <p class="label">The real risk is operational maturity</p>
-            <p>
-              This is pre-1.0 and single-maintainer. That is a reason for caution about
-              <strong>support and pace</strong>, which is a different worry from losing data — and it is worth
-              being clear about which one you are taking on.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">Your data is not held hostage</p>
-            <p>
-              The bytes are immutable, the <span class="m">.crbm</span> format is documented, and they are in
-              <strong>your bucket</strong>. <span class="m">exportSegments()</span> writes them out in a
-              cross-language format with one command, and there is a CLI for it.
-            </p>
-          </div>
-        </div>
+        <h2>Your data is not held hostage</h2>
+        <p class="lede">
+          The reason to be comfortable adopting a pre-1.0 library is not a promise about the library. It is
+          that leaving costs you one command, and the bytes were never anywhere you could not reach.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">The bytes are in your bucket, immutable</span>
+            <span class="rl-fig">your account</span>
+            <span class="rl-note">
+              Cold objects are generation-keyed and never mutated in place. Nothing is stored anywhere we
+              control, and there is no service to be shut off.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">The format is documented</span>
+            <span class="rl-fig"><span class="m">.crbm</span></span>
+            <span class="rl-note">
+              A sequence of per-chunk roaring blobs behind a footer index. Every chunk carries a CRC32C in
+              its index entry, verified <strong>before</strong> any native deserialize, and the index and
+              footer carry their own. Specified rather than reverse-engineered.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">One command writes everything out</span>
+            <span class="rl-fig is-live">exportSegments()</span>
+            <span class="rl-note">
+              Cross-language <span class="m">roaring</span> or newline-delimited
+              <span class="m">ndjson</span>, via public read APIs only, with an
+              <span class="m">export-segments</span> CLI that wraps it. The exit is a shipped feature, not a
+              migration project.
+            </span>
+          </li>
+        </ul>
         <p class="note" style="max-width: 82ch">
-          The <a href="benchmarks.html">benchmarks page</a> carries the caveats, the crossover where Redis
-          wins, and what each measurement does and does not establish.
+          The <a href="benchmarks.html">benchmarks page</a> carries the crossover where Redis wins, the
+          methodology, and what each measurement does and does not establish.
         </p>
       </section>
 
