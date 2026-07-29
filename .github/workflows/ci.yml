@@ -40,6 +40,13 @@ jobs:
       # or the page's own numbers have drifted from bench/scale-results.json — including a figure the
       # benchmark cannot account for at all, which is how an invented number got onto a page once already.
       - run: pnpm site:replay:check
+      # /benchmarks claims every figure on it is gated. This is that gate: each cost anchor is checked against
+      # bench/results.json and docs/benchmarks.md, and the check ALSO fails on a figure the sources cannot
+      # account for — so a number cannot quietly improve without evidence.
+      - run: pnpm site:figures
+      # Markup must not reference a class the stylesheet never declares, and no internal link may 404.
+      - run: python3 scripts/site-classes.py
+      - run: python3 scripts/site-links.py
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
+    <meta
+      name="description"
+      content="Measured against real S3 and DynamoDB, with DynamoDB units taken from AWS's own ConsumedCapacity. $0.75 per million incremental writes, $0.03/mo for 1.2 GiB at rest — and past 26.33 writes/s a flat Redis node is simply cheaper."
+    />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
+    <link rel="canonical" href="https://cloudbitmaps.pages.dev/benchmarks" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps benchmarks — what it costs, and where it stops paying" />
+    <meta
+      property="og:description"
+      content="Real S3 and DynamoDB, wire-metered. And the crossover past which Redis is simply cheaper, published rather than buried."
+    />
+    <meta property="og:url" content="https://cloudbitmaps.pages.dev/benchmarks" />
+    <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CloudBitmaps benchmarks — what it costs, and where it stops paying" />
+    <meta
+      name="twitter:description"
+      content="Real S3 and DynamoDB, wire-metered — and the crossover past which Redis is cheaper."
+    />
+    <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
+          <a href="index.html">Overview</a>
+          <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+          <a class="active" href="benchmarks.html" aria-current="page">Benchmarks</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The headline names both halves. A benchmarks page that only says what a thing costs is an ad; the
+           second clause is what makes the first one worth believing. -->
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Benchmarks · aws us-east-1 on-demand · gated</p>
+            <h1>What it costs, and where it stops paying.</h1>
+            <p class="hero-lede">
+              Measured against real S3 and DynamoDB — no emulator — with DynamoDB units taken from AWS's own
+              <span class="m">ConsumedCapacity</span> rather than from our arithmetic. Every figure below is
+              checked against its source by a build gate, so a regression <em>or an overclaim</em> fails the
+              build.
+            </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
+              <a class="btn" href="#limits">What they do not establish</a>
+            </p>
+            <p class="meta">
+              Generated from the shipped <span class="m">estimateCost()</span> — the page cannot drift ahead of
+              the library.
+            </p>
+          </div>
+
+          <aside class="panel">
+            <div class="panel-head label">The comparison</div>
+            <p class="panel-row is-pair"><span>Redis-HA, standing</span><span>$346 /mo</span></p>
+            <p class="panel-row is-pair">
+              <span>1.2 GiB at rest, no traffic</span><span class="is-live">$0.03 /mo</span>
+            </p>
+            <p class="panel-row is-pair"><span>Share of a Redis node</span><span>0.008%</span></p>
+            <p class="panel-row is-pair"><span>Write crossover</span><span>26.33 /s</span></p>
+            <p class="panel-row is-pair"><span>Read crossover</span><span>526.64 /s</span></p>
+            <p class="link-row"><a href="usage.html#drivers">Estimate your own rates →</a></p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── COST ANCHORS ───────────────────────────────────────────────────
+           The two crossover rows sit in this table at the same weight and in the same type as the wins. That is
+           the design decision the page turns on: moving them to a footnote, or styling them down, would be the
+           one thing this project cannot afford to do. -->
+      <section id="anchors">
+        <h2>Cost anchors</h2>
+        <p class="lede">
+          Published rates applied to wire-metered operation counts. The last two rows are the crossover — past
+          them a flat node is simply cheaper, and they are in the same table, the same type and the same weight
+          as everything above them.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Cost anchors</span><span class="label">Generated from estimateCost()</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scenario</th>
+                  <th class="num">Value</th>
+                  <th>Basis</th>
+                  <th>Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1M incremental writes</td>
+                  <td class="num">$0.75</td>
+                  <td class="from">One delta row per chunk, metered per request.</td>
+                  <td><span class="status is-shipped">Win</span></td>
+                </tr>
+                <tr>
+                  <td>1M <span class="m">count()</span> calls</td>
+                  <td class="num">$0.14</td>
+                  <td class="from">Metadata only — zero payload reads, and exact rather than estimated.</td>
+                  <td><span class="status is-shipped">Win</span></td>
+                </tr>
+                <tr>
+                  <td>1.2 GiB at rest, no traffic</td>
+                  <td class="num">$0.03 /mo</td>
+                  <td class="from">
+                    0.008% of a Redis-HA node. Nothing is billed while nobody is asking.
+                  </td>
+                  <td><span class="status is-shipped">Win big</span></td>
+                </tr>
+                <tr>
+                  <td>A ∩ B over two 2M-id segments</td>
+                  <td class="num">100 / 2,000</td>
+                  <td class="from">
+                    Chunks fetched in 25.3 ms — 1,900 per segment never requested.
+                    <a href="demo.html">Step through it</a>.
+                  </td>
+                  <td><span class="status is-shipped">Win big</span></td>
+                </tr>
+                <tr>
+                  <td>1M segment publishes</td>
+                  <td class="num">$5.88</td>
+                  <td class="from">A full generation rewrite. Batch it; do not publish per write.</td>
+                  <td><span class="status is-coming">Batch it</span></td>
+                </tr>
+                <tr>
+                  <td>Sustained writes above</td>
+                  <td class="num">26.33 /s</td>
+                  <td class="from">8 KiB items against a flat Redis-HA node at $346 /mo.</td>
+                  <td><span class="status is-spec">Redis wins</span></td>
+                </tr>
+                <tr>
+                  <td>Sustained reads above</td>
+                  <td class="num">526.64 /s</td>
+                  <td class="from">Topology-B warm tier with the hot cache off — the pessimal case.</td>
+                  <td><span class="status is-spec">Redis wins</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            Assumptions, stated rather than buried: <strong>8 KiB</strong> average item, hot-cache hit rate
+            <strong>0</strong>, topology <strong>B</strong>. Change any of them and the crossover moves.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── THE ONE LATENCY CLAIM ──────────────────────────────────────────
+           Scoped deliberately, and the scope is the point. Wall-clock throughput on shared CI runners is too
+           noisy to gate, so it is absent rather than reported loosely. -->
+      <section>
+        <h2>The one latency claim we make</h2>
+        <p class="lede">
+          Throughput is too noisy to gate on shared runners, so it is not in the table above at all. This single
+          scoped measurement is the exception.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">Warm <span class="m">has()</span>, in-region</span>
+            <span class="rl-fig is-live">p50 5.27 ms · p99 12.71 ms</span>
+            <span class="rl-note">
+              n = 2,000, run 2026-07-27 from AWS CloudShell in <span class="m">us-east-1</span>, against the
+              published npm package rather than a local build. Warm-only seeding with no cold generation, so
+              every call had to reach DynamoDB and the hot cache could not mask it.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">The honest reading</span>
+            <span class="rl-fig">“p99 inside budget”</span>
+            <span class="rl-note">
+              Not “always fast”. A second independent run agreed on every percentile to within about 0.5 ms —
+              that agreement, rather than either run alone, is the reason to believe the distribution. If your
+              budget is sub-millisecond, this number is telling you to use Redis.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── METHOD ─────────────────────────────────────────────────────── -->
+      <section>
+        <h2>Method</h2>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">Real services</p>
+            <p>
+              S3 and DynamoDB in <span class="m">us-east-1</span> at on-demand rates. No LocalStack, no
+              emulator, no simulated latency — a LocalStack rehearsal exists for mechanics and is deliberately
+              not committed as evidence.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Metered at the wire</p>
+            <p>
+              Operation counts come from the SDK. DynamoDB capacity comes from AWS's own
+              <span class="m">ConsumedCapacity</span> field, not from our model of what a write ought to cost.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Gated, both directions</p>
+            <p>
+              Every figure on this page is checked against
+              <span class="m">bench/results.json</span> and <span class="m">docs/benchmarks.md</span> by a
+              build gate — and the check also fails on a figure the sources
+              <strong>cannot account for</strong>, so a number cannot improve without evidence either.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── WHAT THESE DO NOT ESTABLISH ────────────────────────────────────
+           Stated in the same type as the wins, on the same page, not linked from it. -->
+      <section id="limits">
+        <h2>What these numbers do not establish</h2>
+        <p class="lede">
+          Each of these is a real limit on what you should conclude, and each is here rather than in a footnote
+          because a caveat nobody reads is not a caveat.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">Published rates × wire-metered ops — not a cloud bill</span>
+            <span class="rl-fig">not reconciled</span>
+            <span class="rl-note">
+              Request tiers and storage-class transitions are unmeasured, and reconciliation against Cost
+              Explorer is blocked on account access. This is arithmetic over real counts, which is stronger
+              than a model and weaker than an invoice.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Cost, not latency</span>
+            <span class="rl-fig">one scoped run</span>
+            <span class="rl-note">
+              One latency measurement is published above and it is scoped narrowly on purpose. Everything else
+              on this page is a bill, not a stopwatch.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Your region and workload move the crossover</span>
+            <span class="rl-fig is-live">estimateCost()</span>
+            <span class="rl-note">
+              These are <span class="m">us-east-1</span> on-demand rates at 8 KiB items with the hot cache off.
+              Feed your own pricing profile in and get your own crossover — the same function generates this
+              page. <a href="usage.html">How</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">The intersection window is not soak-tested</span>
+            <span class="rl-fig">no intersect in soak</span>
+            <span class="rl-note">
+              The long-running soak exercises the write and read paths but issues no
+              <span class="m">intersect</span> calls, so it says nothing about intersection memory over time.
+              The <a href="demo.html">measured run</a> is a single operation, not a duration.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Run it against your own rates.</h2>
+            <p class="lede" style="margin: 0">
+              The cost model is a shipped, pure function. Ours is one pricing profile; yours will move every
+              number on this page, including which side of the crossover you are on.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="usage.html">Estimate your bill →</a>
+              <a class="btn" href="demo.html">See the intersection</a>
+              <a class="btn" href="architecture.html">Why it is cheap</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.4.1 · pre-1.0 · single maintainer</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Reproduce</span><span>No cloud account</span></div>
+            <pre><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
+pnpm install
+
+<span class="c"># regenerates bench/results.json</span>
+pnpm bench</code></pre>
+            <p class="link-row"><a href="usage.html">Or call estimateCost() directly →</a></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-inner">
+        <p class="meta">
+          CloudBitmaps · v0.4.1 · Apache-2.0 <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a> <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+        </p>
+        <p class="meta">Pre-1.0 · single maintainer · every figure here is gated against its source</p>
+      </div>
+    </footer>
+
+    <script src="theme.js"></script>
+  </body>
+</html>
