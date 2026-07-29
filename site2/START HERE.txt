@@ -1,0 +1,25 @@
+CloudBitmaps — full site
+=======================
+
+Open "Home.dc.html" in any browser. Everything is local; no internet needed.
+
+  Home.dc.html            /                  Overview
+  Flavors Hub.dc.html     /flavors           Choose-one table
+  Roaring Flavor.dc.html  /flavors/roaring   The one shipped flavor
+  Architecture.dc.html    /architecture      How the intersection stays cheap
+  Usage.dc.html           /usage             Install, quickstart, API
+  Benchmarks.dc.html      /benchmarks        Costs, crossovers, caveats
+  Design Language.dc.html                    The design system behind it all
+
+Dark is the default; the DARK/LIGHT toggle in the header is remembered
+across pages.
+
+On the home page, the codec picker in "Three layers" rewrites layer 01 and
+re-scopes the measured-figure labels — try switching to bitmap.
+
+Superseded home pages kept for reference: Home v1, Home v2.
+
+assets/    — tidied logo, favicon set, tokens.css
+support.js — keep next to the pages; they need it to render.
+
+Note: Home.dc.html states v0.4.1; the other six pages still say v0.1.0.

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  html, body { margin: 0; padding: 0; }
+  * { box-sizing: border-box; }
+  :root {
+    --bg: #0C0E11; --surface: #14171C; --surface2: #1A1E25; --rule: #232830; --ruleSoft: #1B2029;
+    --ink: #E6E9EE; --muted: #9BA3AE; --faint: #8A929E;
+    --signal: #176FFF; --signalFill: #0F62E8; --cyan: #19C5F4; --cyanSoft: rgba(25,197,244,.10); --signalSoft: rgba(23,111,255,.10);
+    --hot: #E8834A; --warm: #D7B25A; --cold: #19C5F4;
+    --dsp: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  }
+  [data-theme="light"] {
+    --bg: #F7F8FA; --surface: #FFFFFF; --surface2: #F0F2F5; --rule: #DFE3E9; --ruleSoft: #E9ECF1;
+    --ink: #12151A; --muted: #4B5361; --faint: #666E7B;
+    --signal: #0B4FCC; --signalFill: #0B4FCC; --cyan: #0A6C90; --cyanSoft: rgba(10,108,144,.07); --signalSoft: rgba(11,79,204,.06);
+    --hot: #B5541C; --warm: #8A6A12; --cold: #0A6C90;
+  }
+  body { background: var(--bg); }
+  a { color: var(--cyan); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { color: var(--ink); border-bottom-color: var(--cyan); }
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  @media (max-width: 680px) {
+    [data-hdr] { flex-wrap: wrap !important; height: auto !important; min-height: 56px; gap: 10px 16px !important; padding-top: 10px !important; padding-bottom: 10px !important; }
+    [data-hdr] > nav { order: 3; width: 100%; margin-left: 0 !important; gap: 14px !important; }
+    [data-hdr] > div:last-of-type { margin-left: auto; }
+  }
+  @media (max-width: 560px) {
+    [data-pad] { padding-left: 20px !important; padding-right: 20px !important; }
+  }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" style="background: var(--bg); color: var(--ink); font-family: var(--dsp); min-height: 100vh;">
+
+  <header style="position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--rule);">
+    <div data-pad="1" data-hdr="1" style="max-width: 1240px; margin: 0 auto; padding: 0 32px; height: 56px; display: flex; align-items: center; gap: 28px;">
+      <a href="Home.dc.html" style="display: flex; align-items: center; gap: 9px; color: var(--ink); border: 0;">
+        <svg viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps"><path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"></path><rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF"></rect><rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF"></rect><rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF"></rect><rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF"></rect><rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF"></rect><rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF"></rect><rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4"></rect><rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF"></rect><rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF"></rect></svg>
+        <span style="font-size: 16px; font-weight: 700; letter-spacing: -.035em;">CloudBitmaps</span>
+      </a>
+      <nav style="display: flex; gap: 18px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; flex-wrap: wrap;">
+        <a href="Home.dc.html" style="color: var(--muted);">Overview</a>
+        <a href="Flavors Hub.dc.html" style="color: var(--muted);">Flavors</a>
+        <a href="Architecture.dc.html" style="color: var(--muted);">Architecture</a>
+        <span style="color: var(--ink);">Usage</span>
+        <a href="Benchmarks.dc.html" style="color: var(--muted);">Benchmarks</a>
+        <a href="Design Language.dc.html" style="color: var(--muted);">Design</a>
+      </nav>
+      <div style="display: flex; border: 1px solid var(--rule);">
+        <button type="button" onClick="{{ setDark }}" style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 5px 9px; border: 0; cursor: pointer; background: {{ darkBtnBg }}; color: {{ darkBtnFg }};">DARK</button>
+        <button type="button" onClick="{{ setLight }}" style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 5px 9px; border: 0; border-left: 1px solid var(--rule); cursor: pointer; background: {{ lightBtnBg }}; color: {{ lightBtnFg }};">LIGHT</button>
+      </div>
+    </div>
+  </header>
+
+  <main data-pad="1" style="max-width: 1240px; margin: 0 auto; padding: 0 32px 120px;">
+
+    <section style="padding: 64px 0 40px;">
+      <div style="font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); margin-bottom: 18px;">Usage · @cloudbitmaps/roaring 0.1.0</div>
+      <h1 style="margin: 0 0 18px; font-size: 52px; line-height: 1.02; letter-spacing: -.04em; font-weight: 700; max-width: 24ch; text-wrap: balance;">Zero setup, then the same code in production.</h1>
+      <p style="margin: 0; font-size: 16px; line-height: 1.62; color: var(--muted); max-width: 66ch; text-wrap: pretty;">The in-memory drivers need nothing — no bucket, no table, no credentials. Swap them for S3 and DynamoDB later and every line above the constructor stays as it was.</p>
+    </section>
+
+    <section style="padding: 0 0 48px;">
+      <div style="display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <div style="border: 1px solid var(--rule); background: var(--surface);">
+          <div style="padding: 10px 16px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--faint);"><span>1 · INSTALL &amp; VERIFY</span><span>NPM</span></div>
+          <pre style="margin: 0; padding: 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--ink);"><span style="color: var(--faint);">$ </span>npm i @cloudbitmaps/roaring
+<span style="color: var(--faint);">$ </span>npm audit signatures   <span style="color: var(--faint);"># OIDC + SLSA provenance</span></pre>
+        </div>
+        <div style="border: 1px solid var(--rule); background: var(--surface); padding: 18px;">
+          <div style="font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--faint); margin-bottom: 12px;">SUPPLY CHAIN</div>
+          <p style="margin: 0; font-size: 13.5px; line-height: 1.58; color: var(--muted); text-wrap: pretty;">Published tokenlessly from CI via OIDC with SLSA provenance attached, so you can verify the tarball came from the commit it claims. One runtime dependency; cloud SDKs are optional peers you already have.</p>
+        </div>
+      </div>
+    </section>
+
+    <section style="padding: 0 0 48px;">
+      <div style="border: 1px solid var(--rule); background: var(--surface);">
+        <div style="padding: 10px 16px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--faint);"><span>2 · QUICKSTART.TS — SIX LINES TO A WORKING STORE</span><span>SCROLLS IN ITS OWN BOX</span></div>
+        <pre style="margin: 0; padding: 18px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--ink);"><span style="color: var(--cyan);">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span style="color: var(--cyan);">from</span> <span style="color: var(--muted);">'@cloudbitmaps/roaring'</span>;
+
+<span style="color: var(--cyan);">const</span> store = <span style="color: var(--cyan);">new</span> CloudRoaring({
+  warm: <span style="color: var(--cyan);">new</span> MemoryWarmDriver(),
+  cold: <span style="color: var(--cyan);">new</span> MemoryColdChunkSource(),
+});
+
+<span style="color: var(--cyan);">const</span> vips = store.segment(<span style="color: var(--muted);">'high-value-shoppers'</span>);
+<span style="color: var(--cyan);">await</span> vips.addMany([<span style="color: var(--ink);">75</span>, <span style="color: var(--ink);">99_999</span>, <span style="color: var(--ink);">1_234_567_890</span>]);  <span style="color: var(--faint);">// grouped by chunk, one write per chunk
+</span><span style="color: var(--cyan);">await</span> vips.has(<span style="color: var(--ink);">1_234_567_890</span>);                    <span style="color: var(--faint);">// true
+</span><span style="color: var(--cyan);">await</span> vips.count();                                <span style="color: var(--faint);">// exact cardinality, 0 payload reads</span></pre>
+      </div>
+    </section>
+
+    <section style="padding: 0 0 48px;">
+      <h2 style="margin: 0 0 12px; font-size: 30px; font-weight: 700; letter-spacing: -.032em;">Going to production</h2>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 1.62; color: var(--muted); max-width: 68ch; text-wrap: pretty;">Only the constructor changes. Nothing above it knows which tier it is talking to.</p>
+      <div style="border: 1px solid var(--rule); background: var(--surface);">
+        <div style="padding: 10px 16px; border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--faint);">3 · SWAP THE DRIVERS</div>
+        <pre style="margin: 0; padding: 18px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--ink);"><span style="color: var(--cyan);">const</span> store = <span style="color: var(--cyan);">new</span> CloudRoaring({
+  warm: <span style="color: var(--cyan);">new</span> DynamoWarmDriver({ table: <span style="color: var(--muted);">'bitmap-deltas'</span> }),
+  cold: <span style="color: var(--cyan);">new</span> S3ColdChunkSource({ bucket: <span style="color: var(--muted);">'my-segments'</span>, prefix: <span style="color: var(--muted);">'v1/'</span> }),
+  hot:  { maxChunks: <span style="color: var(--ink);">512</span> },   <span style="color: var(--faint);">// optional bounded LRU
+</span>});</pre>
+      </div>
+    </section>
+
+    <section style="padding: 0 0 48px;">
+      <h2 style="margin: 0 0 12px; font-size: 30px; font-weight: 700; letter-spacing: -.032em;">API</h2>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 1.62; color: var(--muted); max-width: 68ch; text-wrap: pretty;">Deliberately the shape of an in-memory <span style="font-family: var(--mono); font-size: 13.5px; color: var(--ink);">Set</span>. What is new is where the bytes live, not what you call.</p>
+      <div style="overflow-x: auto; border: 1px solid var(--rule); background: var(--surface);">
+        <table style="width: 100%; min-width: 820px; border-collapse: collapse; font-size: 14px; text-align: left;">
+          <thead>
+            <tr style="font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--faint);">
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule); width: 260px;">METHOD</th>
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule);">DOES</th>
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule); width: 230px;">TOUCHES</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">add(id) · addMany(ids)</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Appends to the chunk's delta row. Ids are grouped by chunk first, so a bulk add is one write per chunk, not per id.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--warm);">warm</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">has(id)</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Resolves one chunk: hot if cached, else cold payload merged with warm deltas.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--muted);">hot → warm + cold</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">remove(id)</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Records a tombstone in the delta row. Cold objects are never mutated in place.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--warm);">warm</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">count()</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Sums per-chunk cardinality from metadata. <span style="color: var(--ink);">Exact, not estimated</span> — and it never opens a payload.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--muted);">metadata only</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--cyan);">intersect(other)</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Async-iterates the intersection. Compares chunk keys first and fetches only shared chunks; streams the AND inside a 128 MiB window.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--cyan);">shared chunks only</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">publish()</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Folds deltas into a new immutable cold generation and drops the rows. Schedule it; don't call it per write.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--cold);">cold</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 13px; color: var(--ink);">estimateCost(profile)</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted);">Your region and rates in, projected bill out. The benchmarks page is generated from this same function.</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); font-family: var(--mono); font-size: 12px; color: var(--muted);">nothing — pure</td></tr>
+            <tr><td style="padding: 13px 16px; font-family: var(--mono); font-size: 13px; color: var(--ink);">exportSegments()</td><td style="padding: 13px 16px; color: var(--muted);">Writes every segment out in the documented <span style="font-family: var(--mono); font-size: 12.5px;">.crbm</span> format. The one-command exit.</td><td style="padding: 13px 16px; font-family: var(--mono); font-size: 12px; color: var(--cold);">cold</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="padding: 0 0 48px;">
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <div style="border: 1px solid var(--rule); background: var(--surface); padding: 24px;">
+          <h3 style="margin: 0 0 14px; font-size: 20px; font-weight: 700; letter-spacing: -.025em;">Ten drivers</h3>
+          <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.58; color: var(--muted); text-wrap: pretty;">Warm and cold are independent — pick one of each. Anything with a range read works as cold; anything with cheap small writes works as warm.</p>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">S3</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">GCS</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Azure Blob</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">R2</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">DynamoDB</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Firestore</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Cosmos DB</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Postgres</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Filesystem</span>
+            <span style="font-family: var(--mono); font-size: 11.5px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">Memory</span>
+          </div>
+        </div>
+        <div style="border: 1px solid var(--rule); background: var(--surface); padding: 24px;">
+          <h3 style="margin: 0 0 14px; font-size: 20px; font-weight: 700; letter-spacing: -.025em;">Estimate your own bill</h3>
+          <p style="margin: 0 0 14px; font-size: 14px; line-height: 1.58; color: var(--muted); text-wrap: pretty;">Our numbers are <span style="font-family: var(--mono); font-size: 13px;">us-east-1</span> on-demand. Yours are not. Feed your own rates in and get your own crossover — the page cannot drift ahead of the library because both call this function.</p>
+          <pre style="margin: 0; padding: 14px; background: var(--bg); border: 1px solid var(--rule); overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.65; color: var(--ink);"><span style="color: var(--cyan);">const</span> bill = estimateCost({
+  writesPerSec: <span style="color: var(--ink);">40</span>,
+  readsPerSec: <span style="color: var(--ink);">800</span>,
+  pricing: myPricingProfile,
+});</pre>
+        </div>
+      </div>
+    </section>
+
+    <section style="padding: 0 0 24px;">
+      <div style="border: 1px solid var(--rule); background: var(--surface); display: grid; grid-template-columns: 1fr 1fr;">
+        <div style="padding: 24px; border-right: 1px solid var(--rule);">
+          <div style="font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--cyan); margin-bottom: 12px;">OPERATIONAL CHECKLIST</div>
+          <ul style="margin: 0; padding: 0 0 0 18px; font-size: 14px; line-height: 1.6; color: var(--muted);">
+            <li style="margin-bottom: 8px;">Schedule <span style="font-family: var(--mono); font-size: 13px; color: var(--ink);">publish()</span> — deltas are not free forever.</li>
+            <li style="margin-bottom: 8px;">Bound the hot cache to something your runtime can actually hold.</li>
+            <li>Keep one old generation if you want cheap point-in-time snapshots.</li>
+          </ul>
+        </div>
+        <div style="padding: 24px;">
+          <div style="font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--muted); margin-bottom: 12px;">BEFORE YOU COMMIT</div>
+          <p style="margin: 0 0 12px; font-size: 14px; line-height: 1.6; color: var(--muted); text-wrap: pretty;">This is pre-1.0 and single-maintainer. The real risk is operational maturity, not losing your data — the bytes are immutable, the format is documented, and they are in your bucket.</p>
+          <div style="font-family: var(--mono); font-size: 11.5px; color: var(--muted);">exit: <span style="color: var(--ink);">exportSegments()</span> · <a href="Benchmarks.dc.html">read the caveats</a></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer style="border-top: 1px solid var(--rule); background: var(--surface);">
+    <div data-pad="1" style="max-width: 1240px; margin: 0 auto; padding: 28px 32px; display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline;">
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">CloudBitmaps · usage</span>
+      <a href="Home.dc.html" style="font-family: var(--mono); font-size: 11px;">Overview</a>
+      <a href="Architecture.dc.html" style="font-family: var(--mono); font-size: 11px;">Architecture</a>
+      <a href="Roaring Flavor.dc.html" style="font-family: var(--mono); font-size: 11px;">/flavors/roaring</a>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--faint); margin-left: auto;">1 runtime dependency · 10 drivers</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;defaultTheme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light'&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null };
+  componentDidMount() {
+    let saved = null;
+    try { saved = window.localStorage.getItem('cb-theme'); } catch (e) {}
+    this.setState({ theme: saved || this.props.defaultTheme || 'dark' });
+  }
+  set(theme) {
+    this.setState({ theme });
+    try { window.localStorage.setItem('cb-theme', theme); } catch (e) {}
+  }
+  renderVals() {
+    const theme = this.state.theme || this.props.defaultTheme || 'dark';
+    const isLight = theme === 'light';
+    return {
+      theme,
+      setDark: () => this.set('dark'),
+      setLight: () => this.set('light'),
+      darkBtnBg: isLight ? 'transparent' : 'var(--ink)',
+      darkBtnFg: isLight ? 'var(--muted)' : 'var(--bg)',
+      lightBtnBg: isLight ? 'var(--ink)' : 'transparent',
+      lightBtnFg: isLight ? 'var(--bg)' : 'var(--muted)'
+    };
+  }
+}
+</script>
+</body>
+</html>

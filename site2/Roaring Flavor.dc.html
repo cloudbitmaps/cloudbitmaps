@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  html, body { margin: 0; padding: 0; }
+  * { box-sizing: border-box; }
+  :root {
+    --bg: #0C0E11; --surface: #14171C; --surface2: #1A1E25; --rule: #232830; --ruleSoft: #1B2029;
+    --ink: #E6E9EE; --muted: #9BA3AE; --faint: #8A929E;
+    --signal: #176FFF; --signalFill: #0F62E8; --cyan: #19C5F4; --cyanSoft: rgba(25,197,244,.10); --signalSoft: rgba(23,111,255,.10);
+    --hot: #E8834A; --warm: #D7B25A; --cold: #19C5F4;
+    --dsp: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  }
+  [data-theme="light"] {
+    --bg: #F7F8FA; --surface: #FFFFFF; --surface2: #F0F2F5; --rule: #DFE3E9; --ruleSoft: #E9ECF1;
+    --ink: #12151A; --muted: #4B5361; --faint: #666E7B;
+    --signal: #0B4FCC; --signalFill: #0B4FCC; --cyan: #0A6C90; --cyanSoft: rgba(10,108,144,.07); --signalSoft: rgba(11,79,204,.06);
+    --hot: #B5541C; --warm: #8A6A12; --cold: #0A6C90;
+  }
+  body { background: var(--bg); }
+  a { color: var(--cyan); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { color: var(--ink); border-bottom-color: var(--cyan); }
+  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  @keyframes cbPick { 0%, 6% { opacity: .3; } 14%, 28% { opacity: 1; } 36%, 100% { opacity: .3; } }
+  @keyframes cbFill { 0%, 6% { transform: scaleX(.04); } 20%, 30% { transform: scaleX(1); } 40%, 100% { transform: scaleX(.04); } }
+  @keyframes cbStage { 0%, 1% { opacity: .34; } 5%, 22% { opacity: 1; } 27%, 100% { opacity: .34; } }
+  @keyframes cbMeasure { 0%, 50% { transform: scaleX(.02); } 60%, 74% { transform: scaleX(1); } 80%, 100% { transform: scaleX(.02); } }
+  @keyframes cbFlip { 0%, 52% { opacity: .16; } 58%, 74% { opacity: 1; } 80%, 100% { opacity: .16; } }
+  @keyframes cbSlide { 0%, 4% { transform: translateX(-6px); opacity: .4; } 12%, 100% { transform: translateX(0); opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  @media (max-width: 680px) {
+    [data-hdr] { flex-wrap: wrap !important; height: auto !important; min-height: 56px; gap: 10px 16px !important; padding-top: 10px !important; padding-bottom: 10px !important; }
+    [data-hdr] > nav { order: 3; width: 100%; margin-left: 0 !important; gap: 14px !important; }
+    [data-hdr] > div:last-of-type { margin-left: auto; }
+  }
+  @media (max-width: 560px) {
+    [data-pad] { padding-left: 20px !important; padding-right: 20px !important; }
+  }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" style="background: var(--bg); color: var(--ink); font-family: var(--dsp); min-height: 100vh;">
+
+  <header style="position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--rule);">
+    <div data-pad="1" data-hdr="1" style="max-width: 1240px; margin: 0 auto; padding: 0 32px; height: 56px; display: flex; align-items: center; gap: 28px;">
+      <a href="Home.dc.html" style="display: flex; align-items: center; gap: 9px; color: var(--ink); border: 0;">
+        <svg viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps"><path fill="currentColor" d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"></path><rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF"></rect><rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF"></rect><rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF"></rect><rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF"></rect><rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF"></rect><rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF"></rect><rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4"></rect><rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF"></rect><rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF"></rect></svg>
+        <span style="font-size: 16px; font-weight: 700; letter-spacing: -.035em;">CloudBitmaps</span>
+        <span style="font-family: var(--mono); font-size: 12px; color: var(--muted);">/roaring</span>
+      </a>
+      <nav style="display: flex; gap: 18px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; flex-wrap: wrap;">
+        <a href="Home.dc.html" style="color: var(--muted);">Overview</a>
+        <span style="color: var(--ink);">Flavors</span>
+        <a href="Architecture.dc.html" style="color: var(--muted);">Architecture</a>
+        <a href="Usage.dc.html" style="color: var(--muted);">Usage</a>
+        <a href="Benchmarks.dc.html" style="color: var(--muted);">Benchmarks</a>
+        <a href="Design Language.dc.html" style="color: var(--muted);">Design</a>
+      </nav>
+      <div style="display: flex; border: 1px solid var(--rule);">
+        <button type="button" onClick="{{ setDark }}" style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 5px 9px; border: 0; cursor: pointer; background: {{ darkBtnBg }}; color: {{ darkBtnFg }};">DARK</button>
+        <button type="button" onClick="{{ setLight }}" style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 5px 9px; border: 0; border-left: 1px solid var(--rule); cursor: pointer; background: {{ lightBtnBg }}; color: {{ lightBtnFg }};">LIGHT</button>
+      </div>
+    </div>
+  </header>
+
+  <main data-pad="1" style="max-width: 1240px; margin: 0 auto; padding: 0 32px 120px;">
+
+    <!-- SLOT 1 — flavor identity -->
+    <section style="padding: 56px 0 0;">
+      <div style="font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--faint); margin-bottom: 24px;"><a href="Flavors Hub.dc.html" style="color: var(--muted);">FLAVORS</a> / ROARING</div>
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 56px; align-items: start;">
+        <div style="display: flex; flex-direction: column; gap: 18px;">
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <span style="font-family: var(--mono); font-size: 15px; font-weight: 700;">@cloudbitmaps/roaring</span>
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 4px 8px; border: 1px solid var(--cyan); color: var(--cyan);">SHIPPED 0.1.0</span>
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 4px 8px; border: 1px solid var(--rule); color: var(--muted);">APACHE-2.0</span>
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 4px 8px; border: 1px solid var(--rule); color: var(--muted);">OIDC + SLSA</span>
+          </div>
+          <h1 style="margin: 0; font-size: 52px; line-height: 1.02; letter-spacing: -.04em; font-weight: 700; text-wrap: balance;">Sparse or clustered ids, compressed by containers that pick themselves.</h1>
+          <p style="margin: 0; font-size: 16px; line-height: 1.62; color: var(--muted); max-width: 62ch; text-wrap: pretty;">The Roaring format splits a 32-bit id into a 16-bit chunk key and a 16-bit remainder, then stores each chunk in whichever representation is smallest — a sorted array, a dense bitset, or a run-length list. It is the right default for id spaces with holes in them, which is most of them.</p>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px;">
+            <a href="#usage" style="font-size: 13px; font-weight: 700; padding: 9px 15px; background: var(--signalFill); color: #FFFFFF; border: 1px solid var(--signalFill);">Six-line quickstart ↓</a>
+            <a href="Flavors Hub.dc.html" style="font-size: 13px; padding: 9px 15px; border: 1px solid var(--rule); color: var(--ink);">← Compare flavors</a>
+          </div>
+        </div>
+
+        <div style="border: 1px solid var(--rule); background: var(--surface);">
+          <div style="padding: 10px 16px; border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">INSTALL</div>
+          <pre style="margin: 0; padding: 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: var(--ink);"><span style="color: var(--faint);">$ </span>npm i @cloudbitmaps/roaring</pre>
+          <div style="border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr 1fr;">
+            <div style="padding: 14px 16px; border-right: 1px solid var(--ruleSoft);"><div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">RUNTIME DEPS</div><div style="font-family: var(--mono); font-size: 22px; margin-top: 5px;">1</div></div>
+            <div style="padding: 14px 16px;"><div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">CLOUD SDKS</div><div style="font-family: var(--mono); font-size: 22px; margin-top: 5px;">0 <span style="font-size: 11px; color: var(--muted);">optional peers</span></div></div>
+            <div style="padding: 14px 16px; border-top: 1px solid var(--ruleSoft); border-right: 1px solid var(--ruleSoft);"><div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">DRIVERS</div><div style="font-family: var(--mono); font-size: 22px; margin-top: 5px;">10</div></div>
+            <div style="padding: 14px 16px; border-top: 1px solid var(--ruleSoft);"><div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">VERIFY</div><div style="font-family: var(--mono); font-size: 12px; margin-top: 9px; color: var(--muted);">npm audit signatures</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLOT 2 — the trade, both directions, equal weight -->
+    <section style="padding: 48px 0 0;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--rule);">
+        <div style="padding: 24px; border-right: 1px solid var(--rule); background: var(--surface);">
+          <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--cyan); margin-bottom: 12px;">TAKE THIS FLAVOR WHEN</div>
+          <ul style="margin: 0; padding: 0 0 0 18px; font-size: 14.5px; line-height: 1.62; color: var(--muted);">
+            <li style="margin-bottom: 8px;">Ids are <span style="color: var(--ink);">sparse or clustered</span> — user ids, event ids, anything with gaps.</li>
+            <li style="margin-bottom: 8px;">You want the strongest compression per chunk without tuning anything.</li>
+            <li>You are moving off Redis sets and want the closest thing to a drop-in.</li>
+          </ul>
+        </div>
+        <div style="padding: 24px; background: var(--surface);">
+          <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--muted); margin-bottom: 12px;">TAKE SOMETHING ELSE WHEN</div>
+          <ul style="margin: 0; padding: 0 0 0 18px; font-size: 14.5px; line-height: 1.62; color: var(--muted);">
+            <li style="margin-bottom: 8px;">You need <span style="color: var(--ink);">sub-millisecond p99</span> on a bounded working set — that is Redis, not this library, and not any flavor of it.</li>
+            <li style="margin-bottom: 8px;">You cannot take a native dependency — wait for <span style="font-family: var(--mono); font-size: 13.5px;">@cloudbitmaps/bitmap</span>.</li>
+            <li>Your ids are dense and contiguous; adaptive containers buy you nothing there.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLOT 3 — per-flavor codec animation -->
+    <section style="padding: 56px 0 0;">
+      <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;">
+        <span style="font-family: var(--mono); font-size: 11px; letter-spacing: .16em; color: var(--cyan);">CODEC</span>
+        <h2 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.03em;">How a chunk picks its representation</h2>
+      </div>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 1.62; color: var(--muted); max-width: 68ch; text-wrap: pretty;">This is the only animation on a flavor page, and it explains only the codec — the tiering and chunk-skipping story lives once, on <span style="font-family: var(--mono); font-size: 13.5px; color: var(--ink);">/architecture</span>, because it is codec-independent. A second flavor drops its own version into this slot and changes nothing else.</p>
+
+      <div style="border: 1px solid var(--rule); background: var(--surface); display: grid; grid-template-columns: minmax(0, 1fr) 320px;">
+        <div style="padding: 24px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); padding-bottom: 4px;"><span>ENCODE · WRITE PATH</span><span style="color: var(--cyan);">12s LOOP · 4 STAGES</span></div>
+
+          <div style="display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--ruleSoft); animation: cbStage 12s ease-in-out infinite;">
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--cyan); width: 88px; flex: none;">01 SPLIT</span>
+            <span style="flex: 1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span style="font-family: var(--mono); font-size: 13px; color: var(--ink);">1,234,567,890</span>
+              <span style="font-family: var(--mono); font-size: 12px; color: var(--cyan);">→</span>
+              <span style="font-family: var(--mono); font-size: 11.5px; padding: 4px 8px; border: 1px solid var(--rule); color: var(--ink); animation: cbSlide 12s ease-in-out infinite;">key <span style="color: var(--cyan);">0x4996</span></span>
+              <span style="font-family: var(--mono); font-size: 11.5px; padding: 4px 8px; border: 1px solid var(--rule); color: var(--ink); animation: cbSlide 12s ease-in-out infinite; animation-delay: .25s;">rem <span style="color: var(--cyan);">0x02D2</span></span>
+            </span>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 150px; text-align: right; flex: none;">16 bits + 16 bits</span>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--ruleSoft); animation: cbStage 12s ease-in-out infinite; animation-delay: 3s;">
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--cyan); width: 88px; flex: none;">02 GROUP</span>
+            <span style="flex: 1; display: flex; gap: 6px; flex-wrap: wrap;">
+              <span style="font-family: var(--mono); font-size: 11px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--muted);">0x0000 · <span style="color: var(--ink);">2 ids</span></span>
+              <span style="font-family: var(--mono); font-size: 11px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--muted);">0x0001 · <span style="color: var(--ink);">61,904 ids</span></span>
+              <span style="font-family: var(--mono); font-size: 11px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--muted);">0x4996 · <span style="color: var(--ink);">9,001 ids</span></span>
+            </span>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 150px; text-align: right; flex: none;">one chunk = 2¹⁶ ids</span>
+          </div>
+
+          <div style="display: flex; align-items: flex-start; gap: 14px; padding: 12px 0; border-top: 1px solid var(--ruleSoft); animation: cbStage 12s ease-in-out infinite; animation-delay: 6s;">
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--cyan); width: 88px; flex: none; padding-top: 4px;">03 CHOOSE</span>
+            <span style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+              <span style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-family: var(--mono); font-size: 10px; color: var(--muted); width: 52px; flex: none;">array</span>
+                <span style="width: 84px; height: 16px; border: 1px solid var(--rule); position: relative; overflow: hidden; flex: none;"><span style="position: absolute; inset: 0; transform-origin: left; background: repeating-linear-gradient(90deg, var(--cyan) 0 3px, transparent 3px 9px); animation: cbMeasure 12s ease-in-out infinite;"></span></span>
+                <span style="font-family: var(--mono); font-size: 10.5px; color: var(--cyan);">18 KiB — 2 B × 9,001</span>
+              </span>
+              <span style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-family: var(--mono); font-size: 10px; color: var(--muted); width: 52px; flex: none;">bitset</span>
+                <span style="width: 40px; height: 16px; border: 1px solid var(--rule); position: relative; overflow: hidden; flex: none;"><span style="position: absolute; inset: 0; transform-origin: left; background: repeating-linear-gradient(90deg, var(--cyan) 0 4px, rgba(25,197,244,.3) 4px 7px); animation: cbMeasure 12s ease-in-out infinite;"></span></span>
+                <span style="font-family: var(--mono); font-size: 10.5px; color: var(--ink);">8 KiB — flat, always <span style="color: var(--cyan);">← winner</span></span>
+              </span>
+              <span style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-family: var(--mono); font-size: 10px; color: var(--muted); width: 52px; flex: none;">run</span>
+                <span style="width: 112px; height: 16px; border: 1px solid var(--rule); position: relative; overflow: hidden; flex: none;"><span style="position: absolute; inset: 0; transform-origin: left; background: linear-gradient(90deg, var(--cyan) 0 34%, transparent 34% 44%, var(--cyan) 44% 100%); animation: cbMeasure 12s ease-in-out infinite;"></span></span>
+                <span style="font-family: var(--mono); font-size: 10.5px; color: var(--muted);">24 KiB — 4 B × 6,102 runs</span>
+              </span>
+            </span>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 150px; text-align: right; flex: none;">smallest encoding wins,<br>per chunk, on write</span>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--ruleSoft); animation: cbStage 12s ease-in-out infinite; animation-delay: 9s;">
+            <span style="font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--cyan); width: 88px; flex: none;">04 STORE</span>
+            <span style="flex: 1; display: flex; gap: 3px; align-items: stretch;">
+              <span style="flex: 2; height: 24px; background: var(--cyanSoft); border: 1px solid var(--cyan); font-family: var(--mono); font-size: 10px; color: var(--cyan); display: flex; align-items: center; justify-content: center;">ARR</span>
+              <span style="flex: 5; height: 24px; background: var(--cyanSoft); border: 1px solid var(--cyan); font-family: var(--mono); font-size: 10px; color: var(--cyan); display: flex; align-items: center; justify-content: center;">BITSET</span>
+              <span style="flex: 3; height: 24px; background: var(--cyanSoft); border: 1px solid var(--cyan); font-family: var(--mono); font-size: 10px; color: var(--cyan); display: flex; align-items: center; justify-content: center;">RUN</span>
+              <span style="flex: 2; height: 24px; background: var(--cyanSoft); border: 1px solid var(--cyan); font-family: var(--mono); font-size: 10px; color: var(--cyan); display: flex; align-items: center; justify-content: center;">ARR</span>
+            </span>
+            <span style="font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 150px; text-align: right; flex: none;">one segment,<br>mixed containers</span>
+          </div>
+
+          <div style="border-top: 1px solid var(--ruleSoft); padding-top: 14px; font-size: 13.5px; line-height: 1.6; color: var(--muted); text-wrap: pretty;">No configuration, no hint, no tuning knob — the container is decided per chunk by whichever encoding measures smallest. A real segment routinely holds all three at once, and the chunk key above the payload is what lets two segments intersect without downloading either.</div>
+        </div>
+        <div style="padding: 24px; display: flex; flex-direction: column; gap: 18px;">
+          <div>
+            <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); margin-bottom: 8px;">ID SPLIT</div>
+            <div style="font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted);">id &lt; 2³² <span style="color: var(--cyan);">→</span> chunkKey <span style="color: var(--ink);">16-bit</span><br><span style="margin-left: 66px; display: inline-block;">remainder <span style="color: var(--ink);">16-bit</span></span></div>
+          </div>
+          <div style="border-top: 1px solid var(--ruleSoft); padding-top: 16px;">
+            <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); margin-bottom: 8px;">WHY IT MATTERS HERE</div>
+            <p style="margin: 0; font-size: 13px; line-height: 1.58; color: var(--muted);">The chunk key is what makes intersection cheap across tiers: two segments only exchange chunks whose keys appear in both. The codec decides the bytes <em style="font-style: normal; color: var(--ink);">inside</em> a chunk; the key alignment is the engine's.</p>
+          </div>
+          <a href="Design Language.dc.html" style="font-family: var(--mono); font-size: 11.5px; margin-top: auto;">See the tiered ∩ animation →</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLOT 4 — usage -->
+    <section id="usage" style="padding: 56px 0 0;">
+      <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;">
+        <span style="font-family: var(--mono); font-size: 11px; letter-spacing: .16em; color: var(--cyan);">USAGE</span>
+        <h2 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.03em;">Zero setup: in-memory in six lines</h2>
+      </div>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 1.62; color: var(--muted); max-width: 68ch; text-wrap: pretty;">A store is wired to a warm driver for live mutations and a cold source for the immutable archive. The in-memory drivers need no setup — swap in the S3 and DynamoDB drivers later and the code above them does not change.</p>
+      <div style="display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start;">
+        <div style="border: 1px solid var(--rule); background: var(--surface);">
+          <div style="padding: 10px 16px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);"><span>QUICKSTART.TS</span><span>SAME API IN PRODUCTION</span></div>
+          <pre style="margin: 0; padding: 18px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--ink);"><span style="color: var(--cyan);">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span style="color: var(--cyan);">from</span> <span style="color: var(--muted);">'@cloudbitmaps/roaring'</span>;
+
+<span style="color: var(--cyan);">const</span> store = <span style="color: var(--cyan);">new</span> CloudRoaring({
+  warm: <span style="color: var(--cyan);">new</span> MemoryWarmDriver(),
+  cold: <span style="color: var(--cyan);">new</span> MemoryColdChunkSource(),
+});
+
+<span style="color: var(--cyan);">const</span> vips = store.segment(<span style="color: var(--muted);">'high-value-shoppers'</span>);
+<span style="color: var(--cyan);">await</span> vips.addMany([<span style="color: var(--ink);">75</span>, <span style="color: var(--ink);">99_999</span>, <span style="color: var(--ink);">1_234_567_890</span>]);  <span style="color: var(--faint);">// grouped by chunk
+</span><span style="color: var(--cyan);">await</span> vips.has(<span style="color: var(--ink);">1_234_567_890</span>);                    <span style="color: var(--faint);">// true
+</span><span style="color: var(--cyan);">await</span> vips.count();                                <span style="color: var(--faint);">// exact cardinality, 0 payload reads</span></pre>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 20px;">
+          <div style="border: 1px solid var(--rule); background: var(--surface); padding: 20px;">
+            <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); margin-bottom: 14px;">THE API IS THE ONE YOU KNOW</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+              <span style="font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">add</span>
+              <span style="font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">has</span>
+              <span style="font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">remove</span>
+              <span style="font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--rule); color: var(--ink);">count</span>
+              <span style="font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--cyan); color: var(--cyan);">intersect</span>
+            </div>
+            <p style="margin: 14px 0 0; font-size: 13px; line-height: 1.58; color: var(--muted);">Deliberately the in-memory <span style="font-family: var(--mono); font-size: 12.5px;">Set</span> surface. What is new is where the bytes live, not what you call.</p>
+          </div>
+          <div style="border: 1px solid var(--rule); background: var(--surface); padding: 20px;">
+            <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); margin-bottom: 12px;">TIER MAP</div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; align-items: baseline; gap: 10px;"><span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 3px 7px; border: 1px solid var(--hot); color: var(--hot); width: 118px; text-align: center;">HOT · RAM</span><span style="font-size: 12.5px; color: var(--muted);">bounded LRU of decoded chunks</span></div>
+              <div style="display: flex; align-items: baseline; gap: 10px;"><span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 3px 7px; border: 1px solid var(--warm); color: var(--warm); width: 118px; text-align: center;">WARM · NoSQL</span><span style="font-size: 12.5px; color: var(--muted);">per-chunk delta rows, adds + removes</span></div>
+              <div style="display: flex; align-items: baseline; gap: 10px;"><span style="font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding: 3px 7px; border: 1px solid var(--cold); color: var(--cold); width: 118px; text-align: center;">COLD · .crbm</span><span style="font-size: 12.5px; color: var(--muted);">immutable, generation-keyed objects</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLOT 5 — numbers -->
+    <section style="padding: 56px 0 0;">
+      <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;">
+        <span style="font-family: var(--mono); font-size: 11px; letter-spacing: .16em; color: var(--cyan);">NUMBERS</span>
+        <h2 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.03em;">What it costs, and where it stops paying</h2>
+      </div>
+      <p style="margin: 0 0 24px; font-size: 15px; line-height: 1.62; color: var(--muted); max-width: 68ch; text-wrap: pretty;">Measured on real S3 + DynamoDB in <span style="font-family: var(--mono); font-size: 13.5px;">us-east-1</span> — not an emulator — with DynamoDB capacity taken from AWS's own <span style="font-family: var(--mono); font-size: 13.5px;">ConsumedCapacity</span>. Every anchor below is asserted in CI: a regression or an overclaim breaks the build.</p>
+      <div style="overflow-x: auto; border: 1px solid var(--rule); background: var(--surface);">
+        <table style="width: 100%; min-width: 800px; border-collapse: collapse; font-size: 14px; text-align: left;">
+          <thead>
+            <tr style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint);">
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule);">SCENARIO</th>
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule); text-align: right;">VALUE</th>
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule);">BASIS</th>
+              <th style="padding: 12px 16px; font-weight: 400; border-bottom: 1px solid var(--rule); text-align: right;">VERDICT</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft);">1M incremental writes</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums; color: var(--cyan);">$0.75</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted); font-size: 13px;">metered, pay-per-use</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--cyan);">WIN</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft);">1M <span style="font-family: var(--mono); font-size: 13px;">count()</span>s</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums; color: var(--cyan);">$0.14</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted); font-size: 13px;">zero payload reads — index only</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--cyan);">WIN</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft);">1M segment publishes</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums;">$5.88</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted); font-size: 13px;">full generation rewrite</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--muted);">BATCH IT</td></tr>
+            <tr><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft);">1.2 GiB at rest, no traffic</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums; color: var(--cyan);">$0.03/mo</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted); font-size: 13px;">0.008% of a Redis-HA node</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--cyan);">WIN BIG</td></tr>
+            <tr style="background: var(--surface2);"><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft);">Sustained writes above crossover</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums;">26.33 /s</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); color: var(--muted); font-size: 13px;">8 KiB items, flat Redis-HA = $346/mo</td><td style="padding: 13px 16px; border-bottom: 1px solid var(--ruleSoft); text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--ink);">REDIS WINS</td></tr>
+            <tr style="background: var(--surface2);"><td style="padding: 13px 16px;">Sustained reads above crossover</td><td style="padding: 13px 16px; text-align: right; font-family: var(--mono); font-size: 16px; font-variant-numeric: tabular-nums;">526.64 /s</td><td style="padding: 13px 16px; color: var(--muted); font-size: 13px;">Topology-B warm, cache off</td><td style="padding: 13px 16px; text-align: right; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--ink);">REDIS WINS</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin: 14px 0 0; font-size: 13px; color: var(--faint); line-height: 1.55; max-width: 72ch; text-wrap: pretty;">The last two rows are in the same table, the same type and the same weight as the first four. They are the crossover, and past it a flat node is simply cheaper.</p>
+    </section>
+
+    <!-- SLOT 6 — what this doesn't establish -->
+    <section style="padding: 56px 0 0;">
+      <div style="border: 1px solid var(--rule); background: var(--surface); display: grid; grid-template-columns: 260px minmax(0, 1fr);">
+        <div style="padding: 24px; border-right: 1px solid var(--rule);">
+          <h2 style="margin: 0 0 10px; font-size: 22px; font-weight: 700; letter-spacing: -.03em;">What these numbers do not establish</h2>
+          <p style="margin: 0; font-size: 13px; line-height: 1.58; color: var(--muted);">Published on every page that quotes a figure, in the same panel as the figure.</p>
+        </div>
+        <div style="padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; gap: 14px;"><span style="font-family: var(--mono); font-size: 10px; color: var(--cyan); padding-top: 3px;">01</span><p style="margin: 0; font-size: 14px; line-height: 1.6; color: var(--muted); text-wrap: pretty;"><span style="color: var(--ink); font-weight: 700;">Published rates × wire-metered ops — not a cloud bill.</span> Request tiers and storage-class transitions are unmeasured; Cost Explorer reconciliation is blocked on the account.</p></div>
+          <div style="display: flex; gap: 14px;"><span style="font-family: var(--mono); font-size: 10px; color: var(--cyan); padding-top: 3px;">02</span><p style="margin: 0; font-size: 14px; line-height: 1.6; color: var(--muted); text-wrap: pretty;"><span style="color: var(--ink); font-weight: 700;">Cost, not latency.</span> Wall-clock throughput is too noisy to gate on shared CI runners. The one latency claim we make is scoped: a 2026-07-27 in-region run puts a warm <span style="font-family: var(--mono); font-size: 13px;">has()</span> at p50 5.27 ms / p99 12.71 ms (n=2,000) — <span style="color: var(--ink);">“p99 inside budget”, not “always”</span>.</p></div>
+          <div style="display: flex; gap: 14px;"><span style="font-family: var(--mono); font-size: 10px; color: var(--cyan); padding-top: 3px;">03</span><p style="margin: 0; font-size: 14px; line-height: 1.6; color: var(--muted); text-wrap: pretty;"><span style="color: var(--ink); font-weight: 700;">Your region and workload move the crossover.</span> Feed your own <span style="font-family: var(--mono); font-size: 13px;">PricingProfile</span> into the shipped <span style="font-family: var(--mono); font-size: 13px;">estimateCost()</span> — the same function the chart is generated from, so the page cannot drift ahead of the library.</p></div>
+          <div style="display: flex; gap: 14px;"><span style="font-family: var(--mono); font-size: 10px; color: var(--cyan); padding-top: 3px;">04</span><p style="margin: 0; font-size: 14px; line-height: 1.6; color: var(--muted); text-wrap: pretty;"><span style="color: var(--ink); font-weight: 700;">It is pre-1.0 and single-maintainer.</span> The real risk is operational maturity, not losing the bytes — they are immutable, documented, and in your bucket. <span style="font-family: var(--mono); font-size: 13px;">exportSegments()</span> is a one-command exit.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLOT contract -->
+    <section style="padding: 56px 0 0;">
+      <div style="border: 1px dashed var(--rule); padding: 20px 24px;">
+        <div style="font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--faint); margin-bottom: 12px;">TEMPLATE CONTRACT — WHAT A SECOND FLAVOR FILLS IN</div>
+        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.5;">
+          <div><span style="color: var(--cyan);">01</span> identity<br><span style="color: var(--faint);">name · status · install</span></div>
+          <div><span style="color: var(--cyan);">02</span> the trade<br><span style="color: var(--faint);">take / don't take</span></div>
+          <div><span style="color: var(--cyan);">03</span> codec anim<br><span style="color: var(--faint);">one, small, own</span></div>
+          <div><span style="color: var(--cyan);">04</span> usage<br><span style="color: var(--faint);">same six lines</span></div>
+          <div><span style="color: var(--cyan);">05</span> numbers<br><span style="color: var(--faint);">shared table shape</span></div>
+          <div><span style="color: var(--cyan);">06</span> caveats<br><span style="color: var(--faint);">verbatim, shared</span></div>
+        </div>
+        <p style="margin: 14px 0 0; font-size: 13px; line-height: 1.55; color: var(--muted); max-width: 72ch; text-wrap: pretty;">Slots 05 and 06 are engine-level and identical across flavors. Only 01–04 are authored per package, which is what keeps a third flavor from becoming a redesign.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer style="border-top: 1px solid var(--rule); background: var(--surface);">
+    <div data-pad="1" style="max-width: 1240px; margin: 0 auto; padding: 28px 32px; display: flex; gap: 24px; flex-wrap: wrap; align-items: baseline;">
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">@cloudbitmaps/roaring · 0.1.0 · Apache-2.0</span>
+      <a href="Flavors Hub.dc.html" style="font-family: var(--mono); font-size: 11px;">All flavors</a>
+      <a href="Design Language.dc.html" style="font-family: var(--mono); font-size: 11px;">Design language</a>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--faint); margin-left: auto;">Published tokenlessly via OIDC · SLSA provenance</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;defaultTheme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light'&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null };
+  componentDidMount() {
+    let saved = null;
+    try { saved = window.localStorage.getItem('cb-theme'); } catch (e) {}
+    this.setState({ theme: saved || this.props.defaultTheme || 'dark' });
+  }
+  set(theme) {
+    this.setState({ theme });
+    try { window.localStorage.setItem('cb-theme', theme); } catch (e) {}
+  }
+  renderVals() {
+    const theme = this.state.theme || this.props.defaultTheme || 'dark';
+    const isLight = theme === 'light';
+    return {
+      theme,
+      setDark: () => this.set('dark'),
+      setLight: () => this.set('light'),
+      darkBtnBg: isLight ? 'transparent' : 'var(--ink)',
+      darkBtnFg: isLight ? 'var(--muted)' : 'var(--bg)',
+      lightBtnBg: isLight ? 'var(--ink)' : 'transparent',
+      lightBtnFg: isLight ? 'var(--bg)' : 'var(--muted)'
+    };
+  }
+}
+</script>
+</body>
+</html>

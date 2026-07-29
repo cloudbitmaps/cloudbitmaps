@@ -15,6 +15,8 @@ export default tseslint.config(
       'reports',
       // The superseded site, kept only to diff against until it is deleted.
       'site-old',
+      // The delivery's own support.js — vendor code we diff against, never lint.
+      'site2',
     ],
   },
   js.configs.recommended,
