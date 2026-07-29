@@ -1,0 +1,41 @@
+# CloudBitmaps
+
+> Distributed, cloud-native Roaring Bitmaps. Query and intersect billion-scale integer sets over tiered
+> cloud storage (RAM → warm NoSQL/SQL → cold immutable objects) at a fraction of an always-on cache, with
+> the familiar in-memory API: `add`, `has`, `remove`, `count`, `intersect`.
+
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage tiers. The distinguishing capability
+is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks that can possibly contribute,
+so intersecting two 2,000,000-id segments touches only the shared chunks, and `count()` on a published
+segment does zero payload reads.
+
+Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all ten storage
+drivers) arrives transitively. Ten backends ship as optional-peer subpaths: S3, GCS, Azure Blob, DynamoDB,
+Postgres, Redis, MongoDB, Cassandra, MySQL, and local filesystem.
+
+## Measured, not modelled
+
+Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with DynamoDB capacity taken from
+AWS's own ConsumedCapacity: $0.75 per million incremental writes, $0.14 per million count()s, $5.88 per
+million segment publishes, against an always-on Redis-HA line of $346/month standing.
+
+## When NOT to use it
+
+If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: a check that
+misses the hot cache costs a network round trip, where an in-process RAM store costs a memory read. CloudBitmaps is for sets
+that are large, mostly read, and shouldn't cost $346/month to keep warm. In-region latency is not yet
+calibrated and no in-region figure is published.
+
+## Status
+
+v0.4.1, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
+in a minor bump until the .crbm format freezes at 1.0.
+
+## Links
+
+- Repository: https://github.com/cloudbitmaps/cloudbitmaps
+- Package: https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
+- Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
+- Roaring flavor: https://cloudbitmaps.pages.dev/flavors/roaring
+- Chunk-skipping, stepped through on a recorded run: https://cloudbitmaps.pages.dev/demo
