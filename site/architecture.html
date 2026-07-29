@@ -425,6 +425,146 @@
         </p>
       </section>
 
+      <!-- ── ERRORS, AND WHICH ONES RETRY ────────────────────────────────────
+           "Fail fast, typed errors" is one of the project's stated principles and the site never mentioned it.
+           A reader wiring this into a service needs to know which failures are theirs to handle and which the
+           library handles for them; the answer is a rule, not a list of knobs, so the retry KNOBS
+           (maxAttempts / baseDelayMs / maxDelayMs) are left to the API reference and the rule is here. -->
+      <section id="errors">
+        <h2>Errors, and which ones retry</h2>
+        <p class="lede">
+          Every failure is a typed error, never a thrown string, because the interesting question at a call site
+          is not <em>what went wrong</em> but <em>whether trying again could possibly help</em>. That is a
+          property of the error's kind, so the kind decides.
+        </p>
+        <div class="tpanel">
+          <!-- The right label deliberately does NOT say "Retried?" — the table's own third column is headed
+               "Retry", and two names for one column is how a legend stops agreeing with its figure. It says
+               what the panel is a selection OF instead, so a reader knows five is not the whole set. -->
+          <div class="tpanel-head">
+            <span class="label">What you will catch</span>
+            <span class="label">5 of 11 exported types</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Error</th>
+                  <th>What it means</th>
+                  <th>Retry</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="m">TransientError</span></td>
+                  <td class="from">
+                    The backend was briefly unavailable — throttled, a dropped connection, a 5xx.
+                  </td>
+                  <td><span class="status is-auto">Automatic</span></td>
+                </tr>
+                <tr>
+                  <td><span class="m">WriteConflictError</span></td>
+                  <td class="from">
+                    Someone else wrote the chunk you were holding a version of. Optimistic concurrency working,
+                    not failing.
+                  </td>
+                  <td><span class="status is-manual">Re-read first</span></td>
+                </tr>
+                <tr>
+                  <td><span class="m">IntegrityError</span></td>
+                  <td class="from">
+                    Bytes came back that do not match their checksum. Something is corrupt; the same request
+                    will return the same corruption.
+                  </td>
+                  <td><span class="status is-never">Never</span></td>
+                </tr>
+                <tr>
+                  <td><span class="m">KeyUnavailableError</span></td>
+                  <td class="from">
+                    An encrypted segment's key is gone or unreachable. If it was crypto-shredded, this is the
+                    correct and permanent answer.
+                  </td>
+                  <td><span class="status is-never">Never</span></td>
+                </tr>
+                <tr>
+                  <td><span class="m">ValidationError</span></td>
+                  <td class="from">A bad argument reached a boundary. Your bug, and it fails immediately.</td>
+                  <td><span class="status is-never">Never</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <strong>Deterministic failures are never retried.</strong> Replaying a request that failed for a
+            reason that has not changed either cannot help or is actively wrong — and a retry loop that hides a
+            corruption is worse than the corruption. Write conflicts are the one middle case: they get their own
+            loop, in the engine, which <em>re-reads and re-applies</em> rather than replaying the same call,
+            because blindly repeating a read-modify-write is how you lose the other writer's change.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── OBSERVABILITY + HOW WE KNOW ─────────────────────────────────────
+           Two questions a reader asks in this order and the site answered neither: can I see what it is doing,
+           and why should I believe it holds? They belong together because they are the same question asked of
+           production and of CI. -->
+      <section id="operating">
+        <h2>Watching it, and knowing it holds</h2>
+        <p class="lede">
+          The engine emits neutral domain events — no vendor, no telemetry dependency, and no emission at all
+          when no sink is wired, so the default costs nothing on the hot path. A short adapter maps them to
+          OpenTelemetry, Datadog, or a log line.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">The chunk-skipping is observable in production, not just in a benchmark</span>
+            <span class="rl-fig">intersect</span>
+            <span class="rl-note">
+              The <span class="m">intersect</span> event carries
+              <span class="m">fetchedChunks</span> and <span class="m">skippedChunks</span> for the real
+              operation. The ratio the <a href="demo.html">demo</a> steps through on a recorded run is the same
+              number you can graph off your own traffic — which is the only way to know the skipping is still
+              working on <em>your</em> data.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Where the bytes and the milliseconds went</span>
+            <span class="rl-fig">cold.get · warm.read · cache</span>
+            <span class="rl-note">
+              Every tier crossing reports its bytes and its duration, and the cache reports hit or miss. Events
+              carry raw observations rather than dollars — turning bytes into money is the cost model's job, so
+              rates stay yours to change.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Retries and compaction are events, not silence</span>
+            <span class="rl-fig">retry · compaction</span>
+            <span class="rl-note">
+              A retry reports its reason — <span class="m">occ</span> or
+              <span class="m">transient</span> — with the attempt number and the delay, so backoff storms are
+              visible rather than inferred. Compaction reports whether it ran and how many chunks were dirty.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">And why any of this should be believed</span>
+            <span class="rl-fig">one seed</span>
+            <span class="rl-note">
+              A deterministic simulator, in the FoundationDB tradition, runs the real engine against a virtual
+              clock, a seeded scheduler and a seeded RNG, checking it against a plain
+              <span class="m">Set</span> oracle at every quiescent point — under injected conflicts, transient
+              faults, compaction racing the live write path, and a compaction crashed mid-commit. Because time
+              and randomness are injected rather than ambient, a failure is reported <em>with its seed</em> and
+              that seed replays the same interleaving. A concurrency bug is therefore reproducible instead of
+              being a story about a flaky test.
+            </span>
+          </li>
+        </ul>
+      </section>
+
       <!-- ── WHAT IT COSTS ──────────────────────────────────────────────────
            The figure column earns its place most here: a costs section should be scannable for WHAT IT COSTS
            before any prose is read, and three cards buried the numbers inside paragraphs. -->

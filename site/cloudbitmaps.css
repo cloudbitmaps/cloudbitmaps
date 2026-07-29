@@ -2382,6 +2382,27 @@ em {
   color: var(--cb-hot);
 }
 
+/* ── retry policy, its own axis ───────────────────────────────────────────────
+   These three answer "would trying again help?", which is NOT the shipping-status axis above. They get their
+   own modifiers even though two of them resolve to colours already in use, because the alternative is what
+   already went wrong once on this site: is-spec was doing double duty for two unrelated meanings, so restyling
+   it for one silently restyled the other page. A shared hook between unrelated axes is a latent bug, not reuse.
+
+   is-never is deliberately NEUTRAL rather than hot. "Never retried" is the correct and intended behaviour for a
+   corruption or a shredded key — colouring it like a warning would tell the reader something is wrong when the
+   library is doing exactly the right thing. */
+.status.is-auto {
+  color: var(--cb-cyan);
+}
+
+.status.is-manual {
+  color: var(--cb-warm);
+}
+
+.status.is-never {
+  color: var(--cb-muted);
+}
+
 /* The second line of a table's first cell — what the thing IS, under its name. */
 .row-sub {
   display: block;
