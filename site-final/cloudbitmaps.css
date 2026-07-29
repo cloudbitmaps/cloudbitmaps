@@ -1476,6 +1476,15 @@ em {
   padding: 16px 16px 4px;
 }
 
+/* Prose in the alt slot rather than a command — the supply-chain note is an
+   explanation, not something to copy. */
+.install-note {
+  margin: 8px 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+}
+
 .install-alt pre {
   padding: 10px 0 14px;
   font-size: 11.5px;
@@ -2055,6 +2064,32 @@ em {
 .tpanel .from {
   color: var(--cb-muted);
   font-size: 13px;
+}
+
+.code-plain {
+  margin: 0;
+  padding: 18px 16px;
+  overflow-x: auto;
+  font-family: var(--cb-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--cb-ink);
+}
+
+.code-plain code {
+  font: inherit;
+}
+
+.code-plain .k {
+  color: var(--cb-cyan);
+}
+
+.code-plain .s {
+  color: var(--cb-muted);
+}
+
+.code-plain .c {
+  color: var(--cb-faint);
 }
 
 .tpanel-foot {
