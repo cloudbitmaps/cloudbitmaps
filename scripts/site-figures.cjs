@@ -63,6 +63,37 @@ const p50 = /\*\*p50\*\*\s*\|\s*\*\*([\d.]+) ms\*\*/.exec(doc);
 const p99 = /\|\s*p99\s*\|\s*\*\*([\d.]+) ms\*\*/.exec(doc);
 if (!p50 || !p99) fail('docs/benchmarks.md no longer states the p50/p99 warm has() figures');
 
+// ── the estimator's own accuracy (K3) ─────────────────────────────────────────────────────────────────────
+// This is the claim every other figure on the page rests on, since they all come out of estimateCost(). Parsed
+// rather than transcribed so that loosening it in the docs cannot leave a tighter number published on the site.
+const k3 = /prediction lands within ±(\d+)% of the engine's actual measured/.exec(doc);
+if (!k3) fail("docs/benchmarks.md no longer states the estimator's ±N% accuracy claim (K3)");
+
+// ── the real-cloud calibration receipt ────────────────────────────────────────────────────────────────────
+// The only figures on the page that are what AWS ACTUALLY CHARGED rather than what the model predicts, so they
+// are also the only ones a reader has no way to sanity-check. Every line item, the total, the request count,
+// the date and the run id come out of the docs table. Transcribing a receipt by hand is exactly how a page ends
+// up quoting a number no run produced.
+const calDate = /MEASURED\*\* against real S3 \+ DynamoDB on \*\*(\d{4}-\d{2}-\d{2})\*\*/.exec(doc);
+const calRun = /run id `([\w-]+)`/.exec(doc);
+if (!calDate || !calRun)
+  fail('docs/benchmarks.md no longer dates/identifies the AWS calibration run');
+
+// Line items: `| DynamoDB write | 2,020 WRU | $0.625/M | $0.001263 |` and the bolded Total row.
+const calRows = [
+  ...doc.matchAll(
+    /^\|\s*(?:\*\*)?([\w /]+?)(?:\*\*)?\s*\|\s*(?:\*\*)?([\d,]+(?: \w+)?)(?:\*\*)?\s*\|[^|\n]*\|\s*(?:\*\*)?(\$[\d.]+)(?:\*\*)?\s*\|$/gm,
+  ),
+]
+  .map((m) => ({ term: m[1].trim(), qty: m[2].trim(), cost: m[3] }))
+  .filter((r) => /Dynamo|S3|Total/i.test(r.term));
+if (calRows.length < 5) {
+  fail(
+    `docs/benchmarks.md's calibration table parsed to ${calRows.length} rows, expected 5 ` +
+      '(4 line items + total) — did its shape change?',
+  );
+}
+
 // ── at-rest rounds for display, and the rounding is stated rather than assumed ─────────────────────────────
 const atRestExact = results.atRest.monthlyUSD; // 0.0276
 const atRestShown = atRestExact.toFixed(2); // "0.03"
@@ -81,6 +112,20 @@ const anchors = [
   ['item size assumption', `${results.assumptions.avgItemKiB} KiB`],
   ['warm has() p50', p50 ? `${p50[1]} ms` : null],
   ['warm has() p99', p99 ? `${p99[1]} ms` : null],
+  ['estimator accuracy (K3)', k3 ? `±${k3[1]}%` : null],
+  ['calibration date', calDate ? calDate[1] : null],
+  ['calibration run id', calRun ? calRun[1] : null],
+  // Every calibration line item and the total, so the receipt cannot be quietly retyped.
+  //
+  // Quantities are only anchored when they are DISCRIMINATING — `2,020 WRU`, `6,355 requests`. The S3 rows'
+  // quantities are the bare strings "22" and "23", which `includes()` would find in almost any page (a year, a
+  // percentage, a pixel value), so anchoring them would add two checks that cannot fail. A gate that always
+  // passes is worse than no gate, because it reports coverage it does not have. The cost column carries those
+  // two rows instead, and every cost is distinctive to six decimal places.
+  ...calRows.flatMap((r) => [
+    ...(/[ ,]/.test(r.qty) ? [[`calibration · ${r.term} qty`, r.qty]] : []),
+    [`calibration · ${r.term} cost`, r.cost],
+  ]),
 ];
 
 let html;

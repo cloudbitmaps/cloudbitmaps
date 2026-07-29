@@ -2092,6 +2092,16 @@ em {
   font-size: 13px;
 }
 
+/* A summing row, not a fifth line item. Without this the calibration receipt's "Total" read as one more
+   charge in the list — the docs table bolds it, and the site had no equivalent.
+
+   Brightness and a rule, not weight: bolding the row would thicken the 15px tabular mono into the same mud
+   that bolding 11.5px mono produces, and the whole sheet resolves emphasis with --cb-ink instead. */
+.tpanel tr.is-total td {
+  border-top: 1px solid var(--cb-rule);
+  color: var(--cb-ink);
+}
+
 .code-plain {
   margin: 0;
   padding: 18px 16px;
@@ -2387,6 +2397,15 @@ em {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+}
+
+/* `gap` spaces the cards from EACH OTHER and nothing spaces the grid from what follows it, so the calibration
+   panel added after this grid sat flush against the cards' bottom border — two hairlines touching, reading as
+   one broken frame. 28px is the sheet's existing block rhythm (.lede's margin-bottom).
+
+   Scoped with :not(:last-child) so the common case, where .matters ends its section, gains no trailing space. */
+.matters:not(:last-child) {
+  margin-bottom: 28px;
 }
 
 @media (max-width: 900px) {

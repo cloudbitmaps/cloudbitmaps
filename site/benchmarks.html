@@ -410,6 +410,74 @@
               <strong>cannot account for</strong>, so a number cannot improve without evidence either.
             </p>
           </div>
+          <!-- The fourth card, which is also what makes the grid 2×2 rather than leaving a half-row. It is the
+               claim that licenses every OTHER number on the page: all of them come out of estimateCost(), so
+               the estimator's own accuracy against a real bill is the load-bearing one. -->
+          <div class="limit">
+            <p class="label">And the estimator itself</p>
+            <p>
+              <span class="m">estimateCost()</span> produces every figure above, so its own accuracy is the
+              claim they all rest on. Against a real measured workload its prediction lands within
+              <strong>±20%</strong> of the backend cost actually incurred.
+            </p>
+          </div>
+        </div>
+
+        <!-- ── THE CALIBRATION RECEIPT ──────────────────────────────────────
+             The one place on this page reporting what AWS ACTUALLY CHARGED, rather than what the model says it
+             would. It is a small number — two tenths of a cent — and that is the point: it is a receipt, not a
+             headline, and it is what turns "modelled" into "calibrated". Dated and run-identified, because a
+             calibration with no date is a calibration you cannot re-check. -->
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">What AWS actually charged</span>
+            <span class="label">2026-07-25 · us-east-1 · run 2026-07-25-60291</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Term</th>
+                  <th class="num">Billed quantity</th>
+                  <th class="num">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>DynamoDB write</td>
+                  <td class="num">2,020 WRU</td>
+                  <td class="num">$0.001263</td>
+                </tr>
+                <tr>
+                  <td>DynamoDB read</td>
+                  <td class="num">4,233 RRU</td>
+                  <td class="num">$0.000529</td>
+                </tr>
+                <tr>
+                  <td>S3 PUT / LIST</td>
+                  <td class="num">22</td>
+                  <td class="num">$0.000110</td>
+                </tr>
+                <tr>
+                  <td>S3 GET</td>
+                  <td class="num">23</td>
+                  <td class="num">$0.000009</td>
+                </tr>
+                <tr class="is-total">
+                  <td>Total</td>
+                  <td class="num">6,355 requests</td>
+                  <td class="num">$0.001911</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            20 segments · 2,000 incremental writes · 20 publishes · 2,000 tier-merging
+            <span class="m">count()</span> reads, on a throwaway bucket and table torn down afterwards. The
+            capacity units are AWS's own <span class="m">ConsumedCapacity</span>, read off every response rather
+            than derived from a size estimate — the harness cross-checks them against the request count and
+            refuses to report a total it cannot reconcile.
+          </p>
         </div>
       </section>
 
