@@ -2317,3 +2317,276 @@ em {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   THE CODEC FIGURE — four stages of the write path, and the only animation on a
+   flavor page. It explains the CODEC and nothing else: tiering and chunk-skipping
+   live once, on /architecture, because they are codec-independent. Which is also
+   what makes a second flavor cheap — it drops its own version of this figure into
+   this slot and changes nothing else on the site.
+
+   ALL FOUR STAGES STAY FULLY LEGIBLE. The delivery dims the inactive ones to .34
+   to cycle attention; full opacity is strictly better, for two reasons. Dimmed
+   body text stops clearing AA, and a figure whose job is to explain has no
+   business hiding information in order to direct the eye. Attention is directed by
+   a marker instead — one rule, on one stage, moving.
+
+   The only substantive motion is stage 03's three cost bars growing from zero.
+   That is `transform: scaleX`, composited, and it makes the ranking visible before
+   it is read: the winner is simply the shortest bar.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.codec {
+  margin: 0;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.codec-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.codec-stages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cstage {
+  border-right: 1px solid var(--cb-rule);
+  border-top: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cstage:last-child {
+  border-right: 0;
+}
+
+/* The marker. A rule on the stage being explained, not a dimming of the others. */
+.cstage.is-focus {
+  border-top-color: var(--cb-cyan);
+  background: var(--cb-surface-2);
+}
+
+.cstage-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--cb-rule-soft);
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-ink);
+}
+
+.cstage-n {
+  color: var(--cb-faint);
+}
+
+.cstage.is-focus .cstage-n {
+  color: var(--cb-cyan);
+}
+
+.cstage-body {
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cstage-fig {
+  font-family: var(--cb-mono);
+  font-size: 13px;
+  line-height: normal;
+  color: var(--cb-ink);
+  word-break: break-all;
+}
+
+.cstage-note {
+  margin-top: auto;
+  font-family: var(--cb-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--cb-faint);
+}
+
+/* A label/value list inside a stage. Same shape as `.panel-row.is-pair` but at the
+   figure's smaller scale. */
+.cpair,
+.cstore {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cpair li,
+.cstore li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--cb-mono);
+  font-size: 11.5px;
+  line-height: normal;
+  color: var(--cb-muted);
+}
+
+.cpair b,
+.cstore b {
+  font-weight: 400;
+  color: var(--cb-ink);
+  text-align: right;
+}
+
+.cstore .c-arr {
+  color: var(--cb-warm);
+}
+
+.cstore .c-bit {
+  color: var(--cb-cyan);
+}
+
+/* ── stage 03 · the measurement ─────────────────────────────────────────────── */
+.cmeasure {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cmeasure li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.cm-name {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-muted);
+}
+
+.cm-cost {
+  font-family: var(--cb-mono);
+  font-size: 11.5px;
+  line-height: normal;
+  color: var(--cb-ink);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cm-track {
+  grid-column: 1 / -1;
+  display: block;
+  height: 7px;
+  background: var(--cb-rule);
+}
+
+/* Grown from the left by transform, so the bar's length is the cost. `--cm` is the
+   fraction of the largest of the three, set per row in the markup beside the number
+   it represents — a bar whose scale disagreed with its label would be worse than no
+   bar at all. */
+.cm-bar {
+  display: block;
+  height: 100%;
+  background: var(--cb-muted);
+  transform-origin: left center;
+  transform: scaleX(var(--cm));
+  animation: cb-measure 12s ease-in-out infinite;
+}
+
+/* The winner is the shortest bar AND the labelled one AND the cyan one: three
+   channels, because this is the single conclusion the figure exists to deliver. */
+.cmeasure .is-win .cm-bar {
+  background: var(--cb-cyan);
+}
+
+.cmeasure .is-win .cm-cost,
+.cmeasure .is-win .cm-name {
+  color: var(--cb-cyan);
+}
+
+.cmeasure .is-win .cm-name::after {
+  content: ' ← smallest';
+  letter-spacing: 0.02em;
+}
+
+.cm-how {
+  grid-column: 1 / -1;
+  font-family: var(--cb-mono);
+  font-size: 9.5px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+/* Grows from nothing to its measured length, then holds for the rest of the loop:
+   84% of the cycle at rest, so the figure is a still image almost all of the time
+   and the reduced-motion frame is the informative one. */
+@keyframes cb-measure {
+  0%,
+  4% {
+    transform: scaleX(0);
+  }
+  16%,
+  100% {
+    transform: scaleX(var(--cm));
+  }
+}
+
+.codec-foot {
+  border-top: 1px solid var(--cb-rule);
+  padding: 14px 16px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+}
+
+/* Four stages side by side stop being readable well before the columns get narrow
+   enough to wrap text badly; two by two keeps each one at a usable width. */
+@media (max-width: 1000px) {
+  .codec-stages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cstage:nth-child(2) {
+    border-right: 0;
+  }
+
+  .cstage:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--cb-rule);
+  }
+}
+
+@media (max-width: 620px) {
+  .codec-stages {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cstage {
+    border-right: 0;
+    border-bottom: 1px solid var(--cb-rule);
+  }
+
+  .cstage:last-child {
+    border-bottom: 0;
+  }
+}
