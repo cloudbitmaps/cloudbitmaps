@@ -16,6 +16,18 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Changed
 
+- **The planned plain-bitset flavor is renamed `@cloudbitmaps/bitset` (facade `CloudBitset`), from
+  `@cloudbitmaps/bitmap`.** Nothing is published under either name yet, so this costs nobody anything — which is
+  exactly why it is being done now rather than after. Three reasons: `bitmap` is the singular of its own scope
+  and so differentiates nothing (every flavor is a bitmap); putting `roaring` and `bitmap` side by side in a
+  picker implies Roaring is not a bitmap, when one of Roaring's three containers *is* a bitset and the real axis
+  is compressed vs uncompressed; and `bitset` is a term of art — `java.util.BitSet`, `std::bitset` — that means
+  precisely "an uncompressed array of bits", which is the actual differentiator. The tell was in our own copy:
+  the site's subtitle for `@cloudbitmaps/bitmap` read "Plain bitset — one bit per id", so the name needed the
+  word `bitset` to explain itself. It also gives the naming pattern that generalises —
+  `roaring`/`CloudRoaring`, `bitset`/`CloudBitset`, `soaring`/`CloudSoaring` — and avoids the `.bmp`
+  image-format collision in search. The generic term `bitmap` is retained where it is genuinely generic: npm
+  keywords, repo topics, the `CodecBitmap` type, `core/bitmap.ts`, and prose about the data structure.
 - **The site adopts a designed visual language, and gains a `/flavors` hub and a `/flavors/roaring` page.** One
   engine, pluggable codecs — the hub is a single choose-one table (including a *cost of choosing it* column), and
   the flavor page is also the template a second flavor fills in. The library itself is untouched.
@@ -562,7 +574,7 @@ provenance. Everything below is the work that got it here.
   in place of the guesses. It will refuse to invent what it can't know: traffic rates and arrival pattern stay
   caller-declared and labelled as such. Stage **9.5b** adds the *"do you even need the native addon?"* comparison
   (a plain per-chunk bitset is exactly `chunkCount × 8192` bytes against a measured roaring size — ratio ~1 ⇒ skip
-  CRoaring and deploy to edge runtimes), gated on the `bitmap` flavor existing.
+  CRoaring and deploy to edge runtimes), gated on the `bitset` flavor existing.
 - **`CostReport.advisories` — the estimator now compares you to *us*, not only to Redis**.
   `verdict` has always been Redis-relative, which left a blind spot: feed it the id-at-a-time write shape and it
   returns `'win-big'` — true, and thoroughly misleading, because you can beat the $346/mo baseline by 40× while
@@ -873,7 +885,7 @@ provenance. Everything below is the work that got it here.
   `SegmentEngine`, compaction, and the `.crbm` read/write helpers construct and combine bitmaps only through a
   new `CodecInterface` factory + `CodecBitmap` value type (`src/core/codec.ts`), never a concrete implementation.
   Roaring is the flagship codec (`roaringCodec`, delegating to `SafeBitmap`); the `CloudRoaring` facade injects
-  it, so nothing changes for callers. This is the pre-split step that lets `@cloudbitmaps/bitmap` /
+  it, so nothing changes for callers. This is the pre-split step that lets `@cloudbitmaps/bitset` /
   `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes. New public exports:
   `CodecInterface`, `CodecBitmap`, `roaringCodec`. A codec-agnostic test drives the whole engine (add/has/remove/
   count/iterate/tier-merge/intersect) on a non-roaring `Set`-backed codec to prove no roaring assumption leaked.

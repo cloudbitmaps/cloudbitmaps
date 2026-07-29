@@ -191,7 +191,7 @@ move it up.
   also answer whether you need the native Roaring addon at all: if your IDs compress no better than a plain
   bitset, you can skip it and deploy to edge runtimes.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **A generic `bitmap` flavor** (`@cloudbitmaps/bitmap`) — the same cloud engine behind a plain bitset codec
+- **A generic `bitset` flavor** (`@cloudbitmaps/bitset`) — the same cloud engine behind a plain bitset codec
   instead of Roaring. The codec seam that makes this a drop-in already exists; this is the committed
   fast-follow after `1.0`, on validated demand.
 - **Native registry drivers** for GCS, Azure, Postgres, and Redis, so a non-AWS deployment can run the

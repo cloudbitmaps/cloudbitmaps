@@ -159,8 +159,11 @@
                 </tr>
                 <tr>
                   <td>
-                    <span class="m">@cloudbitmaps/bitmap</span>
-                    <span class="row-sub">Plain bitset — one bit per id, no branches</span>
+                    <span class="m">@cloudbitmaps/bitset</span>
+                    <!-- Was "Plain bitset — one bit per id, no branches" back when the package was called
+                         @cloudbitmaps/bitmap and the subtitle had to do the naming's job. The name says
+                         "bitset" now, so the subtitle can say something the name does not. -->
+                    <span class="row-sub">One bit per id — no containers, no branches</span>
                   </td>
                   <td><span class="status is-coming">Coming</span></td>
                   <td class="from">
@@ -226,11 +229,20 @@
               than any warm-tier round trip. Use Redis.
             </p>
           </div>
+          <!-- This card used to say "one API surface" without ever naming it, which left a reader to assume
+               the surface was intersect-and-nothing-else. The set operations belong here: they are the part of
+               the API that is identical across flavors, and the question "does it do andNot?" has nowhere else
+               on the site to get answered. -->
           <div class="limit">
-            <p class="label">The engine underneath</p>
+            <p class="label">The API, whichever you pick</p>
             <p>
-              Ten storage drivers, three tiers, one API surface, one runtime dependency. A flavor sits inside
-              that as a <span class="m">CodecInterface</span> implementation and touches none of it.
+              <span class="m">add</span> · <span class="m">has</span> · <span class="m">remove</span> ·
+              <span class="m">count</span>, and the full set algebra —
+              <span class="m">intersect</span>, <span class="m">union</span>,
+              <span class="m">andNot</span> — plus <span class="m">*Into</span> variants that write the result
+              straight to a destination segment instead of returning it. A flavor is a
+              <span class="m">CodecInterface</span> implementation underneath ten drivers and three tiers, and
+              changes none of these signatures.
             </p>
           </div>
         </div>
