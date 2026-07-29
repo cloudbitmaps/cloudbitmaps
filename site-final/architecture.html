@@ -175,38 +175,38 @@
           Each step names what it does and what it cost. The numbers are from the same measured run as the
           panel above.
         </p>
-        <ol class="trace">
+        <ol class="rowlist">
           <li>
-            <span class="trace-n">01</span>
-            <span class="trace-what"><span class="m">keys(A) ∩ keys(B)</span></span>
-            <span class="trace-out is-live">100 / 2,000</span>
-            <span class="trace-note">
+            <span class="rl-mark">01</span>
+            <span class="rl-what"><span class="m">keys(A) ∩ keys(B)</span></span>
+            <span class="rl-fig is-live">100 / 2,000</span>
+            <span class="rl-note">
               Metadata only. Cardinality per chunk is stored beside the key, so this phase never opens a
               payload.
             </span>
           </li>
           <li>
-            <span class="trace-n">02</span>
-            <span class="trace-what">Plan the fetch</span>
-            <span class="trace-out">3,800 skipped</span>
-            <span class="trace-note">
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Plan the fetch</span>
+            <span class="rl-fig">3,800 skipped</span>
+            <span class="rl-note">
               Every non-aligned key in either segment. Not deferred and not cached — the request is never
               issued.
             </span>
           </li>
           <li>
-            <span class="trace-n">03</span>
-            <span class="trace-what">Merge warm deltas</span>
-            <span class="trace-out">one range read</span>
-            <span class="trace-note">
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Merge warm deltas</span>
+            <span class="rl-fig">one range read</span>
+            <span class="rl-note">
               Adds and removes since the last publish, read as a range rather than scanned.
             </span>
           </li>
           <li>
-            <span class="trace-n">04</span>
-            <span class="trace-what">Stream the AND</span>
-            <span class="trace-out">403,200 bytes</span>
-            <span class="trace-note">
+            <span class="rl-mark">04</span>
+            <span class="rl-what">Stream the AND</span>
+            <span class="rl-fig">403,200 bytes</span>
+            <span class="rl-note">
               The cold payload footprint is bounded by
               <span class="m">concurrency × operands × chunk</span> — the window, not the segment size.
             </span>
@@ -379,34 +379,46 @@
       </section>
 
       <!-- ── THE REST OF THE INVARIANTS ─────────────────────────────────────
-           What is left after the two diagrams: three properties that are genuinely propositional. A diagram of
-           "bytes are validated before decoding" would be a picture of nothing happening. -->
+           Three propositions that a diagram cannot carry — a picture of "bytes are validated before decoding"
+           is a picture of nothing happening. Rows rather than cards: three items in a two-column grid always
+           leaves an orphan, and a card gives a one-line claim the same weight as its explanation. -->
       <section>
         <h2>Three more that hold</h2>
-        <div class="matters">
-          <div class="limit">
-            <p class="label">Intersect is commutative</p>
-            <p>
+        <p class="lede">
+          Not intentions. Each of these has a named test or a typed guard behind it, and the right-hand column
+          is where to look for it.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">Intersect is commutative</span>
+            <span class="rl-fig">a named test</span>
+            <span class="rl-note">
               <span class="m">a.intersect([b])</span> and <span class="m">b.intersect([a])</span> return the
-              same set. There is a test named for it, not a comment claiming it.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">The object ceiling is reachable</p>
-            <p>
-              S3 allows 10,000 multipart parts; at an 8 MiB part that is a <strong>78 GiB</strong> ceiling.
-              Exceeding it raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and
-              never silent truncation.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">All tier bytes are untrusted</p>
-            <p>
-              Payloads go through the safe deserialiser behind a hard size cap before reaching the native
-              addon. A corrupt or hostile row is a typed error, not a crash.
-            </p>
-          </div>
-        </div>
+              same set — asserted by a test called <span class="m">is commutative</span>, not by a comment
+              claiming it.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">The object ceiling is reachable</span>
+            <span class="rl-fig is-live">78 GiB</span>
+            <span class="rl-note">
+              S3 allows 10,000 multipart parts, and at an 8 MiB part that is the real ceiling. Exceeding it
+              raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and never silent
+              truncation.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">All tier bytes are untrusted</span>
+            <span class="rl-fig">safe decode + cap</span>
+            <span class="rl-note">
+              Payloads pass the safe deserialiser behind a hard size cap before they reach the native addon. A
+              corrupt or hostile row is a typed error, not a crash.
+            </span>
+          </li>
+        </ul>
         <p class="note" style="max-width: 82ch">
           1,156 tests run on every commit, and the compaction and OCC paths carry property and concurrency
           tests specifically.
@@ -414,39 +426,44 @@
       </section>
 
       <!-- ── WHAT IT COSTS ──────────────────────────────────────────────────
-           Stated where the diagram is, not on a page a reader has to go looking for. -->
+           The figure column earns its place most here: a costs section should be scannable for WHAT IT COSTS
+           before any prose is read, and three cards buried the numbers inside paragraphs. -->
       <section>
         <h2>What this design costs you</h2>
         <p class="lede">
-          Every architecture is a set of trades. These are ours, and the numbers are measured rather than
-          estimated.
+          Every architecture is a set of trades. These are ours, measured rather than estimated, and stated on
+          the page with the diagrams rather than somewhere a reader has to go looking.
         </p>
-        <div class="matters">
-          <div class="limit">
-            <p class="label">01 · A warm round trip is milliseconds, not microseconds</p>
-            <p>
-              Measured in-region in <span class="m">us-east-1</span> on 2026-07-27:
-              <strong>p50 5.27 ms, p99 12.71 ms</strong> over 2,000 samples, against the published package
-              rather than a local build. That is inside budget for most request paths and disqualifying for
-              some.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">02 · Sustained high write rates lose to a flat node</p>
-            <p>
-              Past <strong>26.33 writes/s</strong> the metered bill overtakes $346/mo for a Redis-HA node. We
-              publish the crossover rather than waiting to be asked.
-              <a href="benchmarks.html">See it</a>.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">03 · Compaction is an operational responsibility</p>
-            <p>
-              Skip it and reads degrade as deltas pile up. It is a scheduled job you own, like a vacuum —
-              there is no version of this design where nobody has to run it.
-            </p>
-          </div>
-        </div>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">A warm round trip is milliseconds, not microseconds</span>
+            <span class="rl-fig is-live">p50 5.27 ms · p99 12.71 ms</span>
+            <span class="rl-note">
+              Measured in-region in <span class="m">us-east-1</span> on 2026-07-27 over 2,000 samples, against
+              the published package rather than a local build. Inside budget for most request paths, and
+              disqualifying for some.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Sustained high write rates lose to a flat node</span>
+            <span class="rl-fig is-live">26.33 writes/s</span>
+            <span class="rl-note">
+              Past that rate the metered bill overtakes $346/mo for a Redis-HA node. We publish the crossover
+              rather than waiting to be asked. <a href="benchmarks.html">See it</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Compaction is an operational responsibility</span>
+            <span class="rl-fig">a job you own</span>
+            <span class="rl-note">
+              Skip it and reads degrade as deltas pile up. It is a scheduled job, like a vacuum — there is no
+              version of this design where nobody has to run it.
+            </span>
+          </li>
+        </ul>
       </section>
 
       <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->

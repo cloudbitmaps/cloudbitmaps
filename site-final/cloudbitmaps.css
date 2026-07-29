@@ -2847,14 +2847,18 @@ em {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   THE TRACE — four auditable steps, each with what it did and what it cost.
+   ROW LIST — marked rows, each with a statement, a figure, and a note.
 
-   This replaces nine code figures. What a reader needs from an architecture page is
-   the sequence and its costs; the calls that produce it belong on /usage once,
-   where they can be copied. A numbered list is honest here because these steps ARE
-   a sequence — the numbering encodes order that matters, rather than decorating.
+   Used three times on /architecture: the four-step trace, the invariants, and the
+   costs. It replaced a two-column card grid in the last two, which was the wrong
+   shape for three items — 2 + 1 always leaves an orphan and a hole beside it, and a
+   card gives a one-line claim the same weight as its explanation.
+
+   The right-hand figure column is the reason this reads faster than cards: the
+   numbers line up down a single edge, so a costs section can be scanned for what it
+   costs before any of the prose is read.
    ══════════════════════════════════════════════════════════════════════════════ */
-.trace {
+.rowlist {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -2862,7 +2866,7 @@ em {
   background: var(--cb-surface);
 }
 
-.trace li {
+.rowlist li {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
   gap: 6px 16px;
@@ -2871,11 +2875,11 @@ em {
   align-items: baseline;
 }
 
-.trace li:last-child {
+.rowlist li:last-child {
   border-bottom: 0;
 }
 
-.trace-n {
+.rl-mark {
   font-family: var(--cb-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
@@ -2883,13 +2887,20 @@ em {
   color: var(--cb-faint);
 }
 
-.trace-what {
+/* A held guarantee gets a glyph rather than a number — these are not a sequence, and
+   numbering them would imply an order that does not exist. */
+.rl-mark.is-held {
+  color: var(--cb-cyan);
+  font-size: 13px;
+}
+
+.rl-what {
   font-size: 15px;
   line-height: 1.5;
   color: var(--cb-ink);
 }
 
-.trace-out {
+.rl-fig {
   font-family: var(--cb-mono);
   font-size: 12.5px;
   line-height: normal;
@@ -2898,20 +2909,24 @@ em {
   white-space: nowrap;
 }
 
-.trace-note {
+.rl-fig.is-live {
+  color: var(--cb-cyan);
+}
+
+.rl-note {
   grid-column: 2 / -1;
   font-size: 13.5px;
   line-height: 1.55;
   color: var(--cb-muted);
-  max-width: 76ch;
+  max-width: 82ch;
 }
 
 @media (max-width: 700px) {
-  .trace li {
+  .rowlist li {
     grid-template-columns: 34px minmax(0, 1fr);
   }
 
-  .trace-out {
+  .rl-fig {
     grid-column: 2;
     text-align: left;
   }
