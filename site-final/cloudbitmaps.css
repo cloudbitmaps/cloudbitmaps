@@ -2590,3 +2590,265 @@ em {
     border-bottom: 0;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   KEY ALIGNMENT — the one figure /architecture needs.
+
+   Two sorted key lists with a single cursor walking them. The lit keys are the ones
+   present in BOTH, and they are the only ones ever fetched. The point the figure
+   has to land is that the skip is the DEFAULT: everything unlit was compared and
+   dropped without a request, so a reader should see far more dark cells than lit
+   ones and should see them dark before anything moves.
+
+   The cursor is a full-width carriage translated by transform — the site's one
+   movement primitive — and it is `linear`, because a cursor crossing a sorted list
+   at a varying speed would be a claim about the algorithm.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.align {
+  margin: 0;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.align-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.align-body {
+  position: relative;
+  overflow: hidden;
+  padding: 26px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.align-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.align-tag {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.align-keys {
+  display: grid;
+  grid-template-columns: repeat(18, 1fr);
+  gap: 4px;
+}
+
+.ak {
+  aspect-ratio: 1;
+  display: block;
+  background: var(--cb-rule);
+  border-radius: 2px;
+}
+
+/* Lit = present in both. Cyan means "this is the answer" here exactly as it does on
+   /demo's axis and in the moat figure — one meaning, three figures. */
+.ak.on {
+  background: var(--cb-cyan);
+  animation: cb-ak 7s ease-in-out infinite;
+}
+
+.ak.one {
+  background: var(--cb-muted);
+}
+
+.ak.d2 {
+  animation-delay: 0.5s;
+}
+
+.ak.d3 {
+  animation-delay: 1s;
+}
+
+.ak.d4 {
+  animation-delay: 1.5s;
+}
+
+.ak.d5 {
+  animation-delay: 2s;
+}
+
+/* Rests LIT for 78% of the loop: the informative state is the one that says which
+   keys align, so that is the frame reduced-motion keeps. */
+@keyframes cb-ak {
+  0%,
+  8% {
+    opacity: 0.14;
+    transform: scale(0.8);
+  }
+  22%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.align-cursor {
+  position: absolute;
+  left: 122px;
+  right: 16px;
+  top: 20px;
+  bottom: 20px;
+  pointer-events: none;
+  animation: cb-cursor 7s linear infinite;
+}
+
+.align-cursor::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--cb-ink);
+}
+
+@keyframes cb-cursor {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  34% {
+    opacity: 1;
+  }
+  40%,
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+.align-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 0;
+  padding: 0 16px 20px;
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.align-legend span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.align-legend .b-shared {
+  background: var(--cb-cyan);
+}
+
+.swatch.ak-one {
+  background: var(--cb-muted);
+}
+
+.align-foot {
+  border-top: 1px solid var(--cb-rule);
+  padding: 14px 16px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   THE TRACE — four auditable steps, each with what it did and what it cost.
+
+   This replaces nine code figures. What a reader needs from an architecture page is
+   the sequence and its costs; the calls that produce it belong on /usage once,
+   where they can be copied. A numbered list is honest here because these steps ARE
+   a sequence — the numbering encodes order that matters, rather than decorating.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.trace {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.trace li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--cb-rule-soft);
+  align-items: baseline;
+}
+
+.trace li:last-child {
+  border-bottom: 0;
+}
+
+.trace-n {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.trace-what {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--cb-ink);
+}
+
+.trace-out {
+  font-family: var(--cb-mono);
+  font-size: 12.5px;
+  line-height: normal;
+  color: var(--cb-ink);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.trace-note {
+  grid-column: 2 / -1;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+  max-width: 76ch;
+}
+
+@media (max-width: 700px) {
+  .trace li {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .trace-out {
+    grid-column: 2;
+    text-align: left;
+  }
+
+  .align-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  /* The cursor's fixed left offset assumes the tag column; stacked, there is nothing
+     for it to align to, so it goes rather than pointing at the wrong thing. */
+  .align-cursor {
+    display: none;
+  }
+}
