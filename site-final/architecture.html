@@ -153,9 +153,10 @@
             <span class="align-cursor" aria-hidden="true"></span>
           </div>
           <p class="align-legend">
-            <span><i class="swatch b-shared"></i>in both &mdash; fetched</span>
-            <span><i class="swatch ak-one"></i>in one segment only &mdash; skipped</span>
-            <span><i class="swatch b-none"></i>in neither</span>
+            <span><i class="swatch b-shared"></i><b>5</b> in both &mdash; fetched</span>
+            <span><i class="swatch ak-one"></i><b>6</b> in one segment only &mdash; skipped</span>
+            <span><i class="swatch b-none"></i><b>7</b> in neither</span>
+            <span class="align-total">18 keys, one pass</span>
           </p>
           <figcaption class="align-foot">
             A key in only one segment cannot contribute to an intersection, so it is dropped after a
@@ -289,87 +290,127 @@
         </div>
       </section>
 
-      <!-- ── WHAT MUST STAY TRUE ────────────────────────────────────────────
-           The invariants a skeptic checks, each one traceable to code or a test rather than asserted. This is
-           where the claims the earlier restructure dropped are restored — with sources this time. -->
+      <!-- ── A DELETE, AND A PUBLISH ────────────────────────────────────────
+           These were table rows. `(cold ∪ adds) \ removes` is a sentence a reader has to parse; four rows of
+           cells where the tombstone visibly punches a hole in the result is something they can just see. Same
+           for the generation flip — "cold objects are never overwritten" is a claim, while watching gen 7
+           arrive beside gen 6 and the pointer move afterwards is the mechanism. -->
       <section>
-        <h2>What must stay true</h2>
+        <h2>A delete, and a publish</h2>
         <p class="lede">
-          These are the properties the design would be broken without, not intentions. Each has a named test
-          or a typed guard behind it.
+          The two operations most systems get wrong. Both are shown rather than asserted, and in both the
+          order of events is the point.
         </p>
-        <div class="tpanel">
-          <div class="tpanel-head">
-            <span class="label">Invariants</span><span class="label">Held by tests, not by intent</span>
-          </div>
-          <div class="tscroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Property</th>
-                  <th>What it means</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><span class="m">intersect</span> is commutative</td>
-                  <td class="from">
-                    <span class="m">a.intersect([b])</span> and <span class="m">b.intersect([a])</span> return
-                    the same set, and there is a test named for it.
-                  </td>
-                </tr>
-                <tr>
-                  <td>Bounded transfer</td>
-                  <td class="from">
-                    Only chunks whose keys appear in <strong>every</strong> operand are fetched. The cold
-                    payload footprint is bounded by the window, not by segment size.
-                  </td>
-                </tr>
-                <tr>
-                  <td>Tombstones are first-class</td>
-                  <td class="from">
-                    There is a real <span class="m">remove()</span>. The effective set is
-                    <span class="m">(cold ∪ warm.adds) \ warm.removes</span> — an OR-merge alone cannot express
-                    a delete.
-                  </td>
-                </tr>
-                <tr>
-                  <td>Compaction purges conditionally</td>
-                  <td class="from">
-                    Warm rows are dropped on the version that was archived, so a write landing mid-scan
-                    survives instead of being silently lost.
-                  </td>
-                </tr>
-                <tr>
-                  <td>Cold objects are never overwritten</td>
-                  <td class="from">
-                    <span class="m">segment.&lt;gen&gt;.crbm</span> plus a LATEST pointer. A reader sees one
-                    generation or another, never half of a write.
-                  </td>
-                </tr>
-                <tr>
-                  <td>The object ceiling is reachable</td>
-                  <td class="from">
-                    S3 allows 10,000 multipart parts; at an 8 MiB part that is a <strong>78 GiB</strong>
-                    ceiling. Exceeding it raises a typed
-                    <span class="m">ValidationError</span> — never a raw S3 400, and never silent truncation.
-                  </td>
-                </tr>
-                <tr>
-                  <td>All tier bytes are untrusted</td>
-                  <td class="from">
-                    Payloads go through the safe deserialiser behind a hard size cap before they reach the
-                    native addon. A corrupt or hostile row is an error, not a crash.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="tpanel-foot">
-            1,156 tests run on every commit, and the compaction and OCC paths carry property and concurrency
-            tests specifically.
-          </p>
+        <div class="dgms">
+          <figure class="dgm">
+            <div class="dgm-head">
+              <span class="label">A delete</span><span class="label">One chunk, no rebuild</span>
+            </div>
+            <div class="dgm-body">
+              <div class="dgm-row">
+                <span class="dgm-key">Cold</span>
+                <span class="dgm-cells" aria-hidden="true">
+                  <i class="set"></i><i></i><i class="set"></i><i class="set"></i><i></i><i class="set"></i><i></i><i class="set"></i><i></i><i></i><i class="set"></i><i></i>
+                </span>
+              </div>
+              <div class="dgm-row">
+                <span class="dgm-key">Warm · adds</span>
+                <span class="dgm-cells" aria-hidden="true">
+                  <i></i><i class="add"></i><i></i><i></i><i></i><i></i><i class="add"></i><i></i><i></i><i></i><i></i><i></i>
+                </span>
+              </div>
+              <div class="dgm-row">
+                <span class="dgm-key">Warm · removes</span>
+                <span class="dgm-cells" aria-hidden="true">
+                  <i></i><i></i><i></i><i class="tomb"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </span>
+              </div>
+              <div class="dgm-row is-result">
+                <span class="dgm-key">Effective</span>
+                <span class="dgm-cells" aria-hidden="true">
+                  <i class="set"></i><i class="add"></i><i class="set"></i><i class="gone"></i><i></i><i class="set"></i><i class="add"></i><i class="set"></i><i></i><i></i><i class="set"></i><i></i>
+                </span>
+              </div>
+            </div>
+            <p class="dgm-legend">
+              <span><i class="swatch sw-set"></i>in cold</span>
+              <span><i class="swatch sw-add"></i>added since</span>
+              <span><i class="swatch sw-tomb"></i>tombstone</span>
+            </p>
+            <p class="dgm-formula">
+              effective = <b>(cold &cup; warm.adds) &#xFF3C; warm.removes</b> &mdash; the tombstone is
+              outlined because it marks an <b>absence</b>, and it wins. A delete is one small row write, not a
+              scan and not a rebuild.
+            </p>
+          </figure>
+
+          <figure class="dgm">
+            <div class="dgm-head">
+              <span class="label">A publish</span><span class="label">Never in place</span>
+            </div>
+            <div class="dgm-body">
+              <div class="dgm-row">
+                <span class="dgm-key">Compaction scan</span>
+                <span class="dgm-scan" aria-hidden="true"><i></i></span>
+              </div>
+              <div class="dgm-row">
+                <span class="dgm-key">Cold objects</span>
+                <span class="dgm-objs" aria-hidden="true">
+                  <span class="dgm-obj">segment.6.crbm</span
+                  ><span class="dgm-obj is-new">segment.7.crbm</span>
+                </span>
+              </div>
+              <div class="dgm-row is-result">
+                <span class="dgm-key">LATEST</span>
+                <span class="dgm-ptr" aria-hidden="true">
+                  &rarr; <span class="old">segment.6.crbm</span><span class="new">segment.7.crbm</span>
+                </span>
+              </div>
+            </div>
+            <p class="dgm-formula">
+              The new generation is written <b>beside</b> the old one, and the pointer flips
+              <b>last</b>. Until it does, every reader still sees generation 6 &mdash; which is why a
+              half-finished publish cannot be observed, and why an old generation can be kept as a snapshot.
+              Warm rows are then purged <b>conditionally on the version that was archived</b>, so a write
+              landing mid-scan survives.
+            </p>
+          </figure>
         </div>
+      </section>
+
+      <!-- ── THE REST OF THE INVARIANTS ─────────────────────────────────────
+           What is left after the two diagrams: three properties that are genuinely propositional. A diagram of
+           "bytes are validated before decoding" would be a picture of nothing happening. -->
+      <section>
+        <h2>Three more that hold</h2>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">Intersect is commutative</p>
+            <p>
+              <span class="m">a.intersect([b])</span> and <span class="m">b.intersect([a])</span> return the
+              same set. There is a test named for it, not a comment claiming it.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">The object ceiling is reachable</p>
+            <p>
+              S3 allows 10,000 multipart parts; at an 8 MiB part that is a <strong>78 GiB</strong> ceiling.
+              Exceeding it raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and
+              never silent truncation.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">All tier bytes are untrusted</p>
+            <p>
+              Payloads go through the safe deserialiser behind a hard size cap before reaching the native
+              addon. A corrupt or hostile row is a typed error, not a crash.
+            </p>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          1,156 tests run on every commit, and the compaction and OCC paths carry property and concurrency
+          tests specifically.
+        </p>
       </section>
 
       <!-- ── WHAT IT COSTS ──────────────────────────────────────────────────

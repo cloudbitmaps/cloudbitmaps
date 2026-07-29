@@ -613,6 +613,8 @@ em {
 .tier-chip {
   font-family: var(--cb-mono);
   font-size: 10.5px;
+  /* `WARM · NoSQL` broke across two lines inside the tier table and the bezel came apart with it. */
+  white-space: nowrap;
   letter-spacing: 0.1em;
   line-height: normal;
   padding: 4px 9px;
@@ -2002,6 +2004,11 @@ em {
   text-align: left;
 }
 
+/* A cell holding a chip must not be squeezed narrower than the chip. */
+.tpanel td:has(.tier-chip) {
+  white-space: nowrap;
+}
+
 .tpanel th {
   padding: 12px 16px;
   font-family: var(--cb-mono);
@@ -2659,44 +2666,102 @@ em {
 
 /* Lit = present in both. Cyan means "this is the answer" here exactly as it does on
    /demo's axis and in the moat figure — one meaning, three figures. */
+/* Each shared key ignites AT THE MOMENT THE CURSOR REACHES IT. That is the whole difference between a figure
+   that decorates and one that explains: before this the cells were on fixed 0.5s delays while the cursor swept
+   independently, so nothing the cursor did appeared to cause anything.
+
+   The cursor crosses the row over the first 40% of the loop, so a key at fraction `p` along it is reached at
+   40 x p percent. Keys 0, 3, 6, 10 and 15 of 18 land at 0%, 6.7%, 13.3%, 22.2% and 33.3%.
+
+   Five keyframes rather than five `animation-delay`s, deliberately: a delay phase-shifts each cell's DIM as
+   well, so they would wink out one after another instead of resetting together with the cursor. */
 .ak.on {
   background: var(--cb-cyan);
-  animation: cb-ak 7s ease-in-out infinite;
+  animation: cb-ak1 14s ease-out infinite;
 }
 
-.ak.one {
-  background: var(--cb-muted);
+.ak.on.d2 {
+  animation-name: cb-ak2;
 }
 
-.ak.d2 {
-  animation-delay: 0.5s;
+.ak.on.d3 {
+  animation-name: cb-ak3;
 }
 
-.ak.d3 {
-  animation-delay: 1s;
+.ak.on.d4 {
+  animation-name: cb-ak4;
 }
 
-.ak.d4 {
-  animation-delay: 1.5s;
+.ak.on.d5 {
+  animation-name: cb-ak5;
 }
 
-.ak.d5 {
-  animation-delay: 2s;
-}
-
-/* Rests LIT for 78% of the loop: the informative state is the one that says which
-   keys align, so that is the frame reduced-motion keeps. */
-@keyframes cb-ak {
-  0%,
-  8% {
-    opacity: 0.14;
-    transform: scale(0.8);
+@keyframes cb-ak1 {
+  0% {
+    opacity: 0.16;
+    transform: scale(0.78);
   }
-  22%,
+  3%,
   100% {
     opacity: 1;
     transform: scale(1);
   }
+}
+
+@keyframes cb-ak2 {
+  0%,
+  6.7% {
+    opacity: 0.16;
+    transform: scale(0.78);
+  }
+  10%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cb-ak3 {
+  0%,
+  13.3% {
+    opacity: 0.16;
+    transform: scale(0.78);
+  }
+  16.6%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cb-ak4 {
+  0%,
+  22.2% {
+    opacity: 0.16;
+    transform: scale(0.78);
+  }
+  25.5%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cb-ak5 {
+  0%,
+  33.3% {
+    opacity: 0.16;
+    transform: scale(0.78);
+  }
+  36.6%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ak.one {
+  background: var(--cb-muted);
 }
 
 .align-cursor {
@@ -2706,7 +2771,7 @@ em {
   top: 20px;
   bottom: 20px;
   pointer-events: none;
-  animation: cb-cursor 7s linear infinite;
+  animation: cb-cursor 14s linear infinite;
 }
 
 .align-cursor::before {
@@ -2719,18 +2784,18 @@ em {
   background: var(--cb-ink);
 }
 
+/* 14s, not 7s: at 7s the sweep read as a transition rather than a pass over a list. It crosses in the first
+   40% (about 5.6s, ~310ms per key) and then stays off-stage, so what a reader mostly sees is the RESULT. */
 @keyframes cb-cursor {
   0% {
     transform: translateX(0);
-    opacity: 0;
-  }
-  6% {
     opacity: 1;
   }
-  34% {
+  40% {
+    transform: translateX(100%);
     opacity: 1;
   }
-  40%,
+  44%,
   100% {
     transform: translateX(100%);
     opacity: 0;
@@ -2747,6 +2812,16 @@ em {
   font-size: 10.5px;
   line-height: normal;
   color: var(--cb-faint);
+}
+
+.align-legend b {
+  font-weight: 400;
+  color: var(--cb-ink);
+}
+
+.align-total {
+  margin-left: auto;
+  color: var(--cb-muted);
 }
 
 .align-legend span {
@@ -2850,5 +2925,310 @@ em {
      for it to align to, so it goes rather than pointing at the wrong thing. */
   .align-cursor {
     display: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   TWO ARCHITECTURE DIAGRAMS — a delete, and a publish.
+
+   These replace table rows. `(cold ∪ adds) \ removes` is a sentence a reader has to
+   parse; four rows of cells where the tombstone visibly punches a hole in the
+   result is a thing they can just see. Same for a generation flip: "cold objects
+   are never overwritten" is a claim, whereas watching gen 7 appear beside gen 6 and
+   the pointer move is the mechanism.
+
+   Both are built here rather than ported, because the old site's versions were
+   never styled: `site/architecture.html` references .merge, .bits, .add, .gen,
+   .gen-bar, .gen-obj, .delta and .g7, and `site/cloudbitmaps.css` declares none of
+   them. 29 undefined class references on that page, which is how a diagram ships as
+   bare markup and nobody notices.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.dgm {
+  margin: 0;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.dgm-head {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dgm-body {
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dgm-row {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.dgm-key {
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+/* The result row is the conclusion, so its label is ink rather than faint. */
+.dgm-row.is-result .dgm-key {
+  color: var(--cb-ink);
+}
+
+.dgm-row.is-result {
+  border-top: 1px solid var(--cb-rule-soft);
+  padding-top: 14px;
+  margin-top: 2px;
+}
+
+.dgm-cells {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 4px;
+}
+
+.dgm-cells i {
+  aspect-ratio: 1;
+  display: block;
+  border-radius: 2px;
+  background: transparent;
+  border: 1px solid var(--cb-rule);
+}
+
+/* present in cold */
+.dgm-cells i.set {
+  background: var(--cb-muted);
+  border-color: var(--cb-muted);
+}
+
+/* added since the last publish */
+.dgm-cells i.add {
+  background: var(--cb-cyan);
+  border-color: var(--cb-cyan);
+}
+
+/* a tombstone: outlined, never filled — it marks an ABSENCE, and filling it in would
+   say the opposite of what it means */
+.dgm-cells i.tomb {
+  background: none;
+  border: 2px solid var(--cb-hot);
+}
+
+/* The hole the tombstone punches. Appears after the tombstone does, which is the
+   causal order and the only reason the figure is worth having. */
+.dgm-cells i.gone {
+  background: none;
+  border-color: var(--cb-rule);
+  animation: cb-gone 12s ease-in-out infinite;
+}
+
+@keyframes cb-gone {
+  0%,
+  30% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.dgm-cells i.tomb {
+  animation: cb-tomb 12s ease-in-out infinite;
+}
+
+@keyframes cb-tomb {
+  0%,
+  16% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  26%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.dgm-formula {
+  border-top: 1px solid var(--cb-rule);
+  padding: 14px 16px;
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cb-muted);
+}
+
+.dgm-formula b {
+  font-weight: 400;
+  color: var(--cb-ink);
+}
+
+.dgm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0 16px 18px;
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  line-height: normal;
+  color: var(--cb-faint);
+}
+
+.dgm-legend span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.swatch.sw-set {
+  background: var(--cb-muted);
+}
+
+.swatch.sw-add {
+  background: var(--cb-cyan);
+}
+
+.swatch.sw-tomb {
+  background: none;
+  border: 2px solid var(--cb-hot);
+}
+
+/* ── the publish: a generation flip ────────────────────────────────────────────── */
+.dgm-scan {
+  display: block;
+  height: 7px;
+  background: var(--cb-rule);
+}
+
+.dgm-scan i {
+  display: block;
+  height: 100%;
+  background: var(--cb-cyan);
+  transform-origin: left center;
+  animation: cb-scan 12s ease-in-out infinite;
+}
+
+@keyframes cb-scan {
+  0% {
+    transform: scaleX(0);
+  }
+  34%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+.dgm-objs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dgm-obj {
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  padding: 5px 9px;
+  border: 1px solid var(--cb-rule);
+  color: var(--cb-muted);
+  white-space: nowrap;
+}
+
+/* The new generation arrives only after the scan completes — never in place of the
+   old one, which is the invariant this figure exists to show. */
+.dgm-obj.is-new {
+  border-color: var(--cb-cyan);
+  color: var(--cb-cyan);
+  animation: cb-newgen 12s ease-in-out infinite;
+}
+
+@keyframes cb-newgen {
+  0%,
+  36% {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  46%,
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.dgm-ptr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--cb-mono);
+  font-size: 11px;
+  line-height: normal;
+  min-height: 24px;
+}
+
+.dgm-ptr .old {
+  color: var(--cb-faint);
+  animation: cb-ptr-old 12s ease-in-out infinite;
+}
+
+.dgm-ptr .new {
+  color: var(--cb-cyan);
+  animation: cb-ptr-new 12s ease-in-out infinite;
+}
+
+/* The pointer flips last. Until it does, readers still see generation 6 — which is
+   exactly why a half-written publish cannot be observed. */
+@keyframes cb-ptr-old {
+  0%,
+  56% {
+    opacity: 1;
+  }
+  64%,
+  100% {
+    opacity: 0.18;
+  }
+}
+
+@keyframes cb-ptr-new {
+  0%,
+  56% {
+    opacity: 0;
+  }
+  64%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.dgms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1040px) {
+  .dgms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .dgm-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
   }
 }
