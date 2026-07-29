@@ -23,7 +23,7 @@
     <title>CloudBitmaps — set operations at object-storage prices</title>
     <meta
       name="description"
-      content="Keep the Set-shaped API you already know and move the bytes to object storage: a billion-id segment costs cents per month at rest and answers set queries from small, stateless functions. Past 26.33 writes/s, Redis is cheaper — and we publish the crossover."
+      content="Keep the Set-shaped API you already know and move the bytes to object storage: a billion-id segment costs cents per month at rest and answers set queries from small, stateless functions. Past 26.33 writes/s a flat tier is cheaper — and we publish the crossover."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
@@ -36,7 +36,7 @@
     <meta property="og:title" content="CloudBitmaps — set operations at object-storage prices" />
     <meta
       property="og:description"
-      content="Roaring Bitmaps over tiered cloud storage. 1.2 GiB of ID sets at rest costs $0.03/mo against $346 standing for Redis-HA — and past 26.33 writes/s, Redis wins."
+      content="Roaring Bitmaps over tiered cloud storage — Redis has no Roaring type, and we run over your choice of backend including Redis. 1.2 GiB of ID sets at rest costs $0.03/mo against $346 standing for reserved RAM; past 26.33 writes/s, use a flat tier."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -44,7 +44,7 @@
     <meta name="twitter:title" content="CloudBitmaps — set operations at object-storage prices" />
     <meta
       name="twitter:description"
-      content="Roaring Bitmaps over tiered cloud storage. $0.03/mo at rest against $346 standing — and we publish the crossover where Redis wins."
+      content="Roaring Bitmaps over tiered cloud storage. $0.03/mo at rest against $346 standing for reserved RAM — and we publish the rate past which a flat tier is cheaper."
     />
     <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
     <!-- Progressive bit reduction: the mark's nine bits survive at 64px and turn to mud below it, so 32
@@ -133,10 +133,10 @@
                 >
               </div>
               <div class="bill is-compare">
-                <span class="label">Redis-HA</span>
+                <span class="label">Reserved RAM</span>
                 <span class="bill-fig">$346</span>
                 <span class="bill-cap"
-                  >per month, standing<small>whether you read it or not</small></span
+                  >per month, standing — ElastiCache HA<small>whether you read it or not</small></span
                 >
               </div>
             </div>
