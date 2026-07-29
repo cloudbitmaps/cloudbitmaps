@@ -2331,10 +2331,19 @@ em {
   color: var(--cb-warm);
 }
 
-/* Faint, deliberately: this row cannot be acted on, and it should not look like it
-   can. It is on the page for shape, not for choosing. */
-.status.is-spec {
+/* Faint, deliberately: a flavor under research cannot be acted on and should not look
+   like it can. It is on the page for shape, not for choosing. */
+.status.is-research {
   color: var(--cb-faint);
+}
+
+/* The counter-case: the point past which you should use something else. A DIFFERENT
+   colour, never a quieter one — /benchmarks states that the crossover rows carry the
+   same weight as the wins, and a faint verdict chip beside a cyan one would make the
+   page contradict itself in the only place that matters. This shared the research
+   chip's rule until the rename exposed it. */
+.status.is-counter {
+  color: var(--cb-hot);
 }
 
 /* The second line of a table's first cell — what the thing IS, under its name. */
