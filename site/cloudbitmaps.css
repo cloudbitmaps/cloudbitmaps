@@ -1990,6 +1990,32 @@ em {
   background: var(--cb-surface);
 }
 
+/* ── the generated crossover chart ────────────────────────────────────────────
+   The svg is injected INLINE by `pnpm bench` (not linked as an <img>) for one reason: inline, its
+   `var(--cb-surface)` / `var(--cb-ink)` / `var(--cb-cyan)` fills resolve against this sheet, so the chart
+   follows the theme toggle like everything else on the page. The same generator also writes
+   bench/crossover.svg as a standalone file for the docs, where no stylesheet is in scope and every var()
+   falls back to its literal — which is why the fallbacks in bench/run.cjs are a light palette.
+
+   The svg carries its own 760-unit viewBox and its own panel border, so this wrapper deliberately adds no
+   frame of its own — a .tpanel border here would double the hairline. */
+.chart {
+  margin: 0;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart figcaption {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--cb-faint);
+  max-width: 68ch;
+}
+
 .tpanel-head {
   padding: 10px 16px;
   border-bottom: 1px solid var(--cb-rule);

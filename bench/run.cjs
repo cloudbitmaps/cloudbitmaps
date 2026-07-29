@@ -71,16 +71,30 @@ const results = {
 };
 
 // ── The chart ────────────────────────────────────────────────────────────────────────────────────
+// Colours are `var(--token, literal)` because this ONE svg is consumed two ways: inlined into
+// site/benchmarks.html (where the custom properties resolve, so the chart follows the page's light/dark
+// toggle) and written to bench/crossover.svg for docs/benchmarks.md, where it is an <img> with no
+// stylesheet in scope and every var() falls back to the literal. The literals are therefore a coherent
+// LIGHT palette — they are what GitHub renders.
+//
+// Two colours deliberately stay literal or muted rather than taking a semantic token:
+//   · redis   — a third-party baseline, outside our token system. Verified 3.43:1 on the dark ground and
+//               5.36:1 on white, so it clears 1.4.11 for non-text in both themes. It is used only for the
+//               LINE and the band fill, never for a text label, because 3.43:1 fails AA for 11px text.
+//   · the lose-zone label — --cb-no is 4.30:1 on the dark ground, just under AA, so the annotation takes
+//               --cb-muted and lets the band fill plus its own wording carry the meaning. Nothing here is
+//               encoded by colour alone.
 const COL = {
-  card: '#ffffff',
-  hair: '#e4e8ed',
-  ink: '#15181e',
-  inkSoft: '#3c4450',
-  muted: '#69737f',
-  cr: '#34378f', // CloudRoaring (accent)
-  redis: '#d9480f', // Redis baseline (hot)
-  win: '#1e7a52', // good
+  card: 'var(--cb-surface, #ffffff)',
+  hair: 'var(--cb-rule, #e4e8ed)',
+  ink: 'var(--cb-ink, #15181e)',
+  inkSoft: 'var(--cb-muted, #3c4450)',
+  muted: 'var(--cb-faint, #69737f)',
+  cr: 'var(--cb-cyan, #34378f)', // the CloudBitmaps curve — "this is the number"
+  redis: '#d9480f', // Redis baseline. Non-text only; see above.
+  win: 'var(--cb-ok, #1e7a52)',
 };
+const FONT = "var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)";
 
 const W = 760;
 const HEADER = 96;
@@ -102,8 +116,9 @@ const X_MAX_READS = 850;
 }
 
 const svg = [
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">`,
-  `<rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="14" fill="${COL.card}" stroke="${COL.hair}"/>`,
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">`,
+  // rx=0: the site's design language has no rounded corners, and this chart sits inline in it.
+  `<rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="0" fill="${COL.card}" stroke="${COL.hair}"/>`,
   // header
   `<text x="28" y="34" font-size="17" font-weight="700" fill="${COL.ink}">Where pay-per-use crosses a flat Redis-HA node</text>`,
   `<text x="28" y="56" font-size="12.5" fill="${COL.muted}">${esc(P.name)} · ${base.avgItemKiB} KiB items · cache off · flat Redis-HA = $${REDIS}/mo</text>`,
@@ -182,7 +197,7 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
     `<rect x="${plotL}" y="${plotT}" width="${(crX - plotL).toFixed(1)}" height="${plotH}" fill="${COL.win}" opacity="0.06"/>`,
     `<rect x="${crX.toFixed(1)}" y="${plotT}" width="${(plotR - crX).toFixed(1)}" height="${plotH}" fill="${COL.redis}" opacity="0.06"/>`,
     `<text x="${(plotL + (crX - plotL) / 2).toFixed(1)}" y="${plotT + 18}" font-size="11" fill="${COL.win}" text-anchor="middle" font-weight="600">cheaper than Redis</text>`,
-    `<text x="${(crX + (plotR - crX) / 2).toFixed(1)}" y="${plotT + 18}" font-size="11" fill="${COL.redis}" text-anchor="middle" font-weight="600">lose-zone</text>`,
+    `<text x="${(crX + (plotR - crX) / 2).toFixed(1)}" y="${plotT + 18}" font-size="11" fill="${COL.inkSoft}" text-anchor="middle" font-weight="600">Redis is cheaper</text>`,
   );
   // y grid + labels
   for (const t of yTicks) {
@@ -213,7 +228,10 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
   out.push(
     `<line x1="${crX.toFixed(1)}" y1="${plotT}" x2="${crX.toFixed(1)}" y2="${plotB}" stroke="${COL.muted}" stroke-width="1" stroke-dasharray="3 3"/>`,
     `<circle cx="${crX.toFixed(1)}" cy="${redisY.toFixed(1)}" r="4.5" fill="${COL.cr}"/>`,
-    `<text x="${(crX + 8).toFixed(1)}" y="${(redisY - 10).toFixed(1)}" font-size="12" font-weight="700" fill="${COL.cr}">crossover ≈ ${crossover.toFixed(crossover < 100 ? 1 : 0)} /s</text>`,
+    // BELOW the baseline, not above it. The curve crosses the flat Redis line exactly here by definition, so
+    // a label at `redisY - 10` is guaranteed to be printed over the curve's own stroke — which it was, most
+    // illegibly on the reads panel. Below-right of the crossing is the one quadrant the curve has just left.
+    `<text x="${(crX + 8).toFixed(1)}" y="${(redisY + 20).toFixed(1)}" font-size="12" font-weight="700" fill="${COL.cr}">crossover ≈ ${crossover.toFixed(crossover < 100 ? 1 : 0)} /s</text>`,
   );
   out.push(`</g>`);
   return out.join('\n');
@@ -241,15 +259,13 @@ const rows = [
   ],
   ['Redis-HA baseline', `$${REDIS}/mo`, 'flat', 'the comparison line'],
 ];
-const htmlTable =
-  `<table class="bench-table"><thead><tr><th>Scenario</th><th>Value</th><th>Basis</th><th>Verdict</th></tr></thead><tbody>` +
-  rows
-    .map(
-      (r) =>
-        `<tr><td>${r[0]}</td><td><strong>${r[1]}</strong></td><td>${r[2]}</td><td>${r[3]}</td></tr>`,
-    )
-    .join('') +
-  `</tbody></table>`;
+// NOTE — there is deliberately no HTML table here any more. site/benchmarks.html hand-writes its own
+// "Cost anchors" panel, which is a superset of these four rows (it adds count(), segment publishes and the
+// A ∩ B chunk-skipping row) in the site's own .tpanel form with verdict chips and a basis column. Injecting
+// this table beside it would print four of those numbers twice in two different styles. The site's copies are
+// instead verified against bench/results.json by scripts/site-figures.cjs, in BOTH directions — every anchor
+// must appear, and no money figure may appear that no source accounts for. The markdown table below is still
+// injected, because docs/benchmarks.md has no hand-written equivalent.
 const mdTable =
   `| Scenario | Value | Basis | Verdict |\n| --- | --- | --- | --- |\n` +
   rows.map((r) => `| ${r[0]} | **${r[1]}** | ${r[2]} | ${r[3]} |`).join('\n');
@@ -257,26 +273,31 @@ const mdTable =
 // ── Write / inject ───────────────────────────────────────────────────────────────────────────────
 write('bench/crossover.svg', `<?xml version="1.0" encoding="UTF-8"?>\n${svg}\n`);
 write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
-inject('site/benchmarks.html', { chart: svg, stats: htmlTable });
+// The site takes the svg inline (so it inherits the page's theme tokens); the docs take it as an <img> and
+// carry the stats table the site hand-writes. Only the regions passed are touched, so a file is not required
+// to host every marker pair — but a marker pair that IS named must exist, or replaceRegion throws.
+inject('site/benchmarks.html', { CHART: svg });
 inject('docs/benchmarks.md', {
-  chart: `![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)`,
-  stats: mdTable,
+  CHART: `![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)`,
+  STATS: mdTable,
 });
 
-function inject(rel, { chart, stats }) {
+function inject(rel, regions) {
   const file = path.join(ROOT, rel);
   let s = fs.readFileSync(file, 'utf8');
-  s = replaceRegion(s, 'CHART', chart);
-  s = replaceRegion(s, 'STATS', stats);
+  for (const [name, body] of Object.entries(regions)) s = replaceRegion(s, name, body, rel);
   fs.writeFileSync(file, s);
   log(rel);
 }
-function replaceRegion(s, name, body) {
+function replaceRegion(s, name, body, rel) {
   const start = `<!-- BENCH:${name}:START -->`;
   const end = `<!-- BENCH:${name}:END -->`;
   const i = s.indexOf(start);
   const j = s.indexOf(end);
-  if (i === -1 || j === -1) throw new Error(`missing ${name} markers in target`);
+  // Throwing rather than warning is deliberate: a silently-skipped region publishes a page with a stale or
+  // empty figure, which is worse than a failed run. This is exactly how the site rebuild broke `pnpm bench` —
+  // the markers were dropped with the old markup and nothing noticed until the next run.
+  if (i === -1 || j === -1) throw new Error(`missing BENCH:${name} markers in ${rel}`);
   return s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
 }
 function write(rel, body) {

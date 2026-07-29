@@ -35,6 +35,7 @@
     "lint:arch": "depcruise packages/core/src packages/roaring/src",
     "bench": "pnpm run build && node bench/run.cjs",
     "bench:scale": "pnpm run build && node --expose-gc bench/scale.cjs",
+    "bench:scale:render": "SCALE_TASK=inject node bench/scale.cjs",
     "soak": "pnpm run build && node --expose-gc bench/soak.cjs",
     "stress": "pnpm run build && node --expose-gc bench/stress.cjs",
     "dr-drill": "vitest run tests/dr-drill.test.ts",

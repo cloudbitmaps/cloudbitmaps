@@ -11,7 +11,7 @@ sustained write/read rate, pay-per-use is far cheaper; above it, the flat node w
 ## The crossover chart
 
 <!-- BENCH:CHART:START -->
-![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)
+![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)
 <!-- BENCH:CHART:END -->
 
 <!-- BENCH:STATS:START -->
@@ -242,15 +242,15 @@ The production-readiness audit flagged three scale risks — an unbounded
 them; this is the measured evidence at fleet scale:
 
 <!-- BENCH:SCALE:START -->
-| Fleet | Live heap (cap 1024) | Peak RSS | Discovery scan |
+| Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
 | 1,000 segments | 7.8 MiB | 63.1 MiB | 80.2 ms |
 | 10,000 segments | 7.9 MiB | 114.7 MiB | 1,522.7 ms |
-| 100,000 segments | 7 MiB | 178 MiB | 12,954.4 ms |
+| 100,000 segments | 7.0 MiB | 178.0 MiB | 12,954.4 ms |
 
 Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 25.3 ms.
 
-_Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the live heap** (post-GC), flat at 7.8 MiB @ 1,000 · 7.9 MiB @ 10,000 · 7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~42–55 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
+_Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the retained heap** (post-GC), flat at 7.8 MiB @ 1,000 · 7.9 MiB @ 10,000 · 7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~42–55 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The cold-reader cache is capped by open-segment

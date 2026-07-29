@@ -91,10 +91,40 @@ try {
 }
 
 if (html) {
+  // The inlined crossover chart is stripped out before the prose scan, and then checked separately below.
+  //
+  // Why: its y-axis ticks are $0/$200/$400/$600 and its curve labels restate the crossovers, so leaving it in
+  // made the inverse check fire on four axis labels. Whitelisting those four strings would have been the wrong
+  // fix — it widens the allow-list permanently to silence a specific run, and a later Y_MAX change would then
+  // introduce new unaccounted figures OR silently pass. The chart is not prose: bench/run.cjs generates it from
+  // the same bench/results.json this script reads, so it cannot drift from the anchors independently. What it
+  // CAN do is disagree about the crossover it marks, so that is asserted directly.
+  const svgs = html.match(/<svg[\s\S]*?<\/svg>/g) || [];
   const visible = html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
+    .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
     .replace(/<[^>]+>/g, ' ');
+
+  // ── the chart, checked rather than exempted ──────────────────────────────────────────────────────────
+  // Mirrors bench/run.cjs's own rounding: one decimal below 100/s, none above.
+  const chartLabel = (n) => `crossover ≈ ${n.toFixed(n < 100 ? 1 : 0)} /s`;
+  const chart = svgs.find((s) => s.includes('crossover'));
+  if (!chart) {
+    fail(
+      'benchmarks.html no longer inlines the crossover chart — run `pnpm bench` to refill BENCH:CHART',
+    );
+  } else {
+    for (const [what, want] of [
+      ['the write crossover', chartLabel(results.writeCrossoverPerSec)],
+      ['the read crossover', chartLabel(results.readCrossoverPerSec)],
+      ['the Redis baseline', `$${results.redisBaselineUSD}/mo`],
+    ]) {
+      if (!chart.includes(want)) {
+        fail(`the inlined chart does not mark ${what} (${want}) — stale? re-run \`pnpm bench\``);
+      }
+    }
+  }
 
   // 1 · every anchor must be stated
   for (const [name, want] of anchors) {
