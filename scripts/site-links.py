@@ -84,7 +84,52 @@ else:
     # success over an empty set — the vacuous-pass failure mode.
     print(f'site-links: {n_frags} fragment link(s) resolve to a real id.')
 
-# ── 2 · the crawler files ─────────────────────────────────────────────────────────────────────────────────
+# ── 2 · external links leave the site in a new tab ────────────────────────────────────────────────────────
+# Every off-site anchor opens in a new tab, so following one does not throw away the page someone was reading.
+# Three attributes make that safe and legible rather than merely working:
+#
+#   target="_blank"  — the behaviour itself.
+#   rel="noopener"   — the security half: without it the opened page can reach back through `window.opener`.
+#                      Deliberately NOT `noreferrer`, which would also strip the Referer header and with it
+#                      GitHub's ability to see that the traffic came from here.
+#   aria-label       — a new tab with no warning is disorienting for a screen-reader user. The label repeats
+#                      the visible text before adding the hint, which keeps WCAG 2.5.3 (Label in Name) intact.
+#
+# `<link rel="canonical">` and `<meta>` URLs are absolute too but are not anchors, so the pattern below is
+# anchored on `<a ` specifically rather than on "contains https://".
+ANCHOR_RE = re.compile(r'<a\s[^>]*href="https?://[^"]+"[^>]*>', re.I)
+ext_problems = {}
+ext_count = 0
+for page in pages:
+    html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
+    for m in ANCHOR_RE.finditer(html):
+        tag = m.group(0)
+        ext_count += 1
+        missing_attrs = []
+        if 'target="_blank"' not in tag:
+            missing_attrs.append('target="_blank"')
+        if 'noopener' not in tag:
+            missing_attrs.append('rel="noopener"')
+        if 'aria-label' not in tag:
+            missing_attrs.append('aria-label="… (opens in a new tab)"')
+        if missing_attrs:
+            href = re.search(r'href="([^"]+)"', tag).group(1)
+            ext_problems.setdefault(
+                f'{os.path.basename(page)} → {href}', []
+            ).extend(missing_attrs)
+
+if ext_problems:
+    failed = True
+    print(f'site-links: {len(ext_problems)} external link(s) not set to open in a new tab')
+    for where, attrs in sorted(ext_problems.items()):
+        print(f'    {where}\n        missing: {", ".join(sorted(set(attrs)))}')
+elif ext_count == 0:
+    # A page set with no external anchors at all would otherwise make the check above vacuously true.
+    print('site-links: no external anchors found — check skipped (was this intended?)')
+else:
+    print(f'site-links: {ext_count} external link(s) open in a new tab, with rel=noopener.')
+
+# ── 3 · the crawler files ─────────────────────────────────────────────────────────────────────────────────
 REQUIRED = ['robots.txt', 'sitemap.xml', 'llms.txt']
 absent = [f for f in REQUIRED if not os.path.exists(os.path.join(ROOT, f))]
 if absent:
