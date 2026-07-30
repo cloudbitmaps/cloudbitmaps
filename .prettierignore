@@ -12,9 +12,3 @@ pnpm-lock.yaml
 # chunk-key grid and the <pre> code samples, which changes what renders.
 site/*.html
 
-# site-old/ is the superseded site, kept only to diff against until it is deleted.
-site-old/
-
-# site2/ is the design agent's delivery, imported verbatim to diff against. Not ours to format —
-# reformatting it would destroy the thing we are comparing. Deleted once the Home port lands.
-site2/

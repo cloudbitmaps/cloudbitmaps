@@ -1,8 +1,8 @@
 """Every class used in markup must be defined in the stylesheet.
 
-Scoped to `site/`. `site-old/` is deliberately out of scope: it carries 32 undefined class references of its own
-(29 on its architecture page, where the tombstone and generation diagrams render as bare markup), which is
-precisely why it was superseded rather than fixed.
+Scoped to `site/`, which is now the only site directory — `site-old/` (the superseded site) and `site2/` (the
+design delivery, imported verbatim to diff against) are both deleted, along with their entries in
+.prettierignore and eslint.config.js.
 
 This is the `.table` bug generalised: markup referencing a class the sheet never
 declares renders as bare HTML and nothing complains. Both instances of it on
