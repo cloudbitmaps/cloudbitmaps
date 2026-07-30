@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://cloudbitmaps.pages.dev/</loc></url>
-  <url><loc>https://cloudbitmaps.pages.dev/usage</loc></url>
   <url><loc>https://cloudbitmaps.pages.dev/architecture</loc></url>
   <url><loc>https://cloudbitmaps.pages.dev/benchmarks</loc></url>
+  <url><loc>https://cloudbitmaps.pages.dev/demo</loc></url>
+  <url><loc>https://cloudbitmaps.pages.dev/flavors</loc></url>
+  <url><loc>https://cloudbitmaps.pages.dev/usage</loc></url>
+  <url><loc>https://cloudbitmaps.pages.dev/flavors/roaring</loc></url>
 </urlset>

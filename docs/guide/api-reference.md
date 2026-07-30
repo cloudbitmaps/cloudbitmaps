@@ -194,7 +194,7 @@ net-new surface), so everything here still imports from the single
 ### Bitmap-codec seam
 
 The engine is **codec-agnostic** behind these; roaring is the flagship codec. You only touch them to plug in a
-different codec (the `@cloudbitmaps/bitmap` / `@cloudbitmaps/soaring` flavors) — the `CloudRoaring` facade injects
+different codec (the `@cloudbitmaps/bitset` / `@cloudbitmaps/soaring` flavors) — the `CloudRoaring` facade injects
 `roaringCodec` for you.
 
 | Symbol | What it does |

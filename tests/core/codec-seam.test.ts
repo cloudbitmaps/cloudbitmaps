@@ -4,7 +4,7 @@
  * had leaked a roaring-specific assumption, this non-roaring codec would break it.
  *
  * `SetCodec` is a deliberately naive `CodecInterface` over a plain JS `Set<number>` (serialize = JSON). It is
- * NOT a real codec (no compression, not the `bitmap`/`soaring` we'll ship) — just enough to exercise every
+ * NOT a real codec (no compression, not the `bitset`/`soaring` we'll ship) — just enough to exercise every
  * operation the engine calls through the interface: construct, (de)serialize with a size cap, the set algebra
  * for tier-merge (`orInPlace`/`andNotInPlace`/`andInPlace`), membership, count, ascending iteration.
  */

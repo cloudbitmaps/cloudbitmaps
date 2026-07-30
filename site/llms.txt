@@ -28,7 +28,7 @@ calibrated and no in-region figure is published.
 
 ## Status
 
-v0.1.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
+v0.4.1, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
 in a minor bump until the .crbm format freezes at 1.0.
 
 ## Links
@@ -36,3 +36,6 @@ in a minor bump until the .crbm format freezes at 1.0.
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package: https://www.npmjs.com/package/@cloudbitmaps/roaring
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
+- Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
+- Roaring flavor: https://cloudbitmaps.pages.dev/flavors/roaring
+- Chunk-skipping, stepped through on a recorded run: https://cloudbitmaps.pages.dev/demo

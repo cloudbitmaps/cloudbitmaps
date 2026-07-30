@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // Applied BEFORE first paint, deliberately inline and unminified: a deferred or external script would
+      // let the default dark ground paint and then flip. `prefers-color-scheme` is consulted only when
+      // nothing has been stored — an explicit choice wins.
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <title>CloudBitmaps — a measured intersection, replayed</title>
+    <meta
+      name="description"
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 403,200 bytes are read in 25.3 ms — replayed from a recorded benchmark run, not simulated."
+    />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
+    <link rel="canonical" href="https://cloudbitmaps.pages.dev/demo" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps — a measured intersection, replayed" />
+    <meta
+      property="og:description"
+      content="100 of 2,000 chunk keys align. 3,800 chunk reads never happen. Replayed from a recorded benchmark run, not simulated."
+    />
+    <meta property="og:url" content="https://cloudbitmaps.pages.dev/demo" />
+    <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CloudBitmaps — a measured intersection, replayed" />
+    <meta
+      name="twitter:description"
+      content="100 of 2,000 chunk keys align. 3,800 chunk reads never happen. Replayed, not simulated."
+    />
+    <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
+          <a href="index.html">Overview</a>
+          <a class="active" href="demo.html" aria-current="page">Demo</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps">GitHub</a>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The badge is the first thing on the page, before the headline, because what this page IS matters
+           more than what it shows. A demo that overstates its own nature is worth less than no demo. -->
+      <section class="hero">
+        <p class="replay-badge">Replay of a measured run</p>
+        <h1>100 of 2,000 keys. The rest are never read.</h1>
+        <p class="hero-lede" style="max-width: 74ch">
+          Two segments of <strong>2,000,000 ids</strong> each. Intersecting them reads
+          <strong>403,200 bytes</strong> and returns <strong>100,000 ids</strong> in
+          <strong>25.3 ms</strong> — because keys are compared before any bytes move, and
+          <strong>3,800</strong> chunk reads simply never happen.
+        </p>
+        <p class="note" style="max-width: 78ch">
+          Every number on this page comes from one recorded run of
+          <span class="m">pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
+          and nothing is computed live — this is a replay, and it says so because the distinction is the
+          point.
+        </p>
+      </section>
+
+      <!-- ── WHAT ROARING DOES ──────────────────────────────────────────────
+           Before the replay, not after. The replay's whole vocabulary is "chunk key", and a reader who does
+           not know what one is cannot follow beat 02 — which is the beat carrying the argument. This is the
+           smallest figure that makes the word mean something: the 32 bits, the cut, and what each half is
+           for. The fuller treatment of the containers lives on /flavors. -->
+      <section>
+        <h2>First, what Roaring actually does</h2>
+        <p class="lede">
+          A plain bitset over the 32-bit id space is <strong>512 MiB</strong>, allocated whether you store
+          five ids or five million. Roaring cuts every id in two and never allocates a chunk nobody has
+          written to.
+        </p>
+
+        <figure class="split">
+          <div class="split-head">
+            <span class="label">One id, two halves</span><span class="label">32 bits, cut at 16</span>
+          </div>
+          <div class="split-body">
+            <p class="split-id">1_234_567_890 <span>= 0x499602D2</span></p>
+            <div class="split-bits" aria-hidden="true">
+              <span class="bhalf bhi">0100 1001 1001 0110</span>
+              <span class="bhalf blo">0000 0010 1101 0010</span>
+            </div>
+            <div class="split-out">
+              <div class="sout">
+                <span class="label">High 16 &rarr; chunk key</span>
+                <span class="sfig">0x4996</span>
+                <p>
+                  <em>Which</em> chunk. One of 65,536 &mdash; and the only thing compared when two segments
+                  are intersected.
+                </p>
+              </div>
+              <div class="sout">
+                <span class="label">Low 16 &rarr; remainder</span>
+                <span class="sfig">0x02D2</span>
+                <p>
+                  <em>Which bit</em> inside that chunk. One of 65,536 &mdash; and never looked at unless the
+                  chunk is fetched.
+                </p>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <p class="note" style="max-width: 82ch">
+          That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
+          replay below compares 4,000 keys and fetches 100 payloads.
+        </p>
+
+        <h3 style="margin-top: 44px">Then each chunk picks its own shape</h3>
+        <p class="lede">
+          A chunk holds up to 65,536 remainders, and how it stores them depends on how many there are. All
+          three shapes answer the same question &mdash; <span class="m">is this id present?</span> &mdash; so
+          nothing above the container ever knows which one it got.
+        </p>
+        <div class="tiers">
+          <div class="tier">
+            <span class="tier-chip t-c">Array</span>
+            <p>
+              A sorted list of 16-bit remainders. Two bytes per id and nothing wasted, so it wins while a
+              chunk stays sparse.
+            </p>
+            <span class="cbytes">2 bytes &times; ids present</span>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-c">Bitset</span>
+            <p>
+              One bit per possible remainder, 65,536 of them. Flat cost whatever the count, which is what
+              makes it the cheaper shape once a chunk fills up.
+            </p>
+            <span class="cbytes">8 KiB, always</span>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-c">Run</span>
+            <p>
+              Start-and-length pairs. A contiguous stretch of ids becomes a couple of numbers instead of
+              one entry each &mdash; the shape that beats both others on ranges.
+            </p>
+            <span class="cbytes">4 bytes &times; runs</span>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          The two costs cross at <strong>4,096 ids</strong>, and that is arithmetic rather than a tuning
+          choice: 4,096 &times; 2 bytes is <strong>8 KiB</strong>, exactly what a bitset costs. Below it an
+          array is smaller; above it a bitset is. <a href="flavors.html">The flavors page</a> walks all three
+          shapes and the conversions between them.
+        </p>
+      </section>
+
+      <!-- ── THE REPLAY ─────────────────────────────────────────────────────
+           One figure, four states. Geometry and counters come from data attributes rather than a fetch, so
+           the page works from `file://`, needs no network, and — most importantly — still says everything
+           it has to say with no JavaScript at all. `scripts/site-replay.cjs --check` verifies every number
+           below against bench/scale-results.json, so this markup cannot drift from the benchmark. -->
+      <section>
+        <h2>Step through it</h2>
+        <p class="lede">
+          The whole argument is in beat two: the keys are compared first, and at that moment
+          <strong>zero bytes have been read</strong>. Everything after it is the consequence.
+        </p>
+
+        <div
+          class="replay"
+          id="replay"
+          data-axis="4000"
+          data-shared-from="0"
+          data-shared-to="100"
+          data-a-from="0"
+          data-a-to="2000"
+          data-b-from="2100"
+          data-b-to="4000"
+          data-chunks="2000"
+          data-shared="100"
+          data-skipped="3800"
+          data-bytes="403200"
+          data-bytes-per-chunk="4032"
+          data-ids="100000"
+          data-ms="25.3"
+          data-density="1000"
+        >
+          <!-- The beat rail. Real buttons: a beat is a destination, and a reader who wants to sit on beat
+               two should be able to get there directly and with a keyboard. -->
+          <div class="replay-rail" role="tablist" aria-label="Replay beats">
+            <button type="button" class="beat-tab is-on" role="tab" aria-selected="true" data-beat="0">
+              <span class="beat-n">01</span><span>Two segments</span>
+            </button>
+            <button type="button" class="beat-tab" role="tab" aria-selected="false" data-beat="1">
+              <span class="beat-n">02</span><span>Compare keys</span>
+            </button>
+            <button type="button" class="beat-tab" role="tab" aria-selected="false" data-beat="2">
+              <span class="beat-n">03</span><span>Fetch</span>
+            </button>
+            <button type="button" class="beat-tab" role="tab" aria-selected="false" data-beat="3">
+              <span class="beat-n">04</span><span>Result</span>
+            </button>
+          </div>
+
+          <div class="replay-stage">
+            <!-- The key axis. Proportional bands, not cells: 4,000 keys across 1,176px is a third of a pixel
+                 each, so drawing them individually would be a lie about resolution. The inset below draws
+                 real cells at a scale where a cell means something. -->
+            <div>
+              <p class="label">Chunk-key space · 4,000 keys · both segments</p>
+              <div class="axis" aria-hidden="true">
+                <div class="axis-row">
+                  <span class="axis-tag">A</span>
+                  <span class="axis-track">
+                    <i class="band b-a" style="left: 0%; width: 50%"></i>
+                    <i class="band b-shared" style="left: 0%; width: 2.5%"></i>
+                  </span>
+                </div>
+                <div class="axis-row">
+                  <span class="axis-tag">B</span>
+                  <span class="axis-track">
+                    <i class="band b-b" style="left: 52.5%; width: 47.5%"></i>
+                    <i class="band b-shared" style="left: 0%; width: 2.5%"></i>
+                  </span>
+                </div>
+                <!-- Swept by transform, not `left`: animating `left` would force layout on every frame of a
+                     constant-velocity travel. `linear` is correct here for the same reason — a playhead
+                     crossing a measured axis at a varying speed would misrepresent the axis. -->
+                <span class="axis-head" id="axis-head"></span>
+              </div>
+              <p class="axis-legend">
+                <span><i class="swatch b-shared"></i>in both · 100 keys</span>
+                <span><i class="swatch b-a"></i>in one segment only · 1,900 each</span>
+                <span><i class="swatch b-none"></i>in neither · 100</span>
+              </p>
+            </div>
+
+            <!-- The check-it-yourself inset. Keys 80-119 at one cell per key, straddling the boundary where
+                 the shared prefix ends — so the claim "exactly 100 align" is inspectable rather than
+                 asserted. -->
+            <div class="inset">
+              <p class="label">Keys 80&ndash;119, one cell per key</p>
+              <div class="inset-grid" id="inset" aria-hidden="true">
+                <i class="icell is-shared" data-key="80"></i><i class="icell is-shared" data-key="81"></i><i class="icell is-shared" data-key="82"></i><i class="icell is-shared" data-key="83"></i><i class="icell is-shared" data-key="84"></i><i class="icell is-shared" data-key="85"></i><i class="icell is-shared" data-key="86"></i><i class="icell is-shared" data-key="87"></i><i class="icell is-shared" data-key="88"></i><i class="icell is-shared" data-key="89"></i>
+                <i class="icell is-shared" data-key="90"></i><i class="icell is-shared" data-key="91"></i><i class="icell is-shared" data-key="92"></i><i class="icell is-shared" data-key="93"></i><i class="icell is-shared" data-key="94"></i><i class="icell is-shared" data-key="95"></i><i class="icell is-shared" data-key="96"></i><i class="icell is-shared" data-key="97"></i><i class="icell is-shared" data-key="98"></i><i class="icell is-shared" data-key="99"></i>
+                <i class="icell is-a" data-key="100"></i><i class="icell is-a" data-key="101"></i><i class="icell is-a" data-key="102"></i><i class="icell is-a" data-key="103"></i><i class="icell is-a" data-key="104"></i><i class="icell is-a" data-key="105"></i><i class="icell is-a" data-key="106"></i><i class="icell is-a" data-key="107"></i><i class="icell is-a" data-key="108"></i><i class="icell is-a" data-key="109"></i>
+                <i class="icell is-a" data-key="110"></i><i class="icell is-a" data-key="111"></i><i class="icell is-a" data-key="112"></i><i class="icell is-a" data-key="113"></i><i class="icell is-a" data-key="114"></i><i class="icell is-a" data-key="115"></i><i class="icell is-a" data-key="116"></i><i class="icell is-a" data-key="117"></i><i class="icell is-a" data-key="118"></i><i class="icell is-a" data-key="119"></i>
+              </div>
+              <p class="inset-foot">
+                The shared prefix ends at key <span class="m">99</span>. From
+                <span class="m">100</span> on, a key exists in A alone — nothing to intersect with, so
+                nothing to fetch.
+              </p>
+            </div>
+
+            <!-- Counters. Mono and fixed-width so a climbing number cannot reflow the row it sits in. -->
+            <div class="tally">
+              <div class="tally-cell">
+                <span class="label">Keys compared</span>
+                <span class="tally-fig" id="t-compared">4,000</span>
+                <span class="tally-note">of 4,000</span>
+              </div>
+              <div class="tally-cell">
+                <span class="label">Aligned</span>
+                <span class="tally-fig is-live" id="t-aligned">100</span>
+                <span class="tally-note">present in both</span>
+              </div>
+              <div class="tally-cell">
+                <span class="label">Reads skipped</span>
+                <span class="tally-fig" id="t-skipped">3,800</span>
+                <span class="tally-note">never requested, never billed</span>
+              </div>
+              <div class="tally-cell">
+                <span class="label">Bytes read</span>
+                <span class="tally-fig" id="t-bytes">403,200</span>
+                <span class="tally-note">4,032 per fetched chunk</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Beat copy. All four are in the markup and all four are readable with no JavaScript; the script
+               only narrows this to one at a time. The `is-on` class is what the stepper drives. -->
+          <div class="beats">
+            <article class="beat is-on" data-beat="0">
+              <p class="beat-head"><span class="beat-n">01</span> 2,000,000 ids each, 2,000 chunk keys each</p>
+              <p>
+                Each segment holds 2,000,000 ids over 2,000 chunk keys — 1,000 ids per key. A's keys run
+                <span class="m">0&ndash;1,999</span>; B shares the first hundred and then diverges to
+                <span class="m">2,100&ndash;3,999</span>.
+                <strong>Nothing has been read yet.</strong>
+              </p>
+            </article>
+            <article class="beat" data-beat="1">
+              <p class="beat-head"><span class="beat-n">02</span> 100 of 2,000 keys align</p>
+              <p>
+                Keys are compared before any bytes move. One hundred appear in both segments; 1,900 in each
+                segment appear in only one, and a key that exists in one segment alone cannot contribute to
+                an intersection. <strong>Bytes read at this point: still zero.</strong>
+              </p>
+            </article>
+            <article class="beat" data-beat="2">
+              <p class="beat-head"><span class="beat-n">03</span> 403,200 bytes, 100 chunks</p>
+              <p>
+                Only the hundred aligned chunks are requested, 4,032 bytes each. The other
+                <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never issued. On
+                object storage that is 3,800 GET requests you are not charged for.
+              </p>
+            </article>
+            <article class="beat" data-beat="3">
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 25.3 ms</p>
+              <p>
+                One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
+                reported. The result is <em>derivable from the setup</em> as well as observed, which is the
+                only reason to trust a number on a page like this one.
+              </p>
+            </article>
+          </div>
+
+          <!-- Controls last in the DOM so tab order reaches the content first. Hidden until the script runs:
+               a Play button that cannot play is worse than no button. -->
+          <div class="replay-controls" id="controls" hidden>
+            <button type="button" class="btn" id="prev">&larr; Back</button>
+            <button type="button" class="btn btn-primary" id="play">Play</button>
+            <button type="button" class="btn" id="next">Next &rarr;</button>
+            <span class="replay-hint">Arrow keys work too</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── PROVENANCE ─────────────────────────────────────────────────────
+           Two panels, side by side, because the distinction between them is the point: one column of numbers
+           was OBSERVED and the other is ARITHMETIC. Conflating the two is how a page ends up asserting a
+           figure nobody measured. Each panel names its own kind in its head strip. -->
+      <section>
+        <h2>Where every number came from</h2>
+        <p class="lede">
+          Two kinds of number appear above and they are not equally strong. Both panels are cross-checked
+          against each other by a build gate, so neither can quietly stop being true.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">Measured</span><span class="label">Observed by the run</span>
+            </div>
+            <div class="tscroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Quantity</th>
+                    <th class="num">Value</th>
+                    <th>Reported by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Chunk keys per segment</td>
+                    <td class="num">2,000</td>
+                    <td class="from">benchmark parameter</td>
+                  </tr>
+                  <tr>
+                    <td>Ids per segment</td>
+                    <td class="num">2,000,000</td>
+                    <td class="from">benchmark parameter</td>
+                  </tr>
+                  <tr>
+                    <td>Chunks fetched</td>
+                    <td class="num">100</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Chunk reads skipped</td>
+                    <td class="num">3,800</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Cold bytes read</td>
+                    <td class="num">403,200</td>
+                    <td class="from">metrics sink</td>
+                  </tr>
+                  <tr>
+                    <td>Wall time</td>
+                    <td class="num">25.3 ms</td>
+                    <td class="from">timer around the drained stream</td>
+                  </tr>
+                  <tr>
+                    <td>Ids returned</td>
+                    <td class="num">100,000</td>
+                    <td class="from">counted while draining</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tpanel-foot">Source: <strong>bench/scale-results.json</strong></p>
+          </div>
+
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">Derived</span><span class="label">Arithmetic, not observation</span>
+            </div>
+            <div class="tscroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Quantity</th>
+                    <th class="num">Value</th>
+                    <th>From</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Ids per chunk key</td>
+                    <td class="num">1,000</td>
+                    <td class="from">2,000,000 ids &divide; 2,000 keys</td>
+                  </tr>
+                  <tr>
+                    <td>Bytes per fetched chunk</td>
+                    <td class="num">4,032</td>
+                    <td class="from">403,200 bytes &divide; 100 chunks</td>
+                  </tr>
+                  <tr>
+                    <td>Key-space extent</td>
+                    <td class="num">4,000</td>
+                    <td class="from">B&rsquo;s tail is offset past A&rsquo;s range</td>
+                  </tr>
+                  <tr>
+                    <td>Keys in neither segment</td>
+                    <td class="num">100</td>
+                    <td class="from">the offset leaves a gap of that width</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="tpanel-foot">
+              A derived number is only as good as the construction behind it &mdash;
+              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.
+            </p>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          The check is a build gate rather than a promise:
+          <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
+          <em>reported</em> stop matching what its construction <em>implies</em>, fails if this page drifts
+          from either, and fails if the page states any figure the benchmark cannot account for at all.
+        </p>
+      </section>
+
+      <!-- ── LIMITS ─────────────────────────────────────────────────────────
+           What the demo does not show, stated by us rather than discovered by a skeptic. This section is the
+           reason the page is worth publishing. -->
+      <section>
+        <h2>What this does not prove</h2>
+        <div class="limits">
+          <div class="limit">
+            <p class="label">It is not running here</p>
+            <p>
+              No bitmap engine is loaded in your browser and no network request is made. Making it live
+              would mean either real credentials on a public page, or the in-memory drivers — in which case
+              nothing crosses a network and the demo would be testing a claim it cannot reach.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">One workload, not a guarantee</p>
+            <p>
+              5% key overlap on 2,000-chunk segments. The skip rate is a property of
+              <em>your</em> overlap: two segments sharing most of their keys fetch most of their chunks, and
+              the win shrinks accordingly.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Memory drivers, not S3</p>
+            <p>
+              25.3 ms is compute, not cloud latency. It is the right number for
+              <em>how many</em> requests happen and the wrong one for how long they take — the
+              <a href="benchmarks.html">benchmarks</a> carry real-backend timings, and the rate past which a flat
+              tier is cheaper.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────────
+           Two commands, in the order a reader actually wants them. Installing is what most people are here
+           to do; reproducing the run is what a skeptic is here to do, and the page's credibility rests on
+           that being possible — but it is the second action, not the first. `pnpm bench:scale` is a repo
+           script, so reproducing genuinely needs the clone; installing does not. -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Six lines, no cloud account.</h2>
+            <p class="lede" style="margin: 0">
+              Everything above ran against the in-memory drivers, which ship inside the package and need no
+              configuration at all. So the quickstart runs as-is, and you can see the shape before you point
+              anything at a bucket.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
+              <a class="btn" href="architecture.html">How the skipping works</a>
+              <a class="btn" href="benchmarks.html">Real-backend numbers</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.4.1 · 1 runtime dependency · 10 storage drivers</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Install</span><span>One flavor</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring
+
+<span class="c"># the memory drivers need nothing else</span>
+<span class="c"># add an SDK only for a real backend:</span>
+npm i @aws-sdk/client-s3</code></pre>
+            <div class="install-alt">
+              <p class="label">Or reproduce the run above</p>
+              <pre><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
+pnpm install
+pnpm bench:scale  <span class="c"># writes scale-results.json</span></code></pre>
+            </div>
+            <p class="link-row"><a href="benchmarks.html">Methodology and caveats →</a></p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="foot">
+      <div class="foot-inner">
+        <p class="meta">
+          CloudBitmaps · v0.4.1 · Apache-2.0 <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a> <a href="usage.html">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
+        </p>
+        <p class="meta">Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></p>
+      </div>
+    </footer>
+
+    <script src="theme.js"></script>
+    <script src="demo.js"></script>
+  </body>
+</html>

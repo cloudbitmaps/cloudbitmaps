@@ -4,7 +4,7 @@
  * Everything here is **independent of any bitmap codec**: the tiered engine, every storage driver, the `.crbm`
  * format, crash-safe compaction, encryption/crypto-shred, the registry, the budget/consistency/eject machinery.
  * Bitmaps are only ever constructed and combined through the {@link CodecInterface} seam, so a *flavor* package
- * (`@cloudbitmaps/roaring` today; `@cloudbitmaps/bitmap` next) supplies the codec and a facade on top.
+ * (`@cloudbitmaps/roaring` today; `@cloudbitmaps/bitset` next) supplies the codec and a facade on top.
  *
  * **You normally install a flavor, not this package** — `npm i @cloudbitmaps/roaring` pulls this in
  * transitively and re-exports it, so `@cloudbitmaps/roaring` is the one name to know. Depend on `core`

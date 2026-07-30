@@ -4,7 +4,7 @@
  * `core/` is **codec-agnostic**: `SegmentEngine`, compaction, and the `.crbm` read/write helpers only ever
  * construct and combine bitmaps through the {@link CodecInterface} factory + the {@link CodecBitmap} value type
  * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, today in
- * `core/bitmap.ts`; it moves to `@cloudbitmaps/roaring` when the package split lands); `@cloudbitmaps/bitmap`
+ * `core/bitmap.ts`; it moves to `@cloudbitmaps/roaring` when the package split lands); `@cloudbitmaps/bitset`
  * (plain bitset) and `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes.
  *
  * **Homogeneity contract:** a single store uses a single codec, so every {@link CodecBitmap} an operation sees
@@ -15,7 +15,7 @@
  * mints the cache per store, so this cannot arise in normal use.)
  *
  * **Interface surface = exactly what the engine needs**, kept general enough for the known fast-follow codecs
- * (positional/rank-select access + raw-bitset interop that `@cloudbitmaps/bitmap` will add live on that
+ * (positional/rank-select access + raw-bitset interop that `@cloudbitmaps/bitset` will add live on that
  * package's own extended value type, not here — the engine never calls them). The one codec-linked concern
  * this seam intentionally leaves in the format layer is the `.crbm` **serialization id** (`ROARING_PORTABLE_ID`
  * in `crbm/format.ts`): it is stamped in the footer and validated on read, and generalizes to a per-codec id

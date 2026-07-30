@@ -34,21 +34,54 @@ const VERSION_RE = /\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  * release. A guard that fires on correct content trains people to ignore it, so the match is anchored on what
  * actually distinguishes a badge: both shapes the site uses — the header `CloudBitmaps v0.1.3 · pre-1.0` and
  * the footer `pre-1.0 v0.1.3` — carry `pre-1.0` on the same line. Third-party versions never do.
+ *
+ * UPDATE — that anchor turned out to reach exactly ONE of the seven pages. Every page displays the release
+ * twice, in a header eyebrow and a footer line, and only benchmarks.html happened to put `pre-1.0` on the same
+ * line as one of them. So the guard written because "the site pages carry the same number in two places each,
+ * guarded by nothing" was itself guarding one place out of fourteen. A gate with that little reach reports
+ * coverage it does not have, which is worse than no gate at all — it is the reason nobody re-checks.
+ *
+ * `Apache-2.0` joins it as a second anchor. It sits on every footer line that names the version, it is OUR
+ * licence rather than a dependency's, and it preserves the property that made `pre-1.0` the right pick: a
+ * third-party version never appears beside it. Verified against the whole tree — the Node version in the
+ * benchmarks methodology (`v24.14.1`) matches neither anchor. Coverage went from 1 page to 7.
  */
 function badgeVersions(html: string): string[] {
   return html
     .split('\n')
-    .filter((line) => line.includes('pre-1.0'))
+    .filter((line) => line.includes('pre-1.0') || line.includes('Apache-2.0'))
     .flatMap((line) => [...line.matchAll(VERSION_RE)].map((m) => m[1] as string));
 }
 
 const pages = readdirSync(SITE).filter((f) => f.endsWith('.html'));
+
+/**
+ * Non-HTML files that also name the release.
+ *
+ * `llms.txt` is the machine-readable summary served to crawlers and assistants, and it sat at `v0.1.0` through
+ * three releases — invisible because this suite only ever read `*.html`. A version gate that covers some of the
+ * files carrying a version is a gate with a hole in it, and this is what fell through.
+ */
+const VERSIONED_TEXT_FILES = ['llms.txt'];
 
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
     // Without this, moving or renaming site/ leaves zero pages, every it.each below generates zero cases,
     // and the file passes while checking nothing — the vacuous-guard failure mode.
     expect(pages.length).toBeGreaterThan(0);
+  });
+
+  it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
+    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)].map(
+      (m) => m[1] as string,
+    );
+    expect(
+      found.length,
+      `${file} names no version at all — did its wording change?`,
+    ).toBeGreaterThan(0);
+    for (const v of found) {
+      expect(v, `${file} names v${v}, but the packages are at ${version}`).toBe(version);
+    }
   });
 
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {

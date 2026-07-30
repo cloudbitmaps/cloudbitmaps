@@ -764,6 +764,29 @@ crossover disappear. The report is honest: `verdict` always includes the lose-zo
 lists the model's simplifications (S3→same-region egress free; request cost from your supplied workload rates —
 deriving it from live metrics is a later refinement).
 
+### Past the write crossover
+
+`redisCrossover.writesPerSec` is where the metered bill overtakes a flat node. It is not a ceiling on the
+library — it is a property of **four inputs**, three of which default to their worst plausible value so the
+published figure cannot flatter us, and two of which remove the crossover entirely:
+
+| Input | Default | Change it and |
+| --- | --- | --- |
+| `avgItemKiB` | `8` | DynamoDB bills writes per KiB **rounded up**, so an 8 KiB chunk is 8 write units, not 1. Narrower delta rows move the crossover by the same factor. |
+| `cacheHitRate` | `0` | Every read is billed. A working hot cache moves the *read* crossover by the reciprocal of the miss rate. |
+| `pricing.warm.wruPerMillion` | on-demand | Set it to `0` and you have modelled a **provisioned or flat** Warm tier. `writesPerSec` returns `Infinity` — there is no per-request meter left to cross. |
+| `topology` | `'B'` | `'A'` takes writes by bulk-load, so it carries **no per-op write charge at all**. `writesPerSec` returns `Infinity`. |
+
+A flat Warm tier can be one of our own drivers — Redis, Postgres, MySQL, or anything else with cheap small
+writes on an instance you already run. Note that Redis is a **Warm** driver: it holds recent chunk deltas while
+the corpus stays in Cold object storage, so the node is sized for your write rate rather than for your whole
+history. You keep tiering and chunk-skipping and stop paying per request; what you give up is the one property
+a flat tier cannot have, which is costing nothing while idle.
+
+Watch also for the `batchable-writes` advisory — it fires when the modelled write count far exceeds the number
+of distinct Warm rows the data can occupy, which means the same row is being rewritten repeatedly and
+`addMany()` would collapse it.
+
 > **Model compaction — the usually-dominant cost.** Compaction re-reads a segment's whole Cold generation each
 > cycle, so it often dwarfs live traffic. Set `workload.compactionsPerMonth` to fold it in (with
 > `chunksPerCompaction`, default = the modeled cold set's chunk count, and an optional `dirtyChunksPerCompaction`

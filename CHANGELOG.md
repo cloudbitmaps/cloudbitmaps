@@ -14,6 +14,56 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **The planned plain-bitset flavor is renamed `@cloudbitmaps/bitset` (facade `CloudBitset`), from
+  `@cloudbitmaps/bitmap`.** Nothing is published under either name yet, so this costs nobody anything — which is
+  exactly why it is being done now rather than after. Three reasons: `bitmap` is the singular of its own scope
+  and so differentiates nothing (every flavor is a bitmap); putting `roaring` and `bitmap` side by side in a
+  picker implies Roaring is not a bitmap, when one of Roaring's three containers *is* a bitset and the real axis
+  is compressed vs uncompressed; and `bitset` is a term of art — `java.util.BitSet`, `std::bitset` — that means
+  precisely "an uncompressed array of bits", which is the actual differentiator. The tell was in our own copy:
+  the site's subtitle for `@cloudbitmaps/bitmap` read "Plain bitset — one bit per id", so the name needed the
+  word `bitset` to explain itself. It also gives the naming pattern that generalises —
+  `roaring`/`CloudRoaring`, `bitset`/`CloudBitset`, `soaring`/`CloudSoaring` — and avoids the `.bmp`
+  image-format collision in search. The generic term `bitmap` is retained where it is genuinely generic: npm
+  keywords, repo topics, the `CodecBitmap` type, `core/bitmap.ts`, and prose about the data structure.
+- **The site adopts a designed visual language, and gains a `/flavors` hub and a `/flavors/roaring` page.** One
+  engine, pluggable codecs — the hub is a single choose-one table (including a *cost of choosing it* column), and
+  the flavor page is also the template a second flavor fills in. The library itself is untouched.
+  - Two themes, both **designed**: light is not an inversion — the mark's cyan cannot hold 4.5:1 on paper, so
+    both accents are re-picked for their ground. The toggle is applied before first paint, so there is no flash.
+  - Three explainers move and nothing else does: the chunk-skipping centrepiece on `/architecture` (three views
+    of one statement — which chunks · from which tier · prove it) and one codec animation per flavor page. Every
+    one holds a readable final frame, so `prefers-reduced-motion` loses the motion and none of the information.
+  - The **counter-case is staged as a peer of the pitch** throughout — "Use Redis instead." sits in the same grid
+    row, bezel, padding and weight as the cost figure, and the two crossover rows where a flat Redis node is
+    simply cheaper are in the same table at the same weight as the four rows above them. No alert colour
+    anywhere.
+
+### Fixed
+
+- **The light theme's label colour failed WCAG AA.** `--cb-faint` — used for every label, caption and column
+  head, and the one token the design explicitly holds to AA *because it carries information* — shipped as
+  `#7A8393`, which gives **3.60:1** on the light ground where AA needs 4.5:1. Both the design bundle's
+  `tokens.css` and its README stated 4.6:1 for that value; measured, neither was right. Corrected to
+  `#666E7B` (**4.84:1**), the value in the design-language specimen, whose own stated contrast figures all
+  reproduce to two significant figures.
+- **The favicon's progressive bit reduction never reached a browser.** The mark's nine bits turn to mud below
+  64px, so the design ships simplified 32px (five bits) and 16px (three bits) art. Both files were in
+  `site/assets/` and neither was ever referenced — every page declared only the full 64px icon. Now declared
+  by size.
+- **The site's own logo mark rendered with no letterform in dark mode.** It was loaded via `<img src>`, and an
+  SVG referenced that way is an isolated document, so its `fill="currentColor"` resolved against *itself* —
+  i.e. to black — leaving only the coloured bits visible on the graphite ground. The mark is now inlined, so
+  `currentColor` and the bit tokens resolve against the page and one file serves both themes. Favicons, which
+  browser chrome always fetches standalone, carry their own `prefers-color-scheme` instead.
+- **`llms.txt` had been advertising `v0.1.0` for three releases.** The site-version gate only read `*.html`, so
+  nothing caught it. Gate widened to every file that carries a version string.
+- **The site's reveal-on-scroll script is gone.** It held whole sections at `opacity: 0` until an
+  IntersectionObserver fired — invisible to anyone with JavaScript disabled, and it left the new
+  `/architecture` centrepiece blank in every static render.
+
 ## [0.4.1] - 2026-07-27
 
 A correctness release from **audit round 4** — four independent adversarial review passes over the 0.4.0 diff
@@ -524,7 +574,7 @@ provenance. Everything below is the work that got it here.
   in place of the guesses. It will refuse to invent what it can't know: traffic rates and arrival pattern stay
   caller-declared and labelled as such. Stage **9.5b** adds the *"do you even need the native addon?"* comparison
   (a plain per-chunk bitset is exactly `chunkCount × 8192` bytes against a measured roaring size — ratio ~1 ⇒ skip
-  CRoaring and deploy to edge runtimes), gated on the `bitmap` flavor existing.
+  CRoaring and deploy to edge runtimes), gated on the `bitset` flavor existing.
 - **`CostReport.advisories` — the estimator now compares you to *us*, not only to Redis**.
   `verdict` has always been Redis-relative, which left a blind spot: feed it the id-at-a-time write shape and it
   returns `'win-big'` — true, and thoroughly misleading, because you can beat the $346/mo baseline by 40× while
@@ -835,7 +885,7 @@ provenance. Everything below is the work that got it here.
   `SegmentEngine`, compaction, and the `.crbm` read/write helpers construct and combine bitmaps only through a
   new `CodecInterface` factory + `CodecBitmap` value type (`src/core/codec.ts`), never a concrete implementation.
   Roaring is the flagship codec (`roaringCodec`, delegating to `SafeBitmap`); the `CloudRoaring` facade injects
-  it, so nothing changes for callers. This is the pre-split step that lets `@cloudbitmaps/bitmap` /
+  it, so nothing changes for callers. This is the pre-split step that lets `@cloudbitmaps/bitset` /
   `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes. New public exports:
   `CodecInterface`, `CodecBitmap`, `roaringCodec`. A codec-agnostic test drives the whole engine (add/has/remove/
   count/iterate/tier-merge/intersect) on a non-roaring `Set`-backed codec to prove no roaring assumption leaked.

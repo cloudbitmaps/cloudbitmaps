@@ -33,6 +33,12 @@
  * elapsed — if the machine sleeps mid-run the wall-clock numbers are silently inflated (memory numbers are
  * unaffected). Prevent sleep for the duration, e.g. macOS `caffeinate -i pnpm bench:scale`.
  *
+ * TO RESTYLE THE PUBLISHED TABLE WITHOUT RE-MEASURING: `pnpm bench:scale:render`. It re-renders and re-injects
+ * from the committed bench/scale-results.json and takes about a second. Reach for it whenever the change is to
+ * the PRESENTATION rather than the measurement — re-running the real thing to pick up a markup fix would burn
+ * half an hour and, worse, would silently replace a recorded 100K measurement with a different machine's
+ * wall-clock numbers. The committed results file is the record; rendering is separate from measuring.
+ *
  * Imports the CJS build (@cloudbitmaps/roaring) — same reason as bench/run.cjs (native `roaring` named exports).
  *
  * Env knobs (for a quick validation run at small scale):
@@ -281,13 +287,30 @@ function render(r) {
   const memFlat = r.fleets
     .map((f) => `${f.heapRetainedMiB} MiB @ ${f.n.toLocaleString()}`)
     .join(' · ');
+
+  // The claim the table cannot make about itself, computed rather than asserted: how far the heap moved while
+  // the fleet grew by a factor of N. Restating the heap column under the table (which is what `memFlat` does)
+  // is fine in markdown, where the table and the note read as separate blocks; directly under a bordered panel
+  // it is the same three numbers twice. This is the derived line the panel gets instead.
+  const heaps = r.fleets.map((f) => f.heapRetainedMiB);
+  const fleetLo = Math.min(...r.fleets.map((f) => f.n));
+  const fleetHi = Math.max(...r.fleets.map((f) => f.n));
+  const heapSpread = round(Math.max(...heaps) - Math.min(...heaps), 1);
+  const fleetFactor = Math.round(fleetHi / fleetLo);
+
+  // One decimal everywhere, so the .num columns line up on the decimal point. A bare `7` beside `7.9` breaks
+  // the tabular alignment that is the entire reason those columns are right-aligned.
+  const mib = (n) => `${n.toFixed(1)} MiB`;
   const rows = r.fleets.map((f) => [
     f.n.toLocaleString() + ' segments',
-    `${f.heapRetainedMiB} MiB`,
-    `${f.rssPeakMiB} MiB`,
+    mib(f.heapRetainedMiB),
+    mib(f.rssPeakMiB),
     `${f.discoveryMs.toLocaleString()} ms`,
   ]);
-  const header = ['Fleet', 'Live heap (cap ' + r.cap + ')', 'Peak RSS', 'Discovery scan'];
+  // "Retained heap" rather than "Live heap": it matches the `heapRetainedMiB` field it comes from AND the
+  // word the site's own prose uses beside the table. Three names for one column is how a legend stops
+  // agreeing with its figure.
+  const header = ['Fleet', 'Retained heap (cap ' + r.cap + ')', 'Peak RSS', 'Discovery scan'];
   const seedLo = Math.min(...r.fleets.map((f) => f.seedPerSec));
   const seedHi = Math.max(...r.fleets.map((f) => f.seedPerSec));
   const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString()} chunks per segment`;
@@ -297,30 +320,47 @@ function render(r) {
     `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString()}-id segments ` +
     `(${r.intersect.chunksPerSegment.toLocaleString()} chunks each, ${r.intersect.sharedChunks} shared): ` +
     `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms.\n\n` +
-    `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}). **The bound is the live heap** (post-GC), ` +
+    `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}). **The bound is the retained heap** (post-GC), ` +
     `flat at ${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
     `(shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and ` +
     `isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint ` +
     `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~${seedLo}–${seedHi} ` +
     `durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the \`O(total)\` **shape** is the ` +
     `point, not the absolute ms._`;
+  // The site's markup, not the old site's `.bench-table` — that class no longer exists in
+  // site/cloudbitmaps.css, so injecting it rendered as a bare unstyled table with nothing complaining.
+  // Numeric columns take `.num` (tabular, right-aligned) so the fleet sizes and MiB figures line up.
+  //
+  // The footnote here is deliberately SHORTER than the markdown one: the page already carries a three-row
+  // list explaining what is bounded, what is not, and what degrades. Repeating those explanations under the
+  // table would say the same thing twice in two voices. What only the run knows — the machine, the node
+  // version, the seed rate, the intersect result — stays.
   const htmlRows = rows
     .map(
       (row) =>
-        `<tr><td>${row[0]}</td><td><strong>${row[1]}</strong></td><td>${row[2]}</td><td>${row[3]}</td></tr>`,
+        `<tr><td>${row[0]}</td><td class="num">${row[1]}</td><td class="num">${row[2]}</td>` +
+        `<td class="num">${row[3]}</td></tr>`,
     )
     .join('');
   const htmlTable =
-    `<table class="bench-table"><thead><tr>${header.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` +
-    `<tbody>${htmlRows}</tbody></table>` +
-    `<p class="bench-note">Intersection of two ${r.intersect.idsPerSegment.toLocaleString()}-id segments ` +
-    `(${r.intersect.chunksPerSegment.toLocaleString()} chunks each, ${r.intersect.sharedChunks} shared): ` +
-    `<strong>${perSeg}</strong> — the shared keys; the rest skipped by key alignment — in ` +
-    `${r.intersect.intersectMs} ms. Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ${r.env.node}). The bound ` +
-    `is the <strong>live heap</strong> (post-GC), flat at ${memFlat}. Process peak RSS (for context) is a ` +
-    `high-water that also folds in the benchmark's fleet-seeding allocations and isn't returned to the OS after ` +
-    `GC, so it grows with fleet here — not a clean read-path footprint. Fleet seeded at ~${seedLo}–${seedHi} ` +
-    `durable segments/s (fsync-bound); discovery is LocalFs-bound (the O(total) shape is the point).</p>`;
+    `<div class="tpanel">` +
+    // The cap is already in the heap column's own header, where it qualifies the column it applies to —
+    // repeating it here said "1024" twice on one panel. The head carries the axis instead.
+    `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
+    `<span class="label">Measured &middot; ${fleetLo.toLocaleString()} &rarr; ` +
+    `${fleetHi.toLocaleString()} segments</span></div>` +
+    `<div class="tscroll"><table><thead><tr>` +
+    header.map((h, i) => `<th${i > 0 ? ' class="num"' : ''}>${esc(h)}</th>`).join('') +
+    `</tr></thead><tbody>${htmlRows}</tbody></table></div>` +
+    `<p class="tpanel-foot">A <strong>${fleetFactor}&times;</strong> larger fleet moved retained heap by ` +
+    `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
+    `${r.intersect.idsPerSegment.toLocaleString()}-id segments ` +
+    `(${r.intersect.chunksPerSegment.toLocaleString()} chunks each, ${r.intersect.sharedChunks} shared) ` +
+    `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded at ~${seedLo}&ndash;${seedHi} ` +
+    `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
+    `${r.env.node}) &mdash; discovery is filesystem-bound here, so the ` +
+    `<strong>shape</strong> is the claim, not the absolute milliseconds.</p>` +
+    `</div>`;
   const summary =
     `scale: ` +
     r.fleets
