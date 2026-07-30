@@ -249,23 +249,34 @@
               </tbody>
             </table>
           </div>
-          <!-- Breadth without diluting the five. Ten rows at equal weight would turn an argument into a
-               directory, so the additional fits sit under the table at a lower weight.
+          <!-- Both bands are .tpanel-foot now. This one used .also — a 13px SANS block sitting directly
+               above an 11.5px MONO one, which is why the two looked like different components when they
+               are the same thing: a footnote under a table. Same fault as .trade-foot last commit, so the
+               same resolution — one treatment, not a third.
 
-               count() earns the last slot on merit rather than as filler: exactness is a real
-               differentiator here. The usual way to count a huge distinct set cheaply is a probabilistic
-               sketch, which trades an error bar for the saving. We read cardinality from the metadata
-               beside the chunk keys, so it costs $0.14 per million AND is exact — /benchmarks states
-               both. That combination is the interesting part. -->
-          <div class="also">
-            <p class="label">Also fits</p>
-            <p class="from">
-              Fraud and abuse blocklists · event deduplication, the “have I already processed this?”
-              set · follower and social-graph edges · consent and regional-eligibility registries ·
-              and distinct-count reporting, where <span class="m">count()</span> is
-              <strong>exact</strong> rather than a sketch with an error bar.
-            </p>
-          </div>
+               Breadth without diluting the five: ten rows at equal weight turns an argument into a
+               directory, so the additional fits sit under the table rather than in it.
+
+               count() earns the last slot on merit. The usual way to count a huge distinct set cheaply is
+               a probabilistic sketch, which buys the saving with an error bar; we read cardinality from
+               the metadata beside the chunk keys, so it is $0.14 per million AND exact. -->
+          <p class="tpanel-foot">
+            <span class="label">Also fits</span> Fraud and abuse blocklists · event deduplication, the
+            “have I already processed this?” set · follower and social-graph edges · consent and
+            regional-eligibility registries · and distinct-count reporting, where
+            <span class="m">count()</span> is <strong>exact</strong> rather than a sketch with an error
+            bar.
+          </p>
+          <!-- The u32 constraint, which was documented NOWHERE on the site once it came off the
+               counter-case panel. It is a hard adoption blocker — someone should meet it before
+               `npm i`, not after — but it is a fact about the input, not an argument against the
+               library, so a footnote under "what this is for" is the right weight for it. -->
+          <p class="tpanel-foot">
+            <span class="label">Ids must be u32</span> An id is a 32-bit unsigned integer: it splits
+            into a 16-bit chunk key and a 16-bit remainder, and anything else raises a
+            <span class="m">ValidationError</span>. UUIDs and string keys need a dense-integer mapping
+            that you own and operate — worth knowing before you install, not after.
+          </p>
           <p class="tpanel-foot">
             <span class="call is-key">intersect</span> and
             <span class="call is-key">andNot</span> are marked because they are the operations the

@@ -596,7 +596,14 @@ em {
   font-size: 15px;
   line-height: 1.62;
   color: var(--cb-muted);
-  max-width: 68ch;
+  /* 70ch, up from 68, because a lede alone in a full-width section left the right half empty.
+     70 and not more. `ch` is the advance of "0", which in Helvetica runs wider than average lowercase, so
+     a rendered line is always LONGER than the ch figure suggests and the number cannot be reasoned about
+     — it has to be measured in the real font. Past roughly 85 characters the eye starts losing its place
+     returning to the left margin, and that is the ceiling here. Measured, widest line on any of the seven
+     pages: 68ch → 82 · 70ch → 84 · 72ch → 87 · 80ch → 95. Only the first two are inside it. Site-wide
+     rule, so re-measure every page when changing it — index alone is not representative. */
+  max-width: 70ch;
 }
 
 /* ── three tiers ─────────────────────────────────────────────────────────── */
@@ -2144,6 +2151,13 @@ em {
   font-weight: 400;
 }
 
+/* The band's leading label runs INLINE with the prose that follows it, so it needs the gap a block
+   label would get from layout. Three bands share this treatment — breadth, the u32 constraint, and the
+   marked-operations note — and they only read as one device if the label spacing matches. */
+.tpanel-foot .label {
+  margin-right: 6px;
+}
+
 /* Two provenance panels side by side at full width, stacked when the columns would
    force either table to scroll. */
 .prov {
@@ -3391,19 +3405,6 @@ em {
 .tpanel-foot .call {
   border: 0;
   padding: 0;
-}
-
-/* ── the "also fits" band ──────────────────────────────────────────────────────
-   Sits inside a table panel, under the rows, to show BREADTH without diluting the detailed rows
-   above it. Five rows with four columns each is the argument; a sixth through tenth row at the same
-   weight would make the table a directory instead. */
-.also {
-  padding: 16px;
-  border-top: 1px solid var(--cb-rule);
-}
-
-.also .from {
-  margin-top: 5px;
 }
 
 /* Spacing where the pair now follows the table inside one section — `section`'s own bottom border used
