@@ -169,6 +169,93 @@
         </div>
       </section>
 
+      <!-- ── THE JOBS ───────────────────────────────────────────────────────
+           Ported from the design delivery. It answers "is this my problem?", which is why it sits ahead
+           of the use-this/use-Redis pair below — that one answers "should I use it?", and a reader asks
+           these in that order. The pair was NOT replaced: its equal-weight bezel is the site's whole
+           stance on the counter-case, and demoting it from position two to deep-page would give that up.
+
+           Three changes from the delivery:
+
+             · Its heading was "Any large id-set you read a fraction of the time" — a noun fragment, and
+               "a fraction of the time" reads temporally when the sense is "only part of it, and only
+               sometimes". The shape TEST is the strongest line in the section, so it becomes the
+               heading and a reader can self-select from it alone.
+             · Suppression lists mapped to `add · has`. Suppression is the andNot case: you add ids to
+               the list and then subtract it from an audience. `has` implies checking one id at a time,
+               which is a different and worse pattern. Fixed — and it is the only place andNot appears
+               on this page, despite being a real export.
+             · The section's whole premise is scale and it quoted no figure, so "large" was undefined.
+               The panel foot now grounds it in the measured run. -->
+      <section id="jobs">
+        <h2>Big, mostly idle, and it has to survive a restart.</h2>
+        <p class="lede">
+          These five are the common ones, not the limit — the shape is what decides it. If that
+          describes a list you maintain, it fits, whatever you call it.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Where it fits</span><span class="label">Five common shapes</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>The job</th>
+                  <th>What&rsquo;s in the set</th>
+                  <th>You call</th>
+                  <th>How it&rsquo;s used</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Audience segmentation</td>
+                  <td class="from">
+                    user ids who bought in the last 90 days AND opened the app this week
+                  </td>
+                  <td><span class="call is-key">intersect</span></td>
+                  <td class="from">rebuilt on a schedule, read on a fraction of requests</td>
+                </tr>
+                <tr>
+                  <td>Feature-flag &amp; experiment cohorts</td>
+                  <td class="from">the ids assigned to each variant</td>
+                  <td><span class="call">has</span></td>
+                  <td class="from">read on nearly every request, written rarely</td>
+                </tr>
+                <tr>
+                  <td>Permission &amp; entitlement sets</td>
+                  <td class="from">ids allowed to see a given resource</td>
+                  <td><span class="call">has</span></td>
+                  <td class="from">read constantly, and must survive a restart</td>
+                </tr>
+                <tr>
+                  <td>Recommendation candidate pools</td>
+                  <td class="from">ids eligible before ranking narrows them</td>
+                  <td><span class="call is-key">intersect</span></td>
+                  <td class="from">narrowed per request instead of scanned</td>
+                </tr>
+                <tr>
+                  <td>Suppression lists</td>
+                  <td class="from">never-contact, opted-out, already-seen</td>
+                  <td>
+                    <span class="call">add</span> <span class="call is-key">andNot</span>
+                  </td>
+                  <td class="from">append-only — it only ever grows</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <span class="call is-key">intersect</span> and
+            <span class="call is-key">andNot</span> are marked because they are the operations the
+            tiering exists for — the ones that would otherwise pull whole sets into memory.
+            <strong>Large</strong> means the measured run behind this page: two 2,000,000-id segments,
+            of which an intersection fetches <strong>100 chunks of 2,000</strong>.
+            <a href="demo.html">Step through it</a>.
+          </p>
+        </div>
+      </section>
+
       <!-- ── THE TRADE ──────────────────────────────────────────────────────
            Position two, not buried. Identical bezel, padding and weight; only the left label is cyan. -->
       <section>

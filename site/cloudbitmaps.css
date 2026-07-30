@@ -3371,3 +3371,24 @@ em {
     gap: 6px;
   }
 }
+
+/* ── an API call named in a table cell ─────────────────────────────────────────
+   The delivery boxes these, and the box is what makes the "you call" column scan as API rather than
+   as prose. `.is-key` marks the one operation the tiering exists for.
+
+   That highlight is EXPLAINED in the panel's own footnote. Two chips in one column looking different
+   with nothing to say why is the legend-vs-figure fault that has already shipped three times on this
+   site; a colour that carries meaning needs a legend, or it needs to not carry meaning. */
+.call {
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  padding: 3px 7px;
+  border: 1px solid var(--cb-rule);
+  color: var(--cb-muted);
+  white-space: nowrap;
+}
+
+.call.is-key {
+  border-color: var(--cb-cyan);
+  color: var(--cb-cyan);
+}
