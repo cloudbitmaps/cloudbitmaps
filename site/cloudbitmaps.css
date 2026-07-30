@@ -3445,6 +3445,43 @@ em {
   padding: 16px;
 }
 
+/* Vertical rhythm inside the card. Without this, "Take it when" and "Figures below" sat flush against
+   the paragraph above them and the card read as one undifferentiated block — the delivery separates
+   each block with a hairline, which is what makes it scannable rather than merely short. */
+.pick .from {
+  margin-top: 5px;
+}
+
+.pick .label + .from + .label {
+  display: block;
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--cb-rule);
+}
+
+.pick .panel-row + .label {
+  display: block;
+  margin-top: 13px;
+  padding-top: 13px;
+  border-top: 1px solid var(--cb-rule);
+}
+
+.pick .link-row {
+  margin-top: 14px;
+  padding-top: 13px;
+  border-top: 1px solid var(--cb-rule);
+}
+
+/* The bar figure needs the same courtesy: its label was flush against the first bar and its caption
+   flush against the last one. */
+.bars {
+  margin: 10px 0;
+}
+
+.pane > .bars + .metric-cap {
+  margin-top: 12px;
+}
+
 /* Panes are hidden by default so that a browser which somehow applies no :checked rule shows
    the FIRST pane's content rather than all three stacked. Roaring is checked in the markup. */
 .pane {
@@ -3576,11 +3613,15 @@ em {
   color: var(--cb-cyan);
 }
 
-/* ── the strip: a head bar over hairline-separated columns ─────────────────────
-   The delivery's treatment for a row of peer facts, and the reason it works is that it has NO
-   heading — the head bar's left label IS the heading, so the block reads as one instrument panel
-   rather than as another section competing with the ones around it. My first port gave it an h2
-   and a lede and it immediately looked like a different page. */
+/* ── the strip: a bordered panel with a head bar ───────────────────────────────
+   Used by the four layer/threshold panels. The head bar's left label IS the panel's heading, which
+   is why these read as instrument panels rather than as sections competing with their neighbours —
+   none of them carries an <h2>.
+
+   It arrived carrying a .strip-cols row of hairline-separated peer facts too. That section was
+   removed: all five of its figures were restated from elsewhere on the page, so it was a summary of
+   its own neighbours. The columns went with it rather than staying as dead CSS that reads like a
+   supported component. */
 .strip {
   border: 1px solid var(--cb-rule);
   background: var(--cb-surface);
@@ -3601,30 +3642,65 @@ em {
   color: var(--cb-cyan);
 }
 
-.strip-cols {
+/* At phone width twenty cells cannot fit on one line; wrapping is the lesser harm, since a figure that
+   pushes the page sideways is not readable at all. Above 520px it stays a single run. */
+@media (max-width: 520px) {
+  .chunkgrid {
+    flex-wrap: wrap;
+  }
+}
+
+/* ── the chunk grid, layer 02 ─────────────────────────────────────────────────
+   Twenty cells, four lit, matching the delivery. Non-text graphic so 1.4.11's 3:1 applies; cyan on
+   the panel ground clears it in both themes, and the legend beneath names both states in words. */
+.chunkgrid {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin: 18px 0 6px;
+}
+
+.chunkgrid i {
+  display: block;
+  width: 12px;
+  height: 12px;
+  background: var(--cb-rule);
+}
+
+.chunkgrid i.on {
+  background: var(--cb-cyan);
+}
+
+/* ── the section intro: prose left, the picker card right ───────────────────────
+   The delivery puts the codec card BESIDE the intro, not under it. Full-width it stretched a
+   four-line card across 1,240px and left half of it empty; beside the prose it is a sidebar the
+   reader consults, which is what a picker is. */
+.intro-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-}
-
-/* 1px hairlines BETWEEN columns only, drawn as borders rather than a gap-with-background, so the
-   auto-fit reflow at narrow widths cannot leave a dangling rule on the last item in a row. */
-.strip-cols > * {
-  padding: 16px;
-  border-left: 1px solid var(--cb-rule);
-}
-
-.strip-cols > *:first-child {
-  border-left: 0;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  margin-bottom: 28px;
 }
 
 @media (max-width: 900px) {
-  .strip-cols > * {
-    border-left: 0;
-    border-top: 1px solid var(--cb-rule);
+  .intro-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .strip-cols > *:first-child {
-    border-top: 0;
-  }
+}
+
+/* A shipped-and-versioned chip: cyan, bordered, mono — the delivery's treatment, and distinct from
+   the .status chips because it carries a version rather than a verdict. */
+.vchip {
+  font-family: var(--cb-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: normal;
+  padding: 3px 7px;
+  border: 1px solid var(--cb-cyan);
+  color: var(--cb-cyan);
+  white-space: nowrap;
 }
 
 /* ── a layer panel: figures left, the argument right ───────────────────────────
@@ -3672,8 +3748,9 @@ em {
    grounds. Each row is labelled in text beside it, so nothing is encoded by the bars alone. */
 .bars {
   display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px 12px;
+  grid-template-columns: auto minmax(0, 250px) auto;
+  justify-content: start;
+  gap: 9px 12px;
   align-items: center;
 }
 
@@ -3686,7 +3763,8 @@ em {
 .bars .bv {
   display: flex;
   gap: 2px;
-  height: 14px;
+  height: 15px;
+  width: 100%;
 }
 
 .bars .bv i {
@@ -3714,29 +3792,4 @@ em {
   font-size: 11.5px;
   color: var(--cb-muted);
   white-space: nowrap;
-}
-
-/* ── the chunk grid ────────────────────────────────────────────────────────────
-   Forty cells, two lit. That is 5% — the measured overlap behind "100 of 2,000 chunks fetched" —
-   and it is why the count is forty rather than the delivery's twenty-four, where the five lit
-   cells it drew read as 20%. A figure illustrating a ratio has to be that ratio, or it is
-   arguing against the number printed beside it. Forty also matches /demo's own inset grid. */
-.chunkgrid {
-  display: flex;
-  /* nowrap: forty cells must read as ONE run of chunks. Wrapped across two rows they looked like two
-     segments, which is a different claim. 40 x 9px + 39 x 2px = 438px, inside the duo column. */
-  flex-wrap: nowrap;
-  gap: 2px;
-  margin: 16px 0 8px;
-}
-
-.chunkgrid i {
-  display: block;
-  width: 9px;
-  height: 9px;
-  background: var(--cb-rule);
-}
-
-.chunkgrid i.on {
-  background: var(--cb-cyan);
 }

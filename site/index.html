@@ -246,61 +246,6 @@
         </div>
       </section>
 
-      <!-- ── WHAT ELSE IT IS GOOD AT ────────────────────────────────────────
-           A strip, with NO heading — the head bar's left label is the heading. My first port gave
-           this an <h2> and a lede, which made a panel of peer facts read as another competing
-           section. The delivery was right and I was wrong. -->
-      <section>
-        <div class="strip">
-          <div class="strip-head">
-            <span class="label">What else it is good at</span>
-            <span class="label">Measured on @cloudbitmaps/roaring</span>
-          </div>
-          <div class="strip-cols">
-            <div>
-              <span class="metric-fig">$0.14<span class="u"> /M</span></span>
-              <span class="metric-what">Exact cardinality</span>
-              <span class="metric-cap">
-                Counts come from metadata beside the chunk keys — no payload is opened, and the
-                answer is exact rather than estimated.
-              </span>
-            </div>
-            <div>
-              <span class="metric-fig">7.8<span class="u"> → 7.0 MiB</span></span>
-              <span class="metric-what">Flat memory as segments multiply</span>
-              <span class="metric-cap">
-                Retained heap barely moves from 1,000 segments to 100,000 — the engine holds keys
-                and a bounded window, not the corpus.
-              </span>
-            </div>
-            <div>
-              <span class="metric-fig">crypto-shred</span>
-              <span class="metric-what">Erase a person, not a dataset</span>
-              <span class="metric-cap">
-                Destroy the key and the data goes with it. No rewrite pass over immutable objects,
-                no waiting on compaction.
-              </span>
-            </div>
-            <div>
-              <span class="metric-fig">3 · 10 · 1</span>
-              <span class="metric-what">Runs where your code runs</span>
-              <span class="metric-cap">
-                Three tiers, ten storage drivers, one runtime dependency — including a flat node as
-                the warm tier if you want one.
-              </span>
-            </div>
-            <div>
-              <span class="metric-fig">±20%</span>
-              <span class="metric-what">Know the bill first</span>
-              <span class="metric-cap">
-                The shipped estimator lands within ±20% of a real invoice, on your own rates rather
-                than ours.
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <!-- ── THREE LAYERS ───────────────────────────────────────────────────────
            The spine. The site spent its whole life arguing on one axis — price against a flat node
            — which is the only one of three where a flat node can win. All three come before any
@@ -315,14 +260,25 @@
         <input type="radio" name="cb-codec" id="cb-codec-soaring" />
 
         <h2>Three layers, in the order that decides it</h2>
-        <p class="lede">
-          How the sets are <strong>represented</strong>, where they <strong>reside</strong>, and what
-          they cost <strong>while nobody is asking</strong>. The first is a property of the format
-          and no configuration erases it. The second is why a query does not pull the corpus back.
-          The third is where reserved capacity competes — and it does.
-        </p>
+        <!-- Prose left, picker right — the delivery's arrangement. The second paragraph was dropped
+             in my first port and it is the one that tells the reader the picker EXISTS and what it
+             governs, without which the card on the right is unexplained furniture. -->
+        <div class="intro-grid">
+          <div>
+            <p class="lede">
+              How the sets are <strong>represented</strong>, where they <strong>reside</strong>, and
+              what they cost <strong>while nobody is asking</strong>. The first is a property of the
+              format and no configuration erases it. The second is why a query does not pull the
+              corpus back. The third is where reserved capacity competes — and it does.
+            </p>
+            <p class="lede">
+              The thresholds come after all three, because a threshold without the structure around it
+              is just a number. <strong>Layer 01 depends on the codec you install</strong> — pick it on
+              the right and this section follows. Layers 02 and 03 sit above the codec and do not move.
+            </p>
+          </div>
 
-        <div class="pick" role="group" aria-label="Codec">
+          <div class="pick" role="group" aria-label="Codec">
           <div class="pick-head">
             <span class="label">Layer 01 depends on the codec you install</span>
             <div class="pick-tabs">
@@ -332,57 +288,36 @@
             </div>
           </div>
           <div class="pick-body">
-            <div class="pick-grid">
               <div>
                 <div class="pane for-roaring">
                   <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/roaring</span
-                    ><span class="status is-shipped">Shipped</span>
+                    <span class="m">@cloudbitmaps/roaring</span><span class="vchip">Shipped v0.4.1</span>
                   </p>
-                  <p class="from">
-                    <strong>Take it when</strong> ids are sparse or clustered and adaptive containers
-                    do real compression work. The default: if you are moving off Redis sets, start
-                    here.
-                  </p>
-                  <p class="from">
-                    <strong>Figures below</strong> are measured on this codec — every one in this
-                    section comes from it.
-                  </p>
+                  <p class="label">Take it when</p>
+                  <p class="from">Ids are sparse or clustered and adaptive containers do real compression work. The default: if you are moving off Redis sets, start here.</p>
+                  <p class="label">Figures below</p>
+                  <p class="from">Measured on this codec — every figure in this section comes from it.</p>
                 </div>
                 <div class="pane for-bitset">
                   <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/bitset</span
-                    ><span class="status is-coming">Coming</span>
+                    <span class="m">@cloudbitmaps/bitset</span><span class="status is-coming">Coming</span>
                   </p>
-                  <p class="from">
-                    <strong>Take it when</strong> ids are dense, or you want zero native dependency —
-                    edge runtimes, no platform matrix, nothing to compile.
-                  </p>
-                  <p class="from">
-                    <strong>Figures below</strong> are not measured yet. They are roaring's, and none
-                    are claimed for bitset.
-                  </p>
+                  <p class="label">Take it when</p>
+                  <p class="from">Ids are dense, or you want zero native dependency — edge runtimes, no platform matrix, nothing to compile.</p>
+                  <p class="label">Figures below</p>
+                  <p class="from">Not measured yet. The figures below are roaring&rsquo;s, and none are claimed for bitset.</p>
                 </div>
                 <div class="pane for-soaring">
                   <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/soaring</span
-                    ><span class="status is-research">Research</span>
+                    <span class="m">@cloudbitmaps/soaring</span><span class="status is-research">Research</span>
                   </p>
-                  <p class="from">
-                    <strong>Take it when</strong> — not yet. It is a separate algorithm and it is
-                    unproven.
-                  </p>
-                  <p class="from">
-                    <strong>Figures below</strong>: nothing measured, and nothing published until
-                    there is.
-                  </p>
+                  <p class="label">Take it when</p>
+                  <p class="from">Not yet. It is a separate algorithm and it is unproven.</p>
+                  <p class="label">Figures below</p>
+                  <p class="from">Nothing measured, and nothing published until there is.</p>
                 </div>
               </div>
-              <div>
-                <p class="link-row">
-                  <a href="flavors.html">Compare all three →</a>
-                </p>
-              </div>
+              <p class="link-row"><a href="flavors.html">Compare all three →</a></p>
             </div>
           </div>
         </div>
@@ -491,6 +426,13 @@
                   <span class="metric-cap">across 1,000 → 100,000 segments</span>
                 </div>
               </div>
+              <div class="chunkgrid" role="img"
+                   aria-label="Twenty chunks; four can contribute and are fetched, sixteen are never requested">
+                <i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i><i></i
+                ><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i
+                ><i></i><i></i>
+              </div>
+              <p class="metric-cap">lit = can contribute · dim = never requested</p>
             </div>
             <div>
               <p>
