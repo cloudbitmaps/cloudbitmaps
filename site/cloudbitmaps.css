@@ -598,24 +598,29 @@ em {
   font-size: 15px;
   line-height: 1.62;
   color: var(--cb-muted);
-  /* Uncapped: the lede fills whatever column contains it, so a section intro is as wide as the panel or
-     table beneath it.
-     ─────────────────────────────────────────────────────────────────────────────────────────────────────
-     Three earlier attempts all missed the point. 68ch, then 70ch, then keeping 70ch but enlarging the type
-     to 18px to gain pixels without gaining characters — every one of them held the block between 580 and
-     700px, and every one still left a full-width section visibly empty on the right. Widening the measure
-     was the request; protecting the measure was what kept happening.
-
-     Stated plainly, because it is a real trade and not a free win: this is past the classic readability
-     measure. Roughly 45-85 characters is where line-tracking is most reliable; measured at 1440px, these
-     run 167-170. What makes it acceptable here rather than merely long is that a lede is two or three lines,
-     so there are one or two line-returns to track — the 85-character guidance bites hardest on many-line
-     body copy, where losing your place costs a re-read. A stranded paragraph above a full-width panel was
-     reading worse than a long line does.
-
-     Re-measure at 1440px when touching this; the numbers above are from `.lede` on all seven pages. To pull
-     it back, `max-width: 100ch` is the middle setting — clearly wider than 70ch, without going all the way. */
+  /* Uncapped here, so a lede nested inside a column simply fills that column. The three-quarter cap below
+     applies only to the ones in full-width context. */
   max-width: none;
+}
+
+/* Three quarters, and only for a lede in full-width context.
+   ────────────────────────────────────────────────────────────────────────────────────────────────────────
+   The history is worth keeping, because the same wrong answer got tried three times: 68ch, then 70ch, then
+   70ch at 18px to buy pixels without buying characters. Each held the block near 580-700px and each still
+   left a full-width section obviously empty on the right. Removing the cap entirely then went too far the
+   other way — full bleed, 167-170 characters a line.
+
+   `75%` rather than a `ch` figure on purpose. It is the composition being specified, not the measure: the
+   lede reads as three quarters of the panel below it at any viewport, where a fixed `ch` cap drifts from
+   that relationship as soon as the container changes. Lands near 128 characters at 1440px — still past the
+   ~85 where line-tracking is most reliable, and a deliberate trade, softened by the fact that a lede is two
+   or three lines and so carries only one or two line-returns to lose your place on.
+
+   The child selector is doing real work. 32 of the 39 ledes are direct children of `<section>`; the other 7
+   already sit in narrow columns (660px in `.close-copy`, 578px in `.moat`), and a percentage applied to
+   those would SHRINK them to three quarters of an already-half column. They inherit `none` above instead. */
+section > .lede {
+  max-width: 75%;
 }
 
 /* ── three tiers ─────────────────────────────────────────────────────────── */
@@ -1579,6 +1584,14 @@ em {
   .close-grid,
   .tiers {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The three-quarter cap comes off at the same breakpoint these panels stack at, and for the same reason:
+     `75%` expresses "three quarters of the panel below me", and below 1000px there is no multi-column panel
+     left to be three quarters of. Keeping it would just donate a quarter of a phone's width to the margin —
+     it measured 251px of an available 335px at 375px, which is the opposite of the problem being solved. */
+  section > .lede {
+    max-width: none;
   }
 
   /* Stacked, the pairs must keep reading as pairs. `.ba-pairs` collapses to one column too, which puts each
