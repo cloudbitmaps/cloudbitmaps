@@ -172,15 +172,33 @@ async function shredSegment(
   throw new WriteConflictError(`destroySegment: contention shredding "${ref.segment}" — retry`);
 }
 
-/** Physically delete a segment's Warm rows (version-fenced per row; re-list on contention). Returns the count. */
+/**
+ * Physically delete a segment's Warm rows (version-fenced per row; re-list on contention). Returns the count.
+ *
+ * **Throws rather than giving up quietly.** This used to run out of passes and `return deleted` with rows still
+ * live, and the caller would go on to CAS the `destroyed` tombstone — so `destroySegment` could answer
+ * `destroyed: true` on a segment whose Warm rows, which this module's header notes are CLEARTEXT, were still
+ * readable. For a right-to-erasure command that is the worst available failure: it reports the one thing it did
+ * not do, and `warmRowsDeleted` is a count of successes that cannot express "and N remain".
+ *
+ * Failing typed here is also what the rest of the codebase already does when a bounded retry runs out —
+ * `shredSegment`'s own CAS loop below, and `S3RegistryDriver.delete`, which comments that it "fails typed rather
+ * than silently leaving the row live". This function was the one deviation.
+ *
+ * It is safe to throw from here specifically because of the ordering at the call site: Warm is cleared BEFORE
+ * the tombstone CAS, so an exception leaves the segment un-destroyed and retryable rather than marked destroyed
+ * with data behind it.
+ */
 async function eraseWarm(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
   let deleted = 0;
+  // Hoisted: the value after the loop is what decides whether the erase actually finished.
+  let conflicts = 0;
   for (let pass = 0; pass < MAX_WARM_PASSES; pass++) {
+    conflicts = 0;
     const rows: Array<{ chunkKey: number; token: string }> = [];
     for await (const row of warm.listChunks(ref))
       rows.push({ chunkKey: row.chunkKey, token: row.token });
-    if (rows.length === 0) break;
-    let conflicts = 0;
+    if (rows.length === 0) break; // nothing left — the only clean finish
     for (const { chunkKey, token } of rows) {
       const chunkRef: ChunkRef = { namespace: ref.namespace, segment: ref.segment, chunkKey };
       try {
@@ -192,6 +210,13 @@ async function eraseWarm(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
       }
     }
     if (conflicts === 0) break;
+  }
+  if (conflicts > 0) {
+    throw new WriteConflictError(
+      `destroySegment: ${conflicts} warm row(s) of "${ref.segment}" were rewritten during every one of ` +
+        `${MAX_WARM_PASSES} erase passes — the segment was NOT destroyed and its cleartext warm deltas are ` +
+        `still readable. Stop writes to this segment and retry.`,
+    );
   }
   return deleted;
 }

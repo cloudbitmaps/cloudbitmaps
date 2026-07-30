@@ -7,11 +7,23 @@
  * I/O of their own); the wrapped driver is responsible for *classifying* its transient faults (raising
  * {@link TransientError}); these decorators decide *whether and when* to retry.
  *
- * **Streaming methods** (`listChunks`, `list`) are retried by **re-enumerating from the start**, buffering
- * the result — a partially-consumed async iterator can't be safely resumed mid-stream (it would re-yield
- * earlier items). Their consumers in the engine already collect fully (the Warm dirty-set is small under
- * Topology-A; the cold `list` is a discovery scan), so buffering preserves current semantics. Point methods
- * are retried in place with no buffering.
+ * **Streaming methods split into two shapes**, and the difference is deliberate — a partially-consumed async
+ * iterator cannot be resumed mid-stream (it would re-yield earlier items), so each method picks between
+ * buffering and bounded memory:
+ *
+ *   · `RetryingColdDriver.list` / `RetryingRegistryDriver.list` **buffer**, inside `withRetry`, so the whole
+ *     enumeration is retried by re-running it from the start. Both are discovery scans over a generation or
+ *     namespace listing, where the result set is small and whole-scan retry is worth the memory.
+ *   · `RetryingWarmDriver.listChunks` does **not** buffer. It retries only until the first row arrives and
+ *     then streams live, because buffering it defeated the engine's resident-memory bound outright — see the
+ *     measured account on the method itself. A mid-stream fault therefore propagates rather than being
+ *     retried, which is the documented trade there.
+ *
+ * Point methods are retried in place, with nothing to buffer.
+ *
+ * (This paragraph previously said streaming methods buffer, full stop. That described `listChunks` as it was
+ * before the bound was fixed, and the stale wording had also been copied into the Postgres and MySQL warm
+ * drivers — so three comments promised a mid-stream resilience that the hot read path does not have.)
  *
  * What is **not** retried here: {@link WriteConflictError} (OCC — the engine's read-modify-write loop owns
  * that; a blind replay would re-apply against a stale token), and every deterministic error
@@ -137,11 +149,27 @@ export class RetryingWarmDriver implements IWarmDriver {
       this.deps,
     );
     if (started.first.done === true) return;
-    yield started.first.value;
-    for (;;) {
-      const next = await started.iterator.next();
-      if (next.done === true) return;
-      yield next.value;
+    // The `finally` is load-bearing, and this is the only generator in the codebase that needs one written by
+    // hand. Everywhere else either drives the inner scan with `for await` — which closes it automatically on an
+    // abrupt exit — or has nothing to close (Postgres/MySQL/DynamoDB page statelessly, so each page's client is
+    // already back in the pool). This method drives the inner iterator manually, precisely so it does NOT buffer,
+    // and that means abandonment has to be handled explicitly.
+    //
+    // Abandonment is not hypothetical here, it is the designed path: `engine.ts` throws `BudgetExceededError`
+    // from INSIDE its `for await` over this method ("the scan was abandoned there rather than completed"). That
+    // closes this generator at a `yield`, and without the `finally` the inner generator stays suspended forever
+    // — holding an open Mongo cursor or Cassandra stream, since those two are the drivers that keep one across
+    // yields. The leak therefore fired exactly when the memory ceiling was doing its job, which is the worst
+    // possible time to also be leaking a connection.
+    try {
+      yield started.first.value;
+      for (;;) {
+        const next = await started.iterator.next();
+        if (next.done === true) return;
+        yield next.value;
+      }
+    } finally {
+      await started.iterator.return?.();
     }
   }
 }

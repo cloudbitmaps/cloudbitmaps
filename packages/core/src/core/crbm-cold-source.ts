@@ -505,6 +505,24 @@ export async function publishGeneration(
           currentGen: key.generation,
           wrappedDeks: options.wrappedDeks,
         });
+      } else if (record.status === 'destroyed') {
+        // Closes the window between a writer's own destroyed-check and its publish.
+        //
+        // `bulkLoadCrbmGeneration` reads the registry record once, refuses if it is already destroyed, and then
+        // spends a KMS call plus a whole object write before getting here — seconds to minutes on a large load.
+        // A `destroySegment` landing inside that window used to be invisible to this function: it compares only
+        // `currentGen`, so it would advance the pointer on a destroyed record, leaving an object encrypted with
+        // the DEK that destroy had just shredded — permanently unreadable, still paid for, and attached to a
+        // segment the registry says was erased.
+        //
+        // Checking here rather than at the caller is what makes it a fence instead of a second guess: this
+        // record was re-read moments ago inside the retry loop, so the check and the CAS that follows it see the
+        // same state. `erasure.ts` notes that coupling the write path to destruction was left as "a later
+        // hardening" — for the publish step, this is it.
+        throw new ValidationError(
+          `segment "${key.segment}" was destroyed (crypto-shredded) while generation ${key.generation} was ` +
+            `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
+        );
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {

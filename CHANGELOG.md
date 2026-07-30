@@ -43,6 +43,40 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Fixed
 
+- **`destroySegment` could report `destroyed: true` on a segment it had not finished erasing.** `eraseWarm`
+  retries rows that are rewritten mid-erase for a bounded number of passes, and when that bound ran out it
+  returned the count deleted so far and let the caller CAS the `destroyed` tombstone anyway. Warm rows are
+  **cleartext**, so a right-to-erasure command could attest to a destruction while the data was still readable,
+  and the result could not reveal it — `warmRowsDeleted` counts successes only. It now throws
+  `WriteConflictError` naming the number of rows still contended; because Warm is cleared *before* the tombstone
+  is written, the failure leaves the segment un-destroyed and safely retryable. Every other bounded retry in the
+  codebase already failed typed on exhaustion — this one function was the exception.
+- **A generation could be published onto a segment destroyed while that generation was being written.**
+  `bulkLoadCrbmGeneration` reads the registry once, refuses if the segment is already destroyed, and then spends
+  a KMS call and a whole object write before publishing — seconds to minutes on a large load. A `destroySegment`
+  landing inside that window was invisible to `publishGeneration`, which compares only `currentGen`, so the
+  pointer advanced on a destroyed record and left an object encrypted with the DEK destroy had just shredded:
+  unreadable, still stored, and attached to a segment the registry says was erased. `publishGeneration` now
+  refuses a destroyed record, using the record it had already re-read for its own CAS — so the check and the
+  write see the same state. This is the publish-step half of the coupling `erasure.ts` had noted as "a later
+  hardening".
+- **The retry wrapper leaked the inner scan whenever a warm enumeration was abandoned.**
+  `RetryingWarmDriver.listChunks` is the only wrapper that drives its inner iterator by hand — deliberately, so
+  that it does not buffer and defeat the engine's resident-memory bound — but it never closed that iterator when
+  its own consumer walked away. The engine abandons a scan *by design*, throwing `BudgetExceededError` from
+  inside its `for await` once `maxWarmScanBytes` is crossed, so the leak fired precisely when the memory ceiling
+  was protecting the process, leaving an open Mongo cursor or Cassandra stream behind each time. Now closed in a
+  `finally`. The other drivers were never affected: Postgres, MySQL and DynamoDB page statelessly, and Mongo and
+  Cassandra drive their cursors with `for await`, which closes on an abrupt exit by itself.
+
+### Changed
+
+- **Corrected three comments that promised retry behaviour the hot read path does not have.** The retry module's
+  header still described `listChunks` as buffering and re-enumerating from the start — true of the cold and
+  registry `list` wrappers, and true of `listChunks` only before its bound was fixed. The stale wording had been
+  copied into the Postgres and MySQL warm drivers. A mid-stream fault on a warm enumeration propagates; that is
+  the documented trade for bounded memory, and now all four places say so.
+
 - **The light theme's label colour failed WCAG AA.** `--cb-faint` — used for every label, caption and column
   head, and the one token the design explicitly holds to AA *because it carries information* — shipped as
   `#7A8393`, which gives **3.60:1** on the light ground where AA needs 4.5:1. Both the design bundle's
