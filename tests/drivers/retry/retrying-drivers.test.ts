@@ -74,7 +74,7 @@ describe('RetryingWarmDriver', () => {
     expect(clock.sleeps).toEqual([]);
   });
 
-  it('re-enumerates listChunks from the start on a transient fault (buffered)', async () => {
+  it('re-enumerates listChunks from the start on a transient fault while establishing the scan', async () => {
     const clock = recordingClock();
     let attempts = 0;
     const rows: Array<{ chunkKey: number } & WarmRow> = [
@@ -93,6 +93,52 @@ describe('RetryingWarmDriver', () => {
     for await (const r of d.listChunks(seg)) out.push(r.chunkKey);
     expect(out).toEqual([1, 2]); // no duplicates — full re-enumeration on retry
     expect(attempts).toBe(2);
+  });
+
+  // Both of these pin the same fix. `listChunks` is the only wrapper that drives its inner iterator by hand
+  // (deliberately — buffering it would defeat the engine's resident-memory bound), so it is the only one where
+  // abandonment has to be cleaned up explicitly. Without the `finally`, the inner generator stays suspended at
+  // its `yield` forever, holding whatever it had open: a Mongo cursor, a Cassandra stream.
+  //
+  // Two exits, because the engine uses the second one. `collectWarm` throws `BudgetExceededError` from INSIDE
+  // its `for await` over this method, so the throw path is the one that actually fires in production.
+  const abandonable = (): { inner: IWarmDriver; closed: () => boolean } => {
+    let closed = false;
+    const inner: Pick<IWarmDriver, 'listChunks'> = {
+      async *listChunks() {
+        try {
+          yield { chunkKey: 1, token: '1', bytes: Uint8Array.of(1) };
+          yield { chunkKey: 2, token: '1', bytes: Uint8Array.of(2) };
+        } finally {
+          closed = true; // stands in for a real driver releasing its cursor
+        }
+      },
+    };
+    return { inner: inner as IWarmDriver, closed: () => closed };
+  };
+
+  it('closes the inner scan when the consumer breaks out early', async () => {
+    const { inner, closed } = abandonable();
+    const d = new RetryingWarmDriver(inner, opts(recordingClock()));
+    for await (const row of d.listChunks(seg)) {
+      expect(row.chunkKey).toBe(1);
+      break;
+    }
+    expect(closed()).toBe(true);
+  });
+
+  it('closes the inner scan when the consumer throws mid-stream (the engine’s ceiling path)', async () => {
+    const { inner, closed } = abandonable();
+    const d = new RetryingWarmDriver(inner, opts(recordingClock()));
+    await expect(
+      (async () => {
+        for await (const row of d.listChunks(seg)) {
+          void row;
+          throw new Error('maxWarmScanBytes exceeded');
+        }
+      })(),
+    ).rejects.toThrow('maxWarmScanBytes exceeded');
+    expect(closed()).toBe(true);
   });
 });
 

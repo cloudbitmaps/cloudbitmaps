@@ -179,8 +179,11 @@ export class PostgresWarmDriver implements IWarmDriver {
     validateSegmentRef(ref);
     const ns = namespacePart(ref.namespace);
     // Keyset pagination on chunk_key (ascending) bounds peak memory to one page WITHIN a single enumeration,
-    // regardless of how wide the segment is. (It does NOT resume across a transient fault — the retry decorator
-    // re-enumerates a streaming method from the start and buffers, see drivers/retry/retrying-drivers.ts.)
+    // regardless of how wide the segment is. It does NOT resume across a transient fault, and nothing above it
+    // makes that good: the retry decorator retries `listChunks` only until the first row arrives and then
+    // streams live, deliberately NOT buffering, so a fault mid-enumeration reaches the caller. (This comment
+    // used to say the decorator "re-enumerates from the start and buffers" — true of the cold/registry `list`
+    // wrappers, never of this one. See drivers/retry/retrying-drivers.ts.)
     let after = -1;
     for (;;) {
       let rows: RawRow[];

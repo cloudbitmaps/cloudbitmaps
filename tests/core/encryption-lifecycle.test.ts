@@ -11,7 +11,7 @@ import {
   eraseNamespace,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { KeyUnavailableError, ValidationError } from '@/core/errors';
+import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { CompactionDeps, IKeystore, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { segment: 's' };
@@ -145,6 +145,55 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
 
     // Reads empty even though we still hold the KEK: there is no DEK left to unwrap.
     expect(await members(w.store())).toEqual([]);
+  });
+
+  it('refuses to report a destruction it could not finish — warm rows contended on every pass', async () => {
+    // The defect this pins: `eraseWarm` retries contended rows a bounded number of times (MAX_WARM_PASSES) and
+    // used to fall out of that loop and simply `return deleted`. `shredSegment` then CAS'd the `destroyed`
+    // tombstone regardless, so `destroySegment` answered `destroyed: true` on a segment whose Warm rows — which
+    // this module documents as CLEARTEXT — were still readable. On a right-to-erasure command that is a false
+    // attestation, and nothing in the result could reveal it: `warmRowsDeleted` counts successes only.
+    //
+    // Note WHY asserting the throw is not enough on its own, and why the registry assertion below is the real
+    // test: the ordering in `shredSegment` clears Warm BEFORE flipping the tombstone, so the fix is only correct
+    // if the failure leaves the segment un-destroyed and retryable. A version that threw AFTER the CAS would
+    // still pass a throws-assertion while leaving exactly the state we are trying to prevent.
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: w.registry,
+      keystore,
+    });
+    await w.store().segment('s').add(4); // the live Warm row that will stay contended
+
+    // A warm driver whose conditional delete always loses the race, as if another writer rewrote the row
+    // between our list and our delete — every pass, forever.
+    // A Proxy rather than a spread-and-override: the driver's methods live on its prototype and touch private
+    // fields, so a spread copies none of them and a hand-listed subset silently depends on which methods the
+    // interface happens to have today. Forwarding with `receiver = target` keeps `this` the real instance.
+    const contended = new Proxy(w.warm, {
+      get(target, prop) {
+        if (prop === 'deleteConditional') {
+          return async (): Promise<never> => {
+            throw new WriteConflictError('row rewritten mid-erase');
+          };
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    await expect(
+      destroySegment(SEG, { ...w.deps, warm: contended }, { confirmSegment: 's' }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+
+    // The point of the fix: NOT destroyed, and still holding its key, so a retry can finish the job.
+    const rec = (await w.registry.get(SEG))!;
+    expect(rec.status).toBe('active');
+    expect(rec.wrappedDeks).toBeDefined();
+    // And the data is demonstrably still there — which is the honest state, and the state the old code
+    // reported as `destroyed: true`.
+    expect(await members(w.store())).toEqual([1, 2, 3, 4]);
   });
 
   it('requires the exact segment name as confirmation (guards against accidental shred)', async () => {
