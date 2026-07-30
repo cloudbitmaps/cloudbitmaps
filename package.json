@@ -55,7 +55,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky",
-    "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit"
+    "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit",
+    "bench:encoding": "pnpm run build && node bench/encoding.cjs"
   },
   "lint-staged": {
     "*.ts": [

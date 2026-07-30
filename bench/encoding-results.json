@@ -1,0 +1,66 @@
+{
+  "note": "Encoded size of one id set under roaring vs two fixed representations. Deterministic (seeded); no wall-clock or RSS component. See bench/encoding.cjs for the honesty boundary — these are encoded sizes, NOT Redis process memory.",
+  "generatedBy": "bench/encoding.cjs",
+  "shapes": [
+    {
+      "shape": "sparse random",
+      "note": "ids scattered over a wide space — a user cohort across a large id range",
+      "n": 100000,
+      "roaringPlain": 212216,
+      "min": 1952,
+      "max": 99999095,
+      "roaring": 212216,
+      "array": 400000,
+      "bitset": 12499887,
+      "bitsetSpan": 12499643,
+      "vsBestFixed": 1.88,
+      "roaringSmaller": true,
+      "bestFixed": "array"
+    },
+    {
+      "shape": "dense contiguous",
+      "note": "one solid range — \"everything created in this window\"",
+      "n": 1000000,
+      "roaringPlain": 131208,
+      "min": 5000000,
+      "max": 5999999,
+      "roaring": 230,
+      "array": 4000000,
+      "bitset": 750000,
+      "bitsetSpan": 125000,
+      "vsBestFixed": 543.48,
+      "roaringSmaller": true,
+      "bestFixed": "bitset span"
+    },
+    {
+      "shape": "clustered runs",
+      "note": "2,000 runs of ~500 — the shape sequential ids acquire once rows are deleted in batches",
+      "n": 995135,
+      "roaringPlain": 549408,
+      "min": 1000,
+      "max": 4385675,
+      "roaring": 8747,
+      "array": 3980540,
+      "bitset": 548210,
+      "bitsetSpan": 548085,
+      "vsBestFixed": 62.66,
+      "roaringSmaller": true,
+      "bestFixed": "bitset span"
+    },
+    {
+      "shape": "half-dense block",
+      "note": "every other id in a 2M block — the case an uncompressed bitset is built for",
+      "n": 1000000,
+      "roaringPlain": 254208,
+      "min": 1000000,
+      "max": 2999998,
+      "roaring": 254208,
+      "array": 4000000,
+      "bitset": 375000,
+      "bitsetSpan": 250000,
+      "vsBestFixed": 0.983,
+      "roaringSmaller": false,
+      "bestFixed": "bitset span"
+    }
+  ]
+}

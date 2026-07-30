@@ -61,6 +61,27 @@ export interface CodecBitmap {
    * Roaring answers it in O(1) from its container index, so the flagship codec implements it.
    */
   maximum?(): number | undefined;
+  /**
+   * Re-encode for size, in place, immediately before a **cold** write. Representation only — this must never
+   * change membership, and `serialize()` afterwards must decode back to exactly the same set.
+   *
+   * **Optional, like {@link maximum}.** A codec whose encoding has no size decision to make (a plain bitset has
+   * one representation and nothing to choose) simply omits it, and the engine skips the call.
+   *
+   * WHY THIS EXISTS. Roaring picks per container between an array, a bitset and a RUN — but the run choice is
+   * not automatic in any implementation: it is a `runOptimize()` pass you have to ask for, and nothing here was
+   * asking. So two of the three container types were ever used, and run-shaped data paid list or bitmap prices
+   * for a run. Measured on the shipped codec: a contiguous 1,000,000-id range serialized to 128.1 KiB where
+   * run-encoding needs **0.2 KiB** (570×), and a 2,000-run shape 536.5 KiB against **8.5 KiB** (63×). Sparse
+   * data is unchanged, because there are no runs to find — the pass is not a gamble.
+   *
+   * WHY ONLY ON THE COLD PATH. This is called where a whole immutable generation is written, so its cost
+   * amortizes over a write that is already serializing and checksumming every chunk. It is deliberately NOT
+   * called on the warm delta path (`chunk.ts`), which runs per operation: the hot path must not pay for a
+   * rare-ish win, per KISS/YAGNI. Warm rows are short-lived and get folded into a cold generation by
+   * compaction, where they are optimized then.
+   */
+  optimize?(): void;
 }
 
 /**
