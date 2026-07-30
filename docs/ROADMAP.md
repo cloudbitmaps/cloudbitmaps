@@ -192,8 +192,11 @@ move it up.
   bitset, you can skip it and deploy to edge runtimes.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
 - **A generic `bitset` flavor** (`@cloudbitmaps/bitset`) — the same cloud engine behind a plain bitset codec
-  instead of Roaring. The codec seam that makes this a drop-in already exists; this is the committed
-  fast-follow after `1.0`, on validated demand.
+  instead of Roaring, for dense id spaces and for runtimes where a native addon is unwelcome. The codec seam
+  that makes it a drop-in already exists. Of everything in this section it is the most likely to happen first,
+  after `1.0` and on validated demand — but like the rest of this list it is uncommitted and undated. (It read
+  "the committed fast-follow" until 0.5.0, directly under a heading saying nothing here is committed. The
+  heading is right.)
 - **Native registry drivers** for GCS, Azure, Postgres, and Redis, so a non-AWS deployment can run the
   compaction daemon without an AWS dependency.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
