@@ -98,461 +98,96 @@
     </header>
 
     <main class="wrap">
-      <!-- ══════════════════════════════════════════════════════════════════════
-           HOME — ported from the design agent's Home.dc.html onto this stylesheet.
-
-           Four defects in the delivery were fixed rather than carried over:
-
-             1  Ten `{{ }}` bindings rendered as literal text with scripting off (measured: 0
-                leaks with JS, 10 without). The codec picker below is radios + CSS, so there is
-                no state to hydrate and no placeholder that can escape.
-             2  It used BOTH "bitmap" and "bitset" for one flavor, plus internal bindings named
-                isBitmap / pickBitmap. b7a94e8 settled that name; it is `bitset` everywhere.
-             3  Layer 01 explained adaptive containers without ever naming what the reader is
-                comparing against. Redis has no Roaring type — that is the argument no pricing
-                choice erases, and it was the one part of the spine that did not land.
-             4  Its code sample called `bought.intersect(opened)`. The real signature is
-                `intersect(others: Segment[], options?)` (roaring/src/index.ts) — an ARRAY. The
-                sample as delivered would not compile.
-
-           The nav also omitted /demo and included a /design page we do not publish.
-
-           Every figure here is gated by scripts/site-figures.cjs against bench/results.json and
-           docs/benchmarks.md, in both directions. Adding a number no source accounts for fails
-           the build. -->
-
-      <!-- ── HERO ───────────────────────────────────────────────────────────────
-           The headline names the reader's situation, not our architecture. What a tiered bitmap
-           engine IS comes later; nobody has asked yet. -->
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The headline states what you get, not what the thing is. The cost comparison is the hero FIGURE
+           rather than a section further down, because it is the whole argument. -->
       <section class="hero">
         <div class="hero-grid">
           <div class="hero-copy">
-            <p class="eyebrow">TypeScript · Apache-2.0 · v0.4.1</p>
-            <h1>Your id-sets don't need to live in reserved RAM.</h1>
+            <p class="eyebrow">Distributed, cloud-native Roaring Bitmaps · v0.4.1</p>
+            <h1>Set operations at object-storage prices.</h1>
             <p class="hero-lede">
-              CloudBitmaps keeps large sets of user ids as compressed Roaring bitmaps in
-              <strong>object storage you already own</strong>, holds only the working set warm, and
-              answers membership and intersection queries from stateless functions. The axis is
-              <strong>reserved capacity versus metered requests</strong> — not speed.
+              Keep the bitmap engine and the <span class="m">Set</span>-shaped API you already know.
+              Move the bytes to object storage, where a billion-id segment costs cents per month at
+              rest and answers set queries from small, stateless functions.
             </p>
             <p class="actions">
-              <a class="btn btn-primary" href="usage.html#quickstart">Six-line quickstart →</a>
-              <a class="btn" href="benchmarks.html">Read the numbers first</a>
+              <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
+              <a class="btn" href="architecture.html">How it works</a>
+              <a class="btn" href="flavors.html">Choose a flavor</a>
             </p>
             <p class="meta">
-              Ten storage drivers, one runtime dependency. The cloud SDKs are optional peers you
-              already have.
+              Apache-2.0 · 1 runtime dependency · 10 storage drivers · published tokenlessly via
+              OIDC
             </p>
           </div>
 
           <aside class="panel">
-            <div class="panel-head label">1.2 GiB of id-sets · at rest, no traffic</div>
+            <div class="panel-head label">The same workload, two bills</div>
             <div class="bills-grid">
               <div class="bill is-win">
-                <span class="label">Object storage</span>
-                <span class="bill-fig">$0.03</span>
-                <span class="bill-cap">per month, storage<small>nothing while idle</small></span>
+                <span class="label">CloudBitmaps</span>
+                <span class="bill-fig">$0.75</span>
+                <span class="bill-cap"
+                  >per 1M incremental writes<small>metered — nothing when idle</small></span
+                >
               </div>
               <div class="bill is-compare">
                 <span class="label">Reserved RAM</span>
                 <span class="bill-fig">$346</span>
                 <span class="bill-cap"
-                  >per month, baseline<small>whether you read it or not</small></span
+                  >per month, standing — ElastiCache HA<small>whether you read it or not</small></span
                 >
               </div>
             </div>
-            <p class="panel-row is-pair"><span>Ratio</span><span class="is-live">0.008%</span></p>
-            <p class="panel-row is-pair">
-              <span>One measured month, billed</span><span class="is-live">$0.001911</span>
-            </p>
             <p class="panel-row">
-              <span class="from"
-                >Baseline: ElastiCache HA, 1 primary + 2 replicas on
-                <span class="m">cache.m7g.large</span>. Storage only — requests are metered
-                separately. Measured on <span class="m">@cloudbitmaps/roaring</span>.</span
-              >
+              1.2 GiB at rest, no traffic: <span class="is-live">$0.03/mo</span> — 0.008% of a Redis
+              node
             </p>
-            <p class="link-row"><a href="benchmarks.html#anchors">Every figure, with method →</a></p>
+            <p class="link-row"><a href="benchmarks.html">Method, crossovers and caveats →</a></p>
           </aside>
         </div>
       </section>
 
-      <!-- ── THE JOBS ───────────────────────────────────────────────────────────
-           The reader has to find their own system here, in the first screen after the hero.
-           "Distributed Roaring Bitmaps" is not a job. -->
-      <section id="jobs">
-        <h2>Any large id-set you read a fraction of the time</h2>
-        <p class="lede">
-          These five are the common ones, not the limit. The shape is what decides it:
-          <strong>many ids, mostly idle, and it has to survive a restart</strong>. If that describes
-          a list you maintain, it fits — whatever you call it.
+      <!-- ── THE TRADE ──────────────────────────────────────────────────────
+           Position two, not buried. Identical bezel, padding and weight; only the left label is cyan. -->
+      <section>
+        <div class="trade">
+          <div class="trade-half">
+            <div class="label is-live">Use this when</div>
+            <ul class="trade-list">
+              <li>
+                Segments are <strong>large and mostly read</strong> — audience lists, feature
+                cohorts, permission sets.
+              </li>
+              <li>They must survive restarts and cost nothing while nobody is asking.</li>
+              <li>Your compute is stateless and you would rather not run a node at all.</li>
+            </ul>
+          </div>
+          <div class="trade-half">
+            <div class="label is-peer">Use Redis instead when</div>
+            <p class="trade-title">You need sub-millisecond p99.</p>
+            <p class="trade-body">
+              On a working set that fits a bounded hot cache, a RAM store answers a single
+              membership check 10–20× faster than a warm-tier round trip. That is a different
+              machine, and no flavor of this library changes it.
+            </p>
+            <p class="trade-foot">
+              crossover published: <b>26.33 writes/s</b> · <b>526.64 reads/s</b>
+            </p>
+          </div>
+        </div>
+        <p class="note">
+          Both panels have the same bezel, the same padding and the same weight on purpose. If the
+          case against this library is easier to find than the case for it, the case for it is worth
+          more.
         </p>
-        <div class="tpanel">
-          <!-- Not "The job" — the table's own first column is headed that, and one label appearing twice on
-               one panel is how a legend stops agreeing with its figure. -->
-          <div class="tpanel-head">
-            <span class="label">Where it fits</span><span class="label">Five common shapes</span>
-          </div>
-          <div class="tscroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>The job</th>
-                  <th>What's in the set</th>
-                  <th>You call</th>
-                  <th>How it's used</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Audience segmentation</td>
-                  <td class="from">
-                    user ids who bought in the last 90 days AND opened the app this week
-                  </td>
-                  <td><span class="m">intersect</span></td>
-                  <td class="from">rebuilt on a schedule, read on a fraction of requests</td>
-                </tr>
-                <tr>
-                  <td>Feature-flag &amp; experiment cohorts</td>
-                  <td class="from">the ids assigned to each variant</td>
-                  <td><span class="m">has</span></td>
-                  <td class="from">read on nearly every request, written rarely</td>
-                </tr>
-                <tr>
-                  <td>Permission &amp; entitlement sets</td>
-                  <td class="from">ids allowed to see a given resource</td>
-                  <td><span class="m">has</span></td>
-                  <td class="from">read constantly, and must survive a restart</td>
-                </tr>
-                <tr>
-                  <td>Recommendation candidate pools</td>
-                  <td class="from">ids eligible before ranking narrows them</td>
-                  <td><span class="m">intersect</span></td>
-                  <td class="from">narrowed per request instead of scanned</td>
-                </tr>
-                <tr>
-                  <td>Suppression lists</td>
-                  <td class="from">never-contact, opted-out, already-seen</td>
-                  <td><span class="m">add</span> · <span class="m">andNot</span></td>
-                  <td class="from">append-only — it only ever grows</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p class="tpanel-foot">
-            Every one of these is the same five operations against a differently-shaped set. The
-            engine does not know which job it is doing.
-          </p>
-        </div>
       </section>
 
-      <!-- ── THREE LAYERS ───────────────────────────────────────────────────────
-           The spine. The site spent its whole life arguing on one axis — price against a flat node
-           — which is the only one of three where a flat node can win. All three come before any
-           threshold, because a threshold without the structure around it is just a number.
-
-           The radios live HERE, at the top of the section, so `:checked ~ *` reaches both layer
-           01's panes and layer 03's scope caption. They are in different panels; a picker scoped
-           to one of them could not drive the other without script. -->
-      <section id="layers" class="codec-pick">
-        <input type="radio" name="cb-codec" id="cb-codec-roaring" checked />
-        <input type="radio" name="cb-codec" id="cb-codec-bitset" />
-        <input type="radio" name="cb-codec" id="cb-codec-soaring" />
-
-        <h2>Three layers, in the order that decides it</h2>
-        <!-- Prose left, picker right — the delivery's arrangement. The second paragraph was dropped
-             in my first port and it is the one that tells the reader the picker EXISTS and what it
-             governs, without which the card on the right is unexplained furniture. -->
-        <div class="intro-grid">
-          <div>
-            <p class="lede">
-              How the sets are <strong>represented</strong>, where they <strong>reside</strong>, and
-              what they cost <strong>while nobody is asking</strong>. The first is a property of the
-              format and no configuration erases it. The second is why a query does not pull the
-              corpus back. The third is where reserved capacity competes — and it does.
-            </p>
-            <p class="lede">
-              The thresholds come after all three, because a threshold without the structure around it
-              is just a number. <strong>Layer 01 depends on the codec you install</strong> — pick it on
-              the right and this section follows. Layers 02 and 03 sit above the codec and do not move.
-            </p>
-          </div>
-
-          <div class="pick" role="group" aria-label="Codec">
-          <div class="pick-head">
-            <span class="label">Layer 01 depends on the codec you install</span>
-            <div class="pick-tabs">
-              <label for="cb-codec-roaring">roaring</label>
-              <label for="cb-codec-bitset">bitset</label>
-              <label for="cb-codec-soaring">soaring</label>
-            </div>
-          </div>
-          <div class="pick-body">
-              <div>
-                <div class="pane for-roaring">
-                  <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/roaring</span><span class="vchip">Shipped v0.4.1</span>
-                  </p>
-                  <p class="label">Take it when</p>
-                  <p class="from">Ids are sparse or clustered and adaptive containers do real compression work. The default: if you are moving off Redis sets, start here.</p>
-                  <p class="label">Figures below</p>
-                  <p class="from">Measured on this codec — every figure in this section comes from it.</p>
-                </div>
-                <div class="pane for-bitset">
-                  <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/bitset</span><span class="status is-coming">Coming</span>
-                  </p>
-                  <p class="label">Take it when</p>
-                  <p class="from">Ids are dense, or you want zero native dependency — edge runtimes, no platform matrix, nothing to compile.</p>
-                  <p class="label">Figures below</p>
-                  <p class="from">Not measured yet. The figures below are roaring&rsquo;s, and none are claimed for bitset.</p>
-                </div>
-                <div class="pane for-soaring">
-                  <p class="panel-row is-pair">
-                    <span class="m">@cloudbitmaps/soaring</span><span class="status is-research">Research</span>
-                  </p>
-                  <p class="label">Take it when</p>
-                  <p class="from">Not yet. It is a separate algorithm and it is unproven.</p>
-                  <p class="label">Figures below</p>
-                  <p class="from">Nothing measured, and nothing published until there is.</p>
-                </div>
-              </div>
-              <p class="link-row"><a href="flavors.html">Compare all three →</a></p>
-            </div>
-          </div>
-        </div>
-
-        <!-- LAYER 01 · figures left, argument right — the delivery's rhythm for all four of these
-             panels, and it is load-bearing: in one column a reader scrolls past the numbers to reach
-             the sentence explaining them.
-
-             The bar figure is restored. My first port turned it into three text rows, which loses the
-             point — the whole claim of layer 01 is that the representation FOLLOWS THE DATA, and three
-             bars at three densities say that in a way three labels cannot.
-
-             The Redis comparison stays as prose rather than the table I first wrote: the duo's right
-             column is too narrow for a table, and two sentences carry it. -->
-        <div class="strip">
-          <div class="strip-head">
-            <span class="label">Layer 01 · Structure</span>
-            <span class="label">
-              Depends on the codec ·
-              <span class="pane for-roaring">roaring</span>
-              <span class="pane for-bitset">bitset</span>
-              <span class="pane for-soaring">soaring</span>
-            </span>
-          </div>
-          <div class="duo">
-            <div>
-              <p class="label">Container chosen per chunk</p>
-              <div class="pane for-roaring">
-                <div class="bars">
-                  <span class="bk">array</span>
-                  <span class="bv is-sparse"
-                    ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                    ><i></i><i></i><i></i></span
-                  >
-                  <span class="bn">sparse</span>
-                  <span class="bk">bitset</span>
-                  <span class="bv is-dense"
-                    ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                    ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                    ><i></i><i></i><i></i><i></i></span
-                  >
-                  <span class="bn">dense</span>
-                  <span class="bk">run</span>
-                  <span class="bv is-run"><i></i><i></i></span>
-                  <span class="bn">contiguous</span>
-                </div>
-                <p class="metric-cap">Smallest encoding wins, per chunk, on write. No tuning knob.</p>
-              </div>
-              <div class="pane for-bitset">
-                <div class="bars">
-                  <span class="bk">bitset</span>
-                  <span class="bv is-dense"
-                    ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                    ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                    ><i></i><i></i><i></i><i></i></span
-                  >
-                  <span class="bn">every chunk</span>
-                </div>
-                <p class="metric-cap">
-                  One shape, always — which is the point. No decision engine, and nothing native to
-                  compile.
-                </p>
-              </div>
-              <div class="pane for-soaring">
-                <p class="metric-cap">Unpublished. Nothing to draw yet.</p>
-              </div>
-            </div>
-            <div>
-              <p>
-                <strong>Redis has no Roaring type.</strong> It gives you Sets, which carry per-member
-                overhead, or Bitmaps — a String treated as a bit array, uncompressed. Neither
-                compresses a sparse id-space.
-              </p>
-              <p>
-                A third-party Roaring module exists, and a managed Redis will not load it. So on a
-                managed node this is not a setting you can change — which is what makes structure the
-                first layer rather than an optimisation.
-              </p>
-              <p class="link-row">
-                <a href="flavors-roaring.html">How a chunk picks its container →</a>
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- LAYER 02 · the chunk grid is restored too, at FORTY cells with two lit. That is 5% — the
-             measured overlap behind "100 of 2,000" — where the delivery drew five of twenty-four and
-             showed 20%. A figure illustrating a ratio has to BE that ratio or it argues against the
-             number printed beside it. -->
-        <div class="strip">
-          <div class="strip-head">
-            <span class="label">Layer 02 · Residency</span>
-            <span class="label">Corpus cold · working set warm</span>
-          </div>
-          <div class="duo">
-            <div>
-              <div class="metrics">
-                <div>
-                  <span class="metric-fig">25.3<span class="u"> ms</span></span>
-                  <span class="metric-what">One intersection</span>
-                  <span class="metric-cap">100 of 2,000 chunks fetched</span>
-                </div>
-                <div>
-                  <span class="metric-fig">7.8<span class="u"> → 7.0 MiB</span></span>
-                  <span class="metric-what">Retained heap</span>
-                  <span class="metric-cap">across 1,000 → 100,000 segments</span>
-                </div>
-              </div>
-              <div class="chunkgrid" role="img"
-                   aria-label="Twenty chunks; four can contribute and are fetched, sixteen are never requested">
-                <i class="on"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i><i></i
-                ><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i
-                ><i></i><i></i>
-              </div>
-              <p class="metric-cap">lit = can contribute · dim = never requested</p>
-            </div>
-            <div>
-              <p>
-                The corpus sits in blob storage as immutable objects. Only the working set is warm. An
-                intersection compares chunk keys first and fetches only the chunks that
-                <em>can</em> contribute to the result — the rest are never requested, so they cost
-                nothing and add no time.
-              </p>
-              <p>
-                Reserved RAM has no equivalent move: the set is resident or it is not there. That is
-                also why retained heap barely changes when the segment count grows a hundredfold — the
-                engine is holding keys and a bounded window, not the corpus.
-              </p>
-              <p class="link-row">
-                <a href="architecture.html">The three tiers and the key arithmetic →</a> ·
-                <a href="demo.html">Step through it →</a>
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- LAYER 03 -->
-        <div class="strip">
-          <div class="strip-head">
-            <span class="label">Layer 03 · Idle cost</span>
-            <span class="label">Requests &amp; compute · measured on this codec</span>
-          </div>
-          <div class="duo">
-            <div>
-              <div class="metrics">
-                <div>
-                  <span class="metric-fig">$0</span>
-                  <span class="metric-what">Standing charge</span>
-                  <span class="metric-cap">nobody asking, nothing charged</span>
-                </div>
-                <div>
-                  <span class="metric-what">When you do ask</span>
-                  <span class="metric-cap">
-                    <span class="m">$0.75</span> / M writes<br />
-                    <span class="m">$0.14</span> / M count()<br />
-                    <span class="m">$5.88</span> / M publishes
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div>
-              <p>
-                There is no hourly charge for a segment existing. You pay per request, and an idle
-                segment issues none — which is the whole point when most of the corpus is read on a
-                small fraction of requests. Storage at rest is separate, and it is the
-                <strong>$0.03 /mo</strong> above.
-              </p>
-              <p>
-                <strong>This is the layer where reserved capacity genuinely competes.</strong> A flat
-                node is a fixed price for unlimited requests, so above some rate it wins outright. That
-                rate is in the next panel, at the same size as everything above it.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- THE CROSSOVER · a panel in the same rhythm, INSIDE this section rather than promoted to
-             its own <h2>. The delivery put it here deliberately: it is the fourth reading of the same
-             instrument, not a new subject, and giving it its own heading made it look like a
-             concession bolted on at the end. -->
-        <div class="strip" id="crossover">
-          <div class="strip-head">
-            <span class="label">Where reserved capacity wins</span>
-            <span class="label">Topology quoted · measured on this codec</span>
-          </div>
-          <div class="duo">
-            <div>
-              <div class="metrics">
-                <div>
-                  <span class="metric-fig">26.33<span class="u"> /s</span></span>
-                  <span class="metric-what">Write crossover</span>
-                  <span class="metric-cap">sustained — past this, reserved is cheaper</span>
-                </div>
-                <div>
-                  <span class="metric-fig">526.64<span class="u"> /s</span></span>
-                  <span class="metric-what">Read crossover</span>
-                  <span class="metric-cap">sustained, warm tier, cache off</span>
-                </div>
-              </div>
-              <p class="label" style="margin-top: 16px">Warm has() latency</p>
-              <p class="metric-cap">
-                p50 <span class="m">5.27 ms</span> · p99 <span class="m">12.71 ms</span>
-              </p>
-            </div>
-            <div>
-              <p>
-                Past these sustained rates a flat reserved node is simply cheaper, and we publish the
-                figures rather than let you find them. They are properties of the warm tier you chose,
-                not of the engine — a different tier moves them, which is why each is quoted with its
-                topology.
-              </p>
-              <p>
-                <strong>Don't use this if</strong> you need a sub-millisecond p99 on a cache-sized
-                working set. Warm <span class="m">has()</span> is milliseconds and the distribution is
-                beside it — for that job, use Redis.
-              </p>
-              <p>
-                And if the answer is “both”, a flat tier can be one of our own ten drivers: run Redis
-                as the <strong>warm</strong> tier and keep the cold corpus in blob storage. The node
-                then holds recent chunk deltas rather than your whole history.
-              </p>
-              <p class="link-row">
-                <a href="benchmarks.html#crossover">What moves these lines →</a> — four inputs, two of
-                which remove the write crossover entirely.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ── THREE TIERS, ONE API ───────────────────────────────────────────
-           Kept from the previous Home at your request, verbatim — every class it uses is still in the
-           sheet, so it needed no reworking. It sits here, after the three-layer argument and before the
-           API, because it is the mechanism: layer 02 asserts that only contributing chunks are
-           fetched, and this figure is that assertion drawn end to end. -->
+      <!-- ── THREE TIERS ────────────────────────────────────────────────────
+           The animation and the cards tell one story, in motion and at rest. Merged rather than given a
+           section of its own: the figure carries the movement, the cards below stay as its legend, and the
+           page gains a moment without gaining a section. -->
       <section>
         <h2>Three tiers, one API</h2>
         <p class="lede">
@@ -669,83 +304,142 @@
 
       <!-- ── THE MOAT ───────────────────────────────────────────────────────
            The design leaves this figure static; it is the approved key-alignment animation, so it moves. -->
-
-      <!-- ── INTERSECTING WITHOUT DOWNLOADING ────────────────────────────────
-           Kept from the previous Home, retitled. "The part that is hard to copy" answers "why can't a
-           competitor build this" — a question the reader has not asked, about our position rather than
-           their problem, which is why it read as strange. The new title names the operation.
-
-           Its quickstart panel is not restored: the API section below now carries the code, and this
-           section's own figure is what it was really for. That figure replaced the schematic grid I had
-           put in layer 02 — it is the better of the two (a labelled readout, and a link to the
-           walk-through), and one page should draw one chunk figure exactly once. -->
-      <section id="skipping">
-        <h2>Intersecting without downloading</h2>
-        <p class="lede">
-          Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are compared
-          first, and only chunks whose keys appear in <strong>both</strong> are ever fetched — 100 of
-          2,000, in 25.3 ms. The other 1,900 stay cold and unbilled.
-        </p>
-        <figure class="keys">
-          <div class="label">Chunk keys · shared only</div>
-          <div class="keys-grid" aria-hidden="true">
-            <i class="on"></i><i></i><i></i><i></i><i class="on d2"></i><i></i><i></i><i></i><i></i
-            ><i class="on d3"></i><i></i><i></i><i></i><i></i><i></i><i class="on d4"></i><i></i
-            ><i></i><i></i><i></i>
+      <section>
+        <div class="moat">
+          <div>
+            <h2>The part that is hard to copy</h2>
+            <p class="lede">
+              Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
+              compared first, and only chunks whose keys appear in <strong>both</strong> are ever
+              fetched — 100 of 2,000, in 25.3 ms. The other 1,900 stay cold and unbilled.
+            </p>
+            <figure class="keys">
+              <div class="label">Chunk keys · shared only</div>
+              <div class="keys-grid" aria-hidden="true">
+                <i class="on"></i><i></i><i></i><i></i><i class="on d2"></i><i></i><i></i><i></i
+                ><i></i><i class="on d3"></i><i></i><i></i><i></i><i></i><i></i><i class="on d4"></i
+                ><i></i><i></i><i></i><i></i>
+              </div>
+              <figcaption class="keys-foot">
+                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 25.3 ms</span>
+              </figcaption>
+              <a class="keys-link" href="architecture.html">See the full walk-through →</a>
+            </figure>
           </div>
-          <figcaption class="keys-foot">
-            <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 25.3 ms</span>
-          </figcaption>
-          <a class="keys-link" href="architecture.html">See the full walk-through →</a>
-        </figure>
+          <div class="code">
+            <div class="code-head label"><span>quickstart.ts</span><span>No setup</span></div>
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
+  warm: <span class="k">new</span> MemoryWarmDriver(),
+  cold: <span class="k">new</span> MemoryColdChunkSource(),
+});
+
+<span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
+<span class="k">await</span> vips.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
+<span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
+            <p class="code-link"><a href="usage.html">Full usage, drivers and API →</a></p>
+          </div>
+        </div>
       </section>
 
-      <!-- ── THE API ────────────────────────────────────────────────────────────
-           The delivery's sample called `bought.intersect(opened)`. The real signature takes an
-           ARRAY of segments, so that would not compile. Fixed here, and /usage carries the
-           verified long form. -->
-      <section id="api">
-        <h2>A <span class="m">Set</span>, with a different address</h2>
+      <!-- ── WHY NOT BUILD IT ───────────────────────────────────────────────
+           Placed AFTER the moat on purpose: the argument only lands once the reader has seen what the hard
+           part actually is. Note the left column is not Redis — the trade pair two sections up already
+           argues that case, and repeating it would read as making one point twice. The honest alternative
+           for someone who has already ruled Redis out is rolling this themselves on object storage. -->
+      <section>
+        <h2>You could build this yourself. Here's the part that takes a year.</h2>
         <p class="lede">
-          Five operations, the ones you already call. What changes is where the bytes live and what
-          you are billed for — not the shape of your code.
+          Sharding a bitmap across object storage is a weekend. Making it correct under concurrent writes,
+          deletes and compaction is not.
         </p>
-        <ul class="ops">
-          <li>add</li>
-          <li>has</li>
-          <li>remove</li>
-          <li>count</li>
-          <li>intersect</li>
-        </ul>
-        <div class="tpanel">
-          <div class="tpanel-head">
-            <span class="label">segments.ts</span><span class="label">@cloudbitmaps/roaring</span>
+        <div class="ba">
+          <div class="ba-half ba-no">
+            <p class="label">Rolling it yourself</p>
+            <ul class="ba-list">
+              <li>
+                <i>✕</i
+                ><span
+                  >A chunking scheme <strong>only your code can read</strong>, undocumented and
+                  unversioned</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >Whole-blob <strong>GET, decode, modify, PUT</strong> — the write cost scales with the
+                  segment, not the change</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >An OR-merge that <strong>cannot express a delete</strong>, so removals need a full
+                  rebuild</span
+                >
+              </li>
+              <li>
+                <i>✕</i
+                ><span
+                  >Two concurrent compactions that <strong>silently drop</strong> whichever writes landed
+                  mid-scan</span
+                >
+              </li>
+            </ul>
           </div>
-          <pre class="code-plain"><code><span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
-<span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
-
-<span class="k">await</span> bought.add(<span class="n">1_234_567_890</span>);
-<span class="k">await</span> bought.has(<span class="n">1_234_567_890</span>); <span class="c">// true</span>
-<span class="k">await</span> bought.count();                <span class="c">// exact, not estimated</span>
-
-<span class="c">// fetches only the chunks that can contribute</span>
-<span class="k">for await</span> (<span class="k">const</span> id <span class="k">of</span> bought.intersect([opened])) { … }</code></pre>
-          <p class="tpanel-foot">
-            <span class="m">intersect()</span> takes an array, so the same call combines any number of
-            segments. It returns an async iterable — ids stream out as the surviving chunks arrive
-            rather than accumulating first.
+          <div class="ba-half ba-yes">
+            <p class="label">With CloudBitmaps</p>
+            <ul class="ba-list">
+              <li>
+                <i>✓</i
+                ><span
+                  >A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
+                  one-command export</span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at
+                  all when idle</span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Tombstones are first-class — <strong>a real remove()</strong>, merged as
+                  <span class="m">(cold ∪ adds) \ removes</span></span
+                >
+              </li>
+              <li>
+                <i>✓</i
+                ><span
+                  >Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan
+                  writes survive</span
+                >
+              </li>
+            </ul>
+          </div>
+          <p class="ba-foot">
+            Every row on the right is a <strong>hard invariant with named tests</strong>, not a design
+            intention — <strong>1,156</strong> of them run on every commit.
           </p>
         </div>
+      </section>
 
-        <!-- "Six lines, one bucket" folded in from the previous Home, as you asked. It belongs with the
-             code rather than as its own closing section: the sample above IS the six lines, so the
-             install block and the calls-to-action are the same thought finished, not a new one. -->
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────────
+           The page used to end on a code block, which left a reader who had scrolled the whole way with
+           nowhere obvious to go. Same two-column proportion as the hero, so the page opens and shuts on the
+           same shape. -->
+      <section>
         <div class="close-grid">
           <div class="close-copy">
+            <h2>Six lines, one bucket.</h2>
             <p class="lede" style="margin: 0">
-              <strong>Six lines, one bucket.</strong> Install one flavor and the backend SDKs you already
-              use. The in-memory drivers need nothing at all — no bucket, no table, no credentials — so
-              the calls above run before you point anything at storage.
+              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at
+              all — the quickstart above runs as-is, so you can see the shape before you point it at a
+              bucket.
             </p>
             <div class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
@@ -762,88 +456,6 @@
 npm i @aws-sdk/client-s3 @aws-sdk/client-dynamodb</code></pre>
             <p class="link-row"><a href="flavors.html">Every driver and its peer deps →</a></p>
           </div>
-        </div>
-      </section>
-
-      <!-- ── IT STAYS YOURS ─────────────────────────────────────────────────────
-           Both of these arrive before any benchmark does. Neither was on the old Home. -->
-      <section id="yours">
-        <h2>The data stays yours, and you can prove it</h2>
-        <p class="lede">
-          Two questions arrive before a benchmark does: what happens when someone must be erased, and
-          what happens if we want out.
-        </p>
-        <div class="matters">
-          <div class="limit">
-            <p class="label">Encryption at rest · crypto-shred</p>
-            <p>
-              Cold objects are encrypted at rest. Destroy the key and the data is destroyed with it —
-              no rewrite pass over immutable objects, no waiting for a compaction to catch up. A
-              later read raises a typed <span class="m">KeyUnavailableError</span> rather than
-              returning silence.
-            </p>
-          </div>
-          <div class="limit">
-            <p class="label">Portability · no platform</p>
-            <p>
-              An open, documented on-disk format, written to storage accounts you own, with a
-              documented export path off the library entirely. There is no service in the middle and
-              no account to close — leaving is a matter of reading your own bucket. The exit is a
-              feature, not a concession.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ── HOW THE FIGURES ARE KEPT HONEST ────────────────────────────────────
-           This claim used to be false on this site: a page said its anchors were CI-gated when
-           nothing gated them. It is true now, which is why it can be said here. -->
-      <section id="honest">
-        <h2>How the figures are kept honest</h2>
-        <p class="lede">
-          Every money figure and rate on this site is checked in CI against the sources that produced
-          it — <strong>in both directions</strong>. A number its sources cannot account for fails the
-          build rather than shipping quietly, so an overclaim is a broken build and not a discovery
-          you make later.
-        </p>
-        <div class="metrics">
-          <div>
-            <span class="metric-fig">±20%</span>
-            <span class="metric-what">Estimator accuracy</span>
-            <span class="metric-cap">against a real invoice, not against our own model</span>
-          </div>
-          <div>
-            <span class="metric-fig">$0.001911</span>
-            <span class="metric-what">One measured month</span>
-            <span class="metric-cap">real S3 + DynamoDB, us-east-1, 6,355 billed requests</span>
-          </div>
-        </div>
-        <p class="note">
-          <a href="benchmarks.html#limits">What these numbers do not establish →</a> — stated on the
-          same page, in the same type, as the wins.
-        </p>
-      </section>
-
-      <!-- ── WHERE TO GO NEXT ───────────────────────────────────────────────────
-           Includes /demo, which the delivery's own nav and footer both omitted. -->
-      <section>
-        <h2>Where to go next</h2>
-        <div class="next-grid">
-          <a class="next-item" href="demo.html">
-            Step through a measured intersection<span class="next-path">/demo</span>
-          </a>
-          <a class="next-item" href="architecture.html">
-            Tiers, residency and the key arithmetic<span class="next-path">/architecture</span>
-          </a>
-          <a class="next-item" href="flavors.html">
-            Which codec matches your id-space<span class="next-path">/flavors</span>
-          </a>
-          <a class="next-item" href="benchmarks.html">
-            Every figure, method and topology<span class="next-path">/benchmarks</span>
-          </a>
-          <a class="next-item" href="usage.html">
-            Install and run the estimator<span class="next-path">/usage</span>
-          </a>
         </div>
       </section>
     </main>
