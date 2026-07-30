@@ -3405,3 +3405,34 @@ em {
 .also .from {
   margin-top: 5px;
 }
+
+/* ── the trade pair's footnote, in two columns ──────────────────────────────────
+   `.note` caps its own measure at 74ch, which is right — 13px text across the full 1240px runs to
+   about 150 characters a line, roughly double a comfortable maximum. But one narrow column under a
+   full-width panel reads as an accident rather than as a decision, with unexplained space beside it.
+   Two columns fill the width and keep each line short, so the readable measure survives instead of
+   being traded for the appearance of one. */
+.trade-note {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 26px;
+  margin-top: 14px;
+}
+
+.trade-note .note {
+  margin: 0;
+  max-width: none;
+}
+
+@media (max-width: 760px) {
+  .trade-note {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/* Spacing where the pair now follows the table inside one section — `section`'s own bottom border used
+   to do this, and folding the two together removed it. */
+.trade {
+  margin-top: 40px;
+}

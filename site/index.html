@@ -275,11 +275,12 @@
             <a href="demo.html">Step through it</a>.
           </p>
         </div>
-      </section>
 
-      <!-- ── THE TRADE ──────────────────────────────────────────────────────
-           Position two, not buried. Identical bezel, padding and weight; only the left label is cyan. -->
-      <section>
+        <!-- ── THE TRADE, in the same section ────────────────────────────────
+             Folded in rather than given its own <section>, because `section` carries a bottom border and
+             a rule between "where it fits" and "should you use it" implied they were separate arguments.
+             They are one: the table says whether this is your problem, the pair says whether to reach for
+             this to solve it. -->
         <div class="trade">
           <div class="trade-half">
             <div class="label is-live">Use this when</div>
@@ -290,26 +291,90 @@
               </li>
               <li>They must survive restarts and cost nothing while nobody is asking.</li>
               <li>Your compute is stateless and you would rather not run a node at all.</li>
+              <li>
+                The set is <strong>bigger than you want to keep resident</strong>, or heading that way,
+                and sizing a node for its growth is the part you would rather not do.
+              </li>
+              <li>
+                You need <strong>exact</strong> cardinality — not a sketch with an error bar — and you
+                need it without reading the payload.
+              </li>
+              <li>
+                The bytes have to stay in <strong>your own storage account</strong>, in a documented
+                format, with a way out that does not involve us.
+              </li>
+              <li>
+                Someone may have to be <strong>erased</strong> on request, and rewriting immutable
+                objects to do it is not acceptable.
+              </li>
             </ul>
           </div>
           <div class="trade-half">
+            <!-- Rewritten twice over.
+
+                 FIRST, it overstated its own case. It said "on a working set that fits a bounded hot
+                 cache" — but our HOT tier is an in-process RAM LRU, so on a cache hit there is nothing
+                 between us. The real limit is the TAIL: a p99 requirement means the misses have to be
+                 sub-millisecond too, and a miss is a network hop. That is the honest version, and it is
+                 narrower and more useful than the one it replaces.
+
+                 SECOND, it named a product where it meant an architecture — the same ambiguity fixed on
+                 /benchmarks. Redis appears on this site twice doing different jobs: as the always-on
+                 store you would use INSTEAD of this library, and as one of our ten warm drivers. A
+                 reader who has seen the driver list cannot tell which one this panel means, so it now
+                 says.
+
+                 The old "10–20× faster" is gone: it was never a sourced figure. Our own p50/p99 are
+                 gated, and "sub-millisecond" is a property of in-process RAM rather than a claim we
+                 need to measure, so the comparison stands without an invented multiplier. -->
             <div class="label is-peer">Use Redis instead when</div>
             <p class="trade-title">You need sub-millisecond p99.</p>
             <p class="trade-body">
-              On a working set that fits a bounded hot cache, a RAM store answers a single
-              membership check 10–20× faster than a warm-tier round trip. That is a different
-              machine, and no flavor of this library changes it.
+              Not just on cache hits — on <em>every</em> request. Our hot tier is an in-process RAM LRU,
+              so a hit is fast; a miss is a network hop, and warm <span class="m">has()</span> is
+              <b>5.27 ms</b> at p50 and <b>12.71 ms</b> at p99. If your tail has to be under a
+              millisecond, the set has to be resident, and that is a different machine. No flavor and no
+              driver here changes it.
+            </p>
+            <!-- A SECOND counter-case, added because adding four bullets opposite left this panel with a
+                 couple of hundred pixels of void — and the honest way to fill a counter-case panel is
+                 with another real disqualifier, never with padding.
+
+                 This one turned out to be genuinely missing from the whole site: ids are u32.
+                 bit-route.ts splits a 32-bit id into a 16-bit chunk key and a 16-bit remainder and
+                 throws ValidationError on anything else, so UUIDs and string keys need a mapping you
+                 own and maintain. That is a hard constraint a reader should meet here rather than
+                 discover at the import statement. -->
+            <p class="trade-title" style="margin-top: 22px">Your ids aren&rsquo;t 32-bit integers.</p>
+            <p class="trade-body">
+              An id is a <span class="m">u32</span> — it splits into a 16-bit chunk key and a 16-bit
+              remainder, and anything else raises a
+              <span class="m">ValidationError</span>. UUIDs and string keys need a dense-integer mapping
+              that you own and keep, and that is a second store to operate. If you don&rsquo;t already
+              have one, this is a real cost rather than a footnote.
             </p>
             <p class="trade-foot">
-              crossover published: <b>26.33 writes/s</b> · <b>526.64 reads/s</b>
+              And note which Redis: this means Redis as <b>your set store</b>, instead of this library.
+              Redis is also one of our ten <a href="usage.html#drivers">warm drivers</a>, which is a
+              different choice — it holds recent chunk deltas while the corpus stays cold.
+              <br />crossover published: <b>26.33 writes/s</b> · <b>526.64 reads/s</b>
             </p>
           </div>
         </div>
-        <p class="note">
-          Both panels have the same bezel, the same padding and the same weight on purpose. If the
-          case against this library is easier to find than the case for it, the case for it is worth
-          more.
-        </p>
+        <!-- Two columns rather than one 74ch block. `.note` caps its measure for a real reason — 13px
+             text run across the full 1240px is about 150 characters a line, roughly double a comfortable
+             maximum — but as a single narrow column under a full-width panel it read as an accident,
+             with unexplained space to its right. Splitting the two sentences fills the width AND keeps
+             each line short, so both constraints are satisfied instead of one being traded away. -->
+        <div class="trade-note">
+          <p class="note">
+            Both panels have the same bezel, the same padding and the same weight on purpose.
+          </p>
+          <p class="note">
+            If the case against this library is easier to find than the case for it, the case for it is
+            worth more.
+          </p>
+        </div>
       </section>
 
       <!-- ── THREE TIERS ────────────────────────────────────────────────────
