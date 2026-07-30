@@ -515,6 +515,13 @@ const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry })
 > tombstones must persist for the pointer's ABA-safety). DynamoDB is the better fit when writes are frequent
 > (single-digit-ms swaps vs an S3 GET+PUT). **Infra scales with the workload** — read-mostly needs only S3.
 
+> **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding cold
+> objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
+> any error it survives to handle, but it cannot abort one whose process no longer exists — a killed container
+> or an OOM leaves the parts behind. Those parts are **billed and invisible**: they never appear in an object
+> listing, so nothing but the bill will tell you. This is the one case where cost can accumulate quietly, which
+> matters more here than it would elsewhere, because a low idle bill is the point of the library.
+
 The record also reserves `status`, `dirtyChunkCount` (compaction discovery), and a wrapped-DEK `keyId` slot
 (encryption) — populated by the compaction daemon and crypto-shred in later phases. To publish a generation
 you wrote yourself, call `publishGeneration(registry, { segment, generation })` (forward-only — it never

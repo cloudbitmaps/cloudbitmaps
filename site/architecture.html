@@ -208,7 +208,11 @@
             <span class="rl-fig">403,200 bytes</span>
             <span class="rl-note">
               The cold payload footprint is bounded by
-              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size.
+              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size. Warm is
+              the other term, and it is not in that window: each operand's warm rows are snapshotted up front,
+              so an intersection also holds <span class="m">operands × warm-per-segment</span>, each capped by
+              <span class="m">maxWarmScanBytes</span> (64 MiB by default). Sizing a function for a many-operand
+              intersection has to budget for both.
             </span>
           </li>
         </ol>
