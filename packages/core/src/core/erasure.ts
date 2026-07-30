@@ -32,7 +32,15 @@ export interface DestroyResult {
    * `segment.erase` audit event keys off — a cleartext "erase" is not an irreversible destruction.
    */
   readonly cryptoShredded: boolean;
-  /** `'absent'` (no registry row), `'already'` (already destroyed), or `'cleartext'` (no DEK to shred). */
+  /**
+   * Why this segment was not a fresh crypto-shred. `'absent'` (no registry row), `'already'` (already
+   * destroyed), `'cleartext'` (no DEK to shred) — and from `eraseNamespace` only, where per-segment faults are
+   * isolated so one failure cannot discard the ledger: `'contended'` (warm rows were rewritten during every
+   * erase pass) or `` `failed: <message>` `` (any other fault).
+   *
+   * The last two come with `destroyed: false` and mean **the segment still holds data**. A namespace erase
+   * returns them rather than throwing, so its entries have to be inspected — see {@link eraseNamespace}.
+   */
   readonly reason?: string;
   /** Warm rows physically deleted as part of the erase. */
   readonly warmRowsDeleted: number;
@@ -94,7 +102,37 @@ export async function eraseNamespace(
   const destroyed: DestroyResult[] = [];
   let segmentsShredded = 0;
   for (const ref of refs) {
-    const result = await shredSegment(ref, deps, options.allowCleartext ?? false);
+    // Per-segment faults stay isolated so one failure cannot discard the ledger, mirroring `eraseSubject`'s
+    // entries ("one failure never aborts the ledger") and for the same reason: on an erasure command the
+    // caller's load-bearing question is *which segments are now destroyed*, and an exception thrown from the
+    // middle of the loop answers it for none of them while having already destroyed some.
+    //
+    // Every error is caught, not just contention — again matching `eraseSubject`, which records any thrown
+    // fault as a ledger entry rather than deciding which faults deserve a record. A `KeyUnavailableError` on
+    // segment 3 is exactly as important to report as a `WriteConflictError`, and just as segment-local.
+    //
+    // NOTE the caller's obligation, because this is quieter than a throw: entries must be INSPECTED.
+    // `destroyed: false` with a `reason` is a segment that still holds data. The `namespace.erase` audit event
+    // carries the honest `segmentsShredded` count, which will be lower than the segment count, so an audit
+    // trail still shows the shortfall even if the return value is ignored.
+    let result: DestroyResult;
+    try {
+      result = await shredSegment(ref, deps, options.allowCleartext ?? false);
+    } catch (err) {
+      result = {
+        segment: ref.segment,
+        namespace: ref.namespace,
+        destroyed: false,
+        cryptoShredded: false,
+        reason: isWriteConflictError(err)
+          ? 'contended'
+          : `failed: ${err instanceof Error ? err.message : String(err)}`,
+        // Deliberately 0, and not a partial count. `eraseWarm` may have deleted rows before it threw, but the
+        // erase did not complete as a unit, so a partial figure on a failed entry would invite reading it as
+        // progress toward a destruction that did not happen. The attestation that matters is `destroyed`.
+        warmRowsDeleted: 0,
+      };
+    }
     destroyed.push(result);
     // A per-segment record for each genuine crypto-shred, so the trail can prove *which* segments were
     // destroyed (each carries the namespace) — not just that the command ran.

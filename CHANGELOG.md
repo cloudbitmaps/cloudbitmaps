@@ -14,6 +14,22 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **`eraseNamespace` no longer discards its ledger when one segment cannot be erased.** It called
+  `shredSegment` per segment with no isolation, so a single failure aborted the loop: the caller got an exception,
+  no ledger, and no way to learn which segments had *already* been destroyed before the throw — the worst answer
+  available on an erasure command, because some data really was destroyed and the record of which is gone. Faults
+  are now isolated per segment, matching `eraseSubject`, whose entries already worked this way ("one failure never
+  aborts the ledger"). A failed segment appears in the result with `destroyed: false` and a `reason` —
+  `'contended'` for warm rows rewritten during every erase pass, `` `failed: <message>` `` otherwise.
+
+  **This trades loud-but-empty for quiet-but-complete, so entries must be inspected**: `destroyed: false` means
+  that segment still holds data. The `namespace.erase` audit event carries the honest `segmentsShredded` count,
+  which will be lower than the segment count, so an audit trail still shows the shortfall even if the return
+  value is ignored. Additive to `DestroyResult` — no field changed type, so nothing that compiled before stops
+  compiling.
+
 ## [0.5.0] — 2026-07-30
 
 **A minor, not a patch, and deliberately so.** Everything below is a bug fix, but two of them turn a call that

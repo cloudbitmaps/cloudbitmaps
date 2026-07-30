@@ -251,6 +251,71 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
     expect(again).toMatchObject({ destroyed: true, reason: 'already' });
   });
 
+  it('eraseNamespace keeps a complete ledger when one segment cannot be erased', async () => {
+    // Before this, a single failing segment aborted the loop: the caller got an exception, no ledger, and no way
+    // to learn which segments had ALREADY been destroyed before the throw — the worst answer available on an
+    // erasure command, because some data really was destroyed and the record of which is gone.
+    //
+    // The fix isolates per segment, matching `eraseSubject` ("one failure never aborts the ledger"). Note this
+    // trades loud-but-empty for quiet-but-complete, so the assertions below check BOTH halves: the healthy
+    // segments really were destroyed, and the failing one is recorded as not-destroyed with a reason rather
+    // than omitted or silently counted as a success.
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    for (const seg of ['a', 'b', 'c']) {
+      await bulkLoadCrbmGeneration(
+        w.cold,
+        { namespace: 'ns', segment: seg, generation: 0 },
+        [1, 2],
+        { registry: w.registry, keystore },
+      );
+    }
+    // Give 'b' a live warm row and make only ITS conditional delete lose the race, every time — so 'b' burns
+    // through every erase pass while 'a' and 'c' are untouched.
+    await new CloudRoaring({
+      warm: w.warm,
+      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry, keystore }),
+      retry: false,
+    })
+      .segment('b', { namespace: 'ns' })
+      .add(9);
+    const warm = new Proxy(w.warm, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop, target) as unknown;
+        if (prop === 'deleteConditional') {
+          // A rest parameter, NOT `arguments`: this is an arrow function, so `arguments` would resolve to the
+          // enclosing trap's own args and forward the property NAME as the expected token. Every real delete
+          // would then fail on a bad token and the test would "pass" while proving nothing about isolation.
+          return async (...args: unknown[]): Promise<unknown> => {
+            const ref = args[0] as { segment: string };
+            if (ref.segment === 'b') throw new WriteConflictError('row rewritten mid-erase');
+            return (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    const { destroyed } = await eraseNamespace(
+      'ns',
+      { ...w.deps, warm },
+      { confirmNamespace: 'ns' },
+    );
+
+    // The ledger is COMPLETE — every segment appears, including the one that failed.
+    expect(destroyed.map((d) => d.segment).sort()).toEqual(['a', 'b', 'c']);
+    const byName = new Map(destroyed.map((d) => [d.segment, d]));
+    expect(byName.get('a')!.destroyed).toBe(true);
+    expect(byName.get('c')!.destroyed).toBe(true);
+    // And the failure is honest rather than absent or counted as a success.
+    expect(byName.get('b')).toMatchObject({ destroyed: false, reason: 'contended' });
+
+    // The registry agrees with the ledger, which is the claim that actually matters.
+    expect((await w.registry.get({ namespace: 'ns', segment: 'a' }))!.status).toBe('destroyed');
+    expect((await w.registry.get({ namespace: 'ns', segment: 'c' }))!.status).toBe('destroyed');
+    expect((await w.registry.get({ namespace: 'ns', segment: 'b' }))!.status).toBe('active');
+  });
+
   it('eraseNamespace shreds every encrypted segment in the namespace', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
