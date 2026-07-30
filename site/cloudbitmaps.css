@@ -554,22 +554,6 @@ em {
   margin-bottom: 14px;
 }
 
-.trade-list {
-  margin: 0;
-  padding: 0 0 0 18px;
-  font-size: 15px;
-  line-height: 1.6;
-  color: var(--cb-muted);
-}
-
-.trade-list li {
-  margin-bottom: 9px;
-}
-
-.trade-list li:last-child {
-  margin-bottom: 0;
-}
-
 .trade-body + .trade-title {
   margin-top: 22px;
 }
@@ -591,9 +575,10 @@ em {
 
 .trade-foot {
   border-top: 1px solid var(--cb-rule-soft);
-  padding-top: 12px;
-  font-size: 13px;
-  line-height: 1.55;
+  padding-top: 14px;
+  font-family: var(--cb-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--cb-faint);
 }
 
@@ -3401,7 +3386,7 @@ em {
    above it. Five rows with four columns each is the argument; a sixth through tenth row at the same
    weight would make the table a directory instead. */
 .also {
-  padding: 14px 16px;
+  padding: 16px;
   border-top: 1px solid var(--cb-rule);
 }
 

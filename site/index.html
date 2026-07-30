@@ -282,32 +282,33 @@
              They are one: the table says whether this is your problem, the pair says whether to reach for
              this to solve it. -->
         <div class="trade">
+          <!-- Both halves use the same title + body pair, three each. A flat bullet list opposite two
+               title/body pairs is why these did not read as peers — same bezel, different grammar.
+
+               Seven bullets folded into three: "large and mostly read" absorbs "bigger than you want
+               resident"; "survives a restart" absorbs the stateless-compute and no-node points; "the data
+               stays yours" absorbs the erasure case. The exact-cardinality bullet is gone rather than
+               folded — the Also fits band above already carries it ("distinct-count reporting, where
+               count() is exact rather than a sketch with an error bar"), so repeating it here was the
+               page arguing with itself. -->
           <div class="trade-half">
             <div class="label is-live">Use this when</div>
-            <ul class="trade-list">
-              <li>
-                Segments are <strong>large and mostly read</strong> — audience lists, feature
-                cohorts, permission sets.
-              </li>
-              <li>They must survive restarts and cost nothing while nobody is asking.</li>
-              <li>Your compute is stateless and you would rather not run a node at all.</li>
-              <li>
-                The set is <strong>bigger than you want to keep resident</strong>, or heading that way,
-                and sizing a node for its growth is the part you would rather not do.
-              </li>
-              <li>
-                You need <strong>exact</strong> cardinality — not a sketch with an error bar — and you
-                need it without reading the payload.
-              </li>
-              <li>
-                The bytes have to stay in <strong>your own storage account</strong>, in a documented
-                format, with a way out that does not involve us.
-              </li>
-              <li>
-                Someone may have to be <strong>erased</strong> on request, and rewriting immutable
-                objects to do it is not acceptable.
-              </li>
-            </ul>
+            <p class="trade-title">The set is large, and mostly read.</p>
+            <p class="trade-body">
+              Audience lists, feature cohorts, permission sets — bigger than you want to keep resident,
+              or heading that way. Sizing a node for that growth is the part you would rather not do.
+            </p>
+            <p class="trade-title">It has to survive a restart, and cost nothing while idle.</p>
+            <p class="trade-body">
+              The corpus outlives any one process, your compute is stateless, and you would rather not run
+              a node at all just so the set is there when something asks.
+            </p>
+            <p class="trade-title">The data has to stay yours.</p>
+            <p class="trade-body">
+              Your own storage account, a documented format, and a way out that does not involve us — and
+              someone may have to be <strong>erased</strong> on request without rewriting immutable
+              objects to do it.
+            </p>
           </div>
           <div class="trade-half">
             <!-- "Use something else when", not "Use Redis instead when". Naming one product was wrong
@@ -335,6 +336,12 @@
             <p class="trade-body">
               An id is a <span class="m">u32</span>. UUIDs and string keys need a dense-integer mapping
               that you own and operate — a second store, and a real cost if you don&rsquo;t have one.
+            </p>
+            <p class="trade-title">You write to it constantly.</p>
+            <p class="trade-body">
+              Writes are metered per request, so past <b>26.33</b> sustained writes a second — 8 KiB
+              items, on-demand DynamoDB as the warm tier — a flat node is simply cheaper.
+              <a href="benchmarks.html#crossover">Four inputs move that line</a>, and two remove it.
             </p>
             <p class="trade-foot">
               For the first one that usually means Redis — Redis as <strong>your set store</strong>,
