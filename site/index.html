@@ -728,6 +728,36 @@
       <!-- ── THE MOAT ───────────────────────────────────────────────────────
            The design leaves this figure static; it is the approved key-alignment animation, so it moves. -->
 
+      <!-- ── INTERSECTING WITHOUT DOWNLOADING ────────────────────────────────
+           Kept from the previous Home, retitled. "The part that is hard to copy" answers "why can't a
+           competitor build this" — a question the reader has not asked, about our position rather than
+           their problem, which is why it read as strange. The new title names the operation.
+
+           Its quickstart panel is not restored: the API section below now carries the code, and this
+           section's own figure is what it was really for. That figure replaced the schematic grid I had
+           put in layer 02 — it is the better of the two (a labelled readout, and a link to the
+           walk-through), and one page should draw one chunk figure exactly once. -->
+      <section id="skipping">
+        <h2>Intersecting without downloading</h2>
+        <p class="lede">
+          Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are compared
+          first, and only chunks whose keys appear in <strong>both</strong> are ever fetched — 100 of
+          2,000, in 25.3 ms. The other 1,900 stay cold and unbilled.
+        </p>
+        <figure class="keys">
+          <div class="label">Chunk keys · shared only</div>
+          <div class="keys-grid" aria-hidden="true">
+            <i class="on"></i><i></i><i></i><i></i><i class="on d2"></i><i></i><i></i><i></i><i></i
+            ><i class="on d3"></i><i></i><i></i><i></i><i></i><i></i><i class="on d4"></i><i></i
+            ><i></i><i></i><i></i>
+          </div>
+          <figcaption class="keys-foot">
+            <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 25.3 ms</span>
+          </figcaption>
+          <a class="keys-link" href="architecture.html">See the full walk-through →</a>
+        </figure>
+      </section>
+
       <!-- ── THE API ────────────────────────────────────────────────────────────
            The delivery's sample called `bought.intersect(opened)`. The real signature takes an
            ARRAY of segments, so that would not compile. Fixed here, and /usage carries the
@@ -770,11 +800,10 @@
              install block and the calls-to-action are the same thought finished, not a new one. -->
         <div class="close-grid">
           <div class="close-copy">
-            <h2>Six lines, one bucket.</h2>
             <p class="lede" style="margin: 0">
-              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at
-              all — the quickstart above runs as-is, so you can see the shape before you point it at a
-              bucket.
+              <strong>Six lines, one bucket.</strong> Install one flavor and the backend SDKs you already
+              use. The in-memory drivers need nothing at all — no bucket, no table, no credentials — so
+              the calls above run before you point anything at storage.
             </p>
             <div class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
@@ -792,36 +821,6 @@ npm i @aws-sdk/client-s3 @aws-sdk/client-dynamodb</code></pre>
             <p class="link-row"><a href="flavors.html">Every driver and its peer deps →</a></p>
           </div>
         </div>
-      </section>
-
-      <!-- ── INTERSECTING WITHOUT DOWNLOADING ────────────────────────────────
-           Kept from the previous Home, retitled. "The part that is hard to copy" answers "why can't a
-           competitor build this" — a question the reader has not asked, about our position rather than
-           their problem, which is why it read as strange. The new title names the operation.
-
-           Its quickstart panel is not restored: the API section below now carries the code, and this
-           section's own figure is what it was really for. That figure replaced the schematic grid I had
-           put in layer 02 — it is the better of the two (a labelled readout, and a link to the
-           walk-through), and one page should draw one chunk figure exactly once. -->
-      <section id="skipping">
-        <h2>Intersecting without downloading</h2>
-        <p class="lede">
-          Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are compared
-          first, and only chunks whose keys appear in <strong>both</strong> are ever fetched — 100 of
-          2,000, in 25.3 ms. The other 1,900 stay cold and unbilled.
-        </p>
-        <figure class="keys">
-          <div class="label">Chunk keys · shared only</div>
-          <div class="keys-grid" aria-hidden="true">
-            <i class="on"></i><i></i><i></i><i></i><i class="on d2"></i><i></i><i></i><i></i><i></i
-            ><i class="on d3"></i><i></i><i></i><i></i><i></i><i></i><i class="on d4"></i><i></i
-            ><i></i><i></i><i></i>
-          </div>
-          <figcaption class="keys-foot">
-            <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 25.3 ms</span>
-          </figcaption>
-          <a class="keys-link" href="architecture.html">See the full walk-through →</a>
-        </figure>
       </section>
 
       <!-- ── IT STAYS YOURS ─────────────────────────────────────────────────────

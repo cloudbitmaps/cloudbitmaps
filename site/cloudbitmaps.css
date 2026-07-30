@@ -307,6 +307,16 @@ p {
   color: var(--cb-ink);
 }
 
+/* Inside a heading, .m must scale WITH it. The fixed 13.5px turned "A Set, with a different address"
+   into "A ꜱᴇᴛ, with a different address" — a 13.5px word dropped into a 30px line, which reads as a
+   rendering fault rather than as a code voice. 0.82em keeps the mono narrower than the sans around it
+   without shrinking out of the line. */
+h1 .m,
+h2 .m {
+  font-size: 0.82em;
+  color: inherit;
+}
+
 /* Scaled to the lede it sits in, not to a fixed step: 15.5px inside the 17px hero lede, 13.5px inside the
    15px section ledes. Keyed on `.hero-lede`, which does NOT carry `.lede` — an earlier `.lede .m` rule here
    matched nothing at all and left the hero's mono a step too small. */
