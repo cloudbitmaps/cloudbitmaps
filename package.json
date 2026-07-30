@@ -20,8 +20,8 @@
     "lambda-smoke": "bash scripts/lambda-smoke.sh",
     "rss-gate": "bash scripts/rss-gate.sh",
     "build-lambda-layer": "bash scripts/build-lambda-layer.sh",
-    "typecheck": "tsc --noEmit && pnpm run typecheck:next",
-    "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm run typecheck:pkgs && pnpm run typecheck:next",
+    "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit && node node_modules/typescript-next/bin/tsc -p packages/core --noEmit && node node_modules/typescript-next/bin/tsc -p packages/roaring --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run -c vitest.integration.config.ts",
@@ -54,7 +54,8 @@
     "leak-scan:tarballs": "node scripts/leak-scan-tarballs.cjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit"
   },
   "lint-staged": {
     "*.ts": [

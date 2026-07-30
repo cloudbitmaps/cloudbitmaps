@@ -1,8 +1,12 @@
 {
   "//": "@cloudbitmaps/core — the codec-agnostic engine + every storage driver. Keeps the repo's long-standing `@/…` self-alias, now scoped to THIS package's own `src` (the drivers use it throughout, e.g. `@/core/errors`). It never resolves outside the package, which is what keeps the dependency arrow one-way: core cannot reach a flavor package even by accident.",
   "extends": "../../tsconfig.base.json",
+  // No `outDir`. It used to say "dist" and was never used for anything: `tsc` in this repo only ever runs
+  // `--noEmit`, and tsup owns emit with its own outDir. What the dead setting DID do was make TypeScript
+  // compute an output file layout, which is the only condition under which it reports on `rootDir` — hence
+  // the TS6059 / "the common source directory is '..'" diagnostics in the editor. Removing the setting removes
+  // the question rather than answering it with a `rootDir` that nothing would honour.
   "compilerOptions": {
-    "outDir": "dist",
     "paths": {
       "@/*": ["./src/*"]
     }
