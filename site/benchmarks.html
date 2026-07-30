@@ -134,8 +134,7 @@
         <h2>Cost anchors</h2>
         <p class="lede">
           Published rates applied to wire-metered operation counts. The last two rows are the crossover — past
-          them a flat node is simply cheaper, and they are in the same table, the same type and the same weight
-          as everything above them.
+          them a flat node is simply cheaper.
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
@@ -224,7 +223,7 @@
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
                rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
-            Assumptions, stated rather than buried: <strong>8 KiB</strong> average item, hot-cache hit rate
+            Assumptions: <strong>8 KiB</strong> average item, hot-cache hit rate
             <strong>0</strong>, topology <strong>B</strong>, and the reserved-RAM baseline is an ElastiCache HA
             cluster — <strong>1 primary + 2 replicas</strong> on
             <span class="m">cache.m7g.large</span>, about $115/mo single-node. Change any of them and the
@@ -653,8 +652,7 @@
       <section id="limits">
         <h2>What these numbers do not establish</h2>
         <p class="lede">
-          Each of these is a real limit on what you should conclude, and each is here rather than in a footnote
-          because a caveat nobody reads is not a caveat.
+          Each of these is a real limit on what you should conclude.
         </p>
         <ul class="rowlist">
           <li>
