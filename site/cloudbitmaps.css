@@ -747,6 +747,27 @@ em {
   margin-top: 14px;
 }
 
+/* The spec strip under the keys figure. Emphasis is brightness, not weight — `strong` only lifts the
+   number to `--cb-ink` and holds weight at 400, the same treatment `.tpanel-foot strong` uses, so the
+   figures read as data rather than as bolded prose. Row gap is non-zero because these wrap on narrow
+   viewports and wrapped items with a single gap value collide vertically. */
+.keys-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--cb-rule-soft);
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  color: var(--cb-muted);
+}
+
+.keys-stats strong {
+  color: var(--cb-ink);
+  font-weight: 400;
+}
+
 /* ── code ────────────────────────────────────────────────────────────────── */
 .code {
   border: 1px solid var(--cb-rule);

@@ -481,7 +481,16 @@
       <section>
         <div class="moat">
           <div>
-            <h2>The part that is hard to copy</h2>
+            <!-- `∩` is U+2229. Verified covered by Helvetica Neue rather than assumed — a missing glyph
+                 would silently substitute another family, which is a font change by accident. It is also
+                 part of WGL4, so Arial and Liberation Sans carry it on the other platforms. Kept in the sans
+                 heading and NOT set in mono: the width test that proves coverage cannot work in a monospace
+                 stack, where every glyph has the same advance by definition, so coverage there is unproven.
+                 aria-label because a screen reader announcing "A B without downloading A or B" is useless,
+                 and symbol pronunciation varies between them. -->
+            <h2 aria-label="A intersect B, without downloading A or B">
+              A ∩ B without downloading A or B
+            </h2>
             <p class="lede">
               Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
@@ -499,19 +508,46 @@
               </figcaption>
               <a class="keys-link" href="architecture.html">See the full walk-through →</a>
             </figure>
+            <!-- Absorbed from the design's own version of this section. It reads as a spec strip, but it is
+                 also load-bearing for the composition: the merged code panel is 15 lines where the old one
+                 was 10, and without this the left column ended 157px short of it. "third-party" is deliberate
+                 — `@cloudbitmaps/roaring` declares two runtime deps, `roaring` and `@cloudbitmaps/core`, and
+                 only the first is somebody else's. The final section's meta line used to carry these two
+                 figures; it no longer does, so each is stated once. -->
+            <p class="keys-stats">
+              <span><strong>3</strong> tiers</span>
+              <span><strong>10</strong> drivers</span>
+              <span><strong>1</strong> third-party dependency</span>
+            </p>
           </div>
           <div class="code">
-            <div class="code-head label"><span>quickstart.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <!-- The design shipped this as its own section, `segments.ts`, beside a near-identical
+                 prose+code grid. Folded in here rather than kept separate, because the two made the same
+                 point twice — and because it fixes a real mismatch: the old `quickstart.ts` sat under an
+                 argument about intersection and never called `intersect`.
+
+                 Three things are deliberate. The import wraps: on one line it was 94 characters and 163px
+                 of it sat outside the panel, so the first line of the page's main sample needed a sideways
+                 drag to read. The setup lines stay, because the final section says "the quickstart above
+                 runs as-is" and that sentence points here. And it is `intersect([opened])`, not the
+                 design's `intersect(opened)` — the signature is `intersect(others: Segment[], options?)`,
+                 checked against the export rather than copied. -->
+            <div class="code-head label"><span>segments.ts</span><span>No setup</span></div>
+            <pre><code><span class="k">import</span> {
+  CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource,
+} <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
   warm: <span class="k">new</span> MemoryWarmDriver(),
   cold: <span class="k">new</span> MemoryColdChunkSource(),
 });
 
-<span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
-<span class="k">await</span> vips.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
-<span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
+<span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
+<span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
+<span class="k">await</span> bought.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
+
+<span class="c">// fetches only the chunks that can contribute</span>
+<span class="k">for await</span> (<span class="k">const</span> id <span class="k">of</span> bought.intersect([opened])) { … }</code></pre>
             <p class="code-link"><a href="usage.html">Full usage, drivers and API →</a></p>
           </div>
         </div>
@@ -620,7 +656,10 @@
               <a class="btn" href="usage.html#api">Browse the API</a>
               <a class="btn" href="benchmarks.html">See the benchmarks</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.4.1 · 1 runtime dependency · 10 storage drivers</p>
+            <!-- The driver and dependency counts moved up to the `keys-stats` strip so each is stated once.
+                 `Apache-2.0` and the version stay together on one line on purpose — that pairing is the
+                 anchor `tests/docs/site-version.test.ts` matches on to find a badge at all. -->
+            <p class="meta">Apache-2.0 · v0.4.1</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>One flavor</span></div>
