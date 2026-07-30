@@ -320,6 +320,45 @@ const specAnchors = [];
     .map(([n]) => n);
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
+
+  // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
+  // Home's correctness panel used to close on "1,156 of them run on every commit". That was ungated AND already
+  // wrong — the suite was at 1,161. An exact test total is the worst figure to publish: it moves on nearly every
+  // commit, so gating it breaks CI for anyone who adds a test, and not gating it leaves it stale within a day.
+  //
+  // The invariant count is the stable number and the one the claim actually rests on, so the page states that
+  // instead. CLAUDE.md's "Hard correctness invariants" section is the only enumeration of them in the repo,
+  // which makes it the source.
+  const claudeMd = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const invariantSection = /## Hard correctness invariants\n([\s\S]*?)(?=\n## |$)/.exec(claudeMd);
+  let invariantCount = 0;
+  if (!invariantSection) {
+    fail('CLAUDE.md no longer has a "## Hard correctness invariants" section to count');
+  } else {
+    invariantCount = (invariantSection[1].match(/^\d+\. \*\*/gm) || []).length;
+    if (invariantCount === 0) {
+      fail(
+        "CLAUDE.md's invariants section parsed to 0 numbered items — its list formatting changed, so this " +
+          'check is no longer measuring anything',
+      );
+    }
+    const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/.exec(homeHtml);
+    if (!foot) {
+      fail('site/index.html no longer carries the .ba-foot line that states the invariant count');
+    } else {
+      const stated = /<strong>(\d+)\s+hard correctness invariants<\/strong>/.exec(foot[1]);
+      if (!stated) {
+        fail("Home's correctness panel no longer states an invariant count");
+      } else if (Number(stated[1]) !== invariantCount) {
+        fail(
+          `Home says ${stated[1]} hard correctness invariants but CLAUDE.md enumerates ${invariantCount}`,
+        );
+      } else {
+        specAnchors.push(['Home · hard invariants', String(invariantCount)]);
+      }
+    }
+  }
+
   const strip = /<p class="keys-stats">([\s\S]*?)<\/p>/.exec(homeHtml);
   if (!strip) {
     fail('site/index.html no longer carries the .keys-stats strip that states the driver count');

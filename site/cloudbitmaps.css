@@ -44,8 +44,11 @@
   --cb-bit-6: #1bb8ff;
   --cb-bit-7: #19c5f4;
 
-  /* The before/after marks. Paired with a glyph, never carrying meaning alone. */
-  --cb-no: #c9614a;
+  /* Consumed only by the crossover chart that `bench/run.cjs` inlines into benchmarks.html, as the fill of
+     the "cheaper than Redis" zone. It is NOT referenced by any rule in this file, so grepping the stylesheet
+     alone makes it look dead — the generator is the consumer. Its `--cb-no` counterpart really was dead and
+     is gone; run.cjs only mentions that one in a comment explaining why the chart does not use it (4.30:1 on
+     the dark ground, under AA). */
   --cb-ok: #4fb477;
 
   --cb-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
@@ -77,7 +80,6 @@
   --cb-bit-5: #0a62a4;
   --cb-bit-6: #0a679a;
   --cb-bit-7: #0a6c90;
-  --cb-no: #a33a24;
   --cb-ok: #1f7a46;
 }
 
@@ -1385,12 +1387,17 @@ em {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   THE BEFORE/AFTER — what you would otherwise be building.
+   THE PROBLEM / WHAT WE DO PAIRS.
 
    Same bezel and the same 26px padding as the trade pair, deliberately: this is an
    argument, not a sales panel, and inflating the right-hand column would undercut
-   it. The ✕ / ✓ are GLYPHS, not colour alone, so the two columns stay separable
-   for a reader who cannot tell the two hues apart.
+   it.
+
+   This carried red ✕ and green ✓ glyphs per row until the copy rewrite. They went
+   because two columns scored in red and green read as a vendor comparison chart no
+   matter what the rows say — and the left column is no longer "the bad option", it
+   is the problem statement. Nothing here encodes meaning in colour, so there is
+   also nothing left for 1.4.1 to be at risk from.
    ══════════════════════════════════════════════════════════════════════════════ */
 .ba {
   display: grid;
@@ -1399,45 +1406,42 @@ em {
   background: var(--cb-surface);
 }
 
-.ba-half {
-  padding: 26px;
+.ba-h {
+  margin: 0;
+  padding: 26px 26px 12px;
 }
 
-.ba-half + .ba-half {
-  border-left: 1px solid var(--cb-rule);
+/* The pair list spans both columns and re-declares the SAME two tracks, so its cells sit directly under the
+   labels above them. This only holds while neither container adds a column gap or horizontal padding of its
+   own — the cells carry all the horizontal padding for exactly that reason. */
+.ba-pairs {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
 }
 
-.ba-list {
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.ba-pairs dt,
+.ba-pairs dd {
+  margin: 0;
+  padding: 7px 26px;
   font-size: 15px;
   line-height: 1.6;
   color: var(--cb-muted);
 }
 
-.ba-list li {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 10px;
+/* The rule between the columns, drawn per right-hand cell. It reads as one continuous line only because the
+   grid has no row gap — the cells butt against each other and their borders join. Add a row-gap here and the
+   rule breaks into four dashes. */
+.ba-h:nth-of-type(2),
+.ba-pairs dd {
+  border-left: 1px solid var(--cb-rule);
 }
 
-.ba-list i {
-  font-family: var(--cb-mono);
-  font-size: 13px;
-  font-style: normal;
-  line-height: 1.5;
-}
-
-.ba-no i {
-  color: var(--cb-no);
-}
-
-.ba-yes i {
-  color: var(--cb-ok);
+/* The final pair restores the panel's 26px inset, which the shared 7px cell padding would otherwise leave at
+   7px against the foot's rule. */
+.ba-pairs > :nth-last-child(-n + 2) {
+  padding-bottom: 26px;
 }
 
 /* Spans the pair, so the closing claim reads as covering both columns rather than
@@ -1542,9 +1546,53 @@ em {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .ba-half + .ba-half {
+  /* Stacked, the pairs must keep reading as pairs. `.ba-pairs` collapses to one column too, which puts each
+     problem immediately above its answer — the source order is already problem, answer, problem, answer. The
+     vertical rule becomes a horizontal one on the answer, so the boundary a reader used to get from the column
+     edge is still there. */
+  .ba-pairs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Both column headers go, because stacked they no longer head a column — and hiding only the second would
+     leave a reader unable to tell which block is the answer. Each cell carries its own label instead. These are
+     decorative duplicates of the headers they replace: the <dl> already conveys term-and-definition to a screen
+     reader, so generated content adds nothing there and removes nothing either. */
+  .ba-h {
+    display: none;
+  }
+
+  .ba-pairs dt::before,
+  .ba-pairs dd::before {
+    display: block;
+    margin-bottom: 6px;
+    font-family: var(--cb-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--cb-faint);
+  }
+
+  .ba-pairs dt::before {
+    content: 'The problem';
+  }
+
+  .ba-pairs dd::before {
+    content: 'What CloudBitmaps does';
+  }
+
+  .ba-pairs dd {
     border-left: 0;
+    padding-bottom: 18px;
+  }
+
+  .ba-pairs dt {
+    padding-top: 18px;
     border-top: 1px solid var(--cb-rule);
+  }
+
+  .ba-pairs dt:first-of-type {
+    border-top: 0;
   }
 }
 

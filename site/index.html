@@ -553,87 +553,90 @@
         </div>
       </section>
 
-      <!-- ── WHY NOT BUILD IT ───────────────────────────────────────────────
-           Placed AFTER the moat on purpose: the argument only lands once the reader has seen what the hard
-           part actually is. Note the left column is not Redis — the trade pair two sections up already
-           argues that case, and repeating it would read as making one point twice. The honest alternative
-           for someone who has already ruled Redis out is rolling this themselves on object storage. -->
+      <!-- ── WHAT THE TIERING HAS TO GET RIGHT ──────────────────────────────
+           Placed AFTER the moat on purpose: what makes the tiering hard only lands once the reader has seen
+           what the tiering DOES.
+
+           This was "You could build this yourself. Here's the part that takes a year." over a left column
+           headed "Rolling it yourself". Three faults, all in the framing rather than the content:
+
+             · The heading was about the reader's hypothetical failure, not about the product — and it told a
+               visitor their attempt would be naive, which is a strange thing to say to someone evaluating you.
+             · "a weekend" and "a year" were invented durations sitting inches from `$0.75 per 1M`, which is
+               gated. Unsourced quantities next to measured ones borrow credibility they have not earned, and
+               that is the one thing this site cannot afford to do.
+             · The left column described a naive implementation nobody had proposed and then beat it. A reader
+               who has actually thought about the problem notices a rigged comparison, and the suspicion
+               carries into the right column, which is the part worth reading.
+
+           The ROWS did not change, because they were already right: each left row is precisely the problem its
+           right row solves, all four pair 1:1. Only the axis labels were wrong. So the left column now states
+           each problem as a property of the domain, and the ✓/✕ glyphs are gone — red-and-green scoring in two
+           columns reads as a vendor comparison chart regardless of what it actually says.
+
+           The layout changed too, and not by choice. As two independent lists the columns lined up only where
+           a pair happened to wrap to the same number of lines — row 4 was already 24px out, and rewording made
+           it three rows instead of one. Text tuned to make a layout look aligned comes apart at the next width,
+           font size or zoom level, so the pairing is structural now: one grid, one row per pair. Measured 0px
+           drift on all four pairs at 1024-1600px. -->
       <section>
-        <h2>You could build this yourself. Here's the part that takes a year.</h2>
+        <h2>The hard part is concurrency, not compression.</h2>
         <p class="lede">
-          Sharding a bitmap across object storage is a weekend. Making it correct under concurrent writes,
-          deletes and compaction is not.
+          Roaring already solves the compression. Putting it on tiered storage creates four problems that have
+          nothing to do with bit math: a format something other than your own code can read, writes that cost
+          the change instead of the whole segment, deletes that actually delete, and a compaction that cannot
+          lose a write which landed while it was running.
         </p>
+        <!-- One grid, not two lists. The section's whole claim is that each left row is the problem its right
+             row solves, and two independent <ul>s could only ever align by coincidence — they were 24px out on
+             row 4 before this rewrite, and rewording pushed three rows out instead of one. A pair that shares a
+             grid row aligns because of how it is built, at any width and any font size.
+
+             <dl> rather than divs: these ARE term/description pairs, so a screen reader announces the pairing
+             instead of eight unrelated blocks. The column labels sit outside the list because they label the
+             columns, not the terms. -->
         <div class="ba">
-          <div class="ba-half ba-no">
-            <p class="label">Rolling it yourself</p>
-            <ul class="ba-list">
-              <li>
-                <i>✕</i
-                ><span
-                  >A chunking scheme <strong>only your code can read</strong>, undocumented and
-                  unversioned</span
-                >
-              </li>
-              <li>
-                <i>✕</i
-                ><span
-                  >Whole-blob <strong>GET, decode, modify, PUT</strong> — the write cost scales with the
-                  segment, not the change</span
-                >
-              </li>
-              <li>
-                <i>✕</i
-                ><span
-                  >An OR-merge that <strong>cannot express a delete</strong>, so removals need a full
-                  rebuild</span
-                >
-              </li>
-              <li>
-                <i>✕</i
-                ><span
-                  >Two concurrent compactions that <strong>silently drop</strong> whichever writes landed
-                  mid-scan</span
-                >
-              </li>
-            </ul>
-          </div>
-          <div class="ba-half ba-yes">
-            <p class="label">With CloudBitmaps</p>
-            <ul class="ba-list">
-              <li>
-                <i>✓</i
-                ><span
-                  >A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
-                  one-command export</span
-                >
-              </li>
-              <li>
-                <i>✓</i
-                ><span
-                  >Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at
-                  all when idle</span
-                >
-              </li>
-              <li>
-                <i>✓</i
-                ><span
-                  >Tombstones are first-class — <strong>a real remove()</strong>, merged as
-                  <span class="m">(cold ∪ adds) \ removes</span></span
-                >
-              </li>
-              <li>
-                <i>✓</i
-                ><span
-                  >Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan
-                  writes survive</span
-                >
-              </li>
-            </ul>
-          </div>
+          <p class="label ba-h">The problem</p>
+          <p class="label ba-h">What CloudBitmaps does</p>
+          <dl class="ba-pairs">
+            <dt>A private chunk layout leaves the data only as portable as the code that wrote it</dt>
+            <dd>
+              A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
+              one-command export
+            </dd>
+
+            <dt>
+              Whole-blob <strong>GET, decode, modify, PUT</strong> makes a write cost the size of the segment
+              rather than the size of the change
+            </dt>
+            <dd>
+              Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at all when
+              idle
+            </dd>
+
+            <dt>
+              An OR-merge across tiers <strong>cannot express a delete</strong>, so one removal means
+              rebuilding the segment
+            </dt>
+            <dd>
+              Tombstones are first-class — <strong>a real remove()</strong>, merged as
+              <span class="m">(cold ∪ adds) \ removes</span>
+            </dd>
+
+            <dt>Two compactions running at once <strong>drop whichever writes landed mid-scan</strong></dt>
+            <dd>
+              Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan writes
+              survive
+            </dd>
+          </dl>
+          <!-- Was "1,156 of them run on every commit", which was both ungated and already wrong — the suite
+               was at 1,161. An exact test total is the worst possible thing to publish: it changes on almost
+               every commit, so gating it would break CI for anyone who adds a test, and NOT gating it means it
+               is stale within a day. The invariant count is the stable figure, it is the one that actually
+               carries the claim, and it is derived in scripts/site-figures.cjs. -->
           <p class="ba-foot">
-            Every row on the right is a <strong>hard invariant with named tests</strong>, not a design
-            intention — <strong>1,156</strong> of them run on every commit.
+            These are four of the project's <strong>7 hard correctness invariants</strong> — each one has
+            named tests, and they run on every commit.
           </p>
         </div>
       </section>
