@@ -3565,3 +3565,168 @@ em {
   font-size: 12px;
   color: var(--cb-cyan);
 }
+
+/* ── the strip: a head bar over hairline-separated columns ─────────────────────
+   The delivery's treatment for a row of peer facts, and the reason it works is that it has NO
+   heading — the head bar's left label IS the heading, so the block reads as one instrument panel
+   rather than as another section competing with the ones around it. My first port gave it an h2
+   and a lede and it immediately looked like a different page. */
+.strip {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+}
+
+.strip-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cb-rule);
+}
+
+/* Cyan on the left, muted on the right. The left label names the panel; the right one qualifies
+   it (scope, topology, what it was measured on). Two roles, so two colours. */
+.strip-head .label:first-child {
+  color: var(--cb-cyan);
+}
+
+.strip-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+/* 1px hairlines BETWEEN columns only, drawn as borders rather than a gap-with-background, so the
+   auto-fit reflow at narrow widths cannot leave a dangling rule on the last item in a row. */
+.strip-cols > * {
+  padding: 16px;
+  border-left: 1px solid var(--cb-rule);
+}
+
+.strip-cols > *:first-child {
+  border-left: 0;
+}
+
+@media (max-width: 900px) {
+  .strip-cols > * {
+    border-left: 0;
+    border-top: 1px solid var(--cb-rule);
+  }
+  .strip-cols > *:first-child {
+    border-top: 0;
+  }
+}
+
+/* ── a layer panel: figures left, the argument right ───────────────────────────
+   The delivery's rhythm for all four layer/threshold panels, and it is load-bearing. Figures and
+   prose in one column makes a reader scroll past the numbers to reach the sentence that explains
+   them; side by side, the number is legible while the sentence is being read. */
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.duo > * {
+  padding: 18px 16px;
+}
+
+/* The sheet zeroes paragraph margins globally, so a two-paragraph argument inside a duo column ran
+   together into one slab. Restored here rather than globally, because most components on this site
+   deliberately control their own spacing. */
+.duo > * > p + p,
+.duo > * > .link-row {
+  margin-top: 12px;
+}
+
+.duo > * + * {
+  border-left: 1px solid var(--cb-rule);
+}
+
+@media (max-width: 900px) {
+  .duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .duo > * + * {
+    border-left: 0;
+    border-top: 1px solid var(--cb-rule);
+  }
+}
+
+/* ── the container bar chart ───────────────────────────────────────────────────
+   Roaring's three containers, drawn at the density each one is FOR: array as sparse ticks, bitset
+   as a solid run of them, run as two long spans. The whole argument of layer 01 is that the
+   representation follows the data, and a bar whose density differs per row states that in a way
+   three text rows cannot — which is why dropping this figure in the first port cost real meaning.
+
+   Non-text graphic, so 1.4.11's 3:1 applies rather than 4.5:1; --cb-cyan clears both on both
+   grounds. Each row is labelled in text beside it, so nothing is encoded by the bars alone. */
+.bars {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+.bars .bk {
+  font-family: var(--cb-mono);
+  font-size: 12px;
+  color: var(--cb-ink);
+}
+
+.bars .bv {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+}
+
+.bars .bv i {
+  display: block;
+  flex: 1 1 auto;
+  background: var(--cb-cyan);
+}
+
+/* Sparse: a handful of ticks with the gaps doing the talking. Dense: no gaps to speak of.
+   Contiguous: two spans instead of many marks. */
+.bars .bv.is-sparse i {
+  max-width: 3px;
+}
+
+.bars .bv.is-dense i {
+  max-width: 5px;
+}
+
+.bars .bv.is-run i {
+  max-width: none;
+}
+
+.bars .bn {
+  font-family: var(--cb-mono);
+  font-size: 11.5px;
+  color: var(--cb-muted);
+  white-space: nowrap;
+}
+
+/* ── the chunk grid ────────────────────────────────────────────────────────────
+   Forty cells, two lit. That is 5% — the measured overlap behind "100 of 2,000 chunks fetched" —
+   and it is why the count is forty rather than the delivery's twenty-four, where the five lit
+   cells it drew read as 20%. A figure illustrating a ratio has to be that ratio, or it is
+   arguing against the number printed beside it. Forty also matches /demo's own inset grid. */
+.chunkgrid {
+  display: flex;
+  /* nowrap: forty cells must read as ONE run of chunks. Wrapped across two rows they looked like two
+     segments, which is a different claim. 40 x 9px + 39 x 2px = 438px, inside the duo column. */
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 16px 0 8px;
+}
+
+.chunkgrid i {
+  display: block;
+  width: 9px;
+  height: 9px;
+  background: var(--cb-rule);
+}
+
+.chunkgrid i.on {
+  background: var(--cb-cyan);
+}
