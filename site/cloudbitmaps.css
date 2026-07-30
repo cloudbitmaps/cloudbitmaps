@@ -595,22 +595,27 @@ em {
 /* ── section ledes ───────────────────────────────────────────────────────── */
 .lede {
   margin: 0 0 28px;
-  /* 18px, up from 15. The block kept leaving the right half of a full-width section empty, and the fix is
-     SIZE rather than measure: `max-width` is in `ch`, so the pixel width scales with the font while the line
-     length in characters does not move at all. 15px/70ch was 580px wide; 18px/70ch is ~700px, and both wrap
-     at the same ~84 characters. Widening by raising the ch count instead would have bought the same pixels
-     by pushing past the readability ceiling, which is the one thing that is not available here. */
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1.62;
   color: var(--cb-muted);
-  /* 70ch, up from 68, because a lede alone in a full-width section left the right half empty.
-     70 and not more. `ch` is the advance of "0", which in Helvetica runs wider than average lowercase, so
-     a rendered line is always LONGER than the ch figure suggests and the number cannot be reasoned about
-     — it has to be measured in the real font. Past roughly 85 characters the eye starts losing its place
-     returning to the left margin, and that is the ceiling here. Measured, widest line on any of the seven
-     pages: 68ch → 82 · 70ch → 84 · 72ch → 87 · 80ch → 95. Only the first two are inside it. Site-wide
-     rule, so re-measure every page when changing it — index alone is not representative. */
-  max-width: 70ch;
+  /* Uncapped: the lede fills whatever column contains it, so a section intro is as wide as the panel or
+     table beneath it.
+     ─────────────────────────────────────────────────────────────────────────────────────────────────────
+     Three earlier attempts all missed the point. 68ch, then 70ch, then keeping 70ch but enlarging the type
+     to 18px to gain pixels without gaining characters — every one of them held the block between 580 and
+     700px, and every one still left a full-width section visibly empty on the right. Widening the measure
+     was the request; protecting the measure was what kept happening.
+
+     Stated plainly, because it is a real trade and not a free win: this is past the classic readability
+     measure. Roughly 45-85 characters is where line-tracking is most reliable; measured at 1440px, these
+     run 167-170. What makes it acceptable here rather than merely long is that a lede is two or three lines,
+     so there are one or two line-returns to track — the 85-character guidance bites hardest on many-line
+     body copy, where losing your place costs a re-read. A stranded paragraph above a full-width panel was
+     reading worse than a long line does.
+
+     Re-measure at 1440px when touching this; the numbers above are from `.lede` on all seven pages. To pull
+     it back, `max-width: 100ch` is the middle setting — clearly wider than 70ch, without going all the way. */
+  max-width: none;
 }
 
 /* ── three tiers ─────────────────────────────────────────────────────────── */
@@ -664,10 +669,11 @@ em {
   align-items: start;
 }
 
-/* Fills its column — the 68ch cap is for a lede that sits at full measure, not one already in a half. */
+/* Only the tighter bottom margin now. This also carried `max-width: none`, to opt a lede inside a half-column
+   out of the measure cap — redundant since `.lede` itself is uncapped, so it went rather than sitting here
+   restating the base rule. */
 .moat .lede {
   margin: 0 0 20px;
-  max-width: none;
 }
 
 /* One padded box, one internal margin — no bordered head strip. */
