@@ -14,6 +14,14 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-30
+
+**A minor, not a patch, and deliberately so.** Everything below is a bug fix, but two of them turn a call that
+previously *returned* into a call that *throws*, and this project routes a behaviour change through a minor bump
+until `1.0` rather than hiding it in a patch. If you call `destroySegment` or `eraseNamespace`, check that it sits
+inside a `try`/`catch` before upgrading: a contended erasure that used to report success now raises
+`WriteConflictError`. That is the point of the fix — but it is a new exception on a path that did not throw.
+
 ### Changed
 
 - **The planned plain-bitset flavor is renamed `@cloudbitmaps/bitset` (facade `CloudBitset`), from
