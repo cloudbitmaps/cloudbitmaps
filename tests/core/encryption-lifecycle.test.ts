@@ -9,6 +9,7 @@ import {
   compactSegment,
   destroySegment,
   eraseNamespace,
+  publishGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -207,6 +208,35 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
       ValidationError,
     );
     expect((await w.registry.get(SEG))!.status).toBe('active'); // untouched
+  });
+
+  it('refuses to publish a generation for a segment destroyed WHILE it was being written', async () => {
+    // The window: `bulkLoadCrbmGeneration` reads the registry once and refuses if the segment is already
+    // destroyed — then spends a KMS call and a whole object write before publishing. A `destroySegment` landing
+    // inside that window used to be invisible to `publishGeneration`, which compares only `currentGen`, so the
+    // pointer advanced on a destroyed record and left an object encrypted with the DEK destroy had just
+    // shredded: unreadable, still stored, attached to a segment the registry says was erased.
+    //
+    // Simulated by destroying between the write and the publish, which is exactly what the race produces. This
+    // is the "later hardening" erasure.ts's header refers to, for the publish step.
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+      registry: w.registry,
+      keystore,
+    });
+    await destroySegment(SEG, w.deps, { confirmSegment: 's' });
+    expect((await w.registry.get(SEG))!.status).toBe('destroyed');
+
+    // A late publish for a *newer* generation — what the in-flight bulk load would have attempted.
+    await expect(publishGeneration(w.registry, { ...SEG, generation: 1 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+
+    // The pointer did not move, so the destroyed segment did not acquire an unreadable "current" generation.
+    const rec = (await w.registry.get(SEG))!;
+    expect(rec.status).toBe('destroyed');
+    expect(rec.currentGen).toBe(0);
   });
 
   it('is idempotent — destroying an already-destroyed segment is a no-op success', async () => {

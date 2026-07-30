@@ -51,6 +51,15 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   `WriteConflictError` naming the number of rows still contended; because Warm is cleared *before* the tombstone
   is written, the failure leaves the segment un-destroyed and safely retryable. Every other bounded retry in the
   codebase already failed typed on exhaustion — this one function was the exception.
+- **A generation could be published onto a segment destroyed while that generation was being written.**
+  `bulkLoadCrbmGeneration` reads the registry once, refuses if the segment is already destroyed, and then spends
+  a KMS call and a whole object write before publishing — seconds to minutes on a large load. A `destroySegment`
+  landing inside that window was invisible to `publishGeneration`, which compares only `currentGen`, so the
+  pointer advanced on a destroyed record and left an object encrypted with the DEK destroy had just shredded:
+  unreadable, still stored, and attached to a segment the registry says was erased. `publishGeneration` now
+  refuses a destroyed record, using the record it had already re-read for its own CAS — so the check and the
+  write see the same state. This is the publish-step half of the coupling `erasure.ts` had noted as "a later
+  hardening".
 - **The retry wrapper leaked the inner scan whenever a warm enumeration was abandoned.**
   `RetryingWarmDriver.listChunks` is the only wrapper that drives its inner iterator by hand — deliberately, so
   that it does not buffer and defeat the engine's resident-memory bound — but it never closed that iterator when
