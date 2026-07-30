@@ -332,11 +332,6 @@
               <span class="m">has()</span> is <b>5.27 ms</b> at p50 and <b>12.71 ms</b> at p99. A
               sub-millisecond tail needs the whole set resident, which is a different machine.
             </p>
-            <p class="trade-title">Your ids aren&rsquo;t 32-bit integers.</p>
-            <p class="trade-body">
-              An id is a <span class="m">u32</span>. UUIDs and string keys need a dense-integer mapping
-              that you own and operate — a second store, and a real cost if you don&rsquo;t have one.
-            </p>
             <p class="trade-title">You write to it constantly.</p>
             <p class="trade-body">
               Writes are metered per request, so past <b>26.33</b> sustained writes a second — 8 KiB

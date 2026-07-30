@@ -3367,18 +3367,30 @@ em {
    That highlight is EXPLAINED in the panel's own footnote. Two chips in one column looking different
    with nothing to say why is the legend-vs-figure fault that has already shipped three times on this
    site; a colour that carries meaning needs a legend, or it needs to not carry meaning. */
+/* One rule for both variants: the chip's border is its own text colour. --cb-rule (#232830 on the dark
+   ground) is a HAIRLINE token meant for dividing panels, and at roughly 1.3:1 against --cb-surface it was
+   invisible as a box — so `has` and `add` read as bare words beside a clearly drawn cyan `intersect`,
+   which made the difference look like a rendering fault rather than emphasis. Using the text colour for
+   the border makes the two variants differ only in hue, which is what was intended. */
 .call {
   font-family: var(--cb-mono);
   font-size: 12px;
   padding: 3px 7px;
-  border: 1px solid var(--cb-rule);
+  border: 1px solid currentColor;
   color: var(--cb-muted);
   white-space: nowrap;
 }
 
 .call.is-key {
-  border-color: var(--cb-cyan);
   color: var(--cb-cyan);
+}
+
+/* Inline in a footnote, a .call is a REFERENCE to a name in the table above, not a cell of its own —
+   so it keeps the colour and drops the box. Boxed, four of them mid-sentence made the paragraph look
+   like a broken table row. */
+.tpanel-foot .call {
+  border: 0;
+  padding: 0;
 }
 
 /* ── the "also fits" band ──────────────────────────────────────────────────────
