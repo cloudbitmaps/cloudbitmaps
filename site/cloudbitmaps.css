@@ -595,7 +595,12 @@ em {
 /* ── section ledes ───────────────────────────────────────────────────────── */
 .lede {
   margin: 0 0 28px;
-  font-size: 15px;
+  /* 18px, up from 15. The block kept leaving the right half of a full-width section empty, and the fix is
+     SIZE rather than measure: `max-width` is in `ch`, so the pixel width scales with the font while the line
+     length in characters does not move at all. 15px/70ch was 580px wide; 18px/70ch is ~700px, and both wrap
+     at the same ~84 characters. Widening by raising the ch count instead would have bought the same pixels
+     by pushing past the readability ceiling, which is the one thing that is not available here. */
+  font-size: 18px;
   line-height: 1.62;
   color: var(--cb-muted);
   /* 70ch, up from 68, because a lede alone in a full-width section left the right half empty.
@@ -1421,13 +1426,37 @@ em {
   margin: 0;
 }
 
+/* Marker column plus text, which is what gives each row its hanging indent — without it the rows sat flush
+   against the cell edge and the panel read as two paragraphs rather than two lists. */
 .ba-pairs dt,
 .ba-pairs dd {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
   margin: 0;
   padding: 7px 26px;
   font-size: 15px;
   line-height: 1.6;
   color: var(--cb-muted);
+}
+
+.ba-pairs i {
+  font-family: var(--cb-mono);
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+/* The tick keeps its green. The left marker does NOT get the matching red: this column is the problem
+   statement, not a list of your mistakes, and a red cross is a verdict on the reader. `!` is plain ASCII, so
+   unlike a warning triangle there is no glyph-coverage question, and it reads as "here is the catch" rather
+   than "wrong". Both are GLYPHS, so the columns stay distinguishable without colour — 1.4.1 is not in play. */
+.ba-pairs dt i {
+  color: var(--cb-muted);
+}
+
+.ba-pairs dd i {
+  color: var(--cb-ok);
 }
 
 /* The rule between the columns, drawn per right-hand cell. It reads as one continuous line only because the
@@ -1562,9 +1591,11 @@ em {
     display: none;
   }
 
+  /* The cells are `16px 1fr` grids for their marker, so a pseudo-element joins as a THIRD grid item and would
+     land in the marker column of a new row. It has to span both tracks explicitly. */
   .ba-pairs dt::before,
   .ba-pairs dd::before {
-    display: block;
+    grid-column: 1 / -1;
     margin-bottom: 6px;
     font-family: var(--cb-mono);
     font-size: 10px;

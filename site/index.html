@@ -599,34 +599,68 @@
           <p class="label ba-h">The problem</p>
           <p class="label ba-h">What CloudBitmaps does</p>
           <dl class="ba-pairs">
-            <dt>A private chunk layout leaves the data only as portable as the code that wrote it</dt>
+            <!-- Row 1's left text is deliberately long enough to wrap to two lines, matching its partner. With
+                 the shared-row grid this is cosmetic only — alignment holds at any length, so if a future edit
+                 makes it one line again the pairs stay correct and the row simply gains whitespace. That is the
+                 difference between tuning text for rhythm and tuning it to fake a layout. -->
+            <dt>
+              <i>!</i
+              ><span
+                >A private chunk layout leaves the data only as portable as the code that wrote it, and
+                unreadable by anything else you own</span
+              >
+            </dt>
             <dd>
-              A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
-              one-command export
+              <i>✓</i
+              ><span
+                >A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
+                one-command export</span
+              >
             </dd>
 
             <dt>
-              Whole-blob <strong>GET, decode, modify, PUT</strong> makes a write cost the size of the segment
-              rather than the size of the change
+              <i>!</i
+              ><span
+                >Whole-blob <strong>GET, decode, modify, PUT</strong> makes a write cost the size of the
+                segment rather than the size of the change</span
+              >
             </dt>
             <dd>
-              Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at all when
-              idle
+              <i>✓</i
+              ><span
+                >Per-chunk delta rows: <strong>$0.75 per 1M incremental writes</strong>, and nothing at all
+                when idle</span
+              >
             </dd>
 
             <dt>
-              An OR-merge across tiers <strong>cannot express a delete</strong>, so one removal means
-              rebuilding the segment
+              <i>!</i
+              ><span
+                >An OR-merge across tiers <strong>cannot express a delete</strong>, so one removal means
+                rebuilding the segment</span
+              >
             </dt>
             <dd>
-              Tombstones are first-class — <strong>a real remove()</strong>, merged as
-              <span class="m">(cold ∪ adds) \ removes</span>
+              <i>✓</i
+              ><span
+                >Tombstones are first-class — <strong>a real remove()</strong>, merged as
+                <span class="m">(cold ∪ adds) \ removes</span></span
+              >
             </dd>
 
-            <dt>Two compactions running at once <strong>drop whichever writes landed mid-scan</strong></dt>
+            <dt>
+              <i>!</i
+              ><span
+                >Two compactions running at once
+                <strong>drop whichever writes landed mid-scan</strong></span
+              >
+            </dt>
             <dd>
-              Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan writes
-              survive
+              <i>✓</i
+              ><span
+                >Compaction purges <strong>conditionally on the version it archived</strong>, so post-scan
+                writes survive</span
+              >
             </dd>
           </dl>
           <!-- Was "1,156 of them run on every commit", which was both ungated and already wrong — the suite
