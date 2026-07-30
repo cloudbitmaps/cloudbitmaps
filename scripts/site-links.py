@@ -25,17 +25,37 @@ ROOT = 'site'
 pages = sorted(glob.glob(f'{ROOT}/*.html'))
 failed = False
 
-# ── 1 · internal references ───────────────────────────────────────────────────────────────────────────────
+# ── 1 · internal references, and the fragments on them ────────────────────────────────────────────────────
+# The fragment half of this was missing, and it mattered. `refs.add(t.split('#')[0])` threw the fragment away
+# before checking anything, and pure `#foo` same-page links were skipped by the startswith() filter entirely.
+# So `usage.html#api` was verified as far as "usage.html exists" and no further.
+#
+# Confirmed by breaking it: pointing Home at `usage.html#nonexistent-anchor` still printed "all internal
+# references resolve". A broken fragment does not 404 — the browser silently lands the reader at the top of the
+# page — so this is precisely the class of defect that needs a gate, and the gate was passing it through.
+ids_by_page = {
+    os.path.basename(p): set(re.findall(r'\bid="([^"]+)"', open(p).read())) for p in pages
+}
+
 missing = {}
+bad_frags = {}
 for page in pages:
     html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
     refs = set()
     for attr in ('href', 'src'):
         for m in re.finditer(attr + r'="([^"]+)"', html):
             t = m.group(1)
-            if t.startswith(('http://', 'https://', 'mailto:', '#', 'data:')):
+            if t.startswith(('http://', 'https://', 'mailto:', 'data:')):
                 continue
-            refs.add(t.split('#')[0])
+            if t.startswith('#'):
+                # Same-page anchor: the target file IS this page.
+                target, frag = os.path.basename(page), t[1:]
+            else:
+                file_part, _, frag = t.partition('#')
+                refs.add(file_part)
+                target = os.path.basename(file_part)
+            if frag and target in ids_by_page and frag not in ids_by_page[target]:
+                bad_frags.setdefault(f'{target}#{frag}', []).append(os.path.basename(page))
     for t in sorted(refs):
         if not t:
             continue
@@ -49,6 +69,20 @@ if missing:
         print(f'    {t:26} linked from {", ".join(sorted(set(srcs)))}')
 else:
     print(f'site-links: all internal references resolve across {len(pages)} page(s).')
+
+if bad_frags:
+    failed = True
+    print(f'site-links: {len(bad_frags)} link(s) point at an id that does not exist')
+    for t, srcs in sorted(bad_frags.items()):
+        print(f'    {t:34} linked from {", ".join(sorted(set(srcs)))}')
+else:
+    n_frags = sum(
+        len(re.findall(r'(?:href|src)="[^"]*#[^"]+"', re.sub(r'<!--.*?-->', '', open(p).read(), flags=re.S)))
+        for p in pages
+    )
+    # Counted and printed so that a refactor which removes every fragment link cannot leave this reporting
+    # success over an empty set — the vacuous-pass failure mode.
+    print(f'site-links: {n_frags} fragment link(s) resolve to a real id.')
 
 # ── 2 · the crawler files ─────────────────────────────────────────────────────────────────────────────────
 REQUIRED = ['robots.txt', 'sitemap.xml', 'llms.txt']

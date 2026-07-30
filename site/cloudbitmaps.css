@@ -380,6 +380,33 @@ em {
   max-width: 60ch;
 }
 
+/* The install command, in the hero. One line, same bezel as every other panel — the closing section owns the
+   full install story including peer deps, and this is the pointer to it, not a second copy of it.
+   `margin-left: auto` on the caption rather than `justify-content: space-between` so that when the two wrap
+   onto separate lines the caption stays left-aligned under the command instead of stranded at the right edge. */
+.hero-install {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin: 0 0 20px;
+  padding: 11px 14px;
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-surface);
+  font-family: var(--cb-mono);
+  font-size: 13px;
+}
+
+.hero-install code {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--cb-ink);
+}
+
+.hero-install .label {
+  margin-left: auto;
+}
+
 .actions {
   display: flex;
   gap: 10px;

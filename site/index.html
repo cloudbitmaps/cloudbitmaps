@@ -131,14 +131,28 @@
               <strong>1.2 GiB</strong> at rest is <strong>$0.03</strong> a month, against
               <strong>$346</strong> for a node standing by.
             </p>
+            <!-- "How do I get it" was answered five sections down, in the closing install panel. For a library
+                 that is the first question, so the command moves up here as one line. It stays ONE line on
+                 purpose: the peer-dependency half of the story ("plus only the backends you actually use")
+                 belongs with the closing panel, and repeating it here would make the hero a second install
+                 section rather than a pointer to one. -->
+            <p class="hero-install">
+              <code>npm i @cloudbitmaps/roaring</code>
+              <span class="label">One flavor · memory drivers need no setup</span>
+            </p>
             <p class="actions">
               <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
               <a class="btn" href="architecture.html">How it works</a>
               <a class="btn" href="flavors.html">Choose a flavor</a>
             </p>
+            <!-- "third-party", matching the spec strip further down. This line said "1 runtime dependency",
+                 which is the loose form: `@cloudbitmaps/roaring` declares TWO runtime deps, `roaring` and
+                 `@cloudbitmaps/core`, and only the first belongs to somebody else. Both places are gated by
+                 scripts/site-figures.cjs now — the counts appear twice on purpose, once at a glance for a
+                 skimmer and once in context beside the tiering, and gating both is what makes the duplication
+                 safe rather than two chances to drift. -->
             <p class="meta">
-              Apache-2.0 · 1 runtime dependency · 10 storage drivers · published tokenlessly via
-              OIDC
+              Apache-2.0 · 1 third-party dependency · 10 storage drivers · published tokenlessly via OIDC
             </p>
           </div>
 
@@ -684,9 +698,9 @@
           <div class="close-copy">
             <h2>Six lines, one bucket.</h2>
             <p class="lede" style="margin: 0">
-              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at
-              all — the quickstart above runs as-is, so you can see the shape before you point it at a
-              bucket.
+              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at all
+              — the <span class="m">segments.ts</span> sample above runs as-is, so you can see the shape
+              before you point it at a bucket.
             </p>
             <div class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>

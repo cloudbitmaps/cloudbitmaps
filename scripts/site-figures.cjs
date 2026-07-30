@@ -376,13 +376,41 @@ const specAnchors = [];
       ['third-party dependency', thirdParty.length, () => thirdParty.join(', ')],
     ]) {
       if (!stated.has(label)) {
-        fail(
-          `Home's spec strip no longer states "${label}" — it is the only place on the site that does`,
-        );
+        fail(`Home's spec strip no longer states "${label}"`);
       } else if (stated.get(label) !== want) {
         fail(`Home says ${stated.get(label)} ${label} but the source has ${want}: ${detail()}`);
       } else {
         specAnchors.push([`Home · ${label}`, String(want)]);
+      }
+    }
+  }
+
+  // ── the SAME two counts in the hero's meta line ────────────────────────────────────────────────────────
+  // Consolidating these into the spec strip came with the claim that each was then "stated once". That was
+  // wrong: only the final section's meta line was checked, and the HERO carries them too — in prime position,
+  // and in the loose wording ("1 runtime dependency") that the strip had already been corrected away from.
+  //
+  // Two statements of a figure is fine where they serve different readers, and these do: at-a-glance in the
+  // hero, in context beside the tiering further down. What is not fine is one of them being ungated, which is
+  // two chances to drift and one place that notices. Both are covered now.
+  const heroMeta = /<p class="meta">([\s\S]*?)<\/p>/.exec(homeHtml);
+  if (!heroMeta) {
+    fail("site/index.html no longer carries the hero's meta line");
+  } else {
+    for (const [label, want, detail] of [
+      ['storage drivers', backends.size, () => [...backends].sort().join(', ')],
+      ['third-party dependency', thirdParty.length, () => thirdParty.join(', ')],
+    ]) {
+      const m = new RegExp(`(\\d+)\\s+${label}`).exec(heroMeta[1]);
+      if (!m) {
+        fail(`Home's hero meta line no longer states a count for "${label}"`);
+      } else if (Number(m[1]) !== want) {
+        fail(
+          `Home's hero says ${m[1]} ${label} but the source has ${want}: ${detail()} — the spec strip and ` +
+            'the hero must agree, and both must agree with the tree',
+        );
+      } else {
+        specAnchors.push([`Home hero · ${label}`, String(want)]);
       }
     }
   }
