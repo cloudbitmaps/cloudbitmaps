@@ -3392,3 +3392,16 @@ em {
   border-color: var(--cb-cyan);
   color: var(--cb-cyan);
 }
+
+/* ── the "also fits" band ──────────────────────────────────────────────────────
+   Sits inside a table panel, under the rows, to show BREADTH without diluting the detailed rows
+   above it. Five rows with four columns each is the argument; a sixth through tenth row at the same
+   weight would make the table a directory instead. */
+.also {
+  padding: 14px 16px;
+  border-top: 1px solid var(--cb-rule);
+}
+
+.also .from {
+  margin-top: 5px;
+}
