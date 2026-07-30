@@ -321,6 +321,37 @@ const specAnchors = [];
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
 
+  // ── the default warm-scan ceiling, wherever the site quotes it ─────────────────────────────────────────
+  // /architecture and /usage now publish this because the pages state the COLD footprint formula precisely and
+  // used to say nothing at all about Warm — and Warm is a separate term outside that window, one per operand.
+  // A reader sizing a function for a many-operand intersection needs both, so the figure had to be published;
+  // and once published it needs a source, or it becomes the next stale number on the site.
+  const engineSrc = fs.readFileSync(
+    path.join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'),
+    'utf8',
+  );
+  const scanCap = /DEFAULT_MAX_WARM_SCAN_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024\b/.exec(
+    engineSrc,
+  );
+  if (!scanCap) {
+    fail(
+      'engine.ts no longer defines DEFAULT_MAX_WARM_SCAN_BYTES as `N * 1024 * 1024` — the site quotes this ' +
+        'ceiling in MiB, so either the constant changed shape or the derivation needs updating',
+    );
+  } else {
+    const want = `${scanCap[1]} MiB`;
+    for (const rel of ['site/architecture.html', 'site/usage.html']) {
+      const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      // Only assert on the page that actually quotes a figure; /usage names the option without a number.
+      if (/maxWarmScanBytes/.test(html) && /\d+ MiB/.test(html) && !html.includes(want)) {
+        fail(
+          `${rel} quotes a warm-scan ceiling that is not ${want} (engine.ts's DEFAULT_MAX_WARM_SCAN_BYTES)`,
+        );
+      }
+    }
+    specAnchors.push(['default warm-scan ceiling', want]);
+  }
+
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
   // Home's correctness panel used to close on "1,156 of them run on every commit". That was ungated AND already
   // wrong — the suite was at 1,161. An exact test total is the worst figure to publish: it moves on nearly every

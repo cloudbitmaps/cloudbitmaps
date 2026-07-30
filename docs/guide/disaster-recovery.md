@@ -98,6 +98,11 @@ The practical takeaway: **warm sets your RPO, cold sets your RTO.** Back warm co
 
 - [ ] **Object store**: versioning enabled; lifecycle rules don't expire generations a live registry still points
       at (never expire the *current* generation of any live segment).
+- [ ] **Object store**: an **`AbortIncompleteMultipartUpload`** lifecycle rule is configured (a few days is
+      plenty). A large generation is written as a multipart upload, and a process that dies mid-write leaves the
+      parts behind. The library aborts the upload on any error it survives to handle, but it cannot abort one
+      whose process is gone — that is the case this rule exists for. Incomplete parts are **billed and invisible**:
+      they do not appear in an object listing, so nothing but your bill reveals them.
 - [ ] **Warm (NoSQL)**: continuous/PITR backups on (this store dominates RPO).
 - [ ] **Registry**: PITR (DynamoDB) or versioning (object store) on — **required** to hit an at-or-before-cold
       restore point.

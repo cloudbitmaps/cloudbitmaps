@@ -233,7 +233,9 @@ npm audit signatures</code></pre>
                   <td class="from">
                     Async-iterates the intersection. Compares chunk keys first and fetches only shared chunks;
                     the cold payload footprint is bounded by
-                    <span class="m">concurrency × operands × chunk</span>.
+                    <span class="m">concurrency × operands × chunk</span>. Warm is a separate term outside that
+                    window — each operand's rows are snapshotted up front, so budget
+                    <span class="m">operands × maxWarmScanBytes</span> as well.
                   </td>
                   <td class="num">shared chunks only</td>
                 </tr>
