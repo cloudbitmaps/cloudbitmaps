@@ -191,11 +191,26 @@ for (const page of PAGES) {
   // the same bench/results.json this script reads, so it cannot drift from the anchors independently. What it
   // CAN do is disagree about the crossover it marks, so that is asserted directly.
   const svgs = html.match(/<svg[\s\S]*?<\/svg>/g) || [];
+
+  // Meta descriptions are pulled into the scan explicitly. Stripping tags removes attribute VALUES, so
+  // every money figure inside <meta name="description" content="..."> was invisible to the check below —
+  // and those strings are the copy a search result and a shared link actually show, which makes them the
+  // highest-leverage sentences on the site rather than the lowest. Home currently quotes $0.03 and $346 in
+  // three of them.
+  const metas = [
+    ...html.matchAll(
+      /<meta[^>]*(?:name="(?:description|twitter:description)"|property="og:description")[^>]*content="([^"]*)"/g,
+    ),
+  ]
+    .map((m) => m[1])
+    .join(' ');
+
   const visible = html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
     .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
-    .replace(/<[^>]+>/g, ' ');
+    .replace(/<[^>]+>/g, ' ')
+    .concat(' ', metas);
 
   // ── the chart, checked rather than exempted ──────────────────────────────────────────────────────────
   // Mirrors bench/run.cjs's own rounding: one decimal below 100/s, none above.

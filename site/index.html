@@ -23,7 +23,7 @@
     <title>CloudBitmaps — set operations at object-storage prices</title>
     <meta
       name="description"
-      content="Keep the Set-shaped API you already know and move the bytes to object storage: a billion-id segment costs cents per month at rest and answers set queries from small, stateless functions. Past 26.33 writes/s a flat tier is cheaper — and we publish the crossover."
+      content="Large id-sets kept as bitmaps in object storage you already own, reading only the chunks a query can match — 100 of 2,000. add, has, remove, count and intersect are unchanged; 1.2 GiB at rest is $0.03 a month against $346 for a node standing by. Past 26.33 writes/s a flat tier is cheaper, and we publish the crossover."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
@@ -104,12 +104,32 @@
       <section class="hero">
         <div class="hero-grid">
           <div class="hero-copy">
-            <p class="eyebrow">Distributed, cloud-native Roaring Bitmaps · v0.4.1</p>
-            <h1>Set operations at object-storage prices.</h1>
+            <!-- Codec-neutral on purpose. The eyebrow said "Roaring Bitmaps" and the lede led with
+                 "the bitmap engine", which hard-codes one flavor into the product's own pitch — and
+                 @cloudbitmaps/core is codec-agnostic, with bitset committed and soaring in research.
+                 "bitmaps" is the right noun: it is the umbrella name and all three flavors produce
+                 them. NOT "compressed bitmaps", because bitset is deliberately uncompressed, so that
+                 phrasing would exclude a flavor we have committed to. Roaring is named as the shipped
+                 flavor rather than as the product.
+
+                 The mechanism clause is the codec-neutral half of the pitch, which is why it leads:
+                 /architecture already states that chunk-key skipping does not depend on the codec, so
+                 it stays true for every flavor.
+
+                 The old lede's "a billion-id segment costs cents per month" is gone, and deliberately.
+                 It was never a sourced figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids
+                 lands anywhere from ~0.12 GiB dense to ~2 GiB sparse, so the price was not pinned to
+                 the quantity. It slipped past site-figures.cjs only because "cents" is not a dollar
+                 amount the money regex can see. Every figure below is a gated anchor. -->
+            <p class="eyebrow">Distributed, cloud-native bitmaps · roaring shipped · v0.4.1</p>
+            <h1>Big sets, the same five calls, and no bill while idle.</h1>
             <p class="hero-lede">
-              Keep the bitmap engine and the <span class="m">Set</span>-shaped API you already know.
-              Move the bytes to object storage, where a billion-id segment costs cents per month at
-              rest and answers set queries from small, stateless functions.
+              CloudBitmaps keeps large id-sets as bitmaps in object storage you already own, and reads
+              only the chunks a query can match — <strong>100 of 2,000</strong>. The calls don't change
+              — <span class="m">add</span>, <span class="m">has</span>, <span class="m">remove</span>,
+              <span class="m">count</span>, <span class="m">intersect</span> — but the bill does:
+              <strong>1.2 GiB</strong> at rest is <strong>$0.03</strong> a month, against
+              <strong>$346</strong> for a node standing by.
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
