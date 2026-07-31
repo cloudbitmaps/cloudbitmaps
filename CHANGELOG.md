@@ -14,23 +14,12 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
-### Fixed
+## [0.6.0] — 2026-07-30
 
-- **Cold generations were never run-encoded, costing up to 570× the bytes they should.** Roaring picks per
-  container between an array, a bitset and a **run** — but no implementation selects the run form on its own; it
-  takes an explicit `runOptimize()` pass, and nothing here was making it. Two of the three container types were
-  therefore ever used, and run-shaped ids paid list or bitmap prices. Measured on the shipped codec: a contiguous
-  1,000,000-id range serialized to **128.1 KiB where run-encoding needs 0.2 KiB (570×)**, and a 2,000-run shape
-  **536.5 KiB against 8.5 KiB (63×)**. Sequential and time-ordered ids — auto-increment keys, batch inserts — are
-  exactly the shapes this hits, so this was a large, quiet multiplier on cold storage, transfer and every read.
-
-  Fixed via a new optional `CodecBitmap.optimize?()`, called where an immutable cold generation is written.
-  Sparse ids come out byte-identical, so it is never a losing trade — roaring keeps whichever encoding is smaller
-  per container. Deliberately NOT called on the per-operation warm delta path: the hot path must not pay for it,
-  and warm rows are folded into a cold generation by compaction, where they are optimized then.
-
-  The `.crbm` envelope is unchanged (the golden byte-layout test passes untouched) and run containers are part of
-  the standard portable Roaring format, so this is a size change, not a format change.
+Two production-path fixes, one of them a large and entirely silent storage multiplier. Nothing here changes the
+`.crbm` format or an existing signature; the reason it is a minor rather than a patch is that the bytes written
+for a cold generation genuinely change shape, and `eraseNamespace` now returns a ledger where it used to throw.
+Read the `eraseNamespace` note before upgrading if you call it.
 
 ### Added
 
@@ -56,6 +45,22 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   which will be lower than the segment count, so an audit trail still shows the shortfall even if the return
   value is ignored. Additive to `DestroyResult` — no field changed type, so nothing that compiled before stops
   compiling.
+
+- **Cold generations were never run-encoded, costing up to 570× the bytes they should.** Roaring picks per
+  container between an array, a bitset and a **run** — but no implementation selects the run form on its own; it
+  takes an explicit `runOptimize()` pass, and nothing here was making it. Two of the three container types were
+  therefore ever used, and run-shaped ids paid list or bitmap prices. Measured on the shipped codec: a contiguous
+  1,000,000-id range serialized to **128.1 KiB where run-encoding needs 0.2 KiB (570×)**, and a 2,000-run shape
+  **536.5 KiB against 8.5 KiB (63×)**. Sequential and time-ordered ids — auto-increment keys, batch inserts — are
+  exactly the shapes this hits, so this was a large, quiet multiplier on cold storage, transfer and every read.
+
+  Fixed via a new optional `CodecBitmap.optimize?()`, called where an immutable cold generation is written.
+  Sparse ids come out byte-identical, so it is never a losing trade — roaring keeps whichever encoding is smaller
+  per container. Deliberately NOT called on the per-operation warm delta path: the hot path must not pay for it,
+  and warm rows are folded into a cold generation by compaction, where they are optimized then.
+
+  The `.crbm` envelope is unchanged (the golden byte-layout test passes untouched) and run containers are part of
+  the standard portable Roaring format, so this is a size change, not a format change.
 
 ## [0.5.0] — 2026-07-30
 

@@ -202,7 +202,12 @@ move it up.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the dirty set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
-  format freeze; a port before then would be a compatibility trap.
+  format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet,
+  new in 0.6.0: cold generations now contain **run containers**, which they never did before. Runs are part of
+  the standard portable Roaring format, but a bitmap that has any announces itself with a different header
+  cookie (`SERIAL_COOKIE` rather than `SERIAL_COOKIE_NO_RUNCONTAINER`). Every maintained Roaring
+  implementation reads both; a hand-rolled or cut-down reader may only have been tested against the cookie our
+  objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
 - **Cheaper reads** — a warm-chunk cache and coalesced merge GETs, both scoped so they can't tax the hot
   path.
 
