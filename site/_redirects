@@ -1,0 +1,12 @@
+# Cloudflare Pages redirect rules. Served from the root of the deployed directory (site/).
+#
+# /flavors-roaring was, for several weeks, the ONLY URL that actually served the roaring page: the file lived at
+# site/flavors-roaring.html while its own canonical, its og:url and the sitemap all advertised /flavors/roaring,
+# which resolved to nothing and fell through to the home page. Anything that linked to or indexed that page in
+# that window used the hyphenated path, so it is the one URL with real inbound value to preserve.
+#
+# The file has since moved to site/flavors/roaring.html and the advertised URL resolves to itself. Without this
+# rule the old path would land on the home page — a soft 404, where a reader gets a 200 and the wrong page rather
+# than being sent anywhere. 301 so search engines consolidate the old path into the canonical one instead of
+# treating them as two pages with the same content.
+/flavors-roaring  /flavors/roaring  301
