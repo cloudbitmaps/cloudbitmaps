@@ -182,6 +182,15 @@ net-new surface), so everything here still imports from the single
 
 ### `.crbm` on-disk format
 
+**`CRBM` stands for Chunked Remote BitMap** — chunked because 16-bit chunks are the data model, remote because
+every structural choice exists for storage that is far away and billed per request (range-GET a single chunk,
+`count()` straight from the footer index without reading payloads, a speculative tail read that collapses `open()`
+to one GET), and bitmap because that is what a chunk holds.
+
+The name is deliberately **not** tied to a codec. `.crbm` is the shared container for every flavor — the footer
+index, the CRC32C checksums, the AES-GCM framing and the generation model are all codec-independent, and only the
+chunk payload bytes differ. A future `@cloudbitmaps/bitset` writes the same format.
+
 | Symbol | What it does |
 |---|---|
 | `CrbmWriter` / `CrbmWriterOptions` | write the `.crbm` archive format |

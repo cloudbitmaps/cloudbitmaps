@@ -467,9 +467,12 @@ npm audit signatures</code></pre>
             <span class="rl-what">The format is documented</span>
             <span class="rl-fig"><span class="m">.crbm</span></span>
             <span class="rl-note">
-              A sequence of per-chunk roaring blobs behind a footer index. Every chunk carries a CRC32C in
-              its index entry, verified <strong>before</strong> any native deserialize, and the index and
-              footer carry their own. Specified rather than reverse-engineered.
+              <strong>Chunked Remote BitMap</strong> — chunked because 16-bit chunks are the data model, remote
+              because every choice in it assumes the bytes are far away and billed per request. A sequence of
+              per-chunk payloads behind a footer index; every chunk carries a CRC32C in its index entry, verified
+              <strong>before</strong> any deserialize, and the index and footer carry their own. The container is
+              codec-independent — only the payload bytes belong to a flavor. Specified rather than
+              reverse-engineered.
             </span>
           </li>
           <li>
