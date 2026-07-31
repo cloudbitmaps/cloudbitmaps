@@ -69,7 +69,25 @@ function badgeVersions(html: string): string[] {
     .filter((v) => !FOREIGN_VERSIONS.has(v));
 }
 
-const pages = readdirSync(SITE).filter((f) => f.endsWith('.html'));
+/**
+ * Every page under `site/`, nested ones included.
+ *
+ * This was `readdirSync(SITE)` — one level, no recursion — which was correct only for as long as the site was
+ * flat. Moving the roaring page to `site/flavors/roaring.html` (so the `/flavors/roaring` URL it has always
+ * advertised as its canonical actually resolves) would have dropped it out of this suite entirely: the loop
+ * below would have found six pages, passed, and left the flagship flavor page free to advertise any version at
+ * all. That is the same hole this file was rewritten to close, reopened by a directory move rather than by a
+ * wording change — so the enumeration is now structural rather than depth-one.
+ */
+function htmlPagesUnder(dir: string, prefix = ''): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return htmlPagesUnder(join(dir, entry.name), rel);
+    return entry.name.endsWith('.html') ? [rel] : [];
+  });
+}
+
+const pages = htmlPagesUnder(SITE);
 
 /**
  * Non-HTML files that also name the release.
@@ -85,6 +103,17 @@ describe('site version badges', () => {
     // Without this, moving or renaming site/ leaves zero pages, every it.each below generates zero cases,
     // and the file passes while checking nothing — the vacuous-guard failure mode.
     expect(pages.length).toBeGreaterThan(0);
+  });
+
+  it('reaches pages in subdirectories, not just the top level', () => {
+    // Named explicitly because the depth-one version of this suite passed while silently excluding a nested
+    // page. "Every page" has to mean every page at any depth, and the assertion that says so should fail if the
+    // walk ever regresses to one level — not merely cover fewer files without comment.
+    const nested = pages.filter((p) => p.includes('/'));
+    expect(
+      nested.length,
+      `no nested page found under site/ — did the walk stop recursing?`,
+    ).toBeGreaterThan(0);
   });
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {

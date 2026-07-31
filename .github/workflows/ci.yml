@@ -125,9 +125,17 @@ jobs:
   rss-gate:
     name: hard RSS ceiling (cgroup --memory)
     # The DEFINITIVE peak-RSS bound the soak's leak-watch can't prove (the production-readiness review's top residual):
-    # runs a sustained write+read+compact workload under a hard cgroup `--memory` limit (swap off) and fails if
-    # it's OOM-killed (exit 137) — i.e. if any memory bound (HOT LRU / cold-reader cache / intersection window)
-    # regressed to unbounded. Includes the roaring addon's off-heap native memory, which a JS-heap sample can't.
+    # runs a sustained write+read+combine+compact workload under a hard cgroup `--memory` limit (swap off) and
+    # fails if it's OOM-killed (exit 137) — i.e. if any memory bound (HOT LRU / cold-reader cache / intersection
+    # window) regressed to unbounded. Includes the roaring addon's off-heap native memory, which a JS-heap
+    # sample can't.
+    #
+    # The "intersection window" clause used to be false here: bench/soak.cjs issued no combines at all, so this
+    # gate could not observe the window no matter what regressed. Combines are part of that workload now, and the
+    # soak refuses to report PASS on a run that performed none. The window's structural bound (at most
+    # `concurrency × operands` payloads in flight, independent of segment size) is proven separately and
+    # deterministically in tests/core/intersect-window-bounded.test.ts — this gate covers accumulation over time,
+    # which a unit test cannot.
     # Needs Docker on the runner (like integration + lambda-smoke).
     runs-on: ubuntu-latest
     steps:

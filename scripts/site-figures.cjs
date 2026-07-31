@@ -362,7 +362,7 @@ const specAnchors = [];
   const encoding = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'bench', 'encoding-results.json'), 'utf8'),
   );
-  const roaringPage = fs.readFileSync(path.join(ROOT, 'site', 'flavors-roaring.html'), 'utf8');
+  const roaringPage = fs.readFileSync(path.join(ROOT, 'site', 'flavors', 'roaring.html'), 'utf8');
   const show = (ratio) => (ratio >= 10 ? String(Math.round(ratio)) : ratio.toFixed(2));
   for (const shape of encoding.shapes) {
     // A shape roaring LOSES is displayed as its reciprocal — the page says "1.02x larger", not "0.98x smaller",
@@ -376,11 +376,48 @@ const specAnchors = [];
     // exactly the kind of check that reports coverage it does not have.
     if (!roaringPage.includes(want)) {
       fail(
-        `site/flavors-roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
+        `site/flavors/roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
           `as "${want}" — re-run \`pnpm bench:encoding\` and update the page together`,
       );
     } else {
       specAnchors.push([`encoding \u00b7 ${shape.shape}`, want]);
+    }
+  }
+
+  // ── the soak's combine evidence, where /benchmarks cites it ────────────────────────────────────────────
+  // Limitation 04 on that page used to read "the intersection window is not soak-tested", which was true. It now
+  // cites two measured figures instead, so they get a source like every other number on the site — the whole
+  // point of this file is that no figure is published on the strength of someone having once seen it.
+  //
+  // The native-creep figure is the load-bearing one. It is the off-heap byte count the roaring addon actually
+  // holds, which is where a combine leak WOULD show up and where a JS-heap sample would miss it, so it is quoted
+  // to 2dp rather than as "flat" — a reader can tell 0.00 from 0.05, and "flat" hides which one it was.
+  const soak = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'soak-results.json'), 'utf8'));
+  const benchPage = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
+  if (soak.combines === undefined) {
+    fail(
+      'bench/soak-results.json has no `combines` field — it predates the combine phase. Re-run `pnpm soak` ' +
+        'with SOAK_INJECT=1; a results file from before that phase existed cannot evidence limitation 04.',
+    );
+  } else if (soak.combines === 0) {
+    // The soak itself refuses to report PASS on zero combines, but the *site* must not be able to cite a
+    // zero-combine run as evidence either — that would launder "we did not test it" into a published number.
+    fail(
+      'bench/soak-results.json records 0 combines — /benchmarks must not cite it as combine evidence',
+    );
+  } else {
+    for (const [label, want] of [
+      ['soak · combines', String(soak.combines)],
+      ['soak · native creep', `${soak.nativeCreepMiB.toFixed(2)} MiB`],
+    ]) {
+      if (!benchPage.includes(want)) {
+        fail(
+          `site/benchmarks.html does not state "${want}" (${label}) — re-run \`pnpm soak\` with ` +
+            `SOAK_INJECT=1 and update limitation 04 together`,
+        );
+      } else {
+        specAnchors.push([label, want]);
+      }
     }
   }
 

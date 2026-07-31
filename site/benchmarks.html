@@ -686,12 +686,19 @@
           </li>
           <li>
             <span class="rl-mark">04</span>
-            <span class="rl-what">The intersection window is not soak-tested</span>
-            <span class="rl-fig">no intersect in soak</span>
+            <span class="rl-what">The intersection window is bounded on local drivers, not on a cloud one</span>
+            <span class="rl-fig">2 &times; 8 payloads, any segment size</span>
             <span class="rl-note">
-              The long-running soak exercises the write and read paths but issues no
-              <span class="m">intersect</span> calls, so it says nothing about intersection memory over time.
-              The <a href="demo.html">measured run</a> is a single operation, not a duration.
+              This row used to say the window was not soak-tested, because it was not. It is now bounded two
+              ways: a per-commit test counts the chunk payloads actually in flight and holds them at
+              <strong>concurrency &times; operands</strong> &mdash; <strong>8&times; the chunks gives the same
+              peak</strong>, which is the claim that matters, since it is residency not scaling with segment
+              size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak now
+              issues combines: <strong>792</strong> of them over 90 s, after which the roaring engine's live
+              off-heap bytes had moved by <strong>0.00 MiB</strong>. What is still true is the <em>driver</em>:
+              both run against local storage, so this bounds our own bookkeeping and says nothing about a real
+              S3 or DynamoDB round trip. The <a href="demo.html">measured run</a> remains a single operation,
+              not a duration.
             </span>
           </li>
         </ul>
