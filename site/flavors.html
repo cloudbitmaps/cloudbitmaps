@@ -165,12 +165,18 @@
                          "bitset" now, so the subtitle can say something the name does not. -->
                     <span class="row-sub">One bit per id — no containers, no branches</span>
                   </td>
-                  <td><span class="status is-coming">Coming</span></td>
+                  <td><span class="status is-never">Not planned</span></td>
                   <td class="from">
-                    Ids are dense, or you want zero native dependency — edge runtimes, no platform matrix,
-                    nothing to compile.
+                    Nothing, and that is a measured result rather than an opinion. Above about
+                    <strong>6&percnt;</strong> density a Roaring chunk <em>is</em> an uncompressed bitset, so
+                    there is no size to win: on the shape built to favour a plain bitset it comes out
+                    <strong>2&percnt;</strong> ahead, and Roaring wins the other three by 543&times;,
+                    63&times; and 1.88&times;.
                   </td>
-                  <td class="from">Sparse sets pay full width per chunk.</td>
+                  <td class="from">
+                    It would be a plausible wrong turn &mdash; picked for dense ids, where Roaring has
+                    already become the same bitset.
+                  </td>
                 </tr>
                 <tr>
                   <td>
