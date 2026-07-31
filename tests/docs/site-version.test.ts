@@ -23,34 +23,50 @@ const version = (
   }
 ).version;
 
-/** A version-ish string: `v1.2.3`, tolerating an optional prerelease suffix. */
-const VERSION_RE = /\bv(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
+/**
+ * A version-ish string. The `v` is optional on purpose — see {@link FOREIGN_VERSIONS}.
+ */
+const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
 
 /**
- * The project's own badges, and only those.
+ * Versions on the site that are deliberately NOT ours, each with the reason it is here.
  *
- * A first draft matched every `vX.Y.Z` anywhere on a page and immediately failed on `v24.14.1` — the **Node**
- * version in the benchmark methodology, which is a fact about the measurement and has nothing to do with the
- * release. A guard that fires on correct content trains people to ignore it, so the match is anchored on what
- * actually distinguishes a badge: both shapes the site uses — the header `CloudBitmaps v0.1.3 · pre-1.0` and
- * the footer `pre-1.0 v0.1.3` — carry `pre-1.0` on the same line. Third-party versions never do.
+ * This allowlist is the whole design. Two earlier drafts tried to identify our badges by what sits NEAR them
+ * and both under-reached:
  *
- * UPDATE — that anchor turned out to reach exactly ONE of the seven pages. Every page displays the release
- * twice, in a header eyebrow and a footer line, and only benchmarks.html happened to put `pre-1.0` on the same
- * line as one of them. So the guard written because "the site pages carry the same number in two places each,
- * guarded by nothing" was itself guarding one place out of fourteen. A gate with that little reach reports
- * coverage it does not have, which is worse than no gate at all — it is the reason nobody re-checks.
+ *   1. anchored on `pre-1.0` — reached 1 of 7 pages, because only benchmarks.html put that string on the same
+ *      line as a version.
+ *   2. added `Apache-2.0` — reached all 7 pages, and was believed to be complete. It was not: it still missed
+ *      4 of 19 occurrences, because the hero eyebrows (`roaring shipped · v0.5.0`, `Usage ·
+ *      @cloudbitmaps/roaring v0.5.0`) name the release with neither anchor beside them, and flavors.html's
+ *      status pill wrote it BARE (`Shipped 0.5.0`) where a `v`-prefixed regex could not see it at all. All four
+ *      were nonetheless bumped correctly through several releases — by hand, which is exactly the property a
+ *      gate is supposed to remove.
  *
- * `Apache-2.0` joins it as a second anchor. It sits on every footer line that names the version, it is OUR
- * licence rather than a dependency's, and it preserves the property that made `pre-1.0` the right pick: a
- * third-party version never appears beside it. Verified against the whole tree — the Node version in the
- * benchmarks methodology (`v24.14.1`) matches neither anchor. Coverage went from 1 page to 7.
+ * Both drafts failed the same way: an opt-IN match, where a version is only checked if it looks the way the
+ * test author expected. New copy is then unguarded by default and nothing says so. So the polarity is
+ * inverted — every version-shaped token on a site page is assumed to be OURS and must equal the release, and
+ * the exceptions are enumerated here. New copy is guarded by default; the failure mode is a loud false
+ * positive that gets an entry added, not silent staleness.
+ */
+const FOREIGN_VERSIONS = new Map<string, string>([
+  [
+    '24.14.1',
+    'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
+  ],
+]);
+
+/**
+ * Version tokens a reader can actually see, excluding HTML comments.
+ *
+ * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
+ * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
+ * bare-token match would otherwise flag forever.
  */
 function badgeVersions(html: string): string[] {
-  return html
-    .split('\n')
-    .filter((line) => line.includes('pre-1.0') || line.includes('Apache-2.0'))
-    .flatMap((line) => [...line.matchAll(VERSION_RE)].map((m) => m[1] as string));
+  return [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(VERSION_RE)]
+    .map((m) => m[1] as string)
+    .filter((v) => !FOREIGN_VERSIONS.has(v));
 }
 
 const pages = readdirSync(SITE).filter((f) => f.endsWith('.html'));
@@ -86,19 +102,43 @@ describe('site version badges', () => {
 
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
     const found = badgeVersions(readFileSync(join(SITE, page), 'utf8'));
-    // A page with no version badge is fine — not every page has one. A page with the WRONG one is not.
     for (const v of found) {
-      expect(v, `${page} names v${v}, but the packages are at ${version}`).toBe(version);
+      expect(
+        v,
+        `${page} names ${v}, but the packages are at ${version}. If ${v} is a third-party version ` +
+          `rather than ours, add it to FOREIGN_VERSIONS with the reason.`,
+      ).toBe(version);
     }
   });
 
-  it('at least one page actually carries a badge', () => {
-    // Guards the inverse mistake: deleting every badge would make the per-page assertion vacuously true.
-    const total = pages.reduce(
-      (n, p) => n + badgeVersions(readFileSync(join(SITE, p), 'utf8')).length,
-      0,
-    );
-    expect(total).toBeGreaterThan(0);
+  it('every page carries the release at least once', () => {
+    // Guards the inverse mistake: the per-page loop above is vacuously true for a page with no badge at all,
+    // so deleting one would pass. Every page currently names the release in a footer line, and a page that
+    // stops doing so is either a copy regression or a deliberate change that should come here first.
+    for (const p of pages) {
+      expect(
+        badgeVersions(readFileSync(join(SITE, p), 'utf8')).length,
+        `${p} names no version anywhere — was a footer badge dropped?`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('every FOREIGN_VERSIONS entry is still on the site', () => {
+    // An allowlist nobody prunes is how the check quietly widens: the day the benchmark methodology is re-run
+    // on a newer Node, `24.14.1` stops appearing and its entry starts silently exempting nothing — or worse,
+    // exempts that number if it ever becomes OUR version. Entries must justify themselves every run.
+    const all = [...pages, ...VERSIONED_TEXT_FILES]
+      .map((f) => readFileSync(join(SITE, f), 'utf8'))
+      .join('\n');
+    for (const [v, why] of FOREIGN_VERSIONS) {
+      expect(all, `FOREIGN_VERSIONS has a stale entry: ${v} (${why}) no longer appears`).toContain(
+        v,
+      );
+      expect(
+        v,
+        `FOREIGN_VERSIONS exempts ${v}, which is now OUR version — remove the entry`,
+      ).not.toBe(version);
+    }
   });
 
   it('matches the exported VERSION constant, so all three sources agree', async () => {
