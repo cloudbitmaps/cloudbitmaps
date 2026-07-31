@@ -63,6 +63,11 @@ export class SafeBitmap implements CodecBitmap {
    * (536.5 KiB → 8.5 KiB). Sparse ids come out byte-identical, so this is never a losing trade; roaring keeps
    * whichever encoding is smaller per container.
    *
+   * Those two factors are THIS CALL's own before/after on the same ids. They are not the ones the site quotes
+   * (543× and 63×) — those compare the optimized encoding against the best *fixed* representation at its floor,
+   * a different baseline that happens to land near 63× on the run shape too. `pnpm bench:encoding` prints both
+   * columns; don't carry a figure between them without checking which denominator it had.
+   *
    * Called by the engine only when writing an immutable cold generation — see {@link CodecBitmap.optimize} for
    * why the per-operation warm path deliberately does not.
    */
