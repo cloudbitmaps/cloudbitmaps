@@ -210,6 +210,26 @@
               </tbody>
             </table>
           </div>
+          <!-- This table argued adaptivity and, until 0.6.0, offered nothing to check it against. Worse, the
+               "and run" in the row above was not true of the shipped codec: roaring's run form is never
+               selected automatically, it takes an explicit pass, and the library was not making it — so cold
+               objects only ever held arrays and bitsets. `pnpm bench:encoding` was written to substantiate the
+               claim and instead found that, which is the better outcome. The figures below are that
+               benchmark's, gated against bench/encoding-results.json.
+
+               Sibling of the band below, deliberately OUTSIDE .tscroll: that div is `overflow-x: auto` around a
+               `min-width: 420px` table, so prose placed inside it inherits the table's scroll width and has to
+               be dragged sideways to read on a narrow screen. Bands belong to the panel, not to the scroller. -->
+          <p class="tpanel-foot">
+            <span class="label">Measured</span> One id set, encoded four ways by
+            <span class="m">pnpm bench:encoding</span>. Against the <em>best</em> fixed representation for each
+            shape, at its own theoretical floor: a contiguous 1,000,000-id range is
+            <strong>543× smaller</strong> as roaring, a 2,000-run shape <strong>63× smaller</strong>, scattered
+            ids <strong>1.88× smaller</strong> — and a half-dense block is <strong>1.02× larger</strong>, because
+            adaptive means sometimes losing narrowly rather than always winning. Encoded bytes, not Redis process
+            memory: a real Set carries per-member overhead above the packed figure, so every alternative here is
+            quoted at its best case.
+          </p>
           <p class="tpanel-foot">
             Redis has no Roaring type of its own — there is a third-party module that wraps CRoaring, but a
             managed Redis service generally will not load arbitrary modules. So the honest comparison is not

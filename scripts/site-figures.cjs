@@ -352,6 +352,38 @@ const specAnchors = [];
     specAnchors.push(['default warm-scan ceiling', want]);
   }
 
+  // ── the encoding benchmark's factors, wherever /flavors/roaring quotes them ─────────────────────────────
+  // That page's table argued adaptivity and offered nothing to check it against — and its "array, bitset and run"
+  // row was not even true of the shipped codec until 0.6.0, because roaring's run form takes an explicit pass
+  // nothing was making. The factors are published now, so they get a source like every other figure here.
+  //
+  // ONE rounding rule, computed here rather than transcribed: >=10x rounds to an integer, below that to 2dp.
+  // An ad-hoc mix (543 truncated, 63 rounded up, 1.88 to 2dp) is how a gate ends up encoding a typo as a spec.
+  const encoding = JSON.parse(
+    fs.readFileSync(path.join(ROOT, 'bench', 'encoding-results.json'), 'utf8'),
+  );
+  const roaringPage = fs.readFileSync(path.join(ROOT, 'site', 'flavors-roaring.html'), 'utf8');
+  const show = (ratio) => (ratio >= 10 ? String(Math.round(ratio)) : ratio.toFixed(2));
+  for (const shape of encoding.shapes) {
+    // A shape roaring LOSES is displayed as its reciprocal — the page says "1.02x larger", not "0.98x smaller",
+    // because a reader should not have to invert a number to learn we came second.
+    const want = shape.roaringSmaller
+      ? `${show(shape.vsBestFixed)}\u00d7 smaller`
+      : `${show(1 / shape.vsBestFixed)}\u00d7 larger`;
+    // Match the WHOLE claim, direction included. An earlier version stripped "smaller"/"larger" and compared
+    // only the digits — so the page could have said a shape roaring LOSES was "1.02x smaller" and this would
+    // have passed. The direction is the claim; a gate that checks the number but not which way it points is
+    // exactly the kind of check that reports coverage it does not have.
+    if (!roaringPage.includes(want)) {
+      fail(
+        `site/flavors-roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
+          `as "${want}" — re-run \`pnpm bench:encoding\` and update the page together`,
+      );
+    } else {
+      specAnchors.push([`encoding \u00b7 ${shape.shape}`, want]);
+    }
+  }
+
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
   // Home's correctness panel used to close on "1,156 of them run on every commit". That was ungated AND already
   // wrong — the suite was at 1,161. An exact test total is the worst figure to publish: it moves on nearly every
