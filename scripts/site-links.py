@@ -22,8 +22,27 @@ Two checks, from the same premise: a page nobody linked and a page nobody listed
 import re, sys, glob, os
 
 ROOT = 'site'
-pages = sorted(glob.glob(f'{ROOT}/*.html'))
+# Recursive: the site is no longer flat. `site/flavors/roaring.html` exists so that the `/flavors/roaring` URL
+# the page has always declared as its canonical actually resolves, and a depth-one glob would have quietly
+# excluded it from every check in this file.
+pages = sorted(glob.glob(f'{ROOT}/**/*.html', recursive=True))
 failed = False
+
+
+def rel(page):
+    """A page's path relative to site/ — 'usage.html', 'flavors/roaring.html'. The identity used throughout."""
+    return os.path.relpath(page, ROOT).replace(os.sep, '/')
+
+
+def resolve_ref(page, target):
+    """Resolve a link/asset target the way a BROWSER would: relative to the page holding it, not to site/.
+
+    This used to be `os.path.join(ROOT, target)`, which is the same thing only while every page sits at the top
+    level. From `site/flavors/roaring.html`, `../cloudbitmaps.css` under the old rule resolved to
+    `site/../cloudbitmaps.css` — the repo root — and would have been reported as a broken asset on a page whose
+    stylesheet was perfectly fine. Anchoring on the page's own directory is what makes nesting checkable at all.
+    """
+    return os.path.normpath(os.path.join(os.path.dirname(page), target))
 
 # ── 1 · internal references, and the fragments on them ────────────────────────────────────────────────────
 # The fragment half of this was missing, and it mattered. `refs.add(t.split('#')[0])` threw the fragment away
@@ -33,9 +52,9 @@ failed = False
 # Confirmed by breaking it: pointing Home at `usage.html#nonexistent-anchor` still printed "all internal
 # references resolve". A broken fragment does not 404 — the browser silently lands the reader at the top of the
 # page — so this is precisely the class of defect that needs a gate, and the gate was passing it through.
-ids_by_page = {
-    os.path.basename(p): set(re.findall(r'\bid="([^"]+)"', open(p).read())) for p in pages
-}
+# Keyed by path-relative-to-site, not basename: two pages in different directories may share a filename, and
+# collapsing them would check one page's fragments against the other's ids.
+ids_by_page = {rel(p): set(re.findall(r'\bid="([^"]+)"', open(p).read())) for p in pages}
 
 missing = {}
 bad_frags = {}
@@ -49,18 +68,21 @@ for page in pages:
                 continue
             if t.startswith('#'):
                 # Same-page anchor: the target file IS this page.
-                target, frag = os.path.basename(page), t[1:]
+                target, frag = rel(page), t[1:]
             else:
                 file_part, _, frag = t.partition('#')
-                refs.add(file_part)
-                target = os.path.basename(file_part)
+                if file_part:
+                    refs.add(file_part)
+                target = (
+                    rel(resolve_ref(page, file_part)) if file_part else rel(page)
+                )
             if frag and target in ids_by_page and frag not in ids_by_page[target]:
-                bad_frags.setdefault(f'{target}#{frag}', []).append(os.path.basename(page))
+                bad_frags.setdefault(f'{target}#{frag}', []).append(rel(page))
     for t in sorted(refs):
         if not t:
             continue
-        if not os.path.exists(os.path.join(ROOT, t)):
-            missing.setdefault(t, []).append(os.path.basename(page))
+        if not os.path.exists(resolve_ref(page, t)):
+            missing.setdefault(f'{rel(page)} → {t}', []).append(rel(page))
 
 if missing:
     failed = True
@@ -167,5 +189,47 @@ else:
             f'site-links: {len(pages)} page(s) but only {len(canonical)} canonical URL(s) — '
             'a page without <link rel="canonical"> makes the sitemap check vacuous for that page.'
         )
+
+    # ── 4 · every advertised URL must actually SERVE the page that claims it ───────────────────────────────
+    # The bidirectional check above compares two sets of strings we wrote ourselves. Both can agree perfectly on
+    # a URL that does not exist — and did. `/flavors/roaring` was the sitemap entry, the canonical AND the
+    # og:url of the roaring page while the file sat at `site/flavors-roaring.html`, so Cloudflare had nothing to
+    # serve at that path and fell back to the home page. Every string matched every other string; the flagship
+    # flavor page told Google to index it at a URL returning someone else's content, and nothing here objected.
+    #
+    # Internal consistency is not resolution. This resolves each <loc> against the files that will actually be
+    # deployed, using Pages' clean-URL rules:  /  → index.html ·  /x  → x.html, else x/index.html.
+    def serves(url_path):
+        p = url_path.strip('/')
+        if not p:
+            return 'index.html' if os.path.exists(os.path.join(ROOT, 'index.html')) else None
+        for candidate in (f'{p}.html', f'{p}/index.html'):
+            if os.path.exists(os.path.join(ROOT, candidate)):
+                return candidate
+        return None
+
+    unresolved = {}
+    for loc in sorted(listed):
+        path = re.sub(r'^https?://[^/]+', '', loc)
+        hit = serves(path)
+        if hit is None:
+            unresolved[loc] = 'nothing to serve — Pages will fall back to another page'
+        else:
+            # And it must be the page that CLAIMS that URL, not merely some page. A file existing at the path is
+            # necessary but not sufficient: the canonical is what tells search engines which URL is the real one.
+            declared = re.search(
+                r'rel="canonical"\s+href="([^"]+)"', open(os.path.join(ROOT, hit)).read()
+            )
+            if not declared or declared.group(1).rstrip('/') != loc.rstrip('/'):
+                got = declared.group(1) if declared else '(none)'
+                unresolved[loc] = f'served by {hit}, whose canonical is {got}'
+
+    if unresolved:
+        failed = True
+        print(f'site-links: {len(unresolved)} sitemap URL(s) do not resolve to the page that claims them')
+        for loc, why in sorted(unresolved.items()):
+            print(f'    {loc}\n        {why}')
+    else:
+        print(f'site-links: all {len(listed)} sitemap URL(s) resolve to the page declaring them.')
 
 sys.exit(1 if failed else 0)

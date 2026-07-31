@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(process.argv[2] ?? `${ROOT}/.site-screenshots`);
-const PAGES = ['index', 'usage', 'architecture', 'benchmarks', 'flavors', 'flavors-roaring'];
+const PAGES = ['index', 'usage', 'architecture', 'benchmarks', 'flavors', 'flavors/roaring'];
 /**
  * Both themes, every time.
  *

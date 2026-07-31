@@ -8,7 +8,7 @@
  * number under it at all:
  *
  *   "Redis has no Roaring type of its own … So the honest comparison is not us versus Redis: it is Roaring
- *    versus a fixed representation."                                          — site/flavors-roaring.html
+ *    versus a fixed representation."                                          — site/flavors/roaring.html
  *
  * That is a falsifiable claim about encoded size, and it was published on assertion. This measures it.
  *
