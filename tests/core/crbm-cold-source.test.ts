@@ -22,6 +22,55 @@ afterEach(async () => {
 const bm = (...vals: number[]): SafeBitmap => SafeBitmap.fromValues(vals);
 
 describe('CrbmColdChunkSource + writeCrbmGeneration', () => {
+  it('run-encodes a cold generation: far smaller on disk, byte-identical set on the way back', async () => {
+    // `writeCrbmGeneration` calls `bitmap.optimize?.()` before serializing. Roaring's third container type is a
+    // RUN, and no implementation selects it on its own — it takes an explicit pass, and nothing was making it.
+    // So run-shaped ids were stored at array or bitset prices: measured at 570x for a contiguous range.
+    //
+    // This asserts BOTH halves, because size alone is not the property that matters. A re-encoding that lost or
+    // gained a single id would also be "smaller".
+    const contiguous = Array.from({ length: 50_000 }, (_, i) => i);
+    const unoptimized = SafeBitmap.fromValues(contiguous).serialize().length;
+
+    await writeCrbmGeneration(driver, { segment: 'runs', generation: 0 }, [
+      { chunkKey: 0, bitmap: SafeBitmap.fromValues(contiguous) },
+    ]);
+
+    // The written object is dramatically smaller than the same chunk serialized without the pass. A loose bound
+    // (10x) rather than the measured ~500x, so a future roaring release tuning its heuristics cannot fail this
+    // test for being *differently* efficient — the claim under test is "run-encoding happens", not an exact size.
+    const cold = new CrbmColdChunkSource(driver);
+    const chunk = await cold.getChunk({ segment: 'runs', chunkKey: 0 });
+    expect(chunk).not.toBeNull();
+    expect(chunk!.length * 10).toBeLessThan(unoptimized);
+
+    // And the set survives exactly: same cardinality, same bounds, and a member/non-member probe either side.
+    const back = SafeBitmap.safeDeserialize(chunk!, 1 << 26);
+    expect(back.size).toBe(contiguous.length);
+    expect(back.toArray()).toEqual(contiguous);
+    expect(back.has(0)).toBe(true);
+    expect(back.has(49_999)).toBe(true);
+    expect(back.has(50_000)).toBe(false);
+  });
+
+  it('leaves a sparse generation byte-identical — the pass is never a losing trade', async () => {
+    // The other half of the contract: `optimize()` must not make anything WORSE. Roaring keeps whichever
+    // encoding is smaller per container, so ids with no runs in them come out unchanged rather than paying for
+    // a speculative conversion. Without this, "smaller on run-shaped data" would be an untested half-claim.
+    const sparse = [3, 901, 5_012, 20_444, 61_003];
+    const direct = SafeBitmap.fromValues(sparse).serialize();
+
+    await writeCrbmGeneration(driver, { segment: 'sparse', generation: 0 }, [
+      { chunkKey: 0, bitmap: SafeBitmap.fromValues(sparse) },
+    ]);
+    const cold = new CrbmColdChunkSource(driver);
+    const chunk = await cold.getChunk({ segment: 'sparse', chunkKey: 0 });
+    // Contents, not identity: the driver hands back a Buffer (a Uint8Array subclass), which `toEqual`
+    // distinguishes from the Uint8Array `serialize()` returns even when every byte matches.
+    expect([...chunk!]).toEqual([...direct]);
+    expect(SafeBitmap.safeDeserialize(chunk!, 1 << 26).toArray()).toEqual(sparse);
+  });
+
   it('round-trips bitmaps through an on-disk generation', async () => {
     await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, [
       { chunkKey: 0, bitmap: bm(1, 2, 3) },

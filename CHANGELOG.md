@@ -16,6 +16,33 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ### Fixed
 
+- **Cold generations were never run-encoded, costing up to 570× the bytes they should.** Roaring picks per
+  container between an array, a bitset and a **run** — but no implementation selects the run form on its own; it
+  takes an explicit `runOptimize()` pass, and nothing here was making it. Two of the three container types were
+  therefore ever used, and run-shaped ids paid list or bitmap prices. Measured on the shipped codec: a contiguous
+  1,000,000-id range serialized to **128.1 KiB where run-encoding needs 0.2 KiB (570×)**, and a 2,000-run shape
+  **536.5 KiB against 8.5 KiB (63×)**. Sequential and time-ordered ids — auto-increment keys, batch inserts — are
+  exactly the shapes this hits, so this was a large, quiet multiplier on cold storage, transfer and every read.
+
+  Fixed via a new optional `CodecBitmap.optimize?()`, called where an immutable cold generation is written.
+  Sparse ids come out byte-identical, so it is never a losing trade — roaring keeps whichever encoding is smaller
+  per container. Deliberately NOT called on the per-operation warm delta path: the hot path must not pay for it,
+  and warm rows are folded into a cold generation by compaction, where they are optimized then.
+
+  The `.crbm` envelope is unchanged (the golden byte-layout test passes untouched) and run containers are part of
+  the standard portable Roaring format, so this is a size change, not a format change.
+
+### Added
+
+- **`pnpm bench:encoding`** — the measured evidence behind the site's structural claim ("the honest comparison is
+  not us versus Redis: it is Roaring versus a fixed representation"), which was the one layer of the argument
+  published on assertion alone. Compares one id set across roaring and the two fixed representations it chooses
+  between, over four workload shapes. Deterministic and seeded, with no wall-clock or RSS component, so unlike the
+  other benches it can be asserted rather than only recorded. It reports the shape where roaring LOSES as
+  prominently as the ones where it wins, because the claim being tested is adaptivity, not superiority.
+
+### Fixed
+
 - **`eraseNamespace` no longer discards its ledger when one segment cannot be erased.** It called
   `shredSegment` per segment with no isolation, so a single failure aborted the loop: the caller got an exception,
   no ledger, and no way to learn which segments had *already* been destroyed before the throw — the worst answer

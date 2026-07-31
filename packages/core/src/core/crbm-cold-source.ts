@@ -430,6 +430,10 @@ export function writeCrbmGeneration(
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for (const { chunkKey, bitmap } of sorted) {
       if (bitmap.isEmpty) continue;
+      // Run-encode before serializing. Cold generations are immutable and read many times, so the one-off cost
+      // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors and for
+      // why the per-operation warm path does not do this.
+      bitmap.optimize?.();
       await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
       const pause = tick();
       if (pause !== null) await pause;
@@ -472,6 +476,7 @@ export async function writeCrbmGenerationStream(
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for await (const { chunkKey, bitmap } of chunks) {
       if (bitmap.isEmpty) continue;
+      bitmap.optimize?.(); // same cold-write rationale as the non-streaming writer above
       await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
       chunkKeys.push(chunkKey);
       cardinality += bitmap.size;
