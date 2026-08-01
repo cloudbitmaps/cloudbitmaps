@@ -14,6 +14,28 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **The `.crbm` footer's codec field is generalized: `roaring_serialization_id` → `payload_codec_id`.** Same byte
+  offset, same width, **no layout change** — the golden byte-layout corpus passes unmodified, and every generation
+  ever written still reads. What changes is the field's meaning and how it is validated: it now says *which codec
+  produced the chunk payloads*, and the reader checks membership in a registry of ids it can decode rather than
+  equality with a single constant. `1` = roaring portable, unchanged and permanent.
+
+  **Why now, and why it could not wait.** `.crbm` is a shared container — the index, the CRC32Cs, the AEAD
+  framing and the generation model are all codec-independent, and only the payload bytes belong to a flavor. The
+  format **freezes at `1.0`**, and a field frozen under a codec-specific name cannot be reinterpreted afterwards
+  without a major format version. A second codec is genuinely expected, so this is a one-line registration later
+  instead of a format migration.
+
+  An unregistered id is rejected with a typed `UnsupportedError` naming both the id and what this build can read
+  — **fail-closed**, which is the safe direction: a store uses one codec throughout, so meeting a foreign
+  generation means misconfiguration, and a loud rejection beats decoding someone else's bytes as your own.
+
+  **Breaking, narrowly:** `CrbmWriterOptions.roaringSerializationId` is renamed to `payloadCodecId`. It is an
+  escape hatch on a lower-level writer that virtually nobody sets — the facade never passes it — but if you do,
+  rename the property. No stored data is affected.
+
 ## [0.6.0] — 2026-07-30
 
 Two production-path fixes, one of them a large and entirely silent storage multiplier. Nothing here changes the

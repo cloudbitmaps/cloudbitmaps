@@ -11,7 +11,8 @@ import {
   FOOTER_CRC_COVERAGE,
   MAGIC,
   PAYLOAD_START,
-  ROARING_PORTABLE_ID,
+  KNOWN_PAYLOAD_CODEC_IDS,
+  PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
   VERSION_MINOR,
 } from '@/core/crbm/format';
@@ -37,7 +38,7 @@ function assembleCrbm(opts: {
   totalCardinality?: number;
   /** Footer format fields — default to the valid v1 values; override to forge an unsupported generation. */
   elementWidth?: number;
-  serializationId?: number;
+  payloadCodecId?: number;
   containerCodec?: number;
 }): Uint8Array {
   const indexArr: number[] = [];
@@ -66,7 +67,11 @@ function assembleCrbm(opts: {
   view.setBigUint64(FOOTER.indexLength, BigInt(index.length), true);
   view.setUint32(FOOTER.indexCrc32c, crc32c(index), true);
   view.setUint32(FOOTER.flags, FLAG_LITTLE_ENDIAN, true);
-  view.setUint16(FOOTER.roaringSerializationId, opts.serializationId ?? ROARING_PORTABLE_ID, true);
+  view.setUint16(
+    FOOTER.payloadCodecId,
+    opts.payloadCodecId ?? PAYLOAD_CODEC_ROARING_PORTABLE,
+    true,
+  );
   footer[FOOTER.elementWidth] = opts.elementWidth ?? ELEMENT_WIDTH_32;
   footer[FOOTER.containerCodec] = opts.containerCodec ?? CONTAINER_CODEC_NONE;
   footer[FOOTER.versionMajor] = VERSION_MAJOR;
@@ -182,8 +187,37 @@ describe('crafted (hostile) index — reader-side guards', () => {
     await expect(open(wellFormed({ elementWidth: 64 }))).rejects.toBeInstanceOf(UnsupportedError);
   });
 
-  it('rejects an unknown roaring_serialization_id (a different serialization) with UnsupportedError', async () => {
-    await expect(open(wellFormed({ serializationId: 2 }))).rejects.toBeInstanceOf(UnsupportedError);
+  it('rejects an unregistered payload_codec_id with UnsupportedError', async () => {
+    await expect(open(wellFormed({ payloadCodecId: 2 }))).rejects.toBeInstanceOf(UnsupportedError);
+  });
+
+  // The next three exist because the generalization from "equals one constant" to "is in a registry" is the
+  // kind of change that can be equality with extra steps. Each one would still pass against the old
+  // single-constant reader EXCEPT where noted, so read them together rather than individually.
+
+  it.each([...KNOWN_PAYLOAD_CODEC_IDS])('accepts registered payload_codec_id %i', async (id) => {
+    // Written as a loop over the registry rather than against the literal `1`, so that registering a second
+    // codec extends this test with no edit. A hand-written `expect(open(id=1))` would silently stop covering
+    // the new id on the day it matters — the same depth-one blindness that has bitten the site gates twice.
+    const reader = await open(wellFormed({ payloadCodecId: id }));
+    expect(reader.chunkKeys()).toEqual([0]);
+  });
+
+  it('names the offending id AND the registry in the rejection message', async () => {
+    // The error is the whole user experience of a foreign generation: someone has pointed a roaring store at
+    // another codec's object, and "unsupported" without the number tells them nothing about which codec or
+    // what this build can read. Asserting the message keeps that diagnostic from decaying.
+    await expect(open(wellFormed({ payloadCodecId: 9 }))).rejects.toThrow(
+      /payload_codec_id 9 not supported by this build.*known: 1/s,
+    );
+  });
+
+  it('registers roaring-portable as id 1, and that id is frozen by the golden corpus', () => {
+    // Two assertions that look trivial and are not. The first is the compatibility statement: every generation
+    // ever written by this project carries id 1, so 1 can never be reassigned. The second guards the direction
+    // of the generalization — the registry must CONTAIN the historical id, not replace it.
+    expect(PAYLOAD_CODEC_ROARING_PORTABLE).toBe(1);
+    expect(KNOWN_PAYLOAD_CODEC_IDS.has(PAYLOAD_CODEC_ROARING_PORTABLE)).toBe(true);
   });
 
   it('rejects a non-zero container_codec (a future compression/codec) with UnsupportedError', async () => {
@@ -194,7 +228,7 @@ describe('crafted (hostile) index — reader-side guards', () => {
     const reader = await open(
       wellFormed({
         elementWidth: ELEMENT_WIDTH_32,
-        serializationId: ROARING_PORTABLE_ID,
+        payloadCodecId: PAYLOAD_CODEC_ROARING_PORTABLE,
         containerCodec: CONTAINER_CODEC_NONE,
       }),
     );
