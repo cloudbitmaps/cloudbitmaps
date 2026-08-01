@@ -47,6 +47,19 @@ module.exports = {
       },
     },
     {
+      name: 'core-no-node-builtins',
+      severity: 'error',
+      comment:
+        'core/ is runtime-agnostic, not just storage-agnostic: it must run unchanged in a V8 isolate ' +
+        '(Cloudflare Workers, Deno Deploy) where no node builtin exists. Randomness, time and I/O reach it ' +
+        'through injected seams (Clock, Rng, BlobReader, the driver ports) precisely so this holds — see ' +
+        'DECISIONS #5. Anything needing a builtin belongs in a driver under src/drivers.',
+      from: { path: '^packages/core/src/core' },
+      // `dependencyTypes: ['core']` is depcruise's name for a Node BUILTIN — unrelated to this project's
+      // `core/` directory, which is an unfortunate collision worth flagging so nobody "fixes" it.
+      to: { dependencyTypes: ['core'] },
+    },
+    {
       name: 'core-never-imports-a-flavor',
       severity: 'error',
       comment:

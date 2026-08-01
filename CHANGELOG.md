@@ -14,6 +14,14 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Internal
+
+- **`core/` is now gated as runtime-agnostic, not just storage-agnostic.** `pnpm lint:arch` fails on any `node:*`
+  import under `packages/core/src/core` (`core-no-node-builtins`). Nothing changed in the code — the seam already
+  imported zero builtins, which is why the engine is portable to a V8 isolate at all — but the property was
+  asserted in the docs and enforced by nobody, so a single `import { createHash } from 'node:crypto'` in the seam
+  passed every gate in the repo. Drivers are unaffected and still hold every builtin import in the project.
+
 ### Changed
 
 - **The `.crbm` footer's codec field is generalized: `roaring_serialization_id` → `payload_codec_id`.** Same byte
