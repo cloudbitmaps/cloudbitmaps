@@ -106,11 +106,12 @@
           <div class="hero-copy">
             <!-- Codec-neutral on purpose. The eyebrow said "Roaring Bitmaps" and the lede led with
                  "the bitmap engine", which hard-codes one flavor into the product's own pitch — and
-                 @cloudbitmaps/core is codec-agnostic, with bitset committed and soaring in research.
-                 "bitmaps" is the right noun: it is the umbrella name and all three flavors produce
-                 them. NOT "compressed bitmaps", because bitset is deliberately uncompressed, so that
-                 phrasing would exclude a flavor we have committed to. Roaring is named as the shipped
-                 flavor rather than as the product.
+                 @cloudbitmaps/core is codec-agnostic. "bitmaps" is the right noun: it is the umbrella
+                 name, and Roaring is named as the shipped flavor rather than as the product.
+                 UPDATE 2026-07-31: the reason given here for avoiding "compressed bitmaps" was that it
+                 would exclude the committed bitset flavor. That flavor is now decided against, so the
+                 phrasing survives on a different and better ground — a Roaring chunk stores itself
+                 uncompressed whenever that is smaller, so "compressed" mis-describes our own default.
 
                  The mechanism clause is the codec-neutral half of the pitch, which is why it leads:
                  /architecture already states that chunk-key skipping does not depend on the codec, so

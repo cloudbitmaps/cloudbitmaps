@@ -164,9 +164,11 @@
           </div>
         </div>
         <p class="note" style="max-width: 82ch">
-          That is the entire idea, and everything below is how the second half of it works. The
-          <a href="../flavors.html">bitset flavor</a> will offer the flat bitset on purpose — for
-          dense id spaces it is the right shape, and it needs no native dependency.
+          That is the entire idea, and everything below is how the second half of it works. And note
+          what Roaring does when a chunk really is dense: it stores that chunk <em>as</em> a flat
+          bitset. The flat shape is not an alternative to this design, it is one of the three things
+          this design picks between — which is why
+          <a href="../flavors.html">a separate plain-bitset flavor</a> is not planned.
         </p>
 
         <!-- This section argued against "one big bitset" in the abstract for its whole life, when a Redis
@@ -243,10 +245,13 @@
             representation for each shape, at its own theoretical floor: a contiguous 1,000,000-id
             range is <strong>543× smaller</strong> as roaring, a 2,000-run shape
             <strong>63× smaller</strong>, scattered ids <strong>1.88× smaller</strong> — and a
-            half-dense block is <strong>1.02× larger</strong>, because adaptive means sometimes
-            losing narrowly rather than always winning. Encoded bytes, not Redis process memory: a
-            real Set carries per-member overhead above the packed figure, so every alternative here
-            is quoted at its best case.
+            half-dense block is <strong>1.02× larger</strong>. Read that last one carefully, because
+            it is not a shape where a flat bitset is the better idea: it is the shape where roaring
+            <em>becomes</em> one. Every chunk there is past the array/bitset threshold, so each is
+            stored as a flat 8 KiB bitset and the 2% is per-chunk bookkeeping. The floor of the
+            adaptive choice is the fixed choice plus a rounding error. Encoded bytes, not Redis
+            process memory: a real Set carries per-member overhead above the packed figure, so every
+            alternative here is quoted at its best case.
           </p>
           <p class="tpanel-foot">
             Redis has no Roaring type of its own — there is a third-party module that wraps
@@ -384,8 +389,13 @@
             <p class="label">A native dependency</p>
             <p>
               This flavor wraps CRoaring through <span class="m">roaring-node</span>, so it brings a
-              platform matrix and something to compile. On an edge runtime that is disqualifying,
-              and it is the honest cost of choosing this row.
+              platform matrix and something to compile. That is the honest cost of choosing this
+              row: a prebuilt exists for common Linux and macOS targets, and anything else &mdash;
+              Graviton, an unusual libc, a locked-down build that forbids compilation &mdash;
+              compiles from source or does not install. Native addons <em>do</em> load on Deno, Bun
+              and Lambda; what they cannot enter is an isolate runtime such as Cloudflare Workers.
+              Note that today the engine itself does not run there either, for reasons that have
+              nothing to do with the codec.
             </p>
           </div>
           <div class="limit">

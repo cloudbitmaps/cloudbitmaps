@@ -188,15 +188,18 @@ move it up.
   measures what actually matters (cardinality, compressed size, and above all **chunk density**), then tells you
   the topology, the write path, and the monthly cost that follow — **offline, with no cloud account and nothing
   created**. Today's cost tooling can only answer that once you're already a user, which is backwards. It would
-  also answer whether you need the native Roaring addon at all: if your IDs compress no better than a plain
-  bitset, you can skip it and deploy to edge runtimes.
+  also answer what the native Roaring addon is buying you on your particular ids &mdash; which is a real
+  question, since the answer ranges from 543x to nothing.
 - **Multi-region active/active** — region-local by design for the `1.0` line; not ruled out beyond it.
-- **A generic `bitset` flavor** (`@cloudbitmaps/bitset`) — the same cloud engine behind a plain bitset codec
-  instead of Roaring, for dense id spaces and for runtimes where a native addon is unwelcome. The codec seam
-  that makes it a drop-in already exists. Of everything in this section it is the most likely to happen first,
-  after `1.0` and on validated demand — but like the rest of this list it is uncommitted and undated. (It read
-  "the committed fast-follow" until 0.5.0, directly under a heading saying nothing here is committed. The
-  heading is right.)
+- ~~**A generic `bitset` flavor** (`@cloudbitmaps/bitset`)~~ — **decided against, 2026-07-31.** It was the most
+  likely item on this list for months. Then we measured the thing it was for: above roughly **6% density a
+  Roaring chunk already *is* an uncompressed bitset**, so a plain codec has no size to win — on the workload
+  built to favour it, a flat bitset comes out **2%** ahead, while Roaring wins the other shapes by 543×, 63× and
+  1.88×. The genuine advantage a flat bitset has is random access — one shift-and-mask against a container
+  lookup, worth 7–77× in CRoaring's own benchmarks — but that is roughly **20 nanoseconds** inside an operation
+  where we spend **5 milliseconds** reaching storage. It would have been a plausible wrong turn: chosen for dense
+  ids, which is exactly where Roaring has already become the same bitset. The codec seam stays; nothing is queued
+  to fill it.
 - **Native registry drivers** for GCS, Azure, Postgres, and Redis, so a non-AWS deployment can run the
   compaction daemon without an AWS dependency.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
