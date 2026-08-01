@@ -22,6 +22,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   asserted in the docs and enforced by nobody, so a single `import { createHash } from 'node:crypto'` in the seam
   passed every gate in the repo. Drivers are unaffected and still hold every builtin import in the project.
 
+- **A dependency-free JavaScript reader for the portable Roaring format** (`packages/roaring/src/portable/`).
+  **Not exported and not wired into anything** — there is no user-visible change here, and nothing to call. It
+  is the first piece of edge-runtime membership: the engine seam is already portable, but `roaring` is a native
+  C++ addon that no V8 isolate can load, so reading a chunk without it is the prerequisite for everything else.
+  Read-only by design (`has` / `count`); writes and compaction stay on the native codec.
+
+  Correctness is differential rather than asserted: the native library generates both the bytes and the expected
+  answers across every container encoding, both header cookies, and 200 randomly-shaped bitmaps. Untrusted bytes
+  are bounds-checked at every header read, and non-ascending container keys are rejected rather than fed to a
+  binary search that would return silently wrong membership.
+
 ### Changed
 
 - **The `.crbm` footer's codec field is generalized: `roaring_serialization_id` → `payload_codec_id`.** Same byte
