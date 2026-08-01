@@ -19,7 +19,8 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (DynamoDB-Local, MinIO, fake-gcs-server,
   Azurite, Postgres, Redis, Mongo, Cassandra, MySQL) — no real cloud account needed
-- `pnpm lint:arch` is the dependency-cruiser gate enforcing the storage-agnostic-core rule.
+- `pnpm lint:arch` is the dependency-cruiser gate enforcing the storage-agnostic-core rule — and, since
+  `core-no-node-builtins`, the **runtime**-agnostic one too.
 - `pnpm smoke` loads the **built** packages through their `exports` maps under both ESM and `require()`, on
   every driver subpath, and cross-checks the `Symbol.for`-branded error predicates across bundles — the class
   of bug the source-graph tests structurally cannot see.
@@ -43,6 +44,12 @@ The `@cloudbitmaps` family split makes this repo a workspace
 A user installs **one flavor** (`@cloudbitmaps/roaring`); core arrives transitively and is never installed
 directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor package, if the main entry
 reaches a cloud SDK, or if `core/` reaches a driver impl.
+
+`core/` is also **runtime**-agnostic: `lint:arch` fails on any `node:*` import under `packages/core/src/core`, so
+the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and
+I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver ports — which is what makes that
+enforceable rather than aspirational. **Anything needing a builtin belongs in a driver under `src/drivers`**,
+where all of them live today.
 
 ## Branching & merge conventions
 
