@@ -213,6 +213,17 @@ move it up.
   objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
 - **Cheaper reads** — a warm-chunk cache and coalesced merge GETs, both scoped so they can't tax the hot
   path.
+- **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
+  Worker answering "is id N in segment S?" against a cold generation in R2 is two ranged reads and a decode,
+  which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no
+  `node:*` builtin and has zero runtime dependencies, so the seam already loads in a V8 isolate. It is the
+  **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the
+  first piece is a dependency-free JavaScript **reader** for the standard portable Roaring format, which now
+  exists in the tree, is checked against the native library on 200 randomly-shaped bitmaps plus every container
+  encoding, and is **not exported, not wired into anything, and not something you can use yet**. Read-only by
+  design: writes and compaction stay in Node, where the native codec is the right tool. **We will not claim this
+  works on any runtime until CI runs the conformance suite inside that runtime** — the project has been wrong
+  about edge-runtime capabilities three times, and a claim is not a test.
 
 ## Deliberately not planned
 

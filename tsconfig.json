@@ -9,6 +9,7 @@
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
       "@/system-clock": ["./packages/roaring/src/system-clock.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
+      "@/portable/*": ["./packages/roaring/src/portable/*"],
       "@/bin/*": ["./packages/roaring/src/bin/*"],
       "@/*": ["./packages/core/src/*"],
       "@cloudbitmaps/core": ["./packages/core/src/index.ts"],
