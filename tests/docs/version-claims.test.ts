@@ -139,7 +139,35 @@ function markdownUnder(dir: string, prefix: string): string[] {
   });
 }
 
-const MARKDOWN_DOCS = ['README.md', ...markdownUnder(join(ROOT, 'docs'), 'docs')];
+/**
+ * The per-package READMEs — one `README.md` per directory under `packages/`.
+ *
+ * (Spelled out rather than written as a glob: the glob's `*` followed by `/` closes this very comment, which
+ * is a two-minute detour worth not repeating.)
+ *
+ * The **fourth** hole in this gate, found while cutting 0.7.0. These are the npm landing pages: the first
+ * thing anyone evaluating either package reads, and arguably the most-seen prose in the project. The scope
+ * above reaches `README.md` at the repo root and everything under `docs/`, and neither of those is this.
+ *
+ * They happen to carry no version token today, so nothing was stale — but "currently harmless" is not the
+ * same as "covered", and that distinction is the entire history of this file. A badge added to either README
+ * tomorrow would be guarded by nobody.
+ *
+ * Derived by walking `packages/`, so a third package is covered the day it exists rather than the day someone
+ * remembers to add it here.
+ */
+function packageReadmes(): string[] {
+  const dir = join(ROOT, 'packages');
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(dir, e.name, 'README.md')))
+    .map((e) => `packages/${e.name}/README.md`);
+}
+
+const MARKDOWN_DOCS = [
+  'README.md',
+  ...packageReadmes(),
+  ...markdownUnder(join(ROOT, 'docs'), 'docs'),
+];
 
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
@@ -234,6 +262,10 @@ describe('markdown version claims', () => {
     // loudly here rather than quietly reduce what is checked.
     expect(MARKDOWN_DOCS).toContain('README.md');
     expect(MARKDOWN_DOCS).toContain('docs/guide/getting-started.md');
+    // The npm landing pages. Named individually rather than counted, so renaming a package directory fails
+    // here instead of silently dropping the page an evaluating user actually reads first.
+    expect(MARKDOWN_DOCS).toContain('packages/core/README.md');
+    expect(MARKDOWN_DOCS).toContain('packages/roaring/README.md');
   });
 
   it('is not vacuous — the covered docs name a version somewhere', () => {

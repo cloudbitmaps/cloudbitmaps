@@ -35,6 +35,28 @@ The trade is stated plainly rather than buried: a membership check that misses t
 round trip to your warm tier, where an in-process RAM store costs a memory read. If you need a sub-millisecond
 p99 on a working set that fits a bounded hot cache, use Redis. If your sets are large, mostly read, and shouldn't cost $346/month to keep warm, use this.
 
+## Coming from Redis bitmaps?
+
+Your operations carry over one-for-one, and you are not giving up the bitmap: past **4,096 ids** in a
+65,536-id chunk — 6.25% of it — Roaring stores that chunk *as* a flat bit array, byte for byte what you have
+now. It just stops paying for the chunks you never wrote to.
+
+| Redis | Here |
+|---|---|
+| `SETBIT` / `GETBIT` | `add` / `remove` · `has` |
+| `BITCOUNT` | `count()` — exact, served from the index with no payload reads |
+| `BITOP AND` / `OR` / `DIFF` | `intersect` / `union` / `andNot` — and `intersect` skips chunks that cannot contribute |
+
+**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything reading your
+Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup —
+will not read ours. `BITFIELD`, `BITPOS`, `BITOP NOT` and byte-range `BITCOUNT` have no equivalent either: this
+is a set of ids, not an addressable bit buffer. Raw bit-position import/export is unbuilt;
+[say so in an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) if you need it, because that is what
+decides whether it gets built.
+
+Redis stays first-class as a **warm tier** underneath this (`@cloudbitmaps/roaring/redis`) — the point above is
+about replacing `SETBIT`-on-one-giant-key as your *data model*, not replacing Redis as infrastructure.
+
 Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
 the method and what the numbers do *not* establish), and the design corpus live in the
 [repository](https://github.com/cloudbitmaps/cloudbitmaps). Licensed Apache-2.0.
