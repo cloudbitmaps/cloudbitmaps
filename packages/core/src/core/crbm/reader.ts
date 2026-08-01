@@ -36,7 +36,8 @@ import {
   MAX_CHUNK_CARDINALITY,
   PAYLOAD_START,
   PREAMBLE_BYTES,
-  ROARING_PORTABLE_ID,
+  KNOWN_PAYLOAD_CODEC_IDS,
+  PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
 } from './format';
 
@@ -172,10 +173,16 @@ export class CrbmReader {
         `.crbm element_width ${elementWidth} not supported (v1 reads 32-bit ids; 64-bit is a future major version)`,
       );
     }
-    const serializationId = fview.getUint16(FOOTER.roaringSerializationId, true);
-    if (serializationId !== ROARING_PORTABLE_ID) {
+    // Membership, not equality: the field says which codec wrote the payloads, and this reader accepts every
+    // id it can actually decode. An unknown one fails closed rather than being handed to a decoder that would
+    // misread it — see KNOWN_PAYLOAD_CODEC_IDS for why that direction is the safe one.
+    const payloadCodecId = fview.getUint16(FOOTER.payloadCodecId, true);
+    if (!KNOWN_PAYLOAD_CODEC_IDS.has(payloadCodecId)) {
       throw new UnsupportedError(
-        `.crbm roaring_serialization_id ${serializationId} not supported (v1 is portable=${ROARING_PORTABLE_ID})`,
+        `.crbm payload_codec_id ${payloadCodecId} not supported by this build ` +
+          `(known: ${[...KNOWN_PAYLOAD_CODEC_IDS].join(', ')}; ` +
+          `${PAYLOAD_CODEC_ROARING_PORTABLE}=roaring portable). A generation written by a different codec ` +
+          `is rejected rather than decoded — a store uses one codec throughout.`,
       );
     }
     const containerCodec = footer[FOOTER.containerCodec]!;

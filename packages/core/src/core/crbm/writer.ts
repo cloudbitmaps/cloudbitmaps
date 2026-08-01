@@ -27,7 +27,7 @@ import {
   MAX_CHUNK_CARDINALITY,
   PAYLOAD_START,
   PREAMBLE_BYTES,
-  ROARING_PORTABLE_ID,
+  PAYLOAD_CODEC_ROARING_PORTABLE,
   VERSION_MAJOR,
   VERSION_MINOR,
 } from './format';
@@ -35,7 +35,13 @@ import {
 export interface CrbmWriterOptions {
   /** Self-describing generation number (also encoded in the object key). */
   readonly generation: number;
-  readonly roaringSerializationId?: number;
+  /**
+   * Which codec produced the chunk payloads. Defaults to {@link PAYLOAD_CODEC_ROARING_PORTABLE}.
+   *
+   * Renamed from `roaringSerializationId` in 0.7.0 — same footer field, same offset and width, generalized
+   * because `.crbm` is a shared container and a second codec is expected before the format freezes.
+   */
+  readonly payloadCodecId?: number;
   readonly elementWidth?: number;
   /** When set, payloads + index are AES-256-GCM-encrypted, bound to `(segment, generation, scope)` via AAD. */
   readonly crypto?: CrbmCrypto;
@@ -188,8 +194,8 @@ export class CrbmWriter {
     view.setUint32(FOOTER.indexCrc32c, crc32c(indexRegion), true);
     view.setUint32(FOOTER.flags, FLAG_LITTLE_ENDIAN | (encrypted ? FLAG_ENCRYPTED : 0), true);
     view.setUint16(
-      FOOTER.roaringSerializationId,
-      this.options.roaringSerializationId ?? ROARING_PORTABLE_ID,
+      FOOTER.payloadCodecId,
+      this.options.payloadCodecId ?? PAYLOAD_CODEC_ROARING_PORTABLE,
       true,
     );
     footer[FOOTER.elementWidth] = this.options.elementWidth ?? ELEMENT_WIDTH_32;

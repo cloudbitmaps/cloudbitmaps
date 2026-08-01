@@ -26,7 +26,7 @@ export const FOOTER = {
   indexLength: 8, // u64
   indexCrc32c: 16, // u32
   flags: 20, // u32
-  roaringSerializationId: 24, // u16
+  payloadCodecId: 24, // u16 — was `roaringSerializationId`; same offset, same width, wider meaning
   elementWidth: 26, // u8
   containerCodec: 27, // u8
   versionMajor: 28, // u8
@@ -63,12 +63,39 @@ export const KNOWN_FLAGS = FLAG_ENCRYPTED | FLAG_LITTLE_ENDIAN;
 export const ELEMENT_WIDTH_32 = 32;
 
 /**
- * CRoaring "portable" serialization id recorded in the footer. Phase 1's `SafeBitmap` serializes with
- * the portable format; this records that choice so a reader can confirm it can decode the payloads. A
- * generation stamped with any other id is rejected ({@link UnsupportedError}) — a different serialization is
- * a format change, not a payload a v1 reader may guess at.
+ * **Which codec produced the chunk payloads.** Recorded in the footer, validated on read.
+ *
+ * `.crbm` is a shared container: the index, the CRC32Cs, the AEAD framing and the generation model are all
+ * codec-independent, and **only the chunk payload bytes belong to a flavor** (hence *Chunked Remote BitMap* —
+ * see `04-CRBM-FORMAT`). This field is what lets one container hold either, the same way ZIP tags each member
+ * with a compression method.
+ *
+ * **Why this is not named `roaringSerializationId` any more.** It was, and the name was a trap waiting for the
+ * `1.0` format freeze. A second codec is genuinely expected — `soaring` is a planned Roaring *variant*, so its
+ * serialized bytes are unlikely to be roaring-portable, and it lands *after* `1.0`. A field frozen under a
+ * codec-specific name cannot be reinterpreted later without a major format version, so generalizing it is a
+ * one-line change now and an expensive one after the freeze. The byte layout is untouched: same offset (24),
+ * same width (u16), same golden corpus.
+ *
+ * **Ids are permanent once published.** Add to {@link KNOWN_PAYLOAD_CODEC_IDS} when a codec ships; never
+ * reuse or renumber. Ids are deliberately *not* pre-allocated for codecs that do not exist — a reserved number
+ * for an unbuilt codec is a guess about a format nobody has designed.
  */
-export const ROARING_PORTABLE_ID = 1;
+export const PAYLOAD_CODEC_ROARING_PORTABLE = 1;
+
+/**
+ * Every payload codec id this reader can decode.
+ *
+ * The reader validates membership rather than equality with a single constant. That is the whole point of the
+ * generalization: an unknown id is rejected with a typed error naming it, so an old reader meeting a
+ * future-codec generation **fails closed** — the correct direction, and the reason a store built on one codec
+ * can never silently misread another's bytes as its own. (The homogeneity contract means one store is one
+ * codec, so meeting a foreign generation implies misconfiguration, and a loud rejection is exactly what you
+ * want there.)
+ */
+export const KNOWN_PAYLOAD_CODEC_IDS: ReadonlySet<number> = new Set([
+  PAYLOAD_CODEC_ROARING_PORTABLE,
+]);
 
 /**
  * The only container codec v1 defines: `0` = none (payloads are stored as the portable roaring serialization
