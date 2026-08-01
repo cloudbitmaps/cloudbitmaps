@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 // most load-bearing number on a landing page — it is what a reader checks to decide whether a feature they
 // just read about exists yet. So it gets the same treatment as every other public claim in this repo: pinned
 // by a test rather than by remembering.
+//
+// It covers two surfaces, `site/` and the markdown docs, because the hole it was written to close turned out
+// to be in both. See MARKDOWN_DOCS for why the second half is scoped differently from the first.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SITE = join(ROOT, 'site');
 
@@ -53,6 +56,10 @@ const FOREIGN_VERSIONS = new Map<string, string>([
   [
     '24.14.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
+  ],
+  [
+    '0.0.0',
+    "README's license section: the placeholder published to reserve the unscoped `cloud-roaring` npm name",
   ],
 ]);
 
@@ -97,6 +104,42 @@ const pages = htmlPagesUnder(SITE);
  * files carrying a version is a gate with a hole in it, and this is what fell through.
  */
 const VERSIONED_TEXT_FILES = ['llms.txt'];
+
+/**
+ * Markdown that describes the CURRENT release, and therefore must name the current release.
+ *
+ * The third hole in the same gate. It has now grown twice for the same reason — once for `llms.txt` (a
+ * versioned file that was not `*.html`) and once for nested pages (a versioned file the walk could not reach) —
+ * and both times the note left behind said that a version gate covering *some* of the files carrying a version
+ * is a gate with a hole in it. The markdown was the rest of that hole: `README.md` and the getting-started
+ * guide both advertised `0.1.1` while the packages shipped `0.6.0`, across five releases, because nothing in
+ * here had ever opened a `.md`.
+ *
+ * The site half's polarity does **not** transfer wholesale, and that is the part worth reading. On the site
+ * every version token is a badge — a claim about what you can install right now — so "assume ours, allowlist
+ * the exceptions" is right. In markdown it is not: `docs/ROADMAP.md` is *about* past releases ("other cloud
+ * backends are post-`0.1.0`"), and at the repo root `CHANGELOG.md`, `RELEASING.md` and `SECURITY.md` are a
+ * release history, worked examples, and third-party advisory pins respectively. Pointing an assume-ours rule at
+ * those yields nothing but false positives, and the allowlist absorbing them would grow until it exempted the
+ * numbers that actually matter.
+ *
+ * So the scope is per-FILE and by kind — files whose job is to describe the library as it is *now*. Inside
+ * them the site polarity applies unchanged. The set is derived by walking `docs/` rather than enumerated, so a
+ * new page is covered the day it is added; `ROADMAP.md` is the one carve-out and it has to name itself here.
+ */
+const HISTORICAL_DOCS = new Set([
+  'docs/ROADMAP.md', // a release history by design — every version in it is deliberately not the current one
+]);
+
+function markdownUnder(dir: string, prefix: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const rel = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) return markdownUnder(join(dir, entry.name), rel);
+    return entry.name.endsWith('.md') && !HISTORICAL_DOCS.has(rel) ? [rel] : [];
+  });
+}
+
+const MARKDOWN_DOCS = ['README.md', ...markdownUnder(join(ROOT, 'docs'), 'docs')];
 
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
@@ -152,13 +195,18 @@ describe('site version badges', () => {
     }
   });
 
-  it('every FOREIGN_VERSIONS entry is still on the site', () => {
+  it('every FOREIGN_VERSIONS entry is still somewhere it is needed', () => {
     // An allowlist nobody prunes is how the check quietly widens: the day the benchmark methodology is re-run
     // on a newer Node, `24.14.1` stops appearing and its entry starts silently exempting nothing — or worse,
     // exempts that number if it ever becomes OUR version. Entries must justify themselves every run.
-    const all = [...pages, ...VERSIONED_TEXT_FILES]
-      .map((f) => readFileSync(join(SITE, f), 'utf8'))
-      .join('\n');
+    //
+    // Read across BOTH surfaces, because the map is shared by both. Scoped to the site alone this would fail
+    // the moment a markdown-only exemption was added, and the tempting fix — a second parallel allowlist — is
+    // how one rule becomes two that drift.
+    const all = [
+      ...[...pages, ...VERSIONED_TEXT_FILES].map((f) => readFileSync(join(SITE, f), 'utf8')),
+      ...MARKDOWN_DOCS.map((f) => readFileSync(join(ROOT, f), 'utf8')),
+    ].join('\n');
     for (const [v, why] of FOREIGN_VERSIONS) {
       expect(all, `FOREIGN_VERSIONS has a stale entry: ${v} (${why}) no longer appears`).toContain(
         v,
@@ -175,5 +223,53 @@ describe('site version badges', () => {
     // cannot agree with one and disagree with the other.
     const { VERSION } = (await import('@/index')) as { VERSION: string };
     expect(VERSION).toBe(version);
+  });
+});
+
+describe('markdown version claims', () => {
+  it('reaches the two front doors, so a move cannot silently shrink the scope', () => {
+    // README and the getting-started guide are the files a reader meets first and the two that were actually
+    // wrong. The derived walk protects against a page being ADDED and missed; this protects against one being
+    // MOVED and dropped, which the walk cannot see. Both were stale for five releases, so a rename has to fail
+    // loudly here rather than quietly reduce what is checked.
+    expect(MARKDOWN_DOCS).toContain('README.md');
+    expect(MARKDOWN_DOCS).toContain('docs/guide/getting-started.md');
+  });
+
+  it('is not vacuous — the covered docs name a version somewhere', () => {
+    // Every per-file assertion below is a loop over the tokens found, so a scope that matched only
+    // version-free files would pass while checking nothing. That is exactly how the markdown went unguarded in
+    // the first place, so it gets an assertion rather than an assumption.
+    const total = MARKDOWN_DOCS.reduce(
+      (n, f) => n + badgeVersions(readFileSync(join(ROOT, f), 'utf8')).length,
+      0,
+    );
+    expect(
+      total,
+      'no covered markdown doc names a version — is the scope still right?',
+    ).toBeGreaterThan(0);
+  });
+
+  it('excludes only docs that exist, so a stale carve-out cannot linger', () => {
+    // HISTORICAL_DOCS is an exemption list and gets the same treatment as FOREIGN_VERSIONS: if ROADMAP.md is
+    // renamed, the entry stops excluding anything and should be deleted rather than left as a comment about a
+    // file that is gone.
+    for (const f of HISTORICAL_DOCS) {
+      expect(
+        existsSync(join(ROOT, f)),
+        `HISTORICAL_DOCS carves out ${f}, which no longer exists`,
+      ).toBe(true);
+    }
+  });
+
+  it.each(MARKDOWN_DOCS)('%s names the current version wherever it names one', (file) => {
+    for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'))) {
+      expect(
+        v,
+        `${file} names ${v}, but the packages are at ${version}. If ${v} is a third-party or historical ` +
+          `version rather than a claim about the current release, add it to FOREIGN_VERSIONS with the reason ` +
+          `— or, if the whole file is a release history, to HISTORICAL_DOCS.`,
+      ).toBe(version);
+    }
   });
 });

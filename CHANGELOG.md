@@ -1,6 +1,6 @@
 # Changelog
 
-All notable, user-facing changes to CloudRoaring are recorded here. The format follows
+All notable, user-facing changes to CloudBitmaps are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adopts
 [Semantic Versioning](https://semver.org/) from **v0.1.0**.
 
@@ -35,6 +35,27 @@ All notable, user-facing changes to CloudRoaring are recorded here. The format f
   **Breaking, narrowly:** `CrbmWriterOptions.roaringSerializationId` is renamed to `payloadCodecId`. It is an
   escape hatch on a lower-level writer that virtually nobody sets — the facade never passes it — but if you do,
   rename the property. No stored data is affected.
+
+### Documentation
+
+- **"Coming from Redis bitmaps?" — a direct answer to the question the flavors table provokes.** Now that
+  `/flavors` lists a plain-bitset flavor as *Not planned*, a reader who runs Redis bitmaps today is entitled to
+  ask what they give up. The answer, on both `/flavors/roaring` and in the
+  [guide](docs/guide/getting-started.md), is a per-command mapping (`SETBIT`→`add`, `GETBIT`→`has`,
+  `BITCOUNT`→`count`, `BITOP AND`/`OR`/`DIFF`→`intersect`/`union`/`andNot`) plus the point that above 4,096 ids
+  in a chunk — 6.25% of it — roaring stores that chunk *as* a flat bit array, so the dense case is byte-for-byte
+  what they have now.
+
+  It also states plainly what does **not** port, because the rest is not credible without it: `BITFIELD`,
+  `BITPOS`, `BITOP NOT`/`ONE` and byte-range `BITCOUNT` have no equivalent, and nothing that reads a Redis
+  bitmap's raw string will read a `.crbm`. Raw bit-position import/export is unbuilt and explicitly demand-gated.
+
+- **Fixed: the README and the getting-started guide both advertised `0.1.1`** while the packages shipped
+  `0.6.0` — stale across five releases. The version gate only ever opened `site/**/*.html` and `llms.txt`, so
+  markdown was invisible to it; it now covers `README.md` and `docs/` (with `docs/ROADMAP.md` carved out, since
+  a release history naming old versions is correct). This is the third hole found in the same gate, and the
+  scope is now derived by walking the tree rather than enumerated, so a new doc is covered the day it is added.
+  Renamed `tests/docs/site-version.test.ts` → `tests/docs/version-claims.test.ts` to match what it guards.
 
 ## [0.6.0] — 2026-07-30
 

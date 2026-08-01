@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.1.1` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.6.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
@@ -8,8 +8,7 @@
 > **Cassandra/ScyllaDB**, and **MySQL/MariaDB**, the **segment registry**, **automatic retry/backoff**, a **crash-safe streaming
 > compaction daemon**, and **encryption-at-rest + crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
 > Phase 7 driver set; the full v1 experience is sketched in
-> the usage walkthrough. The API may
-> change before 1.0.
+> the usage walkthrough.
 
 > **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the
 > *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
@@ -1098,6 +1097,44 @@ intermediate segment and reads the suppression list in full.
 
 Failures are **typed errors** (`ValidationError`, `WriteConflictError`, `IntegrityError`, …), never thrown
 strings — so callers can branch on *why* something failed.
+
+### Coming from Redis bitmaps?
+
+There is no separate "plain bitmap" flavor and there is not going to be one, because this is it — a Roaring
+bitmap **is** a plain bitset wherever a plain bitset is the right answer. Each 65,536-id chunk is stored in
+whichever of three encodings is smallest for that chunk, and past **4,096 ids** in a chunk (6.25% of it) the
+winner is a flat bit array: the same bytes you have now, chosen per chunk instead of assumed for all of them.
+Below that threshold you stop paying for the empty span.
+
+Your operations carry over one-for-one:
+
+| Redis | Here | Difference |
+|---|---|---|
+| `SETBIT key id 1` / `SETBIT key id 0` | `add(id)` / `remove(id)` | none in meaning — an id is a bit offset, both `u32` |
+| `GETBIT key id` | `has(id)` | none in meaning |
+| `BITCOUNT key` | `count()` | exact, and served from the index without fetching payloads |
+| `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute |
+| `BITOP OR dst a b` | `a.union([b])` / `unionInto` | none in meaning |
+| `BITOP DIFF dst a b` (Redis 8.2+) | `a.andNot([b])` / `andNotInto` | none in meaning; reads `b` only where it overlaps `a` |
+| `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
+| `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
+| `BITOP NOT` · `BITOP ONE` | — | no equivalent |
+
+`BITFIELD`, `BITPOS`, and the byte-range forms of `BITCOUNT` have no equivalent either. This is a set of ids,
+not an addressable bit buffer, so anything that treats the key as a positional buffer does not port — and
+`BITOP NOT` in particular has nothing to complement against, because there is no bounded universe here, only
+the `u32` id space.
+
+**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything that reads
+your Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup,
+another service that already parses that layout — will not read ours. Raw bit-position **import** (the
+migration direction off Redis) and export are not built; the format field that would name them exists, and
+whether they get built depends on someone saying they need them. Everything reached through bitmap
+*operations* transfers today; everything reached through the bytes does not.
+
+> Redis stays first-class as a **warm tier** underneath this
+> ([`@cloudbitmaps/roaring/redis`](#redis-warm-cloudbitmapsroaringredis)) — the point above is about replacing
+> `SETBIT`-on-one-giant-key as your *data model*, not about replacing Redis as infrastructure.
 
 ## Intersecting segments (the crown jewel)
 
