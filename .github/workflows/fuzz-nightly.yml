@@ -17,6 +17,20 @@ on:
       seconds:
         description: Per-target fuzz budget (seconds)
         default: '600'
+  # …and a 60s smoke run when THIS FILE changes, which is the only case the paragraph above left uncovered.
+  #
+  # Dependabot bumped actions/cache v4→v6 and actions/upload-artifact v4→v7 in here, and both PRs went green
+  # with 13 passing checks — none of which ran a single line of this workflow, because it has no PR trigger and
+  # the only other consumer of upload-artifact is a job gated on `workflow_dispatch`. Green meant "the rest of
+  # CI still works", not "this change is fine", and nothing said so. Verifying those two took hand-dispatched
+  # runs; without them a broken bump would have sat here until a nightly failed, or worse, until one silently
+  # stopped fuzzing.
+  #
+  # Scoped to this path alone: the point is to cover edits to the workflow, not to make fuzzing a per-PR gate.
+  # The reasoning above — that fuzzing is a time-budgeted campaign and not a pass/fail gate — is unchanged.
+  pull_request:
+    paths:
+      - .github/workflows/fuzz-nightly.yml
 
 permissions:
   contents: read
@@ -34,9 +48,12 @@ jobs:
       matrix:
         target: [deser, crbm, index]
     env:
-      # Per-target budget: the weekly deep soak (Sunday cron) gets 60 min; the nightly gets 10 min; a manual
-      # dispatch overrides both. `github.event.schedule` is the cron string that fired the run.
-      FUZZ_SECONDS: ${{ github.event.inputs.seconds || (github.event.schedule == '0 6 * * 0' && '3600' || '600') }}
+      # Per-target budget: the weekly deep soak (Sunday cron) gets 60 min; the nightly gets 10 min; the
+      # workflow-file smoke run gets 60s, because it is checking that the steps still RUN, not hunting bugs; a
+      # manual dispatch overrides all of them. `github.event.schedule` is the cron string that fired the run.
+      FUZZ_SECONDS:
+        ${{ github.event.inputs.seconds || (github.event_name == 'pull_request' && '60') ||
+        (github.event.schedule == '0 6 * * 0' && '3600') || '600' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
@@ -54,8 +71,13 @@ jobs:
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Fuzz
         run: pnpm fuzz:${{ matrix.target }}
+      # Normally only on failure — there is nothing to collect from a clean run. The extra `pull_request` arm
+      # exists so the smoke run actually REACHES this step: `if: failure()` alone means a green smoke run skips
+      # it, which is precisely how the upload-artifact v4→v7 bump reached `main` with its only two call sites
+      # unexecuted. `if-no-files-found: ignore` already makes the empty case a no-op, so on a passing PR this
+      # costs one resolved action and uploads nothing.
       - name: Upload crash reproducers
-        if: failure()
+        if: failure() || github.event_name == 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-crashes-${{ matrix.target }}
