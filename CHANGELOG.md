@@ -14,6 +14,19 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-01
+
+One narrowly breaking rename, and the docs a Redis-bitmap user needs to evaluate this at all.
+
+The rename is the reason this is a minor: `.crbm`'s footer field `roaring_serialization_id` is now
+`payload_codec_id`. **No stored bytes move** — same offset, same width, every generation ever written still
+reads, and the golden byte-layout corpus passes unmodified. What changes is what the field *means* and how it
+is checked. It had to happen before `1.0` freezes the format, because a field frozen under a codec-specific
+name cannot be reinterpreted afterwards without a major format version.
+
+If you have never set `CrbmWriterOptions.roaringSerializationId` — and almost nobody has, the facade never
+passes it — this release is docs and internals, and upgrading is a version bump.
+
 ### Internal
 
 - **`core/` is now gated as runtime-agnostic, not just storage-agnostic.** `pnpm lint:arch` fails on any `node:*`
