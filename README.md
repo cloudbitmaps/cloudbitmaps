@@ -440,6 +440,15 @@ this isn't. (We deliberately publish no in-region latency *figure* until an in-r
 [benchmarks](docs/benchmarks.md#what-it-cost-in-latency--and-why-the-number-is-what-it-is).) Honest cost/performance
 trade-offs (and where Redis or a columnar store wins instead) are documented as part of the design, not buried.
 
+**Already using Redis bitmaps?** That paragraph is about Redis as a *cache*; this is about `SETBIT`-on-one-giant-key
+as a *data model*, which is a different question. Your operations carry over one-for-one — `SETBIT`/`GETBIT` →
+`add`/`has`, `BITCOUNT` → `count`, `BITOP AND`/`OR`/`DIFF` → `intersect`/`union`/`andNot` — and you are not giving
+up the bitmap: past **4,096 ids** in a 65,536-id chunk (6.25% of it) Roaring stores that chunk *as* a flat bit
+array, byte for byte what you have now. What does **not** carry over is the raw bytes: a `.crbm` is not a flat bit
+array, so anything reading your Redis key's underlying string won't read ours, and `BITFIELD` / `BITPOS` /
+`BITOP NOT` have no equivalent. The full mapping, including what's unbuilt, is in the
+[guide](docs/guide/getting-started.md#coming-from-redis-bitmaps).
+
 ## Status & where it's headed
 
 Built in phases, each shipped behind tests and an adversarial review:
