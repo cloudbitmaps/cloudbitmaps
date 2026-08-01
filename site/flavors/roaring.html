@@ -266,6 +266,120 @@
         </div>
       </section>
 
+      <!-- ── COMING FROM REDIS BITMAPS ──────────────────────────────────────
+           The section above answers "why not one big bitset" and "why not just use Redis" — both structural
+           questions about the design. Neither answers the one a reader actually arrives with, which is
+           practical: "I already run Redis bitmaps. What happens to MY workload?" That question was going
+           unanswered, and the /flavors table's `Not planned` row against a plain-bitset flavor made it louder
+           rather than quieter — a bitmap-literate reader reads that row and reasonably wonders what they lose.
+
+           The third block is the load-bearing one. Two paragraphs saying "everything transfers" are worth
+           nothing without the paragraph that names what does not, and raw byte-level compatibility genuinely
+           does not exist today. Saying so is what makes the first two believable. -->
+      <section>
+        <h2>Coming from Redis bitmaps?</h2>
+        <p class="lede">
+          Then you are already using the shape this is built for. Here is exactly what carries over,
+          and what does not.
+        </p>
+
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">The calls you already make</span>
+            <span class="label">Same operations · different storage</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>In Redis</th>
+                  <th>Here</th>
+                  <th>Difference</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="m">SETBIT key id 1</span></td>
+                  <td><span class="call">add</span> / <span class="call">addMany</span></td>
+                  <td class="from">None in meaning. Ids are u32, same as a bit offset.</td>
+                </tr>
+                <tr>
+                  <td><span class="m">GETBIT key id</span></td>
+                  <td><span class="call">has</span></td>
+                  <td class="from">None in meaning.</td>
+                </tr>
+                <tr>
+                  <td><span class="m">BITCOUNT key</span></td>
+                  <td><span class="call">count</span></td>
+                  <td class="from">Exact, and read from the index without fetching payloads.</td>
+                </tr>
+                <tr>
+                  <td><span class="m">BITOP AND</span></td>
+                  <td><span class="call is-key">intersect</span></td>
+                  <td class="from">Streams, and never fetches a chunk that cannot contribute.</td>
+                </tr>
+                <tr>
+                  <td><span class="m">BITOP OR</span></td>
+                  <td><span class="call">union</span></td>
+                  <td class="from">None in meaning.</td>
+                </tr>
+                <tr>
+                  <td><span class="m">BITOP DIFF</span> <span class="from">(Redis 8.2+)</span></td>
+                  <td><span class="call">andNot</span></td>
+                  <td class="from">
+                    None in meaning. Reads each suppression list only where it overlaps.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <span class="label">Not covered</span> <span class="m">BITFIELD</span>,
+            <span class="m">BITPOS</span>, <span class="m">BITOP NOT</span>, and byte-range forms of
+            <span class="m">BITCOUNT</span> have no equivalent: this is a set of ids, not an
+            addressable bit buffer, and there is no bounded universe to complement against.
+            <span class="m">XOR</span> and <span class="m">ANDOR</span> have no single call but
+            compose from the rows above.
+          </p>
+        </div>
+
+        <div class="matters">
+          <div class="limit">
+            <p class="label">You are not giving up the bitmap</p>
+            <p>
+              A Redis bitmap is one flat bit array. Roaring stores each 65,536-id chunk as
+              <em>whichever of three encodings is smallest for that chunk</em> — and past
+              <strong>4,096 ids</strong> in a chunk, <strong>6.25%</strong> of it, the winner is a
+              flat bit array. Byte for byte, the same thing you have now. The flat representation is
+              not the alternative we rejected; it is the one this codec picks whenever it is the
+              right answer. The figure below is that choice being made.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">You stop paying where it is wrong</p>
+            <p>
+              A sparse cohort in Redis still costs the whole span. Here a chunk nobody wrote to does
+              not exist, and a thinly-populated one is stored as a list instead. Measured against
+              the best fixed representation: <strong>543× smaller</strong> on a contiguous range,
+              <strong>63× smaller</strong> on clustered runs, <strong>1.88× smaller</strong> on
+              scattered ids — and <strong>1.02× larger</strong> on the one shape built to favour a
+              flat array.
+            </p>
+          </div>
+        </div>
+
+        <p class="note" style="max-width: 82ch">
+          <strong>What genuinely does not carry over: the bytes.</strong> A
+          <span class="m">.crbm</span> object is not a flat bit array, so anything that reads your
+          Redis bitmap's raw string — a job that <span class="m">GET</span>s the key and indexes
+          into it, a byte-for-byte backup, another service that already understands that layout —
+          will not read ours. Raw bit-position import and export is a credible feature and is not
+          built; if you need it, that is worth telling us, because it decides whether it gets built.
+          Everything reached through bitmap <em>operations</em> transfers today; everything reached
+          through the bytes does not.
+        </p>
+      </section>
+
       <!-- ── THE CODEC FIGURE ───────────────────────────────────────────────
            The only animation on this page, and it explains only the codec. The tiering and chunk-skipping
            story lives once, on /architecture, because it is codec-independent — which is also why a second
