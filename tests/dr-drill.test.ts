@@ -93,7 +93,8 @@ describe('DR drill — backup → corrupt → restore → verify (test-strategy 
 
     // Failover recovered the registry ahead of the object store: currentGen advances with no matching .crbm.
     const rec = (await registry.get(ref))!;
-    await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen + 1 });
+    expect(rec.currentGen).not.toBeNull(); // the fixture published gen 0 — a null pointer would be a different bug
+    await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen! + 1 });
 
     const torn = await runConsistencyCheck({ cold, registry });
     expect(torn.inconsistent).toEqual([

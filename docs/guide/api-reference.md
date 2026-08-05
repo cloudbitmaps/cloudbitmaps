@@ -247,6 +247,23 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 | `NoRow` · `Token` · `WarmRow` · `WarmReadOptions` | the warm-tier row/token/read-option shapes in `IWarmDriver` |
 | `chunkRefKey` · `segmentKey` | the canonical key-string helpers (used by the conformance suite + fake drivers) |
 
+**`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
+`currentGen: null` says *this segment exists and has no Cold generation yet*: the shape of a **warm-only
+accumulator** (written to, never bulk-loaded, never compacted) that has a row purely so fleet-wide operations —
+`checkConsistency`, `eraseNamespace`, compaction discovery, retention sweeps — can see it at all. Resolution maps
+it onto the same path a segment with no row takes, so Cold contributes the empty set and the Warm delta alone
+answers the read. An `IRegistryDriver` must therefore:
+
+- round-trip `null` through `create`, `compareAndSwap`, `get` **and** `list` — serialization is where it gets
+  silently dropped (`JSON.stringify` keeps `null` but omits `undefined`) or coerced to `0`, which is the
+  forbidden `missing-cold-generation` state;
+- apply a patch that sets `currentGen: null`, and leave the stored value alone when a patch omits the field. The
+  trap is merging with `patch.currentGen ?? previous`, which treats a deliberate `null` as absent and silently
+  keeps pointing at the old generation — use an own-property check (`'currentGen' in patch`);
+- keep `status: 'active'` meaningful for such a row: a null pointer is a **live** segment, not a tombstone.
+
+Conformance case **R8** gates all of the above; every first-party registry driver passes it.
+
 ### Compaction internals (out-of-process)
 
 | Symbol | What it does |

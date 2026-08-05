@@ -314,6 +314,11 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       if (record === null) return null;
       // A crypto-shredded segment reads as empty — its DEK is gone, so its Cold bytes are unrecoverable.
       if (record.status === 'destroyed') return null;
+      // A row with no Cold generation yet (a warm-only accumulator that has a row so admin tools can see it)
+      // resolves exactly like a segment with NO row: Cold contributes nothing and the Warm delta alone answers.
+      // Returning `null` here rather than a generation is the whole reason such a row is safe to create — the
+      // alternative, pointing at a generation that does not exist, is the `missing-cold-generation` state.
+      if (record.currentGen === null) return null;
       return { generation: record.currentGen, wrappedDeks: record.wrappedDeks };
     }
     let maxGen = -1;
@@ -528,6 +533,20 @@ export async function publishGeneration(
           `segment "${key.segment}" was destroyed (crypto-shredded) while generation ${key.generation} was ` +
             `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
         );
+      } else if (record.currentGen === null) {
+        // The row exists with no Cold generation yet (a warm-only accumulator that has a row so fleet-wide ops
+        // can see it). There is no pointer to regress past, so this publish advances it — and carries the wrapped
+        // DEK(s) exactly like a first publish onto no row, since no generation is encrypted under the row's
+        // current wrappings (there is no generation at all).
+        //
+        // `wrappedDeks` is spread in ONLY when there is something to store. A registry patch clears an optional
+        // field by *mentioning* it (`'wrappedDeks' in patch`), so passing `wrappedDeks: undefined` unconditionally
+        // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
+        // from the branch below, which never touches the field.
+        await registry.compareAndSwap(key, record.token, {
+          currentGen: key.generation,
+          ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
+        });
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress
       } else if (record.currentGen === key.generation) {
@@ -545,7 +564,9 @@ export async function publishGeneration(
   // the forward-only goal. Confirm before reporting failure, so a lost-every-race-but-already-current case
   // isn't a spurious error. Whether *this* generation is the current one decides the returned flag.
   const final = await registry.get(key);
-  if (final !== null && final.currentGen >= key.generation)
+  // `currentGen === null` after exhausting the retries is a genuine failure, not an already-current case: nothing
+  // is published, so it falls through to the conflict below rather than being read as "a newer gen won".
+  if (final !== null && final.currentGen !== null && final.currentGen >= key.generation)
     return final.currentGen === key.generation;
   throw new WriteConflictError(
     `publishGeneration: contention setting currentGen for ${key.segment}`,
@@ -712,6 +733,23 @@ export async function bulkLoadCrbmGeneration(
   if (existing?.status === 'destroyed') {
     throw new ValidationError(
       `segment "${key.segment}" is destroyed (crypto-shredded) — refusing to write; use a new segment`,
+    );
+  }
+
+  // An encrypted row with no keystore is a lost key, not a cleartext segment — the same fail-fast compaction
+  // does. Without it this wrote a CLEARTEXT generation onto a row that still advertises `wrappedDeks`, and the
+  // damage is not just a confusing state: `destroySegment` keys `cryptoShredded` off the *presence* of wrappings,
+  // so shredding that segment emits `segment.erase` — the audit event defined as "these bytes are unreadable
+  // everywhere, backups included" — over bytes that are plaintext and stay readable from any copy. An audit trail
+  // that over-attests is the one failure it exists to prevent, so this refuses to create the state.
+  if (
+    existing?.wrappedDeks !== undefined &&
+    existing.wrappedDeks.length > 0 &&
+    options.keystore === undefined
+  ) {
+    throw new KeyUnavailableError(
+      `segment "${key.segment}" is encrypted but this bulk-load has no keystore — refusing to write a cleartext ` +
+        `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
     );
   }
 

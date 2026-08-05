@@ -13,7 +13,8 @@ import type { SegmentRef } from '@/index';
 /** Advance the registry's currentGen WITHOUT writing the matching Cold generation — a torn cross-tier restore. */
 async function tearRestore(registry: MemoryRegistryDriver, ref: SegmentRef): Promise<void> {
   const rec = (await registry.get(ref))!;
-  await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen + 1 });
+  expect(rec.currentGen).not.toBeNull(); // fixtures bulk-load a real gen 0; a null pointer means a broken setup
+  await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen! + 1 });
 }
 
 describe('runConsistencyCheck (gap #11 — torn cross-tier restore)', () => {
@@ -47,7 +48,7 @@ describe('runConsistencyCheck (gap #11 — torn cross-tier restore)', () => {
     await bulkLoadCrbmGeneration(cold, { segment: 'dead', generation: 0 }, [1], { registry });
     const rec = (await registry.get({ segment: 'dead' }))!;
     await registry.compareAndSwap({ segment: 'dead' }, rec.token, {
-      currentGen: rec.currentGen + 1, // would be "missing" — but status makes it moot
+      currentGen: rec.currentGen! + 1, // would be "missing" — but status makes it moot
       status: 'destroyed',
     });
     const report = await runConsistencyCheck({ cold, registry });

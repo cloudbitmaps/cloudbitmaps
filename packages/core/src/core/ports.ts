@@ -163,8 +163,24 @@ export type GovernanceMeta = Record<string, unknown>;
  * One registry row — the authoritative per-segment record. Exactly one per segment.
  */
 export interface RegistryRecord extends SegmentRef {
-  /** **The** authoritative LATEST pointer: which immutable Cold generation is current. */
-  readonly currentGen: number;
+  /**
+   * **The** authoritative LATEST pointer: which immutable Cold generation is current — or **`null` for a segment
+   * that has no Cold generation yet.**
+   *
+   * `null` is not "unknown", it is a positive statement: *this segment exists and has no Cold data.* It is what
+   * lets a **warm-only accumulator** (created by writing to it, never bulk-loaded, never compacted) have a
+   * registry row at all — which it needs to be reachable by `registry.list()`, and therefore by retention
+   * sweeps, `checkConsistency`, `eraseNamespace` and every other fleet-wide operation. Without it those
+   * segments are invisible to every admin tool in the library.
+   *
+   * The alternative — a row with `currentGen: 0` and no object behind it — is the forbidden
+   * `missing-cold-generation` state, and it fails *per operation* rather than cleanly: `has()` short-circuits on
+   * the Warm delta and keeps answering, while `count()` resolves the generation and throws `NotFoundError`.
+   *
+   * Generation resolution maps `null` onto the same path a segment with **no row** takes, so Cold contributes
+   * the empty set and the Warm delta alone produces the answer. Read behaviour is unchanged by construction.
+   */
+  readonly currentGen: number | null;
   /**
    * Per-segment data-key (DEK) wrappings for encryption-at-rest (Phase 4e): the DEK envelope-wrapped under one
    * or more KEKs (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this
@@ -221,7 +237,8 @@ export interface RegistryRecord extends SegmentRef {
 
 /** The caller-settable fields at {@link IRegistryDriver.create} (audit + token are driver-managed). */
 export interface NewRegistryRecord {
-  readonly currentGen: number;
+  /** `null` ⇒ the segment has no Cold generation yet — see {@link RegistryRecord.currentGen}. */
+  readonly currentGen: number | null;
   readonly wrappedDeks?: readonly WrappedDek[];
   readonly keyId?: string;
   /** Defaults to 0. */
@@ -269,7 +286,17 @@ export interface IRegistryDriver {
   create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }>;
   /** Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`. */
   compareAndSwap(ref: SegmentRef, expected: Token, patch: RegistryPatch): Promise<{ token: Token }>;
-  /** Discovery: every live record, optionally scoped to one namespace. Order is unspecified. */
+  /**
+   * Discovery: every **existing** record, optionally scoped to one namespace. Order is unspecified.
+   *
+   * "Existing" means not `delete`d. A **`destroyed` tombstone is still a record and must be yielded** — a driver
+   * that filters by `status` breaks callers silently, and two already depend on seeing them: `runConsistencyCheck`
+   * skips them itself, and the retention sweep can only clean up a tombstone row it can see (filtering it makes
+   * the cleanup a permanent no-op, indistinguishable from having nothing to do, while dead rows accumulate). Same
+   * rule for every other field: a row with **`currentGen: null`** must be yielded like any other, and `retention`
+   * must survive the projection — a fleet sweep reads the policy straight out of this enumeration rather than
+   * paying a `get()` per segment, so a `list()` that drops the field means nothing ever expires, silently.
+   */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /** Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token). */
   delete(ref: SegmentRef): Promise<void>;

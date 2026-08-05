@@ -58,6 +58,7 @@ import type {
   IColdDriver,
   IRegistryDriver,
   IWarmDriver,
+  RegistryRecord,
   SegmentRef,
   Token,
 } from './ports';
@@ -260,13 +261,16 @@ async function compactSegmentInner(
     };
   }
 
-  // ── Bootstrap: a segment with no registry row (never compacted / bulk-loaded). No cold base, no lease
-  // needed — the registry `create` is the exclusivity point. Two workers can race here, and gen 0 is
-  // write-once, so at most one *writes* it; the other(s) only see a conflict. Critically, an adopter must NOT
-  // purge its pinned Warm rows against a gen 0 it didn't write — that gen may not reflect them, which would be
-  // a lost write (**I4**). So only the worker that actually wrote gen 0 purges; an adopter just ensures the
-  // pointer exists and leaves its Warm rows for the next (normal) compaction to fold over the committed gen 0. ──
-  if (record === null) {
+  // ── Bootstrap: a segment with **no Cold generation to merge onto**. That is either no registry row at all
+  // (never compacted / bulk-loaded) or a row whose `currentGen` is `null` — a warm-only accumulator that has a
+  // row only because something else needed it enumerable (a retention policy, `checkConsistency`, …). Both take
+  // this path for the same reason: there is no gen `g` to read, so `g + 1` is meaningless and the merge basis is
+  // the empty set. No cold base, no lease needed — publishing the pointer is the exclusivity point. Two workers
+  // can race here, and gen 0 is write-once, so at most one *writes* it; the other(s) only see a conflict.
+  // Critically, an adopter must NOT purge its pinned Warm rows against a gen 0 it didn't write — that gen may not
+  // reflect them, which would be a lost write (**I4**). So only the worker that actually wrote gen 0 *and* saw
+  // the pointer land purges; anyone else leaves its Warm rows for the next compaction to fold over gen 0. ──
+  if (record === null || record.currentGen === null) {
     const pinned = await collectDirty(
       deps.warm,
       ref,
@@ -283,11 +287,29 @@ async function compactSegmentInner(
         purged: 0,
         survived: 0,
       };
-    // Encryption: mint a fresh per-segment DEK for gen 0 (or write cleartext). If we lose the gen-0 write race
-    // our minted DEK is simply discarded — the winner's DEK (in the winning registry.create) is authoritative.
+    // Encryption: mint a fresh per-segment DEK for gen 0 (or write cleartext). If we LOSE the gen-0 write race we
+    // must not publish this DEK at all — see `publishGenZero`, which refuses to write key material for an object
+    // this worker did not write. (An earlier version of this comment claimed a lost race meant "our minted DEK is
+    // simply discarded". It was not: the publish ran unconditionally, so the loser could CAS its own wrapping onto
+    // the row while the winner's bytes were encrypted under a different key — and the winner, seeing `currentGen`
+    // at 0, then purged the Warm rows that held the only readable copy. Reproduced; see the tests.)
     let aead: Aead | undefined;
     let wrappedDeks: readonly WrappedDek[] | undefined;
-    if (deps.keystore !== undefined) {
+    if (record?.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
+      // A null-gen row that carries a DEK. No writer in this library produces that state today (every
+      // `registry.create` site either publishes a generation or writes no wrappings), so in practice this is a
+      // hand-written or restored row — the guard stays because the alternative is silent key loss. REUSE it rather than
+      // minting a second one: the row's wrappings are what readers resolve the key from, so a fresh DEK would
+      // either be overwritten (gen 0 unreadable) or overwrite theirs (nothing else decryptable). Same fail-fast
+      // as the normal path — an encrypted row with no keystore is a lost key, not a cleartext segment.
+      if (deps.keystore === undefined) {
+        throw new KeyUnavailableError(
+          `segment "${ref.segment}" is encrypted but compaction has no keystore`,
+        );
+      }
+      aead = await deps.keystore.openDek(record.wrappedDeks);
+      wrappedDeks = record.wrappedDeks;
+    } else if (deps.keystore !== undefined) {
       const minted = await deps.keystore.createDek();
       aead = minted.aead;
       wrappedDeks = minted.wrapped;
@@ -313,19 +335,18 @@ async function compactSegmentInner(
     if (wrote && tally !== undefined) {
       await verifyGeneration(deps.cold, gen0, tally, cryptoAt(aead, 0)); // verify only bytes we wrote
     }
-    try {
-      await deps.registry.create(ref, {
-        currentGen: 0,
-        dirtyChunkCount: 0,
-        status: 'active',
-        wrappedDeks,
-      });
-    } catch (err) {
-      if (!isWriteConflictError(err)) throw err; // a concurrent bootstrap published the pointer first
-    }
-    if (!wrote)
-      // We adopted another worker's gen 0; our Warm rows may not be in it, so purging them could lose data.
-      // Leave them — the next normal compaction merges them over the now-committed gen 0. No loss, no torn read.
+    // Publish the gen-0 pointer. Contention here is NOT only "another bootstrap worker": a null-gen row is a
+    // normal row that `setRetention`, the dirty-count hint or an erasure can also CAS, so a conflict does not
+    // imply someone published gen 0. `publishGenZero` re-reads and only reports success when the row actually
+    // points at gen 0 — purging Warm against a pointer that is still `null` would be a silent lost write (I4).
+    const published = await publishGenZero(deps.registry, ref, record, wrappedDeks, wrote);
+    if (!wrote || !published)
+      // Either we adopted another worker's gen 0 (our Warm rows may not be in it) or the pointer never landed on
+      // ours — pointing somewhere else, or carrying someone else's key. All of them mean the same thing: purging
+      // could lose data, so leave the rows for the next compaction to merge over the committed gen 0. No loss, no
+      // torn read, and an unpublished gen-0 object is adopted by the next bootstrap rather than collected (a
+      // null-gen row is never reconciled — `gcOrphanGenerations` deliberately collects nothing while the pointer
+      // is null). `bootstrap-raced` covers all of them; the distinction is not actionable for a caller.
       return {
         ...base,
         compacted: false,
@@ -526,6 +547,89 @@ async function compactSegmentInner(
   }
 }
 
+/** How many times bootstrap re-reads and retries the gen-0 pointer publish before giving up for this cycle. */
+const PUBLISH_GEN0_ATTEMPTS = 5;
+
+/**
+ * Make gen 0 the segment's current generation, whether the row is absent or exists with `currentGen: null`.
+ * Returns **whether the row now points at gen 0** — the caller may only purge its pinned Warm rows if it does.
+ *
+ * `create` alone is not enough once a row can exist without a generation: it would throw a conflict against that
+ * row, and the old code swallowed the conflict as "someone else published", then purged. Against a null-gen row
+ * that is a silent lost write — the object exists, the pointer still says "no Cold data", and the Warm rows that
+ * held the only copy are gone. So a conflict re-reads and retries, and `false` (never an exception) is how a
+ * pointer we could not land is reported: nothing destructive has happened, and the next cycle re-pins.
+ */
+async function publishGenZero(
+  registry: IRegistryDriver,
+  ref: SegmentRef,
+  known: RegistryRecord | null,
+  wrappedDeks: readonly WrappedDek[] | undefined,
+  wrote: boolean,
+): Promise<boolean> {
+  // A worker that LOST the write-once race must never publish key material, and this is the whole reason `wrote`
+  // is threaded down here. The loser skips `verifyGeneration` (a full re-read of the object), so it is *likely* to
+  // reach the registry first — and if it CASes its own wrapping onto the row, the winner then finds `currentGen`
+  // at 0, concludes the publish succeeded, and purges the Warm rows that held the only readable copy. Gen 0 is
+  // encrypted under the winner's DEK and the row carries the loser's: reads fail `AEAD authentication failed`
+  // under an ACTIVE pointer, and `checkConsistency` cannot see it because the object is present. Reproduced.
+  //
+  // Adopting a cleartext generation stays safe (there is no key to get wrong) and is what keeps a crashed
+  // bootstrap's orphan object from blocking the segment forever, so only the encrypted case bails.
+  if (!wrote && wrappedDeks !== undefined) return false;
+  let current = known;
+  for (let attempt = 0; attempt < PUBLISH_GEN0_ATTEMPTS; attempt += 1) {
+    try {
+      if (current === null) {
+        await registry.create(ref, {
+          currentGen: 0,
+          dirtyChunkCount: 0,
+          status: 'active',
+          wrappedDeks,
+        });
+      } else if (current.status === 'destroyed') {
+        // A `dropSegment` landed while we were writing. Never resurrect a tombstone by pointing it at a fresh
+        // generation — the shredded DEK makes those bytes unreadable anyway. Report failure; we purge nothing.
+        return false;
+      } else if (current.currentGen === null) {
+        // `wrappedDeks` is spread in only when there is something to store: a patch clears an optional field by
+        // mentioning it, so an unconditional `wrappedDeks: undefined` would wipe key material off the row on
+        // every cleartext bootstrap. (The caller already reuses a DEK the row carries, so "undefined" here means
+        // the row had none — but this must not depend on that staying true.)
+        await registry.compareAndSwap(ref, current.token, {
+          currentGen: 0,
+          dirtyChunkCount: 0,
+          ...(wrappedDeks === undefined ? {} : { wrappedDeks }),
+        });
+      } else {
+        // Someone published while we worked. Only gen 0 can be the object we wrote (generations are write-once) —
+        // AND the key on the row has to be the one we encrypted it with, or the pointer is live over bytes nobody
+        // can decrypt. Reporting success on a key mismatch is what let the race above purge the last copy.
+        return current.currentGen === 0 && sameWrappings(current.wrappedDeks, wrappedDeks);
+      }
+      return true;
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      current = await registry.get(ref);
+    }
+  }
+  return false; // sustained contention — leave the Warm rows; the next cycle folds them over whatever won
+}
+
+/**
+ * Whether a row's wrapped DEKs are the ones this worker wrote its generation under — compared by `(keyId,
+ * wrapped)` pairs, since a wrapping is an opaque string and two DEKs never produce the same one. Cleartext on both
+ * sides counts as a match; cleartext on one side and encrypted on the other does not, which is the point.
+ */
+function sameWrappings(
+  a: readonly WrappedDek[] | undefined,
+  b: readonly WrappedDek[] | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  return a.every((w, i) => w.keyId === b[i]?.keyId && w.wrapped === b[i]?.wrapped);
+}
+
 /**
  * Garbage-collect superseded Cold generations for a segment: everything strictly below `currentGen`, keeping
  * the most recent `keep` of them as a grace window for in-flight readers pinned to a just-superseded
@@ -555,11 +659,16 @@ export async function gcOrphanGenerations(
   const toDelete =
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can be pinned to a tombstoned segment
-      : // Delete generations below current, except the newest `keep` of them (the grace window).
-        gens
-          .filter((g) => g < current)
-          .sort((a, b) => b - a) // newest-first
-          .slice(keep);
+      : current === null
+        ? // No Cold pointer yet, so "below current" selects nothing and there is nothing safe to infer: an
+          // object here is either a bootstrap about to publish gen 0 or an orphan we cannot tell apart from it.
+          // Deleting would race that publish into a dangling pointer. RECONCILE collects it on the next cycle.
+          []
+        : // Delete generations below current, except the newest `keep` of them (the grace window).
+          gens
+            .filter((g) => g < current)
+            .sort((a, b) => b - a) // newest-first
+            .slice(keep);
   for (const generation of toDelete) {
     await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }

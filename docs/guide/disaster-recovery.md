@@ -202,6 +202,11 @@ if (report.errored.length > 0) {
   whose content dropped a write (Case A). Avoiding a concurrent manual
   publish during compaction (see the caveat above) is the mitigation for that case — there is no post-hoc
   presence check that can see it.
+- **A segment with no Cold generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
+  *this segment exists and has no Cold data yet* — a warm-only accumulator that has a row so fleet-wide
+  operations can see it. There is no generation that ought to exist, so nothing can be missing, and the scan
+  reports it as consistent. (Reporting it would be worse than useless here: `missing-cold-generation` would fire
+  on the healthy steady state of every such segment and bury the one signal a triage is looking for.)
 - It is also worth running **periodically** (not just after a restore) as a cheap tripwire for backup/restore
   drift or an operator mistake.
 
