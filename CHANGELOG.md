@@ -14,6 +14,29 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-04
+
+### Documentation
+
+- **The npm package page did not mention either of `0.8.0`'s headline features.**
+  `packages/roaring/README.md` is a separate file from the repo-root `README.md`, and it is the one npm renders —
+  so it is at once the most-read surface and the easiest to forget. It shipped `0.8.0` without `claimMany` or
+  `dropSegment`, while still claiming Redis operations *"carry over one-for-one"* with no boundary. For a few
+  hours the package page was the least accurate surface in the project. It now carries both, the two limits
+  (no addressable-bit surface; do not port a per-id write loop), the pricing-model caveat, and the
+  no-seed/compaction-is-optional framing.
+
+- **A gate so it cannot drift a third time.** `tests/docs/flavor-readme-sync.test.ts` asserts the published flavor
+  README (a) mentions every `SegmentHandle` method the guide presents as the answer to a Redis command, (b) does not
+  claim Redis parity without stating a limit, and (c) warns against the per-id write loop. Both halves are
+  **derived** — from the live `SegmentHandle` prototype and from the guide's own Redis section — rather than from a
+  hand-maintained list, because a list you must remember to update is a check that cannot fire, and forgetting is
+  exactly what happened here. This is the second drift of this file: `0.7.0`'s Redis mapping was also reported as
+  being on the npm README when only the root README had it.
+
+No code changes. `@cloudbitmaps/core` is republished only to keep the two package versions in lockstep, which the
+publish workflow enforces.
+
 ## [0.8.0] — 2026-08-04
 
 **Retention and dedup.** `dropSegment` closes a spec/implementation divergence that had sat since day one — there
