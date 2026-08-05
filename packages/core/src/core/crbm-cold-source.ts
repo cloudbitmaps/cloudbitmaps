@@ -736,6 +736,23 @@ export async function bulkLoadCrbmGeneration(
     );
   }
 
+  // An encrypted row with no keystore is a lost key, not a cleartext segment — the same fail-fast compaction
+  // does. Without it this wrote a CLEARTEXT generation onto a row that still advertises `wrappedDeks`, and the
+  // damage is not just a confusing state: `destroySegment` keys `cryptoShredded` off the *presence* of wrappings,
+  // so shredding that segment emits `segment.erase` — the audit event defined as "these bytes are unreadable
+  // everywhere, backups included" — over bytes that are plaintext and stay readable from any copy. An audit trail
+  // that over-attests is the one failure it exists to prevent, so this refuses to create the state.
+  if (
+    existing?.wrappedDeks !== undefined &&
+    existing.wrappedDeks.length > 0 &&
+    options.keystore === undefined
+  ) {
+    throw new KeyUnavailableError(
+      `segment "${key.segment}" is encrypted but this bulk-load has no keystore — refusing to write a cleartext ` +
+        `generation onto an encrypted segment. Pass the keystore holding its DEK.`,
+    );
+  }
+
   // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on first write.
   let crypto: CrbmCrypto | undefined;
   let newWrapped: readonly WrappedDek[] | undefined;

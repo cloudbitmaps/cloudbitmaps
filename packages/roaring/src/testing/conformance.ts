@@ -458,9 +458,13 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(rec!.currentGen).toBeNull();
       expect(rec!.status).toBe('active'); // null gen is a LIVE segment, not a tombstone
       expect(rec!.retention).toEqual({ expiresAt: 42 });
-      // Enumeration must carry it too — a retention sweep reads `list()`, never a per-segment `get()`.
+      // Enumeration must carry the WHOLE row, not just the pointer. A fleet sweep reads the policy straight out
+      // of `list()` rather than paying a `get()` per segment, so a driver whose projection drops `retention` — or
+      // stringifies the number — makes every segment read as "no policy" and **nothing ever expires**. That fails
+      // open on a retention commitment and is visible only to someone reading a ledger.
       const listed = await drainRecords(d.list());
       expect(listed.map((r) => r.currentGen)).toEqual([null]);
+      expect(listed[0]!.retention).toEqual({ expiresAt: 42 });
 
       // null → 0: the compaction bootstrap publishing a first generation onto an existing row.
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 0 });
@@ -477,6 +481,27 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const after = await d.get(SEG);
       expect(after!.currentGen).toBeNull();
       expect(after!.dirtyChunkCount).toBe(7);
+    });
+
+    // R9 — a `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
+    // tombstones itself, and the retention sweep can only clean up a dead row it can *see* — a driver that filters
+    // by status turns that cleanup into a permanent silent no-op while rows accumulate forever.
+    it('yields destroyed tombstones from list(), and refuses an undefined currentGen patch (R9)', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 0 });
+      await d.compareAndSwap(SEG, token, { status: 'destroyed' });
+      const listed = await drainRecords(d.list());
+      expect(listed.map((r) => [r.segment, r.status])).toEqual([['s', 'destroyed']]);
+
+      // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`, and it used to be a no-op
+      // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Cold data,
+      // so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
+      const live = makeDriver();
+      const { token: t0 } = await live.create(SEG, { currentGen: 3 });
+      await expectValidationReject(
+        live.compareAndSwap(SEG, t0, { currentGen: undefined, dirtyChunkCount: 1 }),
+      );
+      expect((await live.get(SEG))!.currentGen).toBe(3); // and the pointer is untouched
     });
 
     it('rejects traversal / invalid names on every method (R7)', async () => {
