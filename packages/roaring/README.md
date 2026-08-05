@@ -67,6 +67,39 @@ against. Raw bit-position import/export is unbuilt;
 [say so in an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) if you need it, because that is what
 decides whether it gets built.
 
+## Retiring data: a per-segment expiry, and a sweep you schedule
+
+A **segment** can expire; an individual **id** cannot (a bitmap stores ids, not `(id, timestamp)` pairs — a
+timestamp per id costs more than the compression saves).
+
+```ts
+const DAY = 86_400_000;
+const ref = { namespace: 'active-daily', segment: '2026-08-05' };
+
+await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, when you create the bucket
+```
+
+`expiresAt` is an absolute instant **you** compute, not a duration derived from anything observed: compaction
+rewrites every basis such a duration could use, so "30 days since the last write" would keep a busy bucket alive
+precisely *because* the daemon was keeping it cheap.
+
+Then, from whatever schedule your deployment already has — an EventBridge rule, a Kubernetes `CronJob`, `cron`, a
+queue job — run the sweep. **This library starts no background timer**, deliberately: the same code has to behave
+identically in a Lambda, an edge isolate and a long-lived server, and a timer that only works in one of those is
+worse than none.
+
+```ts
+const swept = await store.retireExpired({ namespace: 'active-daily' });
+for (const e of swept.entries) if (e.action === 'skipped') console.warn(e.segment, e.reason);
+if (swept.limited) scheduleAnotherPassSoon(); // the per-cycle cap deferred some; re-run
+```
+
+Each retirement goes through `dropSegment`, so the Warm → registry → Cold ordering is one implementation rather
+than two. The sweep is bounded (`limit`, default 100), previewable (`dryRun`), and returns a per-segment ledger
+rather than throwing — a fault on one segment must not decide the fate of the other ninety-nine. Once a day is
+enough for daily buckets. Full walkthrough:
+[getting-started §13.5](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt).
+
 ## No seed step, and compaction is optional
 
 A brand-new segment is usable the moment you construct the store: `addMany`, `has`, `remove`, `count`, `iterate`
@@ -75,7 +108,8 @@ merges `(cold ∪ warm.adds) \ warm.removes` and an absent cold tier just makes 
 **import** path for data you already have elsewhere, not an initialization step.
 
 Compaction is a **cost** optimization, never a correctness requirement — it buys cheaper storage, smaller rewrites,
-and a free index-only `count()`. For a write-once dated bucket you retire with `dropSegment`, skip it entirely.
+and a free index-only `count()`. For a write-once dated bucket you retire (with `dropSegment`, or by recording an
+expiry as above), skip it entirely.
 
 Redis stays first-class as a **warm tier** underneath this (`@cloudbitmaps/roaring/redis`) — the point above is
 about replacing `SETBIT`-on-one-giant-key as your *data model*, not replacing Redis as infrastructure.
