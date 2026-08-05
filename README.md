@@ -28,7 +28,7 @@
 > (`/cassandra`), and **MySQL/MariaDB** (`/mysql`); a **segment registry**
 > (memory / LocalFs / DynamoDB / **S3** — so a read-mostly deployment runs on **S3 alone**), and a
 > **crash-safe compaction daemon** (`compact-segments`) — `add` / `addMany` /
-> `remove` / `removeMany` / `has` / `count` / `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, tombstone-correct
+> `remove` / `removeMany` / `claimMany` / `has` / `count` / `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, tombstone-correct
 > deletes, bulk-load, the `.crbm` archive format, a bounded HOT cache, real cross-process optimistic-concurrency
 > writes, **automatic retry with backoff** that rides out transient cloud faults without losing data,
 > registry-resolved generation pointers (no per-read scan), **2-phase-commit compaction** that folds warm
@@ -311,6 +311,7 @@ new CloudRoaring({
 | Method | Does |
 |---|---|
 | `add` · `addMany` · `remove` · `removeMany` | mutate (grouped by chunk; single-chunk atomic) |
+| `claimMany(ids)` → `number[]` | **claim ids atomically** — adds them, returns only those not already present. The durable `SETBIT`-returns-prior-bit primitive for exactly-once dedup. One write per chunk |
 | `has` · `count` · `iterate` | read (tier-merged; `count` = 0 payload reads on compacted chunks) |
 | `intersect(others, { exclude? })` · `intersectInto(dest, …)` | chunk-skipping set intersection, streamed. `exclude` subtracts suppression segments **in the same pass** — no intermediate segment |
 | `union(others, { exclude? })` · `unionInto(dest, …)` | set union, streamed. The one composite with **no** chunk-skipping — every chunk of every operand is read |
@@ -346,6 +347,18 @@ available in this library, so it's worth thirty seconds:
 | Expresses a delta? | yes | yes | **no** — it replaces the whole segment |
 | Takes a stream? | — | **yes** — sync *or* async iterable | **yes** — sync *or* async iterable |
 | Reach for it when | one id changed — a user just qualified | you have a batch of ids in hand | you're building or refreshing a segment |
+
+**The measured spread, because "the most expensive mistake available" deserves a number.** Same 5,000 ids:
+
+| Shape | Warm writes | Bytes written |
+|---|---|---|
+| `add(id)` per id, 5,000× | 5,000 | 23,762 KB |
+| `addMany(ids)` in 500-id batches | 10 | 51 KB |
+| one `addMany(ids)` | 1 | 8 KB |
+
+~3,000× the bytes for the per-id loop, because each write re-serializes the whole 65,536-id chunk bitmap. **If you
+are porting a Redis `SETBIT` loop, this is the line to read twice** — `SETBIT` is genuinely O(1) per call, so the
+natural Redis shape is the worst shape here. See [benchmarks](docs/benchmarks.md#write-shape--the-cost-of-one-op-per-id).
 
 Both batch entry points accept an **`AsyncIterable`**, so a database cursor goes straight in — no hand-batching
 `page → addMany(page)`. That is an ergonomic change only: ids are grouped by chunk and each chunk is written

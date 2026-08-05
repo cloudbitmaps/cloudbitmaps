@@ -238,6 +238,32 @@ the design docs, and it has not changed.
 - **One run, one region, one client, one workload shape.** Method, safety properties, and the explicit list of
   what it does *not* cover is recorded with the run.
 
+## Write shape — the cost of one op per id
+
+A Warm row holds **one roaring bitmap per 65,536-id chunk**, and every write re-serializes and re-writes that whole
+blob. So how you batch your writes dominates your write bill, by orders of magnitude. Same 5,000 ids, three shapes,
+counting actual writes and bytes at the Warm driver:
+
+| Shape | Warm writes | Bytes written | vs. one call |
+|---|---|---|---|
+| `add(id)` per id, 5,000× | 5,000 | 23,762 KB | **~2,970× the bytes** |
+| `addMany(ids)` in 500-id batches | 10 | 51 KB | ~6× the bytes |
+| one `addMany(ids)` | 1 | 8 KB | — |
+
+DynamoDB bills writes per 1 KB, so the per-id loop is ~23,762 WCU where the single call is 8. **This is the one
+place a Redis habit ports badly:** `SETBIT` flips a bit in place and is genuinely O(1), so a per-recipient loop is
+the natural Redis shape and the worst possible shape here. Batch and you are far cheaper than Redis; port the loop
+literally and you are far more expensive. `claimMany(ids)` exists in batch form for this reason.
+
+Volume itself is cheap — it is *op count* that costs. **200,000 ids spread over a 9M-id space occupy 138 Warm
+rows**, not 200,000: one row per 64K of id space actually touched.
+
+**Method.** In-memory Warm driver wrapped in a counting proxy, byte totals taken from the encoded delta handed to
+`putConditional`, so the figures are the payload the driver would send — not an estimate. Ids are `i * 3` over 5,000
+ids (dense, one chunk) for the first table and `i * 45` over 200,000 for the row count. Backend-independent: the
+write and byte counts are what any Warm driver receives, though what each *charges* differs. Reproduced by
+`tests/core/claim-many.test.ts` ("costs one write per chunk"), which fails if the per-chunk batching regresses.
+
 ## At scale — measured (1K → 10K → 100K segments)
 
 > **Measured, not modeled.** Unlike the cost curves above (which come from the estimator), the numbers here are

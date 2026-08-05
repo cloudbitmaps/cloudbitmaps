@@ -21,6 +21,7 @@ export type MetricOpName =
   | 'remove'
   | 'addMany'
   | 'removeMany'
+  | 'claimMany'
   | 'has'
   | 'count'
   | 'intersectInto'

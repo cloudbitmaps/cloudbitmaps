@@ -330,6 +330,23 @@
                     None in meaning. Reads each suppression list only where it overlaps.
                   </td>
                 </tr>
+                <tr>
+                  <td><span class="m">prior = SETBIT key id 1</span></td>
+                  <td><span class="call is-key">claimMany</span></td>
+                  <td class="from">
+                    Takes a batch and returns only the ids it won — the prior-bit return is what
+                    makes an <em>already sent to this id?</em> check exactly-once. One write per
+                    chunk, not per id.
+                  </td>
+                </tr>
+                <tr>
+                  <td><span class="m">EXPIRE key ttl</span></td>
+                  <td><span class="call">dropSegment</span></td>
+                  <td class="from">
+                    No TTL exists. A dated segment plus a retention sweep is the mechanism — and
+                    never enable your backend's own row expiry on the warm table.
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -340,6 +357,26 @@
             addressable bit buffer, and there is no bounded universe to complement against.
             <span class="m">XOR</span> and <span class="m">ANDOR</span> have no single call but
             compose from the rows above.
+          </p>
+          <p class="tpanel-foot">
+            <span class="label">Read this twice</span> <span class="m">SETBIT</span> flips one bit
+            in place and is genuinely O(1), so a per-recipient loop is the natural Redis shape — and
+            the worst shape here. A warm row holds one roaring bitmap per 65,536-id chunk, so every
+            write re-serializes that whole blob:
+            <strong
+              >5,000 ids added one at a time cost 5,000 writes and 23,762&nbsp;KB, against 1 write
+              and 8&nbsp;KB for the same ids in one call.</strong
+            >
+            Batch and you are far cheaper than Redis; port the loop literally and you are far more
+            expensive.
+          </p>
+          <p class="tpanel-foot">
+            <span class="label">No seed step</span> A brand-new segment is usable immediately —
+            <span class="call">addMany</span>, <span class="call">has</span>,
+            <span class="call">remove</span>, <span class="call">count</span> and the set algebra
+            all work with no cold generation and no registry row. Bulk-load is an
+            <em>import</em> path for data you already have elsewhere, and compaction is a cost
+            optimisation, never a correctness requirement.
           </p>
         </div>
 

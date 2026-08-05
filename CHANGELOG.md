@@ -16,6 +16,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 
+- **`seg.claimMany(ids)` — atomically claim ids: add them, and get back only the ones that were not already
+  there.** The durable analogue of Redis `SETBIT` returning the prior bit, which is what an exactly-once *"have I
+  already sent to / already processed this id?"* check needs. `has()` then `add()` cannot express it: two workers
+  both read absent and both proceed.
+
+  **It takes a batch, and that is the whole design.** A Warm write rewrites an entire 64K-id chunk bitmap, so
+  per-id claiming is the single most expensive way to use this library — measured at **5,000 writes / 23,762 KB**
+  for 5,000 ids claimed one at a time, against **1 write / 8 KB** for the same ids in one call. `claimMany` does
+  one OCC read-modify-write per distinct *chunk*: Redis's semantics without Redis's per-id cost shape.
+
+  Exactly-once holds **per id** — each id lives in one chunk and a chunk is one OCC row, so exactly one concurrent
+  claimer sees any given id as new (pinned by a 10-worker race test). Like `addMany` it is not atomic across
+  chunks; re-running is safe, because already-claimed ids simply come back as not-new. The presence test is the
+  full effective set `(cold ∪ adds) \ removes`, not the Warm delta alone — checking `adds` would report an id as
+  newly claimed after a compaction folded it into Cold, silently breaking exactly-once on any long-lived segment.
+
+- **`segment.dispose` audit event.** `dropSegment` now attests what it actually did. Previously a **cleartext**
+  drop emitted nothing at all: `segment.erase` could not be reused, because four documents define that event as
+  proof of an irreversible crypto-shred — bytes unreadable *everywhere*, backups included — and an object delete
+  is strictly weaker (a noncurrent version, a replica or a PITR snapshot still holds the cleartext). Emitting one
+  kind for both would make a compliance dashboard over-attest, which is the one failure an audit trail exists to
+  prevent.
+
+  So a cleartext drop emits `segment.dispose` (with `generationsDeleted`), and an **encrypted** drop emits
+  **both** — `segment.erase` for the key shred, then `segment.dispose` for the storage reclamation — because both
+  genuinely happened. See [dashboards.md](docs/guide/dashboards.md) for which one answers which question. An
+  absent no-op and a dry run emit nothing.
+
 - **`store.dropSegment(ref, { confirmSegment, dryRun? })` — retire a segment and actually reclaim its storage.**
   Tombstones the registry row, deletes the Warm rows, deletes the Cold generations. Works on a cleartext
   segment, and on an encrypted one it *also* discards the DEK, so it is a strict superset of crypto-shred there.
@@ -59,6 +87,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   The free function `dropSegment(ref, { registry, warm, cold }, …)` is exported for out-of-process callers.
 
 ### Fixed
+
+- **`store.compact()` never reclaimed the generation it superseded** ([#47](https://github.com/cloudbitmaps/cloudbitmaps/issues/47)).
+  Cold generations are immutable and generation-keyed, so *every* compaction leaves its predecessor on disk.
+  `runCompactionCycle` (the daemon) has always collected them via `gcOrphanGenerations`; `compactSegment` never
+  did, and the facade's `store.compact` wraps `compactSegment` — so a deployment that compacted **in-process
+  without running the daemon grew its Cold footprint without bound, forever.** Reads stayed correct throughout
+  (`currentGen` always pointed at a real object), which is precisely why nothing ever surfaced it.
+
+  `store.compact` now calls `gcOrphanGenerations` best-effort after a successful commit, matching the daemon, with
+  its default `keep: 1` grace window so a reader pinned to the just-superseded generation is unaffected. Failure
+  is swallowed: GC is housekeeping, and a compaction that committed must not be reported as failed because cleanup
+  could not run — the next cycle collects what this one missed.
+
+  The free function **`compactSegment` is deliberately unchanged**, staying a single-responsibility primitive for
+  callers who schedule GC themselves. If you use it directly, call `gcOrphanGenerations` yourself.
 
 - **`destroySegment` / `eraseNamespace` could report `warmRowsDeleted: 0` after physically deleting every Warm
   row.** The tally was declared *inside* the tombstone CAS retry loop, so only the final attempt's count

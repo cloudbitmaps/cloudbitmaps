@@ -246,7 +246,11 @@ describe('dropSegment', () => {
 
     expect(result.generationsDeleted).toHaveLength(1); // bytes really went
     expect(result.cryptoShredded).toBe(false);
-    expect(events).toEqual([]); // ...and claimed nothing about them
+    // It attests the DISPOSAL and nothing stronger. `segment.erase` must not appear — that is the whole point.
+    // (Originally this asserted `[]`, because silence was the honest interim state before `segment.dispose`
+    // existed. The gap it documented is now closed; the prohibition it enforces is not relaxed.)
+    expect((events as Array<{ kind: string }>).map((e) => e.kind)).toEqual(['segment.dispose']);
+    expect((events as Array<{ kind: string }>).some((e) => e.kind === 'segment.erase')).toBe(false);
   });
 
   it('DOES emit `segment.erase` when the drop genuinely crypto-shreds', async () => {
@@ -259,7 +263,8 @@ describe('dropSegment', () => {
 
     await dropSegment(SEG, w.deps, { ...CONFIRM, audit: { onEvent: (e) => void events.push(e) } });
 
-    expect(events.map((e) => e.kind)).toEqual(['segment.erase']);
+    // Both, on an encrypted segment: the key shred AND the storage reclamation each genuinely happened.
+    expect(events.map((e) => e.kind)).toEqual(['segment.erase', 'segment.dispose']);
   });
 
   it('is only eventually empty to a reader that had already cached the segment', async () => {
@@ -755,7 +760,7 @@ describe('store.dropSegment (facade)', () => {
     });
 
     expect(result.cryptoShredded).toBe(true);
-    expect(events.map((e) => e.kind)).toEqual(['segment.erase']);
+    expect(events.map((e) => e.kind)).toEqual(['segment.erase', 'segment.dispose']);
   });
 
   it('throws UnsupportedError when the store has no raw cold driver', async () => {
@@ -821,5 +826,150 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
     const collected = await gcOrphanGenerations(SEG, w.deps, { keep: 1 });
     expect(collected).toEqual([0]); // gen 1 kept as the window, gen 2 is current
     expect(await generationsInCold(w)).toEqual([1, 2]);
+  });
+});
+
+describe('segment.dispose audit event', () => {
+  it('a cleartext drop emits segment.dispose and NOT segment.erase', async () => {
+    // Before this kind existed, a cleartext disposal was invisible to the audit sink entirely — because
+    // `segment.erase` is defined by four documents as proof of an irreversible crypto-shred, and reusing it for an
+    // object delete would make a compliance dashboard over-attest. Silence was the honest interim state; a
+    // separate kind is the actual fix.
+    const w = world();
+    await seed(w, [1, 2, 3]);
+    const events: Array<{ kind: string; generationsDeleted?: number }> = [];
+
+    await dropSegment(SEG, w.deps, { ...CONFIRM, audit: { onEvent: (e) => events.push(e) } });
+
+    expect(events.map((e) => e.kind)).toEqual(['segment.dispose']);
+    expect(events[0]?.generationsDeleted).toBe(1);
+  });
+
+  it('an ENCRYPTED drop emits both — the shred and the reclamation each really happened', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await seed(w, [1, 2], keystore);
+    const events: Array<{ kind: string }> = [];
+
+    const result = await dropSegment(SEG, w.deps, {
+      ...CONFIRM,
+      audit: { onEvent: (e) => events.push(e) },
+    });
+
+    expect(result.cryptoShredded).toBe(true);
+    // Order matters: the shred is irreversible the moment the tombstone lands, the reclamation only after the
+    // sweep. Attesting them in that order is what makes a replayed trail truthful.
+    expect(events.map((e) => e.kind)).toEqual(['segment.erase', 'segment.dispose']);
+  });
+
+  it('an absent segment emits nothing at all — it disposed of nothing', async () => {
+    const w = world();
+    const events: Array<{ kind: string }> = [];
+    const result = await dropSegment(SEG, w.deps, {
+      ...CONFIRM,
+      audit: { onEvent: (e) => events.push(e) },
+    });
+    expect(result.reason).toBe('absent');
+    expect(events).toEqual([]);
+  });
+
+  it('a dry run emits nothing — it is a preview, not a state change', async () => {
+    const w = world();
+    await seed(w, [1]);
+    const events: Array<{ kind: string }> = [];
+    await dropSegment(SEG, w.deps, {
+      ...CONFIRM,
+      dryRun: true,
+      audit: { onEvent: (e) => events.push(e) },
+    });
+    expect(events).toEqual([]);
+  });
+});
+
+describe('store.compact collects the generation it supersedes (#47)', () => {
+  /**
+   * Cold generations are immutable and generation-keyed, so EVERY compaction leaves its predecessor on disk.
+   * `runCompactionCycle` (the daemon) always collected them; `compactSegment` never did — so a deployment that
+   * compacted in-process without running the daemon grew its Cold footprint without bound, forever, silently.
+   * Reads stayed correct throughout, which is exactly why nothing surfaced it.
+   */
+  const wire = () => {
+    const cold = new MemoryColdDriver();
+    const warm = new MemoryWarmDriver();
+    const registry = new MemoryRegistryDriver();
+    return {
+      cold,
+      warm,
+      registry,
+      store: new CloudRoaring({ cold, warm, registry, retry: false }),
+    };
+  };
+  const gens = async (cold: MemoryColdDriver): Promise<number[]> => {
+    const out: number[] = [];
+    for await (const k of cold.list(SEG)) out.push(k.generation);
+    return out.sort((a, b) => a - b);
+  };
+
+  it('does not accumulate generations across repeated in-process compactions', async () => {
+    const w = wire();
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: w.registry,
+    });
+    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
+
+    for (let round = 0; round < 4; round++) {
+      await seg.add(1000 + round);
+      await w.store.compact(SEG, { owner: 'test' });
+    }
+
+    // Without the GC this would be [0,1,2,3,4]: five objects, four of them dead.
+    // The `keep: 1` grace window is deliberate — a reader that resolved the just-superseded generation a moment
+    // ago must not have its object yanked away, so exactly one superseded generation survives.
+    const present = await gens(w.cold);
+    expect(present.length).toBeLessThanOrEqual(2);
+    // ...and the data is intact, which is the thing a GC must never break.
+    await expect(seg.has(1)).resolves.toBe(true);
+    await expect(seg.has(1003)).resolves.toBe(true);
+    await expect(seg.count()).resolves.toBe(7);
+  });
+
+  it('leaves the current generation alone when there is nothing superseded yet', async () => {
+    const w = wire();
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
+    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
+    await seg.add(2);
+    await w.store.compact(SEG, { owner: 'test' });
+    // gen 1 is current, gen 0 is the single kept grace window — nothing has been lost.
+    expect(await gens(w.cold)).toEqual([0, 1]);
+    await expect(seg.count()).resolves.toBe(2);
+  });
+
+  it('a compaction that commits is not reported as failed when GC cannot run', async () => {
+    // GC is housekeeping. A committed compaction must not surface as an error because cleanup failed — the next
+    // cycle collects what this one missed.
+    const w = wire();
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
+    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
+    await seg.add(2);
+    await w.store.compact(SEG, { owner: 'test' }); // gen 1, so gen 0 becomes collectable
+    await seg.add(3);
+
+    let deletes = 0;
+    const brittle = hook(w.cold, 'delete', async () => {
+      deletes += 1;
+      throw new Error('DELETE denied');
+    });
+    const store = new CloudRoaring({
+      cold: brittle,
+      warm: w.warm,
+      registry: w.registry,
+      retry: false,
+    });
+
+    const result = await store.compact(SEG, { owner: 'test' });
+
+    expect(result.compacted).toBe(true); // the commit stands
+    expect(deletes).toBeGreaterThan(0); // GC was attempted
+    await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).count()).resolves.toBe(3);
   });
 });

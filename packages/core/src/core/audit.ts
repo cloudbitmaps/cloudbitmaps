@@ -42,6 +42,29 @@ export type AuditEvent =
       readonly segment: string;
     }
   | {
+      /**
+       * A segment was **disposed of** — tombstoned and its storage reclaimed (Warm rows + Cold generations
+       * deleted) by `dropSegment`, *without* a key shred.
+       *
+       * Deliberately a separate kind from {@link AuditEvent} `segment.erase`, and the distinction is the point.
+       * `segment.erase` attests that bytes are unreadable **everywhere, backups included** — the only claim that
+       * survives WORM. Deleting an object is strictly weaker: a noncurrent version, a cross-region replica or a
+       * PITR snapshot can still hold the cleartext. Emitting one kind for both would make a compliance dashboard
+       * over-attest, so a cleartext drop gets this instead.
+       *
+       * An **encrypted** segment dropped via `dropSegment` emits **both** — `segment.erase` for the key shred and
+       * this for the storage reclamation — because both things genuinely happened.
+       *
+       * `generationsDeleted` is how many Cold generations went. It can be 0 (a segment whose bytes were already
+       * gone), and it does not promise the storage is now fully reclaimed: check `DropResult.generationsRemaining`
+       * for that.
+       */
+      readonly kind: 'segment.dispose';
+      readonly namespace?: string;
+      readonly segment: string;
+      readonly generationsDeleted: number;
+    }
+  | {
       /** A namespace erasure was executed. `segmentsShredded` is the count actually crypto-shredded (may be 0). */
       readonly kind: 'namespace.erase';
       readonly namespace: string;

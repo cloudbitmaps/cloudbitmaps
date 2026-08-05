@@ -413,6 +413,8 @@ describe('AuditEvent union', () => {
           return e.segment;
         case 'segment.erase':
           return e.segment;
+        case 'segment.dispose':
+          return e.segment;
         case 'namespace.erase':
           return e.namespace;
         default: {
