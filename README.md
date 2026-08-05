@@ -334,6 +334,27 @@ new CloudRoaring({
 `destroySegment` / `eraseNamespace` (crypto-shred), `dropSegment` (retire + reclaim storage). The
 `compact-segments` CLI wraps the compaction path.
 
+### A durable alternative to Redis bitmaps
+
+If you are reaching for `SETBIT` on a big key — audiences, dedup, suppression lists, "have I already sent to this
+user?" — this is built for that job, without an always-on cluster and without a VPC for your functions. The
+operation mapping is one-for-one for everything set-shaped, `count()` is exact and free on a compacted segment, and
+`intersect` does something Redis cannot do at any price: skip the chunks that cannot contribute.
+
+**It is not a drop-in replacement, and two limits are worth knowing before you port anything:**
+
+- **There is no addressable-bit surface.** `BITPOS`, `BITFIELD`, byte-range `BITCOUNT` and `BITOP NOT` have no
+  equivalent. This is a *set of ids*, not a positional bit buffer — and `NOT` in particular has nothing to
+  complement against, because there is no bounded universe here, only the `u32` id space. Raw-bytes
+  interoperability is likewise absent: a `.crbm` object is not a flat bit array.
+- **Do not port a per-id write loop.** `SETBIT` flips one bit in place and is genuinely O(1); here a Warm write
+  re-serializes a whole 65,536-id chunk, so **5,000 ids added one at a time cost 5,000 writes and 23,762 KB against
+  1 write and 8 KB batched** — ~3,000× the bytes. Batch and you are far cheaper than Redis; port the loop literally
+  and you are far more expensive.
+
+Redis also stays first-class *underneath* this as a warm tier, so "replacing Redis bitmaps" means replacing
+`SETBIT`-on-one-giant-key as your **data model**, not necessarily replacing Redis as infrastructure.
+
 ### Picking the write path
 
 Three ways in, billing on **three different axes**. Picking the wrong one is the single most expensive mistake

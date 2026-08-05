@@ -1332,6 +1332,15 @@ strings — so callers can branch on *why* something failed.
 
 ### Coming from Redis bitmaps?
 
+**This is a durable, cloud-native alternative to Redis bitmaps for *set-shaped* workloads** — audiences, dedup,
+suppression, membership — where the sets are large, mostly idle, have to survive a restart, and are written in
+**batches**. That is the job it is built for, and it does it without an always-on cluster or a VPC for your
+functions.
+
+**It is not a drop-in replacement.** Two limits, stated up front rather than discovered later: there is no
+addressable-bit surface (`BITPOS`, `BITFIELD`, byte-range `BITCOUNT`, `BITOP NOT`, or reading the raw bytes), and a
+per-id write loop costs roughly **3,000×** a batched one. Both are detailed below.
+
 There is no separate "plain bitmap" flavor and there is not going to be one, because this is it — a Roaring
 bitmap **is** a plain bitset wherever a plain bitset is the right answer. Each 65,536-id chunk is stored in
 whichever of three encodings is smallest for that chunk, and past **4,096 ids** in a chunk (6.25% of it) the
@@ -1379,9 +1388,23 @@ use this library. Measured, same 5,000 ids, three write shapes:
 | `addMany(ids)` in 500-id batches | 10 | 51 KB |
 | one `addMany(ids)` | **1** | **8 KB** |
 
-Nearly **3,000× more bytes** for the loop. DynamoDB bills per 1 KB of write, so that is ~23,762 WCU against 8.
-Batch, and you are far cheaper than Redis; port the loop literally and you are far more expensive. `claimMany`
-exists in batch form for exactly this reason.
+Nearly **3,000× more bytes** for the loop. Batch, and you are far cheaper than Redis; port the loop literally and
+you are far more expensive. `claimMany` exists in batch form for exactly this reason.
+
+**What that costs depends on your Warm backend's pricing model** — the write and byte counts are backend-independent
+(they are what any driver receives), the bill is not:
+
+- **Per-request metered** (DynamoDB on-demand, Astra, serverless KV): a direct line item. DynamoDB charges one write
+  unit per **1 KB rounded up, per item**, so the ~4.75 KB average per-id write bills 5 units each — ~25,000 for the
+  loop against 8 for one call.
+- **Provisioned capacity**: not extra dollars until it is. It eats capacity you already pay for, so the first
+  symptom is **throttling and retry latency**, and the bill only moves when you scale up to stop it.
+- **Instance-priced** (ElastiCache/Redis, RDS Postgres/MySQL, Mongo Atlas, self-hosted Cassandra): no per-op charge
+  at all, so it surfaces as IOPS, CPU and latency headroom rather than an invoice line — easier to miss, not cheaper.
+
+Rates are region-specific and the vendor's to change; [benchmarks](../benchmarks.md#write-shape--the-cost-of-one-op-per-id)
+uses the repo's default `aws-us-east-1-ondemand` profile, and `estimateCost()` takes a `PricingProfile` so you can
+plug in your own contract rather than trusting ours.
 
 Volume, by contrast, works in your favour: **200,000 ids spread over a 9M-id space cost 138 Warm rows**, not
 200,000 — one row per 64K of id space you actually touch.

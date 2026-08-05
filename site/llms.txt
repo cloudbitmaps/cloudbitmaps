@@ -19,6 +19,37 @@ Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with
 AWS's own ConsumedCapacity: $0.75 per million incremental writes, $0.14 per million count()s, $5.88 per
 million segment publishes, against an always-on Redis-HA line of $346/month standing.
 
+## Coming from Redis bitmaps
+
+A durable alternative to Redis bitmaps for set-shaped workloads — audiences, dedup, suppression, membership —
+where the sets are large, mostly idle, must survive a restart, and are written in batches. Operations map
+one-for-one for everything set-shaped: SETBIT/GETBIT/BITCOUNT become add|addMany/has/count, BITOP AND/OR/DIFF
+become intersect/union/andNot, and `prior = SETBIT` becomes claimMany(ids), which adds a batch and returns only
+the ids that were not already present (the exactly-once dedup primitive; one write per 65,536-id chunk rather
+than one per id).
+
+Not a drop-in replacement, and the two limits are load-bearing rather than footnotes:
+
+1. No addressable-bit surface. BITPOS, BITFIELD, byte-range BITCOUNT and BITOP NOT have no equivalent — this is
+   a set of ids, not a positional bit buffer, and NOT has no bounded universe to complement against. The raw
+   bytes are not interoperable either: a .crbm object is not a flat bit array, and raw bit-position import is
+   not built.
+2. Do not port a per-id write loop. SETBIT flips one bit in place and is O(1); here a warm write re-serializes
+   a whole 65,536-id chunk. Measured: 5,000 ids added one at a time cost 5,000 writes and 23,762 KB, against 1
+   write and 8 KB for the same ids in one call — roughly 3,000x the bytes. Batched, it is far cheaper than
+   Redis; looped, far more expensive. What that costs depends on the backend's pricing model: a direct line item
+   on per-request metered stores (DynamoDB on-demand), consumed throughput and throttling on provisioned
+   capacity, and IOPS/CPU/latency headroom rather than an invoice line on instance-priced stores (ElastiCache,
+   RDS, Atlas).
+
+There is no TTL; a dated segment plus dropSegment is the retention mechanism, and enabling a backend's native
+row expiry on the warm table is a data-loss footgun because warm rows are un-compacted deltas. No seed step is
+required — a segment with no cold generation and no registry row is fully functional — and compaction is a cost
+optimization, never a correctness requirement.
+
+Redis also remains supported as a warm tier underneath, so "replacing Redis bitmaps" means replacing
+SETBIT-on-one-giant-key as the data model, not necessarily replacing Redis as infrastructure.
+
 ## When NOT to use it
 
 If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: a check that
