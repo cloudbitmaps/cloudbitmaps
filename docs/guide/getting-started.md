@@ -970,6 +970,26 @@ for await (const id of days[0].union(days.slice(1))) { /* … */ }
 [the operations table](#the-operations). If a 7-way union per read is too much, materialize the window instead:
 `unionInto` a rolling `active:7d` segment once a day, and read that.
 
+**The best case for this pattern is a dedup or "already sent" window, where the bucket key _is_ the
+semantics.** Suppose you send a daily wave and a user must not be sent to twice in the same local day. Then the
+key is the window:
+
+```ts
+const key = `sent:daily:${localDay}`;                    // the bucket IS the re-eligibility rule
+if (await store.segment(key).has(userId)) return;        // already sent today
+await store.segment(key).add(userId);
+```
+
+There is **no per-user expiry bookkeeping at all** — no timers, no sweep, no 9-million-entry TTL table. A user
+becomes re-eligible the instant the wave moves to tomorrow's key, because tomorrow's segment is a different,
+empty set. A tighter guard (a nightly wave needing ~10 minutes of protection) is still satisfied by a day-scoped
+bucket, so the coarser key is usually the right one.
+
+Reach for a genuine rolling window — *"sent in the last 4 hours"*, exactly — only when the approximation
+actually matters. Then it is `remove`/`removeMany` aging individual ids out on a sweep, which is a real
+tombstone write per id and costs accordingly. Dated buckets are cheaper, simpler and sufficient for anything
+whose window is naturally a calendar boundary.
+
 ### Pruning a segment today — and the honest limits
 
 Two operations exist, and **neither is a plain delete**:
@@ -991,10 +1011,52 @@ Two consequences worth being explicit about:
    Deleting objects yourself while the registry still points at them leaves reads failing on a missing
    generation, so it is not a safe thing to do by hand.
 
-**So, to actually reclaim storage today:** crypto-shred the segment (making it unreadable and clearing Warm),
-then remove the objects out-of-band — an **S3 lifecycle rule** on the segment's key prefix is the clean way,
-because it is declarative, runs in the storage layer, and doesn't race your readers. Combined with the daily-bucket
-pattern above, a lifecycle rule expiring `active:*` objects after N days *is* your TTL.
+### Reclaiming the storage — and the ordering rule that makes it safe
+
+An **S3 lifecycle rule** on the segment's key prefix is the right mechanism: declarative, runs in the storage
+layer, costs nothing to operate.
+
+```jsonc
+// Lifecycle rule on the bucket — expire the daily buckets' objects.
+{
+  "Rules": [
+    {
+      "ID": "expire-daily-audience-buckets",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "segments/active:" },   // your cold key prefix
+      "Expiration": { "Days": 35 }                   // NOTE: longer than your retention window
+    }
+  ]
+}
+```
+
+> ⚠️ **A lifecycle rule on its own is not enough, and on its own it breaks reads.** The registry still holds a
+> row for that segment whose `currentGen` names the object the rule just deleted. That is precisely the state
+> [`checkConsistency()`](disaster-recovery.md) reports as **`missing-cold-generation`** — the torn-restore
+> failure the DR guide tells you not to serve traffic on. You would be manufacturing it on purpose, daily.
+>
+> **It is also intermittent, which is worse than a clean break.** A read checks the hot LRU before it touches
+> cold, so chunks still cached answer correctly while chunks that were never cached — or have since been
+> evicted, or any read after a restart or a new deploy — raise `NotFoundError`. It will look fine in testing
+> and start failing later, and the error resembles a transient cloud fault rather than a configuration bug.
+
+**So the rule is: the pointer goes first, the bytes go second.**
+
+```ts
+// A scheduled job, for each bucket older than the window:
+// 1. Remove the registry row FIRST — after this, nothing resolves a generation for the segment,
+//    so no reader can reach for bytes that are about to disappear.
+await registry.delete({ segment: `active:${oldDay}` });
+// 2. The lifecycle rule reaps the now-orphaned objects on its own schedule.
+```
+
+Set the lifecycle `Days` **longer than your retention window** so the pointer is always removed before the bytes
+— if the rule wins the race you are in the torn state until the job next runs. And if you need the erasure
+guarantee as well as the disposal, crypto-shred (`destroySegment`, §9) *before* removing the row: shredding makes
+the bytes unreadable everywhere including backups, which a bucket deletion does not.
+
+Combined with the daily-bucket pattern above, that pair — registry delete on a schedule, lifecycle rule
+lagging behind it — *is* your TTL.
 
 A first-class **segment-level retention** feature — a `retentionDays` the compaction daemon enforces — is
 [on the roadmap](../ROADMAP.md#planned--exploring) and not built. If you need it, saying so on an issue is what
