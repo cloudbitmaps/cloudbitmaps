@@ -11,8 +11,11 @@ import {
   gcOrphanGenerations,
   publishGeneration,
   runConsistencyCheck,
+  writeCrbmGeneration,
 } from '@/index';
+import { SafeBitmap } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { aadFor } from '@/core/crypto';
 import { KeyUnavailableError, WriteConflictError } from '@/core/errors';
 import type { CompactionDeps, IKeystore, SegmentRef } from '@/index';
 import type { IRegistryDriver, RegistryPatch, Token } from '@/core/ports';
@@ -328,6 +331,55 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       expect(await members(w.store())).toEqual([1, 2, 3]);
     });
 
+    it('a bootstrap that LOST the gen-0 write race never publishes its own DEK', async () => {
+      // The race, and it is the likely interleaving rather than an exotic one: the loser skips `verifyGeneration`
+      // (a full re-read of the object it did not write), so it reaches the registry FIRST. If it publishes the DEK
+      // it minted, the winner then sees `currentGen: 0`, concludes its own publish landed, and purges the Warm rows
+      // that held the only readable copy — leaving gen 0 encrypted under the winner's key while the row carries the
+      // loser's. Reads fail `AEAD authentication failed` under an ACTIVE pointer, and `checkConsistency` cannot see
+      // it because the object is present. Found by three independent adversarial reviews; pre-existing on `main`
+      // through the `create` path, and the nullable pointer added a second way in through the CAS.
+      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+      const w = world(keystore);
+      await createNullGenRow(w.registry);
+      await w.store().segment('s').addMany([1, 2, 3]);
+
+      // Stand in for the winner: gen 0 already exists in Cold, encrypted under a DEK that is NOT this worker's.
+      const winner = await keystore.createDek();
+      const gen0 = { ...SEG, generation: 0 };
+      await writeCrbmGeneration(
+        w.cold,
+        gen0,
+        [{ chunkKey: 0, bitmap: SafeBitmap.fromValues([7, 8, 9]) }],
+        {
+          crypto: { aead: winner.aead, aadFor: (scope) => aadFor(gen0, 0, scope) },
+        },
+      );
+
+      // Our bootstrap therefore loses the write-once race, mints its own DEK, and must publish NOTHING.
+      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
+      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
+      const rec = (await w.registry.get(SEG))!;
+      expect(rec.currentGen).toBeNull(); // no pointer at an object we cannot decrypt…
+      expect(rec.wrappedDeks).toBeUndefined(); // …and no key material of ours on the row
+      expect(await warmRowCount(w.warm, SEG)).toBe(1); // the only copy of our data survives
+      expect(await members(w.store())).toEqual([1, 2, 3]);
+    });
+
+    it('a cleartext bootstrap MAY still adopt an orphan gen 0 — there is no key to get wrong', async () => {
+      // The other half of the same rule. Refusing to adopt unconditionally would strand a crashed bootstrap's
+      // object forever (nothing else collects a null-gen row's generations), so only the encrypted case bails.
+      const w = world();
+      await createNullGenRow(w.registry);
+      await w.store().segment('s').addMany([1, 2, 3]);
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [7, 8, 9]); // orphan, unpublished
+
+      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
+      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
+      expect((await w.registry.get(SEG))!.currentGen).toBe(0); // adopted, so the object is no longer orphaned
+      expect(await warmRowCount(w.warm, SEG)).toBe(1); // still not purged — those rows are not in gen 0
+    });
+
     it('fails fast when the row is encrypted but compaction has no keystore', async () => {
       const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
       const w = world(); // …and this world has no keystore wired
@@ -384,20 +436,38 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       expect(await members(w.store())).toEqual([4, 5, 6]);
     });
 
-    it('a publish with no DEK does not wipe key material already on the row', async () => {
-      // A registry patch CLEARS an optional field by mentioning it, so `wrappedDeks: undefined` is not "leave it
-      // alone" — it is "delete it". Publishing a cleartext generation must therefore not mention the field at
-      // all, or this path would silently destroy the wrappings while the branch for a non-null pointer preserves
-      // them. (The mismatch is what matters: an encrypted row whose only generation is cleartext must fail the
-      // same way it always has — closed, at the reader — not be quietly rewritten into a cleartext row.)
+    it('refuses to bulk-load a CLEARTEXT generation onto a row that claims encryption', async () => {
+      // Writing cleartext bytes under a row that still advertises `wrappedDeks` is not merely untidy: it makes
+      // `destroySegment` emit `segment.erase` — the audit event defined as "unreadable everywhere, backups
+      // included" — for plaintext that stays readable from any copy. An audit trail that over-attests is the one
+      // failure it exists to prevent, so the state is refused rather than created. Same fail-fast compaction does.
+      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+      const w = world(); // …and this world has no keystore wired
+      const minted = await keystore.createDek();
+      await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
+
+      await expect(
+        bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+          registry: w.registry,
+        }),
+      ).rejects.toBeInstanceOf(KeyUnavailableError);
+      const rec = (await w.registry.get(SEG))!;
+      expect(rec.currentGen).toBeNull(); // nothing published
+      expect(rec.wrappedDeks).toEqual(minted.wrapped); // and the key material is untouched
+    });
+
+    it('a publish with no DEK does not mention the field, so key material survives', async () => {
+      // The publish step in isolation: a registry patch CLEARS an optional field by mentioning it, so
+      // `wrappedDeks: undefined` is not "leave it alone" but "delete it". `publishGeneration` must therefore omit
+      // the key entirely when there is nothing to store — the branch for a non-null pointer never touches it, and
+      // the two must not disagree.
       const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
       const w = world();
       const minted = await keystore.createDek();
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3]); // object only, unpublished
 
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-        registry: w.registry, // no keystore ⇒ the generation is written cleartext
-      });
+      expect(await publishGeneration(w.registry, { ...SEG, generation: 0 })).toBe(true);
       const rec = (await w.registry.get(SEG))!;
       expect(rec.currentGen).toBe(0);
       expect(rec.wrappedDeks).toEqual(minted.wrapped);

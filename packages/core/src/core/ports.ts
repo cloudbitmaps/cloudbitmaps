@@ -286,7 +286,17 @@ export interface IRegistryDriver {
   create(ref: SegmentRef, record: NewRegistryRecord): Promise<{ token: Token }>;
   /** Server-side compare-and-set: apply `patch` iff the stored token equals `expected`, else `WriteConflictError`. */
   compareAndSwap(ref: SegmentRef, expected: Token, patch: RegistryPatch): Promise<{ token: Token }>;
-  /** Discovery: every live record, optionally scoped to one namespace. Order is unspecified. */
+  /**
+   * Discovery: every **existing** record, optionally scoped to one namespace. Order is unspecified.
+   *
+   * "Existing" means not `delete`d. A **`destroyed` tombstone is still a record and must be yielded** — a driver
+   * that filters by `status` breaks callers silently, and two already depend on seeing them: `runConsistencyCheck`
+   * skips them itself, and the retention sweep can only clean up a tombstone row it can see (filtering it makes
+   * the cleanup a permanent no-op, indistinguishable from having nothing to do, while dead rows accumulate). Same
+   * rule for every other field: a row with **`currentGen: null`** must be yielded like any other, and `retention`
+   * must survive the projection — a fleet sweep reads the policy straight out of this enumeration rather than
+   * paying a `get()` per segment, so a `list()` that drops the field means nothing ever expires, silently.
+   */
   list(namespace?: string): AsyncIterable<RegistryRecord>;
   /** Remove the row (tombstoned for ABA-safety — a later `create` still gets a fresh, greater token). */
   delete(ref: SegmentRef): Promise<void>;

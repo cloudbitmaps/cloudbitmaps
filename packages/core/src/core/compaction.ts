@@ -287,12 +287,18 @@ async function compactSegmentInner(
         purged: 0,
         survived: 0,
       };
-    // Encryption: mint a fresh per-segment DEK for gen 0 (or write cleartext). If we lose the gen-0 write race
-    // our minted DEK is simply discarded — the winner's DEK (in the winning registry.create) is authoritative.
+    // Encryption: mint a fresh per-segment DEK for gen 0 (or write cleartext). If we LOSE the gen-0 write race we
+    // must not publish this DEK at all — see `publishGenZero`, which refuses to write key material for an object
+    // this worker did not write. (An earlier version of this comment claimed a lost race meant "our minted DEK is
+    // simply discarded". It was not: the publish ran unconditionally, so the loser could CAS its own wrapping onto
+    // the row while the winner's bytes were encrypted under a different key — and the winner, seeing `currentGen`
+    // at 0, then purged the Warm rows that held the only readable copy. Reproduced; see the tests.)
     let aead: Aead | undefined;
     let wrappedDeks: readonly WrappedDek[] | undefined;
     if (record?.wrappedDeks !== undefined && record.wrappedDeks.length > 0) {
-      // A null-gen row can already carry a DEK (created encrypted, never compacted). REUSE it rather than
+      // A null-gen row that carries a DEK. No writer in this library produces that state today (every
+      // `registry.create` site either publishes a generation or writes no wrappings), so in practice this is a
+      // hand-written or restored row — the guard stays because the alternative is silent key loss. REUSE it rather than
       // minting a second one: the row's wrappings are what readers resolve the key from, so a fresh DEK would
       // either be overwritten (gen 0 unreadable) or overwrite theirs (nothing else decryptable). Same fail-fast
       // as the normal path — an encrypted row with no keystore is a lost key, not a cleartext segment.
@@ -333,12 +339,14 @@ async function compactSegmentInner(
     // normal row that `setRetention`, the dirty-count hint or an erasure can also CAS, so a conflict does not
     // imply someone published gen 0. `publishGenZero` re-reads and only reports success when the row actually
     // points at gen 0 — purging Warm against a pointer that is still `null` would be a silent lost write (I4).
-    const published = await publishGenZero(deps.registry, ref, record, wrappedDeks);
+    const published = await publishGenZero(deps.registry, ref, record, wrappedDeks, wrote);
     if (!wrote || !published)
       // Either we adopted another worker's gen 0 (our Warm rows may not be in it) or the pointer never landed on
-      // ours. Both mean the same thing: purging could lose data, so leave the rows for the next compaction to
-      // merge over the committed gen 0. No loss, no torn read; an unpublished object is an orphan the reconcile
-      // sweep collects. `bootstrap-raced` covers both — the distinction is not actionable for a caller.
+      // ours — pointing somewhere else, or carrying someone else's key. All of them mean the same thing: purging
+      // could lose data, so leave the rows for the next compaction to merge over the committed gen 0. No loss, no
+      // torn read, and an unpublished gen-0 object is adopted by the next bootstrap rather than collected (a
+      // null-gen row is never reconciled — `gcOrphanGenerations` deliberately collects nothing while the pointer
+      // is null). `bootstrap-raced` covers all of them; the distinction is not actionable for a caller.
       return {
         ...base,
         compacted: false,
@@ -557,7 +565,18 @@ async function publishGenZero(
   ref: SegmentRef,
   known: RegistryRecord | null,
   wrappedDeks: readonly WrappedDek[] | undefined,
+  wrote: boolean,
 ): Promise<boolean> {
+  // A worker that LOST the write-once race must never publish key material, and this is the whole reason `wrote`
+  // is threaded down here. The loser skips `verifyGeneration` (a full re-read of the object), so it is *likely* to
+  // reach the registry first — and if it CASes its own wrapping onto the row, the winner then finds `currentGen`
+  // at 0, concludes the publish succeeded, and purges the Warm rows that held the only readable copy. Gen 0 is
+  // encrypted under the winner's DEK and the row carries the loser's: reads fail `AEAD authentication failed`
+  // under an ACTIVE pointer, and `checkConsistency` cannot see it because the object is present. Reproduced.
+  //
+  // Adopting a cleartext generation stays safe (there is no key to get wrong) and is what keeps a crashed
+  // bootstrap's orphan object from blocking the segment forever, so only the encrypted case bails.
+  if (!wrote && wrappedDeks !== undefined) return false;
   let current = known;
   for (let attempt = 0; attempt < PUBLISH_GEN0_ATTEMPTS; attempt += 1) {
     try {
@@ -583,9 +602,10 @@ async function publishGenZero(
           ...(wrappedDeks === undefined ? {} : { wrappedDeks }),
         });
       } else {
-        // Someone published while we worked. Only gen 0 can be the object we wrote (generations are write-once),
-        // so anything else means our bytes are an orphan and our Warm rows must survive.
-        return current.currentGen === 0;
+        // Someone published while we worked. Only gen 0 can be the object we wrote (generations are write-once) —
+        // AND the key on the row has to be the one we encrypted it with, or the pointer is live over bytes nobody
+        // can decrypt. Reporting success on a key mismatch is what let the race above purge the last copy.
+        return current.currentGen === 0 && sameWrappings(current.wrappedDeks, wrappedDeks);
       }
       return true;
     } catch (err) {
@@ -594,6 +614,20 @@ async function publishGenZero(
     }
   }
   return false; // sustained contention — leave the Warm rows; the next cycle folds them over whatever won
+}
+
+/**
+ * Whether a row's wrapped DEKs are the ones this worker wrote its generation under — compared by `(keyId,
+ * wrapped)` pairs, since a wrapping is an opaque string and two DEKs never produce the same one. Cleartext on both
+ * sides counts as a match; cleartext on one side and encrypted on the other does not, which is the point.
+ */
+function sameWrappings(
+  a: readonly WrappedDek[] | undefined,
+  b: readonly WrappedDek[] | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  return a.every((w, i) => w.keyId === b[i]?.keyId && w.wrapped === b[i]?.wrapped);
 }
 
 /**

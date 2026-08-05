@@ -65,6 +65,24 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
       );
       await expect(noBody.get(seg)).rejects.toBeInstanceOf(IntegrityError);
     });
+    it('rejects a non-object retention/residency blob (IntegrityError, invariant 5)', async () => {
+      // `JSON.stringify(null)` is 4 valid bytes, so a stored `"retention": null` round-trips through the size and
+      // serializability checks. It matters because `retention.expiresAt` is read with an `in` test, which throws an
+      // untyped `TypeError` on a non-object — and that would abort a whole fleet retention sweep instead of
+      // becoming one ledger entry. The write boundary rejects it now; this is the read boundary, for a row edited
+      // by hand or written before that check existed.
+      for (const bad of ['null', '"nope"', '42', '[1,2]']) {
+        const d = driverWith(() =>
+          Promise.resolve(
+            liveItem(
+              `{"segment":"s","currentGen":3,"dirtyChunkCount":0,"status":"active","createdAt":1,"updatedAt":1,"retention":${bad}}`,
+            ),
+          ),
+        );
+        await expect(d.get(seg)).rejects.toBeInstanceOf(IntegrityError);
+      }
+    });
+
     it('rejects a corrupt (non-JSON) body (IntegrityError, invariant 5)', async () => {
       const d = driverWith(() =>
         Promise.resolve({ Item: { v: { N: '2' }, r: { S: '{not json' }, del: { BOOL: false } } }),

@@ -32,6 +32,30 @@ function validateGeneration(gen: number | null): void {
   }
 }
 
+/**
+ * A patch that *mentions* `currentGen` must give it a real value — `null` to clear the pointer, or a generation.
+ * `{ currentGen: undefined }` is refused rather than coerced, and the reason is a regression this check exists to
+ * prevent: before `currentGen` was nullable, that patch was a **no-op** (the merge used `??`), so
+ * `{ currentGen: maybeUndefined }` — which `strict` alone permits, since `exactOptionalPropertyTypes` is off —
+ * left the pointer alone. Under presence-based merging the same call would silently *un-publish* a live segment:
+ * every Cold generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer
+ * ⇒ nothing to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
+ */
+function validatePatchGeneration(patch: RegistryPatch): void {
+  if (!('currentGen' in patch)) return;
+  // Dropping the old `?? null` is what actually restores the rejection (`validateGeneration(undefined)` fails the
+  // integer test); this branch exists to make the *message* say which value to pass instead, because the generic
+  // "must be a non-negative integer or null" reads like a type error rather than the trap it is.
+  if (patch.currentGen === undefined) {
+    throw new ValidationError(
+      `currentGen was present in the patch but undefined. Pass \`null\` to clear the pointer (the segment has no ` +
+        `Cold generation), or omit the key to leave it unchanged — an undefined value is refused because it used ` +
+        `to be a no-op and would now un-publish the segment's Cold data.`,
+    );
+  }
+  validateGeneration(patch.currentGen);
+}
+
 function validateCount(count: number, field = 'dirtyChunkCount'): void {
   if (!Number.isInteger(count) || count < 0) {
     throw new ValidationError(`${field} must be a non-negative integer; got ${count}`);
@@ -58,6 +82,16 @@ function validateStatus(status: string): void {
  */
 function validateGovernance(meta: unknown, field: string): void {
   if (meta === undefined) return;
+  // A plain object, not `null`/an array/a primitive. `JSON.stringify(null)` is 4 valid bytes, so without this the
+  // size + serializability checks below happily store `"retention": null` — and `retention.expiresAt` is read with
+  // an `in` test, which throws an untyped `TypeError` on a non-object and would abort a whole fleet retention
+  // sweep rather than becoming one ledger entry. Reject at the write boundary; the read boundary
+  // ({@link assertStoredRecordShape}) rejects it too, for rows written before this check or edited by hand.
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+    throw new ValidationError(
+      `${field} must be a plain object (got ${meta === null ? 'null' : typeof meta})`,
+    );
+  }
   let json: string;
   try {
     json = JSON.stringify(meta);
@@ -109,7 +143,7 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
 
 /** Validate the caller-settable fields in a `compareAndSwap` patch. */
 export function validateRegistryPatch(patch: RegistryPatch): void {
-  if ('currentGen' in patch) validateGeneration(patch.currentGen ?? null);
+  validatePatchGeneration(patch);
   if (patch.dirtyChunkCount !== undefined) validateCount(patch.dirtyChunkCount);
   if (patch.consecutiveFailures !== undefined)
     validateCount(patch.consecutiveFailures, 'consecutiveFailures');
@@ -293,6 +327,18 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
+  // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
+  // one of them carries semantics: `retention.expiresAt` is read with an `in` test, which throws an untyped
+  // `TypeError` on a stored `null`/string/number. That is reachable — the write boundary only checks
+  // JSON-serializability and size, so `"retention": null` round-trips through every driver from a hand-edit, an
+  // older writer, or a restore — and it would abort a whole fleet retention sweep rather than becoming one
+  // ledger entry. Reject it here, typed, at the trust boundary (invariant 5).
+  for (const field of ['retention', 'residency'] as const) {
+    const meta = r[field];
+    if (meta !== undefined && (meta === null || typeof meta !== 'object' || Array.isArray(meta))) {
+      throw new IntegrityError(`registry record has a non-object ${field}: ${ctx}`);
+    }
+  }
 }
 
 /**
