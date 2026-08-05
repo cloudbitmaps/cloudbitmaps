@@ -14,6 +14,28 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Documentation
+
+- **Retention, TTL and pruning are now documented — including a footgun that could lose data silently.**
+  There is no TTL and no per-id expiry (a bitmap stores ids, not `(id, timestamp)` pairs, so an expiry per id
+  costs more than the compression saves), and the guidance for what to do instead existed only in `PRIVACY.md` —
+  which is not where anyone asking *"does it support TTL?"* looks. New guide section, plus a note on `/usage`.
+
+  **The warning is the important part: never enable your backend's native row expiry on the Warm table.**
+  DynamoDB TTL, Redis `EXPIRE`, a MongoDB TTL index, a Postgres cleanup job — Warm rows are **un-compacted
+  deltas**, so expiring them discards adds/removes that were never folded into Cold, and the next read returns
+  the Cold generation without them. **No error is raised; the answer is quietly wrong.** "The Warm table is
+  growing, I'll put a TTL on it" is a reasonable instinct and a data-loss bug — the answer is to compact more
+  often. Nothing in the docs said so before.
+
+  Also corrected an overstatement: `PRIVACY.md` described dropping a segment as "an object delete or
+  crypto-shred", implying the first is available. It is not. `destroySegment` crypto-shreds — the Cold bytes
+  become unreadable everywhere including backups, but **they stay in your bucket and you keep paying for them** —
+  and it requires encryption at rest, since a cleartext segment has no key to discard. `gcOrphanGenerations`
+  collects only *superseded* generations. **No operation deletes a live segment's Cold objects**, so reclaiming
+  storage is out-of-band work (an S3 lifecycle rule on the key prefix). Segment-level retention is now on the
+  roadmap with that gap named as its first requirement.
+
 ## [0.7.0] — 2026-08-01
 
 One narrowly breaking rename, and the docs a Redis-bitmap user needs to evaluate this at all.

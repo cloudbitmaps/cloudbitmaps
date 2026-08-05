@@ -926,6 +926,80 @@ See [`PRIVACY.md`](../../PRIVACY.md).
 > Warm deltas into a fresh Cold generation in-process (same drivers, same `UnsupportedError` requirement) — a
 > one-shot alternative to running the `compact-segments` daemon for occasional/manual compaction.
 
+## 13.5 Retention, TTL and pruning — what exists and what doesn't
+
+**There is no TTL.** No per-id expiry, no `expireAfter`, no "auto-prune" flag. An id you `add` stays until
+something removes it, and a segment grows until you prune it. This is a design consequence, not a missing
+feature — see below — but it is the first thing to know, and it means **retention is something you schedule,
+not something you configure.**
+
+> ⚠️ **Never enable your backend's native row expiry on the Warm table.** DynamoDB TTL, Redis `EXPIRE`,
+> a MongoDB TTL index, a Postgres cleanup job — any of them will **silently lose writes.**
+>
+> Warm rows are **un-compacted deltas**: the `adds` and `removes` that have not yet been folded into a Cold
+> generation. Compaction is what durably applies them, and it purges them itself, version-fenced. If the
+> backend deletes a Warm row first, those adds and removes are simply gone — and the next read returns the
+> Cold generation *without* them. **No error is raised**; the answer is just quietly wrong.
+>
+> "The Warm table is growing, I'll put a TTL on it" is a reasonable instinct and a data-loss bug. The correct
+> answer to a growing Warm table is **run compaction more often** — that is precisely what it is for.
+
+### Why there is no per-id TTL
+
+A bitmap stores **ids, not `(id, timestamp)` pairs.** Expiring individual ids means keeping a timestamp
+per id — 4–8 bytes each — which destroys the compression the whole design exists for. A contiguous range of a
+million ids is a few bytes as a Roaring run; the same million with per-id timestamps is megabytes, and worse
+than a plain list. So per-id aging isn't deferred work, it's incompatible with the data model.
+
+### The pattern that gives you the same outcome
+
+Put time in the **segment name** instead of in the data, and let set algebra do the window:
+
+```ts
+// Write into a bucket per day.
+await store.segment(`active:${today}`).addMany(idsSeenToday);
+
+// "Active in the last 7 days" — a union over the buckets you still keep.
+const days = last7Days.map((d) => store.segment(`active:${d}`));
+for await (const id of days[0].union(days.slice(1))) { /* … */ }
+
+// Retention = dropping whole buckets, not aging bits.
+```
+
+`union` reads every chunk of every operand — it can't skip, and the guide says so in
+[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window instead:
+`unionInto` a rolling `active:7d` segment once a day, and read that.
+
+### Pruning a segment today — and the honest limits
+
+Two operations exist, and **neither is a plain delete**:
+
+| | what it does | what it does *not* do |
+|---|---|---|
+| `destroySegment(ref, { registry, warm }, { confirmSegment })` | drops the segment's wrapped DEK → its Cold bytes become **permanently unreadable everywhere, including backups**; physically deletes its Warm rows; leaves a `destroyed` audit tombstone. Reads as empty | **does not delete the Cold objects.** They stay in your bucket, unreadable, and you keep paying for the bytes |
+| `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes **superseded** generations (strictly below `currentGen`), keeping `keep` as a grace window for in-flight readers | **never touches the current generation.** It reclaims compaction garbage, not live data |
+
+Two consequences worth being explicit about:
+
+1. **`destroySegment` needs encryption on.** It works by discarding the key, so a cleartext segment has no key
+   to discard — the call is *rejected* unless you pass `allowCleartext: true`, and in that case it clears Warm
+   and writes the tombstone while **the Cold `.crbm` bytes remain fully readable in your bucket.** If your
+   retention requirement is "the data must become unreadable", encryption at rest (§9) is a prerequisite, not
+   an option.
+2. **Nothing in the library deletes a live segment's Cold objects.** `IColdDriver.delete` exists as a
+   primitive, but no supported operation orchestrates "remove this segment's storage and its registry row".
+   Deleting objects yourself while the registry still points at them leaves reads failing on a missing
+   generation, so it is not a safe thing to do by hand.
+
+**So, to actually reclaim storage today:** crypto-shred the segment (making it unreadable and clearing Warm),
+then remove the objects out-of-band — an **S3 lifecycle rule** on the segment's key prefix is the clean way,
+because it is declarative, runs in the storage layer, and doesn't race your readers. Combined with the daily-bucket
+pattern above, a lifecycle rule expiring `active:*` objects after N days *is* your TTL.
+
+A first-class **segment-level retention** feature — a `retentionDays` the compaction daemon enforces — is
+[on the roadmap](../ROADMAP.md#planned--exploring) and not built. If you need it, saying so on an issue is what
+moves it.
+
 ## 14. Export / eject your data
 
 Your data isn't locked in. `store.exportSegments(sink, options)` dumps **every registered segment's current effective

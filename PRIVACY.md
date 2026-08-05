@@ -100,10 +100,25 @@ The library does not age data out for you — segments grow until you prune them
 a storage-limitation anti-pattern if the data is personal. **Retention policy is yours.** Practical patterns:
 
 - **Rolling windows** (e.g. "active this week"): keep N daily sub-segments, union them for reads, and drop the
-  oldest wholesale — turning retention into cheap whole-segment deletion (an object delete or crypto-shred),
-  not per-bit aging.
+  oldest wholesale — turning retention into cheap whole-segment disposal, not per-bit aging.
 - **Scheduled compaction** enforces any tombstones you've written for aged-out members within your window.
 - Surface segment age/size via the **metrics sink** so unbounded growth is visible, not silent.
+
+**Be precise about what "drop the oldest" involves**, because the library does two different things and neither
+is a plain delete. `destroySegment` **crypto-shreds** — it discards the key, so the Cold bytes become
+unreadable everywhere including backups, and it clears the Warm rows; but **the objects remain in your bucket**
+and you keep paying for those bytes. `gcOrphanGenerations` deletes only *superseded* generations, never the
+current one. **No library operation deletes a live segment's Cold objects**, so reclaiming the storage is
+out-of-band work — an **S3 lifecycle rule** on the segment's key prefix is the clean mechanism, since it is
+declarative and cannot race a reader. Note also that crypto-shred **requires encryption at rest**: a cleartext
+segment has no key to discard, and `allowCleartext` clears Warm while leaving the Cold bytes readable. Full
+detail, including the pattern and the pitfalls, is in the
+[guide](docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt).
+
+> ⚠️ **Do not enable your backend's native row expiry on the Warm table** (DynamoDB TTL, Redis `EXPIRE`, a
+> MongoDB TTL index, a Postgres cleanup job). Warm rows are un-compacted deltas; expiring them discards writes
+> that were never folded into Cold, and the next read is silently wrong rather than an error. If the Warm table
+> is growing, compact more often.
 
 ## Legal hold
 
