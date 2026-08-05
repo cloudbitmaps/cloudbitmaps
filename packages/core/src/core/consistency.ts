@@ -17,8 +17,9 @@
  */
 
 import { mapWithConcurrency } from './concurrency';
-import { BudgetExceededError, ValidationError } from './errors';
-import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import { ValidationError } from './errors';
+import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
+import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
 
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 /**
@@ -33,7 +34,9 @@ import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '.
  * Generous — the compaction docs target 100K+ segment fleets — while still bounding a DR drill's memory to
  * something a modest operator box survives. Raisable, because a ceiling you cannot lift is a landmine.
  */
-export const DEFAULT_MAX_SCAN_SEGMENTS = 250_000;
+// Re-exported from its original home so `@cloudbitmaps/core`'s public name does not move; the value and the loop
+// that enforces it now live in `registry-scan.ts`, shared with the retention sweep.
+export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 const DEFAULT_CHECK_CONCURRENCY = 8;
 
 export interface ConsistencyIssue {
@@ -94,27 +97,13 @@ export async function runConsistencyCheck(
     throw new ValidationError(`concurrency must be a positive integer; got ${concurrency}`);
   }
   const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
-  if (!Number.isFinite(maxScanSegments) || maxScanSegments < 1) {
-    throw new ValidationError(
-      `maxScanSegments must be a finite number >= 1; got ${String(options.maxScanSegments)}`,
-    );
-  }
-  // Bounded enumeration, matching the engine's read paths. The comment above already noted the scan is
-  // "possibly huge" and then drained it into an array regardless: memory scaled with total fleet size, which
-  // the caller had no way to cap. This is operator-invoked rather than request-reachable, so it is less exposed
-  // than the GDPR paths that were fixed first — but "an operator runs it" is not a bound, and a DR drill against
-  // a large fleet from a modest box is exactly when it would bite.
-  const recs: RegistryRecord[] = [];
-  for await (const rec of deps.registry.list(options.namespace)) {
-    recs.push(rec);
-    if (recs.length > maxScanSegments) {
-      throw new BudgetExceededError(
-        `checkConsistency would enumerate more than ${maxScanSegments} segments — the scan was abandoned there ` +
-          `rather than completed. Narrow it with \`namespace\`, or raise \`maxScanSegments\` if the fleet really ` +
-          `is that large and the memory is available.`,
-      );
-    }
-  }
+  // Bounded enumeration, shared with the retention sweep — see `registry-scan.ts` for why a fleet-wide scan is
+  // drained rather than streamed, and why the ceiling is not optional. This used to be an inline copy of that loop.
+  const recs = await drainRegistry(deps.registry, {
+    namespace: options.namespace,
+    maxScanSegments,
+    op: 'checkConsistency',
+  });
   const results = await mapWithConcurrency(recs, concurrency, async (rec): Promise<Outcome> => {
     if (rec.status === 'destroyed') return { kind: 'ok' }; // Cold intentionally gone — not a torn restore
     const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };

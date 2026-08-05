@@ -114,6 +114,7 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `store.setRetention(ref, { expiresAt })` → `SetRetentionResult` | **record when this segment becomes eligible for retirement** — one registry write, nothing deleted, nothing scheduled. `expiresAt` is an absolute epoch-**ms you compute** (a duration the library derived would be anchored to `updatedAt`/`currentGen`, both of which compaction rewrites, so a busy segment would never expire). On an accumulator it mints the registry row (`createdRow: true`) with **no Cold generation**, which is what makes the segment enumerable — and therefore sweepable — without changing any read. Rejects a value below `MIN_EXPIRES_AT_MS` (almost certainly epoch *seconds*, which would read as already-expired) and refuses a crypto-shredded segment |
 | `store.getRetention(ref)` → `RetentionPolicy \| null \| 'invalid'` | the stored policy; `null` for none, `'invalid'` for a present-but-unusable `expiresAt` (a hand-edited row, a restore) so a malformed policy is visible rather than reading as "never expires" |
 | `store.clearRetention(ref)` → `boolean` | cancel the expiry; returns whether one was actually removed. A separate verb from setting one on purpose — "never expire" as a magic value passed to the setter is how a typo becomes a deletion |
+| `store.retireExpired({ namespace?, now?, limit?, dryRun?, maxScanSegments?, purgeTombstones?, tombstoneGraceMs?, audit? })` → `RetireExpiredResult` | **the retention sweep** — retire every segment whose `expiresAt` has passed, each through `dropSegment` (one implementation of the Warm → registry → Cold ordering, not two). **A call, not a daemon**: you schedule it (EventBridge, CronJob, cron, a queue job), and from **one** process — there is no shard option. Returns a per-segment ledger; a per-segment *fault* is an `entries` row rather than a throw, though a bad argument throws `ValidationError` and a fleet past `maxScanSegments` throws `BudgetExceededError`. `limit` (default 100) caps **attempts**, so a partial outage cannot march through the fleet; `limited: true` means more are eligible, re-run. `dryRun` is the real preview (`confirmSegment` is vacuous in a loop) and reports `wouldRetire`, leaving `retired` at 0. Retirements are sequential (~8 round trips each), so `limit` is also a wall-clock knob. Also deletes the tombstone rows **it stamped itself**, after `tombstoneGraceMs` (default 24 h) and only once Warm and Cold are provably empty (collecting a straggler generation first); a `destroyed` row it did not create — a GDPR crypto-shred — is never touched. Needs a raw cold driver + registry |
 | `store.checkConsistency({ namespace?, concurrency? })` → `ConsistencyReport` | DR: verify every segment's `currentGen` `.crbm` is present (catch a torn cross-tier restore) |
 | `store.exportSegments(sink, { format?, namespace?, candidates? })` → `ExportManifest` | eject every segment to portable `roaring`/`ndjson` |
 | `seg.costReport({ pricing?, workload?, topology? })` → `CostReport` | grounded $ cost for this segment (from its real cold size) |
@@ -129,9 +130,11 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `dropSegment(ref, { registry, warm, cold }, { confirmSegment, dryRun? })` → `DropResult` | **dispose of a segment** — tombstone + delete Warm rows + delete every Cold generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `eraseNamespace(…)` | crypto-shred an entire namespace / tenant |
 | `runCompactionCycle(deps, { owner, keep })` | one compaction pass — for a custom compaction worker (the CLI wraps this) |
+| `drainRegistry(registry, { namespace?, maxScanSegments, op })` → `RegistryRecord[]` | the one bounded drain of `registry.list()` — shared by `checkConsistency` and `retireExpired`; refuses past the ceiling rather than exhausting memory |
 | `runConsistencyCheck({ cold, registry }, { namespace?, concurrency? })` → `ConsistencyReport` | the free-function behind `store.checkConsistency` — run it over your own drivers |
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free-function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention` / `clearSegmentRetention` are its read/cancel siblings |
 | `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you already have (a `list()` sweep does this — no extra read per segment) |
+| `retireExpired({ registry, warm, cold }, { now, … })` → `RetireExpiredResult` | the free-function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
 
 ### Optional plug-ins you construct and pass in
 
@@ -145,7 +148,7 @@ All three are charged against the same per-op budget, so a wide union is refused
 
 | Binary | Does |
 |---|---|
-| `compact-segments` | run compaction once or in a loop (`CR_COMPACT_*`) |
+| `compact-segments` | run compaction once or in a loop (`CR_COMPACT_*`, plus `CR_RETIRE*` for the opt-in retention sweep) |
 | `export-segments` | eject all segments to a directory (`CR_EXPORT_*`) |
 
 ---
@@ -241,6 +244,9 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 | `DEFAULT_MAX_SCAN_SEGMENTS` | default ceiling (250,000) on registry records one `checkConsistency` holds resident — raise via its `maxScanSegments` option |
 | `DEFAULT_MAX_WARM_SCAN_BYTES` | default ceiling (64 MiB) on the warm-delta bytes one segment scan may hold resident — see `maxWarmScanBytes` |
 | `DEFAULT_WRITE_CONCURRENCY` | default number (4) of warm chunk writes in flight per `addMany`/`removeMany` — see `writeConcurrency` |
+| `DEFAULT_RETIRE_LIMIT` | default cap (100) on segments one `retireExpired` cycle **attempts** — `limited: true` when it bites |
+| `DEFAULT_TOMBSTONE_GRACE_MS` | default delay (24 h) before the sweep deletes a tombstone row it stamped itself |
+| `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
 
@@ -294,7 +300,7 @@ Conformance case **R8** gates all of the above; every first-party registry drive
 ### Low-level ports & capabilities (driver-author typing)
 
 `ColdCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
-`RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `RetentionPolicy` · `RetentionDeps` · `SetRetentionResult`
+`RegistryStatus` · `GovernanceMeta` · `SegmentSize`
 
 ### Driver option types (subpath entry points)
 
@@ -335,7 +341,8 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `collectWithinBudget` · `DEFAULT_MAX_WARM_SCAN_BYTES` · `DEFAULT_WRITE_CONCURRENCY` · `DEFAULT_MAX_SCAN_SEGMENTS` ·
 `validateSegmentRef` · `NO_ROW` · `chunkRefKey` · `segmentKey` ·
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `readRetentionPolicy` ·
-`MIN_EXPIRES_AT_MS` ·
+`MIN_EXPIRES_AT_MS` · `retireExpired` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` ·
+`drainRegistry` · `validateMaxScanSegments` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
 `RetryingRegistryDriver` · `RetryingColdChunkSource` · `CrbmWriter` · `CrbmReader` ·
 `BufferSink` · `BufferReader` · `CountingMetricsSink` · `NOOP_METRICS` ·
@@ -355,7 +362,8 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IColdDriver` · `IWarmDriver` · `IRegistryDriver` ·
 `ColdChunkSource` · `SegmentRef` · `ChunkRef` · `GenKey` · `ColdCaps` · `RegCaps` · `RegistryRecord` ·
 `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `IKeystore` ·
-`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` · `RetentionDeps` · `SetRetentionResult`
+`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult` ·
+`RetentionPolicy` · `RetentionDeps` · `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry`
 · `RetryPolicy` · `RetryDeps` · `RetryingOptions` · `CrbmWriterOptions` · `CrbmReaderOptions` · `BlobReader` ·
 `BlobSink` · `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` ·
 `CostReport` · `CostAdvisory` · `Workload` · `SegmentSizing` · `EstimateInput` · `Topology` · `IAuditSink` · `AuditEvent` ·

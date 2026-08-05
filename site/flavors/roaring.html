@@ -343,8 +343,9 @@
                   <td><span class="m">EXPIRE key ttl</span></td>
                   <td><span class="call">dropSegment</span></td>
                   <td class="from">
-                    No TTL exists. A dated segment plus a retention sweep is the mechanism — and
-                    never enable your backend's own row expiry on the warm table.
+                    Per <em>segment</em>, not per id: <span class="call">setRetention</span> records
+                    when it expires and <span class="call">retireExpired</span> is the sweep you
+                    schedule. Never enable your backend's own row expiry on the warm table.
                   </td>
                 </tr>
               </tbody>

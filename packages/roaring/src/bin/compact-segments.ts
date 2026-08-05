@@ -28,18 +28,44 @@
  *   CR_COMPACT_METRICS    1 to emit each per-attempt compaction `MetricEvent` (retries, bytes, ms, faults) as a
  *                         JSON line on stdout — pipe to your metrics pipeline. Off by default (cycle summaries
  *                         still print regardless); the library's `IMetricsSink` seam is what this wires.
+ *
+ * **Retention (opt-in).** With `CR_RETIRE=1` each cycle also runs {@link retireExpired}, retiring the segments
+ * whose `expiresAt` has passed. It is a *separate phase after* compaction, not part of `runCompactionCycle`:
+ * compaction's job is to make a segment cheap, retirement's is to delete it, and a destructive step that runs
+ * implicitly inside a maintenance cycle is the wrong default for anyone who just wanted their Warm tier drained.
+ * Off unless you ask for it, and a custom worker composes the same two calls in the same order.
+ *   CR_RETIRE             1 to enable the retention sweep (default: off)
+ *   CR_RETIRE_INTERVAL_MS how often to sweep, independent of the compaction interval (default: 86400000, i.e.
+ *                         daily). Retention windows are measured in days, so sweeping at the 30 s compaction
+ *                         cadence would re-scan the whole registry 2,880 times a day — on DynamoDB that is a
+ *                         full-table Scan each time, billed, competing with the hot path for read capacity.
+ *   CR_RETIRE_LIMIT       max segments retired per sweep    (default: 100)
+ *   CR_RETIRE_DRY_RUN     1 to report what it would retire and delete nothing — start here
+ *   CR_RETIRE_TOMBSTONE_GRACE_MS  ms a retirement's tombstone row must age before the row is deleted
+ *                         (default: 86400000)
+ *   CR_RETIRE_KEEP_TOMBSTONES  1 to never delete a tombstone row
+ *   Scope follows CR_COMPACT_NAMESPACE. **Run the sweep from ONE process** — it has no shard option, so N
+ *   replicas each sweep the whole registry and contend over the same segments.
  */
 import { SystemClock } from '../system-clock';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
+  DEFAULT_RETIRE_LIMIT,
+  DEFAULT_TOMBSTONE_GRACE_MS,
   LocalFsColdDriver,
   LocalFsRegistryDriver,
   LocalFsWarmDriver,
+  retireExpired,
   runCompactionCycle,
 } from '../index';
-import type { CompactionCycleResult, CompactionDeps, IMetricsSink } from '../index';
+import type {
+  CompactionCycleResult,
+  CompactionDeps,
+  IMetricsSink,
+  RetireExpiredResult,
+} from '../index';
 
 export interface CompactConfig {
   readonly root: string;
@@ -52,6 +78,16 @@ export interface CompactConfig {
   readonly shard?: number;
   readonly totalShards?: number;
   readonly maxSegments?: number;
+  /** Retention sweep (opt-in) — absent ⇒ the daemon never retires anything. */
+  readonly retire?: RetireConfig;
+}
+
+export interface RetireConfig {
+  readonly limit: number;
+  readonly dryRun: boolean;
+  readonly intervalMs: number;
+  readonly purgeTombstones: boolean;
+  readonly tombstoneGraceMs: number;
 }
 
 /** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
@@ -96,6 +132,26 @@ export function parseConfig(env: Record<string, string | undefined>): CompactCon
     shard,
     totalShards,
     maxSegments: intOpt('CR_COMPACT_MAX_SEGMENTS', 1),
+    retire: env.CR_RETIRE === '1' ? parseRetireConfig(env, num, intOpt) : undefined,
+  };
+}
+
+function parseRetireConfig(
+  env: Record<string, string | undefined>,
+  num: (name: string, def: number) => number,
+  intOpt: (name: string, min?: number) => number | undefined,
+): RetireConfig {
+  return {
+    // `intOpt(name, 1)`, not `num`: `num` accepts 0 and 1.5, and `retireExpired` then throws a ValidationError
+    // from *inside* the cycle — swallowed into a generic `{"event":"error"}` line every 30 s in loop mode, so
+    // compaction keeps reporting healthy cycles while retention silently never runs. `parseConfig` promises to
+    // throw a clear error on misconfiguration; this is what keeps that promise. (CR_COMPACT_MAX_SEGMENTS, the
+    // identical concept, already used `intOpt`.)
+    limit: intOpt('CR_RETIRE_LIMIT', 1) ?? DEFAULT_RETIRE_LIMIT,
+    dryRun: env.CR_RETIRE_DRY_RUN === '1',
+    intervalMs: num('CR_RETIRE_INTERVAL_MS', DEFAULT_TOMBSTONE_GRACE_MS),
+    purgeTombstones: env.CR_RETIRE_KEEP_TOMBSTONES !== '1',
+    tombstoneGraceMs: num('CR_RETIRE_TOMBSTONE_GRACE_MS', DEFAULT_TOMBSTONE_GRACE_MS),
   };
 }
 
@@ -125,6 +181,79 @@ export async function runOnce(
     shard: config.shard,
     totalShards: config.totalShards,
     maxSegments: config.maxSegments,
+  });
+}
+
+/**
+ * Run the retention sweep for one cycle, if configured. Returns `undefined` when retention is off.
+ *
+ * `now` comes from the deps clock — the same one compaction uses — so a daemon wired with a test clock sweeps
+ * against that clock too.
+ */
+export async function retireOnce(
+  deps: CompactionDeps,
+  config: CompactConfig,
+  /**
+   * When the sweep last ran (epoch-ms), or `undefined` for "never". A sweep is skipped — returning `undefined` —
+   * until `CR_RETIRE_INTERVAL_MS` has elapsed, so the retention cadence is independent of the compaction one.
+   * `once` mode passes nothing and therefore always sweeps, which is the cron/Lambda shape.
+   */
+  lastSweptAt?: number,
+): Promise<RetireExpiredResult | undefined> {
+  const retire = config.retire;
+  if (retire === undefined) return undefined;
+  if (lastSweptAt !== undefined && deps.clock.now() - lastSweptAt < retire.intervalMs) {
+    return undefined;
+  }
+  return retireExpired(
+    { registry: deps.registry, warm: deps.warm, cold: deps.cold },
+    {
+      namespace: config.namespace,
+      now: deps.clock.now(),
+      limit: retire.limit,
+      dryRun: retire.dryRun,
+      purgeTombstones: retire.purgeTombstones,
+      tombstoneGraceMs: retire.tombstoneGraceMs,
+    },
+  );
+}
+
+/** How many skipped segments one log line names before switching to per-reason counts. */
+const LOG_SKIPPED_SAMPLE = 20;
+
+/**
+ * One JSON line summarising a sweep. Skips are counted per reason AND a bounded sample is named — a silent skip is
+ * a lost signal, but the whole list is not loggable: a bad backfill over a 250,000-row fleet would otherwise
+ * serialise megabytes into a single line, which is ~78× CloudWatch's 256 KB event limit, so the line that mattered
+ * would be truncated or dropped. `retired` and `wouldRetire` are separate fields for the same reason — a counter
+ * that means "deleted" in one mode and "would delete" in another puts phantom deletions on a graph.
+ */
+function logRetire(result: RetireExpiredResult): void {
+  const skipped = result.entries.filter((e) => e.action === 'skipped');
+  const byReason: Record<string, number> = {};
+  for (const e of skipped) {
+    // Collapse `failed: <driver message>` into one bucket; the sample below carries the actual text.
+    const key = e.reason.startsWith('failed:') ? 'failed' : e.reason;
+    byReason[key] = (byReason[key] ?? 0) + 1;
+  }
+  const notReclaimed = result.entries.filter(
+    (e) => e.action === 'retired' && e.result.generationsRemaining.length > 0,
+  );
+  log({
+    event: 'retire',
+    dryRun: result.dryRun,
+    scanned: result.scanned,
+    eligible: result.eligible,
+    retired: result.retired,
+    wouldRetire: result.wouldRetire,
+    tombstonesPurged: result.tombstonesPurged,
+    limited: result.limited,
+    skippedByReason: byReason,
+    skippedSample: skipped
+      .slice(0, LOG_SKIPPED_SAMPLE)
+      .map((e) => ({ segment: e.segment, namespace: e.namespace, reason: e.reason })),
+    notFullyReclaimed: notReclaimed.slice(0, LOG_SKIPPED_SAMPLE).map((e) => e.segment),
+    notFullyReclaimedCount: notReclaimed.length,
   });
 }
 
@@ -158,6 +287,8 @@ export async function main(env: Record<string, string | undefined> = process.env
       deferred: cycle.deferred,
       results: cycle.results,
     });
+    const swept = await retireOnce(deps, config);
+    if (swept !== undefined) logRetire(swept);
     return;
   }
 
@@ -169,6 +300,8 @@ export async function main(env: Record<string, string | undefined> = process.env
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   log({ event: 'start', mode: 'loop', intervalMs: config.intervalMs, owner: config.owner });
+  // `undefined` so the first cycle sweeps; thereafter the retention interval gates it independently of this loop's.
+  let lastSweptAt: number | undefined;
   while (!stop) {
     try {
       const cycle = await runOnce(deps, config);
@@ -179,6 +312,11 @@ export async function main(env: Record<string, string | undefined> = process.env
         deferred: cycle.deferred,
         results: cycle.results,
       });
+      const swept = await retireOnce(deps, config, lastSweptAt);
+      if (swept !== undefined) {
+        lastSweptAt = deps.clock.now();
+        logRetire(swept);
+      }
     } catch (err) {
       log({ event: 'error', message: (err as Error).message }); // a cycle error must not kill the daemon
     }

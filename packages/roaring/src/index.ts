@@ -40,6 +40,7 @@ import {
   mapWithConcurrency,
   resolveBudget,
   resolvePerOpBudget,
+  retireExpired,
   runConsistencyCheck,
   runExport,
   setSegmentRetention,
@@ -76,6 +77,8 @@ import type {
   MetricOpName,
   PricingProfile,
   RetentionPolicy,
+  RetireExpiredOptions,
+  RetireExpiredResult,
   RetryPolicy,
   RetryingOptions,
   Rng,
@@ -480,14 +483,14 @@ export class CloudRoaring {
   private compactionDeps(): CompactionDeps {
     if (this.coldDriver === undefined) {
       throw new UnsupportedError(
-        'compact/dropSegment/eraseSubject/checkConsistency need the store built with a raw cold driver (IColdDriver), not ' +
+        'compact/dropSegment/retireExpired/eraseSubject/checkConsistency need the store built with a raw cold driver (IColdDriver), not ' +
           'a pre-built ColdChunkSource — or call the compactSegment/runConsistencyCheck free functions with ' +
           'explicit deps',
       );
     }
     if (this.registry === undefined) {
       throw new UnsupportedError(
-        'compact/eraseSubject/checkConsistency need a `registry` in the store config',
+        'compact/dropSegment/retireExpired/eraseSubject/checkConsistency need a `registry` in the store config',
       );
     }
     return {
@@ -812,6 +815,62 @@ export class CloudRoaring {
   async clearRetention(ref: SegmentRef): Promise<boolean> {
     validateSegmentRef(ref);
     return clearSegmentRetention(ref, { registry: this.requireRegistry('clearRetention') });
+  }
+
+  /**
+   * **Run the retention sweep: retire every segment whose `expiresAt` has passed.** This is the call that acts on
+   * the policies `setRetention` records — and it is a **call, not a daemon**. Nothing schedules it; you run it from
+   * whatever heartbeat your deployment already has (an EventBridge rule, a Kubernetes CronJob, a queue consumer,
+   * your compaction worker's loop). A library that started a timer would behave differently in a Lambda, an edge
+   * isolate and a long-lived server, which is worse than not having one.
+   *
+   * Each retirement goes through `dropSegment`, so the Warm → registry → Cold ordering, the re-sweep for a
+   * generation staged by an in-flight compaction, and the `generationsRemaining` report all come from one
+   * implementation rather than two.
+   *
+   * ```ts
+   * // In your scheduled handler. Start with a preview in a new deployment.
+   * const preview = await store.retireExpired({ namespace: 'active-daily', dryRun: true });
+   * console.log(`would retire ${preview.retired} of ${preview.scanned} (limited: ${preview.limited})`);
+   *
+   * const swept = await store.retireExpired({ namespace: 'active-daily' });
+   * for (const e of swept.entries) {
+   *   if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`); // invalid-policy / limit / failed: …
+   *   if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
+   *     console.warn(`${e.segment}: storage not fully reclaimed — re-run`);
+   *   }
+   * }
+   * if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+   * ```
+   *
+   * **Read the ledger.** A per-segment *fault* is an entry, not an exception — a throw from the middle of a fleet
+   * sweep would leave the caller unable to say which segments were retired, having already retired some. (A bad
+   * argument does throw, and so does a fleet larger than `maxScanSegments`.) `limited: true` means the per-cycle
+   * `limit` (default 100) cut the pass short and more are eligible. That cap is charged on **attempts**, not
+   * successes, which is what makes it a real bound: `dropSegment` deletes Warm and writes the tombstone before
+   * sweeping Cold, so a fault in the Cold phase is a segment that is already retired. Retirements are sequential
+   * (~8 round trips each), so `limit` is a wall-clock knob too, and `retired` counts deletions only — a dry run
+   * reports `wouldRetire` instead, so a dashboard summing `retired` can never show a phantom deletion.
+   *
+   * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
+   * and only once that segment's Warm rows and Cold generations are provably gone — collecting a straggler
+   * generation itself first, since nothing else ever would for a tombstoned segment. Attribution is a **positive
+   * marker the sweep stamps on its own retirements**, not an inference from "destroyed + an expired policy": a
+   * crypto-shred leaves `retention` untouched, so setting a policy and then honouring a right-to-erasure request
+   * mid-window produces exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the
+   * name. Pass `purgeTombstones: false` to keep every tombstone.
+   *
+   * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
+   * because retiring a segment deletes its Cold objects. `now` defaults to the store's clock.
+   */
+  async retireExpired(
+    options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
+  ): Promise<RetireExpiredResult> {
+    const deps = this.compactionDeps(); // guards raw cold + registry, with the same messaging as compact/drop
+    return retireExpired(
+      { registry: deps.registry, warm: deps.warm, cold: deps.cold },
+      { ...options, now: options.now ?? this.clock.now() },
+    );
   }
 
   /** The store's registry, or a typed error naming the operation that needs one. */

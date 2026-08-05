@@ -97,8 +97,17 @@ dependencies** — arrives transitively and is never installed directly.
   ledger.
 - **Segment disposal** — `store.dropSegment` retires a segment and *reclaims its storage*: tombstone, Warm rows,
   and every Cold generation, in that order. Works on cleartext (crypto-shred needs a key); on an encrypted
-  segment it does both. `dryRun` previews. This is the retention primitive — a rolling window is a scheduled loop
-  over it, and it exists so the ordering cannot be got wrong by a caller.
+  segment it does both. `dryRun` previews. This is the retention **primitive**, and it exists so the ordering
+  cannot be got wrong by a caller — record an `expiresAt` and `retireExpired` (below) drives it for you.
+- **Segment-level retention** — `store.setRetention(ref, { expiresAt })` records *when* a segment becomes
+  eligible for retirement, and `store.retireExpired()` is the sweep that acts on it, retiring each expired
+  segment through `dropSegment` so the ordering above is inherited rather than reimplemented. The expiry is an
+  **absolute instant the writer sets**, because every anchor the library could derive one from (`updatedAt`, the
+  current generation) is rewritten by compaction — a daily bucket would have its expiry pushed forward by the
+  very maintenance meant to keep it cheap. The sweep is bounded (`limit`, `maxScanSegments`), previewable
+  (`dryRun`), reports a per-segment ledger instead of throwing, and cleans up the tombstone rows its own
+  retirements leave. It also works on an **accumulator** — setting a policy mints the registry row that makes a
+  warm-only segment enumerable, with no Cold generation and no change to any read.
 - **Supply chain** — every GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
   on publish, and continuous coverage-guided fuzzing over the untrusted-`.crbm` boundary (nightly, plus a
   weekly deep run).
@@ -217,16 +226,6 @@ move it up.
   objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
 - **Cheaper reads** — a warm-chunk cache and coalesced merge GETs, both scoped so they can't tax the hot
   path.
-- **Segment-level retention** — a `retentionDays` the compaction daemon enforces, so a rolling window prunes
-  itself. **The disposal primitive it needs now exists**: `store.dropSegment` retires a segment and deletes its
-  storage, correctly ordered, so today's retention is a short scheduled loop over `registry.list(namespace)`
-  ([guide](guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt)). What is left is
-  the scheduling, and the daemon is the natural home for it — it already has discovery, leases, budgets and
-  per-segment fault isolation. The open question is *age of what*: the current generation's publish time is
-  **wrong**, because compaction refreshes it and a daily bucket that gets compacted would never expire, so it
-  wants an explicit `expiresAt` set at write time. Held until someone has a real policy, since its failure mode
-  is deleting data with no human present. **Per-id TTL is deliberately not on this list** — a bitmap stores ids,
-  not timestamps, and attaching one per id costs more than the compression saves.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
   Worker answering "is id N in segment S?" against a cold generation in R2 is two ranged reads and a decode,
   which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no
@@ -242,6 +241,15 @@ move it up.
 ## Deliberately not planned
 
 Saying no is part of the design:
+
+- **A scheduler for the retention sweep.** Segment-level retention ships; the heartbeat that calls it stays yours,
+  and that is a decision rather than a gap. A library that started a timer would behave differently in a Lambda, an
+  edge isolate and a long-lived server — the first piece of API that works in some runtimes and not others — and it
+  would *hide* the operational burden rather than remove it: a sweep failing silently inside an app server with no
+  alarm is worse than a CronJob that shows up red in a dashboard. The `compact-segments` CLI's opt-in `CR_RETIRE=1`
+  phase is as close to a daemon as this gets.
+- **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and
+  takes the compression the whole design exists for. Not deferred — incompatible with the data model.
 
 - **A hosted/managed CloudBitmaps service.** Never — this is a library. Your data stays in your account, in
   your buckets, under your keys.

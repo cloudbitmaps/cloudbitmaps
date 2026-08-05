@@ -48,7 +48,7 @@ bit array, byte for byte what you have now. It just stops paying for the chunks 
 | `prior = SETBIT` | `claimMany(ids)` — adds a batch and returns only the ids that were **not** already there, so an *"already sent to this id?"* check is exactly-once |
 | `BITCOUNT` | `count()` — exact, served from the index with no payload reads |
 | `BITOP AND` / `OR` / `DIFF` | `intersect` / `union` / `andNot` — and `intersect` skips chunks that cannot contribute |
-| `EXPIRE` | a dated segment + `dropSegment` — there is no TTL, and enabling your backend's own row expiry on the warm table would discard un-compacted deltas |
+| `EXPIRE` | **`setRetention(ref, { expiresAt })` + `retireExpired()`** — a per-segment expiry the writer sets, and a sweep **you** schedule (this library starts no timer, so it works the same in a Lambda and a server). No per-**id** TTL: a bitmap stores ids, not timestamps. And never enable your backend's own row expiry on the warm table — those rows are un-compacted deltas, so it discards writes silently |
 
 **It is not a drop-in replacement, and two limits are worth knowing before you port anything.**
 
