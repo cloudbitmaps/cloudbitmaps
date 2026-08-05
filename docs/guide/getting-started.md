@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.8.2` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.9.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
@@ -1121,9 +1121,10 @@ wave for a segment that had no data — and then have to clean both up. A never-
 | `true` | `'already'` | Already tombstoned. **Not** a no-op: it also clears Warm rows that landed after the tombstone |
 | `false` | `'absent'` | **Nothing existed.** The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
 
-> Until `0.8.2` a successful `'warm-only'` retirement was reported as `{ dropped: false, reason: 'absent' }` with a
-> non-zero `warmRowsDeleted`. A cron written as `if (!res.dropped) alert()` fired on every success. If you wrote
-> that workaround, `dropped` is now the field to trust.
+> **Upgrading from an older release?** A successful `'warm-only'` retirement used to be reported as
+> `{ dropped: false, reason: 'absent' }` with a non-zero `warmRowsDeleted` — see the fix in the
+> [CHANGELOG](../../CHANGELOG.md). A cron written as `if (!res.dropped) alert()` fired on every success; if you
+> wrote that workaround, `dropped` is now the field to trust.
 
 > **`'warm-only'` stops appearing once you set a retention policy on the segment**, and the reason is worth
 > knowing before you key monitoring on it. `setRetention` mints a registry row (that is what makes the segment

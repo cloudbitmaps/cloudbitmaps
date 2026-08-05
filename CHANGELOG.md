@@ -14,6 +14,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-05
+
 ### Added
 
 - **`store.setRetention(ref, { expiresAt })` — record when a segment becomes eligible for retirement**, plus
