@@ -411,9 +411,9 @@ export async function dropSegment(
   // cleartext. Emitting one event for both would make a compliance dashboard **over-attest**, which is the one
   // failure an audit trail exists to prevent.
   //
-  // Consequence, stated rather than hidden: a **cleartext** drop emits no audit event at all. That is a real gap
-  // in the trail, and the honest fix is a distinct kind (`segment.dispose`) — a public-surface addition, so it
-  // waits for a decision instead of being smuggled in behind an existing name.
+  // The cleartext case is NOT silent — it emits `segment.dispose` after the sweep (below). That kind exists
+  // precisely so this one does not have to lie: disposal is attested as disposal, shredding as shredding, and an
+  // encrypted drop emits both because both genuinely happened.
   //
   // And it goes out BEFORE the Cold sweep, not after. A genuine crypto-shred is complete the moment
   // `shredSegment` returns — the DEK wrappings are gone and the bytes are unreadable everywhere. If the sweep
@@ -461,6 +461,18 @@ export async function dropSegment(
   // exhausted while a compaction kept staging. Inferring it would report `[]` in precisely the case that matters
   // — a final pass that deleted everything it saw, after which one more object appeared.
   const generationsRemaining = await listGenerations(deps.cold, ref);
+
+  // `segment.dispose` attests the *storage reclamation*, which is the weaker but still compliance-relevant fact,
+  // and it is emitted AFTER the sweep because unlike a crypto-shred it is not established until the sweep runs.
+  // Only when a tombstone was actually written — an absent no-op disposed of nothing.
+  if (shred.destroyed) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.dispose',
+      namespace: ref.namespace,
+      segment: ref.segment,
+      generationsDeleted: generationsDeleted.length,
+    });
+  }
 
   return {
     ...base,

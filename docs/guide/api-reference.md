@@ -73,6 +73,7 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 |---|---|
 | `seg.add(id)` · `seg.addMany(ids)` | add member(s); `addMany` takes a **sync or async** iterable and groups by chunk (one write per chunk, however long the stream) |
 | `seg.remove(id)` · `seg.removeMany(ids)` | remove member(s) — single-chunk tombstone, no scan |
+| `seg.claimMany(ids)` → `number[]` | **atomically claim ids: add them and return only the ones not already present.** The durable analogue of Redis `SETBIT` returning the prior bit — what exactly-once *"already sent to this id?"* needs, which `has()` + `add()` cannot give you. One OCC write per **chunk**, not per id. Exactly-once holds per id; like `addMany` it is not atomic across chunks, and re-running is safe |
 | `seg.has(id)` → `Promise<boolean>` | membership test |
 | `seg.count()` → `Promise<number>` | exact cardinality (cheap — from the cold index) |
 | `seg.iterate()` → `AsyncIterable<number>` | stream all ids, ascending |

@@ -133,6 +133,18 @@ crypto-shred** (not a cleartext tombstone, whose bytes stay readable), and `eras
 `namespace.erase` carrying `segmentsShredded` (the honest count actually destroyed, which may be 0). An auditor
 asks "prove subject X's data was destroyed on date Y" — a `segment.erase` for X's segment is that receipt.
 
+**`segment.erase` and `segment.dispose` are deliberately different receipts, and conflating them would make your
+dashboard over-attest.**
+
+| Event | What it proves | What it does NOT prove |
+|---|---|---|
+| `segment.erase` | The wrapped DEK(s) are gone, so the segment's at-rest bytes are unreadable **everywhere — backups, replicas, PITR snapshots, WORM included**. The only erasure claim that survives immutable storage | — |
+| `segment.dispose` | The segment was tombstoned and its storage reclaimed (Warm rows + `generationsDeleted` Cold generations). Emitted by `dropSegment` | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
+
+A **cleartext** `dropSegment` emits only `segment.dispose`. An **encrypted** one emits **both**, because both
+things genuinely happened. So: count `segment.erase` for an Art. 17 destruction claim, and `segment.dispose` for
+a retention/lifecycle trail. Never substitute the second for the first.
+
 > **KEK rotation is not in this stream** — rotating the key-encryption key is operator-side keystore
 > reconfiguration (no library call to hook). Audit it at your KMS/keystore layer. See the note in
 > [getting-started §12](./getting-started.md#12-audit-trail-security--compliance-events).

@@ -12,8 +12,13 @@
  * In-process lifecycle helpers — `compact`, `eraseSubject`, `subjectReport` — reuse the store's own drivers, so
  * you never re-pass them (they need the store built with a raw cold driver + registry). Out-of-process cold
  * writers (the compaction daemon, the seed/bulk-load CLI, `destroySegment`/`eraseNamespace`) wire their own deps
- * against the same drivers — they run in separate processes.md + the
- * getting-started guide.
+ * against the same drivers — they run in separate processes.
+ *
+ * **You do not need any of them to start.** Construct a store and call `add`/`addMany`/`has`/`remove` — a segment
+ * with no Cold generation at all is fully functional, because a read merges `(cold ∪ warm.adds) \ warm.removes`
+ * and an absent Cold tier just makes that merge trivial. `bulkLoadCrbmGeneration` is an **import** path for data
+ * you already have elsewhere, not an initialization step, and compaction is a **cost** optimization, never a
+ * correctness requirement. See the README and the getting-started guide.
  */
 
 import {
@@ -28,6 +33,7 @@ import {
   ValidationError,
   collectWithinBudget,
   compactSegment,
+  gcOrphanGenerations,
   dropSegment,
   estimateCost,
   groundedReport,
@@ -677,7 +683,29 @@ export class CloudRoaring {
    */
   async compact(ref: SegmentRef, options: CompactionOptions): Promise<CompactionResult> {
     validateSegmentRef(ref);
-    return compactSegment(ref, this.compactionDeps(), options);
+    const deps = this.compactionDeps();
+    const result = await compactSegment(ref, deps, options);
+    // Collect the generation this compaction just superseded — best-effort, and only on a successful commit.
+    //
+    // Cold generations are immutable and generation-keyed, so **every** compaction leaves its predecessor on
+    // disk. `runCompactionCycle` (the daemon) has always called `gcOrphanGenerations` for exactly this reason;
+    // `compactSegment` never did, so a deployment that compacted in-process without running the daemon grew its
+    // Cold footprint without bound, forever, silently. Reads stayed correct — `currentGen` always pointed at a
+    // real object — so nothing ever surfaced it.
+    //
+    // Fixed here, in the facade, rather than in `compactSegment`: the free function stays a single-responsibility
+    // primitive for callers who want to schedule GC themselves, while the batteries-included surface stops
+    // leaking money by default. `gcOrphanGenerations` keeps its default grace window (`keep: 1`), so a reader
+    // pinned to the just-superseded generation is unaffected.
+    //
+    // Swallowed on failure on purpose: GC is housekeeping, and a compaction that committed must not be reported
+    // as failed because cleanup could not run. The next cycle collects what this one missed.
+    if (result.compacted) {
+      await gcOrphanGenerations(ref, { cold: deps.cold, registry: deps.registry }).catch(
+        () => undefined,
+      );
+    }
+    return result;
   }
 
   /**
@@ -864,6 +892,34 @@ export class Segment {
   /** Remove many ids, from a **sync or async** iterable. Not atomic across chunks — see {@link addMany}. */
   removeMany(ids: Iterable<number> | AsyncIterable<number>): Promise<void> {
     return this.timed('removeMany', () => this.engine.removeMany(this.ref, ids));
+  }
+  /**
+   * **Claim ids atomically — add them, and get back only the ones that were not already there.**
+   *
+   * The durable analogue of Redis `SETBIT` returning the prior bit, which is what an exactly-once *"have I
+   * already sent to / already processed this id?"* check needs. `has()` then `add()` cannot give you this: two
+   * workers can both read absent and both proceed.
+   *
+   * ```ts
+   * const sent = store.segment(day, { namespace: 'sent-daily' });
+   * const toSend = await sent.claimMany(candidateIds);   // only the ids this worker won
+   * for (const id of toSend) enqueue(id);                // ...so nobody else will send them
+   * ```
+   *
+   * **Pass a batch, not one id.** A Warm write rewrites a whole 64K-id chunk bitmap, so claiming ids one at a
+   * time is the single most expensive way to use this library — measured at ~5,000 writes and ~23 MB for 5,000
+   * ids, against 1 write and ~8 KB for the same ids in one call. This method does one OCC read-modify-write per
+   * distinct chunk, giving you Redis's *semantics* without Redis's per-id *cost shape*.
+   *
+   * **Exactly-once holds per id**, which is the guarantee that matters: each id lives in one chunk, a chunk is
+   * one OCC row, so exactly one concurrent claimer sees any given id as new. Like `addMany` it is **not** atomic
+   * across chunks — a mid-flight failure can leave some chunks claimed — but re-running is safe, because
+   * already-claimed ids simply come back as not-new.
+   *
+   * Order of the returned ids is unspecified.
+   */
+  claimMany(ids: Iterable<number>): Promise<number[]> {
+    return this.timed('claimMany', () => this.engine.claimMany(this.ref, ids));
   }
   has(id: number): Promise<boolean> {
     return this.timed('has', () => this.engine.has(this.ref, id));

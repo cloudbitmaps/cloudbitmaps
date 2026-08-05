@@ -162,6 +162,13 @@ await seg.add(42);
 
 ## 3. (Optional) bulk-load a Cold generation
 
+> **This is an *import* path, not an initialization step.** Nothing needs seeding. A brand-new segment is usable
+> the moment you construct the store: `addMany` / `has` / `remove` / `count` / `iterate` / `intersect` all work
+> against a segment with no Cold generation and no registry row, because a read merges
+> `(cold ∪ warm.adds) \ warm.removes` and an absent Cold tier just makes that merge trivial. Reach for bulk-load
+> when you *already have* the data somewhere else — a warehouse query, a Redis migration, a nightly rebuild — and
+> want it to land as a compact Cold archive instead of paying Warm write costs for the initial load.
+
 The batch "seed/rebuild" path: build an immutable Cold archive directly from a (possibly huge, unsorted)
 stream of ids with `bulkLoadCrbmGeneration`. It folds ids into per-chunk bitmaps as they stream — input is
 consumed lazily and deduped, so you can pipe a query result or a file of billions of ids through it:
@@ -528,11 +535,35 @@ regresses the pointer).
 
 ## 8. Compaction: keeping the warm tier small
 
-Every `add`/`remove` lands as a small **warm** delta row. Left alone, the warm tier grows and reads get slower
-(more deltas to merge). **Compaction** periodically folds those deltas into a fresh immutable **cold**
-generation and clears the warm rows — so the warm tier stays small and cheap. It's a separate background
-process (it never slows your app path), and it's **crash-safe**: a 2-phase commit means a write that lands
-mid-compaction is never lost, and a crash at any step recovers cleanly on the next run.
+Every `add`/`remove` lands in a **warm** delta row. **Compaction** folds those deltas into a fresh immutable
+**cold** generation and clears the warm rows. It's a separate background process (it never slows your app path),
+and it's **crash-safe**: a 2-phase commit means a write that lands mid-compaction is never lost, and a crash at
+any step recovers cleanly on the next run.
+
+### Do you actually need it?
+
+**Not for correctness — never.** A read always merges `(cold ∪ warm.adds) \ warm.removes`, so a segment that has
+never been compacted answers `has` / `count` / `iterate` / `intersect` exactly as correctly as one that has. If
+you skip compaction forever, your answers stay right.
+
+Nor does read cost grow with the number of writes, which an earlier version of this section got wrong. There is
+**one delta row per 65,536-id chunk**, not one per write: 20 rounds of 1,000 `addMany` ids leaves **one** row, and
+`has()` reads one row per chunk however many rounds produced it. What grows is that row's *size*, not the count.
+
+What compaction actually buys you:
+
+| | Why |
+|---|---|
+| **Storage price** | Warm is DynamoDB/Redis-priced; Cold is S3-priced — 10–100× cheaper per byte. A long-lived segment wants its steady state in Cold. |
+| **Smaller rewrites** | Once the bulk is in Cold, the Warm row holds only the recent delta, so each write re-serializes a small blob instead of a large one. This compounds: see the write-shape table in [Coming from Redis bitmaps?](#coming-from-redis-bitmaps) |
+| **Free `count()`** | A compacted segment with no Warm deltas counts straight from the `.crbm` index — **zero payload reads**. A warm-only segment must fetch and merge every chunk. |
+
+So: **skip it** for a write-once dated bucket that you retire with `dropSegment` (a dedup wave, a daily sent-list)
+— that data never reaches a steady state worth moving. **Run it** for a long-lived, continuously-updated segment,
+which is where all three columns above start to matter.
+
+If you call `store.compact()` in-process rather than running the daemon, note that it also collects the generation
+it supersedes — see the caveat at the end of this section.
 
 The simplest way is the bundled CLI over the local filesystem:
 
@@ -574,6 +605,22 @@ It discovers segments that have accumulated enough warm deltas, compacts each un
 (so multiple workers don't duplicate work), and garbage-collects superseded cold generations (keeping a small
 grace window for in-flight readers). To compact a single segment directly, call
 `compactSegment(ref, deps, { owner })`.
+
+> ### ⚠️ Who collects the old generations
+>
+> Cold objects are immutable and generation-keyed, so **every compaction leaves its predecessor on disk.**
+> Something has to delete them, and which "something" depends on how you compact:
+>
+> | You call | Old generations collected? |
+> |---|---|
+> | `runCompactionCycle` (the daemon / CLI above) | **Yes** — it calls `gcOrphanGenerations` each cycle |
+> | `store.compact(ref, { owner })` (in-process facade) | **Yes**, best-effort after a successful commit, with the same `keep: 1` grace window |
+> | `compactSegment(ref, deps, { owner })` (free function) | **No.** It is a single-responsibility primitive — call `gcOrphanGenerations(ref, { cold, registry }, { keep })` yourself |
+>
+> `store.compact` did **not** collect them in `0.7.0` and earlier, so a deployment that compacted in-process without
+> running the daemon accumulated `.crbm` objects indefinitely. Reads stayed correct the whole time — `currentGen`
+> always pointed at a live object — so the only symptom was a storage bill that never went down. If that describes
+> your deployment, one `gcOrphanGenerations` pass per segment reclaims the backlog.
 
 **Running a fleet of workers.** To scale past one worker, run N daemons and give each a disjoint **shard**: set
 `CR_COMPACT_TOTAL_SHARDS=N` and worker _i_ `CR_COMPACT_SHARD=i` (or pass `shard`/`totalShards` to
@@ -1304,6 +1351,53 @@ Your operations carry over one-for-one:
 | `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
 | `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
+
+**And one operation Redis has that needed building: `SETBIT` returning the prior bit.** That return value is not a
+convenience — it is what makes a per-recipient *"have I already sent to this user?"* claim exactly-once when two
+workers race the same id. `has()` then `add()` cannot do it: both read absent, both proceed.
+
+| Redis | Here | Difference |
+|---|---|---|
+| `prior = SETBIT sent:wave id 1` | `const won = await sent.claimMany(ids)` | takes a **batch** and returns the ids it won. Exactly-once per id; one write per *chunk*, not per id |
+
+```ts
+// Exactly-once send, no always-on cluster.
+const sent = store.segment(day, { namespace: 'sent-daily' });
+const toSend = await sent.claimMany(candidateIds); // only the ids this worker won
+for (const id of toSend) enqueue(id);              // ...so no other worker will send them
+```
+
+### The one thing not to port literally: one op per user
+
+Redis `SETBIT` flips a single bit in place. Here, a Warm row holds **one roaring bitmap per 65,536-id chunk**, and
+every write re-serializes and re-writes that whole blob. So the per-id loop is the single most expensive way to
+use this library. Measured, same 5,000 ids, three write shapes:
+
+| Shape | Warm writes | Bytes written |
+|---|---|---|
+| `add(id)` per user, 5,000× | **5,000** | **23,762 KB** |
+| `addMany(ids)` in 500-id batches | 10 | 51 KB |
+| one `addMany(ids)` | **1** | **8 KB** |
+
+Nearly **3,000× more bytes** for the loop. DynamoDB bills per 1 KB of write, so that is ~23,762 WCU against 8.
+Batch, and you are far cheaper than Redis; port the loop literally and you are far more expensive. `claimMany`
+exists in batch form for exactly this reason.
+
+Volume, by contrast, works in your favour: **200,000 ids spread over a 9M-id space cost 138 Warm rows**, not
+200,000 — one row per 64K of id space you actually touch.
+
+### You do not need a seed job, and compaction is optional
+
+Two things the rest of this guide implies but never says plainly, because it leads with the scaling story:
+
+- **A brand-new segment is immediately usable.** Construct a store and call `addMany` — `add` / `addMany` / `has`
+  / `remove` / `count` / `iterate` / `intersect` / `union` / `andNot` all work on a segment with **no Cold
+  generation and no registry row at all**, because a read merges `(cold ∪ warm.adds) \ warm.removes` and an
+  absent Cold tier just makes that merge trivial. [§3](#3-optional-bulk-load-a-cold-generation) is an **import**
+  path for data you already have somewhere else — not an initialization step.
+- **Compaction is never required for correctness.** See [§8](#8-compaction-keeping-the-warm-tier-small). For a
+  write-once dated bucket — a dedup wave, a daily sent-list — you can skip it entirely and `dropSegment` the
+  segment when it expires.
 
 `BITFIELD`, `BITPOS`, and the byte-range forms of `BITCOUNT` have no equivalent either. This is a set of ids,
 not an addressable bit buffer, so anything that treats the key as a positional buffer does not port — and

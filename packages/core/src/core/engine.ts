@@ -269,6 +269,60 @@ export class SegmentEngine {
     return this.mutateMany(seg, ids, applyRemoveAll);
   }
 
+  /**
+   * **Atomically claim ids: add them, and return only the ones that were not already there.**
+   *
+   * The durable analogue of Redis `SETBIT` returning the prior bit — the primitive an exactly-once "have I
+   * already processed / already sent to this id?" check needs. `has()` then `add()` cannot do this: two workers
+   * can both read absent and both proceed.
+   *
+   * **Bulk on purpose.** The per-id shape is the one this library is worst at, because a Warm write rewrites a
+   * whole 64K-id chunk bitmap: claiming 5,000 ids one at a time costs ~5,000 writes and ~23 MB, and claiming
+   * them in one call costs 1 write and ~8 KB. So this takes a batch and does one OCC read-modify-write per
+   * distinct chunk — Redis's semantics at this library's cost shape, rather than Redis's cost shape.
+   *
+   * **Atomicity is per id, which is the guarantee that matters here.** Each id lives in exactly one chunk, and a
+   * chunk is one OCC row, so for any id exactly one concurrent claimer sees it as new. It is NOT atomic across
+   * chunks (neither is `addMany`) — a mid-flight failure can leave some chunks claimed. Re-running is safe:
+   * already-claimed ids simply come back as not-new.
+   *
+   * **The presence test consults Cold, not just the Warm delta.** Checking `adds` alone would report an id as
+   * newly claimed when a compaction had already folded it into a Cold generation — silently breaking
+   * exactly-once on any segment that has ever been compacted. The check is the full effective set,
+   * `(cold ∪ adds) \ removes`.
+   *
+   * Returns the claimed ids grouped nowhere in particular — order is unspecified.
+   */
+  async claimMany(seg: SegmentRef, ids: Iterable<number>): Promise<number[]> {
+    // Group by chunk first: the whole point is one write per chunk rather than one per id.
+    const byChunk = new Map<number, number[]>();
+    for (const id of ids) {
+      const { chunkKey, remainder } = splitId(id);
+      const bucket = byChunk.get(chunkKey);
+      if (bucket) bucket.push(remainder);
+      else byChunk.set(chunkKey, [remainder]);
+    }
+    const gen = await this.currentGen(seg);
+    const perChunk = await mapWithConcurrency(
+      [...byChunk],
+      this.writeConcurrency,
+      async ([chunkKey, remainders]) => {
+        const cold = (await this.coldChunk({ ...seg, chunkKey }, gen)) ?? this.codec.empty();
+        // `claimed` is assigned — never appended to — because `readModifyWrite` re-runs this callback on an OCC
+        // conflict. Accumulating across attempts would report an id as newly claimed by us when the retry showed
+        // it had been claimed by the winner of the race, which is exactly the guarantee being sold.
+        let claimed: number[] = [];
+        await this.readModifyWrite(seg, chunkKey, (delta) => {
+          const present = effective(cold, delta);
+          claimed = remainders.filter((r) => !present.has(r));
+          for (const r of claimed) applyAdd(delta, r);
+        });
+        return claimed.map((r) => joinId(chunkKey, r));
+      },
+    );
+    return perChunk.flat();
+  }
+
   async has(seg: SegmentRef, id: number, opts?: WarmReadOptions): Promise<boolean> {
     const { chunkKey, remainder } = splitId(id);
     const ref: ChunkRef = { ...seg, chunkKey };
