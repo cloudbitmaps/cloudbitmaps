@@ -573,10 +573,14 @@ async function publishGenZero(
         // generation — the shredded DEK makes those bytes unreadable anyway. Report failure; we purge nothing.
         return false;
       } else if (current.currentGen === null) {
+        // `wrappedDeks` is spread in only when there is something to store: a patch clears an optional field by
+        // mentioning it, so an unconditional `wrappedDeks: undefined` would wipe key material off the row on
+        // every cleartext bootstrap. (The caller already reuses a DEK the row carries, so "undefined" here means
+        // the row had none — but this must not depend on that staying true.)
         await registry.compareAndSwap(ref, current.token, {
           currentGen: 0,
           dirtyChunkCount: 0,
-          wrappedDeks,
+          ...(wrappedDeks === undefined ? {} : { wrappedDeks }),
         });
       } else {
         // Someone published while we worked. Only gen 0 can be the object we wrote (generations are write-once),

@@ -537,10 +537,15 @@ export async function publishGeneration(
         // The row exists with no Cold generation yet (a warm-only accumulator that has a row so fleet-wide ops
         // can see it). There is no pointer to regress past, so this publish advances it — and carries the wrapped
         // DEK(s) exactly like a first publish onto no row, since no generation is encrypted under the row's
-        // current wrappings (there is no generation at all). Absent `wrappedDeks` leaves the row's untouched.
+        // current wrappings (there is no generation at all).
+        //
+        // `wrappedDeks` is spread in ONLY when there is something to store. A registry patch clears an optional
+        // field by *mentioning* it (`'wrappedDeks' in patch`), so passing `wrappedDeks: undefined` unconditionally
+        // would wipe key material off the row whenever a cleartext generation is published onto it — a divergence
+        // from the branch below, which never touches the field.
         await registry.compareAndSwap(key, record.token, {
           currentGen: key.generation,
-          wrappedDeks: options.wrappedDeks,
+          ...(options.wrappedDeks === undefined ? {} : { wrappedDeks: options.wrappedDeks }),
         });
       } else if (record.currentGen > key.generation) {
         return false; // a newer generation is already current — forward-only, never regress

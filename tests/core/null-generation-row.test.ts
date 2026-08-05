@@ -384,6 +384,25 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       expect(await members(w.store())).toEqual([4, 5, 6]);
     });
 
+    it('a publish with no DEK does not wipe key material already on the row', async () => {
+      // A registry patch CLEARS an optional field by mentioning it, so `wrappedDeks: undefined` is not "leave it
+      // alone" — it is "delete it". Publishing a cleartext generation must therefore not mention the field at
+      // all, or this path would silently destroy the wrappings while the branch for a non-null pointer preserves
+      // them. (The mismatch is what matters: an encrypted row whose only generation is cleartext must fail the
+      // same way it always has — closed, at the reader — not be quietly rewritten into a cleartext row.)
+      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+      const w = world();
+      const minted = await keystore.createDek();
+      await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
+
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+        registry: w.registry, // no keystore ⇒ the generation is written cleartext
+      });
+      const rec = (await w.registry.get(SEG))!;
+      expect(rec.currentGen).toBe(0);
+      expect(rec.wrappedDeks).toEqual(minted.wrapped);
+    });
+
     it('gcOrphanGenerations deletes nothing while the pointer is null', async () => {
       // A bootstrap may have just written gen 0 and be about to publish it; deleting here would race that into a
       // dangling pointer. There is also no "below current" to compute.
