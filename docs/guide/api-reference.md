@@ -109,6 +109,7 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `SubjectReport` | GDPR Art. 15 — which registered segments is this id in? (needs an explicit namespace or an `allNamespaces` ack) |
 | `store.eraseSubject(id, { owner, namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `EraseSubjectResult` | GDPR Art. 17 — remove an id everywhere + physically purge; returns a proof ledger |
 | `store.compact(ref, { owner, leaseMs?, audit? })` → `CompactionResult` | fold warm deltas into a fresh cold generation (usually the daemon does this) |
+| `store.dropSegment(ref, { confirmSegment, dryRun?, audit? })` → `DropResult` | **retire a segment and reclaim its storage** — tombstone + Warm rows + Cold generations (re-swept; **check `generationsRemaining`** — non-empty means bytes survived and the drop should be re-run). Needs a raw cold driver + registry. Reads become empty within `coldGenTtlMs`, for a reader that has a clock. `dryRun` previews `wouldDelete` / `wouldDeleteWarmRows` / `wouldCryptoShred` without touching anything |
 | `store.checkConsistency({ namespace?, concurrency? })` → `ConsistencyReport` | DR: verify every segment's `currentGen` `.crbm` is present (catch a torn cross-tier restore) |
 | `store.exportSegments(sink, { format?, namespace?, candidates? })` → `ExportManifest` | eject every segment to portable `roaring`/`ndjson` |
 | `seg.costReport({ pricing?, workload?, topology? })` → `CostReport` | grounded $ cost for this segment (from its real cold size) |
@@ -120,7 +121,8 @@ All three are charged against the same per-op budget, so a wide union is refused
 | Call | Does |
 |---|---|
 | `bulkLoadCrbmGeneration(cold, { segment, generation }, ids, { registry })` → `BulkLoadResult` | seed a cold generation from a (huge, unsorted) id stream |
-| `destroySegment(…)` → `DestroyResult` | crypto-shred one whole segment (key deleted → bytes unrecoverable) |
+| `destroySegment(…)` → `DestroyResult` | crypto-shred one whole segment (key deleted → bytes unrecoverable); leaves the objects in the bucket, needs encryption |
+| `dropSegment(ref, { registry, warm, cold }, { confirmSegment, dryRun? })` → `DropResult` | **dispose of a segment** — tombstone + delete Warm rows + delete every Cold generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `eraseNamespace(…)` | crypto-shred an entire namespace / tenant |
 | `runCompactionCycle(deps, { owner, keep })` | one compaction pass — for a custom compaction worker (the CLI wraps this) |
 | `runConsistencyCheck({ cold, registry }, { namespace?, concurrency? })` → `ConsistencyReport` | the free-function behind `store.checkConsistency` — run it over your own drivers |
@@ -264,6 +266,7 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 |---|---|
 | `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use |
 | `EraseDeps` | deps for the free-function erasure (`destroySegment` / `eraseNamespace`) |
+| `DropDeps` | `EraseDeps` plus `cold` — `dropSegment` deletes the objects, so it needs the cold driver |
 
 ### Low-level ports & capabilities (driver-author typing)
 
@@ -302,7 +305,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `CloudRoaring` · `Segment` · `MemoryColdDriver` · `MemoryWarmDriver` · `MemoryRegistryDriver` ·
 `MemoryColdChunkSource` · `LocalFsColdDriver` · `LocalFsWarmDriver` · `LocalFsRegistryDriver` ·
 `bulkLoadCrbmGeneration` · `writeCrbmGeneration` · `publishGeneration` · `CrbmColdChunkSource` · `compactSegment`
-· `runCompactionCycle` · `findCompactable` · `gcOrphanGenerations` · `destroySegment` · `eraseNamespace` ·
+· `runCompactionCycle` · `findCompactable` · `gcOrphanGenerations` · `destroySegment` · `dropSegment` · `eraseNamespace` ·
 `InProcessKeystore` · `NodeAead` · `aadFor` · `SafeBitmap` · `roaringCodec` · `withRetry` · `isTransient` ·
 `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` · `validateCompactionOptions` · `runExport` ·
 `splitId` · `joinId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` ·
@@ -327,7 +330,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IColdDriver` · `IWarmDriver` · `IRegistryDriver` ·
 `ColdChunkSource` · `SegmentRef` · `ChunkRef` · `GenKey` · `ColdCaps` · `RegCaps` · `RegistryRecord` ·
 `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `IKeystore` ·
-`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DestroyResult`
+`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult`
 · `RetryPolicy` · `RetryDeps` · `RetryingOptions` · `CrbmWriterOptions` · `CrbmReaderOptions` · `BlobReader` ·
 `BlobSink` · `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` ·
 `CostReport` · `CostAdvisory` · `Workload` · `SegmentSizing` · `EstimateInput` · `Topology` · `IAuditSink` · `AuditEvent` ·

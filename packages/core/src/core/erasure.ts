@@ -12,8 +12,9 @@
  * destroyed segment (a registry-checked write path) is a later hardening; the write path stays uncoupled today.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
-import type { ChunkRef, IRegistryDriver, IWarmDriver, SegmentRef } from './ports';
+import type { ChunkRef, IColdDriver, IRegistryDriver, IWarmDriver, SegmentRef } from './ports';
 
 export interface EraseDeps {
   readonly registry: IRegistryDriver;
@@ -48,6 +49,28 @@ export interface DestroyResult {
 
 const MAX_CAS_ATTEMPTS = 8;
 const MAX_WARM_PASSES = 4;
+/**
+ * Deletes in flight at once, for both the Warm rows and the Cold generations.
+ *
+ * Serial was the first cut and it is the wrong shape for this path: erasure is a fan-out over *independent*
+ * keys, so a segment with 400 warm chunks paid 400 sequential round-trips (~20 s at 50 ms) for work that has no
+ * ordering between items. This is the same bound `engine.writeConcurrency` and `S3RegistryDriver`'s
+ * `LIST_READ_CONCURRENCY` already apply to the same kind of fan-out; the ceiling matters because an unbounded
+ * `Promise.all` over a large segment is a self-inflicted thundering herd against one table/bucket.
+ *
+ * Not configurable: this is an admin path called by a human or a nightly job, so a knob would be surface with no
+ * caller. If a deployment ever needs it tuned, it becomes an option then.
+ */
+const ERASE_CONCURRENCY = 8;
+/**
+ * Cold list-then-delete passes a drop will make before giving up and reporting the residual.
+ *
+ * Two is the honest floor and three is the working value: pass 1 clears what was there, pass 2 catches a
+ * generation staged by a compaction that was already in flight when the tombstone landed, pass 3 covers a second
+ * such worker. It terminates regardless — the tombstone hard-fences *starting* a new generation, so the supply of
+ * late stagings is whatever was already running, and any residual is reported rather than silently dropped.
+ */
+const MAX_COLD_SWEEPS = 3;
 
 /**
  * Crypto-shred one segment. **Irreversible.** `confirmSegment` must equal `ref.segment` (a guard against an
@@ -148,18 +171,383 @@ export async function eraseNamespace(
   return { destroyed };
 }
 
-/** The shred itself: clear Warm rows, then CAS the registry row to a `destroyed` tombstone with no wrappings. */
+/**
+ * Deps for {@link dropSegment}. Adds `cold`, because unlike a crypto-shred this one deletes the objects.
+ */
+export interface DropDeps extends EraseDeps {
+  readonly cold: IColdDriver;
+}
+
+export interface DropResult {
+  readonly segment: string;
+  readonly namespace?: string;
+  /** True iff the segment is now a `destroyed` tombstone (incl. the idempotent already-dropped case). */
+  readonly dropped: boolean;
+  /** Warm rows physically deleted. */
+  readonly warmRowsDeleted: number;
+  /** Cold generations physically deleted, ascending. Empty on a dry run — see {@link DropResult.wouldDelete}. */
+  readonly generationsDeleted: readonly number[];
+  /**
+   * Generations still present in Cold when the sweep gave up, ascending. **Empty is the normal outcome** — a
+   * non-empty value means the storage was NOT fully reclaimed and the drop should be re-run.
+   *
+   * This field exists because its absence was a defect. `dropped: true` with a populated `generationsDeleted`
+   * and no `reason` used to be returned even when a `.crbm` holding the **complete effective set** had just been
+   * left in the bucket by a compaction that was already mid-flight (it stages from data it read before the
+   * tombstone, so its commit fails on the voided lease but its object survives). For a cleartext segment those
+   * bytes are readable — and nothing in the library reclaimed them, because `gcOrphanGenerations` only considers
+   * generations *below* `currentGen` and `checkConsistency` skips destroyed segments. The result was
+   * indistinguishable from a clean drop, so an operator got no signal to re-run. Now they do.
+   */
+  readonly generationsRemaining: readonly number[];
+  /**
+   * On a dry run, the generations that **would** be deleted. `undefined` on a real run.
+   *
+   * This exists because the confirmation guard the erasure calls use — naming the segment twice — protects a
+   * hand-typed literal and nothing else. In the loop this operation is actually *for*
+   * (`for (const day of expired) drop({segment: day}, {confirmSegment: day})`) the same variable appears twice
+   * and the guard is pure ceremony. A dry run is the guard that still works when a machine is calling.
+   *
+   * It is a **snapshot**: a later real run can see a different set.
+   */
+  readonly wouldDelete?: readonly number[];
+  /**
+   * On a dry run, how many Warm rows would be deleted. `undefined` on a real run.
+   *
+   * Previewing only the Cold generations was a gap: Warm rows hold **cleartext** deltas, so for the automated
+   * caller this preview exists for, "how much unencrypted data is about to go" is at least as load-bearing as
+   * the object count.
+   */
+  readonly wouldDeleteWarmRows?: number;
+  /**
+   * On a dry run, whether the real drop would **also** crypto-shred (i.e. the segment is encrypted).
+   * `undefined` on a real run. This is the one fact in the preview that is irreversible *everywhere*, backups
+   * included — a dry run that did not surface it was previewing the recoverable half only.
+   */
+  readonly wouldCryptoShred?: boolean;
+  /**
+   * True iff the segment was encrypted and its wrapped DEK(s) were dropped as part of this call — so its bytes
+   * are unreadable *everywhere*, backups included, not merely deleted from the bucket. Deleting an object does
+   * not reach a noncurrent version, a replica, or a PITR snapshot; discarding the key does.
+   */
+  readonly cryptoShredded: boolean;
+  /**
+   * `'absent'` (no registry row **and** no Cold objects — nothing existed to drop) or `'already'` (already a
+   * tombstone). Absent on a fresh drop.
+   *
+   * Note what `'absent'` no longer means: it used to be returned while the call deleted every Cold generation it
+   * found, with no tombstone written. See {@link dropSegment}'s "the absent case" note.
+   */
+  readonly reason?: string;
+}
+
+/**
+ * **Dispose of a segment: tombstone it, delete its Warm rows, and delete its Cold objects.** Irreversible.
+ *
+ * WHY THIS EXISTS, given {@link destroySegment} already erases. Because `destroySegment` answers a *compliance*
+ * question and this one answers an *operational* question, and they are not the same:
+ *
+ * - `destroySegment` **crypto-shreds** — it discards the key so the bytes are unreadable everywhere including
+ *   immutable backups, which is the only erasure that survives WORM. But it **leaves the objects in the
+ *   bucket**, still billed, and it *requires* encryption because a cleartext segment has no key to discard.
+ * - `dropSegment` **removes the storage**. It works on a cleartext segment, and on an encrypted one it *also*
+ *   drops the DEKs, so it is a strict superset there.
+ *
+ * Before this existed there was no supported way to delete a segment and stop paying for it, and the obvious
+ * workaround — an object-store lifecycle rule on the key prefix — deletes the bytes while the registry still
+ * points at them. That is exactly the `missing-cold-generation` state the DR runbook says not to serve traffic
+ * on, and it surfaces *intermittently*, because a read consults the hot cache before Cold: cached chunks answer
+ * correctly and evicted ones throw. The whole value of this function is that the ordering below cannot be got
+ * wrong by a caller.
+ *
+ * **THE ORDER IS THE CONTRACT — Warm, then registry, then Cold.** Each step is placed against a specific way
+ * the other orders break:
+ *
+ * 1. **Warm first.** A `destroyed` row makes Cold read as empty, but Warm is consulted *separately* and earlier
+ *    on the read path — so a tombstone with live Warm deltas still answers `true` for ids in those deltas.
+ *    (This is why {@link shredSegment} already orders it this way; the reasoning is inherited, not invented.)
+ *    **Necessary, but not sufficient** — see "writes must have stopped" below.
+ * 2. **Registry second.** After the tombstone nothing resolves a generation for this segment, so no reader can
+ *    reach for bytes that are about to disappear.
+ * 3. **Cold last, best-effort, and re-swept.** Once the pointer is a tombstone the segment resolves as empty, so
+ *    a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money and are cleaned
+ *    up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak bytes —
+ *    but say so: whatever survives the sweep is reported in {@link DropResult.generationsRemaining}.
+ *
+ * **Why step 3 sweeps more than once.** A compaction that was already mid-flight when the tombstone landed will
+ * still finish *staging* a fresh generation, built from data it read beforehand — its commit then fails on the
+ * lease the tombstone voided, but the object it wrote survives, and it holds the complete effective set including
+ * the Warm deltas step 1 just deleted. A single list-then-delete misses it entirely. The re-sweep converges
+ * because the tombstone *is* a hard fence on **starting** a new generation (compaction returns `destroyed`
+ * before it does anything), so only already-in-flight stagings can appear and they are finite.
+ *
+ * **Writes must have stopped.** Nothing here prevents a *new* Warm write after step 1 (the write path is
+ * deliberately uncoupled — see this module's header). For `destroySegment` that is a scope note; here it is
+ * sharper, because a Warm row that lands after the tombstone is **immortal**: compaction refuses to fold or purge
+ * a destroyed segment, so nothing ever reaps it, and a fresh reader will report the dropped segment as non-empty
+ * *forever*. Step 1 therefore runs a second time after the tombstone, which converges for anything in flight at
+ * drop time — but a writer that keeps writing will keep resurrecting the segment. Stop writes first, or re-run.
+ *
+ * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
+ * resolved generation is cached and decoded chunks sit in the hot LRU, so an in-flight reader can answer from
+ * cache for a window. A fresh store, or any reader that had not touched the segment, sees empty at once.
+ *
+ * That window is bounded by `coldGenTtlMs` (default 2 s) **only for a reader whose cold source has both a clock
+ * and a registry and a positive TTL** — expiry needs all three. A source built without a clock, or with
+ * `coldGenTtlMs: 0` (documented as "pin forever"), holds its resolved snapshot for its own lifetime; because a
+ * hot-LRU hit never reaches Cold, such a reader can answer `true` for a dropped segment **indefinitely** and must
+ * be restarted. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
+ * than loudly — it cuts both ways.
+ *
+ * `confirmSegment` must equal `ref.segment`, matching `destroySegment`/`eraseNamespace`. For an automated
+ * caller that guard is ceremony — use `dryRun` first, which reports what would go without touching anything.
+ */
+export async function dropSegment(
+  ref: SegmentRef,
+  deps: DropDeps,
+  options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
+): Promise<DropResult> {
+  if (options.confirmSegment !== ref.segment) {
+    throw new ValidationError(
+      `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,
+    );
+  }
+  const base = { segment: ref.segment, namespace: ref.namespace };
+
+  if (options.dryRun === true) {
+    const record = await deps.registry.get(ref);
+    const wouldDelete = await listGenerations(deps.cold, ref);
+    return {
+      ...base,
+      dropped: false,
+      warmRowsDeleted: 0,
+      generationsDeleted: [],
+      generationsRemaining: [],
+      wouldDelete,
+      wouldDeleteWarmRows: await countWarmRows(deps.warm, ref),
+      wouldCryptoShred: record?.wrappedDeks !== undefined && record.wrappedDeks.length > 0,
+      cryptoShredded: false,
+      reason:
+        record === null
+          ? wouldDelete.length === 0
+            ? 'absent'
+            : undefined
+          : record.status === 'destroyed'
+            ? 'already'
+            : undefined,
+    };
+  }
+
+  // Steps 1 and 2, reused wholesale. `allowCleartext` is true because deleting objects does not need a key —
+  // the encryption requirement belongs to crypto-shred, not to disposal.
+  let shred = await shredSegment(ref, deps, true, 'dropSegment');
+
+  // ── THE ABSENT CASE. ───────────────────────────────────────────────────────────────────────────────────────
+  // `shredSegment` returns `absent` having written NOTHING when there is no registry row — and this function used
+  // to go on and delete every Cold generation anyway. That skipped the one step that makes the ordering safe
+  // while still running the destructive one, and it produced two measured disasters, both from ordinary
+  // interleavings:
+  //
+  //  - A drop landing between `bulkLoadCrbmGeneration`'s object write and its `publishGeneration` (minutes apart
+  //    on a large load) left `currentGen: 0`, `status: 'active'` and no object — precisely the
+  //    `missing-cold-generation` state this function exists to PREVENT. Reads threw; nothing self-healed it,
+  //    because `publishGeneration`'s destroyed-fence has no row to check on the create path.
+  //  - A drop during a compaction bootstrap (which had already pinned the Warm rows in memory) deleted those
+  //    rows, reported `absent`, and then watched the bootstrap write them back to Cold and `create` an ACTIVE
+  //    row. Full resurrection, with no tombstone anywhere.
+  //
+  // The fix is to claim the identity before deleting anything. A `destroyed` row is exactly the fence the three
+  // writers already respect — `publishGeneration`, `bulkLoadCrbmGeneration` and `compactSegmentInner` all refuse
+  // one — so creating it converts both disasters into "the writer is refused and the bytes are collected".
+  //
+  // Only when Cold actually holds something, though. A drop against a *genuinely* nonexistent segment (the
+  // typo the facade docs warn about) must not leave a `destroyed` row behind: that is registry litter, and worse,
+  // it would refuse a later legitimate load of that name forever. No row and no objects ⇒ nothing existed ⇒ say
+  // `absent` and touch nothing, which is what that reason has always been documented to mean.
+  if (shred.reason === 'absent') {
+    const orphans = await listGenerations(deps.cold, ref);
+    if (orphans.length === 0) {
+      return {
+        ...base,
+        dropped: false,
+        warmRowsDeleted: shred.warmRowsDeleted,
+        generationsDeleted: [],
+        generationsRemaining: [],
+        cryptoShredded: false,
+        reason: 'absent',
+      };
+    }
+    try {
+      await deps.registry.create(ref, {
+        // The max listed generation, so the row is consistent with what is on disk if anything reads it before
+        // the sweep finishes. It is a tombstone, so no reader resolves through it either way.
+        currentGen: orphans[orphans.length - 1]!,
+        status: 'destroyed',
+      });
+      shred = { ...shred, destroyed: true, reason: undefined };
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      // A row appeared between our `get` and our `create` — that is the racing writer we were trying to fence,
+      // and it won. Fall back into the normal path, which now has a row to CAS into a tombstone.
+      shred = await shredSegment(ref, deps, true, 'dropSegment');
+    }
+  }
+
+  // Step 1, again. A Warm write that landed after the first pass would otherwise be IMMORTAL: compaction returns
+  // `destroyed` before it can fold or purge it, so nothing in the system ever reaps it and a fresh reader reports
+  // this "dropped" segment as non-empty forever. This second pass converges for anything in flight at drop time.
+  // It runs after the tombstone deliberately — that ordering is safe here precisely because the tombstone is
+  // already written, so there is no window in which a destroyed pointer coexists with live deltas we have not
+  // tried to clear.
+  const lateWarmRows = shred.destroyed ? await eraseWarmQuietly(deps.warm, ref) : 0;
+
+  // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
+  // deliberately NOT `|| generationsDeleted.length > 0`.
+  //
+  // It read that way in the first draft, and it was wrong in a way that matters. Four documents — including
+  // `docs/guide/dashboards.md`, which calls this event the compliance *receipt* — define `segment.erase` as
+  // proof of an irreversible crypto-shred: bytes unreadable everywhere, backups included. Deleting an object is
+  // a weaker guarantee, because a noncurrent version, a cross-region replica or a PITR snapshot still holds the
+  // cleartext. Emitting one event for both would make a compliance dashboard **over-attest**, which is the one
+  // failure an audit trail exists to prevent.
+  //
+  // Consequence, stated rather than hidden: a **cleartext** drop emits no audit event at all. That is a real gap
+  // in the trail, and the honest fix is a distinct kind (`segment.dispose`) — a public-surface addition, so it
+  // waits for a decision instead of being smuggled in behind an existing name.
+  //
+  // And it goes out BEFORE the Cold sweep, not after. A genuine crypto-shred is complete the moment
+  // `shredSegment` returns — the DEK wrappings are gone and the bytes are unreadable everywhere. If the sweep
+  // then throws (a Cold driver that cannot list), emitting afterwards would mean **no receipt for a destruction
+  // that really happened** — the exact mirror of the over-attestation above, and just as wrong. Both directions
+  // of a false audit trail are defects; only one of them was obvious.
+  if (shred.cryptoShredded) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.erase',
+      namespace: ref.namespace,
+      segment: ref.segment,
+    });
+  }
+
+  // Step 3, swept until Cold comes back empty. See "Why step 3 sweeps more than once" above: a compaction already
+  // mid-flight when the tombstone landed still finishes *staging* a generation, so one list-then-delete can miss
+  // an object holding the complete effective set. `mapWithConcurrency` returns results in *input* order, so each
+  // pass contributes ascending generations and the concatenation stays ascending. Failures are swallowed per item
+  // so the pool never aborts — one unreachable generation must not leave the rest orphaned too.
+  const generationsDeleted: number[] = [];
+  for (let pass = 0; pass < MAX_COLD_SWEEPS; pass++) {
+    const present = await listGenerations(deps.cold, ref);
+    if (present.length === 0) break;
+    const outcomes = await mapWithConcurrency(present, ERASE_CONCURRENCY, async (generation) => {
+      try {
+        await deps.cold.delete({ ...ref, generation });
+        return generation;
+      } catch {
+        // Leave it orphaned. The segment already reads as empty, so this is a billing problem, not a
+        // correctness one, and re-running the drop collects whatever was missed.
+        return null;
+      }
+    });
+    let deletedThisPass = 0;
+    for (const g of outcomes) {
+      if (g !== null) {
+        generationsDeleted.push(g);
+        deletedThisPass += 1;
+      }
+    }
+    if (deletedThisPass === 0) break; // nothing went — another pass will not help
+  }
+  // Enumerate once more rather than inferring the residual from the last pass, so the reported value is exactly
+  // what is still in Cold whichever way the loop ended: empty, a delete that kept failing, or the pass budget
+  // exhausted while a compaction kept staging. Inferring it would report `[]` in precisely the case that matters
+  // — a final pass that deleted everything it saw, after which one more object appeared.
+  const generationsRemaining = await listGenerations(deps.cold, ref);
+
+  return {
+    ...base,
+    dropped: shred.destroyed,
+    warmRowsDeleted: shred.warmRowsDeleted + lateWarmRows,
+    generationsDeleted,
+    generationsRemaining,
+    cryptoShredded: shred.cryptoShredded,
+    reason: shred.reason,
+  };
+}
+
+/**
+ * Every generation currently present in Cold for a segment, ascending.
+ *
+ * No error handling on purpose: `IColdDriver.list` is mandatory (not optional in `ports.ts`), so a driver that
+ * cannot list cannot exist, and one that *throws* from `list` should propagate. (An earlier version of this
+ * comment claimed it "tolerates a driver that cannot list", describing a `try`/`catch` that was never written.)
+ *
+ * **Be precise about what a throw means at each call site**, because a previous version of this comment was not.
+ * From the `dryRun` branch it is accurate that the call "has established nothing". From the real run it is NOT:
+ * by then the tombstone is written and the Warm rows are gone, so the segment IS dropped and only the bytes
+ * leaked. The throw is still the right behaviour — it is the signal to re-run, and a re-run takes the `'already'`
+ * path and re-attempts the sweep — but a caller who logs "drop failed" is wrong about the segment's state. This is
+ * also why the audit event is emitted *before* the sweep: an irreversible crypto-shred that really happened must
+ * not go unrecorded because a later, weaker step threw.
+ */
+async function listGenerations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+  const generations: number[] = [];
+  for await (const key of cold.list(ref)) generations.push(key.generation);
+  return generations.sort((a, b) => a - b);
+}
+
+/**
+ * Count the Warm rows a drop would delete, for {@link DropResult.wouldDeleteWarmRows}. Read-only.
+ */
+async function countWarmRows(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
+  let n = 0;
+  for await (const _row of warm.listChunks(ref)) {
+    void _row;
+    n += 1;
+  }
+  return n;
+}
+
+/**
+ * {@link eraseWarm}, but a contention failure is reported as "cleared nothing" instead of thrown.
+ *
+ * Used only for the **second** Warm pass, after the tombstone. Throwing there would be wrong in both directions:
+ * the drop has already succeeded at everything the caller asked for (tombstone written, original rows cleared),
+ * and a throw would discard that truthful result *and* skip the Cold sweep, so contention from a writer that
+ * refuses to stop would make the storage permanently unreclaimable. A row this pass cannot clear is a row a
+ * subsequent drop will clear; the pass exists to converge, not to gate.
+ */
+async function eraseWarmQuietly(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
+  try {
+    return await eraseWarm(warm, ref, 'dropSegment');
+  } catch (err) {
+    if (!isWriteConflictError(err)) throw err;
+    return 0;
+  }
+}
+
+/**
+ * The shred itself: clear Warm rows, then CAS the registry row to a `destroyed` tombstone with no wrappings.
+ *
+ * `op` is only for error text — `destroySegment` and `dropSegment` both come through here, and a message naming
+ * the wrong one is operator-facing text on the single path where the operator must act.
+ */
 async function shredSegment(
   ref: SegmentRef,
   deps: EraseDeps,
   allowCleartext: boolean,
+  op: 'destroySegment' | 'dropSegment' = 'destroySegment',
 ): Promise<DestroyResult> {
   const base = { segment: ref.segment, namespace: ref.namespace };
+  // Hoisted, and accumulated across attempts. Declaring it inside the loop meant only the LAST attempt's tally
+  // survived: one benign concurrent registry write (`findCompactable`'s change-guarded CAS, `bumpFailure`, a lease
+  // acquisition) made attempt 1's CAS conflict, and attempt 2 re-listed an already-empty Warm set — so the call
+  // reported `warmRowsDeleted: 0` having physically deleted every row. On a right-to-erasure record that is
+  // under-attestation, which is the same class of defect as over-attesting, pointed the other way.
+  let warmRowsDeleted = 0;
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
     const record = await deps.registry.get(ref);
     if (record === null) {
       // No authoritative row → nothing to crypto-shred. Still clear any stray Warm rows.
-      const warmRowsDeleted = await eraseWarm(deps.warm, ref);
+      warmRowsDeleted += await eraseWarm(deps.warm, ref, op);
       return {
         ...base,
         destroyed: false,
@@ -169,7 +557,7 @@ async function shredSegment(
       };
     }
     if (record.status === 'destroyed') {
-      const warmRowsDeleted = await eraseWarm(deps.warm, ref);
+      warmRowsDeleted += await eraseWarm(deps.warm, ref, op);
       return {
         ...base,
         destroyed: true,
@@ -185,12 +573,12 @@ async function shredSegment(
         destroyed: false,
         cryptoShredded: false,
         reason: 'cleartext',
-        warmRowsDeleted: 0,
+        warmRowsDeleted,
       };
     }
     // Clear Warm first (cleartext deltas), then flip the tombstone so a reader never sees a destroyed pointer
     // with live Warm data lingering.
-    const warmRowsDeleted = await eraseWarm(deps.warm, ref);
+    warmRowsDeleted += await eraseWarm(deps.warm, ref, op);
     try {
       await deps.registry.compareAndSwap(ref, record.token, {
         status: 'destroyed',
@@ -207,7 +595,7 @@ async function shredSegment(
       // A concurrent compaction/write advanced the row — re-read and shred again (it always converges).
     }
   }
-  throw new WriteConflictError(`destroySegment: contention shredding "${ref.segment}" — retry`);
+  throw new WriteConflictError(`${op}: contention shredding "${ref.segment}" — retry`);
 }
 
 /**
@@ -227,7 +615,11 @@ async function shredSegment(
  * the tombstone CAS, so an exception leaves the segment un-destroyed and retryable rather than marked destroyed
  * with data behind it.
  */
-async function eraseWarm(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
+async function eraseWarm(
+  warm: IWarmDriver,
+  ref: SegmentRef,
+  op: 'destroySegment' | 'dropSegment' = 'destroySegment',
+): Promise<number> {
   let deleted = 0;
   // Hoisted: the value after the loop is what decides whether the erase actually finished.
   let conflicts = 0;
@@ -237,21 +629,31 @@ async function eraseWarm(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
     for await (const row of warm.listChunks(ref))
       rows.push({ chunkKey: row.chunkKey, token: row.token });
     if (rows.length === 0) break; // nothing left — the only clean finish
-    for (const { chunkKey, token } of rows) {
-      const chunkRef: ChunkRef = { namespace: ref.namespace, segment: ref.segment, chunkKey };
-      try {
-        await warm.deleteConditional(chunkRef, token);
-        deleted += 1;
-      } catch (err) {
-        if (!isWriteConflictError(err)) throw err;
-        conflicts += 1; // rewritten mid-erase — caught on the next pass
-      }
-    }
+    // A conflict is caught inside `fn` and reported as `false`, so a rewritten row never aborts the pool — it is
+    // retried on the next pass. Any *other* error rejects, which propagates out of `eraseWarm` exactly as the
+    // serial version did (see the throw-vs-swallow note above); the running `deleted` tally is then discarded
+    // along with the result, which is why it is safe not to account for the in-flight deletes that still land.
+    const erased = await mapWithConcurrency(
+      rows,
+      ERASE_CONCURRENCY,
+      async ({ chunkKey, token }) => {
+        const chunkRef: ChunkRef = { namespace: ref.namespace, segment: ref.segment, chunkKey };
+        try {
+          await warm.deleteConditional(chunkRef, token);
+          return true;
+        } catch (err) {
+          if (!isWriteConflictError(err)) throw err;
+          return false; // rewritten mid-erase — caught on the next pass
+        }
+      },
+    );
+    for (const ok of erased) if (ok) deleted += 1;
+    conflicts = erased.length - erased.filter(Boolean).length;
     if (conflicts === 0) break;
   }
   if (conflicts > 0) {
     throw new WriteConflictError(
-      `destroySegment: ${conflicts} warm row(s) of "${ref.segment}" were rewritten during every one of ` +
+      `${op}: ${conflicts} warm row(s) of "${ref.segment}" were rewritten during every one of ` +
         `${MAX_WARM_PASSES} erase passes — the segment was NOT destroyed and its cleartext warm deltas are ` +
         `still readable. Stop writes to this segment and retry.`,
     );

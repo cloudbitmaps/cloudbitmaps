@@ -14,6 +14,74 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **`store.dropSegment(ref, { confirmSegment, dryRun? })` — retire a segment and actually reclaim its storage.**
+  Tombstones the registry row, deletes the Warm rows, deletes the Cold generations. Works on a cleartext
+  segment, and on an encrypted one it *also* discards the DEK, so it is a strict superset of crypto-shred there.
+  Afterwards the segment **reads as empty** rather than erroring — within `coldGenTtlMs` for a reader that has a
+  clock. `DropResult.generationsRemaining` is the field to check: non-empty means the storage was *not* fully
+  reclaimed and the drop should be re-run.
+
+  **This closes a real hole.** `destroySegment` crypto-shreds — the bytes become unreadable everywhere including
+  backups, which no object deletion can achieve — but it leaves the objects in your bucket, still billed, and it
+  *requires* encryption. `gcOrphanGenerations` only collects superseded generations. So until now there was no
+  supported way to delete a segment and stop paying for it, and the obvious workaround (an object-store lifecycle
+  rule on the prefix) deletes the bytes while the registry still points at them — the `missing-cold-generation`
+  torn state, presenting **intermittently** because a read consults the hot cache before Cold.
+
+  **The order is the contract, and it is why this is a library function rather than a recipe:** Warm rows first
+  (a tombstone with live Warm deltas would still answer `true`), then the registry pointer (after which nothing
+  resolves a generation), then the Cold objects, best-effort — so a partial failure leaks bytes rather than
+  correctness, and re-running collects the rest. Also `dryRun`, because `confirmSegment` guards a typed literal
+  and does nothing in the loop this function exists for; it previews `wouldDelete`, `wouldDeleteWarmRows` and
+  `wouldCryptoShred`.
+
+  **An adversarial review before merge found three defects in the first cut of this, all from ordinary
+  interleavings, and all invisible to a single-actor test suite.** They are fixed here, and the fix is worth
+  knowing because it shapes the contract:
+
+  - **The Cold sweep repeats.** A compaction already in flight when the tombstone lands still finishes *staging*
+    a generation from data it read beforehand — its commit fails on the voided lease, but the object survives and
+    holds the complete effective set including the Warm deltas just deleted. One list-then-delete missed it, and
+    nothing else would have collected it. `gcOrphanGenerations` now also takes **every** generation of a
+    tombstoned segment (previously only those below `currentGen`), so a running daemon collects any residual.
+  - **A segment with objects but no registry row now gets a tombstone before anything is deleted.** Objects
+    without a row is a real state — `bulkLoadCrbmGeneration` writes the object, *then* publishes. Deleting
+    without the tombstone produced either a dangling `active` pointer at no object (the very
+    `missing-cold-generation` state this function exists to prevent) or a full resurrection when the racing
+    writer published. A genuinely nonexistent segment still gets `reason: 'absent'` and no row, so a typo leaves
+    no litter.
+  - **A second Warm pass runs after the tombstone.** A Warm write landing after step 1 was *immortal*, because
+    compaction refuses to fold or purge a destroyed segment — a fresh reader would report the dropped segment as
+    non-empty forever.
+
+  The free function `dropSegment(ref, { registry, warm, cold }, …)` is exported for out-of-process callers.
+
+### Fixed
+
+- **`destroySegment` / `eraseNamespace` could report `warmRowsDeleted: 0` after physically deleting every Warm
+  row.** The tally was declared *inside* the tombstone CAS retry loop, so only the final attempt's count
+  survived: one benign concurrent registry write (`findCompactable`'s change-guarded CAS, a failure-count bump, a
+  lease acquisition) made the first attempt conflict, and the second attempt re-listed an already-empty Warm set.
+  On a GDPR Art. 17 erasure record that is **under-attestation** — the same class of defect as over-attesting,
+  pointed the other way — and it has been present since crypto-shred shipped. The tally is now hoisted and
+  accumulated across attempts.
+
+- **`gcOrphanGenerations` now collects every generation of a `destroyed` segment**, not only those below
+  `currentGen`. A tombstoned segment resolves no generation, so no reader can be pinned to one and the grace
+  window is meaningless — while nothing else in the library would ever have collected them, because the reconcile
+  path that deletes generations above `currentGen` returns early on a destroyed row. Those objects were billed
+  forever. Behaviour on a live segment is unchanged.
+
+- **Error messages from a `dropSegment` call no longer name `destroySegment`.** They shared a helper, so a
+  contended Warm row during a drop produced "destroySegment: … the segment was NOT destroyed" — operator-facing
+  text on the one path where the operator has to act.
+
+- **`UnsupportedError` from `store.dropSegment` now names `dropSegment`.** It listed only
+  `compact`/`eraseSubject`/`checkConsistency`, so a caller following the documented requirement got an error
+  about three operations they had not called.
+
 ### Documentation
 
 - **Retention, TTL and pruning are now documented — including a footgun that could lose data silently.**

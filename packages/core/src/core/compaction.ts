@@ -530,6 +530,16 @@ async function compactSegmentInner(
  * Garbage-collect superseded Cold generations for a segment: everything strictly below `currentGen`, keeping
  * the most recent `keep` of them as a grace window for in-flight readers pinned to a just-superseded
  * generation (**I5**). Generations ≥ `currentGen` are never touched. Returns the generations deleted.
+ *
+ * **Except on a `destroyed` segment, where EVERY generation is garbage** and the grace window is meaningless.
+ * A tombstoned segment resolves no generation at all, so no reader is or can become pinned to one; and nothing
+ * else in the library would ever collect them — the reconcile path that deletes generations above `currentGen`
+ * returns early on a destroyed row, so without this those objects are billed forever.
+ *
+ * That state is reachable in practice: a `dropSegment` whose Cold sweep threw part-way, or a compaction that was
+ * already staging when the tombstone landed and finished writing its object afterwards. `dropSegment` re-sweeps
+ * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
+ * residual, and this is what eventually collects it under a running daemon.
  */
 export async function gcOrphanGenerations(
   ref: SegmentRef,
@@ -542,9 +552,14 @@ export async function gcOrphanGenerations(
   const current = record.currentGen;
   const gens: number[] = [];
   for await (const key of deps.cold.list(ref)) gens.push(key.generation);
-  // Delete generations below current, except the newest `keep` of them (the grace window).
-  const below = gens.filter((g) => g < current).sort((a, b) => b - a); // newest-first
-  const toDelete = below.slice(keep);
+  const toDelete =
+    record.status === 'destroyed'
+      ? gens.sort((a, b) => a - b) // all of it: no reader can be pinned to a tombstoned segment
+      : // Delete generations below current, except the newest `keep` of them (the grace window).
+        gens
+          .filter((g) => g < current)
+          .sort((a, b) => b - a) // newest-first
+          .slice(keep);
   for (const generation of toDelete) {
     await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }

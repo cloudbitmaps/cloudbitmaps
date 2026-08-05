@@ -963,8 +963,8 @@ const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' }
 await bucket(today).addMany(idsSeenToday);
 
 // "Active in the last 7 days" — a union over the buckets you still keep.
-const days = last7Days.map(bucket);
-for await (const id of days[0].union(days.slice(1))) { /* … */ }
+const [head, ...rest] = last7Days.map(bucket);
+for await (const id of head.union(rest)) { /* … */ }
 
 // Retention = dropping whole buckets, not aging bits.
 ```
@@ -976,8 +976,19 @@ for await (const id of days[0].union(days.slice(1))) { /* … */ }
 > `active-2026-08-01` is legal too, but then finding "every daily bucket" means string-matching names.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
-[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window instead:
-`unionInto` a rolling `active-7d` segment once a day, and read that.
+[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window — but
+**materialize it into a fresh dated target, not a reused one**:
+
+```ts
+// Right: today's window is its own segment, and yesterday's is dropped when it ages out.
+const window = store.segment(`w-${today}`, { namespace: 'active-7d' });
+await days[0].unionInto(window, days.slice(1));
+```
+
+> ⚠️ **`unionInto` is purely additive — it never clears the destination.** Re-using one rolling `active-7d`
+> segment day after day therefore *accumulates*: union `{07-01, 07-02}` then `{07-02, 07-03}` into the same
+> target and you get `{07-01, 07-02, 07-03}`. The set grows monotonically and **silently stops being a 7-day
+> window**, with no error. An earlier revision of this guide recommended exactly that; it was wrong.
 
 **The best case for this pattern is a dedup or "already sent" window, where the bucket key _is_ the
 semantics.** Suppose you send a daily wave and a user must not be sent to twice in the same local day. Then the
@@ -1002,71 +1013,99 @@ whose window is naturally a calendar boundary.
 
 ### Pruning a segment today — and the honest limits
 
-Two operations exist, and **neither is a plain delete**:
+**`store.dropSegment` is the one you want for a rolling window.** Three levers exist, and they answer
+different questions:
 
-| | what it does | what it does *not* do |
+| | what it does | when |
 |---|---|---|
-| `destroySegment(ref, { registry, warm }, { confirmSegment })` | drops the segment's wrapped DEK → its Cold bytes become **permanently unreadable everywhere, including backups**; physically deletes its Warm rows; leaves a `destroyed` audit tombstone. Reads as empty | **does not delete the Cold objects.** They stay in your bucket, unreadable, and you keep paying for the bytes |
-| `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes **superseded** generations (strictly below `currentGen`), keeping `keep` as a grace window for in-flight readers | **never touches the current generation.** It reclaims compaction garbage, not live data |
+| **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, deletes its **Warm** rows, deletes its Cold generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
+| `destroySegment(ref, { registry, warm }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Cold bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
+| `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming compaction garbage, not live data |
 
-Two consequences worth being explicit about:
+Deleting an object does not reach a noncurrent version, a cross-region replica, or a PITR snapshot; discarding
+the key does. So if your requirement is *"the data must become unreadable"* rather than *"stop paying for it"*,
+encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted segment gives you both at once.
 
-1. **`destroySegment` needs encryption on.** It works by discarding the key, so a cleartext segment has no key
-   to discard — the call is *rejected* unless you pass `allowCleartext: true`, and in that case it clears Warm
-   and writes the tombstone while **the Cold `.crbm` bytes remain fully readable in your bucket.** If your
-   retention requirement is "the data must become unreadable", encryption at rest (§9) is a prerequisite, not
-   an option.
-2. **Nothing in the library deletes a live segment's Cold objects.** `IColdDriver.delete` exists as a
-   primitive, but no supported operation orchestrates "remove this segment's storage and its registry row".
-   Deleting objects yourself while the registry still points at them leaves reads failing on a missing
-   generation, so it is not a safe thing to do by hand.
+### Retiring a bucket
 
-### Reclaiming the storage — and the ordering rule that makes it safe
+`store.dropSegment` needs the store built with a **raw cold driver + a registry** (it has to enumerate and
+delete generations, which a pre-built `ColdChunkSource` cannot do) — the same requirement as `compact` and
+`eraseSubject` in §13. Without it you get an `UnsupportedError`.
 
-An **S3 lifecycle rule** on the segment's key prefix is the right mechanism: declarative, runs in the storage
-layer, costs nothing to operate.
+```ts
+// The namespace is part of the identity. Omit it and you address a DIFFERENT segment, and the call is a
+// silent no-op returning { dropped: false, reason: 'absent' } — no throw. Check `reason` in a sweep.
+const ref = { namespace: 'active-daily', segment: oldDay };
 
-```jsonc
-// Lifecycle rule on the bucket — expire the daily buckets' objects.
-{
-  "Rules": [
-    {
-      "ID": "expire-daily-audience-buckets",
-      "Status": "Enabled",
-      "Filter": { "Prefix": "segments/active-daily/" }, // your cold key prefix for that family
-      "Expiration": { "Days": 35 }                   // NOTE: longer than your retention window
-    }
-  ]
+// Look before you leap — reports the generations it WOULD delete, changes nothing.
+const preview = await store.dropSegment(ref, { confirmSegment: ref.segment, dryRun: true });
+// `wouldDelete` is unbounded — it lists every generation still in Cold, and a segment compacted repeatedly
+// without the daemon's generation GC accumulates them. Log the count and a sample, not the whole array.
+const gens = preview.wouldDelete ?? [];
+console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join(', ')}${gens.length > 10 ? ' …' : ''}`);
+
+// Then do it.
+const result = await store.dropSegment(ref, { confirmSegment: ref.segment });
+// → { dropped: true, warmRowsDeleted: 140, generationsDeleted: [0, 1],
+//      generationsRemaining: [], cryptoShredded: false }
+```
+
+Then the whole retention job is a loop, and the dangerous part is inside the library:
+
+```ts
+for await (const rec of registry.list('active-daily')) {
+  if (rec.segment >= cutoffDay) continue;              // ISO dates sort lexicographically
+  const ref = { namespace: rec.namespace, segment: rec.segment };
+  const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
+  // Non-empty means bytes survived — a compaction already in flight staged one more object after the
+  // tombstone. The segment reads as empty either way, so this is a billing leak, not a correctness one;
+  // re-run to collect it (a running compaction daemon also will).
+  if (res.generationsRemaining.length > 0) {
+    console.warn(`${ref.segment}: ${res.generationsRemaining.length} generation(s) not reclaimed`);
+  }
 }
 ```
 
-> ⚠️ **A lifecycle rule on its own is not enough, and on its own it breaks reads.** The registry still holds a
-> row for that segment whose `currentGen` names the object the rule just deleted. That is precisely the state
+**`confirmSegment` is a typo guard, not an authorization.** In the loop above the same value appears twice, so
+it protects nothing — that is what `dryRun` is for. Run the sweep with `dryRun: true` first and log what it
+would take; a retention bug you can read in a log is worth more than one you find in a bucket.
+
+### Why the order inside it matters, and why you should not hand-roll it
+
+`dropSegment` does Warm → registry → Cold, and each position is load-bearing:
+
+1. **Warm first.** A tombstoned segment reads Cold as empty, but Warm is consulted *separately and earlier*, so
+   a tombstone with live Warm deltas would still answer `true` for ids in those deltas.
+2. **Registry second.** After the tombstone nothing resolves a generation, so no reader can reach for bytes
+   about to disappear.
+3. **Cold last, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
+   empty and is *correct*, so a failure part-way through leaks **bytes, not correctness** — and re-running
+   collects the remainder. The sweep repeats because a compaction that was already in flight when the tombstone
+   landed still finishes *staging* a generation, built from data it read beforehand: its commit fails on the
+   voided lease, but the object survives and holds the full effective set. **Check `generationsRemaining`** —
+   non-empty means bytes are still there and the drop should be repeated. A running compaction daemon also
+   collects them, since `gcOrphanGenerations` takes every generation of a tombstoned segment.
+
+Two limits worth knowing before you automate it:
+
+- **Writes must have stopped.** Nothing prevents a Warm write *after* step 1. The drop makes a second Warm pass
+  after the tombstone, which converges for anything in flight — but a writer that keeps writing keeps
+  resurrecting the segment, and compaction will not reap those rows (it refuses a destroyed segment).
+- **"Reads as empty" needs a clock.** The `coldGenTtlMs` bound below applies to a reader whose cold source has a
+  clock, a registry, *and* a positive TTL. Built without a clock, or with `coldGenTtlMs: 0` ("pin forever"), a
+  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely.
+
+> ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
+> the registry still points at them, which is exactly the state
 > [`checkConsistency()`](disaster-recovery.md) reports as **`missing-cold-generation`** — the torn-restore
-> failure the DR guide tells you not to serve traffic on. You would be manufacturing it on purpose, daily.
+> failure the DR guide says not to serve traffic on.
 >
-> **It is also intermittent, which is worse than a clean break.** A read checks the hot LRU before it touches
-> cold, so chunks still cached answer correctly while chunks that were never cached — or have since been
-> evicted, or any read after a restart or a new deploy — raise `NotFoundError`. It will look fine in testing
-> and start failing later, and the error resembles a transient cloud fault rather than a configuration bug.
-
-**So the rule is: the pointer goes first, the bytes go second.**
-
-```ts
-// A scheduled job, for each bucket older than the window:
-// 1. Remove the registry row FIRST — after this, nothing resolves a generation for the segment,
-//    so no reader can reach for bytes that are about to disappear.
-await registry.delete({ namespace: 'active-daily', segment: oldDay });
-// 2. The lifecycle rule reaps the now-orphaned objects on its own schedule.
-```
-
-Set the lifecycle `Days` **longer than your retention window** so the pointer is always removed before the bytes
-— if the rule wins the race you are in the torn state until the job next runs. And if you need the erasure
-guarantee as well as the disposal, crypto-shred (`destroySegment`, §9) *before* removing the row: shredding makes
-the bytes unreadable everywhere including backups, which a bucket deletion does not.
-
-Combined with the daily-bucket pattern above, that pair — registry delete on a schedule, lifecycle rule
-lagging behind it — *is* your TTL.
+> **And it presents intermittently.** A read checks the hot LRU before Cold, so cached chunks answer correctly
+> while uncached or evicted ones raise `NotFoundError`. It passes a warm-process test and starts failing after a
+> restart or a deploy, looking like a transient cloud fault rather than a misconfiguration.
+>
+> A lifecycle rule is still a fine **backstop** for orphans left by a failed `dropSegment` — just set its
+> expiry window comfortably longer than your retention window, so it can never get there first.
 
 A first-class **segment-level retention** feature — a `retentionDays` the compaction daemon enforces — is
 [on the roadmap](../ROADMAP.md#planned--exploring) and not built. If you need it, saying so on an issue is what

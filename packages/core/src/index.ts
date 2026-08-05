@@ -127,8 +127,10 @@ export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
 
 // Crypto-shred erasure (Phase 4e): delete a segment's key → its encrypted Cold bytes are unrecoverable.
-export { destroySegment, eraseNamespace } from './core/erasure';
-export type { EraseDeps, DestroyResult } from './core/erasure';
+// `dropSegment` is the operational sibling: it deletes the objects, so it works on cleartext and actually
+// reclaims the storage — where crypto-shred makes bytes unreadable but leaves them billed.
+export { destroySegment, dropSegment, eraseNamespace } from './core/erasure';
+export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/erasure';
 
 // Denial-of-wallet budget (Phase F, 07 Decision #3 / T3): per-op request ceiling → `BudgetExceededError`.
 export { DEFAULT_BUDGET } from './core/budget';
