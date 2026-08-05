@@ -28,16 +28,29 @@ const ROOT = join(__dirname, '..', '..');
 const flavorReadme = readFileSync(join(ROOT, 'packages/roaring/README.md'), 'utf8');
 const guide = readFileSync(join(ROOT, 'docs/guide/getting-started.md'), 'utf8');
 
-/** Every public method on a real `SegmentHandle`, from the prototype — not from a list someone maintains. */
-function segmentHandleMethods(): string[] {
+/** Public methods on an object's prototype — derived, never a list someone has to remember to update. */
+function publicMethods(target: object): string[] {
+  return Object.getOwnPropertyNames(Object.getPrototypeOf(target))
+    .filter((n) => n !== 'constructor' && !n.startsWith('_'))
+    .filter((n) => typeof (target as unknown as Record<string, unknown>)[n] === 'function');
+}
+
+/**
+ * Every public method a Redis reader could be pointed at: the `SegmentHandle` verbs AND the **store's** own
+ * methods.
+ *
+ * The store half was added when retention shipped, because it exposed a hole in this gate: `EXPIRE` maps onto
+ * `setRetention` / `retireExpired`, which live on the store rather than on a segment — so the derivation that
+ * caught the last two drifts would have watched the wrong prototype and passed while the npm page still said
+ * "there is no TTL". A gate that only covers the shape of the previous mistake is the same problem this file's
+ * header is about.
+ */
+function mappableMethods(): string[] {
   const store = new CloudRoaring({
     warm: new MemoryWarmDriver(),
     cold: new MemoryColdChunkSource(),
   });
-  const handle = store.segment('probe');
-  return Object.getOwnPropertyNames(Object.getPrototypeOf(handle))
-    .filter((n) => n !== 'constructor' && !n.startsWith('_'))
-    .filter((n) => typeof (handle as unknown as Record<string, unknown>)[n] === 'function');
+  return [...new Set([...publicMethods(store.segment('probe')), ...publicMethods(store)])];
 }
 
 /** The guide's "Coming from Redis bitmaps?" section — the authored mapping this README summarises. */
@@ -50,11 +63,11 @@ function guideRedisSection(): string {
 }
 
 describe('published flavor README stays in sync with the shipped API', () => {
-  it('mentions every SegmentHandle method the guide maps a Redis command onto', async () => {
+  it('mentions every public method the guide maps a Redis command onto', async () => {
     // The intersection is the point. The flavor README is deliberately an OVERVIEW, so requiring it to name every
     // method would fight its purpose — but any method the guide presents as *the answer to a Redis command* is, by
     // construction, something a reader arriving from Redis is looking for, and npm is where they arrive first.
-    const methods = segmentHandleMethods();
+    const methods = mappableMethods();
     const redisSection = guideRedisSection();
     const mappedInGuide = methods.filter((m) => new RegExp(`\\b${m}\\b`).test(redisSection));
 

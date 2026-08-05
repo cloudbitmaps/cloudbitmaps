@@ -975,10 +975,18 @@ See [`PRIVACY.md`](../../PRIVACY.md).
 
 ## 13.5 Retention, TTL and pruning — what exists and what doesn't
 
-**There is no TTL.** No per-id expiry, no `expireAfter`, no "auto-prune" flag. An id you `add` stays until
-something removes it, and a segment grows until you prune it. This is a design consequence, not a missing
-feature — see below — but it is the first thing to know, and it means **retention is something you schedule,
-not something you configure.**
+**Retention is per segment, and there is no per-`id` TTL.** Two separate statements, and the difference is the
+whole shape of this section:
+
+- **A segment can expire.** `store.setRetention(ref, { expiresAt })` records when it becomes eligible for
+  retirement, and `store.retireExpired()` is the sweep that acts on it. Both are below.
+- **An individual id cannot.** No `expireAfter`, no per-id age. That is a consequence of the data model, not a
+  missing feature — a bitmap stores ids, not `(id, timestamp)` pairs — and it is explained next.
+- **You schedule the sweep.** The *policy* is configuration; the *heartbeat* is yours, because this library starts
+  no background timer (it has to behave identically in a Lambda, an edge isolate and a long-lived server). The
+  hosting options are listed under [the sweep](#the-sweep--storeretireexpired).
+
+If you arrived here asking "does it support TTL?", the answer is: **for a segment, yes; for an id, no, by design.**
 
 > ⚠️ **Never enable your backend's native row expiry on the Warm table.** DynamoDB TTL, Redis `EXPIRE`,
 > a MongoDB TTL index, a Postgres cleanup job — any of them will **silently lose writes.**
@@ -1060,11 +1068,12 @@ whose window is naturally a calendar boundary.
 
 ### Pruning a segment today — and the honest limits
 
-**`store.dropSegment` is the one you want for a rolling window.** Three levers exist, and they answer
-different questions:
+**`store.dropSegment` is the one you want for a rolling window** — or `retireExpired`, which calls it for you once
+you have recorded a policy. Four levers exist, and they answer different questions:
 
 | | what it does | when |
 |---|---|---|
+| **`store.retireExpired({ … })`** | enumerates the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window** — the usual answer, [below](#the-sweep--storeretireexpired) |
 | **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, deletes its **Warm** rows, deletes its Cold generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
 | `destroySegment(ref, { registry, warm }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Cold bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
 | `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming compaction garbage, not live data |
@@ -1153,7 +1162,9 @@ const result = await store.dropSegment(ref, { confirmSegment: ref.segment });
 //      generationsRemaining: [], cryptoShredded: false }
 ```
 
-Then the whole retention job is a loop, and the dangerous part is inside the library:
+Then the whole retention job is a loop, and the dangerous part is inside the library — though if the cutoff is a
+property of the *segment* rather than of your code, [`setRetention` + `retireExpired`](#recording-the-expiry-on-the-segment-itself)
+is this loop with the decision moved to the writer and the bounds, preview and ledger already built:
 
 ```ts
 for await (const rec of registry.list('active-daily')) {
@@ -1262,10 +1273,123 @@ malformed policy reading as "never expires" on a segment someone believes is exp
 silence that costs a compliance commitment. And cancelling is its **own verb**, because "never expire" passed
 into the setter as a magic value is how a typo becomes a deletion.
 
-> **The sweep is the next piece.** Recording a policy is inert until something acts on it: `retireExpired`, which
-> enumerates the registry, selects the segments whose `expiresAt` has passed and retires each through
-> `dropSegment` — and which you schedule yourself. Until then the loop earlier in this section is still what does
-> the retiring; a policy simply moves the *decision* out of it.
+### The sweep — `store.retireExpired()`
+
+A policy is inert until something acts on it. `retireExpired` enumerates the registry, selects the segments whose
+`expiresAt` has passed, and retires each one **through `dropSegment`** — so the Warm → registry → Cold ordering,
+the re-sweep for a generation staged by an in-flight compaction, and the `generationsRemaining` report all come
+from one implementation instead of two.
+
+```ts
+const swept = await store.retireExpired({ namespace: 'active-daily' });
+// → { scanned, eligible, retired, tombstonesPurged, limited, dryRun, entries }
+```
+
+**It is a call, not a daemon.** Nothing in this library schedules itself, and that is a deliberate limit rather
+than an unfinished feature: the same code has to behave identically in a Lambda, an edge isolate and a long-lived
+server, and a timer that only works in one of those is worse than none. **You own the heartbeat.** Any of these is
+a correct answer:
+
+| Where you already run things | How to run the sweep |
+|---|---|
+| **AWS Lambda** | an EventBridge (CloudWatch Events) schedule → a handler that builds the store and calls `retireExpired` |
+| **Kubernetes** | a `CronJob`, or the compaction `Deployment` with `CR_RETIRE=1` |
+| **ECS / Fargate** | a scheduled task, or the compaction service with `CR_RETIRE=1` |
+| **A plain VM / container** | `cron` calling a one-shot script, or `compact-segments` in `loop` mode with `CR_RETIRE=1` |
+| **A job queue you already have** | a recurring job |
+
+> ⚠️ **Run the sweep from ONE process.** It has no shard option (compaction does), so N replicas of a sharded
+> compaction Deployment would each sweep the *whole* registry and contend over the same segments. Either put
+> `CR_RETIRE=1` on a single replica / a `CronJob`, or call `retireExpired` from a job that runs once.
+
+**Once a day is enough** for daily buckets — retention windows are measured in days, so an hourly sweep just
+re-scans the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you
+want the deletion to feel.
+
+The bundled `compact-segments` CLI can run it in the same process as compaction, opt-in:
+
+```bash
+CR_COMPACT_ROOT=/data CR_COMPACT_MODE=loop CR_RETIRE=1 CR_RETIRE_DRY_RUN=1 compact-segments
+```
+
+The sweep runs on **its own interval** (`CR_RETIRE_INTERVAL_MS`, default daily), not the compaction one — a
+compaction loop ticks every 30 s, and sweeping at that cadence would re-scan the whole registry 2,880 times a day.
+On DynamoDB that is a billed full-table Scan each time, competing with your hot path for read capacity.
+
+It is a **separate phase after** the compaction cycle, not part of it: compaction's job is to make a segment
+cheap, retirement's is to delete it, and a destructive step running implicitly inside a maintenance cycle is the
+wrong default for someone who just wanted their Warm tier drained. Off unless you set `CR_RETIRE=1`.
+
+**Start with `dryRun`.** In a loop `dropSegment`'s `confirmSegment` guard protects nothing (it is the same
+variable twice), so the sweep-level preview is the real safety net:
+
+```ts
+const preview = await store.retireExpired({ namespace: 'active-daily', dryRun: true });
+// `wouldRetire`, not `retired` — `retired` counts actual deletions and is 0 in a dry run, deliberately, so a
+// dashboard summing it can never report phantom deletions.
+console.log(`would retire ${preview.wouldRetire} of ${preview.scanned} scanned`);
+```
+
+**Read the ledger.** A per-segment fault is an entry, never an exception — a throw from the middle of a fleet
+sweep would leave you unable to say which segments were retired, having already retired some:
+
+```ts
+for (const e of swept.entries) {
+  if (e.action === 'skipped') console.warn(`${e.segment}: ${e.reason}`);
+  if (e.action === 'retired' && e.result.generationsRemaining.length > 0) {
+    console.warn(`${e.segment}: storage not fully reclaimed — re-run`);
+  }
+}
+if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
+```
+
+**Two bounds worth setting deliberately.** Retirements are **sequential** — roughly 8 round trips each, so at a
+15 ms RTT the default `limit` of 100 is about 22 s of wall clock, comfortably inside a Lambda. `limit` is therefore
+a *time* knob as much as a safety one: raising it to 5,000 after a backlog is ~18 minutes and will time out
+mid-sweep (harmlessly — re-run). And `maxScanSegments` (default 250,000) caps how many registry rows one sweep
+holds resident; past it the call throws `BudgetExceededError` rather than half-sweeping, because a scan that cannot
+fit is not a partial result to be mistaken for a complete one. Narrow with `namespace` before raising it.
+
+Every `skipped` reason is worth an alert, for a different reason:
+
+- **`invalid-policy`** — the row's `expiresAt` cannot be used. That segment is **not expiring**, and someone
+  probably believes it is.
+- **`limit`** — eligible, but this cycle's cap (default **100**) was spent; `limited: true` says the same at the
+  top level. That cap is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it
+  defers rather than drops — re-run to continue.
+- **`policy-changed`** — the live row no longer says "expired": a `clearRetention`, a new `expiresAt`, or someone
+  else's drop landed between the enumeration and this segment's turn. **Not an error** — the sweep re-reads the
+  authoritative row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is
+  already running.
+- **`tombstone-not-empty`** — see below.
+- **`failed: …`** — that one segment's retirement threw. Note that `dropSegment` clears Warm and writes the
+  tombstone *before* the Cold sweep, deliberately, so a fault there leaks **bytes, not correctness**; re-running
+  collects them, and so does a running compaction daemon.
+
+**Tombstones are purged, narrowly.** A retired segment that had a registry row leaves a `destroyed` row behind,
+and one dead row per retired daily bucket accumulates forever — the same registry litter `dropSegment` already
+refuses to create for a row-less accumulator. The sweep deletes those rows too, but only when all three hold,
+because deleting the row is what makes the name writable again:
+
+1. the row carries the **sweep's own retirement stamp**. This is a positive marker `retireExpired` writes on the
+   tombstones it creates, *not* an inference from "destroyed + an expired policy" — that inference was wrong, and
+   dangerously so: a crypto-shred leaves `retention` untouched, so the ordinary ordering (set a 30-day policy, then
+   a right-to-erasure request arrives mid-window and you `destroySegment`) produces a **GDPR tombstone carrying an
+   expired policy**. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence
+   the name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched;
+2. a **grace period** has passed since that stamp (default 24 h). While the row exists every writer refuses the
+   segment, and that is what stops an in-flight write from resurrecting it;
+3. Warm **and** Cold are provably empty for it. If Cold still holds a straggler generation — a compaction that was
+   staging when the tombstone landed — the sweep **collects it first** (`gcOrphanGenerations` takes every
+   generation of a destroyed row, and nothing else would ever call it for a tombstoned segment), then purges. Only
+   if the storage still cannot be proven gone does the row stay, with `tombstone-not-empty`: without it
+   `gcOrphanGenerations` can no longer see the segment at all, and live Warm deltas would read as a fresh
+   accumulator holding exactly the ids the retirement was meant to remove.
+
+Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
+the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
+`0` would have to mean "purge immediately" here while `coldGenTtlMs: 0` in this same library means "pin forever",
+and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 
 ## 14. Export / eject your data
 
@@ -1469,6 +1593,7 @@ Your operations carry over one-for-one:
 | `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
 | `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
+| `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt) |
 
 **And one operation Redis has that needed building: `SETBIT` returning the prior bit.** That return value is not a
 convenience — it is what makes a per-recipient *"have I already sent to this user?"* claim exactly-once when two

@@ -148,6 +148,23 @@ export {
 } from './core/retention';
 export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/retention';
 
+// The retention sweep: retire every segment whose policy expired, by delegating to `dropSegment` (the Warm →
+// registry → Cold ordering is load-bearing and lives there). A call, never a daemon — the operator owns the
+// heartbeat that runs it.
+export {
+  retireExpired,
+  DEFAULT_RETIRE_LIMIT,
+  DEFAULT_TOMBSTONE_GRACE_MS,
+} from './core/retention-sweep';
+// The one bounded drain of `registry.list()`, shared by the consistency scan and the retention sweep — exported
+// because a caller writing their own fleet-wide admin pass needs the same ceiling rather than a third copy.
+export { drainRegistry, validateMaxScanSegments } from './core/registry-scan';
+export type {
+  RetireExpiredOptions,
+  RetireExpiredResult,
+  RetireEntry,
+} from './core/retention-sweep';
+
 // Denial-of-wallet budget (Phase F, 07 Decision #3 / T3): per-op request ceiling → `BudgetExceededError`.
 export { DEFAULT_BUDGET } from './core/budget';
 export type { Budget, BudgetOption } from './core/budget';

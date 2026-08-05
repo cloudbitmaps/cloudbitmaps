@@ -324,6 +324,8 @@ new CloudRoaring({
 |---|---|
 | `store.compact(ref, { owner })` | fold Warm deltas into a fresh Cold generation, in-process |
 | `store.dropSegment(ref, { confirmSegment, dryRun? })` | retire a segment and reclaim its storage — Warm rows, tombstone, then every Cold generation. `dryRun` previews |
+| `store.setRetention(ref, { expiresAt })` · `getRetention` · `clearRetention` | record **when a segment becomes eligible for retirement** (an absolute instant you set — per segment, never per id) |
+| `store.retireExpired({ namespace?, limit?, dryRun? })` | the **retention sweep**: retire everything whose expiry has passed, through `dropSegment`. A call you schedule, not a daemon — bounded, previewable, returns a per-segment ledger |
 | `store.eraseSubject(id, { owner, namespace })` | GDPR Art. 17 — remove an id everywhere + physical purge + erasure ledger |
 | `store.subjectReport(id, { namespace })` | GDPR Art. 15 — which segments an id is in |
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
@@ -331,8 +333,9 @@ new CloudRoaring({
 
 **Out-of-process** free functions (wire their own deps — for daemons, CLIs, seed jobs):
 `bulkLoadCrbmGeneration` (seed a generation), `compactSegment` / `runCompactionCycle` (compaction),
-`destroySegment` / `eraseNamespace` (crypto-shred), `dropSegment` (retire + reclaim storage). The
-`compact-segments` CLI wraps the compaction path.
+`destroySegment` / `eraseNamespace` (crypto-shred), `dropSegment` (retire + reclaim storage),
+`setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention` (the policy) and `retireExpired` (the
+sweep). The `compact-segments` CLI wraps the compaction path, and its opt-in `CR_RETIRE=1` phase wraps the sweep.
 
 ### A durable alternative to Redis bitmaps
 

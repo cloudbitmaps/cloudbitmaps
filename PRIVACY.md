@@ -97,17 +97,27 @@ prefer **GOVERNANCE** mode where erasure must remain possible.
 
 ## Retention & data minimization
 
-The library does not age data out for you — segments grow until you prune them, and "cheap to keep forever" is
-a storage-limitation anti-pattern if the data is personal. **Retention policy is yours.** Practical patterns:
+The library will age a **segment** out for you once you tell it when to — but it will not schedule that for you,
+and it will never age out an individual **id** (a bitmap stores ids, not timestamps). "Cheap to keep forever" is a
+storage-limitation anti-pattern if the data is personal, so: **the policy is yours to set, the heartbeat is yours
+to run, and the deletion is ours to perform correctly.** Practical patterns:
 
-- **Rolling windows** (e.g. "active this week"): keep N daily sub-segments, union them for reads, and drop the
-  oldest wholesale — turning retention into cheap whole-segment disposal, not per-bit aging.
-- **Scheduled compaction** enforces any tombstones you've written for aged-out members within your window.
+- **A per-segment expiry** — `store.setRetention(ref, { expiresAt })` records when a segment becomes eligible for
+  retirement, and `store.retireExpired()` retires every expired segment (through `dropSegment`, so the ordering
+  and the storage reclamation below are inherited rather than reimplemented). The expiry is an absolute instant
+  the writer sets; the sweep is a call **you** schedule (EventBridge, a CronJob, cron, a queue job), because this
+  library starts no background timer. Bounded per cycle, previewable with `dryRun`, and it returns a per-segment
+  ledger you should inspect — an entry can say a segment's storage was not fully reclaimed.
+- **Rolling windows** (e.g. "active this week"): keep N daily sub-segments, union them for reads, and let the
+  policy above retire the oldest wholesale — turning retention into cheap whole-segment disposal, not per-bit aging.
+- **Compaction physically applies tombstones** you have written for aged-out members within a window. Note it does
+  **not** enforce retention and never did — that is the sweep's job, and the two are deliberately separate calls.
 - Surface segment age/size via the **metrics sink** so unbounded growth is visible, not silent.
 
 **Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
 
-- **`store.dropSegment(ref, { confirmSegment })` is the retention lever** — and its result must be inspected, not
+- **`store.dropSegment(ref, { confirmSegment })` is the retention primitive**, and `setRetention` +
+  `retireExpired` is the policy-driven form that calls it — and its result must be inspected, not
   assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones the segment, deletes
   its Warm rows and deletes **every Cold generation** — so the storage is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
@@ -148,8 +158,12 @@ locked Cold object *cannot* be deleted before its retention date by anyone (not 
    is preserved. **`dropSegment` matters most here**: it is the only call that deletes the bytes a hold exists to
    protect. In COMPLIANCE mode Object Lock will refuse the delete, so the drop reports the generation as not
    deleted rather than silently succeeding — but the tombstone is still written, so the segment reads as empty
-   while the locked bytes remain. **Exclude held segments from your retention sweep explicitly**; do not rely on
-   Object Lock to be the guard.
+   while the locked bytes remain. **Do not rely on Object Lock to be the guard**, and note how exclusion works
+   today: `retireExpired` has **no exclusion predicate**, so a held segment must either *never carry a retention
+   policy*, or have it removed with `clearRetention` for the duration of the hold and re-set afterwards. Recording
+   the hold itself is free — any key other than `expiresAt` in the row's `retention` metadata is yours and survives
+   both `setRetention` and `clearRetention`, so `{ legalHold: 'case-1234' }` is a durable marker; it is simply not
+   yet something the sweep reads. (An `exclude` predicate is under consideration; say so on an issue if you need it.)
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 
@@ -182,8 +196,8 @@ segment names for sensitive segments (keeping the human label in your own classi
 | **Erasure** | `remove` (logical), compaction (physical), `destroySegment`/`eraseNamespace` (crypto-shred) | run compaction within your SLA; choose crypto-shred under WORM/backups; classify what needs erasing |
 | **Residency** | region-agnostic drivers; you choose every location | wire region-correct drivers; run compute in-region; assess transfers |
 | **Classification** | opaque handling; a place to keep sensitive segments encrypted + audited | classify your segments (the library can't infer sensitivity) |
-| **Retention** | scheduled compaction; rolling-window pattern | set and enforce retention windows |
-| **Legal hold** | Object Lock guidance (the enforced mechanism; no in-library flag) | place holds via Object Lock; exclude held segments from compaction/erasure; decide precedence |
+| **Retention** | per-segment `expiresAt` + `retireExpired` (bounded, previewable, ledgered); rolling-window pattern | set the policy per segment; **schedule the sweep yourself** and alarm on its ledger |
+| **Legal hold** | Object Lock guidance (the enforced mechanism; no in-library flag, and no sweep-level exclusion — see above) | place holds via Object Lock; keep a held segment out of the retention sweep by not giving it a policy; decide precedence |
 | **Accountability** | `IAuditSink` (publish/compact/erase events) | route it to durable, append-only storage; keep your Art. 30 record |
 | **Telemetry** | **none** — no phone-home | (nothing — there is nothing to disable) |
 
@@ -213,7 +227,7 @@ Map CloudBitmaps' processing onto the categories a record of processing needs:
 | Categories of data subjects / data | your IDs' subjects; membership (possibly special-category) |
 | Recipients | none external to your infrastructure (no sub-processor) |
 | Transfers | any cross-region driver/compute topology *you* configure |
-| Retention | your per-segment policy (enforced via scheduled compaction / rolling windows) |
+| Retention | your per-segment policy — `setRetention(ref, { expiresAt })`, enforced by a `retireExpired` sweep **you schedule** |
 | Security measures | AES-256-GCM at rest, crypto-shred erasure, audit sink, your access controls |
 
 ---

@@ -42,8 +42,14 @@ Not a drop-in replacement, and the two limits are load-bearing rather than footn
    capacity, and IOPS/CPU/latency headroom rather than an invoice line on instance-priced stores (ElastiCache,
    RDS, Atlas).
 
-There is no TTL; a dated segment plus dropSegment is the retention mechanism, and enabling a backend's native
-row expiry on the warm table is a data-loss footgun because warm rows are un-compacted deltas. No seed step is
+Retention is per segment and built in: setRetention(ref, {expiresAt}) records when a segment becomes eligible
+for retirement, and retireExpired() is the sweep that acts on it, retiring each expired segment through
+dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
+because compaction rewrites every basis such a duration could use. The sweep is a function you schedule -- this
+library starts no timer, so the same code behaves identically in a Lambda, an edge isolate and a long-running
+server. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id timestamp costs more than the
+compression saves. Never enable a backend's native row expiry on the warm table -- a data-loss footgun, because
+warm rows are un-compacted deltas. No seed step is
 required — a segment with no cold generation and no registry row is fully functional — and compaction is a cost
 optimization, never a correctness requirement.
 

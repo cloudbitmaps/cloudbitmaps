@@ -271,9 +271,11 @@ npm audit signatures</code></pre>
             </table>
           </div>
           <p class="tpanel-foot">
-            <span class="label">No TTL, by design</span> There is no per-id expiry, because a bitmap stores ids
+            <span class="label">No per-id TTL, by design</span> A <em>segment</em> can expire — record
+            <span class="m">setRetention(ref, { expiresAt })</span> and a <span class="m">retireExpired()</span>
+            sweep retires it, on a schedule you own. An individual <em>id</em> cannot, because a bitmap stores ids
             and not <span class="m">(id, timestamp)</span> pairs — an expiry per id costs 4&ndash;8 bytes each
-            and takes the compression with it. Retention is a segment you drop, not a bit that ages.
+            and takes the compression with it. Retention is a segment that expires, not a bit that ages.
           </p>
         </div>
       </section>
@@ -287,10 +289,11 @@ npm audit signatures</code></pre>
            there is no per-user expiry bookkeeping at all. That is a genuinely nicer answer than TTLs, not a
            consolation for lacking them — which is why it leads. -->
       <section id="retention">
-        <h2>Retention without TTLs</h2>
+        <h2>Retention: a segment that expires</h2>
         <p class="lede">
           Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
-          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set.
+          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. The old bucket
+          retires itself once you record when it should — see <span class="m">setRetention</span> below.
         </p>
         <div class="prov">
           <div class="tpanel">

@@ -18,8 +18,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - **`store.setRetention(ref, { expiresAt })` — record when a segment becomes eligible for retirement**, plus
   `getRetention` and `clearRetention` (and `setSegmentRetention` / `getSegmentRetention` /
-  `clearSegmentRetention` / `readRetentionPolicy` / `validateRetentionPolicy` / `MIN_EXPIRES_AT_MS` as free
-  functions for a scheduler that holds only a registry driver).
+  `clearSegmentRetention` / `readRetentionPolicy` / `MIN_EXPIRES_AT_MS` as free functions for a scheduler that
+  holds only a registry driver).
 
   This is **one registry write and nothing else**: nothing is deleted, and no timer starts. It moves the
   retention *decision* from the sweeper — which otherwise has to know that `active-daily` keeps 30 days and
@@ -40,7 +40,74 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   silently reading as "never expires". Cancelling is its own verb for the same reason — "never expire" as a magic
   value passed to the setter is how a typo becomes a deletion.
 
-  Nothing acts on a policy yet; `retireExpired` is the sweep, and it lands in the next change of this stack.
+- **`store.retireExpired({ … })` — the retention sweep.** Enumerates the registry, selects the segments whose
+  `expiresAt` has passed, and retires each one **through `dropSegment`**, so the Warm → registry → Cold ordering,
+  the re-sweep for a generation staged by an in-flight compaction, and the `generationsRemaining` report come from
+  one implementation rather than two. Also available as the free function `retireExpired(deps, { now, … })` for a
+  worker that wires its own drivers, and as an opt-in phase of the `compact-segments` CLI (`CR_RETIRE=1`, plus
+  `CR_RETIRE_LIMIT` / `CR_RETIRE_DRY_RUN` / `CR_RETIRE_TOMBSTONE_GRACE_MS`).
+
+  **It is a call, not a daemon.** Nothing here schedules itself — the same code has to behave identically in a
+  Lambda, an edge isolate and a long-lived server, and a timer that only works in one of those is worse than none.
+  You run it from the heartbeat you already have (EventBridge, a `CronJob`, `cron`, a queue job); the guide's
+  §13.5 lists the shapes. Once a day is enough for daily buckets.
+
+  Three things make it safe to point at a fleet: **`dryRun`** at the sweep level (in a loop `dropSegment`'s
+  `confirmSegment` guard is the same variable twice, so it protects nothing), a per-cycle **`limit`** (default 100)
+  charged on **attempts** — not successes, because `dropSegment` deletes Warm and writes the tombstone *before*
+  sweeping Cold, so counting only successes let a partial cold outage march through an entire fleet with the cap
+  never engaging — and a **ledger** instead of an exception, because a throw from the middle of a fleet sweep leaves
+  the caller unable to say which segments were retired after having already retired some. `entries` names every
+  outcome: `invalid-policy` (that segment is *not* expiring and someone may believe it is), `policy-changed` (a
+  `clearRetention` landed mid-sweep — the sweep re-reads the authoritative row immediately before every deletion,
+  so cancelling an expiry works on a sweep already in flight), `tombstone-not-empty`, `failed: …`, and a
+  retirement that faulted *after* the tombstone is reported as `retired` with a `fault` rather than as skipped,
+  because that segment really is retired.
+
+  It also **purges the tombstone rows its own retirements leave**, which otherwise accumulate one dead row per
+  retired bucket forever — the same registry litter `dropSegment` already refuses to create for a row-less
+  accumulator. Attribution is a **positive marker the sweep stamps on its own retirements**, never an inference
+  from "destroyed + an expired policy": a crypto-shred leaves `retention` untouched, so the ordinary ordering (set
+  a 30-day policy, then a right-to-erasure request arrives mid-window and you `destroySegment`) produces a GDPR
+  tombstone carrying an expired policy, and deleting that row would destroy the local attestation for an Art. 17
+  execution and un-fence the name. Purging additionally waits out `tombstoneGraceMs` (default 24 h; `purgeTombstones:
+  false` keeps every tombstone) and requires Warm **and** Cold to be provably empty — collecting a straggler
+  generation itself first, since nothing else ever would for a tombstoned segment.
+
+  Retirement is deliberately **not** a phase of `runCompactionCycle`: compaction's job is to make a segment cheap
+  and retirement's is to delete it, and a destructive step running implicitly inside a maintenance cycle is the
+  wrong default for someone who just wanted their Warm tier drained.
+
+### Fixed
+
+- **A compaction worker that lost the generation-0 write race could make an encrypted segment permanently
+  unreadable — and delete the only readable copy.** Present in every release to date; found by an adversarial review
+  of the retention work and reproduced independently three times.
+
+  Two workers bootstrapping the same segment both mint a DEK, and generation 0 is write-once, so only one of them
+  writes the object. The loser then **skips `verifyGeneration`** (a full re-read of an object it did not write), so
+  it is *likely* to reach the registry first — and it published **its own** wrapped DEK. The winner subsequently
+  saw `currentGen: 0`, concluded its publish had landed, and purged the Warm rows that held the only readable copy.
+  Result: generation 0 encrypted under the winner's key while the row carries the loser's, reads failing
+  `AEAD authentication failed` under an **active** pointer, and `checkConsistency` unable to see it because the
+  object is present.
+
+  A worker that did not write the object no longer publishes key material at all (adopting a *cleartext* generation
+  stays allowed — there is no key to get wrong, and it is what keeps a crashed bootstrap's orphan object from
+  blocking the segment forever), and a worker only purges when the wrappings on the row are the ones it wrote.
+
+  **If you run more than one compaction worker against encrypted segments**, a segment whose reads now fail with
+  `IntegrityError` / `AEAD authentication failed` may be an instance. The generation is unrecoverable — its key was
+  never stored — so the remedy is to re-seed that segment from your source of truth.
+
+- **A bulk-load with a registry but no keystore wrote a cleartext generation onto an encrypted segment, and a later
+  crypto-shred then issued a false compliance receipt.** `destroySegment` decides `cryptoShredded` from the
+  *presence* of wrapped DEKs on the row, not from whether any generation is actually encrypted — so shredding such a
+  segment emitted `segment.erase`, the event documented as "these bytes are unreadable everywhere, backups
+  included", over bytes that are plaintext and remain readable from any copy. `bulkLoadCrbmGeneration` now fails
+  fast with `KeyUnavailableError`, matching the check compaction already performed. **If your audit trail contains
+  `segment.erase` events, they are only as strong as the encryption of the generations they cover** — worth a
+  spot-check if you have ever bulk-loaded without passing the keystore.
 
 ### Changed
 
