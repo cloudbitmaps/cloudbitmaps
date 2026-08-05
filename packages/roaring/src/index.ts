@@ -469,7 +469,7 @@ export class CloudRoaring {
   private compactionDeps(): CompactionDeps {
     if (this.coldDriver === undefined) {
       throw new UnsupportedError(
-        'compact/eraseSubject/checkConsistency need the store built with a raw cold driver (IColdDriver), not ' +
+        'compact/dropSegment/eraseSubject/checkConsistency need the store built with a raw cold driver (IColdDriver), not ' +
           'a pre-built ColdChunkSource — or call the compactSegment/runConsistencyCheck free functions with ' +
           'explicit deps',
       );
