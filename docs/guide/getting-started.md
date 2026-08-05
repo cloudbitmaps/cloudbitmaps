@@ -953,31 +953,41 @@ than a plain list. So per-id aging isn't deferred work, it's incompatible with t
 
 ### The pattern that gives you the same outcome
 
-Put time in the **segment name** instead of in the data, and let set algebra do the window:
+Put time in the **name** instead of in the data, and let set algebra do the window. Use a **namespace per
+family and the date as the segment** — not one long name:
 
 ```ts
+const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' });
+
 // Write into a bucket per day.
-await store.segment(`active:${today}`).addMany(idsSeenToday);
+await bucket(today).addMany(idsSeenToday);
 
 // "Active in the last 7 days" — a union over the buckets you still keep.
-const days = last7Days.map((d) => store.segment(`active:${d}`));
+const days = last7Days.map(bucket);
 for await (const id of days[0].union(days.slice(1))) { /* … */ }
 
 // Retention = dropping whole buckets, not aging bits.
 ```
 
+> **Names are validated: `/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/`, for both the segment and the namespace.** So
+> the tempting `active:2026-08-01` is **rejected** — no colons. Beyond legality, the namespace split is the
+> better shape anyway: `registry.list('active-daily')` enumerates exactly that family's buckets, which is the
+> list a retention sweep wants, and `eraseNamespace` can retire the whole family at once. One flat
+> `active-2026-08-01` is legal too, but then finding "every daily bucket" means string-matching names.
+
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
 [the operations table](#the-operations). If a 7-way union per read is too much, materialize the window instead:
-`unionInto` a rolling `active:7d` segment once a day, and read that.
+`unionInto` a rolling `active-7d` segment once a day, and read that.
 
 **The best case for this pattern is a dedup or "already sent" window, where the bucket key _is_ the
 semantics.** Suppose you send a daily wave and a user must not be sent to twice in the same local day. Then the
 key is the window:
 
 ```ts
-const key = `sent:daily:${localDay}`;                    // the bucket IS the re-eligibility rule
-if (await store.segment(key).has(userId)) return;        // already sent today
-await store.segment(key).add(userId);
+// The bucket IS the re-eligibility rule. `sent-daily` groups the family; the date names the bucket.
+const sent = store.segment(localDay, { namespace: 'sent-daily' });
+if (await sent.has(userId)) return; // already sent today
+await sent.add(userId);
 ```
 
 There is **no per-user expiry bookkeeping at all** — no timers, no sweep, no 9-million-entry TTL table. A user
@@ -1023,7 +1033,7 @@ layer, costs nothing to operate.
     {
       "ID": "expire-daily-audience-buckets",
       "Status": "Enabled",
-      "Filter": { "Prefix": "segments/active:" },   // your cold key prefix
+      "Filter": { "Prefix": "segments/active-daily/" }, // your cold key prefix for that family
       "Expiration": { "Days": 35 }                   // NOTE: longer than your retention window
     }
   ]
@@ -1046,7 +1056,7 @@ layer, costs nothing to operate.
 // A scheduled job, for each bucket older than the window:
 // 1. Remove the registry row FIRST — after this, nothing resolves a generation for the segment,
 //    so no reader can reach for bytes that are about to disappear.
-await registry.delete({ segment: `active:${oldDay}` });
+await registry.delete({ namespace: 'active-daily', segment: oldDay });
 // 2. The lifecycle rule reaps the now-orphaned objects on its own schedule.
 ```
 
