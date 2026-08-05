@@ -14,6 +14,28 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **`store.dropSegment(ref, { confirmSegment, dryRun? })` — retire a segment and actually reclaim its storage.**
+  Tombstones the registry row, deletes the Warm rows, deletes **every** Cold generation. Works on a cleartext
+  segment, and on an encrypted one it *also* discards the DEK, so it is a strict superset of crypto-shred there.
+  Afterwards the segment **reads as empty** rather than erroring.
+
+  **This closes a real hole.** `destroySegment` crypto-shreds — the bytes become unreadable everywhere including
+  backups, which no object deletion can achieve — but it leaves the objects in your bucket, still billed, and it
+  *requires* encryption. `gcOrphanGenerations` only collects superseded generations. So until now there was no
+  supported way to delete a segment and stop paying for it, and the obvious workaround (an object-store lifecycle
+  rule on the prefix) deletes the bytes while the registry still points at them — the `missing-cold-generation`
+  torn state, presenting **intermittently** because a read consults the hot cache before Cold.
+
+  **The order is the contract, and it is why this is a library function rather than a recipe:** Warm rows first
+  (a tombstone with live Warm deltas would still answer `true`), then the registry pointer (after which nothing
+  resolves a generation), then the Cold objects, best-effort — so a partial failure leaks bytes rather than
+  correctness, and re-running collects the rest. Also `dryRun`, because `confirmSegment` guards a typed literal
+  and does nothing in the loop this function exists for.
+
+  The free function `dropSegment(ref, { registry, warm, cold }, …)` is exported for out-of-process callers.
+
 ### Documentation
 
 - **Retention, TTL and pruning are now documented — including a footgun that could lose data silently.**

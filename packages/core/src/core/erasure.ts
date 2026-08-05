@@ -13,7 +13,7 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
-import type { ChunkRef, IRegistryDriver, IWarmDriver, SegmentRef } from './ports';
+import type { ChunkRef, IColdDriver, IRegistryDriver, IWarmDriver, SegmentRef } from './ports';
 
 export interface EraseDeps {
   readonly registry: IRegistryDriver;
@@ -146,6 +146,143 @@ export async function eraseNamespace(
   // the count keeps the record from over-attesting a destruction that did not happen.
   audit.onEvent({ kind: 'namespace.erase', namespace, segmentsShredded });
   return { destroyed };
+}
+
+/**
+ * Deps for {@link dropSegment}. Adds `cold`, because unlike a crypto-shred this one deletes the objects.
+ */
+export interface DropDeps extends EraseDeps {
+  readonly cold: IColdDriver;
+}
+
+export interface DropResult {
+  readonly segment: string;
+  readonly namespace?: string;
+  /** True iff the segment is now a `destroyed` tombstone (incl. the idempotent already-dropped case). */
+  readonly dropped: boolean;
+  /** Warm rows physically deleted. */
+  readonly warmRowsDeleted: number;
+  /** Cold generations physically deleted, ascending. Empty on a dry run — see {@link DropResult.wouldDelete}. */
+  readonly generationsDeleted: readonly number[];
+  /**
+   * On a dry run, the generations that **would** be deleted. `undefined` on a real run.
+   *
+   * This exists because the confirmation guard the erasure calls use — naming the segment twice — protects a
+   * hand-typed literal and nothing else. In the loop this operation is actually *for*
+   * (`for (const day of expired) drop({segment: day}, {confirmSegment: day})`) the same variable appears twice
+   * and the guard is pure ceremony. A dry run is the guard that still works when a machine is calling.
+   */
+  readonly wouldDelete?: readonly number[];
+  /**
+   * True iff the segment was encrypted and its wrapped DEK(s) were dropped as part of this call — so its bytes
+   * are unreadable *everywhere*, backups included, not merely deleted from the bucket. Deleting an object does
+   * not reach a noncurrent version, a replica, or a PITR snapshot; discarding the key does.
+   */
+  readonly cryptoShredded: boolean;
+  /** `'absent'` (no registry row) or `'already'` (already a tombstone). Absent on a fresh drop. */
+  readonly reason?: string;
+}
+
+/**
+ * **Dispose of a segment: tombstone it, delete its Warm rows, and delete its Cold objects.** Irreversible.
+ *
+ * WHY THIS EXISTS, given {@link destroySegment} already erases. Because `destroySegment` answers a *compliance*
+ * question and this one answers an *operational* question, and they are not the same:
+ *
+ * - `destroySegment` **crypto-shreds** — it discards the key so the bytes are unreadable everywhere including
+ *   immutable backups, which is the only erasure that survives WORM. But it **leaves the objects in the
+ *   bucket**, still billed, and it *requires* encryption because a cleartext segment has no key to discard.
+ * - `dropSegment` **removes the storage**. It works on a cleartext segment, and on an encrypted one it *also*
+ *   drops the DEKs, so it is a strict superset there.
+ *
+ * Before this existed there was no supported way to delete a segment and stop paying for it, and the obvious
+ * workaround — an object-store lifecycle rule on the key prefix — deletes the bytes while the registry still
+ * points at them. That is exactly the `missing-cold-generation` state the DR runbook says not to serve traffic
+ * on, and it surfaces *intermittently*, because a read consults the hot cache before Cold: cached chunks answer
+ * correctly and evicted ones throw. The whole value of this function is that the ordering below cannot be got
+ * wrong by a caller.
+ *
+ * **THE ORDER IS THE CONTRACT — Warm, then registry, then Cold.** Each step is placed against a specific way
+ * the other orders break:
+ *
+ * 1. **Warm first.** A `destroyed` row makes Cold read as empty, but Warm is consulted *separately* and earlier
+ *    on the read path — so a tombstone with live Warm deltas still answers `true` for ids in those deltas.
+ *    (This is why {@link shredSegment} already orders it this way; the reasoning is inherited, not invented.)
+ * 2. **Registry second.** After the tombstone nothing resolves a generation for this segment, so no reader can
+ *    reach for bytes that are about to disappear.
+ * 3. **Cold last, and best-effort.** Once the pointer is a tombstone the segment reads as empty and is
+ *    *correct*, so a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money
+ *    and are cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the
+ *    choice, leak bytes.
+ *
+ * `confirmSegment` must equal `ref.segment`, matching `destroySegment`/`eraseNamespace`. For an automated
+ * caller that guard is ceremony — use `dryRun` first, which reports what would go without touching anything.
+ */
+export async function dropSegment(
+  ref: SegmentRef,
+  deps: DropDeps,
+  options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
+): Promise<DropResult> {
+  if (options.confirmSegment !== ref.segment) {
+    throw new ValidationError(
+      `dropSegment: confirmSegment must equal the segment name "${ref.segment}" (guard against accidental deletion)`,
+    );
+  }
+  const base = { segment: ref.segment, namespace: ref.namespace };
+
+  if (options.dryRun === true) {
+    const record = await deps.registry.get(ref);
+    const wouldDelete = await listGenerations(deps.cold, ref);
+    return {
+      ...base,
+      dropped: false,
+      warmRowsDeleted: 0,
+      generationsDeleted: [],
+      wouldDelete,
+      cryptoShredded: false,
+      reason: record === null ? 'absent' : record.status === 'destroyed' ? 'already' : undefined,
+    };
+  }
+
+  // Steps 1 and 2, reused wholesale. `allowCleartext` is true because deleting objects does not need a key —
+  // the encryption requirement belongs to crypto-shred, not to disposal.
+  const shred = await shredSegment(ref, deps, true);
+
+  // Step 3. Deliberately after the tombstone and deliberately tolerant: see the ordering note above.
+  const generationsDeleted: number[] = [];
+  for (const generation of await listGenerations(deps.cold, ref)) {
+    try {
+      await deps.cold.delete({ ...ref, generation });
+      generationsDeleted.push(generation);
+    } catch {
+      // Leave it orphaned. The segment already reads as empty, so this is a billing problem, not a
+      // correctness one, and re-running the drop collects whatever was missed.
+    }
+  }
+
+  if (shred.cryptoShredded || generationsDeleted.length > 0) {
+    safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
+      kind: 'segment.erase',
+      namespace: ref.namespace,
+      segment: ref.segment,
+    });
+  }
+
+  return {
+    ...base,
+    dropped: shred.destroyed,
+    warmRowsDeleted: shred.warmRowsDeleted,
+    generationsDeleted,
+    cryptoShredded: shred.cryptoShredded,
+    reason: shred.reason,
+  };
+}
+
+/** Every generation currently present in Cold for a segment, ascending. Tolerates a driver that cannot list. */
+async function listGenerations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+  const generations: number[] = [];
+  for await (const key of cold.list(ref)) generations.push(key.generation);
+  return generations.sort((a, b) => a - b);
 }
 
 /** The shred itself: clear Warm rows, then CAS the registry row to a `destroyed` tombstone with no wrappings. */

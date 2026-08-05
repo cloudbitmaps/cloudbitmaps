@@ -270,13 +270,71 @@ npm audit signatures</code></pre>
             </table>
           </div>
           <p class="tpanel-foot">
-            <span class="label">Not here</span> There is no <span class="m">TTL</span> and no per-id expiry.
-            A bitmap stores ids, not <span class="m">(id, timestamp)</span> pairs, so an expiry per id costs
-            4&ndash;8 bytes each and takes the compression with it. Retention is a segment you drop, not a bit
-            that ages: bucket by day, union the window, dispose of the oldest. The
-            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt" target="_blank" rel="noopener" aria-label="Retention guide (opens in a new tab)">retention section of the guide</a>
-            has the pattern, and the two things about disposal that are easy to get wrong.
+            <span class="label">No TTL, by design</span> There is no per-id expiry, because a bitmap stores ids
+            and not <span class="m">(id, timestamp)</span> pairs — an expiry per id costs 4&ndash;8 bytes each
+            and takes the compression with it. Retention is a segment you drop, not a bit that ages.
           </p>
+        </div>
+      </section>
+
+      <!-- ── RETENTION: THE DEDUP WINDOW ────────────────────────────────────
+           Added because the first real consumer asked for TTL, twice, and then reached for the workaround that
+           corrupts reads (a lifecycle rule alone). The absence of TTL was already stated a few lines up; what was
+           missing was the thing you do instead, spelled out in code, on the page a reader is on when they ask.
+
+           The dedup framing is the strongest version of this: the bucket key IS the re-eligibility rule, so
+           there is no per-user expiry bookkeeping at all. That is a genuinely nicer answer than TTLs, not a
+           consolation for lacking them — which is why it leads. -->
+      <section id="retention">
+        <h2>Retention without TTLs</h2>
+        <p class="lede">
+          Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
+          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">dedup.ts</span><span class="label">No per-user timers</span>
+            </div>
+            <pre class="code-plain"><code><span class="c">// The bucket IS the re-eligibility rule.</span>
+<span class="k">const</span> sent = store.segment(localDay, { namespace: <span class="s">'sent-daily'</span> });
+
+<span class="k">if</span> (<span class="k">await</span> sent.has(userId)) <span class="k">return</span>;  <span class="c">// already sent today</span>
+<span class="k">await</span> sent.add(userId);</code></pre>
+          </div>
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">retire.ts</span><span class="label">One call, ordered correctly</span>
+            </div>
+            <pre class="code-plain"><code><span class="c">// Preview first — dryRun changes nothing.</span>
+<span class="k">await</span> store.dropSegment(ref, {
+  confirmSegment: ref.segment, dryRun: <span class="k">true</span>,
+});
+
+<span class="c">// Tombstone + warm rows + every cold generation.</span>
+<span class="k">await</span> store.dropSegment(ref, {
+  confirmSegment: ref.segment,
+});</code></pre>
+          </div>
+        </div>
+        <p class="note">
+          <strong>Names are validated</strong> —
+          <span class="m">/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/</span>, segment and namespace alike, so the
+          tempting <span class="m">sent:2026-08-01</span> is rejected. The namespace split is the better shape
+          regardless: listing the namespace enumerates exactly that family&rsquo;s buckets, which is the list a
+          retention sweep wants.
+        </p>
+        <p class="note">
+          <strong>Do not reach for an object-store lifecycle rule on its own.</strong> It deletes the bytes while
+          the registry still points at them — the torn state a DR runbook says not to serve traffic on — and it
+          surfaces <em>intermittently</em>, because a read checks the in-process cache before cold storage. It
+          passes a warm-process test and starts failing after a restart.
+          <span class="m">dropSegment</span> exists so the ordering cannot be got wrong: warm rows, then the
+          pointer, then the bytes. A lifecycle rule is a fine backstop for orphans — just give it a longer
+          window than your retention.
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt" target="_blank" rel="noopener" aria-label="Retention guide (opens in a new tab)">The guide has the rest</a>.
+        </p>
+        <div class="tpanel">
           <p class="tpanel-foot">
             The <a href="https://github.com/cloudbitmaps/cloudbitmaps" target="_blank" rel="noopener" aria-label="API reference (opens in a new tab)">API reference</a> is checked against the
             real exports by CI, so it cannot drift from the package.

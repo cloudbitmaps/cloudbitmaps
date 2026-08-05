@@ -28,6 +28,7 @@ import {
   ValidationError,
   collectWithinBudget,
   compactSegment,
+  dropSegment,
   estimateCost,
   groundedReport,
   mapWithConcurrency,
@@ -52,6 +53,7 @@ import type {
   ConsistencyReport,
   CostReport,
   EngineDeps,
+  DropResult,
   EstimateInput,
   ExportManifest,
   ExportOptions,
@@ -676,6 +678,36 @@ export class CloudRoaring {
   async compact(ref: SegmentRef, options: CompactionOptions): Promise<CompactionResult> {
     validateSegmentRef(ref);
     return compactSegment(ref, this.compactionDeps(), options);
+  }
+
+  /**
+   * **Dispose of a segment — tombstone it, delete its Warm rows, delete its Cold objects.** Irreversible.
+   *
+   * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
+   * backups, but still sitting in your bucket and still billed, and it requires encryption), while this one
+   * removes the storage and works on a cleartext segment. On an encrypted segment it does both.
+   *
+   * Pass `{ dryRun: true }` first — it reports the generations it *would* delete and changes nothing. That
+   * matters more than the `confirmSegment` guard for anything automated, because in a loop the guard is the same
+   * variable twice.
+   *
+   * ```ts
+   * for (const day of expiredDays) {
+   *   const ref = { segment: `active:${day}` };
+   *   await store.dropSegment(ref, { confirmSegment: ref.segment });
+   * }
+   * ```
+   *
+   * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
+   * because it has to enumerate and delete generations — a pre-built `ColdChunkSource` only reads.
+   */
+  async dropSegment(
+    ref: SegmentRef,
+    options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
+  ): Promise<DropResult> {
+    validateSegmentRef(ref);
+    const deps = this.compactionDeps(); // same wiring; reuses its UnsupportedError messaging for a bad build
+    return dropSegment(ref, { registry: deps.registry, warm: deps.warm, cold: deps.cold }, options);
   }
 
   /**
