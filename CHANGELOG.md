@@ -14,6 +14,19 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-04
+
+**Retention and dedup.** `dropSegment` closes a spec/implementation divergence that had sat since day one — there
+was no supported way to delete a segment and stop paying for it. `claimMany` closes the one Redis-bitmap capability
+we did not have. And `store.compact` stops leaking storage, which it had been doing silently since it shipped.
+
+**Read this before upgrading if you compact in-process.** `store.compact()` now deletes superseded Cold
+generations. Your S3/GCS/Azure object count for compacted segments will **drop** on the first compaction after
+upgrading — that is the fix, not a fault. It keeps the same one-generation grace window the daemon has always kept,
+so no reader loses a generation it could still be pinned to. If you were relying on old generations lingering for
+manual point-in-time recovery, that was never a documented guarantee and it is now gone: use
+`compactSegment` + your own `gcOrphanGenerations` schedule instead.
+
 ### Added
 
 - **`seg.claimMany(ids)` — atomically claim ids: add them, and get back only the ones that were not already
