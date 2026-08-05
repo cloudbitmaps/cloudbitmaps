@@ -223,6 +223,65 @@ describe('dropSegment', () => {
     expect(result.generationsDeleted).toEqual([]); // ...but the bytes leaked
     await expect(handle(w).has(1)).resolves.toBe(false); // and reads stay benign
   });
+
+  it('does NOT emit `segment.erase` for a cleartext drop — that event means crypto-shred', async () => {
+    // Caught by an adversarial docs review, and it was a real bug: the first version fired on
+    // `cryptoShredded || generationsDeleted.length > 0`, so a cleartext drop emitted the event that four
+    // documents — dashboards.md calls it the compliance *receipt* — define as proof of irreversible destruction.
+    // Deleting an object is weaker than discarding a key: a noncurrent version, a replica or a PITR snapshot
+    // still holds the cleartext. A dashboard built on our own docs would have over-attested.
+    const w = world();
+    await seed(w, [1, 2]);
+    const events: unknown[] = [];
+    const audit = { onEvent: (e: unknown): void => void events.push(e) };
+
+    const result = await dropSegment(SEG, w.deps, { ...CONFIRM, audit });
+
+    expect(result.generationsDeleted).toHaveLength(1); // bytes really went
+    expect(result.cryptoShredded).toBe(false);
+    expect(events).toEqual([]); // ...and claimed nothing about them
+  });
+
+  it('DOES emit `segment.erase` when the drop genuinely crypto-shreds', async () => {
+    // The positive control for the test above. Without it, "no event" could be true because the audit sink is
+    // never called at all, and the assertion above would pass against a `dropSegment` that audits nothing ever.
+    const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await seed(w, [1, 2], keystore);
+    const events: Array<{ kind: string }> = [];
+
+    await dropSegment(SEG, w.deps, { ...CONFIRM, audit: { onEvent: (e) => void events.push(e) } });
+
+    expect(events.map((e) => e.kind)).toEqual(['segment.erase']);
+  });
+
+  it('is only eventually empty to a reader that had already cached the segment', async () => {
+    // The docs said "afterwards the segment reads as empty", full stop. False for up to `coldGenTtlMs`
+    // (default 2s): a resolved generation is cached and decoded chunks sit in the hot LRU, so a store that
+    // touched the segment BEFORE the drop keeps answering from cache. My original tests all passed only because
+    // none of them read first — the blind spot was in the fixture, not the assertion.
+    //
+    // Asserted as a bound rather than a timing: a FRESH store over the same drivers must see empty at once,
+    // which pins the cause on caching rather than on the drop having failed.
+    const w = world();
+    await seed(w, [1, 2, 3]);
+    await expect(handle(w).has(1)).resolves.toBe(true); // warms the snapshot + LRU
+
+    await dropSegment(SEG, w.deps, CONFIRM);
+
+    // Same store: may still answer from cache. Whatever it says, it must not throw.
+    await expect(handle(w).has(1)).resolves.toBeTypeOf('boolean');
+
+    // A reader that never cached it sees the truth immediately — so the data really is gone.
+    const fresh = new CloudRoaring({
+      warm: w.warm,
+      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
+      retry: false,
+    });
+    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
+      false,
+    );
+  });
 });
 
 describe('store.dropSegment (facade)', () => {

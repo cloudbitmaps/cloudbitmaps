@@ -210,10 +210,15 @@ export interface DropResult {
  *    (This is why {@link shredSegment} already orders it this way; the reasoning is inherited, not invented.)
  * 2. **Registry second.** After the tombstone nothing resolves a generation for this segment, so no reader can
  *    reach for bytes that are about to disappear.
- * 3. **Cold last, and best-effort.** Once the pointer is a tombstone the segment reads as empty and is
- *    *correct*, so a failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money
- *    and are cleaned up by re-running; a torn pointer costs correctness and is not self-healing. Given the
- *    choice, leak bytes.
+ * 3. **Cold last, and best-effort.** Once the pointer is a tombstone the segment resolves as empty, so a
+ *    failure part-way through leaves **orphaned bytes, not a wrong answer.** Orphans cost money and are cleaned
+ *    up by re-running; a torn pointer costs correctness and is not self-healing. Given the choice, leak bytes.
+ *
+ * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
+ * resolved generation is cached for `coldGenTtlMs` (default 2 s) and decoded chunks sit in the hot LRU, so an
+ * in-flight reader can answer from cache for up to that window. A fresh store, or any reader that had not
+ * touched the segment, sees empty at once. This is the *same* caching that makes the delete-bytes-first ordering
+ * fail intermittently rather than loudly — it cuts both ways, and the bound is `coldGenTtlMs`, not zero.
  *
  * `confirmSegment` must equal `ref.segment`, matching `destroySegment`/`eraseNamespace`. For an automated
  * caller that guard is ceremony — use `dryRun` first, which reports what would go without touching anything.
@@ -260,7 +265,20 @@ export async function dropSegment(
     }
   }
 
-  if (shred.cryptoShredded || generationsDeleted.length > 0) {
+  // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
+  // deliberately NOT `|| generationsDeleted.length > 0`.
+  //
+  // It read that way in the first draft, and it was wrong in a way that matters. Four documents — including
+  // `docs/guide/dashboards.md`, which calls this event the compliance *receipt* — define `segment.erase` as
+  // proof of an irreversible crypto-shred: bytes unreadable everywhere, backups included. Deleting an object is
+  // a weaker guarantee, because a noncurrent version, a cross-region replica or a PITR snapshot still holds the
+  // cleartext. Emitting one event for both would make a compliance dashboard **over-attest**, which is the one
+  // failure an audit trail exists to prevent.
+  //
+  // Consequence, stated rather than hidden: a **cleartext** drop emits no audit event at all. That is a real gap
+  // in the trail, and the honest fix is a distinct kind (`segment.dispose`) — a public-surface addition, so it
+  // waits for a decision instead of being smuggled in behind an existing name.
+  if (shred.cryptoShredded) {
     safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
       kind: 'segment.erase',
       namespace: ref.namespace,
@@ -278,7 +296,14 @@ export async function dropSegment(
   };
 }
 
-/** Every generation currently present in Cold for a segment, ascending. Tolerates a driver that cannot list. */
+/**
+ * Every generation currently present in Cold for a segment, ascending.
+ *
+ * No error handling on purpose: `IColdDriver.list` is mandatory (not optional in `ports.ts`), so a driver that
+ * cannot list cannot exist — and one that *throws* from `list` should propagate, because a drop that cannot
+ * enumerate what to delete has established nothing and must not report success. (An earlier version of this
+ * comment claimed it "tolerates a driver that cannot list", describing a `try`/`catch` that was never written.)
+ */
 async function listGenerations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
   const generations: number[] = [];
   for await (const key of cold.list(ref)) generations.push(key.generation);
