@@ -213,6 +213,17 @@ move it up.
   objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
 - **Cheaper reads** — a warm-chunk cache and coalesced merge GETs, both scoped so they can't tax the hot
   path.
+- **Segment-level retention** — a `retentionDays` the compaction daemon enforces, so a rolling window prunes
+  itself. Today retention is a scheduled job you write: bucket segments by day, union the window, and dispose of
+  the oldest ([guide](guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt)).
+  Two things make the built-in version more than sugar. First, **disposal is currently incomplete**:
+  `destroySegment` crypto-shreds — the Cold bytes become unreadable everywhere, but they stay in your bucket and
+  you keep paying for them — and `gcOrphanGenerations` only collects *superseded* generations, so **no operation
+  deletes a live segment's objects**. A real retention feature needs that primitive, ordered registry-first so a
+  reader never resolves a pointer to bytes that are already gone. Second, the daemon already has scheduling,
+  discovery, leases and per-segment fault isolation, so it is the right place for it rather than a new moving
+  part. **Per-id TTL is deliberately not on this list** — a bitmap stores ids, not timestamps, and attaching one
+  per id costs more than the compression saves.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
   Worker answering "is id N in segment S?" against a cold generation in R2 is two ranged reads and a decode,
   which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no

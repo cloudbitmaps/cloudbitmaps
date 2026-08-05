@@ -270,6 +270,14 @@ npm audit signatures</code></pre>
             </table>
           </div>
           <p class="tpanel-foot">
+            <span class="label">Not here</span> There is no <span class="m">TTL</span> and no per-id expiry.
+            A bitmap stores ids, not <span class="m">(id, timestamp)</span> pairs, so an expiry per id costs
+            4&ndash;8 bytes each and takes the compression with it. Retention is a segment you drop, not a bit
+            that ages: bucket by day, union the window, dispose of the oldest. The
+            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt" target="_blank" rel="noopener" aria-label="Retention guide (opens in a new tab)">retention section of the guide</a>
+            has the pattern, and the two things about disposal that are easy to get wrong.
+          </p>
+          <p class="tpanel-foot">
             The <a href="https://github.com/cloudbitmaps/cloudbitmaps" target="_blank" rel="noopener" aria-label="API reference (opens in a new tab)">API reference</a> is checked against the
             real exports by CI, so it cannot drift from the package.
           </p>
