@@ -8,11 +8,14 @@ import {
   bulkLoadCrbmGeneration,
   compactSegment,
   destroySegment,
+  clearSegmentRetention,
   readRetentionPolicy,
+  setSegmentRetention,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { UnsupportedError, ValidationError } from '@/core/errors';
+import { UnsupportedError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { CompactionDeps, SegmentRef } from '@/index';
+import type { IRegistryDriver } from '@/core/ports';
 import { randomBytes } from 'node:crypto';
 
 /**
@@ -29,6 +32,32 @@ import { randomBytes } from 'node:crypto';
  *  - **Setting a policy on an accumulator mints the Part-1 null-gen row.** That is what makes the segment
  *    enumerable — and therefore sweepable — without changing a single read.
  */
+
+/** Interpose on the registry's mutating methods to reproduce contention. Mirrors the Part-1 test helper. */
+function wrapRegistry(
+  base: IRegistryDriver,
+  hooks: {
+    onCreate?: () => Promise<void> | void;
+    onCas?: () => 'pass' | 'conflict';
+  },
+): IRegistryDriver {
+  return {
+    capabilities: () => base.capabilities(),
+    get: (ref) => base.get(ref),
+    create: async (ref, rec) => {
+      await hooks.onCreate?.();
+      return base.create(ref, rec);
+    },
+    compareAndSwap: (ref, expected, patch) => {
+      if (hooks.onCas?.() === 'conflict') {
+        return Promise.reject(new WriteConflictError('interposed registry conflict'));
+      }
+      return base.compareAndSwap(ref, expected, patch);
+    },
+    list: (ns) => base.list(ns),
+    delete: (ref) => base.delete(ref),
+  };
+}
 
 const SEG: SegmentRef = { segment: 's' };
 const DAY = 86_400_000;
@@ -231,6 +260,12 @@ describe('setRetention / getRetention / clearRetention', () => {
       expect(readRetentionPolicy({ legalHold: 'x' })).toBeNull();
       expect(readRetentionPolicy({ expiresAt: FUTURE })).toEqual({ expiresAt: FUTURE });
       expect(readRetentionPolicy({ expiresAt: null })).toBe('invalid');
+      // The CONTAINER, not just the value: `in` dereferences its operand, so these used to throw an untyped
+      // `TypeError` — and the sweep calls this outside its per-segment `try`, so one such row aborted the whole
+      // fleet sweep and the healthy expired segment beside it was never retired.
+      for (const bad of [null, 'nope', 42, [], true]) {
+        expect(readRetentionPolicy(bad as never)).toBe('invalid');
+      }
       expect(readRetentionPolicy({ expiresAt: 1.5 })).toBe('invalid');
       expect(readRetentionPolicy({ expiresAt: 1_786_000_000 })).toBe('invalid');
     });
@@ -240,6 +275,51 @@ describe('setRetention / getRetention / clearRetention', () => {
       await w.registry.create(SEG, { currentGen: null, retention: { expiresAt: 'tomorrow' } });
       await w.store().setRetention(SEG, { expiresAt: FUTURE });
       expect(await w.store().getRetention(SEG)).toEqual({ expiresAt: FUTURE });
+    });
+  });
+
+  describe('contention — the CAS retry the module exists for', () => {
+    // Without these, `RETENTION_CAS_ATTEMPTS = 5 → 1` passes the whole suite: the retry loop is dead code to it.
+    it('recovers when a compaction bootstrap creates the row first', async () => {
+      const w = world();
+      await w.store().segment('s').addMany([1, 2, 3]);
+      // The race the code comments name: our `get()` sees no row, and a bootstrap publishes gen 0 before our
+      // `create` lands. The policy must still end up on the row, and `createdRow` must tell the truth about who
+      // made it.
+      let raced = false;
+      const registry = wrapRegistry(w.registry, {
+        onCreate: async () => {
+          if (raced) return;
+          raced = true;
+          await compactSegment(SEG, w.deps, { owner: 'worker-1' }); // publishes gen 0, so our create conflicts
+        },
+      });
+
+      const res = await setSegmentRetention(SEG, { registry }, { expiresAt: FUTURE });
+      expect(res.createdRow).toBe(false);
+      const rec = (await w.registry.get(SEG))!;
+      expect(rec.currentGen).toBe(0); // the bootstrap's pointer survived
+      expect(rec.retention).toEqual({ expiresAt: FUTURE }); // and so did our policy
+    });
+
+    it('reports a conflict rather than partially applying, when contention never clears', async () => {
+      const w = world();
+      await w.registry.create(SEG, { currentGen: null });
+      const registry = wrapRegistry(w.registry, { onCas: () => 'conflict' });
+      await expect(
+        setSegmentRetention(SEG, { registry }, { expiresAt: FUTURE }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      expect((await w.registry.get(SEG))!.retention).toBeUndefined(); // nothing landed
+    });
+
+    it('clearRetention behaves the same way under sustained contention', async () => {
+      const w = world();
+      await w.store().setRetention(SEG, { expiresAt: FUTURE });
+      const registry = wrapRegistry(w.registry, { onCas: () => 'conflict' });
+      await expect(clearSegmentRetention(SEG, { registry })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      expect((await w.registry.get(SEG))!.retention).toEqual({ expiresAt: FUTURE }); // still set
     });
   });
 

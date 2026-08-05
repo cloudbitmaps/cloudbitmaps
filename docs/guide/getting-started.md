@@ -1107,7 +1107,7 @@ wave for a segment that had no data — and then have to clean both up. A never-
 
 | `dropped` | `reason` | Meaning |
 |---|---|---|
-| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter) |
+| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter). **Only for a segment with no registry row** — see the note below |
 | `true` | `undefined` | An ordinary drop — tombstone written, Cold generations swept |
 | `true` | `'already'` | Already tombstoned. **Not** a no-op: it also clears Warm rows that landed after the tombstone |
 | `false` | `'absent'` | **Nothing existed.** The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
@@ -1115,6 +1115,14 @@ wave for a segment that had no data — and then have to clean both up. A never-
 > Until `0.8.2` a successful `'warm-only'` retirement was reported as `{ dropped: false, reason: 'absent' }` with a
 > non-zero `warmRowsDeleted`. A cron written as `if (!res.dropped) alert()` fired on every success. If you wrote
 > that workaround, `dropped` is now the field to trust.
+
+> **`'warm-only'` stops appearing once you set a retention policy on the segment**, and the reason is worth
+> knowing before you key monitoring on it. `setRetention` mints a registry row (that is what makes the segment
+> enumerable, and therefore sweepable), so a later `dropSegment` takes the ordinary row-bearing path instead: you
+> get `dropped: true` with `reason: undefined` and a `destroyed` tombstone, not `'warm-only'`. Nothing is lost —
+> `dropped` still answers "is this segment empty as a result of this call?" — and `retireExpired` cleans that
+> tombstone up for you. But an alert written as `if (res.reason !== 'warm-only') alarm()` would start firing the
+> day you adopt retention, which is why `dropped` is the field to branch on and `reason` is for understanding.
 
 **⚠️ And never put a native row TTL on the Warm table.** No DynamoDB TTL, no Redis `EXPIRE`, no Mongo TTL index.
 Warm rows are **un-compacted deltas**, so expiring them discards adds and removes that were never folded into

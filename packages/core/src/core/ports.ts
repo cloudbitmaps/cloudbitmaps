@@ -156,7 +156,15 @@ export interface IColdDriver {
  */
 export type RegistryStatus = 'active' | 'compacting' | 'erasing' | 'destroyed';
 
-/** Free-form, JSON-serializable governance metadata (retention/residency policy); shape lands in Phase 6. */
+/**
+ * Free-form, JSON-serializable governance metadata — a **plain object** (both registry boundaries reject `null`,
+ * an array or a primitive, because a reader that tests `'key' in meta` would throw an untyped `TypeError`).
+ *
+ * `retention` now has one **reserved key with defined semantics**: `expiresAt`, an absolute epoch-ms after which a
+ * retention sweep may retire the segment — written by `setSegmentRetention`, parsed by `readRetentionPolicy`. Any
+ * other key is yours (a legal hold, a note, an owner) and is preserved across policy writes. `residency` is still
+ * shape-later: stored and round-tripped, no semantics attached.
+ */
 export type GovernanceMeta = Record<string, unknown>;
 
 /**
@@ -225,7 +233,11 @@ export interface RegistryRecord extends SegmentRef {
    */
   readonly leaseOwner?: string;
   readonly leaseExpiresAt?: number;
-  /** Governance policy (Phase 6); stored + round-tripped now, semantics later. */
+  /**
+   * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
+   * is stored and round-tripped with no semantics yet. Both must be plain objects, and both must survive a
+   * `list()` projection — a fleet sweep reads the policy from the enumeration rather than per-segment.
+   */
   readonly retention?: GovernanceMeta;
   readonly residency?: GovernanceMeta;
   /** Epoch-ms of creation / last mutation (from the driver's injected clock). */

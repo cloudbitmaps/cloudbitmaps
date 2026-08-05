@@ -76,7 +76,7 @@ export interface SetRetentionResult {
 }
 
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
-export function validateRetentionPolicy(policy: RetentionPolicy): void {
+function validateRetentionPolicy(policy: RetentionPolicy): void {
   const { expiresAt } = policy;
   if (typeof expiresAt !== 'number' || !Number.isInteger(expiresAt)) {
     throw new ValidationError(
@@ -104,7 +104,15 @@ export function validateRetentionPolicy(policy: RetentionPolicy): void {
 export function readRetentionPolicy(
   meta: GovernanceMeta | undefined,
 ): RetentionPolicy | null | 'invalid' {
-  if (meta === undefined || !(EXPIRES_AT in meta)) return null;
+  if (meta === undefined) return null;
+  // Guard the CONTAINER before the `in` test, not just the value inside it. `in` dereferences its operand, so a
+  // stored `retention` of `null` (or a string, a number, an array) threw an untyped `TypeError` from here — and a
+  // fleet sweep calls this *outside* its per-segment `try`, so one malformed row aborted the whole sweep and the
+  // healthy expired segment next to it was never retired. That is precisely the outcome the three-way answer
+  // exists to prevent. Both registry boundaries now reject a non-object blob, so this is the third line of defence
+  // rather than the only one — but it is the one that keeps a ledger alive.
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return 'invalid';
+  if (!(EXPIRES_AT in meta)) return null;
   const raw = meta[EXPIRES_AT];
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < MIN_EXPIRES_AT_MS)
     return 'invalid';
