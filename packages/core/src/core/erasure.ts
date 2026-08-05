@@ -244,7 +244,10 @@ export interface DropResult {
    * How the segment got to its current state. Absent on a fresh, ordinary drop (tombstone written, Cold swept).
    *
    * - `'warm-only'` — **a successful retirement.** No registry row and no Cold objects, so this was an accumulator
-   *   segment: its Warm rows were deleted and it now reads empty. Pairs with `dropped: true`.
+   *   segment: its Warm rows were deleted and it now reads empty. Pairs with `dropped: true`. Note this depends on
+   *   the segment having **no row**: `setRetention` mints one (that is what makes a warm-only segment enumerable),
+   *   so a retention-managed accumulator takes the ordinary row-bearing path and reports `reason: undefined` with a
+   *   tombstone instead. Branch on `dropped`; `reason` is for understanding, not for control flow.
    * - `'already'` — it was already a tombstone. Idempotent; pairs with `dropped: true`. Note a re-drop is **not**
    *   a no-op — it also clears Warm rows that landed after the tombstone.
    * - `'absent'` — **nothing existed.** No registry row, no Cold objects, and no Warm rows to delete. Pairs with

@@ -14,6 +14,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **`store.setRetention(ref, { expiresAt })` — record when a segment becomes eligible for retirement**, plus
+  `getRetention` and `clearRetention` (and `setSegmentRetention` / `getSegmentRetention` /
+  `clearSegmentRetention` / `readRetentionPolicy` / `validateRetentionPolicy` / `MIN_EXPIRES_AT_MS` as free
+  functions for a scheduler that holds only a registry driver).
+
+  This is **one registry write and nothing else**: nothing is deleted, and no timer starts. It moves the
+  retention *decision* from the sweeper — which otherwise has to know that `active-daily` keeps 30 days and
+  `dedup-wave` keeps 3 — to the writer, who is the only one who knows what the segment means.
+
+  `expiresAt` is an **absolute epoch-ms the caller computes**, not a duration the library derives. Every anchor
+  a derived TTL could use is wrong: `updatedAt` and `currentGen` are both rewritten by compaction, so "expire 30
+  days after the last write" would push a busy bucket's expiry forward on every cycle — the segment staying
+  alive precisely *because* the daemon was keeping it cheap.
+
+  **On an accumulator it mints the registry row** (`createdRow: true` in the result) with `currentGen: null`, so
+  a segment that existed only as Warm deltas becomes enumerable — and therefore sweepable — while every read
+  resolves exactly as before.
+
+  Two guards: a value that looks like epoch **seconds** is rejected rather than stored (`Date.now() / 1000 + …`
+  lands in 1970, i.e. already expired — a deletion on the next sweep, not an error), and `getRetention` returns
+  `'invalid'` rather than `null` for a present-but-unusable value, so a malformed policy is visible instead of
+  silently reading as "never expires". Cancelling is its own verb for the same reason — "never expire" as a magic
+  value passed to the setter is how a typo becomes a deletion.
+
+  Nothing acts on a policy yet; `retireExpired` is the sweep, and it lands in the next change of this stack.
+
 ### Changed
 
 - **`RegistryRecord.currentGen` is now `number | null`** — `null` meaning *this segment exists and has no Cold

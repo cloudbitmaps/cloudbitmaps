@@ -110,7 +110,10 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `store.subjectReport(id, { namespace? \| allNamespaces?, concurrency?, budget? })` → `SubjectReport` | GDPR Art. 15 — which registered segments is this id in? (needs an explicit namespace or an `allNamespaces` ack) |
 | `store.eraseSubject(id, { owner, namespace? \| allNamespaces?, audit?, concurrency?, budget? })` → `EraseSubjectResult` | GDPR Art. 17 — remove an id everywhere + physically purge; returns a proof ledger |
 | `store.compact(ref, { owner, leaseMs?, audit? })` → `CompactionResult` | fold warm deltas into a fresh cold generation (usually the daemon does this) |
-| `store.dropSegment(ref, { confirmSegment, dryRun?, audit? })` → `DropResult` | **retire a segment and reclaim its storage** — tombstone + Warm rows + Cold generations (re-swept; **check `generationsRemaining`** — non-empty means bytes survived and the drop should be re-run). Branch on `dropped`; `reason` is `'warm-only'` for an accumulator segment (no registry row, no Cold — retired by clearing Warm), `'already'` if tombstoned, `'absent'` only when **nothing existed**, which is the one worth alerting on. Needs a raw cold driver + registry. Reads become empty within `coldGenTtlMs`, for a reader that has a clock. `dryRun` previews `wouldDelete` / `wouldDeleteWarmRows` / `wouldCryptoShred` without touching anything |
+| `store.dropSegment(ref, { confirmSegment, dryRun?, audit? })` → `DropResult` | **retire a segment and reclaim its storage** — tombstone + Warm rows + Cold generations (re-swept; **check `generationsRemaining`** — non-empty means bytes survived and the drop should be re-run). Branch on `dropped`; `reason` is `'warm-only'` for an accumulator segment (no registry row, no Cold — retired by clearing Warm; a segment carrying a **retention policy** has a row, so it takes the ordinary tombstoned path instead), `'already'` if tombstoned, `'absent'` only when **nothing existed**, which is the one worth alerting on. Needs a raw cold driver + registry. Reads become empty within `coldGenTtlMs`, for a reader that has a clock. `dryRun` previews `wouldDelete` / `wouldDeleteWarmRows` / `wouldCryptoShred` without touching anything |
+| `store.setRetention(ref, { expiresAt })` → `SetRetentionResult` | **record when this segment becomes eligible for retirement** — one registry write, nothing deleted, nothing scheduled. `expiresAt` is an absolute epoch-**ms you compute** (a duration the library derived would be anchored to `updatedAt`/`currentGen`, both of which compaction rewrites, so a busy segment would never expire). On an accumulator it mints the registry row (`createdRow: true`) with **no Cold generation**, which is what makes the segment enumerable — and therefore sweepable — without changing any read. Rejects a value below `MIN_EXPIRES_AT_MS` (almost certainly epoch *seconds*, which would read as already-expired) and refuses a crypto-shredded segment |
+| `store.getRetention(ref)` → `RetentionPolicy \| null \| 'invalid'` | the stored policy; `null` for none, `'invalid'` for a present-but-unusable `expiresAt` (a hand-edited row, a restore) so a malformed policy is visible rather than reading as "never expires" |
+| `store.clearRetention(ref)` → `boolean` | cancel the expiry; returns whether one was actually removed. A separate verb from setting one on purpose — "never expire" as a magic value passed to the setter is how a typo becomes a deletion |
 | `store.checkConsistency({ namespace?, concurrency? })` → `ConsistencyReport` | DR: verify every segment's `currentGen` `.crbm` is present (catch a torn cross-tier restore) |
 | `store.exportSegments(sink, { format?, namespace?, candidates? })` → `ExportManifest` | eject every segment to portable `roaring`/`ndjson` |
 | `seg.costReport({ pricing?, workload?, topology? })` → `CostReport` | grounded $ cost for this segment (from its real cold size) |
@@ -127,6 +130,8 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `eraseNamespace(…)` | crypto-shred an entire namespace / tenant |
 | `runCompactionCycle(deps, { owner, keep })` | one compaction pass — for a custom compaction worker (the CLI wraps this) |
 | `runConsistencyCheck({ cold, registry }, { namespace?, concurrency? })` → `ConsistencyReport` | the free-function behind `store.checkConsistency` — run it over your own drivers |
+| `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free-function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention` / `clearSegmentRetention` are its read/cancel siblings |
+| `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you already have (a `list()` sweep does this — no extra read per segment) |
 
 ### Optional plug-ins you construct and pass in
 
@@ -289,7 +294,7 @@ Conformance case **R8** gates all of the above; every first-party registry drive
 ### Low-level ports & capabilities (driver-author typing)
 
 `ColdCaps` · `RegCaps` · `ChunkRef` · `GenKey` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` ·
-`RegistryStatus` · `GovernanceMeta` · `SegmentSize`
+`RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `RetentionPolicy` · `RetentionDeps` · `SetRetentionResult`
 
 ### Driver option types (subpath entry points)
 
@@ -329,6 +334,8 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `splitId` · `joinId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` ·
 `collectWithinBudget` · `DEFAULT_MAX_WARM_SCAN_BYTES` · `DEFAULT_WRITE_CONCURRENCY` · `DEFAULT_MAX_SCAN_SEGMENTS` ·
 `validateSegmentRef` · `NO_ROW` · `chunkRefKey` · `segmentKey` ·
+`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `readRetentionPolicy` ·
+`MIN_EXPIRES_AT_MS` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
 `RetryingRegistryDriver` · `RetryingColdChunkSource` · `CrbmWriter` · `CrbmReader` ·
 `BufferSink` · `BufferReader` · `CountingMetricsSink` · `NOOP_METRICS` ·
@@ -348,7 +355,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IColdDriver` · `IWarmDriver` · `IRegistryDriver` ·
 `ColdChunkSource` · `SegmentRef` · `ChunkRef` · `GenKey` · `ColdCaps` · `RegCaps` · `RegistryRecord` ·
 `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `IKeystore` ·
-`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult`
+`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` · `RetentionDeps` · `SetRetentionResult`
 · `RetryPolicy` · `RetryDeps` · `RetryingOptions` · `CrbmWriterOptions` · `CrbmReaderOptions` · `BlobReader` ·
 `BlobSink` · `IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` ·
 `CostReport` · `CostAdvisory` · `Workload` · `SegmentSizing` · `EstimateInput` · `Topology` · `IAuditSink` · `AuditEvent` ·

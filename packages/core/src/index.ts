@@ -132,6 +132,22 @@ export type { InProcessKeystoreOptions } from './drivers/crypto';
 export { destroySegment, dropSegment, eraseNamespace } from './core/erasure';
 export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/erasure';
 
+// Retention policy (Phase 6): record WHEN a segment becomes eligible for retirement. Writer-set absolute
+// epoch-ms — a duration the library derived would be anchored to `updatedAt`/`currentGen`, which compaction
+// republishes, so a busy segment would never expire. Nothing here runs on a timer; the sweep is a separate call
+// the operator schedules (see the getting-started "Retention" section for where to run it).
+// `readRetentionPolicy` is exported because a caller running their own `list()` sweep needs to parse a policy out
+// of a row they already hold. `validateRetentionPolicy` deliberately is NOT: `setRetention` validates on the way
+// in, so nothing outside needs the raw validator, and public surface is the hardest kind of decision to reverse.
+export {
+  setSegmentRetention,
+  clearSegmentRetention,
+  getSegmentRetention,
+  readRetentionPolicy,
+  MIN_EXPIRES_AT_MS,
+} from './core/retention';
+export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/retention';
+
 // Denial-of-wallet budget (Phase F, 07 Decision #3 / T3): per-op request ceiling → `BudgetExceededError`.
 export { DEFAULT_BUDGET } from './core/budget';
 export type { Budget, BudgetOption } from './core/budget';

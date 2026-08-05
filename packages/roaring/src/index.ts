@@ -42,6 +42,9 @@ import {
   resolvePerOpBudget,
   runConsistencyCheck,
   runExport,
+  setSegmentRetention,
+  clearSegmentRetention,
+  getSegmentRetention,
   safeMetrics,
   splitId,
   validateCompactionOptions,
@@ -72,9 +75,11 @@ import type {
   IWarmDriver,
   MetricOpName,
   PricingProfile,
+  RetentionPolicy,
   RetryPolicy,
   RetryingOptions,
   Rng,
+  SetRetentionResult,
   SegmentRef,
   Topology,
   Workload,
@@ -523,10 +528,7 @@ export class CloudRoaring {
       budget?: BudgetOption;
     } = {},
   ): Promise<SubjectReport> {
-    if (this.registry === undefined) {
-      throw new UnsupportedError('subjectReport needs a `registry` in the store config');
-    }
-    const registry = this.registry;
+    const registry = this.requireRegistry('subjectReport');
     requireScope(options, 'subjectReport'); // tenancy: explicit namespace, or an { allNamespaces: true } ack
     validateConcurrency(options.concurrency); // fail fast before the (possibly huge) registry scan
     const budget = resolvePerOpBudget(options.budget, this.budget); // partial override inherits the store's tightening
@@ -760,6 +762,67 @@ export class CloudRoaring {
   }
 
   /**
+   * **Record when this segment becomes eligible for retirement.** One registry write; nothing is deleted here,
+   * and nothing starts running. `retireExpired` is what acts on the policy, and **you** decide when that runs —
+   * an EventBridge rule, a CronJob, a queue consumer, whatever your deployment already has. This library starts
+   * no background thread (it has to work identically in a Lambda, an edge isolate and a long-lived server).
+   *
+   * `expiresAt` is an **absolute epoch-ms you compute**, not a duration the library derives. A relative TTL would
+   * have to be anchored to something the library knows — `updatedAt`, or the current generation — and compaction
+   * rewrites both, so "expire 30 days after the last write" would keep a busy daily bucket alive forever
+   * precisely because the daemon is working.
+   *
+   * ```ts
+   * const DAY = 86_400_000;
+   * const ref = { namespace: 'active-daily', segment: '2026-08-05' };
+   * await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY });
+   * ```
+   *
+   * **Works on an accumulator**, which is the whole point: a segment you created by writing to it has no
+   * registry row, so it is invisible to `registry.list()` and therefore to every fleet-wide operation, including
+   * the sweep. This call mints the row (`createdRow: true` in the result) with **no Cold generation**, so it
+   * becomes enumerable while every read still resolves exactly as before.
+   *
+   * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
+   * buckets is normal. A value below `MIN_EXPIRES_AT_MS` (2001-09-09) is rejected: it is almost certainly epoch
+   * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a `registry`
+   * in the store config (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
+   */
+  async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
+    validateSegmentRef(ref);
+    return setSegmentRetention(ref, { registry: this.requireRegistry('setRetention') }, policy);
+  }
+
+  /**
+   * **The stored retention policy**, or `null` if the segment has none (or has no registry row, or is a
+   * tombstone). Returns the string `'invalid'` for a row whose `expiresAt` is present but unusable — a
+   * hand-edited row, or one from a restore — so a malformed policy is visible rather than silently reading as
+   * "never expires" on a segment someone believes is expiring.
+   */
+  async getRetention(ref: SegmentRef): Promise<RetentionPolicy | null | 'invalid'> {
+    validateSegmentRef(ref);
+    return getSegmentRetention(ref, { registry: this.requireRegistry('getRetention') });
+  }
+
+  /**
+   * **Cancel a segment's expiry** so no sweep retires it. Returns whether a policy was actually removed (`false`
+   * when there was none). A separate verb from `setRetention` on purpose: "never expire" as a magic value passed
+   * to the setter is how a typo becomes a deletion.
+   */
+  async clearRetention(ref: SegmentRef): Promise<boolean> {
+    validateSegmentRef(ref);
+    return clearSegmentRetention(ref, { registry: this.requireRegistry('clearRetention') });
+  }
+
+  /** The store's registry, or a typed error naming the operation that needs one. */
+  private requireRegistry(op: string): IRegistryDriver {
+    if (this.registry === undefined) {
+      throw new UnsupportedError(`${op} needs a \`registry\` in the store config`);
+    }
+    return this.registry;
+  }
+
+  /**
    * **Cross-tier DR consistency check (audit gap #11).** After a restore/failover, verify every registered
    * segment's `currentGen` actually has its `.crbm` present in Cold — catching a **torn restore** where the
    * registry (`currentGen`) came back ahead of the object store, so a pointer references a generation that
@@ -789,11 +852,9 @@ export class CloudRoaring {
    * exists" means the run finished — check `failed`. The `export-segments` CLI wraps this with a filesystem sink.
    */
   async exportSegments(sink: ExportSink, options: ExportOptions = {}): Promise<ExportManifest> {
-    if (this.registry === undefined) {
-      throw new UnsupportedError('exportSegments needs a `registry` in the store config');
-    }
+    const registry = this.requireRegistry('exportSegments');
     // Pass the codec: core's `runExport` is codec-agnostic and needs one for the `'roaring'` format.
-    return runExport(this, this.registry, sink, {
+    return runExport(this, registry, sink, {
       ...options,
       codec: options.codec ?? roaringCodec,
     });
