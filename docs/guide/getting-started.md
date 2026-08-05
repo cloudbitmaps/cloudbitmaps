@@ -1107,7 +1107,7 @@ wave for a segment that had no data — and then have to clean both up. A never-
 
 | `dropped` | `reason` | Meaning |
 |---|---|---|
-| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter) |
+| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter). **Only for a segment with no registry row** — see the note below |
 | `true` | `undefined` | An ordinary drop — tombstone written, Cold generations swept |
 | `true` | `'already'` | Already tombstoned. **Not** a no-op: it also clears Warm rows that landed after the tombstone |
 | `false` | `'absent'` | **Nothing existed.** The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
@@ -1115,6 +1115,14 @@ wave for a segment that had no data — and then have to clean both up. A never-
 > Until `0.8.2` a successful `'warm-only'` retirement was reported as `{ dropped: false, reason: 'absent' }` with a
 > non-zero `warmRowsDeleted`. A cron written as `if (!res.dropped) alert()` fired on every success. If you wrote
 > that workaround, `dropped` is now the field to trust.
+
+> **`'warm-only'` stops appearing once you set a retention policy on the segment**, and the reason is worth
+> knowing before you key monitoring on it. `setRetention` mints a registry row (that is what makes the segment
+> enumerable, and therefore sweepable), so a later `dropSegment` takes the ordinary row-bearing path instead: you
+> get `dropped: true` with `reason: undefined` and a `destroyed` tombstone, not `'warm-only'`. Nothing is lost —
+> `dropped` still answers "is this segment empty as a result of this call?" — and `retireExpired` cleans that
+> tombstone up for you. But an alert written as `if (res.reason !== 'warm-only') alarm()` would start firing the
+> day you adopt retention, which is why `dropped` is the field to branch on and `reason` is for understanding.
 
 **⚠️ And never put a native row TTL on the Warm table.** No DynamoDB TTL, no Redis `EXPIRE`, no Mongo TTL index.
 Warm rows are **un-compacted deltas**, so expiring them discards adds and removes that were never folded into
@@ -1202,9 +1210,62 @@ Two limits worth knowing before you automate it:
 > A lifecycle rule is still a fine **backstop** for orphans left by a failed `dropSegment` — just set its
 > expiry window comfortably longer than your retention window, so it can never get there first.
 
-A first-class **segment-level retention** feature — a `retentionDays` the compaction daemon enforces — is
-[on the roadmap](../ROADMAP.md#planned--exploring) and not built. If you need it, saying so on an issue is what
-moves it.
+### Recording the expiry on the segment itself
+
+The loop above works, and it hard-codes your retention rule in the sweeper: whoever writes the sweep has to know
+that `active-daily` keeps 30 days and `dedup-wave` keeps 3. **`store.setRetention` moves that decision to the
+writer**, who is the only one who actually knows what the segment means:
+
+```ts
+const DAY = 86_400_000;
+const ref = { namespace: 'active-daily', segment: today };
+
+await bucket(today).addMany(idsSeenToday);
+await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY });
+```
+
+That is **one registry write, and nothing else happens.** Nothing is deleted, and no timer starts — the sweep
+that acts on the policy is a separate call you schedule (below). Call it once when you create the bucket, not on
+every write; it is idempotent, so re-running is harmless, but it is a write.
+
+**Why an absolute instant rather than `retentionDays`.** A duration has to be measured from *something*, and
+every anchor the library could use is wrong. `updatedAt` and `currentGen` are both rewritten by compaction, so
+"expire 30 days after the last write" would push a busy bucket's expiry forward on every cycle — the segment
+would stay alive precisely *because* the daemon was keeping it cheap. The writer computes the instant; the
+library stores it verbatim and never moves it.
+
+**On an accumulator this also makes the segment visible.** A segment you created by writing to it has no
+registry row at all, so `registry.list()` cannot see it — and neither can any fleet-wide operation, including the
+sweep. `setRetention` mints the row (the result says `createdRow: true`) with **no Cold generation**, which is
+what keeps reads identical: generation resolution takes the same path it takes for a segment with no row, Cold
+contributes nothing, and the Warm delta alone answers. This is the whole reason the accumulator pattern can have
+retention at all.
+
+Two guards worth knowing:
+
+- **`expiresAt` is epoch-milliseconds**, and a value that looks like epoch *seconds* is rejected rather than
+  stored. `Date.now() / 1000 + 30 * 86400` is a natural thing to type and lands in **1970** — already expired —
+  so without the check it would not be an error, it would be a deletion on the next sweep.
+- **A past instant is legal** and means "eligible on the next sweep". Backfilling a policy onto buckets that
+  already exist is a normal migration, and refusing it would make that awkward for no safety gain.
+
+Reading and cancelling:
+
+```ts
+await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
+await store.clearRetention(ref); // → true if a policy was actually removed
+```
+
+`getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable — a
+hand-edited row, or one restored from a different schema. That is deliberately not folded into `null`: a
+malformed policy reading as "never expires" on a segment someone believes is expiring is exactly the kind of
+silence that costs a compliance commitment. And cancelling is its **own verb**, because "never expire" passed
+into the setter as a magic value is how a typo becomes a deletion.
+
+> **The sweep is the next piece.** Recording a policy is inert until something acts on it: `retireExpired`, which
+> enumerates the registry, selects the segments whose `expiresAt` has passed and retires each through
+> `dropSegment` — and which you schedule yourself. Until then the loop earlier in this section is still what does
+> the retiring; a policy simply moves the *decision* out of it.
 
 ## 14. Export / eject your data
 
