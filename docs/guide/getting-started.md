@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.7.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.8.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
@@ -617,7 +617,7 @@ grace window for in-flight readers). To compact a single segment directly, call
 > | `store.compact(ref, { owner })` (in-process facade) | **Yes**, best-effort after a successful commit, with the same `keep: 1` grace window |
 > | `compactSegment(ref, deps, { owner })` (free function) | **No.** It is a single-responsibility primitive — call `gcOrphanGenerations(ref, { cold, registry }, { keep })` yourself |
 >
-> `store.compact` did **not** collect them in `0.7.0` and earlier, so a deployment that compacted in-process without
+> `store.compact` did **not** collect them in earlier releases (see the `CHANGELOG`), so a deployment that compacted in-process without
 > running the daemon accumulated `.crbm` objects indefinitely. Reads stayed correct the whole time — `currentGen`
 > always pointed at a live object — so the only symptom was a storage bill that never went down. If that describes
 > your deployment, one `gcOrphanGenerations` pass per segment reclaims the backlog.

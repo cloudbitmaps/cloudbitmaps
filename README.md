@@ -14,7 +14,7 @@
 > giving up the fast, familiar in-memory API. Bitmaps too big for one machine's RAM live across tiered
 > cloud storage; you still just call `add`, `has`, `remove`, and `intersect`.
 
-> **Status: `0.7.0` — published, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
+> **Status: `0.8.0` — published, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
 > tests — unit, property-vs-oracle, a deterministic fault-injecting simulator, conformance suites run
