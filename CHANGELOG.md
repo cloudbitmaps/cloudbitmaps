@@ -14,6 +14,38 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-08-04
+
+### Fixed
+
+- **Retiring an accumulator segment reported failure while succeeding.** A segment created by writing to it —
+  never bulk-loaded, never compacted, so it has no registry row and no Cold objects — is the documented way to use
+  this as a runtime set (a dedup wave, a daily sent-list). `dropSegment` retires one correctly by deleting its Warm
+  rows, but reported `{ dropped: false, reason: 'absent' }` **with a non-zero `warmRowsDeleted`** — self-
+  contradictory, and `'absent'` was documented as "nothing happened". A retention cron written as the obvious
+  `if (!res.dropped) alert()` fired on **every successful retirement**.
+
+  `dropped` now answers the question callers actually ask — *is this segment empty as a result of this call, or was
+  it already?* — and `reason` says which route got there: **`'warm-only'`** for a retired accumulator (`dropped:
+  true`), `'already'` for an existing tombstone, and `'absent'` **only when nothing existed at all**, which is the
+  one value worth alerting on and almost always a mistyped name or an omitted `namespace`.
+
+  Still no tombstone for the warm-only case, deliberately: a `destroyed` row per retired daily bucket would be
+  registry litter, and would refuse that name if it were ever legitimately reused.
+
+  Found by the first real consumer, whose entire workload is this shape. It went unnoticed because **every**
+  existing `dropSegment` test seeded a Cold generation first — the accumulator lifecycle had no coverage at all.
+  It does now, including the full wave (`claimMany` → dedup a retry → retire), and both failure directions are
+  mutation-verified: reverting to the old under-report and over-correcting to "always claim success" each turn the
+  suite red.
+
+### Documentation
+
+- **The accumulator pattern is now documented** in the getting-started guide, with the result-shape table, the
+  reason an empty `bulkLoadCrbmGeneration(..., [])` seed is pointless (it writes a real object and a registry row
+  for a segment with no data), and a hard warning that a native Warm-table row TTL is **silent total data loss**
+  in this mode — everything you have is Warm, so expiring rows expires the dataset.
+
 ## [0.8.1] — 2026-08-04
 
 ### Documentation

@@ -729,7 +729,12 @@ export class CloudRoaring {
    *
    * **Omitting the namespace addresses a different segment and is a silent no-op** — you get
    * `{ dropped: false, reason: 'absent' }`, not a throw, so a retention loop with that mistake deletes nothing
-   * forever and quietly. Check `reason` in an automated sweep.
+   * forever and quietly. Branch on `dropped`, and treat `reason: 'absent'` as the alert.
+   *
+   * **Works on an accumulator too.** A segment you created by writing to it — never bulk-loaded, never compacted,
+   * so it has no registry row and no Cold objects — is retired by deleting its Warm rows alone. That reports
+   * `{ dropped: true, reason: 'warm-only' }`: there is no tombstone to write, and deliberately none is written,
+   * because a `destroyed` row per retired daily bucket would be registry litter. The data really is gone.
    *
    * **Inspect `generationsRemaining`.** Empty is the normal outcome; non-empty means the storage was NOT fully
    * reclaimed and the drop should be re-run. A compaction that was already in flight when the tombstone landed
@@ -1079,4 +1084,4 @@ export {
 export { SafeBitmap, roaringCodec } from './roaring-codec';
 
 /** Package version marker. Kept in sync with package.json at release. */
-export const VERSION = '0.8.1';
+export const VERSION = '0.8.2';

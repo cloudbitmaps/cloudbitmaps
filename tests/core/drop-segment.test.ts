@@ -563,14 +563,19 @@ describe('dropSegment vs a concurrent writer', () => {
 describe('dropSegment on a segment with no registry row', () => {
   it('clears the cleartext Warm rows of an all-warm segment', async () => {
     // A never-compacted segment has NO registry row — the write path never creates one. Its rows are the
-    // cleartext ones, so this is the case where "absent" must still do work.
+    // cleartext ones, so this is the case where a "nothing here" answer must still do work.
+    //
+    // This test originally asserted `reason === 'absent'`, which codified the defect rather than the contract: it
+    // proved the rows were deleted while accepting a result that said nothing happened. See the accumulator
+    // describe below for why that combination was actively misleading to a caller.
     const w = world();
     await handle(w).addMany([500, 501, 70_000]);
     expect(await w.registry.get(SEG)).toBeNull();
 
     const result = await dropSegment(SEG, w.deps, CONFIRM);
 
-    expect(result.reason).toBe('absent');
+    expect(result.reason).toBe('warm-only');
+    expect(result.dropped).toBe(true);
     expect(result.warmRowsDeleted).toBeGreaterThan(0);
     const fresh = new CloudRoaring({
       warm: w.warm,
@@ -971,5 +976,87 @@ describe('store.compact collects the generation it supersedes (#47)', () => {
     expect(result.compacted).toBe(true); // the commit stands
     expect(deletes).toBeGreaterThan(0); // GC was attempted
     await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).count()).resolves.toBe(3);
+  });
+});
+
+/**
+ * THE ACCUMULATOR LIFECYCLE — a segment used as a pure runtime set.
+ *
+ * Created by writing to it, never bulk-loaded, never compacted: no registry row, no Cold objects, everything in
+ * Warm. It is a documented, supported way to use the library, and it had **no coverage in this file at all** —
+ * every other test seeds a Cold generation first. That gap is why `dropSegment` reported a successful retirement
+ * of an accumulator as `dropped: false, reason: 'absent'` with a non-zero `warmRowsDeleted`, which the first real
+ * consumer hit immediately: a retention cron written as `if (!res.dropped) alert()` fires on every success.
+ */
+describe('dropSegment on a pure accumulator (warm-only, never compacted)', () => {
+  it('reports a successful retirement, not "absent"', async () => {
+    const w = world();
+    await handle(w).addMany([101, 202, 70_000]); // a wave — no seed, no compaction
+    expect(await w.registry.get(SEG)).toBeNull(); // the shape under test: no registry row
+    expect(await generationsInCold(w)).toEqual([]); // ...and no Cold objects
+
+    const res = await dropSegment(SEG, w.deps, CONFIRM);
+
+    expect(res.dropped).toBe(true); // the data IS gone — say so
+    expect(res.reason).toBe('warm-only'); // ...and say which route got there
+    expect(res.warmRowsDeleted).toBeGreaterThan(0);
+    expect(res.generationsDeleted).toEqual([]);
+    expect(res.generationsRemaining).toEqual([]);
+  });
+
+  it('really is empty afterwards, to a reader that never cached it', async () => {
+    const w = world();
+    await handle(w).addMany([101, 202, 70_000]);
+    await dropSegment(SEG, w.deps, CONFIRM);
+
+    const fresh = new CloudRoaring({
+      warm: w.warm,
+      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
+      retry: false,
+    });
+    const seg = fresh.segment(SEG.segment, { namespace: SEG.namespace });
+    await expect(seg.count()).resolves.toBe(0);
+    await expect(seg.has(101)).resolves.toBe(false);
+  });
+
+  it('leaves no registry row behind — a retired accumulator must not become litter', async () => {
+    // Tombstoning every retired daily bucket would accumulate a `destroyed` row per day forever, and would
+    // refuse that exact name if it were ever legitimately reused. Deleting the Warm rows is the whole retirement.
+    const w = world();
+    await handle(w).addMany([1]);
+    await dropSegment(SEG, w.deps, CONFIRM);
+    expect(await w.registry.get(SEG)).toBeNull();
+  });
+
+  it('still says "absent" when there was genuinely nothing — the case worth alerting on', async () => {
+    // The negative control, and the reason `dropped` cannot simply be hardcoded true. A mistyped name or an
+    // omitted namespace addresses a different segment; that must stay loudly distinguishable from success.
+    const w = world();
+    const res = await dropSegment(SEG, w.deps, CONFIRM);
+    expect(res.dropped).toBe(false);
+    expect(res.reason).toBe('absent');
+    expect(res.warmRowsDeleted).toBe(0);
+  });
+
+  it('the whole wave lifecycle: claim, dedup a retry, retire', async () => {
+    // What the accumulator pattern actually looks like end to end, with claimMany rather than has+add so the
+    // dedup is exactly-once rather than racy.
+    const w = world();
+    const seg = handle(w);
+
+    const wave = await seg.claimMany([1, 2, 3]);
+    expect(wave.sort((a, b) => a - b)).toEqual([1, 2, 3]);
+
+    const retry = await seg.claimMany([2, 3, 4, 5]); // overlapping retry
+    expect(retry.sort((a, b) => a - b)).toEqual([4, 5]); // 2 and 3 suppressed
+
+    await expect(seg.count()).resolves.toBe(5);
+
+    const res = await dropSegment(SEG, w.deps, CONFIRM);
+    expect({ dropped: res.dropped, reason: res.reason }).toEqual({
+      dropped: true,
+      reason: 'warm-only',
+    });
+    await expect(seg.count()).resolves.toBe(0);
   });
 });
