@@ -59,7 +59,7 @@ CloudBitmaps gives you four levers with different guarantees. Use them deliberat
 |---|---|---|---|
 | **Logical remove** | `segment.remove(id)` / `removeMany` | *Immediate* — reads exclude the ID at once (tombstone; `effective = (Cold ∪ adds) \ removes`). The bit **physically persists** in the immutable Cold `.crbm` until that chunk is next compacted. | everyday "take this user out of this audience" |
 | **Physical purge** | `store.compact(ref, { owner })` on demand, or the compaction daemon (`compact-segments` / `runCompactionCycle`) on a schedule | A compaction folds the tombstone into a fresh generation and **physically drops** the bit. | meeting a physical-deletion deadline — *run compaction (the daemon on a schedule, or `store.compact` on demand) inside your SLA* |
-| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned, its Warm rows deleted and **every Cold generation deleted**, so the storage is reclaimed. Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
+| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned, its Warm rows deleted and its Cold generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a compaction already in flight can stage one more object after the tombstone). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
@@ -107,7 +107,8 @@ a storage-limitation anti-pattern if the data is personal. **Retention policy is
 
 **Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
 
-- **`store.dropSegment(ref, { confirmSegment })` is the retention lever.** It tombstones the segment, deletes
+- **`store.dropSegment(ref, { confirmSegment })` is the retention lever** — and its result must be inspected, not
+  assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones the segment, deletes
   its Warm rows and deletes **every Cold generation** — so the storage is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
 - **`destroySegment` crypto-shreds** — it discards the key, so the Cold bytes become unreadable *everywhere

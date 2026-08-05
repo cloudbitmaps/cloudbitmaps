@@ -703,9 +703,16 @@ export class CloudRoaring {
    * `{ dropped: false, reason: 'absent' }`, not a throw, so a retention loop with that mistake deletes nothing
    * forever and quietly. Check `reason` in an automated sweep.
    *
+   * **Inspect `generationsRemaining`.** Empty is the normal outcome; non-empty means the storage was NOT fully
+   * reclaimed and the drop should be re-run. A compaction that was already in flight when the tombstone landed
+   * still finishes staging one more object, so a single sweep can miss it — this call re-sweeps and then reports
+   * whatever it still could not remove rather than returning a result that looks like a clean drop.
+   *
    * Reads become empty within `coldGenTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + hot chunks until that window lapses. A reader that never
-   * touched it sees empty at once.
+   * touched it sees empty at once. **That bound needs a clock and `coldGenTtlMs > 0`** — a store built without a
+   * clock, or with `coldGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
+   * keep answering `true` for a dropped segment indefinitely; restart it.
    *
    * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
    * because it has to enumerate and delete generations — a pre-built `ColdChunkSource` only reads.

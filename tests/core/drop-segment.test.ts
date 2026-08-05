@@ -7,6 +7,7 @@ import {
   MemoryWarmDriver,
   bulkLoadCrbmGeneration,
   dropSegment,
+  gcOrphanGenerations,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
@@ -785,5 +786,40 @@ describe('store.dropSegment (facade)', () => {
     await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
       true,
     );
+  });
+});
+
+describe('gcOrphanGenerations on a destroyed segment', () => {
+  it('collects EVERY generation, because a tombstoned segment has no reader to protect', async () => {
+    // The grace window exists for readers pinned to a just-superseded generation. A destroyed segment resolves no
+    // generation at all, so nothing is or can become pinned — and nothing else would ever collect these: the
+    // reconcile path that deletes generations above `currentGen` returns early on a destroyed row. Without this,
+    // a residual left by a drop whose sweep failed is billed forever.
+    const w = world();
+    await seed(w, [1], undefined, 0);
+    const cold = hook(w.cold, 'delete', async () => {
+      throw new Error('bucket unreachable');
+    });
+    const failed = await dropSegment(SEG, { ...w.deps, cold }, CONFIRM);
+    expect(failed.generationsRemaining).toEqual([0]); // tombstoned, bytes still there
+    // A late staging lands on top of the tombstone, exactly as an in-flight compaction would.
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 5 }, [1, 2], {});
+    expect(await generationsInCold(w)).toEqual([0, 5]);
+
+    const collected = await gcOrphanGenerations(SEG, w.deps, { keep: 1 });
+
+    expect(collected.sort((a, b) => a - b)).toEqual([0, 5]);
+    expect(await generationsInCold(w)).toEqual([]);
+  });
+
+  it('still honours the grace window on a live segment', async () => {
+    // The negative control: the destroyed branch must not have widened the live one.
+    const w = world();
+    await seed(w, [1], undefined, 0);
+    await seed(w, [2], undefined, 1);
+    await seed(w, [3], undefined, 2); // currentGen = 2
+    const collected = await gcOrphanGenerations(SEG, w.deps, { keep: 1 });
+    expect(collected).toEqual([0]); // gen 1 kept as the window, gen 2 is current
+    expect(await generationsInCold(w)).toEqual([1, 2]);
   });
 });

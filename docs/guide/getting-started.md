@@ -1018,7 +1018,7 @@ different questions:
 
 | | what it does | when |
 |---|---|---|
-| **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, deletes its **Warm** rows, deletes **every Cold generation**. Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** | **retiring a bucket and reclaiming the storage** |
+| **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, deletes its **Warm** rows, deletes its Cold generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
 | `destroySegment(ref, { registry, warm }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Cold bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
 | `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming compaction garbage, not live data |
 
@@ -1046,7 +1046,8 @@ console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join
 
 // Then do it.
 const result = await store.dropSegment(ref, { confirmSegment: ref.segment });
-// → { dropped: true, warmRowsDeleted: 140, generationsDeleted: [0, 1], cryptoShredded: false }
+// → { dropped: true, warmRowsDeleted: 140, generationsDeleted: [0, 1],
+//      generationsRemaining: [], cryptoShredded: false }
 ```
 
 Then the whole retention job is a loop, and the dangerous part is inside the library:
@@ -1055,7 +1056,13 @@ Then the whole retention job is a loop, and the dangerous part is inside the lib
 for await (const rec of registry.list('active-daily')) {
   if (rec.segment >= cutoffDay) continue;              // ISO dates sort lexicographically
   const ref = { namespace: rec.namespace, segment: rec.segment };
-  await store.dropSegment(ref, { confirmSegment: ref.segment });
+  const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
+  // Non-empty means bytes survived — a compaction already in flight staged one more object after the
+  // tombstone. The segment reads as empty either way, so this is a billing leak, not a correctness one;
+  // re-run to collect it (a running compaction daemon also will).
+  if (res.generationsRemaining.length > 0) {
+    console.warn(`${ref.segment}: ${res.generationsRemaining.length} generation(s) not reclaimed`);
+  }
 }
 ```
 
@@ -1071,8 +1078,22 @@ would take; a retention bug you can read in a log is worth more than one you fin
    a tombstone with live Warm deltas would still answer `true` for ids in those deltas.
 2. **Registry second.** After the tombstone nothing resolves a generation, so no reader can reach for bytes
    about to disappear.
-3. **Cold last, and best-effort.** Once the pointer is a tombstone the segment reads as empty and is *correct*,
-   so a failure part-way through leaks **bytes, not correctness** — and re-running collects the remainder.
+3. **Cold last, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
+   empty and is *correct*, so a failure part-way through leaks **bytes, not correctness** — and re-running
+   collects the remainder. The sweep repeats because a compaction that was already in flight when the tombstone
+   landed still finishes *staging* a generation, built from data it read beforehand: its commit fails on the
+   voided lease, but the object survives and holds the full effective set. **Check `generationsRemaining`** —
+   non-empty means bytes are still there and the drop should be repeated. A running compaction daemon also
+   collects them, since `gcOrphanGenerations` takes every generation of a tombstoned segment.
+
+Two limits worth knowing before you automate it:
+
+- **Writes must have stopped.** Nothing prevents a Warm write *after* step 1. The drop makes a second Warm pass
+  after the tombstone, which converges for anything in flight — but a writer that keeps writing keeps
+  resurrecting the segment, and compaction will not reap those rows (it refuses a destroyed segment).
+- **"Reads as empty" needs a clock.** The `coldGenTtlMs` bound below applies to a reader whose cold source has a
+  clock, a registry, *and* a positive TTL. Built without a clock, or with `coldGenTtlMs: 0` ("pin forever"), a
+  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
 > the registry still points at them, which is exactly the state
