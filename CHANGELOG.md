@@ -14,6 +14,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-05
+
 ### Added
 
 - **`store.setRetention(ref, { expiresAt })` — record when a segment becomes eligible for retirement**, plus
@@ -138,6 +140,46 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   omits `currentGen` must leave it alone while a patch that sets it to `null` must apply. The shared conformance
   suite gates all of it (case **R8**) — a driver that JSON-drops the field, coerces it to `0`, or merges the patch
   with `patch.currentGen ?? previous` fails.
+
+### Documentation
+
+- **The npm package pages now describe retention** — `@cloudbitmaps/roaring` gains a section for the per-segment
+  expiry and the sweep (not just a row inside the Redis comparison table), and `@cloudbitmaps/core`'s engine
+  summary names the lifecycle machinery it carries. That file has now drifted **three times**: `0.7.0`'s Redis
+  mapping was reported as being on it when only the repo README had it, and `0.8.0` shipped `claimMany` and
+  `dropSegment` while the page mentioned neither. The gate added after the second drift
+  (`tests/docs/flavor-readme-sync.test.ts`) **could not have caught this one**: it derives the methods a Redis
+  reader must find from the live `SegmentHandle` prototype, and `setRetention` / `retireExpired` are *store*
+  methods, so it was watching the wrong object. It now derives from both prototypes, and that widening is itself
+  mutation-verified — reverting the README's `EXPIRE` row fails the gate by name, which it did not do before.
+
+- **The retention section of the guide no longer opens "There is no TTL."** It now distinguishes the two claims
+  that were being conflated: a *segment* can expire, an *id* cannot, and what you schedule is the sweep rather
+  than the policy. That paragraph is where a reader asking "does it support TTL?" stops reading, so it was the
+  single highest-value correction in this release.
+
+- **`reason: 'warm-only'` stops being returned once a segment carries a retention policy**, because the policy
+  mints a registry row and `dropSegment` then takes the ordinary tombstoned path. Stated in the guide, the API
+  reference and the `DropResult.reason` JSDoc — the guide had been coaching operators to key monitoring on
+  `reason`, so an alert written that way would have started firing the day retention was adopted. Branch on
+  `dropped`.
+
+- **`PRIVACY.md`** now describes retention as it is rather than as "the library does not age data out for you",
+  including what legal-hold exclusion actually requires today (a held segment must not carry a policy — the sweep
+  has no exclusion predicate), and the Art. 30 / DPIA rows no longer claim retention is enforced by scheduled
+  compaction, which was never true.
+
+- **`docs/guide/dashboards.md`** records that `segment.dispose` is now emitted for every retirement a sweep
+  performs, and — explicitly — that deleting a retired segment's tombstone **row** emits nothing at all. If your
+  controls treat the presence of a `destroyed` row as an attestation, run the sweep with `purgeTombstones: false`.
+
+- `IRegistryDriver.list`'s contract now *states* what two callers already depended on: a `destroyed` tombstone is
+  still a record and must be yielded, a null-generation row must be yielded, and `retention` must survive the
+  projection — a driver that drops it makes retention silently never fire. Conformance **R9** gates it.
+
+- Plus the README admin table, `docs/ROADMAP.md` (retention moved to shipped; the sweep's scheduler and per-id TTL
+  moved to *deliberately not planned*, where a stated non-goal belongs), the API reference, the DR guide, and the
+  site (`usage.html`, `flavors/roaring.html`, `llms.txt`).
 
 ## [0.8.2] — 2026-08-04
 
