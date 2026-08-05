@@ -163,8 +163,24 @@ export type GovernanceMeta = Record<string, unknown>;
  * One registry row — the authoritative per-segment record. Exactly one per segment.
  */
 export interface RegistryRecord extends SegmentRef {
-  /** **The** authoritative LATEST pointer: which immutable Cold generation is current. */
-  readonly currentGen: number;
+  /**
+   * **The** authoritative LATEST pointer: which immutable Cold generation is current — or **`null` for a segment
+   * that has no Cold generation yet.**
+   *
+   * `null` is not "unknown", it is a positive statement: *this segment exists and has no Cold data.* It is what
+   * lets a **warm-only accumulator** (created by writing to it, never bulk-loaded, never compacted) have a
+   * registry row at all — which it needs to be reachable by `registry.list()`, and therefore by retention
+   * sweeps, `checkConsistency`, `eraseNamespace` and every other fleet-wide operation. Without it those
+   * segments are invisible to every admin tool in the library.
+   *
+   * The alternative — a row with `currentGen: 0` and no object behind it — is the forbidden
+   * `missing-cold-generation` state, and it fails *per operation* rather than cleanly: `has()` short-circuits on
+   * the Warm delta and keeps answering, while `count()` resolves the generation and throws `NotFoundError`.
+   *
+   * Generation resolution maps `null` onto the same path a segment with **no row** takes, so Cold contributes
+   * the empty set and the Warm delta alone produces the answer. Read behaviour is unchanged by construction.
+   */
+  readonly currentGen: number | null;
   /**
    * Per-segment data-key (DEK) wrappings for encryption-at-rest (Phase 4e): the DEK envelope-wrapped under one
    * or more KEKs (active + optional recovery). Reading unwraps with any held KEK; **crypto-shred deletes this
@@ -221,7 +237,8 @@ export interface RegistryRecord extends SegmentRef {
 
 /** The caller-settable fields at {@link IRegistryDriver.create} (audit + token are driver-managed). */
 export interface NewRegistryRecord {
-  readonly currentGen: number;
+  /** `null` ⇒ the segment has no Cold generation yet — see {@link RegistryRecord.currentGen}. */
+  readonly currentGen: number | null;
   readonly wrappedDeks?: readonly WrappedDek[];
   readonly keyId?: string;
   /** Defaults to 0. */

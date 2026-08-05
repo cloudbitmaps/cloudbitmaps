@@ -14,6 +14,36 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **`RegistryRecord.currentGen` is now `number | null`** — `null` meaning *this segment exists and has no Cold
+  generation yet*. Breaking **only if you implement or read `IRegistryDriver` yourself** (a custom registry
+  driver, or code that does arithmetic on `currentGen`); nothing in the store/segment API changes, and no
+  behaviour changes for any segment that has ever been bulk-loaded or compacted.
+
+  Why it had to move: a **warm-only accumulator** — a segment created by writing to it, never bulk-loaded, never
+  compacted — has no registry row at all, and the registry is what every fleet-wide operation enumerates. Those
+  segments are therefore invisible to `checkConsistency`, `eraseNamespace`, compaction discovery, and (next) any
+  retention sweep. Giving them a row is the fix, but the obvious row — `currentGen: 0` with no object behind it —
+  is the `missing-cold-generation` state the library exists to prevent, and it fails *per operation* rather than
+  cleanly: `has()` short-circuits on the Warm delta and keeps answering while `count()` resolves the generation
+  and throws `NotFoundError`. So the pointer needed a way to say "none yet".
+
+  A row with `currentGen: null` resolves down the same path as a segment with **no row**: Cold contributes the
+  empty set, the Warm delta alone produces the answer, and `currentGeneration()` reports `null`. Read behaviour is
+  unchanged by construction, and a test asserts read-for-read parity against the identical segment with no row.
+
+  Writers treat `null` as "no Cold data", never as generation 0: compaction takes its **bootstrap** path and
+  publishes gen 0 onto the existing row by CAS (preserving `createdAt` and the row's other fields);
+  `publishGeneration` advances the pointer and carries the wrapped DEK exactly like a first publish;
+  `gcOrphanGenerations` deletes nothing while the pointer is null (a bootstrap may be about to publish gen 0);
+  and `checkConsistency` reports it as healthy rather than as a torn restore.
+
+  **Custom registry drivers:** `null` must round-trip through create, CAS, `get` **and** `list`, and a patch that
+  omits `currentGen` must leave it alone while a patch that sets it to `null` must apply. The shared conformance
+  suite gates all of it (case **R8**) — a driver that JSON-drops the field, coerces it to `0`, or merges the patch
+  with `patch.currentGen ?? previous` fails.
+
 ## [0.8.2] — 2026-08-04
 
 ### Fixed

@@ -124,6 +124,11 @@ export async function runConsistencyCheck(
       // enumerate + skip destroyed segments.
       const live = await deps.registry.get(ref);
       if (!live || live.status === 'destroyed') return { kind: 'ok' }; // vanished/shredded — no live pointer
+      // A row with no Cold generation is *deliberately* Cold-less — a warm-only accumulator that has a row so it
+      // is enumerable at all. There is no generation that ought to exist, so nothing can be missing. Reporting it
+      // would make `missing-cold-generation` fire on the healthy steady state of every such segment, which is the
+      // opposite of what a DR triage needs: the one real signal drowned in expected noise.
+      if (live.currentGen === null) return { kind: 'ok' };
       const present = await listGenerations(deps.cold, ref);
       if (present.has(live.currentGen)) return { kind: 'ok' };
       return {

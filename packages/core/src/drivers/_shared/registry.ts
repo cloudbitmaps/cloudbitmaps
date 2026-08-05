@@ -22,9 +22,13 @@ const MAX_GOVERNANCE_BYTES = 64 * 1024;
 const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
 
-function validateGeneration(gen: number): void {
+/** `null` is legal and meaningful: the segment has no Cold generation yet (see `RegistryRecord.currentGen`). */
+function validateGeneration(gen: number | null): void {
+  if (gen === null) return;
   if (!Number.isInteger(gen) || gen < 0) {
-    throw new ValidationError(`currentGen must be a non-negative integer; got ${gen}`);
+    throw new ValidationError(
+      `currentGen must be a non-negative integer or null (no Cold generation yet); got ${gen}`,
+    );
   }
 }
 
@@ -105,7 +109,7 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
 
 /** Validate the caller-settable fields in a `compareAndSwap` patch. */
 export function validateRegistryPatch(patch: RegistryPatch): void {
-  if (patch.currentGen !== undefined) validateGeneration(patch.currentGen);
+  if ('currentGen' in patch) validateGeneration(patch.currentGen ?? null);
   if (patch.dirtyChunkCount !== undefined) validateCount(patch.dirtyChunkCount);
   if (patch.consecutiveFailures !== undefined)
     validateCount(patch.consecutiveFailures, 'consecutiveFailures');
@@ -246,7 +250,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (
     typeof r.segment !== 'string' ||
     (r.namespace !== undefined && typeof r.namespace !== 'string') ||
-    typeof r.currentGen !== 'number' ||
+    (r.currentGen !== null && typeof r.currentGen !== 'number') ||
     typeof r.dirtyChunkCount !== 'number' ||
     typeof r.status !== 'string' ||
     typeof r.createdAt !== 'number' ||
@@ -256,7 +260,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   }
   // Enforce the same value invariants the write path checks, so corrupt/tampered bytes are rejected at the
   // read boundary (invariant 5) rather than leaking a bad currentGen/status downstream.
-  if (!Number.isInteger(r.currentGen) || r.currentGen < 0) {
+  if (r.currentGen !== null && (!Number.isInteger(r.currentGen) || r.currentGen < 0)) {
     throw new IntegrityError(`registry record has an invalid currentGen (${r.currentGen}): ${ctx}`);
   }
   if (!Number.isInteger(r.dirtyChunkCount) || r.dirtyChunkCount < 0) {
@@ -305,7 +309,11 @@ export function applyRegistryPatch(
   return {
     namespace: prev.namespace,
     segment: prev.segment,
-    currentGen: patch.currentGen ?? prev.currentGen,
+    // `'currentGen' in patch`, NOT `patch.currentGen ?? prev.currentGen`. `null` is a legal, meaningful value
+    // here (no Cold generation yet), and `??` treats it as absent — so the nullish form would silently ignore a
+    // patch that clears the pointer and leave the old generation in place. The same reason `wrappedDeks` and
+    // `keyId` below use presence: any field whose null is a *value* cannot be merged with `??`.
+    currentGen: 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen,
     wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     dirtyChunkCount: patch.dirtyChunkCount ?? prev.dirtyChunkCount,

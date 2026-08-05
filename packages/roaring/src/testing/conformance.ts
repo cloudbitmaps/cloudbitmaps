@@ -20,6 +20,7 @@ import type {
   ColdChunkSource,
   IRegistryDriver,
   IWarmDriver,
+  RegistryRecord,
   SegmentRef,
 } from '@cloudbitmaps/core';
 import {
@@ -243,6 +244,12 @@ async function drainSegments(it: AsyncIterable<{ segment: string }>): Promise<st
   return out;
 }
 
+async function drainRecords(it: AsyncIterable<RegistryRecord>): Promise<RegistryRecord[]> {
+  const out: RegistryRecord[] = [];
+  for await (const r of it) out.push(r);
+  return out;
+}
+
 /**
  * Contract tests for an {@link IRegistryDriver}. `makeDriver` MUST return a fresh, empty, isolated driver on
  * each call. Mirrors the Warm OCC contract (create / token-fenced CAS / ABA) plus the registry's record
@@ -437,6 +444,39 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       }
       const { token } = await d.create(SEG, { currentGen: 0 });
       await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: -5 }));
+    });
+
+    // R8 — `currentGen: null` ("this segment exists and has no Cold generation yet") is a first-class stored
+    // value, not a missing field. It is what makes a warm-only accumulator enumerable, so every driver must
+    // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
+    // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
+    // would leave the pointer at the old generation and read stale Cold data no one asked for.
+    it('round-trips a null currentGen through create, list, and CAS in both directions (R8)', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: null, retention: { expiresAt: 42 } });
+      const rec = await d.get(SEG);
+      expect(rec!.currentGen).toBeNull();
+      expect(rec!.status).toBe('active'); // null gen is a LIVE segment, not a tombstone
+      expect(rec!.retention).toEqual({ expiresAt: 42 });
+      // Enumeration must carry it too — a retention sweep reads `list()`, never a per-segment `get()`.
+      const listed = await drainRecords(d.list());
+      expect(listed.map((r) => r.currentGen)).toEqual([null]);
+
+      // null → 0: the compaction bootstrap publishing a first generation onto an existing row.
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 0 });
+      expect((await d.get(SEG))!.currentGen).toBe(0);
+
+      // 0 → null: clearing the pointer. The value is legal, so a driver must actually apply it; treating the
+      // patch field as absent (the `??` merge bug) would silently leave `currentGen: 0` here.
+      await d.compareAndSwap(SEG, t1, { currentGen: null });
+      expect((await d.get(SEG))!.currentGen).toBeNull();
+
+      // A patch that does not mention `currentGen` must NOT disturb it — the other half of the same trap.
+      const cleared = await d.get(SEG);
+      await d.compareAndSwap(SEG, cleared!.token, { dirtyChunkCount: 7 });
+      const after = await d.get(SEG);
+      expect(after!.currentGen).toBeNull();
+      expect(after!.dirtyChunkCount).toBe(7);
     });
 
     it('rejects traversal / invalid names on every method (R7)', async () => {

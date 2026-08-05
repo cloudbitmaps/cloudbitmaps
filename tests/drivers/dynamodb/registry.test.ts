@@ -145,6 +145,34 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
       expect(written.schemaVersion).toBe(REGISTRY_SCHEMA_VERSION); // stamped on write (format freeze)
     });
 
+    // The shared `registryConformance` R8 case covers this driver too, but only under LocalStack
+    // (`test:integration`). Serialization is exactly where a null pointer gets silently dropped or coerced, so
+    // the JSON body it writes and reads is pinned here, in the suite that runs on every commit.
+    it('round-trips a null currentGen through the serialized body (R8)', async () => {
+      const sent: Array<Record<string, unknown>> = [];
+      const d = driverWith((command) => {
+        const input = (command as { input: Record<string, unknown> }).input;
+        sent.push(input);
+        return Promise.resolve(
+          'UpdateExpression' in input
+            ? { Attributes: { v: { N: '3' } } }
+            : liveItem(body({ currentGen: null }), '2'),
+        );
+      });
+      // READ: a stored `null` parses as a live record with no Cold generation — not an IntegrityError, and not 0.
+      expect(await d.get(seg)).toMatchObject({ segment: 's', currentGen: null, status: 'active' });
+      // WRITE: clearing the pointer keeps the key in the body as an explicit `null`. `JSON.stringify` drops
+      // `undefined` fields (that is how a cleared `keyId` vanishes above) — `null` must NOT go the same way,
+      // or the merged body would silently re-read as whatever the previous generation was.
+      await d.compareAndSwap(seg, '2', { currentGen: null });
+      const update = sent.find((i) => 'UpdateExpression' in i)!;
+      const written = JSON.parse(
+        (update.ExpressionAttributeValues as { ':r': { S: string } })[':r'].S,
+      ) as Record<string, unknown>;
+      expect(written).toHaveProperty('currentGen');
+      expect(written.currentGen).toBeNull();
+    });
+
     it('a cleared keyId is omitted from the serialized body', async () => {
       const sent: Array<Record<string, unknown>> = [];
       const d = driverWith((command) => {
