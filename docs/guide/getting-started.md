@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.8.1` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.8.2` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
@@ -1072,6 +1072,54 @@ different questions:
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a PITR snapshot; discarding
 the key does. So if your requirement is *"the data must become unreadable"* rather than *"stop paying for it"*,
 encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted segment gives you both at once.
+
+### The accumulator pattern — a segment as a pure runtime set
+
+The shape a dedup or sent-list workload actually wants: create it by writing to it, accumulate during a wave,
+retire it when the window closes. **No seed, no warehouse export, no compaction, no daemon.**
+
+```ts
+// Nothing to create. Writing to it IS creating it — no registry row exists yet and none is needed.
+const ref = { namespace: 'sent-daily', segment: '2026-08-05' };
+const sent = store.segment(ref.segment, { namespace: ref.namespace });
+
+// Dedup with claimMany, not has()+add(): it returns only the ids THIS worker won, so two workers
+// racing the same recipient cannot both send. has() then add() has a window between them.
+const toSend = await sent.claimMany(candidateIds);
+for (const id of toSend) enqueue(id);
+
+// When the window closes:
+const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
+// → { dropped: true, reason: 'warm-only', warmRowsDeleted: 138, generationsDeleted: [] }
+```
+
+**Do not do this**, even though it looks harmless:
+
+```ts
+await bulkLoadCrbmGeneration(cold, { ...ref, generation: 0 }, [], { registry }); // ← pointless
+```
+
+An empty seed writes a real `.crbm` object and publishes a registry row, so you pay for an object and a row per
+wave for a segment that had no data — and then have to clean both up. A never-touched segment already answers
+`count() → 0`, `has(x) → false`, `iterate() → []` without throwing.
+
+**Reading the result of a retirement.** Branch on `dropped`; use `reason` to understand *how*:
+
+| `dropped` | `reason` | Meaning |
+|---|---|---|
+| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter) |
+| `true` | `undefined` | An ordinary drop — tombstone written, Cold generations swept |
+| `true` | `'already'` | Already tombstoned. **Not** a no-op: it also clears Warm rows that landed after the tombstone |
+| `false` | `'absent'` | **Nothing existed.** The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
+
+> Until `0.8.2` a successful `'warm-only'` retirement was reported as `{ dropped: false, reason: 'absent' }` with a
+> non-zero `warmRowsDeleted`. A cron written as `if (!res.dropped) alert()` fired on every success. If you wrote
+> that workaround, `dropped` is now the field to trust.
+
+**⚠️ And never put a native row TTL on the Warm table.** No DynamoDB TTL, no Redis `EXPIRE`, no Mongo TTL index.
+Warm rows are **un-compacted deltas**, so expiring them discards adds and removes that were never folded into
+Cold. In accumulator mode this is worse than anywhere else, because *everything* you have is Warm — a Warm TTL
+silently deletes the entire dataset with no error at all. Retire the segment, not the rows.
 
 ### Retiring a bucket
 

@@ -181,7 +181,16 @@ export interface DropDeps extends EraseDeps {
 export interface DropResult {
   readonly segment: string;
   readonly namespace?: string;
-  /** True iff the segment is now a `destroyed` tombstone (incl. the idempotent already-dropped case). */
+  /**
+   * **True iff this segment is now empty as a result of this call — or already was.** This is the field a
+   * retention job should branch on: `false` means the call found nothing to do and your ref is probably wrong.
+   *
+   * It is *not* simply "a tombstone exists", and that distinction is load-bearing. A **pure accumulator**
+   * segment — one created by writing to it and never compacted, so it has no registry row and no Cold objects —
+   * is retired by deleting its Warm rows alone, with no tombstone to write. That reports `dropped: true` with
+   * `reason: 'warm-only'`, because the data really is gone. Reporting it as `false` (which it did until
+   * `0.8.2`) made every successful retirement of an accumulator look like a failure.
+   */
   readonly dropped: boolean;
   /** Warm rows physically deleted. */
   readonly warmRowsDeleted: number;
@@ -232,11 +241,19 @@ export interface DropResult {
    */
   readonly cryptoShredded: boolean;
   /**
-   * `'absent'` (no registry row **and** no Cold objects — nothing existed to drop) or `'already'` (already a
-   * tombstone). Absent on a fresh drop.
+   * How the segment got to its current state. Absent on a fresh, ordinary drop (tombstone written, Cold swept).
    *
-   * Note what `'absent'` no longer means: it used to be returned while the call deleted every Cold generation it
-   * found, with no tombstone written. See {@link dropSegment}'s "the absent case" note.
+   * - `'warm-only'` — **a successful retirement.** No registry row and no Cold objects, so this was an accumulator
+   *   segment: its Warm rows were deleted and it now reads empty. Pairs with `dropped: true`.
+   * - `'already'` — it was already a tombstone. Idempotent; pairs with `dropped: true`. Note a re-drop is **not**
+   *   a no-op — it also clears Warm rows that landed after the tombstone.
+   * - `'absent'` — **nothing existed.** No registry row, no Cold objects, and no Warm rows to delete. Pairs with
+   *   `dropped: false`, and it is the one value worth alerting on: the usual cause is a mistyped name or an
+   *   omitted `namespace`, both of which address a *different* segment than you meant.
+   *
+   * Two things `'absent'` used to mean and no longer does: it was returned while the call deleted every Cold
+   * generation it found with no tombstone written (a data-integrity bug, fixed in `0.8.0`), and it was returned
+   * for a successfully retired accumulator segment (misleading, fixed in `0.8.2`).
    */
   readonly reason?: string;
 }
@@ -367,14 +384,32 @@ export async function dropSegment(
   if (shred.reason === 'absent') {
     const orphans = await listGenerations(deps.cold, ref);
     if (orphans.length === 0) {
+      // Nothing in Cold and no registry row. Two very different situations reach here, and reporting them
+      // identically was a defect — found by the first real consumer, whose whole workload lives in this shape.
+      //
+      // A **pure accumulator** segment (created by writing to it, never compacted, so it has no registry row and
+      // no Cold objects — the documented and supported way to use this as a runtime set) has now had its Warm
+      // rows deleted. Its data is gone: a fresh reader sees `count() === 0`. That is a successful retirement, and
+      // it used to be reported as `dropped: false, reason: 'absent'` *with* a non-zero `warmRowsDeleted` — which
+      // is self-contradictory, and which a retention cron written as `if (!res.dropped) alert()` would alarm on
+      // every single time it worked.
+      //
+      // A **genuinely nonexistent** segment — the typo the facade docs warn about — deleted nothing, and that one
+      // SHOULD alarm.
+      //
+      // So `dropped` now answers the question callers actually ask: *is this segment empty as a result of this
+      // call (or already was)?* `reason` says which route got there. There is deliberately still no tombstone in
+      // either case: a `destroyed` row for every retired accumulator would be registry litter, and for a typo'd
+      // name it would refuse that name forever.
+      const clearedWarmOnly = shred.warmRowsDeleted > 0;
       return {
         ...base,
-        dropped: false,
+        dropped: clearedWarmOnly,
         warmRowsDeleted: shred.warmRowsDeleted,
         generationsDeleted: [],
         generationsRemaining: [],
         cryptoShredded: false,
-        reason: 'absent',
+        reason: clearedWarmOnly ? 'warm-only' : 'absent',
       };
     }
     try {
