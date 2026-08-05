@@ -963,8 +963,8 @@ const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' }
 await bucket(today).addMany(idsSeenToday);
 
 // "Active in the last 7 days" — a union over the buckets you still keep.
-const days = last7Days.map(bucket);
-for await (const id of days[0].union(days.slice(1))) { /* … */ }
+const [head, ...rest] = last7Days.map(bucket);
+for await (const id of head.union(rest)) { /* … */ }
 
 // Retention = dropping whole buckets, not aging bits.
 ```
@@ -976,8 +976,19 @@ for await (const id of days[0].union(days.slice(1))) { /* … */ }
 > `active-2026-08-01` is legal too, but then finding "every daily bucket" means string-matching names.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
-[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window instead:
-`unionInto` a rolling `active-7d` segment once a day, and read that.
+[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window — but
+**materialize it into a fresh dated target, not a reused one**:
+
+```ts
+// Right: today's window is its own segment, and yesterday's is dropped when it ages out.
+const window = store.segment(`w-${today}`, { namespace: 'active-7d' });
+await days[0].unionInto(window, days.slice(1));
+```
+
+> ⚠️ **`unionInto` is purely additive — it never clears the destination.** Re-using one rolling `active-7d`
+> segment day after day therefore *accumulates*: union `{07-01, 07-02}` then `{07-02, 07-03}` into the same
+> target and you get `{07-01, 07-02, 07-03}`. The set grows monotonically and **silently stops being a 7-day
+> window**, with no error. An earlier revision of this guide recommended exactly that; it was wrong.
 
 **The best case for this pattern is a dedup or "already sent" window, where the bucket key _is_ the
 semantics.** Suppose you send a daily wave and a user must not be sent to twice in the same local day. Then the
@@ -1017,12 +1028,21 @@ encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted
 
 ### Retiring a bucket
 
+`store.dropSegment` needs the store built with a **raw cold driver + a registry** (it has to enumerate and
+delete generations, which a pre-built `ColdChunkSource` cannot do) — the same requirement as `compact` and
+`eraseSubject` in §13. Without it you get an `UnsupportedError`.
+
 ```ts
+// The namespace is part of the identity. Omit it and you address a DIFFERENT segment, and the call is a
+// silent no-op returning { dropped: false, reason: 'absent' } — no throw. Check `reason` in a sweep.
 const ref = { namespace: 'active-daily', segment: oldDay };
 
 // Look before you leap — reports the generations it WOULD delete, changes nothing.
 const preview = await store.dropSegment(ref, { confirmSegment: ref.segment, dryRun: true });
-console.log(`would delete generations ${preview.wouldDelete?.join(', ')}`);
+// `wouldDelete` is unbounded — it lists every generation still in Cold, and a segment compacted repeatedly
+// without the daemon's generation GC accumulates them. Log the count and a sample, not the whole array.
+const gens = preview.wouldDelete ?? [];
+console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join(', ')}${gens.length > 10 ? ' …' : ''}`);
 
 // Then do it.
 const result = await store.dropSegment(ref, { confirmSegment: ref.segment });

@@ -53,12 +53,13 @@ posture is "you wire it correctly," documented here.
 
 ## Erasure — what "delete" actually means
 
-CloudBitmaps gives you three erasure levers with different guarantees. Use them deliberately:
+CloudBitmaps gives you four levers with different guarantees. Use them deliberately:
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
 | **Logical remove** | `segment.remove(id)` / `removeMany` | *Immediate* — reads exclude the ID at once (tombstone; `effective = (Cold ∪ adds) \ removes`). The bit **physically persists** in the immutable Cold `.crbm` until that chunk is next compacted. | everyday "take this user out of this audience" |
 | **Physical purge** | `store.compact(ref, { owner })` on demand, or the compaction daemon (`compact-segments` / `runCompactionCycle`) on a schedule | A compaction folds the tombstone into a fresh generation and **physically drops** the bit. | meeting a physical-deletion deadline — *run compaction (the daemon on a schedule, or `store.compact` on demand) inside your SLA* |
+| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned, its Warm rows deleted and **every Cold generation deleted**, so the storage is reclaimed. Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
@@ -104,15 +105,28 @@ a storage-limitation anti-pattern if the data is personal. **Retention policy is
 - **Scheduled compaction** enforces any tombstones you've written for aged-out members within your window.
 - Surface segment age/size via the **metrics sink** so unbounded growth is visible, not silent.
 
-**Be precise about what "drop the oldest" involves**, because the library does two different things and neither
-is a plain delete. `destroySegment` **crypto-shreds** — it discards the key, so the Cold bytes become
-unreadable everywhere including backups, and it clears the Warm rows; but **the objects remain in your bucket**
-and you keep paying for those bytes. `gcOrphanGenerations` deletes only *superseded* generations, never the
-current one. **No library operation deletes a live segment's Cold objects**, so reclaiming the storage is
-out-of-band work — an **S3 lifecycle rule** on the segment's key prefix is the clean mechanism, since it is
-declarative and cannot race a reader. Note also that crypto-shred **requires encryption at rest**: a cleartext
-segment has no key to discard, and `allowCleartext` clears Warm while leaving the Cold bytes readable. Full
-detail, including the pattern and the pitfalls, is in the
+**Be precise about what "drop the oldest" involves**, because the three levers differ in what they guarantee:
+
+- **`store.dropSegment(ref, { confirmSegment })` is the retention lever.** It tombstones the segment, deletes
+  its Warm rows and deletes **every Cold generation** — so the storage is actually reclaimed. It works on a
+  cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
+- **`destroySegment` crypto-shreds** — it discards the key, so the Cold bytes become unreadable *everywhere
+  including backups, replicas and WORM-locked copies*, which no object deletion can achieve. But **the objects
+  remain in your bucket** and you keep paying for them, and it **requires encryption at rest** (a cleartext
+  segment has no key to discard; `allowCleartext` clears Warm while leaving the Cold bytes readable).
+- **`gcOrphanGenerations`** deletes only *superseded* generations, never the current one.
+
+So the two are complements, not alternatives: **`dropSegment` for "stop paying for it", `destroySegment` for
+"it must be unreadable even in backups"** — and on an encrypted segment `dropSegment` gives you both at once.
+
+> ⚠️ **Do not use an object-store lifecycle rule as your retention mechanism.** It deletes the bytes while the
+> registry still points at them, which is the `missing-cold-generation` torn state — and it surfaces
+> *intermittently*, because a read consults the in-process cache before Cold, so it passes testing on a warm
+> process and starts failing after a restart. A lifecycle rule is a fine **backstop** for orphans left by a
+> failed `dropSegment`; give it a window comfortably longer than your retention. Earlier revisions of this
+> document recommended it as the primary mechanism, which was wrong.
+
+Full detail, including the dated-bucket pattern and the pitfalls, is in the
 [guide](docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt).
 
 > ⚠️ **Do not enable your backend's native row expiry on the Warm table** (DynamoDB TTL, Redis `EXPIRE`, a
@@ -129,7 +143,12 @@ locked Cold object *cannot* be deleted before its retention date by anyone (not 
 
 1. Enable **Object Lock** on the segment's Cold `.crbm` objects (and enable versioning) for the hold period.
 2. **Exclude the segment from your compaction and erasure runs** — don't call `eraseSubject`, `destroySegment`,
-   or the compaction daemon against held segments, so the current generation (and its members) is preserved.
+   **`dropSegment`**, or the compaction daemon against held segments, so the current generation (and its members)
+   is preserved. **`dropSegment` matters most here**: it is the only call that deletes the bytes a hold exists to
+   protect. In COMPLIANCE mode Object Lock will refuse the delete, so the drop reports the generation as not
+   deleted rather than silently succeeding — but the tombstone is still written, so the segment reads as empty
+   while the locked bytes remain. **Exclude held segments from your retention sweep explicitly**; do not rely on
+   Object Lock to be the guard.
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 

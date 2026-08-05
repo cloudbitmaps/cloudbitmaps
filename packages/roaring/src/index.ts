@@ -693,10 +693,19 @@ export class CloudRoaring {
    *
    * ```ts
    * for (const day of expiredDays) {
-   *   const ref = { segment: `active:${day}` };
+   *   // A colon is NOT legal in a name — the family goes in the namespace, the date in the segment.
+   *   const ref = { namespace: 'active-daily', segment: day };
    *   await store.dropSegment(ref, { confirmSegment: ref.segment });
    * }
    * ```
+   *
+   * **Omitting the namespace addresses a different segment and is a silent no-op** — you get
+   * `{ dropped: false, reason: 'absent' }`, not a throw, so a retention loop with that mistake deletes nothing
+   * forever and quietly. Check `reason` in an automated sweep.
+   *
+   * Reads become empty within `coldGenTtlMs` (default 2 s), not instantly: a store that had already read this
+   * segment may answer from its cached generation + hot chunks until that window lapses. A reader that never
+   * touched it sees empty at once.
    *
    * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
    * because it has to enumerate and delete generations — a pre-built `ColdChunkSource` only reads.

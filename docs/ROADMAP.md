@@ -95,6 +95,10 @@ dependencies** — arrives transitively and is never installed directly.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
   destruction, plus `subjectReport` (access) and `eraseSubject` (erasure) with a truthful return-value
   ledger.
+- **Segment disposal** — `store.dropSegment` retires a segment and *reclaims its storage*: tombstone, Warm rows,
+  and every Cold generation, in that order. Works on cleartext (crypto-shred needs a key); on an encrypted
+  segment it does both. `dryRun` previews. This is the retention primitive — a rolling window is a scheduled loop
+  over it, and it exists so the ordering cannot be got wrong by a caller.
 - **Supply chain** — every GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
   on publish, and continuous coverage-guided fuzzing over the untrusted-`.crbm` boundary (nightly, plus a
   weekly deep run).

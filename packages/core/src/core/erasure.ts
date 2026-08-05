@@ -12,6 +12,7 @@
  * destroyed segment (a registry-checked write path) is a later hardening; the write path stays uncoupled today.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
+import { mapWithConcurrency } from './concurrency';
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import type { ChunkRef, IColdDriver, IRegistryDriver, IWarmDriver, SegmentRef } from './ports';
 
@@ -48,6 +49,19 @@ export interface DestroyResult {
 
 const MAX_CAS_ATTEMPTS = 8;
 const MAX_WARM_PASSES = 4;
+/**
+ * Deletes in flight at once, for both the Warm rows and the Cold generations.
+ *
+ * Serial was the first cut and it is the wrong shape for this path: erasure is a fan-out over *independent*
+ * keys, so a segment with 400 warm chunks paid 400 sequential round-trips (~20 s at 50 ms) for work that has no
+ * ordering between items. This is the same bound `engine.writeConcurrency` and `S3RegistryDriver`'s
+ * `LIST_READ_CONCURRENCY` already apply to the same kind of fan-out; the ceiling matters because an unbounded
+ * `Promise.all` over a large segment is a self-inflicted thundering herd against one table/bucket.
+ *
+ * Not configurable: this is an admin path called by a human or a nightly job, so a knob would be surface with no
+ * caller. If a deployment ever needs it tuned, it becomes an option then.
+ */
+const ERASE_CONCURRENCY = 8;
 
 /**
  * Crypto-shred one segment. **Irreversible.** `confirmSegment` must equal `ref.segment` (a guard against an
@@ -254,16 +268,24 @@ export async function dropSegment(
   const shred = await shredSegment(ref, deps, true);
 
   // Step 3. Deliberately after the tombstone and deliberately tolerant: see the ordering note above.
-  const generationsDeleted: number[] = [];
-  for (const generation of await listGenerations(deps.cold, ref)) {
-    try {
-      await deps.cold.delete({ ...ref, generation });
-      generationsDeleted.push(generation);
-    } catch {
-      // Leave it orphaned. The segment already reads as empty, so this is a billing problem, not a
-      // correctness one, and re-running the drop collects whatever was missed.
-    }
-  }
+  // `mapWithConcurrency` returns results in *input* order, so `generationsDeleted` stays ascending as documented
+  // even though the deletes complete out of order. Failures are swallowed per item, so the pool never aborts —
+  // one unreachable generation must not leave the rest of them orphaned too.
+  const outcomes = await mapWithConcurrency(
+    await listGenerations(deps.cold, ref),
+    ERASE_CONCURRENCY,
+    async (generation) => {
+      try {
+        await deps.cold.delete({ ...ref, generation });
+        return generation;
+      } catch {
+        // Leave it orphaned. The segment already reads as empty, so this is a billing problem, not a
+        // correctness one, and re-running the drop collects whatever was missed.
+        return null;
+      }
+    },
+  );
+  const generationsDeleted = outcomes.filter((g): g is number => g !== null);
 
   // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
   // deliberately NOT `|| generationsDeleted.length > 0`.
@@ -399,16 +421,26 @@ async function eraseWarm(warm: IWarmDriver, ref: SegmentRef): Promise<number> {
     for await (const row of warm.listChunks(ref))
       rows.push({ chunkKey: row.chunkKey, token: row.token });
     if (rows.length === 0) break; // nothing left — the only clean finish
-    for (const { chunkKey, token } of rows) {
-      const chunkRef: ChunkRef = { namespace: ref.namespace, segment: ref.segment, chunkKey };
-      try {
-        await warm.deleteConditional(chunkRef, token);
-        deleted += 1;
-      } catch (err) {
-        if (!isWriteConflictError(err)) throw err;
-        conflicts += 1; // rewritten mid-erase — caught on the next pass
-      }
-    }
+    // A conflict is caught inside `fn` and reported as `false`, so a rewritten row never aborts the pool — it is
+    // retried on the next pass. Any *other* error rejects, which propagates out of `eraseWarm` exactly as the
+    // serial version did (see the throw-vs-swallow note above); the running `deleted` tally is then discarded
+    // along with the result, which is why it is safe not to account for the in-flight deletes that still land.
+    const erased = await mapWithConcurrency(
+      rows,
+      ERASE_CONCURRENCY,
+      async ({ chunkKey, token }) => {
+        const chunkRef: ChunkRef = { namespace: ref.namespace, segment: ref.segment, chunkKey };
+        try {
+          await warm.deleteConditional(chunkRef, token);
+          return true;
+        } catch (err) {
+          if (!isWriteConflictError(err)) throw err;
+          return false; // rewritten mid-erase — caught on the next pass
+        }
+      },
+    );
+    for (const ok of erased) if (ok) deleted += 1;
+    conflicts = erased.length - erased.filter(Boolean).length;
     if (conflicts === 0) break;
   }
   if (conflicts > 0) {

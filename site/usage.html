@@ -99,6 +99,7 @@
               <a class="btn btn-primary" href="#quickstart">The six lines →</a>
               <a class="btn" href="#api">The whole API</a>
               <a class="btn" href="#drivers">Ten drivers</a>
+              <a class="btn" href="#retention">Retention</a>
             </p>
             <p class="meta">
               Apache-2.0 · 1 runtime dependency · cloud SDKs are optional peers you already have
@@ -306,15 +307,20 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">retire.ts</span><span class="label">One call, ordered correctly</span>
             </div>
-            <pre class="code-plain"><code><span class="c">// Preview first — dryRun changes nothing.</span>
+            <pre class="code-plain"><code><span class="c">// The namespace is part of the identity — omit it</span>
+<span class="c">// and you silently address a different segment.</span>
+<span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: oldDay };
+
+<span class="c">// Preview first — dryRun changes nothing.</span>
 <span class="k">await</span> store.dropSegment(ref, {
   confirmSegment: ref.segment, dryRun: <span class="k">true</span>,
 });
 
 <span class="c">// Tombstone + warm rows + every cold generation.</span>
-<span class="k">await</span> store.dropSegment(ref, {
+<span class="k">const</span> r = <span class="k">await</span> store.dropSegment(ref, {
   confirmSegment: ref.segment,
-});</code></pre>
+});
+<span class="c">// r.reason === 'absent' means you named it wrong.</span></code></pre>
           </div>
         </div>
         <p class="note">
