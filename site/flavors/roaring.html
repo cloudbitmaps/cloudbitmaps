@@ -276,7 +276,7 @@
            The third block is the load-bearing one. Two paragraphs saying "everything transfers" are worth
            nothing without the paragraph that names what does not, and raw byte-level compatibility genuinely
            does not exist today. Saying so is what makes the first two believable. -->
-      <section>
+      <section id="coming-from-redis-bitmaps">
         <h2>Coming from Redis bitmaps?</h2>
         <p class="lede">
           Then you are already using the shape this is built for. Here is exactly what carries over,
@@ -369,6 +369,20 @@
             >
             Batch and you are far cheaper than Redis; port the loop literally and you are far more
             expensive.
+          </p>
+          <p class="tpanel-foot">
+            <span class="label">What that costs</span> The write and byte counts are
+            backend-independent &mdash; they are what any warm driver receives. The bill is not. On
+            a <strong>per-request metered</strong> backend (DynamoDB on-demand, Astra) it is a
+            direct line item, and DynamoDB rounds up per 1&nbsp;KB per item, so small frequent
+            writes are penalised twice. On <strong>provisioned capacity</strong> it eats throughput
+            you already pay for, so the first symptom is throttling rather than dollars. On an
+            <strong>instance-priced</strong> backend (ElastiCache, RDS, Atlas, self-hosted
+            Cassandra) there is no per-op charge at all &mdash; it surfaces as IOPS, CPU and latency
+            headroom, which makes it easier to miss, not cheaper. Rates are region-specific and the
+            vendor's to change; every figure we publish uses the default
+            <span class="m">aws-us-east-1-ondemand</span> profile, and
+            <span class="call">estimateCost</span> accepts your own rates.
           </p>
           <p class="tpanel-foot">
             <span class="label">No seed step</span> A brand-new segment is usable immediately —

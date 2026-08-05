@@ -155,6 +155,22 @@
             <p class="meta">
               Apache-2.0 · 1 third-party dependency · 10 storage drivers · published tokenlessly via OIDC
             </p>
+            <!-- MUST stay BELOW the counts line above. `scripts/site-figures.cjs` gates the hero's
+                 figures by matching the FIRST `<p class="meta">` in this file, so a meta line inserted above
+                 that one silently shadows it — the gate caught exactly that when this line was added higher
+                 up. Two meta lines in the hero is fine; the order is not optional.
+
+                 On the content: "Redis bitmap alternative" is the JOB people search for, and claiming it
+                 unqualified would be falsifiable within an hour by anyone who ports a SETBIT loop and reads
+                 their bill. So the limit travels with the claim, and the detail lives one click away rather
+                 than in the hero. -->
+            <p class="meta">
+              Reaching for <span class="m">SETBIT</span> on a big key? This is a durable alternative for
+              set-shaped work, written in batches — not a drop-in replacement.
+              <a href="flavors/roaring.html#coming-from-redis-bitmaps"
+                >What carries over, and what doesn't →</a
+              >
+            </p>
           </div>
 
           <aside class="panel">

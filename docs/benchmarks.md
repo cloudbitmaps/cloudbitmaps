@@ -258,6 +258,25 @@ literally and you are far more expensive. `claimMany(ids)` exists in batch form 
 Volume itself is cheap — it is *op count* that costs. **200,000 ids spread over a 9M-id space occupy 138 Warm
 rows**, not 200,000: one row per 64K of id space actually touched.
 
+### What that costs you depends on the backend's pricing model
+
+The **write and byte counts above are backend-independent** — they are what *any* Warm driver receives, so they are
+a property of how you batch, not of where you store. What they *cost* is not:
+
+| Warm backend pricing model | How the amplification shows up |
+| --- | --- |
+| **Per-request metered** — DynamoDB on-demand, Astra, most serverless KV | A direct line item. DynamoDB charges one write unit per **1 KB, rounded up, per item**, so small frequent writes are penalized twice: once by the per-request floor and again by rounding. The ~4.75 KB average per-id write above bills 5 units each — ~25,000 units for the loop against 8 for one call |
+| **Provisioned capacity** — DynamoDB provisioned, reserved throughput | Not extra dollars, until it is: it consumes capacity you already pay for, so the first symptom is **throttling and retry latency**, and the bill moves only when you scale the table up to stop it |
+| **Instance-priced** — ElastiCache/Redis, RDS Postgres/MySQL, Mongo Atlas, self-hosted Cassandra | **No per-op charge at all.** The amplification is real but shows up as IOPS, CPU and latency headroom rather than an invoice line — which makes it easier to miss, not cheaper |
+
+So the per-id loop is a **pricing** problem on a metered backend and a **capacity** problem on an instance-priced
+one. Either way, batching removes it.
+
+> **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
+> repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the *ratios* as the durable
+> finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
+> `PricingProfile` so you can plug your real rates in rather than trusting ours.
+
 **Method.** In-memory Warm driver wrapped in a counting proxy, byte totals taken from the encoded delta handed to
 `putConditional`, so the figures are the payload the driver would send — not an estimate. Ids are `i * 3` over 5,000
 ids (dense, one chunk) for the first table and `i * 45` over 200,000 for the row count. Backend-independent: the
