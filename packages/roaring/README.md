@@ -37,22 +37,45 @@ p99 on a working set that fits a bounded hot cache, use Redis. If your sets are 
 
 ## Coming from Redis bitmaps?
 
-Your operations carry over one-for-one, and you are not giving up the bitmap: past **4,096 ids** in a
-65,536-id chunk — 6.25% of it — Roaring stores that chunk *as* a flat bit array, byte for byte what you have
-now. It just stops paying for the chunks you never wrote to.
+**A durable alternative to Redis bitmaps for set-shaped work** — audiences, dedup, suppression, membership —
+where the sets are large, mostly idle, must survive a restart, and are written in **batches**. You are not giving
+up the bitmap either: past **4,096 ids** in a 65,536-id chunk — 6.25% of it — Roaring stores that chunk *as* a flat
+bit array, byte for byte what you have now. It just stops paying for the chunks you never wrote to.
 
 | Redis | Here |
 |---|---|
-| `SETBIT` / `GETBIT` | `add` / `remove` · `has` |
+| `SETBIT` / `GETBIT` | `add` / `addMany` · `remove` / `removeMany` · `has` |
+| `prior = SETBIT` | `claimMany(ids)` — adds a batch and returns only the ids that were **not** already there, so an *"already sent to this id?"* check is exactly-once |
 | `BITCOUNT` | `count()` — exact, served from the index with no payload reads |
 | `BITOP AND` / `OR` / `DIFF` | `intersect` / `union` / `andNot` — and `intersect` skips chunks that cannot contribute |
+| `EXPIRE` | a dated segment + `dropSegment` — there is no TTL, and enabling your backend's own row expiry on the warm table would discard un-compacted deltas |
 
-**What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything reading your
+**It is not a drop-in replacement, and two limits are worth knowing before you port anything.**
+
+**1. Do not port a per-id write loop.** `SETBIT` flips one bit in place and is genuinely O(1). Here a warm write
+re-serializes a whole 65,536-id chunk, so **5,000 ids added one at a time cost 5,000 writes and 23,762 KB, against
+1 write and 8 KB for the same ids in one call** — roughly 3,000× the bytes. Batch and you are far cheaper than
+Redis; port the loop literally and you are far more expensive. On a per-request-metered store (DynamoDB on-demand)
+that is a line item; on an instance-priced one (ElastiCache, RDS) it surfaces as IOPS and latency headroom instead,
+which makes it easier to miss rather than cheaper. `claimMany` takes a batch for exactly this reason.
+
+**2. What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything reading your
 Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup —
 will not read ours. `BITFIELD`, `BITPOS`, `BITOP NOT` and byte-range `BITCOUNT` have no equivalent either: this
-is a set of ids, not an addressable bit buffer. Raw bit-position import/export is unbuilt;
+is a set of ids, not an addressable bit buffer, and `NOT` in particular has no bounded universe to complement
+against. Raw bit-position import/export is unbuilt;
 [say so in an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) if you need it, because that is what
 decides whether it gets built.
+
+## No seed step, and compaction is optional
+
+A brand-new segment is usable the moment you construct the store: `addMany`, `has`, `remove`, `count`, `iterate`
+and the whole set algebra work against a segment with **no cold generation and no registry row**, because a read
+merges `(cold ∪ warm.adds) \ warm.removes` and an absent cold tier just makes that merge trivial. Bulk-load is an
+**import** path for data you already have elsewhere, not an initialization step.
+
+Compaction is a **cost** optimization, never a correctness requirement — it buys cheaper storage, smaller rewrites,
+and a free index-only `count()`. For a write-once dated bucket you retire with `dropSegment`, skip it entirely.
 
 Redis stays first-class as a **warm tier** underneath this (`@cloudbitmaps/roaring/redis`) — the point above is
 about replacing `SETBIT`-on-one-giant-key as your *data model*, not replacing Redis as infrastructure.

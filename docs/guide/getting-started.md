@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.8.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.8.1` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
