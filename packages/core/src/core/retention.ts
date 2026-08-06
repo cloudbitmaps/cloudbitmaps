@@ -29,6 +29,7 @@
  * read still resolves exactly as it did before.
  */
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
+import { canIndex, dueBucket, dueIndexRef } from './due-index';
 import type { GovernanceMeta, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 
 /** The key the policy is stored under inside the row's `retention` metadata. */
@@ -73,6 +74,16 @@ export interface SetRetentionResult {
    * now enumerable. The row claims no Cold generation (`currentGen: null`), so reads are unaffected.
    */
   readonly createdRow: boolean;
+  /**
+   * True iff the **due-index pointer** for this policy was written, so a fast sweep will find this segment by
+   * reading only its expiry day instead of scanning the fleet.
+   *
+   * `false` is a **degradation, not an error**, and the policy is committed either way: either the ref is too
+   * long to encode into one index-row name, or the pointer write failed. The full-scan repair pass still sees
+   * the segment's own row, so it is retired on the repair cadence rather than the fast one — slower, never
+   * never. Alarm on a *sustained* run of `false`, not on one.
+   */
+  readonly indexed: boolean;
 }
 
 /** Fail-fast validation of a caller-supplied policy. Boundary check — untrusted-input posture. */
@@ -138,6 +149,58 @@ export async function getSegmentRetention(
  * Refuses a `destroyed` segment: a tombstone has nothing left to retire, and putting a policy on one would make
  * a sweep repeatedly "retire" bytes that are already gone.
  */
+/** The expiry currently recorded on a row, if any — the input to deciding which old pointer to remove. */
+function readExpiresAt(record: { retention?: GovernanceMeta } | null): number | undefined {
+  const parsed = record === null ? null : readRetentionPolicy(record.retention);
+  return parsed === null || parsed === 'invalid' ? undefined : parsed.expiresAt;
+}
+
+/**
+ * Move the due-index pointer to match a policy change: add the new bucket's pointer, drop the old one.
+ *
+ * **Best-effort by construction, and that is the design rather than a shortcut.** The policy is already
+ * committed when this runs, and the index is a fast path that nothing depends on for correctness — a pointer
+ * that fails to appear costs a repair-cadence delay, and one that fails to disappear costs a single wasted read
+ * when its bucket comes due (the sweep re-reads the live row and skips). So a failure here must never turn a
+ * successful policy write into a thrown error; it is reported through `indexed` instead.
+ *
+ * Order matters the other way round from intuition: the **new pointer is written first**. Interrupted between
+ * the two writes, the segment is then reachable from both buckets — a duplicate the sweep handles by re-reading
+ * — whereas the reverse order would leave a window in which it is reachable from neither.
+ */
+async function reindex(
+  ref: SegmentRef,
+  deps: RetentionDeps,
+  expiresAt: number | undefined,
+  previousExpiresAt: number | undefined,
+): Promise<boolean> {
+  // Not independently observable: `dueIndexRef` would throw for the same refs and the catch below would swallow
+  // it to the same `indexed: false`. Kept because relying on a thrown ValidationError for ordinary control flow
+  // reads as an accident, and because it keeps a programming condition out of a try block whose catch exists for
+  // I/O failures. No mutation kills it, and that is a property of the equivalence, not of the tests.
+  if (!canIndex(ref)) return false;
+  const nextBucket = expiresAt === undefined ? undefined : dueBucket(expiresAt);
+  const oldBucket = previousExpiresAt === undefined ? undefined : dueBucket(previousExpiresAt);
+  let indexed = expiresAt === undefined;
+  if (nextBucket !== undefined) {
+    try {
+      await deps.registry.create(dueIndexRef(nextBucket, ref), { currentGen: null });
+      indexed = true;
+    } catch (err) {
+      // Already there — the pointer is idempotent, and a second policy write in the same day is the common case.
+      if (isWriteConflictError(err)) indexed = true;
+    }
+  }
+  if (oldBucket !== undefined && oldBucket !== nextBucket) {
+    try {
+      await deps.registry.delete(dueIndexRef(oldBucket, ref));
+    } catch {
+      // A pointer left behind is read once, when its bucket comes due, and skipped. Nothing to recover.
+    }
+  }
+  return indexed;
+}
+
 export async function setSegmentRetention(
   ref: SegmentRef,
   deps: RetentionDeps,
@@ -145,9 +208,12 @@ export async function setSegmentRetention(
 ): Promise<SetRetentionResult> {
   validateRetentionPolicy(policy);
   const base = { segment: ref.segment, namespace: ref.namespace };
+  /** The bucket this segment was already in, if any — its pointer has to be removed when the expiry moves. */
+  let previousExpiresAt: number | undefined;
   for (let attempt = 0; attempt < RETENTION_CAS_ATTEMPTS; attempt += 1) {
     const record = await deps.registry.get(ref);
     try {
+      previousExpiresAt = readExpiresAt(record);
       if (record === null) {
         // The warm-only accumulator case. `currentGen: null` is what makes this safe: the row exists purely so
         // the segment is enumerable, and it claims no Cold generation, so generation resolution takes the same
@@ -156,13 +222,23 @@ export async function setSegmentRetention(
           currentGen: null,
           retention: { [EXPIRES_AT]: policy.expiresAt },
         });
-        return { ...base, expiresAt: policy.expiresAt, createdRow: true };
+        return {
+          ...base,
+          expiresAt: policy.expiresAt,
+          createdRow: true,
+          indexed: await reindex(ref, deps, policy.expiresAt, undefined),
+        };
       }
       assertNotDestroyed(record, ref);
       await deps.registry.compareAndSwap(ref, record.token, {
         retention: { ...record.retention, [EXPIRES_AT]: policy.expiresAt },
       });
-      return { ...base, expiresAt: policy.expiresAt, createdRow: false };
+      return {
+        ...base,
+        expiresAt: policy.expiresAt,
+        createdRow: false,
+        indexed: await reindex(ref, deps, policy.expiresAt, previousExpiresAt),
+      };
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
       // Lost the race (a compaction commit, a dirty-count hint, another policy write) — re-read and retry.
@@ -198,6 +274,7 @@ export async function clearSegmentRetention(
       await deps.registry.compareAndSwap(ref, record.token, {
         retention: Object.keys(rest).length === 0 ? undefined : rest,
       });
+      await reindex(ref, deps, undefined, readExpiresAt(record));
       return true;
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;

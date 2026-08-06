@@ -84,10 +84,25 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
   means slower, never never.
 
+- **The due index is now maintained.** `setRetention` writes the pointer for the expiry's day, moves it when the
+  expiry moves, and `clearRetention` removes it. `SetRetentionResult` gains **`indexed`** — true when a fast
+  sweep will find this segment by reading only its expiry day instead of scanning the fleet.
+
+  `indexed: false` is a **degradation, not an error**, and the policy is committed either way: the ref is too
+  long to encode into one row name, or the pointer write failed. The full-scan repair pass still sees the
+  segment's own row. Alarm on a *sustained* run of `false`, never on one.
+
+  The new pointer is written **before** the old one is deleted: interrupted between the two, a segment is
+  reachable from both buckets (a duplicate the sweep resolves by re-reading the live row), where the reverse
+  order would leave a window in which it is reachable from neither.
+
 ### Changed
 
-- `drainRegistry` and compaction discovery skip the reserved lease namespace on an **unscoped** scan. A scan
-  explicitly scoped to it still sees the rows.
+- Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — partition leases and due-index
+  pointers. One predicate (`isReservedRow`) declares the families, rather than a comparison inlined at each
+  call site: the first cut inlined it and shipped with three sites missed, and the due index then leaked into
+  the retention sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a
+  reserved namespace still sees its rows.
 
 ## [0.9.0] — 2026-08-05
 

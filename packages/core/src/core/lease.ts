@@ -25,6 +25,7 @@
  * on.
  */
 import { isWriteConflictError, ValidationError } from './errors';
+import { isDueIndexRow } from './due-index';
 import type { Clock } from './determinism';
 import type { IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 
@@ -70,14 +71,18 @@ export function partitionOfLeaseRow(segment: string): number | null {
 }
 
 /**
- * Is this record a coordination row rather than a segment? **Every unscoped fleet-wide enumeration must skip
- * these** — `drainRegistry`, compaction discovery, the export/eject scan, and the all-namespaces GDPR paths.
- * One predicate rather than an inlined comparison per call site, because a filter you have to remember at each
- * site is a check that cannot fire; the first cut of this shipped with three call sites missed, including
- * `subjectReport`, where the lease rows consumed an Art. 15 request's per-op budget.
+ * Is this record **bookkeeping** rather than a segment? Covers every reserved family — partition leases and
+ * due-index pointers today. **Every unscoped fleet-wide enumeration must skip these**: `drainRegistry`,
+ * compaction discovery, the export/eject scan, and the all-namespaces GDPR paths.
+ *
+ * This is the ONE place a reserved family is declared, and a new one belongs here rather than at the call
+ * sites. The first cut of the lease work inlined the comparison per site and shipped with three missed —
+ * including `subjectReport`, where the rows consumed an Art. 15 request's per-op budget — and the due index
+ * then leaked into the retention sweep's own fleet count the moment it started writing pointers. A filter you
+ * have to remember at each site is a check that cannot fire.
  */
 export function isReservedRow(record: Pick<RegistryRecord, 'namespace'>): boolean {
-  return record.namespace === LEASE_NAMESPACE;
+  return record.namespace === LEASE_NAMESPACE || isDueIndexRow(record);
 }
 
 /**
