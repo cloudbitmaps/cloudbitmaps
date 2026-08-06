@@ -15,6 +15,7 @@ catches a torn restore before it bites.
 - [Backup checklist](#backup-checklist)
 - [Restore procedure](#restore-procedure)
 - [Operational caveat: no manual publish under active compaction](#operational-caveat-no-manual-publish-under-active-compaction)
+- [Repair: an unstamped tombstone after a hard kill](#repair-an-unstamped-tombstone-after-a-hard-kill)
 - [`checkConsistency()` — verify before you serve traffic](#checkconsistency--verify-before-you-serve-traffic)
 - [Encryption & DR](#encryption--dr)
 - [What is *not* recoverable (and why that's correct)](#what-is-not-recoverable-and-why-thats-correct)
@@ -159,6 +160,121 @@ can strand or lose a generation — the same class of silent lost-update the con
 Quiesce the daemon for the target segment (or the fleet) before any manual publish/bulk-load, then re-run
 `checkConsistency()` afterward. This applies during a restore (steps 6–7 may involve manual `currentGen` rolls)
 and in steady-state ops alike.
+
+## Repair: an unstamped tombstone after a hard kill
+
+The one failure in the retention path that does **not** self-heal, and the only one in this runbook that needs a
+human. It costs nothing in steady state and is cheap to check for, so check for it after any hard kill of a
+process that runs `retireExpired` (the engine, the `retire` CLI, or your own scheduler).
+
+**What happens.** Retiring an expired segment is two round trips, not one:
+
+```text
+  1. dropSegment(ref)          CAS the registry row → status: 'destroyed'   ← the retirement itself
+  2. stampRetirement(ref)      CAS retention.retiredBySweepAt = now         ← the attribution
+```
+
+A `SIGKILL` — or a `terminationGracePeriodSeconds` that expires, or a node that vanishes — landing **between**
+those two leaves a tombstone with no stamp. The in-process `catch` that would re-stamp it cannot run.
+
+**Why the stamp is a separate write, and why we won't merge it.** The stamp is a *positive marker the sweep
+writes on its own work*. The alternative — inferring "this tombstone was a retirement because the row is
+`destroyed` and carries an expired policy" — is wrong in a way that matters: `destroySegment` never touches
+`retention`, so the ordinary sequence *(set a 30-day policy → a GDPR request arrives mid-window →
+`destroySegment`)* produces a **crypto-shred** tombstone carrying an expired policy. Auto-purging that row
+destroys your local attestation for a right-to-erasure execution and un-fences the name for every writer. The
+marker cannot be forged by that ordering; the inference can.
+
+**Why nothing tells you.** The purge path reads the stamp and, finding none, does a bare `continue`:
+
+```ts
+const retiredAt = retirementStamp(rec.retention);
+if (retiredAt === null) continue;   // not ours — a GDPR tombstone, or a manual drop
+```
+
+No ledger entry, no counter, no metric. `checkConsistency()` won't see it either — it skips `destroyed`
+segments by design. **The symptom you will actually notice is downstream**, and it looks like something else:
+
+| | What you see |
+|---|---|
+| **The name is fenced, permanently** | `publishGeneration` and `bulkLoadCrbmGeneration` **throw** on a `destroyed` row; compaction returns `reason: 'destroyed'` and declines. Re-creating that segment name never produces a cold generation. |
+| **Warm grows without bound** | the write path is deliberately uncoupled from the registry, so `add`/`addMany` on that name still land in warm — and nothing will ever compact them. Read cost climbs with every delta. |
+| **The row and its objects are billed forever** | the sweep will not purge an unstamped tombstone, and `gcOrphanGenerations` is only ever called for a segment the sweep is purging. |
+
+### Detect
+
+Use your own registry driver instance — the facade keeps it private on purpose, and this is an admin action, not
+an API. `list()` carries `status` and `retention` in its projection, so this is one scan, no per-segment reads:
+
+```ts
+for await (const rec of registry.list(/* namespace? */)) {
+  if (rec.status !== 'destroyed') continue;
+  if (typeof rec.retention?.retiredBySweepAt === 'number') continue;   // a normal sweep retirement
+  console.log(rec.namespace ?? '_default', rec.segment, rec.retention);
+}
+```
+
+Every row this prints is an unstamped tombstone. **Most of them are legitimate** — a crypto-shred
+(`destroySegment` / `eraseNamespace`) or a manual `dropSegment` is *supposed* to be unstamped and permanent.
+Deciding which is which is the part that needs a person:
+
+- **Check your audit sink** for a `segment.destroy` / `namespace.erase` event for that segment. That is the
+  reliable discriminator. An erasure event ⇒ leave the row alone; it is your attestation.
+- An expired `retention.expiresAt` on the row is **not** sufficient evidence on its own — see the GDPR ordering
+  above. Treat it as a hint that narrows the list, never as the answer.
+- Correlate with the kill: an interrupted retirement is contemporaneous with the crash. `updatedAt` on the row
+  is within seconds of it.
+
+### Repair
+
+Once you have established a row was an interrupted *retirement*, pick by whether the name must come back:
+
+**(a) Let the sweep finish its job — the default.** Write the stamp the crash prevented. The next
+`retireExpired` then treats the row as its own, waits out the grace window, verifies cold and warm are actually
+empty, collects any orphan generations, and deletes the row:
+
+```ts
+const rec = await registry.get(ref);
+if (rec?.status === 'destroyed' && rec.retention?.retiredBySweepAt === undefined) {
+  await registry.compareAndSwap(ref, rec.token, {
+    retention: { ...rec.retention, retiredBySweepAt: Date.now() },
+  });
+}
+```
+
+Use the *original* retirement time if you have it from your logs rather than `Date.now()`; the value only
+controls when the grace window elapses.
+
+**(b) Return the name to service now.** Delete the row — but **only** after confirming cold and warm hold
+nothing for it. That precondition is not bureaucracy: deleting the row while cold objects remain strands them
+permanently (`gcOrphanGenerations` reads the row to decide what to collect), and deleting it over live warm
+deltas *resurrects* the segment, complete with any ids a writer added after the drop.
+
+```ts
+for await (const k of cold.list(ref)) throw new Error(`cold not empty: ${k}`);
+for await (const r of warm.listChunks(ref)) throw new Error(`warm not empty: chunk ${r.chunkKey}`);
+await registry.delete(ref);
+```
+
+If either is non-empty, re-run `dropSegment(ref)` first (it is idempotent and clears late warm rows), then
+prefer **(a)** and let the sweep reclaim it.
+
+### Prevent
+
+The window only opens on a kill that skips the graceful path, so close that path:
+
+- **`terminationGracePeriodSeconds` (or ECS `stopTimeout`) ≥ the `timeoutMs` you pass `stop()` + margin**, and
+  that `timeoutMs` ≥ your p99 cycle. Otherwise every deploy is a `SIGKILL`.
+- **Make sure `SIGTERM` is actually delivered.** A shell-form `CMD` puts a shell at PID 1 that does not forward
+  signals, so the container never receives it and *every* stop becomes a kill after the grace period. Use
+  exec-form `CMD`, or an init that forwards.
+- **Set a request timeout on the SDK client you inject.** There is no `AbortSignal` anywhere in this library —
+  deliberately, since a homegrown timeout would abandon in-flight requests mid-write. The consequence is that a
+  black-holed connection hangs a cycle indefinitely; without a client timeout, `stop()` cannot drain and the
+  grace period runs out. This is the single highest-value thing you own.
+
+An automated reconcile — one that pairs the audit trail against unstamped tombstones itself — is a recorded
+deferral, not a shipped feature. Until it lands, this section is the procedure.
 
 ## `checkConsistency()` — verify before you serve traffic
 

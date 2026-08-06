@@ -39,6 +39,16 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   **What the caller still owns:** a request timeout on the injected SDK client. Without one nothing here can
   bound a cycle.
 
+- **Docs — a runbook for the one retention failure that does not self-heal.**
+  [disaster-recovery.md](docs/guide/disaster-recovery.md) gains *"an unstamped tombstone after a hard kill"*.
+  Retiring an expired segment is two round trips — the `destroyed` CAS, then the `retiredBySweepAt` attribution
+  — and a `SIGKILL` between them leaves a tombstone the sweep will never purge, with no ledger entry, no counter
+  and no metric to say so. The name is then fenced against publish, bulk-load and compaction while writes keep
+  landing in warm and nothing compacts them. The entry covers detection, how to tell an interrupted retirement
+  apart from a legitimate crypto-shred tombstone (they can look identical on the row — the audit trail is the
+  discriminator), the two repairs, and the deployment settings that keep the window shut. It ships now, ahead of
+  the automated reconcile, because a failure that needs a human cannot wait behind the code that automates it.
+
 ### Fixed
 
 - **A worker compacted only ONE of the partitions it held.** `runLifecycleCycle` passed `shard:
