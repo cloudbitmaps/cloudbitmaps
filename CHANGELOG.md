@@ -14,6 +14,28 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **A worker compacted only ONE of the partitions it held.** `runLifecycleCycle` passed `shard:
+  partitionsHeld[0]`, so a worker holding four partitions compacted a quarter of its own slice and left the rest
+  to grow — warm tiers growing without bound, reads getting slower and more expensive, and **nothing erroring**.
+  Never released (it landed and was found the same day, by an operational-resilience audit), and masked entirely
+  by the default of one partition — it only bit anyone who raised `partitions`, which is exactly what the option
+  invites. `DiscoveryOptions` now takes `shards` (a set) alongside the single `shard`, and discovery still costs
+  one registry scan however many shards are listed.
+
+  **The test that existed asserted the two workers' slices were *disjoint*, which stayed true while three
+  quarters of the work silently did not happen.** Disjointness is not coverage. The suite now asserts coverage
+  directly, for compaction and retention separately — the first version of that test asserted only retention and
+  a mutation reverting compaction stayed green.
+
+- **Every replica swept the whole fleet.** `retireExpired` had no shard option, so an N-replica engine had all N
+  running the full sweep each cycle and contending over the same segments — the hazard the compaction CLI has
+  documented since `0.8.0`, reintroduced silently by the lifecycle cycle. It now takes `shards`/`totalShards`
+  and uses the **same stable hash as compaction discovery**, so a worker retires and compacts the same slice.
+  `shardOf` moved to one definition for that reason: if the two disagreed, the union across workers would be
+  neither disjoint nor complete.
+
 ### Added
 
 - **Partition leases — `runLeaseCycle` / `releaseAll` / `emptyLeaseState`** (plus `leaseRef`,

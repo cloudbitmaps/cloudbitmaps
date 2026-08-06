@@ -48,6 +48,7 @@ import {
   dueIndexRef,
   dueNamespace,
 } from './due-index';
+import { segmentKey, shardOf } from './keys';
 import type { IRegistryDriver, RegistryRecord } from './ports';
 import type { GovernanceMeta, IColdDriver, IWarmDriver, SegmentRef } from './ports';
 
@@ -94,6 +95,15 @@ export interface RetireExpiredOptions {
    * repair pass. The default stays `'fleet'` so that upgrading changes nothing about what gets retired.
    */
   readonly scan?: 'fleet' | 'index';
+  /**
+   * **The shards this worker owns**, with {@link totalShards}. Without them every replica sweeps the whole
+   * fleet and contends over the same segments — the hazard the compaction CLI documents and that a
+   * multi-process engine would otherwise reintroduce. Uses the same stable hash as compaction discovery, so a
+   * worker retires and compacts the *same* slice.
+   */
+  readonly shards?: readonly number[];
+  /** Total shards the fleet is split into. Required with {@link shards}; ignored without it. */
+  readonly totalShards?: number;
   /**
    * How many **past** buckets an `'index'` scan reads besides the current one (default
    * {@link DEFAULT_LOOKBACK_BUCKETS}). A sweep that did not run — scaled to zero, a failed deploy, a paused
@@ -327,6 +337,13 @@ export async function retireExpired(
           op: 'retireExpired',
         });
 
+  const shards = options.shards;
+  const totalShards = options.totalShards ?? 0;
+  const mine =
+    shards === undefined || totalShards <= 1
+      ? rows
+      : rows.filter((r) => shards.includes(shardOf(segmentKey(r), totalShards)));
+
   const entries: RetireEntry[] = [];
   let eligible = 0;
   let retired = 0;
@@ -340,7 +357,7 @@ export async function retireExpired(
   // every Warm row in the namespace was deleted. Reproduced by two independent reviews.
   let attempted = 0;
 
-  for (const rec of rows) {
+  for (const rec of mine) {
     const ref: SegmentRef = { namespace: rec.namespace, segment: rec.segment };
     const base = { segment: rec.segment, namespace: rec.namespace };
     const policy = readRetentionPolicy(rec.retention);
@@ -502,7 +519,7 @@ export async function retireExpired(
   }
 
   return {
-    scanned: rows.length,
+    scanned: mine.length,
     eligible,
     retired,
     wouldRetire,

@@ -47,7 +47,23 @@ import {
   WriteConflictError,
   isWriteConflictError,
 } from './errors';
-import { segmentKey } from './keys';
+import { segmentKey, shardOf } from './keys';
+
+/**
+ * Does this worker own the segment's shard? `shards` (a set) supersedes `shard` (a single slice) — a worker
+ * that holds four partitions and can only name one compacts a quarter of its own slice, and the rest grows
+ * silently forever. Neither given ⇒ it owns everything.
+ */
+function ownsShard(
+  key: string,
+  totalShards: number,
+  shard: number | undefined,
+  shards: readonly number[] | undefined,
+): boolean {
+  const mine = shardOf(key, totalShards);
+  if (shards !== undefined) return shards.includes(mine);
+  return shard === undefined || mine === shard;
+}
 import { isReservedRow } from './lease';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
@@ -885,6 +901,13 @@ export interface DiscoveryOptions {
    * O(dirty) indexed-enumeration seam that would shard the scan too is deferred (gap #3). Default: handle all.
    */
   readonly shard?: number;
+  /**
+   * **The shards this worker owns**, when it owns more than one. Supersedes {@link shard}, which can only
+   * express a single slice — a worker holding four partitions and passing only the first compacts a quarter of
+   * its own slice and silently leaves the rest to grow. Discovery stays ONE registry scan regardless of how
+   * many shards are listed.
+   */
+  readonly shards?: readonly number[];
   readonly totalShards?: number;
   /**
    * Poison-segment quarantine (gap #2): a segment whose `consecutiveFailures` has reached this threshold is
@@ -911,16 +934,6 @@ function validateShard(shard: number, totalShards: number): void {
   if (!Number.isInteger(shard) || shard < 0 || shard >= totalShards) {
     throw new ValidationError(`shard must be an integer in [0, ${totalShards}); got ${shard}`);
   }
-}
-
-/** Deterministic FNV-1a shard assignment for a segment key — dependency-free, stable across workers/restarts. */
-function shardOf(key: string, totalShards: number): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 0x0100_0193);
-  }
-  return (h >>> 0) % totalShards;
 }
 
 interface KnownSegment {
@@ -978,7 +991,7 @@ export async function findCompactable(
   const out: CompactionCandidate[] = [];
   for (const [key, seg] of known) {
     // Shard filter (gap #3): a worker handles only its slice, so it drains ~1/N of Warm per cycle.
-    if (totalShards > 1 && shardOf(key, totalShards) !== shard) continue;
+    if (totalShards > 1 && !ownsShard(key, totalShards, shard, options.shards)) continue;
     // Poison-segment quarantine (gap #2): skip a repeatedly-failing segment — don't even drain it — until the
     // cooldown since its last update elapses, then let it retry once. Transient faults self-heal; persistent
     // ones re-quarantine on the next failure.

@@ -157,6 +157,7 @@ export async function runLifecycleCycle(
   const errors: LifecyclePhaseError[] = [];
   const cycle = state.cycle + 1;
   const repairEvery = options.retention?.repairEvery ?? DEFAULT_REPAIR_EVERY;
+  const partitions = options.partitions ?? DEFAULT_PARTITIONS;
   // The FIRST cycle repairs. A process that has just started knows nothing about what previous ones swept, and
   // the complete scan is the only thing that can tell it — so a fresh deployment converges immediately instead
   // of waiting out a whole repair interval with an index it did not populate.
@@ -167,7 +168,7 @@ export async function runLifecycleCycle(
   try {
     const result = await runLeaseCycle(lease, deps, {
       owner: options.owner,
-      partitions: options.partitions ?? DEFAULT_PARTITIONS,
+      partitions,
       ttlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
     });
     lease = result.state;
@@ -193,6 +194,10 @@ export async function runLifecycleCycle(
         ...(options.retention?.lookbackBuckets === undefined
           ? {}
           : { lookbackBuckets: options.retention.lookbackBuckets }),
+        // Retire the SAME slice this worker compacts. Without this every replica sweeps the whole fleet and
+        // contends — the hazard the compaction CLI documents, which a multi-process engine would otherwise
+        // reintroduce silently.
+        ...(partitions <= 1 ? {} : { shards: partitionsHeld, totalShards: partitions }),
       });
     } catch (error) {
       errors.push({ phase: 'retention', error });
@@ -207,9 +212,10 @@ export async function runLifecycleCycle(
         namespace: options.namespace,
         // Compaction shards by the same stable hash the partitions use, so a worker compacts exactly the slice
         // its leases entitle it to — the leases replace the hand-configured shard index the daemon needed.
-        ...(options.partitions === undefined || options.partitions === 1
-          ? {}
-          : { shard: partitionsHeld[0] as number, totalShards: options.partitions }),
+        // EVERY partition this worker holds, not just the first. Passing `partitionsHeld[0]` compacted a
+        // quarter of a four-partition worker's own slice and left the rest to grow — silently, since nothing
+        // errors and disjointness tests still pass. Coverage is the property; disjointness is not enough.
+        ...(partitions <= 1 ? {} : { shards: partitionsHeld, totalShards: partitions }),
         ...(options.compaction?.maxSegments === undefined
           ? {}
           : { maxSegments: options.compaction.maxSegments }),
