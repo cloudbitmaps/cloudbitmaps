@@ -48,6 +48,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { segmentKey } from './keys';
+import { isReservedRow } from './lease';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { writeCrbmGenerationStream } from './crbm-cold-source';
@@ -953,6 +954,10 @@ export async function findCompactable(
 
   const known = new Map<string, KnownSegment>();
   for await (const rec of deps.registry.list(options.namespace)) {
+    // Partition leases are not segments — skip them in an unscoped fleet scan. They would never pass the dirty
+    // threshold, so this is hygiene rather than a correctness fix: a lease row must not appear in `scanned`, or
+    // an operator watching discovery counts sees a fleet that is one-per-partition larger than it is.
+    if (options.namespace === undefined && isReservedRow(rec)) continue;
     known.set(segmentKey(rec), {
       ref: { namespace: rec.namespace, segment: rec.segment },
       currentGen: rec.currentGen,

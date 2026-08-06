@@ -32,6 +32,7 @@ import {
   UnsupportedError,
   ValidationError,
   collectWithinBudget,
+  excludingReservedRows,
   compactSegment,
   gcOrphanGenerations,
   dropSegment,
@@ -541,7 +542,9 @@ export class CloudRoaring {
     // buffered under `maxRequests: 2`. This is a GDPR Art. 15 entry point plausibly wired to end-user
     // traffic, so resident memory must be O(budget), not O(fleet size).
     const recs = await collectWithinBudget(
-      registry.list(options.namespace),
+      // A subject cannot be in a coordination row, and charging this request's budget for them would refuse a
+      // GDPR Art. 15 report for a reason unrelated to the subject.
+      excludingReservedRows(registry.list(options.namespace)),
       budget,
       'subjectReport',
     );
@@ -621,7 +624,7 @@ export class CloudRoaring {
     // Bounded incrementally — see subjectReport above. Art. 17 erasure is likewise reachable from ordinary
     // "delete my account" traffic, so the enumeration itself has to respect the budget.
     const recs = await collectWithinBudget(
-      compaction.registry.list(options.namespace),
+      excludingReservedRows(compaction.registry.list(options.namespace)),
       budget,
       'eraseSubject',
     );

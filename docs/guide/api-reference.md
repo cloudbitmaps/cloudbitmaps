@@ -135,6 +135,13 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free-function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention` / `clearSegmentRetention` are its read/cancel siblings |
 | `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you already have (a `list()` sweep does this — no extra read per segment) |
 | `retireExpired({ registry, warm, cold }, { now, … })` → `RetireExpiredResult` | the free-function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
+| `runLeaseCycle(state, { registry, clock }, { owner, partitions?, ttlMs? })` → `LeaseCycleResult` | **partition leases** — one cycle of the coordination protocol that lets N processes run the *same* maintenance code with no coordinator and no per-process config. Renews what you hold, claims what is free or dead, and takes at most **one** partition from an over-share owner (toward `ceil(partitions/workers)`, and never leaving a worker below `floor(partitions/workers)` — stealing only from an owner over the *ceiling* starves a late joiner permanently, and stealing from anyone over the *floor* oscillates forever). Liveness is decided by whether the row's OCC **token** moved since you last looked — never by comparing `leaseExpiresAt` against your own clock, which would make clock skew a correctness bug. Carry the returned `state` into the next cycle; anything in `lost` you must stop working on **immediately**. `held` is what *this worker believes*, not a mutual-exclusion guarantee: a rebalance takes a live lease and its previous holder only finds out at its next renew, so the conditional write at the resource is what actually prevents two workers committing. `sinceLastCycleMs` greater than `ttlMs` means you are polling too slowly and your own leases are being judged dead |
+| `releaseAll(state, { registry })` → `{ released, state }` | release every held lease on a graceful stop, so the next worker picks the partition up on its next cycle instead of waiting out `ttlMs`. Best-effort: a failed release is not an error, because the TTL is the backstop. **Returns the emptied state** — use it, or a trailing in-flight cycle re-takes everything you just gave up |
+| `emptyLeaseState()` → `LeaseState` | the starting state for a fresh worker |
+| `leaseRef(partition)` / `partitionOfLeaseRow(segment)` | the registry ref for a partition's lease row, and its inverse (`null` for any row we did not write — a foreign row in the reserved namespace is ignored, never adopted) |
+| `leaseRenewIntervalMs(ttlMs?)` → `number` | how long to wait between cycles: a third of the TTL, so one lost round trip is survivable |
+| `isReservedRow(record)` / `excludingReservedRows(listing)` | the coordination-row filter, as a predicate and as a stream wrapper. **Every unscoped fleet-wide enumeration must apply one of them** — a lease is not a segment. Both are exported because a caller writing their own fleet pass needs the same filter, not a second definition (the first cut of this had three call sites missed, including `subjectReport`, where the rows consumed an Art. 15 request's budget) |
+| types: `LeaseState` · `LeaseOptions` · `LeaseDeps` · `LeaseCycleResult` | the carried-between-cycles state, the per-worker options (`owner` must differ between live processes), the two ports the protocol needs (`registry` + `clock`), and the cycle's report (`held` · `claimed` · `lost` · `stolen` · `workers` · `target`) |
 
 ### Optional plug-ins you construct and pass in
 
@@ -246,6 +253,10 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 | `DEFAULT_WRITE_CONCURRENCY` | default number (4) of warm chunk writes in flight per `addMany`/`removeMany` — see `writeConcurrency` |
 | `DEFAULT_RETIRE_LIMIT` | default cap (100) on segments one `retireExpired` cycle **attempts** — `limited: true` when it bites |
 | `DEFAULT_TOMBSTONE_GRACE_MS` | default delay (24 h) before the sweep deletes a tombstone row it stamped itself |
+| `LEASE_NAMESPACE` | the reserved registry namespace (`cbm.leases`) holding one row per partition. Excluded from every **unscoped** fleet-wide drain — a lease is not a segment. Do not use it for your own segments |
+| `DEFAULT_LEASE_TTL_MS` | default partition-lease TTL (60 s). A holder renews at a third of it, so two renewals may be missed before it looks dead |
+| `DEFAULT_PARTITIONS` | default partition count (**1**). The registry scan is not partitioned, so N workers each still list the fleet — partitions buy work throughput, not scan cost. Raise it when per-segment work dominates |
+| `MAX_PARTITIONS` / `MIN_LEASE_TTL_MS` / `LEASE_RENEW_DIVISOR` | the bounds: 1,024 partitions (a cycle reads one row each), a 1 s TTL floor (below it, an ordinary GC pause reads as death), and 3 renewals per TTL |
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
@@ -343,6 +354,9 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `readRetentionPolicy` ·
 `MIN_EXPIRES_AT_MS` · `retireExpired` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` ·
 `drainRegistry` · `validateMaxScanSegments` ·
+`runLeaseCycle` · `releaseAll` · `emptyLeaseState` · `leaseRef` · `partitionOfLeaseRow` · `leaseRenewIntervalMs` ·
+`LEASE_NAMESPACE` · `DEFAULT_LEASE_TTL_MS` · `DEFAULT_PARTITIONS` · `MAX_PARTITIONS` · `MIN_LEASE_TTL_MS` ·
+`LEASE_RENEW_DIVISOR` · `isReservedRow` · `excludingReservedRows` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
 `RetryingRegistryDriver` · `RetryingColdChunkSource` · `CrbmWriter` · `CrbmReader` ·
 `BufferSink` · `BufferReader` · `CountingMetricsSink` · `NOOP_METRICS` ·
