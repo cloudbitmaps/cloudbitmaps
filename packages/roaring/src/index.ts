@@ -31,6 +31,7 @@ import {
   SegmentEngine,
   UnsupportedError,
   ValidationError,
+  MIN_EXPIRES_AT_MS,
   collectWithinBudget,
   excludingReservedRows,
   compactSegment,
@@ -262,6 +263,29 @@ export interface CloudRoaringOptions {
 
 export interface SegmentOptions {
   readonly namespace?: string;
+  /**
+   * **When this segment stops being readable** — an absolute epoch-ms instant, declared where the segment is
+   * named instead of in a separate `setRetention` call.
+   *
+   * Every read through this handle checks it first: past the deadline, `has` is `false`, `count` is `0`, and
+   * `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on every backend**.
+   * That is Redis's lazy expiry, and it is what makes an expiry *correct* rather than *eventually correct*: a
+   * deployment whose sweep is late — or which has no sweep at all, like a Lambda-only reader — still stops
+   * serving the data on time.
+   *
+   * **Two things this does NOT do, both deliberate:**
+   *
+   * - It does not reclaim the bytes. That is {@link CloudRoaring.retireExpired}, and until it runs the data is
+   *   still stored and still billed. `count()` reporting 0 while rows exist is the expected state in that
+   *   window, not a bug.
+   * - It does not apply to *other* handles. The deadline lives on this handle; a second handle opened without
+   *   the option reads the segment normally. Record the policy with {@link CloudRoaring.setRetention} to make
+   *   it durable, fleet-visible, and reclaimable.
+   *
+   * Must be **milliseconds** since the epoch and at or after {@link MIN_EXPIRES_AT_MS} — a seconds value would
+   * land in 1970 and make the segment permanently unreadable, so it is refused rather than honoured.
+   */
+  readonly expiresAt?: number;
 }
 
 /** A segment reference in a subject report / erasure ledger. */
@@ -510,7 +534,23 @@ export class CloudRoaring {
   segment(name: string, options?: SegmentOptions): Segment {
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);
-    return new Segment(this.engine, ref, this.clock, this.metrics);
+    const expiresAt = options?.expiresAt;
+    if (expiresAt !== undefined) {
+      // Fail at the handle, not at the first read that silently returns nothing. The floor is the same one
+      // `setRetention` enforces: a seconds-based value would land in 1970 and make the segment permanently
+      // and invisibly empty.
+      if (
+        !Number.isFinite(expiresAt) ||
+        !Number.isInteger(expiresAt) ||
+        expiresAt < MIN_EXPIRES_AT_MS
+      ) {
+        throw new ValidationError(
+          `segment: expiresAt must be an integer epoch-MILLISECONDS >= ${MIN_EXPIRES_AT_MS}; got ${expiresAt}` +
+            ` (a value in seconds lands in 1970 and would make the segment read as permanently empty)`,
+        );
+      }
+    }
+    return new Segment(this.engine, ref, this.clock, this.metrics, expiresAt);
   }
 
   /**
@@ -967,6 +1007,13 @@ export interface CombineIntoOptions extends CombineOptions {
   readonly batchSize?: number;
 }
 
+/** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
+const EMPTY_IDS: AsyncIterable<number> = {
+  async *[Symbol.asyncIterator]() {
+    // deliberately yields nothing
+  },
+};
+
 export class Segment {
   private readonly metricsOn: boolean;
 
@@ -975,8 +1022,21 @@ export class Segment {
     private readonly ref: SegmentRef,
     private readonly clock: Clock,
     private readonly metrics: IMetricsSink,
+    /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
+    readonly expiresAt?: number,
   ) {
     this.metricsOn = metrics !== NOOP_METRICS;
+  }
+
+  /**
+   * Has this handle's deadline passed? **The lazy half of expiry** — the whole check is one comparison against
+   * the injected clock, so it costs nothing on a handle with no deadline and no I/O on one that has expired.
+   *
+   * Deliberately evaluated per call rather than cached: a long-lived handle created before its deadline must
+   * start reading empty the moment the deadline passes, without the caller re-creating it.
+   */
+  private expired(): boolean {
+    return this.expiresAt !== undefined && this.clock.now() >= this.expiresAt;
   }
 
   /**
@@ -1050,12 +1110,15 @@ export class Segment {
     return this.timed('claimMany', () => this.engine.claimMany(this.ref, ids));
   }
   has(id: number): Promise<boolean> {
+    if (this.expired()) return Promise.resolve(false);
     return this.timed('has', () => this.engine.has(this.ref, id));
   }
   count(): Promise<number> {
+    if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
   }
   iterate(): AsyncIterable<number> {
+    if (this.expired()) return EMPTY_IDS;
     return this.engine.iterate(this.ref);
   }
 
@@ -1081,6 +1144,10 @@ export class Segment {
   }
 
   intersect(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+    // An expired operand is empty, and anything ANDed with the empty set is empty. Guarding here rather than
+    // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
+    // contribute members to an intersection.
+    if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
     return this.engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
@@ -1109,6 +1176,14 @@ export class Segment {
    * segment once (`unionInto`, or a bulk-load rebuild) is the cheaper shape.
    */
   union(others: Segment[], options?: CombineOptions): AsyncIterable<number> {
+    // OR: drop the expired operands and union what is left. All expired ⇒ empty.
+    const live = others.filter((o) => !o.expired());
+    if (this.expired()) {
+      if (live.length === 0) return EMPTY_IDS;
+      return (live[0] as Segment).union(live.slice(1), options);
+    }
+    if (live.length === 0 && others.length > 0) return this.iterate(); // every operand expired ⇒ just us
+    if (live.length !== others.length) return this.union(live, options);
     return this.engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
@@ -1135,6 +1210,13 @@ export class Segment {
    * the suppression folds into the same pass rather than materializing an intermediate segment first.
    */
   andNot(excludes: Segment[], options?: BaseCombineOptions): AsyncIterable<number> {
+    // MINUS: an expired base is empty; an expired exclusion excludes nothing.
+    if (this.expired()) return EMPTY_IDS;
+    const liveExcludes = excludes.filter((e) => !e.expired());
+    // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
+    // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
+    if (liveExcludes.length === 0 && excludes.length > 0) return this.iterate();
+    if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
     return this.engine.andNot(
       this.ref,
       excludes.map((o) => o.ref),

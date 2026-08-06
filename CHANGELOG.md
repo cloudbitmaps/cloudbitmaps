@@ -42,6 +42,28 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   `compareAndSwap` — so this needs **no driver change and no new capability**, and works on all nine warm/registry
   backends on day one. They are excluded from every *unscoped* fleet-wide drain, because a lease is not a segment.
 
+- **`expiresAt` on `SegmentOptions` — lazy expiry, declared where the segment is named.**
+
+  ```ts
+  const daily = store.segment(`d-${today}`, { namespace: 'active', expiresAt: Date.now() + 30 * DAY });
+  ```
+
+  Every read through that handle checks the deadline first: past it, `has` is `false`, `count` is `0`, and
+  `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on all nine backends**.
+  This is Redis's lazy-expiry mechanism, and it is what makes an expiry *correct* rather than *eventually
+  correct*: a deployment whose sweep is late, or which has no sweep at all (a Lambda-only reader), still stops
+  serving the data on time.
+
+  Set algebra stays coherent with `count()`, which is the part that would otherwise produce bug reports: an
+  expired operand makes an `intersect` empty, is dropped from a `union`, and excludes nothing in an `andNot`.
+
+  **Two things it deliberately does not do.** It does not reclaim the bytes — `retireExpired` does, and until it
+  runs the data is still stored and still billed, so `count()` reporting 0 while rows exist is the expected
+  state in that window. And it does not apply to *other* handles: the deadline lives on the handle, so record
+  the policy with `setRetention` to make it durable, fleet-visible and reclaimable.
+
+  A seconds-shaped value is refused **at the handle** rather than silently making the segment permanently empty.
+
 ### Changed
 
 - `drainRegistry` and compaction discovery skip the reserved lease namespace on an **unscoped** scan. A scan
