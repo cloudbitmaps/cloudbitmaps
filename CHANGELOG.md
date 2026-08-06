@@ -14,6 +14,55 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+- **`createEngineLoop` — the lifecycle cycle, repeated, with the operational behaviour a background job needs
+  to be trusted.** `start()` · `runOnce()` · `stop({ timeoutMs })` · `status()`. It sleeps on the injected clock,
+  so every property below is asserted on a fake one rather than by waiting.
+
+  **`stop()` races the in-flight cycle against its timeout instead of awaiting it.** Nothing in this library
+  takes an `AbortSignal` — deliberately, since a homegrown timeout would abandon in-flight requests mid-write —
+  so an unconditional await would be a deadlock dressed as a graceful shutdown. It reports `drained: false` when
+  work was abandoned, deadlines the lease release separately (that talks to the same registry that may be
+  hanging), and is idempotent so a second SIGTERM does not start a second shutdown. The interval sleep is
+  **wakeable**, so a stop one second into a 30 s interval does not burn 29 s of a 30 s termination grace period.
+
+  The interval **backs off** while cycles return errors and resets on a clean one — without that a dead backend
+  is retried at full cadence forever, multiplied by the driver retry layer underneath. It is **jittered**, so
+  replicas rolled out together do not run cycle 1 in lockstep (and cycle 1 is always the complete fleet repair
+  scan). The cycle's own duration is subtracted, so a slow cycle does not compound the schedule.
+
+  **`status().healthy` means a cycle *settled* recently — not that work happened.** A worker holding zero
+  partitions is healthy; that is what every worker beyond the first does. It is false before the first cycle and
+  false once the last one is older than `staleAfterMs`, which is precisely the state a hung driver call creates
+  while the process stays alive. That is the failure mode a background job is worst at surfacing, so it is the
+  one the predicate is built around.
+
+  **`status().staleAfterMs` is the *effective* window, and it widens with the backoff.** Found by review, not by
+  a gate: a backed-off loop sleeps for up to `maxIntervalMs` (15× the interval by default) while the window
+  defaulted to 4× it, so `healthy` went false between cycles from the **second** consecutive failure onward — one
+  brief throttle. Wired to a liveness probe, that is a restart loop through an outage, discarding the accumulated
+  backoff each time. A *hung* cycle never settles, so nothing widens and it still surfaces on the configured
+  floor, which is the case the predicate exists for.
+
+  **A loop is single-use.** After `stop()`, `start()` and `runOnce()` throw — construction is free, so build
+  another. The alternative was worse than a restriction: with the stop memoised for idempotence, a restarted
+  loop's second `stop()` returned the *first* stop's result while the loop kept cycling, holding leases and
+  reporting itself stopped. `runOnce()` also refuses to overlap a cycle or a running `start()`, naming the actual
+  cause — two cycles on one loop share state, and a schedule firing faster than a cycle takes should hear about
+  it rather than get a quietly wrong counter.
+
+  **What the caller still owns:** a request timeout on the injected SDK client. Without one nothing here can
+  bound a cycle.
+
+- **Docs — a runbook for the one retention failure that does not self-heal.**
+  [disaster-recovery.md](docs/guide/disaster-recovery.md) gains *"an unstamped tombstone after a hard kill"*.
+  Retiring an expired segment is two round trips — the `destroyed` CAS, then the `retiredBySweepAt` attribution
+  — and a `SIGKILL` between them leaves a tombstone the sweep will never purge, with no ledger entry, no counter
+  and no metric to say so. The name is then fenced against publish, bulk-load and compaction while writes keep
+  landing in warm and nothing compacts them. The entry covers detection, how to tell an interrupted retirement
+  apart from a legitimate crypto-shred tombstone (they can look identical on the row — the audit trail is the
+  discriminator), the two repairs, and the deployment settings that keep the window shut. It ships now, ahead of
+  the automated reconcile, because a failure that needs a human cannot wait behind the code that automates it.
+
 ### Fixed
 
 - **A worker compacted only ONE of the partitions it held.** `runLifecycleCycle` passed `shard:
