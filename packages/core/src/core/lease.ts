@@ -47,7 +47,7 @@ export const LEASE_RENEW_DIVISOR = 3;
  */
 export const DEFAULT_PARTITIONS = 1;
 
-/** Upper bound on partitions — a cycle reads one row per partition, so this bounds a cycle's read cost. */
+/** Upper bound on partitions. Read cost is one `list()` regardless; this bounds the per-cycle WRITE cost. */
 export const MAX_PARTITIONS = 1024;
 
 /** Lower bound on a lease TTL. Below this, ordinary GC pauses and retries read as death. */
@@ -69,6 +69,31 @@ export function partitionOfLeaseRow(segment: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+/**
+ * Is this record a coordination row rather than a segment? **Every unscoped fleet-wide enumeration must skip
+ * these** — `drainRegistry`, compaction discovery, the export/eject scan, and the all-namespaces GDPR paths.
+ * One predicate rather than an inlined comparison per call site, because a filter you have to remember at each
+ * site is a check that cannot fire; the first cut of this shipped with three call sites missed, including
+ * `subjectReport`, where the lease rows consumed an Art. 15 request's per-op budget.
+ */
+export function isReservedRow(record: Pick<RegistryRecord, 'namespace'>): boolean {
+  return record.namespace === LEASE_NAMESPACE;
+}
+
+/**
+ * Filter coordination rows out of a registry listing **before** anything downstream pays for them. Needed where
+ * the enumeration is consumed inside a budgeted collector rather than a plain loop: charging a GDPR Art. 15
+ * request's per-op budget for lease rows can refuse a subject report for a reason that has nothing to do with
+ * the subject, and at 1,024 partitions it would make any budgeted all-namespaces request unusable.
+ */
+export async function* excludingReservedRows(
+  source: AsyncIterable<RegistryRecord>,
+): AsyncIterable<RegistryRecord> {
+  for await (const record of source) {
+    if (!isReservedRow(record)) yield record;
+  }
+}
+
 /** What we saw the last time we looked at a partition we do not hold — the input to the staleness decision. */
 interface Sighting {
   /** The row's OCC token at `at`. Unchanged since then ⇒ nothing has written the row ⇒ the holder is gone. */
@@ -86,6 +111,13 @@ export interface LeaseState {
   readonly held: ReadonlyMap<number, Token>;
   /** Partitions we do not hold → what we last saw, for staleness. */
   readonly seen: ReadonlyMap<number, Sighting>;
+  /**
+   * Our own clock at the previous cycle, surfaced as {@link LeaseCycleResult.sinceLastCycleMs}. A caller that
+   * polls **slower** than `ttlMs` has its own leases correctly judged dead and stolen every cycle — permanent
+   * thrash from a configuration mistake. `runLeaseCycle` cannot see the caller's interval, so it reports the
+   * gap and lets the scheduler alarm on it. Absent on the first cycle.
+   */
+  readonly lastCycleAt?: number;
 }
 
 export function emptyLeaseState(): LeaseState {
@@ -119,8 +151,16 @@ export interface LeaseCycleResult {
   readonly stolen: readonly number[];
   /** Distinct owners observed, including us. The denominator of the fair share. */
   readonly workers: number;
-  /** `ceil(partitions / workers)` — how many this worker is entitled to. */
+  /**
+   * `ceil(partitions / workers)` — the **most** this worker may hold. Not a promise that it holds that many:
+   * with P=4 and W=3 the ceiling is 2 and a fair allocation is `2,1,1`.
+   */
   readonly target: number;
+  /**
+   * Elapsed ms since the previous cycle, by our own clock. **Greater than `ttlMs` means the caller is polling
+   * too slowly** and its own leases are being judged dead — alarm on it. `undefined` on the first cycle.
+   */
+  readonly sinceLastCycleMs?: number;
 }
 
 /** How long to wait between cycles: a third of the TTL, so a holder renews well inside it. */
@@ -128,7 +168,18 @@ export function leaseRenewIntervalMs(ttlMs: number = DEFAULT_LEASE_TTL_MS): numb
   return Math.max(1, Math.floor(ttlMs / LEASE_RENEW_DIVISOR));
 }
 
-function validate(options: LeaseOptions): { owner: string; partitions: number; ttlMs: number } {
+function validate(
+  deps: LeaseDeps,
+  options: LeaseOptions,
+): { owner: string; partitions: number; ttlMs: number } {
+  if (deps === null || typeof deps !== 'object' || typeof deps.registry?.list !== 'function') {
+    throw new ValidationError('lease cycle needs a registry driver');
+  }
+  if (typeof deps.clock?.now !== 'function') {
+    throw new ValidationError(
+      'lease cycle needs an injected clock — core never reads ambient time',
+    );
+  }
   const { owner } = options;
   if (typeof owner !== 'string' || owner.length === 0) {
     throw new ValidationError(
@@ -152,7 +203,14 @@ function validate(options: LeaseOptions): { owner: string; partitions: number; t
 
 /**
  * Run one lease cycle: renew what we hold, claim what is free or dead, and take at most one partition from an
- * over-share owner. Idempotent, bounded (one `list` plus at most one write per partition), and safe to call from
+ * over-share owner.
+ *
+ * **Cost per cycle:** one `list()` of the reserved namespace, plus one conditional write per partition we hold
+ * (the renew) and at most one more per partition we take. A holder therefore issues `partitions` writes every
+ * renew interval **whether or not there is any work to do** — at 1,024 partitions and the default TTL that is
+ * ~51 writes/second, forever. That is the reason to leave `partitions` at 1 until per-segment work actually
+ * dominates. A first cycle costs two writes per partition, because creating the row and owning it are separate
+ * steps (`NewRegistryRecord` carries no lease fields, and widening it would be a driver change). Idempotent, bounded, and safe to call from
  * every process concurrently — the losers of every race get a `WriteConflictError` and simply try again next
  * cycle.
  */
@@ -161,7 +219,7 @@ export async function runLeaseCycle(
   deps: LeaseDeps,
   options: LeaseOptions,
 ): Promise<LeaseCycleResult> {
-  const { owner, partitions, ttlMs } = validate(options);
+  const { owner, partitions, ttlMs } = validate(deps, options);
   const now = deps.clock.now();
 
   const rows = new Map<number, RegistryRecord>();
@@ -201,12 +259,35 @@ export async function runLeaseCycle(
 
   for (let partition = 0; partition < partitions; partition++) {
     if (held.has(partition)) continue;
+    // Never re-take in the same cycle what we just lost, so `held` and `lost` are disjoint by construction
+    // rather than by luck — the contract on `lost` is "stop work on these now", which a partition also listed in
+    // `held` would flatly contradict.
+    //
+    // UNREACHABLE BY CONSTRUCTION at present, and kept deliberately: a just-stolen row is live (owned by the
+    // thief, with a token we have never observed), so it is neither free nor dead and the claim path skips it;
+    // and the steal path needs `held.size < floor` *after* the loss, which the arithmetic prevents — losing one
+    // of `n` leaves you at or above the floor whenever you were at or above it before. No mutation kills this
+    // line, and that is a property of the surrounding arithmetic, not of the test suite. It is here so a future
+    // change to either path cannot reintroduce the contradiction silently.
+    if (lost.includes(partition)) continue;
     const row = rows.get(partition);
-    if (row === undefined || row.leaseOwner === undefined || row.leaseOwner === owner) {
-      // No row, nobody's, or a lease our own owner id abandoned across a restart — take it without waiting.
+    if (row === undefined) {
       free.push(partition);
       continue;
     }
+    // A row we did not write — a real segment that happens to be named `pN` in the reserved namespace — is
+    // ignored rather than adopted. Stamping a lease on it would make it un-compactable (every compaction CAS
+    // would race a renew) and invisible to every unscoped drain.
+    if (row.currentGen !== null) continue;
+    if (row.leaseOwner === undefined) {
+      free.push(partition);
+      continue;
+    }
+    // NOTE: a row bearing OUR OWN owner id gets no shortcut. An earlier version treated it as free — "a lease
+    // we abandoned across a restart" — which is catastrophic when two live processes share an id (a hostname is
+    // per-HOST, not per-process): each takes the other's live leases every cycle using a fresh token, so both
+    // end every cycle reporting they hold everything. It degrades to permanent ping-pong with no error. The
+    // cost of removing it is that a restart under the same id waits one TTL, which is the correct price.
     const previous = state.seen.get(partition);
     if (previous !== undefined && previous.token === row.token && now - previous.at >= ttlMs) {
       // The token has not moved for a whole TTL by OUR clock: the holder is not renewing.
@@ -227,8 +308,19 @@ export async function runLeaseCycle(
   }
 
   // ── 3. Fair share. Workers = distinct live owners, plus us. ──
+  //
+  // TWO bounds, not one, and the difference is the whole correctness of balancing:
+  //   ceiling = ceil(P/W)   the most a worker may hold
+  //   floor   = floor(P/W)  the least a worker is entitled to
+  // Stealing only from an owner strictly over the CEILING starves a late joiner permanently: with P=4 and
+  // W=3 the ceiling is 2, two incumbents hold exactly 2, and a newcomer holding 0 finds no victim — a stable
+  // fixed point where a third of the fleet does nothing. Stealing whenever anyone is over the FLOOR instead
+  // oscillates forever (a worker with 1 takes from a worker with 2, which then takes it back). So: a worker
+  // below its floor is starved and may take from anyone above the floor; otherwise only a genuinely
+  // over-ceiling owner is a victim. Both conditions are monotone, so the fleet converges and then stops.
   const workers = liveByOwner.size + 1;
   const target = Math.ceil(partitions / workers);
+  const floor = Math.floor(partitions / workers);
 
   // ── 4. Claim free rows first, then dead ones, up to our share. ──
   for (const partition of [...free, ...dead]) {
@@ -240,39 +332,41 @@ export async function runLeaseCycle(
     seen.delete(partition);
   }
 
-  // ── 5. Still short? Take ONE partition from the most-loaded owner that is over its share. ──
+  // ── 5. Still short? Take ONE partition from the most-loaded eligible owner. ──
   if (held.size < target) {
+    const starved = held.size < floor;
     let victim: { partition: number; count: number } | null = null;
     for (const owned of liveByOwner.values()) {
-      if (owned.length <= target) continue;
+      const eligible = starved ? owned.length > floor : owned.length > target;
+      if (!eligible) continue;
       if (victim === null || owned.length > victim.count) {
         victim = { partition: owned[0] as number, count: owned.length };
       }
     }
     if (victim !== null) {
-      const row = rows.get(victim.partition);
-      if (row !== undefined) {
-        const token = await write(deps, victim.partition, row.token, {
-          leaseOwner: owner,
-          leaseExpiresAt: now + ttlMs,
-        });
-        if (token !== null) {
-          held.set(victim.partition, token);
-          stolen.push(victim.partition);
-          seen.delete(victim.partition);
-        }
+      const token = await write(deps, victim.partition, rows.get(victim.partition)!.token, {
+        leaseOwner: owner,
+        leaseExpiresAt: now + ttlMs,
+      });
+      if (token !== null) {
+        held.set(victim.partition, token);
+        stolen.push(victim.partition);
+        seen.delete(victim.partition);
       }
     }
   }
 
   return {
-    state: { held, seen },
+    // Copies: the returned state is typed ReadonlyMap, and handing back the live maps would let a caller
+    // mutate the protocol's state between cycles.
+    state: { held: new Map(held), seen: new Map(seen), lastCycleAt: now },
     held: [...held.keys()].sort((a, b) => a - b),
     claimed,
     lost,
     stolen,
     workers,
     target,
+    ...(state.lastCycleAt === undefined ? {} : { sinceLastCycleMs: now - state.lastCycleAt }),
   };
 }
 
@@ -281,15 +375,25 @@ export async function runLeaseCycle(
  * instead of waiting out the whole TTL. Best-effort by design — a failed release is not an error, because the
  * TTL is the backstop and a process that is shutting down has nothing useful to do with the failure.
  */
-export async function releaseAll(state: LeaseState, deps: LeaseDeps): Promise<number[]> {
+export async function releaseAll(
+  state: LeaseState,
+  deps: Pick<LeaseDeps, 'registry'>,
+): Promise<{ released: number[]; state: LeaseState }> {
   const released: number[] = [];
   for (const [partition, token] of state.held) {
     if (await release(deps, partition, token)) released.push(partition);
   }
-  return released;
+  // The emptied state is RETURNED rather than left to the caller. Returning only the released list meant a
+  // shutdown path that let one in-flight cycle finish re-took every partition it had just given up — and the
+  // test helper hid it by resetting the state itself, a step the API neither performed nor documented.
+  return { released, state: emptyLeaseState() };
 }
 
-async function release(deps: LeaseDeps, partition: number, token: Token): Promise<boolean> {
+async function release(
+  deps: Pick<LeaseDeps, 'registry'>,
+  partition: number,
+  token: Token,
+): Promise<boolean> {
   const result = await write(deps, partition, token, {
     leaseOwner: undefined,
     leaseExpiresAt: undefined,
@@ -299,7 +403,7 @@ async function release(deps: LeaseDeps, partition: number, token: Token): Promis
 
 /** A CAS that maps "someone else got there first" to `null` and re-throws everything else. */
 async function write(
-  deps: LeaseDeps,
+  deps: Pick<LeaseDeps, 'registry'>,
   partition: number,
   expected: Token,
   patch: { leaseOwner?: string; leaseExpiresAt?: number },

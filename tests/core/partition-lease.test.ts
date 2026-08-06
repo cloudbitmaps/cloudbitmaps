@@ -10,7 +10,9 @@ import {
   MAX_PARTITIONS,
   MIN_LEASE_TTL_MS,
   MemoryRegistryDriver,
+  MemoryWarmDriver,
   drainRegistry,
+  findCompactable,
   emptyLeaseState,
   leaseRef,
   leaseRenewIntervalMs,
@@ -60,8 +62,8 @@ class Worker {
   }
 
   async stop() {
-    const released = await releaseAll(this.state, deps(this.registry, this.clock));
-    this.state = emptyLeaseState();
+    const { released, state } = await releaseAll(this.state, deps(this.registry, this.clock));
+    this.state = state; // the API returns the emptied state — the caller must not have to know to reset it
     return released;
   }
 }
@@ -167,6 +169,105 @@ describe('partition leases — claiming', () => {
   });
 });
 
+describe('partition leases — a late joiner must not starve', () => {
+  it('a worker joining a CONVERGED fleet acquires its share', async () => {
+    // The defect this guards, found by adversarial review and reproduced before the fix: stealing only from an
+    // owner strictly over the CEILING is a stable fixed point. With P=4 and W=3 the ceiling is 2, both
+    // incumbents hold exactly 2, and a newcomer holding 0 finds no eligible victim — forever. Measured at 50
+    // cycles: a=2 b=2 c=0. The whole point of the feature is that a process you start does work.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const a = new Worker('a', registry, clock, 4);
+    const b = new Worker('b', registry, clock, 4);
+
+    for (let round = 0; round < 6; round++) {
+      await a.cycle();
+      await b.cycle();
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+    expect(a.state.held.size + b.state.held.size).toBe(4); // converged before c exists
+
+    const c = new Worker('c', registry, clock, 4);
+    for (let round = 0; round < 6; round++) {
+      for (const w of [a, b, c]) await w.cycle();
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+
+    expect(c.state.held.size).toBeGreaterThanOrEqual(1);
+    expect(a.state.held.size + b.state.held.size + c.state.held.size).toBe(4);
+  });
+
+  it('a staggered rollout leaves nobody idle — six workers, eight partitions', async () => {
+    // The realistic shape of the same bug: workers appearing one at a time, as a deployment scales. Before the
+    // fix this ended [2,2,2,2,0,0] — two of six processes permanently doing nothing.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const workers: Worker[] = [];
+
+    for (let round = 0; round < 36; round++) {
+      if (round % 3 === 0 && workers.length < 6) {
+        workers.push(new Worker(`w${workers.length}`, registry, clock, 8));
+      }
+      for (const w of workers) await w.cycle();
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+
+    const counts = workers.map((w) => w.state.held.size);
+    expect(counts.reduce((x, y) => x + y, 0)).toBe(8);
+    expect(Math.min(...counts)).toBeGreaterThanOrEqual(1);
+    expect(Math.max(...counts)).toBeLessThanOrEqual(2);
+  });
+
+  it('a balanced fleet does not oscillate — no steals once converged', async () => {
+    // The other half of the trade: stealing from anyone above the FLOOR converges instantly and then ping-pongs
+    // forever (a worker with 1 takes from a worker with 2, which takes it back). P=8/W=6 is the case where the
+    // floor and the ceiling differ, so it is where oscillation would show.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const workers = [0, 1, 2, 3, 4, 5].map((i) => new Worker(`w${i}`, registry, clock, 8));
+
+    for (let round = 0; round < 15; round++) {
+      for (const w of workers) await w.cycle();
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+
+    let steals = 0;
+    for (let round = 0; round < 10; round++) {
+      for (const w of workers) steals += (await w.cycle()).stolen.length;
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+    expect(steals).toBe(0);
+  });
+
+  it('picks the MOST loaded eligible owner as the victim', async () => {
+    // Needs TWO owners simultaneously over the floor with different counts — otherwise "first eligible" and
+    // "most loaded" are the same choice and the test cannot tell them apart. Mutation testing caught that: an
+    // earlier version left `light` holding 1, which is below the floor and therefore never eligible.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const heavy = new Worker('heavy', registry, clock, 8);
+    const middle = new Worker('middle', registry, clock, 8);
+
+    await heavy.cycle(); // 8
+    for (let i = 0; i < 3; i++) {
+      await middle.cycle(); // one steal per cycle → heavy 5, middle 3
+      clock.advance(leaseRenewIntervalMs(TTL));
+      await heavy.cycle();
+    }
+    expect(heavy.state.held.size).toBe(5);
+    expect(middle.state.held.size).toBe(3);
+
+    // W=3 → floor 2, ceiling 3. Both heavy (5) and middle (3) are over the floor, so both are eligible and the
+    // choice is observable.
+    const thief = new Worker('thief', registry, clock, 8);
+    const result = await thief.cycle();
+
+    expect(result.stolen).toHaveLength(1);
+    expect(heavy.state.held.has(result.stolen[0]!)).toBe(true);
+    expect(middle.state.held.has(result.stolen[0]!)).toBe(false);
+  });
+});
+
 describe('partition leases — liveness is the token, not the clock', () => {
   it('a renewing holder is never stolen from by an observer whose clock is a day fast', async () => {
     // The two workers run on SEPARATE, SKEWED clocks — the whole point. An earlier version of this test shared
@@ -231,6 +332,31 @@ describe('partition leases — liveness is the token, not the clock', () => {
     expect(result.held).toEqual([]);
   });
 
+  it('an observer polling SLOWER than the TTL still does not steal from a live holder', async () => {
+    // This pins the load-bearing conjunct `previous.token === row.token`. Every other test polls at TTL/3, so
+    // deleting that conjunct and keeping only the elapsed-time check survived the whole suite: the gap never
+    // exceeded the TTL for a live holder. Here the observer's gap is 15 renew intervals.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const holder = new Worker('holder', registry, clock, 1);
+    const observer = new Worker('observer', registry, clock, 1);
+
+    await holder.cycle();
+    await observer.cycle();
+
+    for (let round = 0; round < 3; round++) {
+      for (let renew = 0; renew < 15; renew++) {
+        clock.advance(leaseRenewIntervalMs(TTL));
+        await holder.cycle(); // on time, every time
+      }
+      const result = await observer.cycle(); // its own gap is 15 intervals — five TTLs
+      expect(result.held).toEqual([]);
+      expect(result.claimed).toEqual([]);
+      expect(result.sinceLastCycleMs).toBeGreaterThan(TTL); // the misconfiguration IS reported
+    }
+    expect(holder.state.held.size).toBe(1);
+  });
+
   it('a woken-up straggler cannot renew with its stale token — the CAS refuses', async () => {
     const clock = testClock();
     const registry = new MemoryRegistryDriver({ now: clock.now });
@@ -268,16 +394,65 @@ describe('partition leases — release', () => {
     expect(result.held).toEqual([0]);
   });
 
-  it('a worker reclaims a lease its own owner id abandoned across a restart', async () => {
+  it('a restart under the SAME owner id waits one TTL rather than reclaiming instantly', async () => {
+    // An earlier version treated any row bearing our own id as free — "a lease we abandoned across a restart".
+    // That is catastrophic when two live processes share an id, so the shortcut is gone and a same-id restart
+    // pays one TTL. See the shared-id test below for what the shortcut actually did.
     const clock = testClock();
     const registry = new MemoryRegistryDriver({ now: clock.now });
     await new Worker('same-id', registry, clock, 1).cycle();
 
-    const restarted = new Worker('same-id', registry, clock, 1); // fresh state, same identity
-    const result = await restarted.cycle();
+    const restarted = new Worker('same-id', registry, clock, 1);
+    expect((await restarted.cycle()).held).toEqual([]); // observed, not taken
 
-    expect(result.held).toEqual([0]);
-    expect(result.claimed).toEqual([0]);
+    clock.advance(TTL);
+    expect((await restarted.cycle()).held).toEqual([0]); // stale by the token rule → taken
+  });
+
+  it('two live processes sharing an owner id no longer produce duplicated ownership', async () => {
+    // The regression this guards: with the old same-id shortcut, each process took the other's live leases every
+    // cycle using a FRESH token, so both ended every cycle reporting held=[0,1] — duplicated ownership,
+    // affirmatively reported by the API — and the same partition then appeared in `held` AND `lost` in one
+    // result. A hostname is per-HOST, not per-process, so this is not an exotic misconfiguration.
+    //
+    // What IS still expected, and is property 2 rather than a defect: a steal takes a LIVE lease and the victim
+    // only learns at its next renew. So the invariant is checked once both sides have polled — not instantly.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const a = new Worker('samehost', registry, clock, 2);
+    const b = new Worker('samehost', registry, clock, 2);
+
+    for (let round = 0; round < 5; round++) {
+      for (const r of [await a.cycle(), await b.cycle(), await a.cycle(), await b.cycle()]) {
+        // Within ONE result these must be disjoint: `lost` means "stop work on these now" and `held` means
+        // "this is your slice", so a partition in both is a contradiction the caller cannot act on.
+        expect(r.held.filter((x) => r.lost.includes(x))).toEqual([]);
+      }
+      // Both sides have now renewed, so at most one of them still believes it holds any given partition.
+      expect([...a.state.held.keys()].filter((x) => b.state.held.has(x))).toEqual([]);
+      // And neither ends up holding everything — which is what the old shortcut produced on every cycle.
+      expect(a.state.held.size).toBeLessThan(2);
+      clock.advance(leaseRenewIntervalMs(TTL));
+    }
+  });
+
+  it('releaseAll hands back the emptied state, so a trailing cycle cannot re-take everything', async () => {
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const w = new Worker('w', registry, clock, 2);
+    await w.cycle();
+
+    const { released, state } = await releaseAll(w.state, deps(registry, clock));
+
+    expect(released).toEqual([0, 1]);
+    expect(state.held.size).toBe(0);
+    // A shutdown path that lets one in-flight cycle finish must not resurrect the leases it just gave up.
+    const trailing = await runLeaseCycle(state, deps(registry, clock), {
+      owner: 'w',
+      partitions: 2,
+      ttlMs: TTL,
+    });
+    expect(trailing.lost).toEqual([]);
   });
 
   it('shrinking the partition count releases the leases that fall outside it', async () => {
@@ -340,6 +515,68 @@ describe('partition leases — the reserved namespace is not a segment', () => {
     expect(
       (await registry.get({ namespace: LEASE_NAMESPACE, segment: 'not-a-partition' }))?.leaseOwner,
     ).toBeUndefined();
+  });
+
+  it('does not adopt a real segment that happens to be named like a partition', async () => {
+    // A row named `p0` in the reserved namespace but carrying a Cold generation is somebody's data. Stamping a
+    // lease on it would make it un-compactable (every compaction CAS would race a renew every ttl/3) and
+    // invisible to every unscoped drain. The earlier test only covered the NAME guard, which read as though
+    // foreign rows were protected in general — they were not.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    await registry.create(leaseRef(0), { currentGen: 7 });
+
+    const result = await new Worker('w', registry, clock, 1).cycle();
+
+    expect(result.held).toEqual([]);
+    const row = await registry.get(leaseRef(0));
+    expect(row?.currentGen).toBe(7);
+    expect(row?.leaseOwner).toBeUndefined();
+  });
+
+  it('compaction discovery does not scan warm chunks for lease rows', async () => {
+    // Half the CHANGELOG's "Changed" section had no test. And the filter's value is NOT that it changes the
+    // candidate list — it cannot, since `threshold` has a floor of 1 and a lease row always has 0 dirty chunks.
+    // Its value is that discovery drains `warm.listChunks` for EVERY known row before applying the threshold,
+    // so without the filter every partition costs one wasted warm scan per cycle: 1,024 of them at
+    // MAX_PARTITIONS. That is the reachable effect, so that is what this asserts.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const warm = new MemoryWarmDriver();
+    const scanned: string[] = [];
+    const countingWarm = {
+      get: warm.get.bind(warm),
+      putConditional: warm.putConditional.bind(warm),
+      deleteConditional: warm.deleteConditional.bind(warm),
+      listChunks: (ref: { namespace?: string; segment: string }) => {
+        scanned.push(`${ref.namespace ?? ''}/${ref.segment}`);
+        return warm.listChunks(ref);
+      },
+    } as unknown as MemoryWarmDriver;
+
+    await registry.create({ namespace: 'prod', segment: 'vips' }, { currentGen: 0 });
+    await new Worker('w', registry, clock, 4).cycle();
+
+    await findCompactable({ registry, warm: countingWarm, clock });
+
+    expect(scanned).toEqual(['prod/vips']);
+    expect(scanned.filter((s) => s.startsWith(LEASE_NAMESPACE))).toEqual([]);
+  });
+
+  it('a release that loses its CAS is not an error', async () => {
+    // The documented "best-effort by design" on the graceful-shutdown path was entirely unverified.
+    const clock = testClock();
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const w = new Worker('w', registry, clock, 1);
+    await w.cycle();
+
+    // Somebody else writes the row, invalidating our token.
+    const row = await registry.get(leaseRef(0));
+    await registry.compareAndSwap(leaseRef(0), row!.token, { leaseOwner: 'thief' });
+
+    const { released, state } = await releaseAll(w.state, deps(registry, clock));
+    expect(released).toEqual([]); // nothing we could release
+    expect(state.held.size).toBe(0); // but the state is still cleared
   });
 
   it('parses only the names we write', () => {

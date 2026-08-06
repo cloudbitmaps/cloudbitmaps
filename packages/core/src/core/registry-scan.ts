@@ -13,7 +13,7 @@
  * comfortably more than the 128–256 MB Lambda the guide suggests starting with, so it fails loudly instead.
  */
 import { BudgetExceededError, ValidationError } from './errors';
-import { LEASE_NAMESPACE } from './lease';
+import { isReservedRow } from './lease';
 import type { IRegistryDriver, RegistryRecord } from './ports';
 
 /**
@@ -44,12 +44,13 @@ export async function drainRegistry(
   validateMaxScanSegments(maxScanSegments, op);
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
-    // A partition lease is not a segment. It lives in a reserved namespace with `currentGen: null`, so an
-    // unscoped fleet scan would otherwise hand it to `checkConsistency` (which would report a missing Cold
-    // generation), to a retention sweep, and to every fleet-wide count. Dropping it here rather than at each
-    // call site is deliberate: this is the ONE drain, and a filter that has to be remembered per caller is a
-    // check that cannot fire. A caller that explicitly scopes to the lease namespace still sees them.
-    if (options.namespace === undefined && rec.namespace === LEASE_NAMESPACE) continue;
+    // A partition lease is not a segment. It lives in a reserved namespace, so an unscoped fleet scan would
+    // otherwise pay a strong `get` per lease row in `checkConsistency`, hand them to a retention sweep, and
+    // inflate every fleet-wide count. (It would NOT produce a false `missing-cold-generation` — the consistency
+    // check returns `ok` for `currentGen === null`. An earlier version of this comment claimed it would, which
+    // justified a real filter with a failure that cannot occur.) A caller that explicitly scopes to the lease
+    // namespace still sees them.
+    if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
         `${op} would enumerate more than ${maxScanSegments} segments — the scan was abandoned there rather than ` +

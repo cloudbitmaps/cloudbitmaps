@@ -28,6 +28,7 @@
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
  * succeeded — check `failed` (the CLI also exits non-zero when it's non-empty).
  */
+import { isReservedRow } from '../core/lease';
 import type { CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
 import type { IRegistryDriver, SegmentRef } from '../core/ports';
@@ -217,6 +218,9 @@ export async function runExport(
   };
 
   for await (const rec of registry.list(options.namespace)) {
+    // A coordination row is not a segment: an unscoped eject would otherwise write one empty file per partition
+    // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
+    if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export
     if (seen !== null) seen.add(refKey(rec));
     await exportRef({ segment: rec.segment, namespace: rec.namespace });

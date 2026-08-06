@@ -169,6 +169,8 @@ export {
   leaseRef,
   leaseRenewIntervalMs,
   partitionOfLeaseRow,
+  isReservedRow,
+  excludingReservedRows,
   LEASE_NAMESPACE,
   DEFAULT_LEASE_TTL_MS,
   DEFAULT_PARTITIONS,

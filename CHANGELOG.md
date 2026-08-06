@@ -21,8 +21,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   `DEFAULT_PARTITIONS`, `MAX_PARTITIONS`, `MIN_LEASE_TTL_MS`, `LEASE_RENEW_DIVISOR`). **N processes can run the
   same maintenance code with no coordinator and no per-process configuration**: each cycle renews what you hold,
   claims what is free or dead, and takes at most one partition from an over-share owner, converging on
-  `ceil(partitions / workers)`. This is the first piece of the lifecycle engine, and it replaces the
-  *"run the sweep from exactly ONE process"* rule that `0.9.0` could only state in prose.
+  `ceil(partitions / workers)`. This is the first piece of the lifecycle engine: **it makes the
+  *"run the sweep from exactly ONE process"* rule enforceable**, rather than something a deployment could violate
+  silently. It does not yet retire that rule — nothing maps a segment to a partition until the sweep and the
+  engine land, and `DEFAULT_PARTITIONS` is `1`.
 
   Three properties are deliberate and load-bearing:
 

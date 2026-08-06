@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Mutation testing (test-strategy T2). Quantifies how well the suite actually catches bugs by injecting mutants into the highest-risk core logic (compaction 2PC/OCC, tombstone merge, bounded concurrency, bit routing) and checking the suite kills them. Offline + slow (a mutant runs the covering tests) — NOT a CI gate; `break` is null so it never fails a build, it just reports a score.",
+  "_comment": "Mutation testing (test-strategy T2). Quantifies how well the suite actually catches bugs by injecting mutants into the highest-risk core logic (compaction 2PC/OCC, tombstone merge, bounded concurrency, bit routing) and checking the suite kills them. Offline + slow (a mutant runs the covering tests) \u2014 NOT a CI gate; `break` is null so it never fails a build, it just reports a score.",
   "testRunner": "vitest",
   "plugins": ["@stryker-mutator/vitest-runner"],
   "coverageAnalysis": "perTest",
@@ -8,13 +8,24 @@
     "packages/core/src/core/compaction.ts",
     "packages/core/src/core/chunk.ts",
     "packages/core/src/core/concurrency.ts",
-    "packages/core/src/core/bit-route.ts"
+    "packages/core/src/core/bit-route.ts",
+    "packages/core/src/core/lease.ts"
   ],
   "reporters": ["html", "json", "clear-text", "progress"],
-  "htmlReporter": { "fileName": "reports/mutation/index.html" },
-  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
-  "clearTextReporter": { "maxTestsToLog": 0 },
-  "thresholds": { "high": 80, "low": 60, "break": null },
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "clearTextReporter": {
+    "maxTestsToLog": 0
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": null
+  },
   "tempDirName": ".stryker-tmp",
   "timeoutMS": 60000,
   "concurrency": 2
