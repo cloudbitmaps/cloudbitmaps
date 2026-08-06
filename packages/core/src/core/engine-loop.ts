@@ -31,6 +31,7 @@ import {
   type LifecycleDeps,
   type LifecycleOptions,
   type LifecycleState,
+  type PhaseFailures,
 } from './lifecycle';
 import { LEASE_RENEW_DIVISOR, releaseAll } from './lease';
 
@@ -74,6 +75,16 @@ export function derivedLeaseTtlMs(intervalMs: number, jitter: number): number {
 }
 
 /**
+ * Consecutive failed cycles after which {@link EngineStatus.healthy} goes false.
+ *
+ * **Three**, because one is a throttle and three is a deployment. Without this the engine had a failure mode with
+ * no signal at all: a fleet past `maxScanSegments` threw from retention on *every* cycle, forever — the cycle
+ * absorbed it into `errors` (correctly: one bad phase must not stop the others), the loop backed off, and
+ * `healthy` stayed **true** because cycles were settling. Nothing was working and the light was green.
+ */
+export const DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES = 3;
+
+/**
  * Fewer than this many renewal attempts per TTL and one slow round trip costs the lease. Two is the floor an
  * explicit `leaseTtlMs` must clear; the derived default gives three.
  */
@@ -107,6 +118,12 @@ export interface EngineLoopOptions extends LifecycleOptions {
    * {@link EngineStatus.staleAfterMs}.
    */
   readonly staleAfterMs?: number;
+  /**
+   * Consecutive failed cycles before {@link EngineStatus.healthy} goes false (default
+   * {@link DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES}). `0` disables the condition — only do that if something else
+   * is alarming on `phaseFailures`, because it restores the state where a permanently broken phase reads healthy.
+   */
+  readonly unhealthyAfterFailedCycles?: number;
 }
 
 export interface EngineStatus {
@@ -124,6 +141,13 @@ export interface EngineStatus {
   readonly lastErrors: readonly { phase: string; error: unknown }[];
   /** Elapsed since the previous cycle. **Greater than the lease TTL means the loop is polling too slowly.** */
   readonly sinceLastCycleMs?: number;
+  /**
+   * Consecutive failures **per phase**, so an alert says *which* half of the cycle is broken. Retention failing
+   * every cycle while compaction succeeds every cycle is a completely different page-out from the reverse, and a
+   * single aggregate counter cannot tell them apart. A phase that did not run this cycle (disabled, or skipped
+   * because this worker holds no partitions) carries its previous count forward rather than resetting.
+   */
+  readonly phaseFailures: PhaseFailures;
   /**
    * **Liveness, and it is not "doing work".** A worker holding zero partitions is healthy — that is what every
    * worker beyond the first does. Healthy means *a cycle attempted and settled recently*, which is exactly the
@@ -227,6 +251,8 @@ export function createEngineLoop(
   const maxIntervalMs = options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS;
   const jitterFraction = options.jitter ?? DEFAULT_JITTER;
   const staleAfterMs = options.staleAfterMs ?? intervalMs * 3 + intervalMs;
+  const unhealthyAfter =
+    options.unhealthyAfterFailedCycles ?? DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES;
   /**
    * Everything the cycle needs, with the two cadence-derived values filled in **here** — this is the only layer
    * that knows the cadence, so it is the only layer that can derive them. A caller driving `runLifecycleCycle`
@@ -452,8 +478,15 @@ export function createEngineLoop(
         ...(lastCycleCompletedAt === undefined
           ? {}
           : { sinceLastCycleMs: now - lastCycleCompletedAt }),
-        // Never started ⇒ not healthy: a process that has not completed a cycle has not proved it can.
-        healthy: lastCycleCompletedAt !== undefined && now - lastCycleCompletedAt < window,
+        phaseFailures: state.phaseFailures,
+        // TWO conditions, and the second was missing entirely. A cycle must have SETTLED recently — a process
+        // that has not completed one has not proved it can — AND the cycles must be getting somewhere. Sustained
+        // failure used to be "a separate signal", which in practice meant no signal: nothing forces an operator
+        // to read `lastErrors`.
+        healthy:
+          lastCycleCompletedAt !== undefined &&
+          now - lastCycleCompletedAt < window &&
+          (unhealthyAfter === 0 || consecutiveFailedCycles < unhealthyAfter),
         staleAfterMs: window,
       };
     },

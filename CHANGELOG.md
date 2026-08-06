@@ -14,6 +14,38 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+- **Both fleet scans in a cycle now have a ceiling, and both are reachable from the engine.** Measured while
+  trying to break it: the retention sweep and compaction discovery run in the *same* cycle off the *same*
+  `registry.list()`, and only one of them was bounded. Peak heap, in-memory driver:
+
+  | fleet | compaction discovery | retention fleet scan |
+  |---|---|---|
+  | 250k | +128 MB | +123 MB |
+  | 500k | **+209 MB** | `BudgetExceededError` |
+  | 1M | **+362 MB** | `BudgetExceededError` |
+
+  So "what does the engine do at a million segments" had two answers, and one of them was to exhaust the heap —
+  on cycle 1, which is always the complete fleet repair, so every restart replayed it. `findCompactable` gains
+  `maxScanSegments` (charged on the row, *before* the shard filter: a sharded worker's scan is not smaller, and
+  the module has always said so). This makes the limit **loud**, not smaller — the scan is still O(fleet) per
+  worker because the shard filter needs a key only the enumeration yields.
+
+  `maxScanSegments` is now settable on **both** `LifecycleRetentionOptions` and `LifecycleCompactionOptions`.
+  Past the old default, retention threw every cycle with a message saying *"raise `maxScanSegments`"* — which no
+  engine option allowed you to do.
+
+- **A phase that has failed on every cycle since Tuesday can no longer read `healthy`.** `LifecycleState` carries
+  `phaseFailures` — consecutive failures per phase — surfaced on `EngineStatus`, and `healthy` goes false once
+  `consecutiveFailedCycles` reaches `unhealthyAfterFailedCycles` (default **3**: one failure is a throttle, three
+  is a deployment). Per-phase, because retention broken while compaction succeeds is a different page-out from
+  the reverse and one aggregate counter cannot tell them apart.
+
+  **This is a deliberate change to what `healthy` means.** It previously meant only "a cycle settled recently",
+  and sustained failure was documented as "a separate signal" — which in practice meant *no* signal, since
+  nothing forces an operator to read `lastErrors`. A phase that did not run (disabled, or skipped because the
+  worker holds no partitions) carries its count forward rather than resetting: "we did not look" is not evidence
+  either way. `unhealthyAfterFailedCycles: 0` opts out and restores the old behaviour.
+
 - **The cycle interval and the lease TTL are one decision — they were two identical numbers.** Found by trying to
   break the engine, not by any gate. `DEFAULT_INTERVAL_MS` and `DEFAULT_LEASE_TTL_MS` were both 60 s, set in
   separate modules in separate PRs, so there was **zero** renewal margin — and the loop's own jitter then spent

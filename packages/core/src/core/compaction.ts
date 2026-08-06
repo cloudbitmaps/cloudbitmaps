@@ -42,12 +42,14 @@ import type { Yielder } from './cooperative';
 import type { Clock } from './determinism';
 import type { IMetricsSink } from './metrics';
 import {
+  BudgetExceededError,
   KeyUnavailableError,
   ValidationError,
   WriteConflictError,
   isWriteConflictError,
 } from './errors';
 import { segmentKey, shardOf } from './keys';
+import { DEFAULT_MAX_SCAN_SEGMENTS, validateMaxScanSegments } from './registry-scan';
 
 /**
  * Does this worker own the segment's shard? `shards` (a set) supersedes `shard` (a single slice) — a worker
@@ -910,6 +912,23 @@ export interface DiscoveryOptions {
   readonly shards?: readonly number[];
   readonly totalShards?: number;
   /**
+   * Ceiling on how many registry rows discovery will hold before giving up (default
+   * {@link DEFAULT_MAX_SCAN_SEGMENTS}).
+   *
+   * **This existed on the retention sweep and not here, and the asymmetry was the bug.** The two run in the
+   * *same* cycle off the *same* `registry.list()`, and at 500k segments retention refused with a
+   * `BudgetExceededError` at ~123 MB while discovery quietly allocated **209 MB**; at 1M, **362 MB** (measured,
+   * in-memory driver). So "what does the engine do at a million segments" had two different answers depending on
+   * which phase you asked about, and one of them was to exhaust the heap. A background process that OOMs is worse
+   * than one that reports it cannot proceed, because the restart replays the same scan — and the first cycle
+   * after every restart is the complete fleet repair.
+   *
+   * Note what this does **not** fix: the scan is still O(fleet) per worker, because the shard filter needs the
+   * segment key and only the enumeration yields it (gap #3). Partitions buy work throughput, not scan cost. The
+   * ceiling makes the limit *loud* rather than removing it.
+   */
+  readonly maxScanSegments?: number;
+  /**
    * Poison-segment quarantine (gap #2): a segment whose `consecutiveFailures` has reached this threshold is
    * skipped by discovery (not even drained) until `quarantineCooldownMs` since its last registry update has
    * elapsed — then it's retried once (a transient fault self-heals; a persistent one re-quarantines). Default 5.
@@ -965,12 +984,26 @@ export async function findCompactable(
   const cooldownMs = options.quarantineCooldownMs ?? DEFAULT_QUARANTINE_COOLDOWN_MS;
   const now = deps.clock.now();
 
+  const maxScanSegments = options.maxScanSegments ?? DEFAULT_MAX_SCAN_SEGMENTS;
+  validateMaxScanSegments(maxScanSegments, 'findCompactable');
+
   const known = new Map<string, KnownSegment>();
   for await (const rec of deps.registry.list(options.namespace)) {
     // Partition leases are not segments — skip them in an unscoped fleet scan. They would never pass the dirty
     // threshold, so this is hygiene rather than a correctness fix: a lease row must not appear in `scanned`, or
     // an operator watching discovery counts sees a fleet that is one-per-partition larger than it is.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
+    // Charged on the ROW, before the shard filter, because the map is what grows — filtering later does not make
+    // the enumeration smaller, and pretending a sharded worker has a smaller scan is the claim the module header
+    // already refuses to make.
+    if (known.size >= maxScanSegments) {
+      throw new BudgetExceededError(
+        `findCompactable would enumerate more than ${maxScanSegments} segments — the scan was abandoned there ` +
+          `rather than completed. Narrow it with \`namespace\`, or raise \`maxScanSegments\` if the fleet really ` +
+          `is that large and the memory is available (a record is a few hundred bytes resident, so a million ` +
+          `segments is a few hundred MB on top of everything else in the process).`,
+      );
+    }
     known.set(segmentKey(rec), {
       ref: { namespace: rec.namespace, segment: rec.segment },
       currentGen: rec.currentGen,

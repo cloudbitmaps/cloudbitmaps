@@ -73,6 +73,14 @@ export interface LifecycleRetentionOptions {
   /** Past due-buckets a fast scan also reads. */
   readonly lookbackBuckets?: number;
   /**
+   * Ceiling on rows a retention scan will hold before refusing (default `DEFAULT_MAX_SCAN_SEGMENTS`, 250k).
+   *
+   * **Exposed because the error told you to raise something you could not reach.** Past the default, retention
+   * threw a `BudgetExceededError` every cycle — caught into {@link LifecycleCycleResult.errors}, so retention
+   * silently never ran again — and its message said *"raise `maxScanSegments`"*, which no engine option allowed.
+   */
+  readonly maxScanSegments?: number;
+  /**
    * Run the complete `'fleet'` scan every Nth cycle. `1` = always. Defaults to
    * {@link repairEveryFor}`(cycleIntervalMs)` when the cadence is known, else {@link DEFAULT_REPAIR_EVERY}.
    *
@@ -90,6 +98,12 @@ export interface LifecycleCompactionOptions {
   readonly threshold?: number;
   /** Superseded generations to keep as a grace window for in-flight readers. */
   readonly keep?: number;
+  /**
+   * Ceiling on rows discovery will hold before refusing (default `DEFAULT_MAX_SCAN_SEGMENTS`, 250k). Set it on
+   * **both** phases: they scan the same registry in the same cycle, so a ceiling on one is not a ceiling on the
+   * cycle.
+   */
+  readonly maxScanSegments?: number;
 }
 
 export interface LifecycleOptions {
@@ -122,19 +136,39 @@ export interface LifecycleOptions {
   readonly namespace?: string;
 }
 
+/** Consecutive failures per phase. A phase that ran clean is back to `0`; one that did not run is unchanged. */
+export type PhaseFailures = Readonly<Record<LifecyclePhase, number>>;
+
 export interface LifecycleState {
   readonly lease: LeaseState;
   /** Cycles completed. Drives the repair cadence; carried so a restart does not reset it to "repair now". */
   readonly cycle: number;
+  /**
+   * How many cycles in a row each phase has failed.
+   *
+   * **This is the difference between "something went wrong once" and "this has not worked since Tuesday",** and
+   * only the second is worth waking someone for. A single `errors` entry is transient by nature — a throttle, a
+   * retried write. The same entry on every cycle for an hour is a broken deployment, and until this counter
+   * existed the two were indistinguishable from the outside: a fleet past `maxScanSegments` threw from retention
+   * on *every* cycle, forever, and nothing but an unread `lastErrors` array said so.
+   */
+  readonly phaseFailures: PhaseFailures;
 }
 
 export function emptyLifecycleState(): LifecycleState {
-  return { lease: emptyLeaseState(), cycle: 0 };
+  return {
+    lease: emptyLeaseState(),
+    cycle: 0,
+    phaseFailures: { lease: 0, retention: 0, compaction: 0 },
+  };
 }
+
+/** The three phases of a cycle, in the order they run. */
+export type LifecyclePhase = 'lease' | 'retention' | 'compaction';
 
 /** A phase that failed. The cycle continues; the caller decides whether one of these is worth alarming on. */
 export interface LifecyclePhaseError {
-  readonly phase: 'lease' | 'retention' | 'compaction';
+  readonly phase: LifecyclePhase;
   readonly error: unknown;
 }
 
@@ -196,6 +230,22 @@ function validate(deps: LifecycleDeps, options: LifecycleOptions): void {
 }
 
 /**
+ * Fold a cycle's outcome into the carried per-phase counters. A phase that **ran** either resets to 0 or
+ * increments; a phase that **did not run** — disabled, or skipped because this worker holds no partitions — keeps
+ * whatever it had, because "we did not look" is not evidence either way.
+ */
+function foldPhaseFailures(
+  previous: PhaseFailures,
+  ran: readonly LifecyclePhase[],
+  errors: readonly LifecyclePhaseError[],
+): PhaseFailures {
+  const failed = new Set(errors.map((e) => e.phase));
+  const next = { ...previous };
+  for (const phase of ran) next[phase] = failed.has(phase) ? previous[phase] + 1 : 0;
+  return next;
+}
+
+/**
  * Run one cycle. Idempotent and safe to call concurrently from every process: the partition lease decides who
  * acts on what, and every mutation underneath is a conditional write, so a duplicated effort cannot corrupt
  * anything — it can only waste a request.
@@ -215,6 +265,7 @@ export async function runLifecycleCycle(
   // of waiting out a whole repair interval with an index it did not populate.
   const scan: 'index' | 'fleet' = cycle === 1 || cycle % repairEvery === 0 ? 'fleet' : 'index';
 
+  const ran: LifecyclePhase[] = ['lease'];
   let lease = state.lease;
   let partitionsHeld: readonly number[] = [];
   try {
@@ -232,11 +283,17 @@ export async function runLifecycleCycle(
   // Holding nothing is not a failure — it is what every worker beyond the first does when partitions are
   // scarce. It does mean this cycle has no work, and doing it anyway would duplicate another worker's.
   if (partitionsHeld.length === 0) {
-    return { state: { lease, cycle }, partitionsHeld, scan, errors };
+    return {
+      state: { lease, cycle, phaseFailures: foldPhaseFailures(state.phaseFailures, ran, errors) },
+      partitionsHeld,
+      scan,
+      errors,
+    };
   }
 
   let retention: RetireExpiredResult | undefined;
   if (options.retention?.enabled !== false) {
+    ran.push('retention');
     try {
       retention = await retireExpired(deps, {
         now: deps.clock.now(),
@@ -246,6 +303,9 @@ export async function runLifecycleCycle(
         ...(options.retention?.lookbackBuckets === undefined
           ? {}
           : { lookbackBuckets: options.retention.lookbackBuckets }),
+        ...(options.retention?.maxScanSegments === undefined
+          ? {}
+          : { maxScanSegments: options.retention.maxScanSegments }),
         // Retire the SAME slice this worker compacts. Without this every replica sweeps the whole fleet and
         // contends — the hazard the compaction CLI documents, which a multi-process engine would otherwise
         // reintroduce silently.
@@ -258,6 +318,7 @@ export async function runLifecycleCycle(
 
   let compaction: CompactionCycleResult | undefined;
   if (options.compaction?.enabled !== false) {
+    ran.push('compaction');
     try {
       compaction = await runCompactionCycle(deps, {
         owner: options.owner,
@@ -275,6 +336,9 @@ export async function runLifecycleCycle(
           ? {}
           : { threshold: options.compaction.threshold }),
         ...(options.compaction?.keep === undefined ? {} : { keep: options.compaction.keep }),
+        ...(options.compaction?.maxScanSegments === undefined
+          ? {}
+          : { maxScanSegments: options.compaction.maxScanSegments }),
       });
     } catch (error) {
       errors.push({ phase: 'compaction', error });
@@ -282,7 +346,7 @@ export async function runLifecycleCycle(
   }
 
   return {
-    state: { lease, cycle },
+    state: { lease, cycle, phaseFailures: foldPhaseFailures(state.phaseFailures, ran, errors) },
     partitionsHeld,
     scan,
     ...(retention === undefined ? {} : { retention }),
