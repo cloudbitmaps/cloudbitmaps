@@ -6,11 +6,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_INTERVAL_MS,
+  DEFAULT_JITTER,
+  DEFAULT_LEASE_TTL_MS,
+  DEFAULT_REPAIR_EVERY,
+  leaseRef,
   MemoryColdDriver,
   MemoryRegistryDriver,
   MemoryWarmDriver,
+  REPAIR_TARGET_MS,
   createEngineLoop,
+  derivedLeaseTtlMs,
+  emptyLeaseState,
+  leaseRenewIntervalMs,
+  maxCycleGapMs,
+  repairEveryFor,
   roaringCodec,
+  runLeaseCycle,
   type LifecycleDeps,
 } from '@/index';
 import { CloudRoaring } from '@/index';
@@ -446,6 +457,162 @@ describe('engine loop — an injected clock that rejects', () => {
     // And `stop()` resolves rather than rejecting — a rejected stop would be memoised, so every later stop
     // rejects too and the leases are never released.
     await expect(loop.stop({ timeoutMs: 1000 })).resolves.toMatchObject({ released: [] });
+  });
+});
+
+describe('engine loop — the interval and the lease TTL are one decision', () => {
+  it('a holder on its SLOWEST legal sleep is never judged dead by an observer', async () => {
+    // The regression. Both defaults were 60 s, set in different modules in different PRs, so there was no
+    // margin — and a legal default sleep of 66 s then exceeded the TTL. Reproduced as a healthy four-partition
+    // worker periodically dropping to ZERO partitions, abandoning in-flight work, reconverging, repeating.
+    // Nothing in either module's tests could see it: the defect lived in the ratio between two constants.
+    const ttl = derivedLeaseTtlMs(DEFAULT_INTERVAL_MS, DEFAULT_JITTER);
+    const holderGap = maxCycleGapMs(DEFAULT_INTERVAL_MS, DEFAULT_JITTER); // the worst case, every time
+    const observerGap = DEFAULT_INTERVAL_MS;
+
+    let t = T0;
+    const clock = { now: () => t, sleep: () => Promise.resolve() };
+    const registry = new MemoryRegistryDriver({ now: clock.now });
+    const deps = { registry, clock } as unknown as Parameters<typeof runLeaseCycle>[1];
+    const opts = (owner: string) => ({ owner, partitions: 4, ttlMs: ttl });
+
+    let sh = emptyLeaseState();
+    let so = emptyLeaseState();
+    let nextH = 0;
+    let nextO = 0;
+    let churn = 0;
+    let converged = false;
+    const holdings: number[] = [];
+
+    for (let i = 0; i < 40; i++) {
+      if (nextH <= nextO) {
+        t = T0 + nextH;
+        nextH += holderGap;
+        const r = await runLeaseCycle(sh, deps, opts('holder'));
+        sh = r.state;
+        if (converged) churn += r.lost.length;
+        holdings.push(r.held.length);
+      } else {
+        t = T0 + nextO;
+        nextO += observerGap;
+        const r = await runLeaseCycle(so, deps, opts('observer'));
+        so = r.state;
+        if (converged) churn += r.lost.length;
+      }
+      if (i === 9) converged = true;
+    }
+
+    expect(churn).toBe(0); // no steady-state losses at all
+    expect(Math.min(...holdings.slice(6))).toBeGreaterThan(0); // and never starved to zero
+  });
+
+  it('derives a TTL with three renewals inside it, and widens it when jitter rises', () => {
+    expect(derivedLeaseTtlMs(60_000, 0.1)).toBe(198_000); // ceil(60_000 × 1.1) × 3
+    expect(derivedLeaseTtlMs(60_000, 0)).toBe(180_000);
+    expect(derivedLeaseTtlMs(60_000, 0.5)).toBeGreaterThan(derivedLeaseTtlMs(60_000, 0.1));
+    // The relationship `lease.ts` has always exported, read the other way round.
+    expect(leaseRenewIntervalMs(derivedLeaseTtlMs(60_000, 0))).toBe(60_000);
+  });
+
+  it('refuses an explicit TTL the interval cannot keep up with', () => {
+    const { deps } = harness();
+    expect(() =>
+      createEngineLoop(deps, { owner: 'w', intervalMs: 60_000, leaseTtlMs: 60_000 }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      createEngineLoop(deps, { owner: 'w', intervalMs: 60_000, leaseTtlMs: 60_000 }),
+    ).toThrow(/judged dead and stolen/);
+    // …and accepts one that clears the two-renewals floor.
+    expect(() =>
+      createEngineLoop(deps, { owner: 'w', intervalMs: 60_000, leaseTtlMs: 132_000 }),
+    ).not.toThrow();
+  });
+
+  it('passes the derived TTL down to the cycle rather than letting the lease default apply', async () => {
+    // Read the TTL the lease phase ACTUALLY used, off the row it wrote. The first version of this test asserted
+    // that the worker still held its partition — which is true under the derived TTL *and* under the 60 s lease
+    // default, so the mutation that removed the derivation survived it. An assertion both branches satisfy is
+    // not a test (15-CORRECTIONS §18).
+    const { c, deps, registry } = harness();
+    const intervalMs = 1000;
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs, jitter: 0 });
+
+    await loop.runOnce();
+
+    const row = await registry.get(leaseRef(0));
+    expect(row?.leaseOwner).toBe('w1');
+    expect((row?.leaseExpiresAt ?? 0) - c.now()).toBe(derivedLeaseTtlMs(intervalMs, 0));
+    expect(derivedLeaseTtlMs(intervalMs, 0)).not.toBe(DEFAULT_LEASE_TTL_MS); // the two really differ here
+  });
+
+  it('an explicit TTL that clears the floor is passed through untouched', async () => {
+    const { c, deps, registry } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000, leaseTtlMs: 9000 });
+
+    await loop.runOnce();
+
+    const row = await registry.get(leaseRef(0));
+    expect((row?.leaseExpiresAt ?? 0) - c.now()).toBe(9000);
+  });
+
+  it('the first sleep never exceeds one interval — it used to be able to reach two', async () => {
+    // The old spread was `[0, 2 × intervalMs)`, which made a brand-new worker's first renew gap up to TWICE the
+    // lease TTL: on every deploy a worker could acquire its slice and immediately have it judged dead. Bounding
+    // it to one period de-phases the fleet just as well, since a full period is all the phase there is.
+    for (const rngValue of [0, 0.5, 0.999]) {
+      const { c, deps } = harness(rngValue);
+      const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 10_000 });
+      void loop.start();
+      await c.settle();
+      // A zero offset is legal and registers no sleep at all — the loop simply proceeds. Both are within bound.
+      const first = c.sleepsRequested()[0] ?? 0;
+      expect(first).toBeLessThanOrEqual(10_000);
+      // The bound is what regressed: the old spread could ask for up to 20_000 here.
+      expect(first).toBeCloseTo(10_000 * rngValue, 0);
+      await loop.stop();
+    }
+  });
+
+  it('jitter: 0 still means a deterministic first sleep', async () => {
+    const { c, deps } = harness(0.999);
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 10_000, jitter: 0 });
+    void loop.start();
+    await c.settle();
+    expect(c.sleepsRequested()[0]).toBe(10_000);
+    await loop.stop();
+  });
+});
+
+describe('engine loop — the repair cadence is derived from the real cadence', () => {
+  it('lands near a day instead of near half an hour', () => {
+    // The number 24 was justified by "roughly daily at the engine's default cadence". It is 24 MINUTES there —
+    // wrong by 60× — so the fleet scan the due index exists to avoid ran 60 times a day.
+    expect(repairEveryFor(60_000)).toBe(1440);
+    expect(repairEveryFor(5 * 60_000)).toBe(288);
+    expect(repairEveryFor(REPAIR_TARGET_MS * 2)).toBe(1); // a caller slower than a day repairs every cycle
+    expect(DEFAULT_REPAIR_EVERY * 60_000).toBeLessThan(REPAIR_TARGET_MS); // the old default, stated plainly
+  });
+
+  it('the loop supplies its own interval, so cycle 1441 repairs and cycle 25 does not', async () => {
+    const { deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 60_000 });
+    // Cycle 1 always repairs; from then on the derived cadence governs.
+    expect((await loop.runOnce()).scan).toBe('fleet');
+    const scans: string[] = [];
+    for (let i = 0; i < 30; i++) scans.push((await loop.runOnce()).scan);
+    expect(scans).not.toContain('fleet'); // at 24 cycles it USED to repair here
+  });
+
+  it('an explicit repairEvery still wins', async () => {
+    const { deps } = harness();
+    const loop = createEngineLoop(deps, {
+      owner: 'w1',
+      intervalMs: 60_000,
+      retention: { repairEvery: 3 },
+    });
+    await loop.runOnce(); // 1 — always fleet
+    await loop.runOnce(); // 2
+    expect((await loop.runOnce()).scan).toBe('fleet'); // 3
   });
 });
 

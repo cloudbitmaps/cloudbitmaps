@@ -14,6 +14,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+- **The cycle interval and the lease TTL are one decision — they were two identical numbers.** Found by trying to
+  break the engine, not by any gate. `DEFAULT_INTERVAL_MS` and `DEFAULT_LEASE_TTL_MS` were both 60 s, set in
+  separate modules in separate PRs, so there was **zero** renewal margin — and the loop's own jitter then spent
+  it, since a legal default sleep of 66 s exceeds a 60 s TTL. Reproduced: a healthy four-partition worker was
+  periodically judged dead and dropped to **zero** partitions, abandoning whatever it was mid-way through, then
+  reconverged, then repeated. `lease.ts` had exported the required relationship (`leaseRenewIntervalMs`) all
+  along; the loop never called it, and no test anywhere related the two constants.
+
+  `leaseTtlMs` now defaults to **`derivedLeaseTtlMs(intervalMs, jitter)`** — the longest legal cycle gap ×
+  `LEASE_RENEW_DIVISOR`, so three renewal attempts fit inside one TTL (198 s at the defaults). An explicit
+  `leaseTtlMs` allowing fewer than two is **refused at construction** rather than discovered as fleet churn. Both
+  helpers are exported for callers driving `runLifecycleCycle` from their own scheduler. **The trade, stated:** a
+  crashed worker's slice now idles up to ~200 s instead of ~60 s before a healthy replica takes it. For
+  background retention and compaction that is the right direction, but it is a trade.
+
+  Relatedly, **the first sleep is now spread over one period, `[0, interval)`, not two.** The old `[0, 2 ×
+  interval)` made a brand-new worker's first renew gap up to *twice* the TTL, so on every deploy a worker could
+  acquire its slice and immediately have it judged dead. One period de-phases a fleet exactly as well. It also
+  now respects the backoff, which the first version of this fix broke — caught by the existing backoff test.
+
+- **`repairEvery` is derived from your actual cadence, because a cycle count cannot be right without it.** The
+  default `24` carried the justification *"roughly daily at the engine's default cadence, matching the due
+  index's bucket granularity"* — **wrong by a factor of 60.** At the 60 s default it is 24 *minutes*, so the
+  complete fleet scan the due index exists to avoid was running 60 times a day, forever. `LifecycleOptions` gains
+  `cycleIntervalMs`, and `repairEvery` then defaults to `repairEveryFor(cycleIntervalMs)` — 1440 cycles at 60 s,
+  landing on one bucket width as the comment always claimed. `createEngineLoop` always supplies it;
+  `DEFAULT_REPAIR_EVERY` remains only as the fallback for a caller that has not said how often it runs.
+
 - **`createEngineLoop` — the lifecycle cycle, repeated, with the operational behaviour a background job needs
   to be trusted.** `start()` · `runOnce()` · `stop({ timeoutMs })` · `status()`. It sleeps on the injected clock,
   so every property below is asserted on a fake one rather than by waiting.
