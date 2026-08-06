@@ -268,7 +268,9 @@ The window only opens on a kill that skips the graceful path, so close that path
 - **Make sure `SIGTERM` is actually delivered.** A shell-form `CMD` puts a shell at PID 1 that does not forward
   signals, so the container never receives it and *every* stop becomes a kill after the grace period. Use
   exec-form `CMD`, or an init that forwards.
-- **Set a request timeout on the SDK client you inject.** There is no `AbortSignal` anywhere in this library —
+- **Set a request timeout on the SDK client you inject** (the whole list is in
+  [engine operations](engine-operations.md#what-you-own--the-five-things-the-library-cannot-do-for-you)). There is
+  no `AbortSignal` anywhere in this library —
   deliberately, since a homegrown timeout would abandon in-flight requests mid-write. The consequence is that a
   black-holed connection hangs a cycle indefinitely; without a client timeout, `stop()` cannot drain and the
   grace period runs out. This is the single highest-value thing you own.

@@ -5,6 +5,9 @@ grown one capability per phase (so it never describes vapor).
 
 - [**Getting started**](getting-started.md) — install status, the in-memory quick start, the persistent
   local-filesystem setup, seeding a Cold generation, and the operation reference.
+- [**Running the lifecycle engine**](engine-operations.md) — the operational contract for the background half:
+  what you own (a client timeout, above all), why the cycle interval and the lease TTL are one decision, what to
+  alarm on, where the scale ceilings are, and the safe way to change `partitions` on a live fleet.
 - [**Dashboards**](dashboards.md) — wiring the metrics + audit sinks into your observability stack.
 - [**Disaster recovery**](disaster-recovery.md) — what to back up, the coordinated-restore procedure, RPO/RTO,
   and the `checkConsistency()` torn-restore check.
