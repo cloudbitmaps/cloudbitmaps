@@ -62,6 +62,9 @@ export interface EngineLoopOptions extends LifecycleOptions {
   /**
    * How stale the last completed cycle may be before {@link EngineStatus.healthy} goes false. Defaults to
    * three intervals plus a margin, so one slow cycle is not an alarm and a stopped loop is.
+   *
+   * **It is a floor, not a fixed window** — it widens with the backoff. See
+   * {@link EngineStatus.staleAfterMs}.
    */
   readonly staleAfterMs?: number;
 }
@@ -87,20 +90,52 @@ export interface EngineStatus {
    * condition a hung driver call breaks while the process stays alive.
    */
   readonly healthy: boolean;
+  /**
+   * The window `healthy` actually applied — **the effective one, not the configured one.** It widens with the
+   * backoff, and that is load-bearing rather than a nicety: a backed-off loop sleeps for up to `maxIntervalMs`
+   * (15× the interval by default), so a fixed four-interval window would report a perfectly alive worker as
+   * unhealthy from its *second* consecutive failure onward — one brief throttle. Wired to a liveness probe that
+   * flap restarts the pod during an outage, which is exactly the thrash the backoff exists to prevent, and the
+   * restart also loses the accumulated backoff. So the window tracks what the loop is currently promising.
+   *
+   * A **hung** cycle is unaffected: it never settles, so nothing widens, and it surfaces on the configured
+   * floor as designed.
+   */
   readonly staleAfterMs: number;
 }
 
 export interface StopResult {
   /** True iff the in-flight cycle finished before the timeout. False ⇒ work was abandoned, and it is unbounded. */
   readonly drained: boolean;
-  /** Partitions released, so another worker takes them on its next cycle instead of waiting out the TTL. */
+  /**
+   * Partitions released, so another worker takes them on its next cycle instead of waiting out the TTL.
+   *
+   * **May be a subset of what was held**, and that is not a bug to chase: an abandoned cycle keeps running and
+   * can move a lease row's token under the release, whose CAS then loses. Those partitions fall back to the
+   * ordinary TTL expiry the protocol is built on. Reported rather than assumed, so it is visible.
+   */
   readonly released: readonly number[];
 }
 
+/**
+ * A loop is **single-use**: once {@link EngineLoop.stop} has been called it cannot be restarted, and `start` /
+ * `runOnce` throw. Constructing one is free and side-effect free, so a caller who genuinely wants to run again
+ * builds a new one — which is also the only way to get a clean {@link LifecycleState} rather than a half-released
+ * lease view. The alternative was worse than a restriction: with the stop memoised for idempotence, a restarted
+ * loop's second `stop()` returned the *first* stop's result and the loop kept running — holding leases, sweeping,
+ * reporting stopped.
+ */
 export interface EngineLoop {
   /** Loop until {@link stop}. Rejects only for a wiring error; a cycle fault is absorbed and backed off. */
   start(): Promise<void>;
-  /** One cycle, then resolve. The shape for a scheduler — no timer, so nothing can silently fail to fire. */
+  /**
+   * One cycle, then resolve. The shape for a scheduler — no timer, so nothing can silently fail to fire.
+   *
+   * **Refuses to overlap.** Two cycles on one loop share {@link LifecycleState}, so the later one's lease view
+   * and repair-cadence counter overwrite the earlier's. The data is safe regardless (every mutation underneath
+   * is a conditional write), but the loop's own bookkeeping is not, and the condition — a schedule firing faster
+   * than a cycle takes — is worth a thrown error rather than a silently confused counter.
+   */
   runOnce(): Promise<LifecycleCycleResult>;
   /** Wake the sleep, race the in-flight cycle against `timeoutMs`, release leases. Idempotent. */
   stop(options?: { timeoutMs?: number }): Promise<StopResult>;
@@ -153,6 +188,21 @@ export function createEngineLoop(
   let wake: (() => void) | null = null;
   let stopped: Promise<StopResult> | null = null;
 
+  /** The interval the loop is currently promising: the plain one when clean, the backed-off one when not. */
+  function currentIntervalMs(): number {
+    if (consecutiveFailedCycles === 0) return intervalMs;
+    return Math.min(intervalMs * 2 ** consecutiveFailedCycles, maxIntervalMs);
+  }
+
+  /**
+   * The staleness window `healthy` applies — the configured floor, widened to twice whatever the loop is
+   * currently promising. Twice, not once, so a cycle that takes a while on top of a backed-off sleep is not an
+   * alarm; see {@link EngineStatus.staleAfterMs} for why a fixed window is wrong.
+   */
+  function effectiveStaleAfterMs(): number {
+    return Math.max(staleAfterMs, currentIntervalMs() * 2);
+  }
+
   /** Random in `[1 - f, 1 + f)`, or exactly 1 with no `rng` — core may not read ambient randomness. */
   function jitterFactor(fraction: number): number {
     if (fraction === 0 || deps.rng === undefined) return 1;
@@ -164,11 +214,30 @@ export function createEngineLoop(
     if (ms <= 0 || stopping) return;
     await new Promise<void>((resolve) => {
       wake = resolve;
-      void clock.sleep(ms).then(() => {
-        resolve();
-      });
+      // A rejection counts as elapsed. `clock` is injected, so a caller's implementation can reject — and an
+      // unhandled one would leave this promise pending forever: the loop silently dead while the process lives,
+      // the exact failure this module is built to prevent.
+      void clock.sleep(ms).then(
+        () => resolve(),
+        () => resolve(),
+      );
     });
     wake = null;
+  }
+
+  /** Guard both entry points. `start`'s own loop is sequential, so only its *first* cycle passes through here. */
+  function refuseIfUnusable(verb: string): void {
+    if (stopped !== null) {
+      throw new ValidationError(
+        `engine: ${verb} after stop() — a loop is single-use; build another with createEngineLoop`,
+      );
+    }
+    if (inFlight !== null) {
+      throw new ValidationError(
+        `engine: ${verb} while a cycle is already running — two cycles on one loop share state; your schedule ` +
+          'is firing faster than a cycle takes',
+      );
+    }
   }
 
   async function cycle(): Promise<LifecycleCycleResult> {
@@ -194,6 +263,7 @@ export function createEngineLoop(
   return {
     async start(): Promise<void> {
       if (running) throw new ValidationError('engine: already started');
+      refuseIfUnusable('start()');
       running = true;
       stopping = false;
       // Fully jitter the FIRST sleep: replicas deployed together would otherwise run cycle 1 in lockstep, and
@@ -211,8 +281,7 @@ export function createEngineLoop(
         if (stopping) break;
         // Back off while the world is broken, and subtract the work already done so a slow cycle does not
         // compound into an ever-later schedule.
-        const backedOff = Math.min(intervalMs * 2 ** consecutiveFailedCycles, maxIntervalMs);
-        const base = consecutiveFailedCycles === 0 ? intervalMs : backedOff;
+        const base = currentIntervalMs();
         // The first sleep is jittered FULLY (the whole interval), not by the configured fraction: replicas
         // deployed together must not run cycle 1 in lockstep, and cycle 1 is always the complete fleet repair
         // scan. `jitter: 0` still means none at all — an operator asking for determinism gets it.
@@ -224,6 +293,14 @@ export function createEngineLoop(
     },
 
     runOnce(): Promise<LifecycleCycleResult> {
+      // `running` too, not only `inFlight`: `start()` between cycles has an empty `inFlight` and would still
+      // have its state overwritten underneath it.
+      if (running) {
+        throw new ValidationError(
+          'engine: runOnce() while start() is looping — pick one, they share state',
+        );
+      }
+      refuseIfUnusable('runOnce()');
       return cycle();
     },
 
@@ -240,12 +317,18 @@ export function createEngineLoop(
           // RACE, never await. Nothing here is cancellable, so an unconditional await on a hung driver call is
           // a deadlock dressed as a graceful shutdown.
           const timedOut = Symbol('timeout');
+          // Both arms swallow rejection. A `stop()` that rejects is worse than one that reports
+          // `drained: false` — `stopped` memoises it, so every later stop rejects too and the leases are never
+          // released.
           const outcome = await Promise.race([
             pending.then(
               () => undefined,
               () => undefined,
             ),
-            clock.sleep(timeoutMs).then(() => timedOut),
+            clock.sleep(timeoutMs).then(
+              () => timedOut,
+              () => timedOut,
+            ),
           ]);
           drained = outcome !== timedOut;
         }
@@ -254,7 +337,10 @@ export function createEngineLoop(
         const releaseTimedOut = Symbol('release-timeout');
         const outcome = await Promise.race([
           releaseAll(state.lease, deps).then((r) => r.released),
-          clock.sleep(timeoutMs).then(() => releaseTimedOut),
+          clock.sleep(timeoutMs).then(
+            () => releaseTimedOut,
+            () => releaseTimedOut,
+          ),
         ]).catch(() => [] as number[]);
         if (outcome !== releaseTimedOut) released = outcome as number[];
         state = { ...state, lease: emptyLifecycleState().lease };
@@ -266,6 +352,7 @@ export function createEngineLoop(
 
     status(): EngineStatus {
       const now = clock.now();
+      const window = effectiveStaleAfterMs();
       return {
         running,
         cyclesCompleted,
@@ -280,8 +367,8 @@ export function createEngineLoop(
           ? {}
           : { sinceLastCycleMs: now - lastCycleCompletedAt }),
         // Never started ⇒ not healthy: a process that has not completed a cycle has not proved it can.
-        healthy: lastCycleCompletedAt !== undefined && now - lastCycleCompletedAt < staleAfterMs,
-        staleAfterMs,
+        healthy: lastCycleCompletedAt !== undefined && now - lastCycleCompletedAt < window,
+        staleAfterMs: window,
       };
     },
   };

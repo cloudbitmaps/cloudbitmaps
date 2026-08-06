@@ -330,6 +330,125 @@ describe('engine loop — backoff and jitter', () => {
   });
 });
 
+describe('engine loop — the health window tracks the backoff', () => {
+  it('a backed-off but alive worker stays HEALTHY — a fixed window would flap and restart the pod', async () => {
+    // Found by review, not by a gate. The backoff climbs to maxIntervalMs (15× the interval by default) while
+    // `staleAfterMs` defaulted to 4× it — so from the SECOND consecutive failure onward, one brief throttle,
+    // `healthy` went false between cycles. Wired to a liveness probe that is a restart loop during an outage:
+    // exactly the thrash the backoff exists to prevent, and each restart also discards the backoff.
+    const { c, deps } = harness(0.5);
+    const broken = wrapRegistry(deps.registry as MemoryRegistryDriver, {
+      list: () => {
+        throw new Error('backend down');
+      },
+    });
+    const loop = createEngineLoop({ ...deps, registry: broken } as LifecycleDeps, {
+      owner: 'w1',
+      intervalMs: 1000,
+      maxIntervalMs: 60_000,
+      jitter: 0,
+      // default staleAfterMs === 4 × interval === 4000
+    });
+
+    void loop.start();
+    for (let i = 0; i < 3; i++) {
+      await c.settle();
+      await c.release();
+    }
+    await c.settle();
+    expect(loop.status().consecutiveFailedCycles).toBeGreaterThanOrEqual(3);
+
+    // Well past the 4000 floor, well inside what the loop is currently promising.
+    c.advance(5000);
+    expect(loop.status().healthy).toBe(true);
+    // And the operator can SEE the widened window rather than having to infer it.
+    expect(loop.status().staleAfterMs).toBeGreaterThan(5000);
+
+    await loop.stop();
+  });
+
+  it('the configured floor still wins when it is the larger of the two', async () => {
+    const { deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000, staleAfterMs: 5000 });
+
+    await loop.runOnce();
+
+    // Clean cycle ⇒ 2 × interval === 2000, so the floor governs. Widening must never *narrow* the window.
+    expect(loop.status().staleAfterMs).toBe(5000);
+  });
+});
+
+describe('engine loop — a loop is single-use', () => {
+  it('start() after stop() throws, instead of running a loop that stop() can no longer stop', async () => {
+    // The hole: `stopped` is memoised for idempotence and was never cleared, so a restarted loop's second
+    // `stop()` returned the FIRST stop's settled result — while the loop kept cycling, holding leases and
+    // sweeping, reporting itself stopped. A restriction beats a silent lie; constructing another loop is free.
+    const { c, deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000 });
+    void loop.start();
+    await c.settle();
+    await loop.stop();
+
+    await expect(loop.start()).rejects.toThrow(ValidationError);
+    await expect(loop.start()).rejects.toThrow(/single-use/);
+    expect(() => loop.runOnce()).toThrow(/single-use/);
+  });
+
+  it('runOnce() refuses to overlap a cycle, naming the cause', async () => {
+    // Two cycles on one loop share LifecycleState: the later one's lease view and repair-cadence counter
+    // overwrite the earlier's. The data is safe either way (every mutation underneath is a conditional write),
+    // but a scheduler firing faster than a cycle takes deserves to be told, not to get a confused counter.
+    const { deps } = harness();
+    const slow = wrapRegistry(deps.registry as MemoryRegistryDriver, {
+      list: () => neverEnding(),
+    });
+    const loop = createEngineLoop({ ...deps, registry: slow } as LifecycleDeps, { owner: 'w1' });
+
+    void loop.runOnce();
+    await Promise.resolve();
+
+    expect(() => loop.runOnce()).toThrow(/already running/);
+  });
+
+  it('runOnce() refuses while start() is looping, even between cycles', async () => {
+    // `inFlight` is empty while the loop sleeps, so guarding on it alone would let a runOnce slip through and
+    // overwrite the schedule's state underneath it.
+    const { c, deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 30_000, jitter: 0 });
+    void loop.start();
+    await c.settle(); // sleeping between cycles: nothing is in flight
+
+    expect(() => loop.runOnce()).toThrow(/start\(\) is looping/);
+
+    await loop.stop();
+  });
+});
+
+describe('engine loop — an injected clock that rejects', () => {
+  it('counts a rejected sleep as elapsed instead of hanging the loop forever', async () => {
+    // `clock` is the caller's. A rejection from `sleep` left the interval promise pending forever: the loop
+    // silently dead while the process stayed alive — the one failure mode this module exists to prevent.
+    const registry = new MemoryRegistryDriver({ now: () => T0 });
+    const deps = {
+      warm: new MemoryWarmDriver(),
+      cold: new MemoryColdDriver(),
+      registry,
+      clock: { now: () => T0, sleep: () => Promise.reject(new Error('clock is broken')) },
+      codec: roaringCodec,
+    } as unknown as LifecycleDeps;
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000, jitter: 0 });
+
+    void loop.start();
+    for (let i = 0; i < 60; i++) await Promise.resolve();
+
+    expect(loop.status().cyclesCompleted).toBeGreaterThan(1); // it kept going
+
+    // And `stop()` resolves rather than rejecting — a rejected stop would be memoised, so every later stop
+    // rejects too and the leases are never released.
+    await expect(loop.stop({ timeoutMs: 1000 })).resolves.toMatchObject({ released: [] });
+  });
+});
+
 describe('engine loop — validation', () => {
   it('refuses a nonsense interval, ceiling or jitter', () => {
     const { deps } = harness();

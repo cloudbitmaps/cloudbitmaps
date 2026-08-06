@@ -36,6 +36,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   while the process stays alive. That is the failure mode a background job is worst at surfacing, so it is the
   one the predicate is built around.
 
+  **`status().staleAfterMs` is the *effective* window, and it widens with the backoff.** Found by review, not by
+  a gate: a backed-off loop sleeps for up to `maxIntervalMs` (15× the interval by default) while the window
+  defaulted to 4× it, so `healthy` went false between cycles from the **second** consecutive failure onward — one
+  brief throttle. Wired to a liveness probe, that is a restart loop through an outage, discarding the accumulated
+  backoff each time. A *hung* cycle never settles, so nothing widens and it still surfaces on the configured
+  floor, which is the case the predicate exists for.
+
+  **A loop is single-use.** After `stop()`, `start()` and `runOnce()` throw — construction is free, so build
+  another. The alternative was worse than a restriction: with the stop memoised for idempotence, a restarted
+  loop's second `stop()` returned the *first* stop's result while the loop kept cycling, holding leases and
+  reporting itself stopped. `runOnce()` also refuses to overlap a cycle or a running `start()`, naming the actual
+  cause — two cycles on one loop share state, and a schedule firing faster than a cycle takes should hear about
+  it rather than get a quietly wrong counter.
+
   **What the caller still owns:** a request timeout on the injected SDK client. Without one nothing here can
   bound a cycle.
 
