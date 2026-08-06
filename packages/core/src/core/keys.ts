@@ -33,3 +33,18 @@ export function chunkRefKey(ref: ChunkRef): string {
 export function chunkGenKey(ref: ChunkRef, generation: number): string {
   return `${chunkRefKey(ref)}${FIELD}${generation}`;
 }
+
+/**
+ * Deterministic FNV-1a shard assignment for a segment key — dependency-free, stable across workers and
+ * restarts. One definition, because compaction discovery and the retention sweep must agree on it exactly: if
+ * they disagreed, a worker would compact one slice and retire another, and the union across workers would be
+ * neither disjoint nor complete.
+ */
+export function shardOf(key: string, totalShards: number): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x0100_0193);
+  }
+  return (h >>> 0) % totalShards;
+}

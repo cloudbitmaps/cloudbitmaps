@@ -227,6 +227,77 @@ describe('lifecycle cycle — fails loudly on a wiring error', () => {
   });
 });
 
+describe('lifecycle cycle — COVERAGE, not just disjointness', () => {
+  it('a worker compacts and retires EVERY partition it holds, not just the first', async () => {
+    // The bug this guards, shipped and merged before an audit caught it: the cycle passed
+    // `shard: partitionsHeld[0]`, so a worker holding four partitions worked ONE of them and left the other
+    // three to grow. Nothing errored. The existing multi-worker test asserted the two workers' slices were
+    // DISJOINT — which stayed perfectly true while three quarters of the work silently did not happen.
+    // Disjointness is not coverage, and only coverage is the property that matters.
+    const { store, deps } = harness();
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    for (const n of names) await seed(store, n, T0 - DAY);
+
+    // One worker, four partitions: it holds all four, so it must retire all eight segments.
+    const result = await new Worker('solo', deps, { partitions: 4 }).cycle();
+
+    expect(result.partitionsHeld).toEqual([0, 1, 2, 3]);
+    expect(result.retention?.retired).toBe(names.length);
+    for (const n of names) expect(await store.segment(n).count()).toBe(0);
+  });
+
+  it('COMPACTS every partition it holds — the shipped bug, in the phase it actually broke', async () => {
+    // The first version of this test asserted `retention.retired`, which exercises the SWEEP's sharding and
+    // passes happily while compaction still works one shard in four. Mutation testing caught that: reverting
+    // compaction to `shard: partitionsHeld[0]` left the suite green. Compaction coverage needs its own
+    // assertion, against candidates that are actually compactable.
+    const { store, deps } = harness();
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    // A far-future expiry mints the registry row (nothing is retired), and the warm writes make it dirty.
+    // Warm-only accumulators have no row at all, so discovery cannot see them — the invisibility #53 fixed for
+    // the sweep, which applies to compaction discovery just the same.
+    for (const n of names) await seed(store, n, T0 + 3650 * DAY);
+
+    const result = await new Worker('solo', deps, { partitions: 4 }).cycle();
+
+    expect(result.partitionsHeld).toEqual([0, 1, 2, 3]);
+    // Every segment is in SOME shard of 4, and this worker holds all four — so all eight are candidates.
+    // With `shard: partitionsHeld[0]` only the ~quarter hashing to shard 0 were, and nothing errored.
+    expect(result.compaction?.candidates).toBe(names.length);
+    expect(result.compaction?.compacted).toBe(names.length);
+  });
+
+  it('two workers between them cover the whole fleet', async () => {
+    const { store, deps } = harness();
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    for (const n of names) await seed(store, n, T0 - DAY);
+
+    const a = new Worker('a', deps, { partitions: 4 });
+    const b = new Worker('b', deps, { partitions: 4 });
+    for (let round = 0; round < 6; round++) {
+      await a.cycle();
+      await b.cycle();
+    }
+
+    // Whatever the split, the union must be everything: a segment owned by nobody is invisible forever.
+    for (const n of names) expect(await store.segment(n).count()).toBe(0);
+  });
+
+  it('a worker does NOT retire a partition it does not hold', async () => {
+    const { store, deps } = harness();
+    for (const n of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) await seed(store, n, T0 - DAY);
+
+    const holder = new Worker('holder', deps, { partitions: 4 });
+    await holder.cycle(); // takes all four
+
+    // A second worker steals exactly one partition, so it must retire only that slice.
+    const second = await new Worker('second', deps, { partitions: 4 }).cycle();
+
+    expect(second.partitionsHeld).toHaveLength(1);
+    expect(second.retention?.scanned).toBeLessThan(8); // not the whole fleet — the C4 regression
+  });
+});
+
 describe('lifecycle cycle — N processes', () => {
   it('two workers converge on disjoint slices and stay there', async () => {
     const { store, deps } = harness();
