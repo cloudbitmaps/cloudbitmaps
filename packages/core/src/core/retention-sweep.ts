@@ -33,13 +33,22 @@
  * `gcOrphanGenerations`.
  */
 import { type IAuditSink } from './audit';
-import { ValidationError, isWriteConflictError } from './errors';
+import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
 import { gcOrphanGenerations } from './compaction';
 import { drainRegistry } from './registry-scan';
 import { dropSegment } from './erasure';
 import type { DropDeps, DropResult } from './erasure';
 import { MIN_EXPIRES_AT_MS, readRetentionPolicy } from './retention';
 import { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
+import {
+  canIndex,
+  decodeDueName,
+  dueBucket,
+  dueBucketsAt,
+  dueIndexRef,
+  dueNamespace,
+} from './due-index';
+import type { IRegistryDriver, RegistryRecord } from './ports';
 import type { GovernanceMeta, IColdDriver, IWarmDriver, SegmentRef } from './ports';
 
 /** Default cap on retirements per sweep — a bounded batch, so a policy mistake costs one batch, not the fleet. */
@@ -70,6 +79,29 @@ export interface RetireExpiredOptions {
   readonly audit?: IAuditSink;
   /** Ceiling on rows enumerated (default `DEFAULT_MAX_SCAN_SEGMENTS`, 250,000); exceeding it throws. */
   readonly maxScanSegments?: number;
+  /**
+   * **Where the candidates come from.**
+   *
+   * - `'fleet'` (default) — drain `registry.list()` and filter. Cost tracks the **fleet**, every cycle, even
+   *   when nothing expires. Complete by construction: it cannot miss a policy.
+   * - `'index'` — read only the due buckets of the {@link dueBucket due index}. Cost tracks **what is
+   *   expiring**. Each candidate's live row is still re-read before anything is decided, so a stale pointer
+   *   costs one read and retires nothing.
+   *
+   * **`'index'` is not a drop-in replacement for `'fleet'`; it is the fast half of a pair.** A policy written
+   * before the index existed, or one whose pointer write failed (`indexed: false`), has no pointer — so a
+   * deployment that *only* ever runs `'index'` will never retire those. Run `'fleet'` periodically as the
+   * repair pass. The default stays `'fleet'` so that upgrading changes nothing about what gets retired.
+   */
+  readonly scan?: 'fleet' | 'index';
+  /**
+   * How many **past** buckets an `'index'` scan reads besides the current one (default
+   * {@link DEFAULT_LOOKBACK_BUCKETS}). A sweep that did not run — scaled to zero, a failed deploy, a paused
+   * schedule — leaves its buckets behind, and this is how far back a later cycle reaches for them. Bounded so a
+   * long outage costs a bounded number of list calls per cycle rather than one per day since the epoch;
+   * anything older is the `'fleet'` repair pass's job.
+   */
+  readonly lookbackBuckets?: number;
   /**
    * Whether to delete the tombstone rows this sweep's own past retirements left (default `true`). Set `false` to
    * keep every tombstone forever — the right choice if something outside this library treats the presence of a
@@ -170,6 +202,73 @@ export interface RetireExpiredResult {
  * argument, and for a fleet larger than `maxScanSegments` — a scan that cannot be held in memory is a fail-loud
  * condition, not a partial result to be mistaken for a complete sweep.
  */
+/**
+ * How many past buckets an index scan reads besides the current one. A week: long enough that a weekend outage
+ * or a paused schedule recovers on its own, short enough that a cycle is eight list calls rather than hundreds.
+ */
+export const DEFAULT_LOOKBACK_BUCKETS = 7;
+
+/**
+ * Candidates from the due index: read the buckets that are due, resolve each pointer, and **re-read the live
+ * row**.
+ *
+ * That re-read is the load-bearing line. The index is a fast path and the segment's own row is the truth, so a
+ * pointer whose policy has since been cleared, moved, or destroyed must cost one read and change nothing — the
+ * ordinary eligibility check downstream then skips it, using exactly the same logic the fleet scan uses. There
+ * is no second decision path to keep in step, which is the property that makes a second index safe here.
+ *
+ * A pointer we cannot decode, or one whose segment no longer exists, is skipped rather than repaired: this
+ * function decides nothing irreversible, and cleaning up is the sweep's job once a retirement actually happens.
+ */
+async function rowsFromDueIndex(
+  registry: IRegistryDriver,
+  options: { now: number; lookbackBuckets: number; namespace?: string; maxScanSegments: number },
+): Promise<RegistryRecord[]> {
+  const rows: RegistryRecord[] = [];
+  const seen = new Set<string>();
+  for (const bucket of dueBucketsAt(options.now, options.lookbackBuckets)) {
+    for await (const pointer of registry.list(dueNamespace(bucket))) {
+      const ref = decodeDueName(pointer.segment);
+      if (ref === null) continue; // a foreign row in the reserved namespace — ignored, never acted on
+      if (options.namespace !== undefined && ref.namespace !== options.namespace) continue;
+      // A segment can appear in two buckets at once: `reindex` writes the new pointer before deleting the old,
+      // so an interruption leaves both. De-duplicate here rather than retiring twice and reporting a phantom.
+      const key = `${ref.namespace ?? ''}\u0000${ref.segment}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (rows.length >= options.maxScanSegments) {
+        throw new BudgetExceededError(
+          `retireExpired: the due index yielded more than ${options.maxScanSegments} segments — the scan was ` +
+            `abandoned there rather than completed. Raise \`maxScanSegments\`, narrow with \`namespace\`, or ` +
+            `reduce \`lookbackBuckets\`.`,
+        );
+      }
+      const live = await registry.get(ref);
+      if (live === null) continue; // the segment is gone; the pointer is litter a later retirement will clear
+      rows.push(live);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Best-effort removal of a retired segment's due-index pointer. A failure here leaves litter that costs one
+ * read when its bucket next comes due and is then skipped (the segment is gone, so the live re-read yields
+ * `null`) — never a wrong retirement, so it must not turn a successful retirement into a fault.
+ */
+async function forgetDuePointer(
+  registry: IRegistryDriver,
+  ref: SegmentRef,
+  expiresAt: number,
+): Promise<void> {
+  if (!canIndex(ref)) return;
+  try {
+    await registry.delete(dueIndexRef(dueBucket(expiresAt), ref));
+  } catch {
+    // See above: litter, not a fault.
+  }
+}
+
 export async function retireExpired(
   deps: DropDeps,
   options: RetireExpiredOptions,
@@ -213,11 +312,20 @@ export async function retireExpired(
   // iterating a live listing while doing so is driver-dependent — a Scan may or may not observe its own writes.
   // Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on it,
   // because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
-  const rows = await drainRegistry(deps.registry, {
-    namespace: options.namespace,
-    maxScanSegments,
-    op: 'retireExpired',
-  });
+  const scan = options.scan ?? 'fleet';
+  const rows =
+    scan === 'index'
+      ? await rowsFromDueIndex(deps.registry, {
+          now,
+          lookbackBuckets: options.lookbackBuckets ?? DEFAULT_LOOKBACK_BUCKETS,
+          namespace: options.namespace,
+          maxScanSegments,
+        })
+      : await drainRegistry(deps.registry, {
+          namespace: options.namespace,
+          maxScanSegments,
+          op: 'retireExpired',
+        });
 
   const entries: RetireEntry[] = [];
   let eligible = 0;
@@ -345,6 +453,11 @@ export async function retireExpired(
       }
       retired += 1;
       entries.push({ ...base, action: 'retired', expiresAt: livePolicy.expiresAt, result });
+      // The pointer has done its job. Dropping it keeps a bucket from accumulating rows that every subsequent
+      // lookback re-reads forever — the index would otherwise grow monotonically and slowly undo its own
+      // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
+      // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
+      await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt);
       if (result.warmRowsDeleted === 0 && result.generationsDeleted.length === 0) {
         // The segment was already empty, so `dropSegment` has just written a tombstone for a name that held
         // nothing. Left in place that row FENCES the name against every writer — and `setRetention` will mint a

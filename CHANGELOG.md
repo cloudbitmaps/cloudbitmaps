@@ -84,6 +84,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
   means slower, never never.
 
+- **`retireExpired({ scan: 'index' })` — a sweep that reads what is *expiring*, not what the fleet *holds*.**
+  Reads only the due buckets (the current one plus `lookbackBuckets`, default 7, so a sweep that did not run
+  leaves nothing stranded), resolves each pointer, and **re-reads the live row** before deciding anything. That
+  re-read is why a second index is safe here: a stale pointer costs one read and retires nothing, and there is
+  no second eligibility path to keep in step with the first.
+
+  **`'index'` is the fast half of a pair, not a drop-in replacement.** A policy written before the index
+  existed, or one whose pointer write failed, has no pointer — so a deployment that *only* runs `'index'` will
+  never retire those. Run `'fleet'` periodically as the repair pass. **The default stays `'fleet'`**, so
+  upgrading changes nothing about what gets retired.
+
+  A retirement also forgets its own pointer, so a bucket cannot accumulate rows that every later lookback
+  re-reads — an index that grows monotonically would slowly undo its own purpose.
+
 - **The due index is now maintained.** `setRetention` writes the pointer for the expiry's day, moves it when the
   expiry moves, and `clearRetention` removes it. `SetRetentionResult` gains **`indexed`** — true when a fast
   sweep will find this segment by reading only its expiry day instead of scanning the fleet.
