@@ -84,6 +84,30 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
   means slower, never never.
 
+- **`runLifecycleCycle` — one cycle of the background work an engine repeats**: claim a slice of the fleet via
+  the partition lease, retire what expired, compact what is dirty, collect superseded generations. The mechanism
+  half of the forthcoming `@cloudbitmaps/engine`; the package on top adds `start`/`stop`, defaults and an
+  entrypoint.
+
+  It lives in `core/` and is driven by the **injected clock**, not a timer — so it is pure under the
+  architecture rules, runs where no `node:` builtin exists, and (the part that matters for a background job
+  nobody watches) a whole multi-worker interleaving is **deterministically testable** by advancing a fake clock.
+
+  **A per-phase fault never stops the cycle.** A retention failure must not stop compaction, and neither must
+  stop the next cycle: a loop that dies on one bad segment stops doing *everything*. Faults are collected into
+  `errors` and reported — never swallowed, never rethrown. A bad *argument* still throws immediately, and a
+  missing registry throws at the first cycle rather than silently skipping a loop the operator believes is
+  running.
+
+  **Fast most cycles, complete sometimes.** Retention runs `scan: 'index'`, except every `repairEvery`-th cycle
+  (default **24**) which runs `scan: 'fleet'`. The first cycle always repairs: a process that has just started
+  knows nothing about what previous ones swept. The trade is real in both directions — too rare and an unpointed
+  policy lingers, too frequent and the fleet scan the index exists to avoid is back — so it is a stated default
+  and configurable, not a guess.
+
+  Holding no partitions is **not** a fault: it is what every worker beyond the first does when partitions are
+  scarce, and doing the work anyway would duplicate another worker's.
+
 - **`retireExpired({ scan: 'index' })` — a sweep that reads what is *expiring*, not what the fleet *holds*.**
   Reads only the due buckets (the current one plus `lookbackBuckets`, default 7, so a sweep that did not run
   leaves nothing stranded), resolves each pointer, and **re-reads the live row** before deciding anything. That

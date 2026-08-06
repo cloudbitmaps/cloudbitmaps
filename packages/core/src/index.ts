@@ -181,6 +181,20 @@ export {
 } from './core/lease';
 export type { LeaseState, LeaseOptions, LeaseDeps, LeaseCycleResult } from './core/lease';
 
+// One lifecycle cycle — lease a slice of the fleet, retire what expired, compact what is dirty, GC generations.
+// The mechanism half of `@cloudbitmaps/engine`: driven by the injected Clock rather than a timer, so it is pure,
+// runs where no node builtin exists, and a whole multi-worker interleaving is deterministically testable.
+export { runLifecycleCycle, emptyLifecycleState, DEFAULT_REPAIR_EVERY } from './core/lifecycle';
+export type {
+  LifecycleState,
+  LifecycleOptions,
+  LifecycleDeps,
+  LifecycleCycleResult,
+  LifecyclePhaseError,
+  LifecycleRetentionOptions,
+  LifecycleCompactionOptions,
+} from './core/lifecycle';
+
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
 // with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
