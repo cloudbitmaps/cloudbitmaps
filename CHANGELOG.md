@@ -14,6 +14,37 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **Partition leases — `runLeaseCycle` / `releaseAll` / `emptyLeaseState`** (plus `leaseRef`,
+  `partitionOfLeaseRow`, `leaseRenewIntervalMs`, `LEASE_NAMESPACE`, `DEFAULT_LEASE_TTL_MS`,
+  `DEFAULT_PARTITIONS`, `MAX_PARTITIONS`, `MIN_LEASE_TTL_MS`, `LEASE_RENEW_DIVISOR`). **N processes can run the
+  same maintenance code with no coordinator and no per-process configuration**: each cycle renews what you hold,
+  claims what is free or dead, and takes at most one partition from an over-share owner, converging on
+  `ceil(partitions / workers)`. This is the first piece of the lifecycle engine, and it replaces the
+  *"run the sweep from exactly ONE process"* rule that `0.9.0` could only state in prose.
+
+  Three properties are deliberate and load-bearing:
+
+  - **Liveness is decided by the OCC token, never by the clock.** Asking `leaseExpiresAt <= myNow()` compares one
+    machine's wall clock against another's, so a host running fast steals live leases — clock skew becoming a
+    correctness bug that only shows up in production. Instead a worker asks *"has this row's token changed since
+    I last looked, one TTL ago?"*, which compares its own clock to itself. The token is contractually never
+    reused, so an unchanged token proves no write landed. `leaseExpiresAt` is still written, as diagnostics.
+  - **A lease only chooses who works; the conditional write at the resource decides who commits.** A holder can
+    be paused between checking its lease and writing, so the lease alone is not safety — compaction's swap is
+    already fenced on the token it acquired, which is what makes a woken-up straggler harmless.
+  - **One steal per cycle.** Convergence is slower and monotone rather than fast and oscillating.
+
+  Leases are ordinary registry records in a reserved namespace (`cbm.leases`) with `currentGen: null`, moved by
+  `compareAndSwap` — so this needs **no driver change and no new capability**, and works on all nine warm/registry
+  backends on day one. They are excluded from every *unscoped* fleet-wide drain, because a lease is not a segment.
+
+### Changed
+
+- `drainRegistry` and compaction discovery skip the reserved lease namespace on an **unscoped** scan. A scan
+  explicitly scoped to it still sees the rows.
+
 ## [0.9.0] — 2026-08-05
 
 ### Added

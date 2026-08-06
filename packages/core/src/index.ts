@@ -159,6 +159,24 @@ export {
 // The one bounded drain of `registry.list()`, shared by the consistency scan and the retention sweep — exported
 // because a caller writing their own fleet-wide admin pass needs the same ceiling rather than a third copy.
 export { drainRegistry, validateMaxScanSegments } from './core/registry-scan';
+
+// Partition leases — how N processes share fleet-wide lifecycle work with no coordinator (ADR 83). Exported
+// because anyone running their own maintenance loop needs the same coordination rather than a second protocol.
+export {
+  runLeaseCycle,
+  releaseAll,
+  emptyLeaseState,
+  leaseRef,
+  leaseRenewIntervalMs,
+  partitionOfLeaseRow,
+  LEASE_NAMESPACE,
+  DEFAULT_LEASE_TTL_MS,
+  DEFAULT_PARTITIONS,
+  MAX_PARTITIONS,
+  MIN_LEASE_TTL_MS,
+  LEASE_RENEW_DIVISOR,
+} from './core/lease';
+export type { LeaseState, LeaseOptions, LeaseDeps, LeaseCycleResult } from './core/lease';
 export type {
   RetireExpiredOptions,
   RetireExpiredResult,
