@@ -65,7 +65,17 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 | **registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `DynamoDbRegistryDriver` · `S3RegistryDriver` |
 | **keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same |
 
-### Get a segment — `store.segment(name, { namespace? })` → `Segment`
+### Get a segment — `store.segment(name, { namespace?, expiresAt? })` → `Segment`
+
+`expiresAt` is an absolute epoch-**milliseconds** deadline, declared where the segment is named. Past it, every
+read through **that handle** answers empty — `has` → `false`, `count` → `0`, `iterate` → nothing — as one integer
+compare against the injected clock, with **no I/O, on every backend**. Set algebra stays coherent with it: an
+expired operand makes an `intersect` empty, is dropped from a `union`, and excludes nothing in an `andNot`.
+
+It does **not** reclaim the bytes (`retireExpired` does, so `count()` reporting 0 while rows still exist is the
+expected state in that window) and it does **not** apply to other handles — record the policy with
+`setRetention` to make it durable, fleet-visible and reclaimable. A seconds-shaped value is refused at the
+handle rather than silently making the segment permanently empty. `seg.expiresAt` reads it back.
 
 ### The segment verbs (the ~90% of daily use)
 
