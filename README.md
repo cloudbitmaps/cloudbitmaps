@@ -527,6 +527,9 @@ CLIs). You install one flavor; core arrives transitively.
   local → cloud wiring, the operations, the real flows (seed, match, campaign targeting, compaction,
   encryption), and where cost + observability fit.
 - **[Getting started](docs/guide/getting-started.md)** — the exhaustive, per-tier reference with every signature.
+- **[Running the lifecycle engine](docs/guide/engine-operations.md)** — the operational contract for the
+  background half (retire · compact · collect): what you own, what to alarm on, where the scale ceilings are, and
+  the failure modes a background job is worst at surfacing.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.
