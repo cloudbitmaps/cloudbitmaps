@@ -172,10 +172,41 @@ export interface LifecyclePhaseError {
   readonly error: unknown;
 }
 
+/**
+ * What the lease phase reported, forwarded rather than discarded.
+ *
+ * **The lease protocol delegates an alarm to its caller, and the caller was throwing it away.**
+ * `runLeaseCycle` returns `sinceLastCycleMs` with the note *"greater than `ttlMs` means you are polling too
+ * slowly and your own leases are being judged dead — alarm on it"*, because the lease layer cannot see the
+ * caller's interval and so cannot raise it itself. This function kept `state` and `held` and dropped the rest,
+ * which made that alarm unreachable: the one signal designed to surface a cadence misconfiguration in production
+ * could not reach an operator. A check that cannot fire.
+ */
+export interface LeaseTelemetry {
+  /** Distinct live owners observed, including us — the denominator of the fair share. */
+  readonly workers: number;
+  /** `ceil(partitions / workers)`: the most this worker may hold. Not a promise that it holds that many. */
+  readonly target: number;
+  readonly claimed: readonly number[];
+  /** Held at the start of the cycle and gone by the end. **Steady-state churn here is a problem.** */
+  readonly lost: readonly number[];
+  readonly stolen: readonly number[];
+  /** Gap between this cycle's lease phase and the previous one, by this worker's own clock. */
+  readonly sinceLastCycleMs?: number;
+  /**
+   * That gap exceeded the lease TTL, so this worker's own live leases are being judged dead and stolen every
+   * cycle — permanent fleet churn from a cadence mistake, not an error anything would throw. Derived here
+   * because this is the layer that knows both numbers.
+   */
+  readonly pollingTooSlowly: boolean;
+}
+
 export interface LifecycleCycleResult {
   readonly state: LifecycleState;
   /** Partitions this worker holds after the lease phase — its slice of the fleet. */
   readonly partitionsHeld: readonly number[];
+  /** What the lease phase reported. Absent only if the lease phase threw. */
+  readonly lease?: LeaseTelemetry;
   /** Which scan retention used this cycle. `'fleet'` is the periodic repair pass. */
   readonly scan: 'index' | 'fleet';
   readonly retention?: RetireExpiredResult;
@@ -266,16 +297,28 @@ export async function runLifecycleCycle(
   const scan: 'index' | 'fleet' = cycle === 1 || cycle % repairEvery === 0 ? 'fleet' : 'index';
 
   const ran: LifecyclePhase[] = ['lease'];
+  const ttlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   let lease = state.lease;
   let partitionsHeld: readonly number[] = [];
+  let telemetry: LeaseTelemetry | undefined;
   try {
-    const result = await runLeaseCycle(lease, deps, {
-      owner: options.owner,
-      partitions,
-      ttlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
-    });
+    const result = await runLeaseCycle(lease, deps, { owner: options.owner, partitions, ttlMs });
     lease = result.state;
     partitionsHeld = result.held;
+    telemetry = {
+      workers: result.workers,
+      target: result.target,
+      claimed: result.claimed,
+      lost: result.lost,
+      stolen: result.stolen,
+      ...(result.sinceLastCycleMs === undefined
+        ? {}
+        : { sinceLastCycleMs: result.sinceLastCycleMs }),
+      // `>=`, not `>`: the staleness test upstream is `now - previous.at >= ttlMs`, so a gap of exactly the TTL
+      // is already enough for an observer to conclude this holder is dead. Reporting the boundary as fine would
+      // put the alarm one millisecond to the wrong side of the thing it is warning about.
+      pollingTooSlowly: (result.sinceLastCycleMs ?? 0) >= ttlMs,
+    };
   } catch (error) {
     errors.push({ phase: 'lease', error });
   }
@@ -286,6 +329,7 @@ export async function runLifecycleCycle(
     return {
       state: { lease, cycle, phaseFailures: foldPhaseFailures(state.phaseFailures, ran, errors) },
       partitionsHeld,
+      ...(telemetry === undefined ? {} : { lease: telemetry }),
       scan,
       errors,
     };
@@ -348,6 +392,7 @@ export async function runLifecycleCycle(
   return {
     state: { lease, cycle, phaseFailures: foldPhaseFailures(state.phaseFailures, ran, errors) },
     partitionsHeld,
+    ...(telemetry === undefined ? {} : { lease: telemetry }),
     scan,
     ...(retention === undefined ? {} : { retention }),
     ...(compaction === undefined ? {} : { compaction }),

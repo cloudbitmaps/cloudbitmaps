@@ -782,6 +782,110 @@ describe('engine loop — both fleet scans have a ceiling, and both are reachabl
   });
 });
 
+describe('engine loop — the lease telemetry reaches the operator', () => {
+  it('forwards workers/target/claimed rather than keeping only `held`', async () => {
+    const { deps } = harness();
+    const a = createEngineLoop(deps, { owner: 'w1', partitions: 4 });
+    const b = createEngineLoop(deps, { owner: 'w2', partitions: 4 });
+
+    await a.runOnce();
+    await b.runOnce();
+
+    expect(a.status().lease?.claimed).toEqual([0, 1, 2, 3]); // it took the free fleet
+    expect(b.status().lease?.workers).toBe(2); // and w2 can SEE that it is not alone
+    expect(b.status().lease?.target).toBe(2);
+  });
+
+  it('reports the cadence gap, which the lease layer computes specifically as an alarm input', async () => {
+    const { c, deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000, jitter: 0 });
+
+    await loop.runOnce();
+    expect(loop.status().lease?.sinceLastCycleMs).toBeUndefined(); // no previous cycle to measure against
+
+    c.advance(700);
+    await loop.runOnce();
+
+    expect(loop.status().lease?.sinceLastCycleMs).toBe(700);
+    expect(loop.status().lease?.pollingTooSlowly).toBe(false);
+  });
+
+  it('a gap at or past the TTL is flagged AND makes the worker unhealthy', async () => {
+    // This is the condition #66 made unreachable through the defaults. It is still reachable by an explicit TTL
+    // plus a cycle that runs long, and by a caller driving cycles from its own scheduler — so the alarm has to
+    // exist rather than being assumed away.
+    const { c, deps } = harness();
+    const loop = createEngineLoop(deps, {
+      owner: 'w1',
+      intervalMs: 1000,
+      leaseTtlMs: 4000, // clears the two-renewals floor, so construction is allowed
+    });
+
+    await loop.runOnce();
+    c.advance(4000); // exactly the TTL — already enough for an observer to call us dead
+    await loop.runOnce();
+
+    expect(loop.status().lease?.pollingTooSlowly).toBe(true);
+    expect(loop.status().healthy).toBe(false);
+    expect(loop.status().lastErrors).toEqual([]); // nothing threw — which is exactly why it needed surfacing
+  });
+
+  it('recovers as soon as the cadence recovers', async () => {
+    const { c, deps } = harness();
+    const loop = createEngineLoop(deps, { owner: 'w1', intervalMs: 1000, leaseTtlMs: 4000 });
+
+    await loop.runOnce();
+    c.advance(5000);
+    await loop.runOnce();
+    expect(loop.status().healthy).toBe(false);
+
+    c.advance(500);
+    await loop.runOnce();
+
+    expect(loop.status().lease?.pollingTooSlowly).toBe(false);
+    expect(loop.status().healthy).toBe(true);
+  });
+
+  it('a worker losing partitions in steady state can be SEEN losing them', async () => {
+    // The observable that would have caught the interval/TTL defect in production instead of in a repro.
+    const { c, deps } = harness();
+    const holder = createEngineLoop(deps, { owner: 'holder', partitions: 2 });
+    await holder.runOnce(); // takes both
+
+    // A second worker arrives and rebalances one away.
+    const thief = createEngineLoop(deps, { owner: 'thief', partitions: 2 });
+    await thief.runOnce();
+    c.advance(1);
+    await holder.runOnce();
+
+    // Pinned to exact counts. `expect(stolen.length).toBeGreaterThanOrEqual(0)` is vacuously true, and
+    // `expect(lost).toEqual(thiefHeld)` passes when BOTH are empty — the same both-branches-satisfy trap that has
+    // already let three mutations through in this session.
+    expect(thief.status().partitionsHeld).toHaveLength(1);
+    expect(holder.status().lease?.lost).toHaveLength(1);
+    expect(holder.status().lease?.lost).toEqual(thief.status().partitionsHeld);
+    expect(holder.status().partitionsHeld).toHaveLength(1); // and the fleet is still fully covered
+    expect(
+      [...(holder.status().partitionsHeld ?? []), ...thief.status().partitionsHeld].sort(),
+    ).toEqual([0, 1]);
+  });
+
+  it('the lease telemetry is absent when the lease phase threw, not silently zeroed', async () => {
+    const { deps, registry } = harness();
+    const broken = wrapRegistry(registry, {
+      list: () => {
+        throw new Error('registry down');
+      },
+    });
+    const loop = createEngineLoop({ ...deps, registry: broken } as LifecycleDeps, { owner: 'w1' });
+
+    const result = await loop.runOnce();
+
+    expect(result.lease).toBeUndefined(); // a zeroed `workers: 0` would read as real data
+    expect(result.errors.map((e) => e.phase)).toEqual(['lease']);
+  });
+});
+
 describe('engine loop — validation', () => {
   it('refuses a nonsense interval, ceiling or jitter', () => {
     const { deps } = harness();
