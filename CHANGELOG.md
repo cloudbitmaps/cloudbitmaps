@@ -14,6 +14,31 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+- **`createEngineLoop` — the lifecycle cycle, repeated, with the operational behaviour a background job needs
+  to be trusted.** `start()` · `runOnce()` · `stop({ timeoutMs })` · `status()`. It sleeps on the injected clock,
+  so every property below is asserted on a fake one rather than by waiting.
+
+  **`stop()` races the in-flight cycle against its timeout instead of awaiting it.** Nothing in this library
+  takes an `AbortSignal` — deliberately, since a homegrown timeout would abandon in-flight requests mid-write —
+  so an unconditional await would be a deadlock dressed as a graceful shutdown. It reports `drained: false` when
+  work was abandoned, deadlines the lease release separately (that talks to the same registry that may be
+  hanging), and is idempotent so a second SIGTERM does not start a second shutdown. The interval sleep is
+  **wakeable**, so a stop one second into a 30 s interval does not burn 29 s of a 30 s termination grace period.
+
+  The interval **backs off** while cycles return errors and resets on a clean one — without that a dead backend
+  is retried at full cadence forever, multiplied by the driver retry layer underneath. It is **jittered**, so
+  replicas rolled out together do not run cycle 1 in lockstep (and cycle 1 is always the complete fleet repair
+  scan). The cycle's own duration is subtracted, so a slow cycle does not compound the schedule.
+
+  **`status().healthy` means a cycle *settled* recently — not that work happened.** A worker holding zero
+  partitions is healthy; that is what every worker beyond the first does. It is false before the first cycle and
+  false once the last one is older than `staleAfterMs`, which is precisely the state a hung driver call creates
+  while the process stays alive. That is the failure mode a background job is worst at surfacing, so it is the
+  one the predicate is built around.
+
+  **What the caller still owns:** a request timeout on the injected SDK client. Without one nothing here can
+  bound a cycle.
+
 ### Fixed
 
 - **A worker compacted only ONE of the partitions it held.** `runLifecycleCycle` passed `shard:

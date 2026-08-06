@@ -195,6 +195,19 @@ export type {
   LifecycleCompactionOptions,
 } from './core/lifecycle';
 
+// The engine loop — runLifecycleCycle repeated, with the operational behaviour a background job needs to be
+// trusted: a stop that cannot deadlock (nothing here is cancellable, so it RACES rather than awaits), interval
+// backoff, jitter so replicas do not move in lockstep, and a `healthy` predicate that means "a cycle settled
+// recently" rather than "work happened". Sleeps on the injected Clock, so all of it is testable on a fake one.
+export {
+  createEngineLoop,
+  DEFAULT_INTERVAL_MS,
+  DEFAULT_MAX_INTERVAL_MS,
+  DEFAULT_JITTER,
+  DEFAULT_STOP_TIMEOUT_MS,
+} from './core/engine-loop';
+export type { EngineLoop, EngineLoopOptions, EngineStatus, StopResult } from './core/engine-loop';
+
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
 // with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
