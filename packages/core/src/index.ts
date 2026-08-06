@@ -155,6 +155,7 @@ export {
   retireExpired,
   DEFAULT_RETIRE_LIMIT,
   DEFAULT_TOMBSTONE_GRACE_MS,
+  DEFAULT_LOOKBACK_BUCKETS,
 } from './core/retention-sweep';
 // The one bounded drain of `registry.list()`, shared by the consistency scan and the retention sweep — exported
 // because a caller writing their own fleet-wide admin pass needs the same ceiling rather than a third copy.
