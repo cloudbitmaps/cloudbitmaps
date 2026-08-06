@@ -199,6 +199,8 @@ export type {
   LifecyclePhaseError,
   LifecycleRetentionOptions,
   LifecycleCompactionOptions,
+  LifecyclePhase,
+  PhaseFailures,
 } from './core/lifecycle';
 
 // The engine loop — runLifecycleCycle repeated, with the operational behaviour a background job needs to be
@@ -211,6 +213,7 @@ export {
   DEFAULT_MAX_INTERVAL_MS,
   DEFAULT_JITTER,
   DEFAULT_STOP_TIMEOUT_MS,
+  DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES,
   // The interval and the lease TTL are ONE decision, not two — both shipped defaults were 60 s, set in separate
   // modules, and the loop's own jitter then spent the nonexistent margin. Exported so a caller driving cycles
   // from its own scheduler can compute the same TTL the loop does.

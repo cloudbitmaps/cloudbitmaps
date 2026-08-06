@@ -9,6 +9,9 @@ import {
   DEFAULT_JITTER,
   DEFAULT_LEASE_TTL_MS,
   DEFAULT_REPAIR_EVERY,
+  DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES,
+  LEASE_NAMESPACE,
+  findCompactable,
   leaseRef,
   MemoryColdDriver,
   MemoryRegistryDriver,
@@ -21,11 +24,12 @@ import {
   maxCycleGapMs,
   repairEveryFor,
   roaringCodec,
+  runLifecycleCycle,
   runLeaseCycle,
   type LifecycleDeps,
 } from '@/index';
 import { CloudRoaring } from '@/index';
-import { ValidationError } from '@/core/errors';
+import { BudgetExceededError, ValidationError } from '@/core/errors';
 
 const T0 = 1_754_000_000_000;
 
@@ -270,7 +274,11 @@ describe('engine loop — backoff and jitter', () => {
     // 1 failure → 2×, 2 → 4×, then capped at maxIntervalMs.
     expect(waits).toEqual([2000, 4000, 4000]);
     expect(loop.status().consecutiveFailedCycles).toBeGreaterThan(1);
-    expect(loop.status().healthy).toBe(true); // it is still SETTLING cycles — failure is a separate signal
+    // This used to assert `healthy: true`, with the comment "failure is a separate signal". It was, and in
+    // practice that meant NO signal — nothing forces an operator to read `lastErrors`. Three consecutive failures
+    // is a deployment problem, not a throttle, and `healthy` now says so.
+    expect(loop.status().healthy).toBe(false);
+    expect(loop.status().phaseFailures.lease).toBeGreaterThanOrEqual(3);
   });
 
   it('a clean cycle resets the backoff', async () => {
@@ -359,6 +367,10 @@ describe('engine loop — the health window tracks the backoff', () => {
       maxIntervalMs: 60_000,
       jitter: 0,
       // default staleAfterMs === 4 × interval === 4000
+      // The ONLY way to back off is to fail cycles, and sustained failure is now independently unhealthy. Switch
+      // that condition off so this test measures the window and nothing else — a test that would pass for either
+      // of two reasons tells you about neither.
+      unhealthyAfterFailedCycles: 0,
     });
 
     void loop.start();
@@ -613,6 +625,160 @@ describe('engine loop — the repair cadence is derived from the real cadence', 
     await loop.runOnce(); // 1 — always fleet
     await loop.runOnce(); // 2
     expect((await loop.runOnce()).scan).toBe('fleet'); // 3
+  });
+});
+
+describe('engine loop — a phase that never works cannot read healthy', () => {
+  /** A registry whose `list` throws only for the retention/compaction fleet scan, not for the lease namespace. */
+  function brokenFleetScan(registry: MemoryRegistryDriver): MemoryRegistryDriver {
+    const real = registry.list.bind(registry);
+    return wrapRegistry(registry, {
+      list: (namespace?: string) => {
+        if (namespace === LEASE_NAMESPACE) return real(namespace);
+        throw new BudgetExceededError('fleet is larger than maxScanSegments');
+      },
+    });
+  }
+
+  it('the exact production shape: retention throws every cycle, leases are fine, light goes red', async () => {
+    // A fleet past `maxScanSegments` threw from retention on EVERY cycle, forever. The cycle absorbed it into
+    // `errors` — correctly, one bad phase must not stop the others — the loop backed off, and `healthy` stayed
+    // true because cycles kept settling. Nothing worked and the light was green.
+    const { deps, registry } = harness();
+    const loop = createEngineLoop(
+      { ...deps, registry: brokenFleetScan(registry) } as LifecycleDeps,
+      {
+        owner: 'w1',
+        intervalMs: 1000,
+      },
+    );
+
+    await loop.runOnce();
+    expect(loop.status().partitionsHeld).toEqual([0]); // the lease phase is perfectly healthy
+    expect(loop.status().healthy).toBe(true); // one failure is a throttle, not a page
+
+    await loop.runOnce();
+    expect(loop.status().healthy).toBe(true);
+    await loop.runOnce();
+    expect(loop.status().healthy).toBe(false); // three in a row is a deployment problem
+
+    // …and it says WHICH phase, which is a different page-out from the reverse.
+    expect(loop.status().phaseFailures.retention).toBe(3);
+    expect(loop.status().phaseFailures.lease).toBe(0);
+  });
+
+  it('a clean cycle clears it, so a transient outage recovers on its own', async () => {
+    const { deps, registry } = harness();
+    let broken = true;
+    const real = registry.list.bind(registry);
+    const flaky = wrapRegistry(registry, {
+      list: (namespace?: string) => {
+        if (namespace === LEASE_NAMESPACE || !broken) return real(namespace);
+        throw new Error('transient');
+      },
+    });
+    const loop = createEngineLoop({ ...deps, registry: flaky } as LifecycleDeps, {
+      owner: 'w1',
+      intervalMs: 1000,
+    });
+
+    for (let i = 0; i < 4; i++) await loop.runOnce();
+    expect(loop.status().healthy).toBe(false);
+
+    broken = false;
+    await loop.runOnce();
+
+    expect(loop.status().healthy).toBe(true);
+    expect(loop.status().phaseFailures.retention).toBe(0);
+  });
+
+  it('a phase that did not run carries its count; one that ran clean resets it', async () => {
+    // Asserted on a state that arrives with a NON-ZERO count, because `compaction: 0` after a cycle where
+    // compaction was disabled is true whether the count carries or resets — which is exactly how the first
+    // version of this test let the mutation survive. Third time I have made that mistake in this session; the
+    // tell is always an expected value that both branches produce.
+    const { deps, registry } = harness();
+    const broken = brokenFleetScan(registry);
+
+    const carried = await runLifecycleCycle(
+      {
+        lease: emptyLeaseState(),
+        cycle: 5,
+        phaseFailures: { lease: 0, retention: 4, compaction: 2 },
+      },
+      { ...deps, registry: broken } as LifecycleDeps,
+      { owner: 'w2', compaction: { enabled: false } },
+    );
+
+    expect(carried.state.phaseFailures.compaction).toBe(2); // did not run ⇒ unchanged
+    expect(carried.state.phaseFailures.retention).toBe(5); // ran and failed ⇒ incremented
+    expect(carried.state.phaseFailures.lease).toBe(0); // ran clean ⇒ reset
+  });
+
+  it('the threshold is a stated number and can be switched off', async () => {
+    expect(DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES).toBe(3);
+    const { deps, registry } = harness();
+    const loop = createEngineLoop(
+      { ...deps, registry: brokenFleetScan(registry) } as LifecycleDeps,
+      {
+        owner: 'w1',
+        unhealthyAfterFailedCycles: 0,
+      },
+    );
+    for (let i = 0; i < 5; i++) await loop.runOnce();
+    expect(loop.status().healthy).toBe(true); // opt-out honoured
+    expect(loop.status().phaseFailures.retention).toBe(5); // but still reported
+  });
+});
+
+describe('engine loop — both fleet scans have a ceiling, and both are reachable', () => {
+  it('compaction discovery refuses an oversized fleet instead of allocating through it', async () => {
+    // The asymmetry WAS the bug: the two scans run in the same cycle off the same `registry.list()`, and at 500k
+    // segments retention refused at ~123 MB while discovery quietly took 209 MB; at 1M, 362 MB (measured).
+    const { deps, registry } = harness();
+    for (let i = 0; i < 6; i++) {
+      await registry.create({ namespace: 'active', segment: `seg-${i}` }, { currentGen: 0 });
+    }
+
+    await expect(
+      findCompactable({ warm: deps.warm, registry, clock: deps.clock }, { maxScanSegments: 3 }),
+    ).rejects.toThrow(BudgetExceededError);
+    // The ceiling is charged on the ROW, before the shard filter — a sharded worker's scan is not smaller.
+    await expect(
+      findCompactable(
+        { warm: deps.warm, registry, clock: deps.clock },
+        { maxScanSegments: 3, shards: [0], totalShards: 4 },
+      ),
+    ).rejects.toThrow(BudgetExceededError);
+    // …and it completes under the ceiling.
+    await expect(
+      findCompactable({ warm: deps.warm, registry, clock: deps.clock }, { maxScanSegments: 10 }),
+    ).resolves.toBeInstanceOf(Array);
+  });
+
+  it('the engine can raise it on BOTH phases — the error told you to raise something unreachable', async () => {
+    const { deps, registry } = harness();
+    for (let i = 0; i < 6; i++) {
+      await registry.create({ namespace: 'active', segment: `seg-${i}` }, { currentGen: 0 });
+    }
+    const loop = createEngineLoop(deps, {
+      owner: 'w1',
+      retention: { maxScanSegments: 2 },
+      compaction: { maxScanSegments: 2 },
+    });
+
+    const result = await loop.runOnce();
+
+    expect(result.errors.map((e) => e.phase).sort()).toEqual(['compaction', 'retention']);
+    for (const e of result.errors) expect(e.error).toBeInstanceOf(BudgetExceededError);
+
+    // Raised high enough, the same cycle is clean — which is what makes the error's advice followable.
+    const ok = createEngineLoop(deps, {
+      owner: 'w2',
+      retention: { maxScanSegments: 100 },
+      compaction: { maxScanSegments: 100 },
+    });
+    expect((await ok.runOnce()).errors).toEqual([]);
   });
 });
 
