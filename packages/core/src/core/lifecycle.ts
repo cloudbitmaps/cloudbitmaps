@@ -1,0 +1,234 @@
+/**
+ * One **lifecycle cycle** — the unit of background work the engine repeats: claim a slice of the fleet, retire
+ * what has expired, compact what has grown dirty, collect superseded generations.
+ *
+ * This is the mechanism half of `@cloudbitmaps/engine`. It lives in `core/` on purpose: the loop is driven by
+ * the injected {@link Clock} rather than a timer, so it is pure under this project's architecture rules, it
+ * runs where no `node:` builtin exists, and — the part that matters most for a background job nobody watches —
+ * **a whole multi-worker interleaving can be driven deterministically in a test** by advancing a fake clock.
+ * The package on top adds configuration, defaults, `start`/`stop`, and an entrypoint.
+ *
+ * ## A cycle never throws for a per-phase fault
+ *
+ * A retention failure must not stop compaction, and neither must stop the next cycle: a background loop that
+ * dies on one bad segment stops doing *everything*, which is strictly worse than doing most of it. Faults are
+ * collected into {@link LifecycleCycleResult.errors} and reported, never swallowed and never rethrown. A bad
+ * *argument*, by contrast, throws immediately — that is a programming error, not an operational one.
+ *
+ * ## Fast most cycles, complete sometimes
+ *
+ * Retention runs `scan: 'index'` — cost tracks what is expiring, not what the fleet holds — but that path
+ * cannot see a policy with no due-index pointer (written before the index existed, or whose pointer write
+ * failed). So every {@link LifecycleRetentionOptions.repairEvery}-th cycle runs `scan: 'fleet'` instead. The
+ * pair is the whole design: neither half is a retention strategy alone.
+ */
+import { runCompactionCycle } from './compaction';
+import type { CompactionCycleResult, CompactionDeps } from './compaction';
+import type { Clock } from './determinism';
+import { ValidationError } from './errors';
+import {
+  DEFAULT_LEASE_TTL_MS,
+  DEFAULT_PARTITIONS,
+  emptyLeaseState,
+  runLeaseCycle,
+  type LeaseState,
+} from './lease';
+import { retireExpired } from './retention-sweep';
+import type { RetireExpiredResult } from './retention-sweep';
+import type { DropDeps } from './erasure';
+
+/**
+ * How often a retention cycle runs the complete `'fleet'` scan instead of the fast index scan.
+ *
+ * **24 cycles.** The trade is real in both directions and worth stating: too rare and a policy with no pointer
+ * lingers past its expiry; too frequent and the fleet scan the index exists to avoid is back. At the engine's
+ * default cadence this is roughly daily, which matches the granularity of the index buckets themselves — a
+ * segment can be at most one bucket stale before a repair pass sees it.
+ */
+export const DEFAULT_REPAIR_EVERY = 24;
+
+export interface LifecycleRetentionOptions {
+  /** Default true. */
+  readonly enabled?: boolean;
+  /** Per-cycle cap on retirement attempts, passed through to `retireExpired`. */
+  readonly limit?: number;
+  /** Past due-buckets a fast scan also reads. */
+  readonly lookbackBuckets?: number;
+  /** Run the complete `'fleet'` scan every Nth cycle (default {@link DEFAULT_REPAIR_EVERY}). `1` = always. */
+  readonly repairEvery?: number;
+}
+
+export interface LifecycleCompactionOptions {
+  /** Default true. */
+  readonly enabled?: boolean;
+  /** Per-cycle cap on segments compacted. */
+  readonly maxSegments?: number;
+  /** Minimum dirty warm rows for a segment to be a candidate. */
+  readonly threshold?: number;
+  /** Superseded generations to keep as a grace window for in-flight readers. */
+  readonly keep?: number;
+}
+
+export interface LifecycleOptions {
+  /** This worker's identity — stable per **process**, and distinct between live processes. */
+  readonly owner: string;
+  /** How many ways to split the fleet (default 1). */
+  readonly partitions?: number;
+  /** Partition-lease TTL. */
+  readonly leaseTtlMs?: number;
+  readonly retention?: LifecycleRetentionOptions;
+  readonly compaction?: LifecycleCompactionOptions;
+  /** Scope every phase to one namespace. Absent ⇒ the whole fleet. */
+  readonly namespace?: string;
+}
+
+export interface LifecycleState {
+  readonly lease: LeaseState;
+  /** Cycles completed. Drives the repair cadence; carried so a restart does not reset it to "repair now". */
+  readonly cycle: number;
+}
+
+export function emptyLifecycleState(): LifecycleState {
+  return { lease: emptyLeaseState(), cycle: 0 };
+}
+
+/** A phase that failed. The cycle continues; the caller decides whether one of these is worth alarming on. */
+export interface LifecyclePhaseError {
+  readonly phase: 'lease' | 'retention' | 'compaction';
+  readonly error: unknown;
+}
+
+export interface LifecycleCycleResult {
+  readonly state: LifecycleState;
+  /** Partitions this worker holds after the lease phase — its slice of the fleet. */
+  readonly partitionsHeld: readonly number[];
+  /** Which scan retention used this cycle. `'fleet'` is the periodic repair pass. */
+  readonly scan: 'index' | 'fleet';
+  readonly retention?: RetireExpiredResult;
+  readonly compaction?: CompactionCycleResult;
+  /** Per-phase faults. **Empty is the healthy state**; a cycle never throws for one of these. */
+  readonly errors: readonly LifecyclePhaseError[];
+}
+
+/**
+ * Everything a cycle needs. The `clock` is narrowed to a full {@link Clock} rather than compaction's
+ * `Pick<Clock, 'now'>`: the lease protocol measures elapsed time between cycles, and the engine's loop sleeps
+ * on it, so a bare `{ now }` would type-check and then behave differently in the one place it matters.
+ */
+export type LifecycleDeps = DropDeps & CompactionDeps & { readonly clock: Clock };
+
+function validate(deps: LifecycleDeps, options: LifecycleOptions): void {
+  // Fail loudly at the first cycle rather than skipping a loop that the operator believes is running. Every
+  // phase here needs a registry, so its absence is a wiring error, not a reason to quietly do less.
+  if (deps.registry === undefined || typeof deps.registry.list !== 'function') {
+    throw new ValidationError(
+      'lifecycle: a registry driver is required — retention, compaction and generation GC all enumerate it',
+    );
+  }
+  if (typeof deps.clock?.now !== 'function') {
+    throw new ValidationError(
+      'lifecycle: an injected clock is required — core never reads ambient time',
+    );
+  }
+  if (typeof options.owner !== 'string' || options.owner.length === 0) {
+    throw new ValidationError(
+      'lifecycle: `owner` must be a non-empty string, distinct between live processes',
+    );
+  }
+  const repairEvery = options.retention?.repairEvery ?? DEFAULT_REPAIR_EVERY;
+  if (!Number.isSafeInteger(repairEvery) || repairEvery < 1) {
+    throw new ValidationError(
+      `lifecycle: \`repairEvery\` must be an integer >= 1; got ${repairEvery}`,
+    );
+  }
+}
+
+/**
+ * Run one cycle. Idempotent and safe to call concurrently from every process: the partition lease decides who
+ * acts on what, and every mutation underneath is a conditional write, so a duplicated effort cannot corrupt
+ * anything — it can only waste a request.
+ */
+export async function runLifecycleCycle(
+  state: LifecycleState,
+  deps: LifecycleDeps,
+  options: LifecycleOptions,
+): Promise<LifecycleCycleResult> {
+  validate(deps, options);
+  const errors: LifecyclePhaseError[] = [];
+  const cycle = state.cycle + 1;
+  const repairEvery = options.retention?.repairEvery ?? DEFAULT_REPAIR_EVERY;
+  // The FIRST cycle repairs. A process that has just started knows nothing about what previous ones swept, and
+  // the complete scan is the only thing that can tell it — so a fresh deployment converges immediately instead
+  // of waiting out a whole repair interval with an index it did not populate.
+  const scan: 'index' | 'fleet' = cycle === 1 || cycle % repairEvery === 0 ? 'fleet' : 'index';
+
+  let lease = state.lease;
+  let partitionsHeld: readonly number[] = [];
+  try {
+    const result = await runLeaseCycle(lease, deps, {
+      owner: options.owner,
+      partitions: options.partitions ?? DEFAULT_PARTITIONS,
+      ttlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+    });
+    lease = result.state;
+    partitionsHeld = result.held;
+  } catch (error) {
+    errors.push({ phase: 'lease', error });
+  }
+
+  // Holding nothing is not a failure — it is what every worker beyond the first does when partitions are
+  // scarce. It does mean this cycle has no work, and doing it anyway would duplicate another worker's.
+  if (partitionsHeld.length === 0) {
+    return { state: { lease, cycle }, partitionsHeld, scan, errors };
+  }
+
+  let retention: RetireExpiredResult | undefined;
+  if (options.retention?.enabled !== false) {
+    try {
+      retention = await retireExpired(deps, {
+        now: deps.clock.now(),
+        scan,
+        namespace: options.namespace,
+        ...(options.retention?.limit === undefined ? {} : { limit: options.retention.limit }),
+        ...(options.retention?.lookbackBuckets === undefined
+          ? {}
+          : { lookbackBuckets: options.retention.lookbackBuckets }),
+      });
+    } catch (error) {
+      errors.push({ phase: 'retention', error });
+    }
+  }
+
+  let compaction: CompactionCycleResult | undefined;
+  if (options.compaction?.enabled !== false) {
+    try {
+      compaction = await runCompactionCycle(deps, {
+        owner: options.owner,
+        namespace: options.namespace,
+        // Compaction shards by the same stable hash the partitions use, so a worker compacts exactly the slice
+        // its leases entitle it to — the leases replace the hand-configured shard index the daemon needed.
+        ...(options.partitions === undefined || options.partitions === 1
+          ? {}
+          : { shard: partitionsHeld[0] as number, totalShards: options.partitions }),
+        ...(options.compaction?.maxSegments === undefined
+          ? {}
+          : { maxSegments: options.compaction.maxSegments }),
+        ...(options.compaction?.threshold === undefined
+          ? {}
+          : { threshold: options.compaction.threshold }),
+        ...(options.compaction?.keep === undefined ? {} : { keep: options.compaction.keep }),
+      });
+    } catch (error) {
+      errors.push({ phase: 'compaction', error });
+    }
+  }
+
+  return {
+    state: { lease, cycle },
+    partitionsHeld,
+    scan,
+    ...(retention === undefined ? {} : { retention }),
+    ...(compaction === undefined ? {} : { compaction }),
+    errors,
+  };
+}
