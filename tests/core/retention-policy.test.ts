@@ -92,6 +92,9 @@ describe('setRetention / getRetention / clearRetention', () => {
       namespace: undefined,
       expiresAt: FUTURE,
       createdRow: true,
+      // …and the due-index pointer for its expiry day was written, so a fast sweep finds it by reading only
+      // that day rather than scanning the fleet.
+      indexed: true,
     });
 
     // …and now it does — enumerable by every fleet-wide operation, which is the entire point of Part 1.
