@@ -32,7 +32,7 @@ import {
   type LifecycleOptions,
   type LifecycleState,
 } from './lifecycle';
-import { releaseAll } from './lease';
+import { LEASE_RENEW_DIVISOR, releaseAll } from './lease';
 
 /** Default gap between cycles. */
 export const DEFAULT_INTERVAL_MS = 60_000;
@@ -42,6 +42,42 @@ export const DEFAULT_MAX_INTERVAL_MS = 15 * 60_000;
 export const DEFAULT_JITTER = 0.1;
 /** Default grace for `stop()` before it abandons an in-flight cycle. */
 export const DEFAULT_STOP_TIMEOUT_MS = 30_000;
+
+/**
+ * The longest gap the loop can leave between two cycles when nothing is failing: the interval plus its jitter.
+ * **This is the number the lease TTL has to be built on**, because the gap between cycles *is* the gap between
+ * lease renewals.
+ *
+ * Backoff is deliberately excluded. A backed-off worker is one whose cycles are failing, and letting its leases
+ * be judged dead so a healthy replica takes them is the correct outcome, not a fault to pad against.
+ */
+export function maxCycleGapMs(intervalMs: number, jitter: number): number {
+  return Math.ceil(intervalMs * (1 + jitter));
+}
+
+/**
+ * The lease TTL to use for a loop running at `intervalMs` — `{@link maxCycleGapMs} × {@link
+ * LEASE_RENEW_DIVISOR}`, so a holder gets three renewal attempts inside one TTL even on its slowest legal sleep.
+ *
+ * **This exists because the two shipped defaults were the same number.** `DEFAULT_INTERVAL_MS` and
+ * `DEFAULT_LEASE_TTL_MS` were both 60 s, set in different modules in different PRs, leaving *zero* margin — and
+ * the loop's own jitter then spent it, since a legal default sleep of 66 s exceeds a 60 s TTL. Reproduced: a
+ * healthy four-partition worker was periodically judged dead and dropped to **zero** partitions, abandoning
+ * whatever it was mid-way through, then reconverged, then repeated. Neither module's tests could see it; the
+ * defect lived entirely in the ratio between two constants.
+ *
+ * `lease.ts` has always exported {@link leaseRenewIntervalMs} — the same relationship read the other way. The
+ * loop simply never called it.
+ */
+export function derivedLeaseTtlMs(intervalMs: number, jitter: number): number {
+  return maxCycleGapMs(intervalMs, jitter) * LEASE_RENEW_DIVISOR;
+}
+
+/**
+ * Fewer than this many renewal attempts per TTL and one slow round trip costs the lease. Two is the floor an
+ * explicit `leaseTtlMs` must clear; the derived default gives three.
+ */
+const MIN_RENEWALS_PER_TTL = 2;
 
 export interface EngineLoopOptions extends LifecycleOptions {
   /** Gap between cycles when things are healthy (default {@link DEFAULT_INTERVAL_MS}). */
@@ -55,8 +91,12 @@ export interface EngineLoopOptions extends LifecycleOptions {
   readonly maxIntervalMs?: number;
   /**
    * Fraction of the interval to jitter, `0` to disable (default {@link DEFAULT_JITTER}). **The first sleep is
-   * fully jittered**, because replicas rolled out together would otherwise run cycle 1 simultaneously — and
-   * cycle 1 is the complete fleet repair scan.
+   * spread over a whole period instead** — `[0, intervalMs)` — because replicas rolled out together would
+   * otherwise run cycle 1 simultaneously, and cycle 1 is the complete fleet repair scan.
+   *
+   * It also sets the lease TTL when you do not: `leaseTtlMs` defaults to
+   * {@link derivedLeaseTtlMs}`(intervalMs, jitter)`, so raising the jitter widens the TTL with it rather than
+   * eating into the renewal margin.
    */
   readonly jitter?: number;
   /**
@@ -157,6 +197,21 @@ function validateLoop(options: EngineLoopOptions): void {
   if (!Number.isFinite(jitter) || jitter < 0 || jitter > 1) {
     throw new ValidationError(`engine: jitter must be between 0 and 1; got ${jitter}`);
   }
+  // The interval/TTL relationship, checked at wiring time rather than discovered as fleet churn in production.
+  // Only an EXPLICIT ttl can fail this — the derived default clears it by construction.
+  if (options.leaseTtlMs !== undefined) {
+    const gap = maxCycleGapMs(interval, jitter);
+    const floor = gap * MIN_RENEWALS_PER_TTL;
+    if (options.leaseTtlMs < floor) {
+      throw new ValidationError(
+        `engine: leaseTtlMs ${options.leaseTtlMs} is too short for a ${interval} ms interval with jitter ` +
+          `${jitter} — the longest legal gap between cycles is ${gap} ms, so this worker would renew fewer ` +
+          `than ${MIN_RENEWALS_PER_TTL} times per TTL and have its own live leases judged dead and stolen ` +
+          `every cycle. Use at least ${floor}, or omit leaseTtlMs to get the derived ` +
+          `${derivedLeaseTtlMs(interval, jitter)}.`,
+      );
+    }
+  }
 }
 
 /**
@@ -172,6 +227,16 @@ export function createEngineLoop(
   const maxIntervalMs = options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS;
   const jitterFraction = options.jitter ?? DEFAULT_JITTER;
   const staleAfterMs = options.staleAfterMs ?? intervalMs * 3 + intervalMs;
+  /**
+   * Everything the cycle needs, with the two cadence-derived values filled in **here** — this is the only layer
+   * that knows the cadence, so it is the only layer that can derive them. A caller driving `runLifecycleCycle`
+   * from its own scheduler passes `cycleIntervalMs` for the same reason.
+   */
+  const cycleOptions: LifecycleOptions = {
+    ...options,
+    cycleIntervalMs: intervalMs,
+    leaseTtlMs: options.leaseTtlMs ?? derivedLeaseTtlMs(intervalMs, jitterFraction),
+  };
   const clock: Clock = deps.clock;
 
   let state: LifecycleState = emptyLifecycleState();
@@ -209,6 +274,28 @@ export function createEngineLoop(
     return 1 - fraction + deps.rng.next() * fraction * 2;
   }
 
+  /**
+   * The **first** sleep is spread over a whole period — `[0, intervalMs)` — rather than jittered by the
+   * configured fraction, because replicas rolled out together would otherwise run cycle 1 simultaneously and
+   * cycle 1 is the complete fleet repair scan.
+   *
+   * It is a uniform fraction *of* the current interval and never exceeds it, which is a correction rather than a
+   * refinement: the original spread this by the whole interval in **both** directions, `[0, 2 × intervalMs)`. That
+   * made a brand-new worker's very first renew gap up to twice the lease TTL — so on every deploy a worker could
+   * acquire its slice and immediately have it judged dead. Bounding the spread to one period de-phases the fleet
+   * exactly as well (a full period is all the phase there is) and costs the lease protocol nothing, where the
+   * two-period version would have forced a 3× longer TTL on everyone to accommodate a once-per-process event.
+   *
+   * `base` is the interval **currently** in force, not `intervalMs`, so a cycle 1 that failed still backs off.
+   * Taking `intervalMs` here was a regression caught by the backoff test: it de-phased the fleet and threw away
+   * the backoff in the same line, retrying a dead backend at full cadence on exactly the cycle where the outage
+   * is most likely still in progress.
+   */
+  function firstSleepMs(base: number): number {
+    if (jitterFraction === 0 || deps.rng === undefined) return base;
+    return base * deps.rng.next();
+  }
+
   /** Sleep, but wake early on `stop()`. Returns whether it was cut short. */
   async function interruptibleSleep(ms: number): Promise<void> {
     if (ms <= 0 || stopping) return;
@@ -242,7 +329,7 @@ export function createEngineLoop(
 
   async function cycle(): Promise<LifecycleCycleResult> {
     lastCycleStartedAt = clock.now();
-    const promise = runLifecycleCycle(state, deps, options);
+    const promise = runLifecycleCycle(state, deps, cycleOptions);
     inFlight = promise;
     try {
       const result = await promise;
@@ -282,10 +369,9 @@ export function createEngineLoop(
         // Back off while the world is broken, and subtract the work already done so a slow cycle does not
         // compound into an ever-later schedule.
         const base = currentIntervalMs();
-        // The first sleep is jittered FULLY (the whole interval), not by the configured fraction: replicas
-        // deployed together must not run cycle 1 in lockstep, and cycle 1 is always the complete fleet repair
-        // scan. `jitter: 0` still means none at all — an operator asking for determinism gets it.
-        const target = base * jitterFactor(first && jitterFraction > 0 ? 1 : jitterFraction);
+        // See `firstSleepMs` for why cycle 1's sleep is spread differently. `jitter: 0` still means none at all —
+        // an operator asking for determinism gets it, on the first sleep as much as the rest.
+        const target = first ? firstSleepMs(base) : base * jitterFactor(jitterFraction);
         first = false;
         await interruptibleSleep(Math.max(0, target - (lastCycleMs ?? 0)));
       }

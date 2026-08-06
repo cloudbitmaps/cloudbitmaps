@@ -37,15 +37,33 @@ import { retireExpired } from './retention-sweep';
 import type { RetireExpiredResult } from './retention-sweep';
 import type { DropDeps } from './erasure';
 
+/** One day — the target *time* between repair passes, matching the due index's one-day bucket granularity. */
+export const REPAIR_TARGET_MS = 86_400_000;
+
 /**
- * How often a retention cycle runs the complete `'fleet'` scan instead of the fast index scan.
+ * Fallback repair cadence, in **cycles**, when the caller has not said how often it runs
+ * ({@link LifecycleOptions.cycleIntervalMs}).
  *
- * **24 cycles.** The trade is real in both directions and worth stating: too rare and a policy with no pointer
- * lingers past its expiry; too frequent and the fleet scan the index exists to avoid is back. At the engine's
- * default cadence this is roughly daily, which matches the granularity of the index buckets themselves — a
- * segment can be at most one bucket stale before a repair pass sees it.
+ * **This number cannot be right without knowing the cadence**, which is the correction: it previously carried a
+ * justification — *"at the engine's default cadence this is roughly daily, which matches the granularity of the
+ * index buckets"* — that was wrong by a factor of 60. At the engine's 60 s default, 24 cycles is **24 minutes**,
+ * so the complete fleet scan the due index exists to avoid was running 60 times a day, forever. Daily at that
+ * cadence is 1440 cycles, and the point of a *cycles* unit is that it does not know that. Pass
+ * `cycleIntervalMs` and {@link repairEveryFor} computes it; this constant is only what is left when nobody has.
  */
 export const DEFAULT_REPAIR_EVERY = 24;
+
+/**
+ * Cycles between repair passes for a caller running every `cycleIntervalMs` — enough to land near
+ * {@link REPAIR_TARGET_MS}. At least 1, so a caller whose interval already exceeds a day repairs every cycle.
+ *
+ * The trade is real in both directions: too rare and a policy with no due-index pointer lingers past its expiry;
+ * too frequent and you are paying the fleet scan the index was built to remove. One bucket-width is the natural
+ * answer — a segment can then be at most one bucket stale before a repair pass sees it.
+ */
+export function repairEveryFor(cycleIntervalMs: number): number {
+  return Math.max(1, Math.ceil(REPAIR_TARGET_MS / cycleIntervalMs));
+}
 
 export interface LifecycleRetentionOptions {
   /** Default true. */
@@ -54,7 +72,12 @@ export interface LifecycleRetentionOptions {
   readonly limit?: number;
   /** Past due-buckets a fast scan also reads. */
   readonly lookbackBuckets?: number;
-  /** Run the complete `'fleet'` scan every Nth cycle (default {@link DEFAULT_REPAIR_EVERY}). `1` = always. */
+  /**
+   * Run the complete `'fleet'` scan every Nth cycle. `1` = always. Defaults to
+   * {@link repairEveryFor}`(cycleIntervalMs)` when the cadence is known, else {@link DEFAULT_REPAIR_EVERY}.
+   *
+   * The unit is **cycles, not time** — which is exactly why {@link LifecycleOptions.cycleIntervalMs} exists.
+   */
   readonly repairEvery?: number;
 }
 
@@ -74,8 +97,25 @@ export interface LifecycleOptions {
   readonly owner: string;
   /** How many ways to split the fleet (default 1). */
   readonly partitions?: number;
-  /** Partition-lease TTL. */
+  /**
+   * Partition-lease TTL.
+   *
+   * **It must be several times longer than the gap between your cycles**, because that gap *is* the gap between
+   * renewals: a holder that renews less than twice per TTL has its own live leases judged dead and stolen, which
+   * is permanent fleet churn rather than an error. `createEngineLoop` derives this from its interval and refuses
+   * an explicit value that cannot work; a caller driving cycles from its own scheduler owns the arithmetic and
+   * should use `derivedLeaseTtlMs(yourIntervalMs, 0)`.
+   */
   readonly leaseTtlMs?: number;
+  /**
+   * How often the caller runs a cycle. **Not used to schedule anything** — this function never sleeps. It is the
+   * one input that lets cadence-dependent defaults be derived rather than guessed, and today that means
+   * {@link LifecycleRetentionOptions.repairEvery}, whose unit is cycles.
+   *
+   * `createEngineLoop` always supplies it. A caller driving cycles from a cron should too, or it gets a repair
+   * cadence tuned for nothing in particular.
+   */
+  readonly cycleIntervalMs?: number;
   readonly retention?: LifecycleRetentionOptions;
   readonly compaction?: LifecycleCompactionOptions;
   /** Scope every phase to one namespace. Absent ⇒ the whole fleet. */
@@ -117,6 +157,18 @@ export interface LifecycleCycleResult {
  */
 export type LifecycleDeps = DropDeps & CompactionDeps & { readonly clock: Clock };
 
+/**
+ * The repair cadence actually in force: explicit, else derived from the caller's cadence, else the cadence-blind
+ * fallback. One function so `validate` and the cycle cannot disagree about which number applies.
+ */
+function resolveRepairEvery(options: LifecycleOptions): number {
+  if (options.retention?.repairEvery !== undefined) return options.retention.repairEvery;
+  if (options.cycleIntervalMs !== undefined && options.cycleIntervalMs > 0) {
+    return repairEveryFor(options.cycleIntervalMs);
+  }
+  return DEFAULT_REPAIR_EVERY;
+}
+
 function validate(deps: LifecycleDeps, options: LifecycleOptions): void {
   // Fail loudly at the first cycle rather than skipping a loop that the operator believes is running. Every
   // phase here needs a registry, so its absence is a wiring error, not a reason to quietly do less.
@@ -135,7 +187,7 @@ function validate(deps: LifecycleDeps, options: LifecycleOptions): void {
       'lifecycle: `owner` must be a non-empty string, distinct between live processes',
     );
   }
-  const repairEvery = options.retention?.repairEvery ?? DEFAULT_REPAIR_EVERY;
+  const repairEvery = resolveRepairEvery(options);
   if (!Number.isSafeInteger(repairEvery) || repairEvery < 1) {
     throw new ValidationError(
       `lifecycle: \`repairEvery\` must be an integer >= 1; got ${repairEvery}`,
@@ -156,7 +208,7 @@ export async function runLifecycleCycle(
   validate(deps, options);
   const errors: LifecyclePhaseError[] = [];
   const cycle = state.cycle + 1;
-  const repairEvery = options.retention?.repairEvery ?? DEFAULT_REPAIR_EVERY;
+  const repairEvery = resolveRepairEvery(options);
   const partitions = options.partitions ?? DEFAULT_PARTITIONS;
   // The FIRST cycle repairs. A process that has just started knows nothing about what previous ones swept, and
   // the complete scan is the only thing that can tell it — so a fresh deployment converges immediately instead

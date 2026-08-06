@@ -184,7 +184,13 @@ export type { LeaseState, LeaseOptions, LeaseDeps, LeaseCycleResult } from './co
 // One lifecycle cycle — lease a slice of the fleet, retire what expired, compact what is dirty, GC generations.
 // The mechanism half of `@cloudbitmaps/engine`: driven by the injected Clock rather than a timer, so it is pure,
 // runs where no node builtin exists, and a whole multi-worker interleaving is deterministically testable.
-export { runLifecycleCycle, emptyLifecycleState, DEFAULT_REPAIR_EVERY } from './core/lifecycle';
+export {
+  runLifecycleCycle,
+  emptyLifecycleState,
+  DEFAULT_REPAIR_EVERY,
+  REPAIR_TARGET_MS,
+  repairEveryFor,
+} from './core/lifecycle';
 export type {
   LifecycleState,
   LifecycleOptions,
@@ -205,6 +211,11 @@ export {
   DEFAULT_MAX_INTERVAL_MS,
   DEFAULT_JITTER,
   DEFAULT_STOP_TIMEOUT_MS,
+  // The interval and the lease TTL are ONE decision, not two — both shipped defaults were 60 s, set in separate
+  // modules, and the loop's own jitter then spent the nonexistent margin. Exported so a caller driving cycles
+  // from its own scheduler can compute the same TTL the loop does.
+  maxCycleGapMs,
+  derivedLeaseTtlMs,
 } from './core/engine-loop';
 export type { EngineLoop, EngineLoopOptions, EngineStatus, StopResult } from './core/engine-loop';
 
