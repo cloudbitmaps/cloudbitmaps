@@ -31,6 +31,7 @@ import {
   type LifecycleDeps,
   type LifecycleOptions,
   type LifecycleState,
+  type LeaseTelemetry,
   type PhaseFailures,
 } from './lifecycle';
 import { LEASE_RENEW_DIVISOR, releaseAll } from './lease';
@@ -148,6 +149,18 @@ export interface EngineStatus {
    * because this worker holds no partitions) carries its previous count forward rather than resetting.
    */
   readonly phaseFailures: PhaseFailures;
+  /**
+   * What the lease phase reported last cycle — `workers` · `target` · `claimed` · `lost` · `stolen` ·
+   * `sinceLastCycleMs` · `pollingTooSlowly`.
+   *
+   * Nested rather than flattened because the lease layer's `sinceLastCycleMs` and this status's top-level one
+   * measure **different things** — the gap between lease cycles versus how stale this reading is — and two fields
+   * of the same name meaning different quantities is how a dashboard ends up lying.
+   *
+   * Watch `lost` in steady state. Convergence churn after a deploy is normal and bounded; a worker still losing
+   * partitions once the fleet has settled is thrash, and `pollingTooSlowly` usually says why.
+   */
+  readonly lease?: LeaseTelemetry;
   /**
    * **Liveness, and it is not "doing work".** A worker holding zero partitions is healthy — that is what every
    * worker beyond the first does. Healthy means *a cycle attempted and settled recently*, which is exactly the
@@ -479,6 +492,7 @@ export function createEngineLoop(
           ? {}
           : { sinceLastCycleMs: now - lastCycleCompletedAt }),
         phaseFailures: state.phaseFailures,
+        ...(lastResult?.lease === undefined ? {} : { lease: lastResult.lease }),
         // TWO conditions, and the second was missing entirely. A cycle must have SETTLED recently — a process
         // that has not completed one has not proved it can — AND the cycles must be getting somewhere. Sustained
         // failure used to be "a separate signal", which in practice meant no signal: nothing forces an operator
@@ -486,7 +500,11 @@ export function createEngineLoop(
         healthy:
           lastCycleCompletedAt !== undefined &&
           now - lastCycleCompletedAt < window &&
-          (unhealthyAfter === 0 || consecutiveFailedCycles < unhealthyAfter),
+          (unhealthyAfter === 0 || consecutiveFailedCycles < unhealthyAfter) &&
+          // Polling slower than the lease TTL is not an error and nothing throws for it, but this worker's own
+          // live leases are being judged dead and stolen every cycle. It is doing a fraction of its work and
+          // abandoning the rest mid-flight — the definition of alive but not working.
+          lastResult?.lease?.pollingTooSlowly !== true,
         staleAfterMs: window,
       };
     },

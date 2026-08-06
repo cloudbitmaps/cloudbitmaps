@@ -200,6 +200,7 @@ export type {
   LifecycleRetentionOptions,
   LifecycleCompactionOptions,
   LifecyclePhase,
+  LeaseTelemetry,
   PhaseFailures,
 } from './core/lifecycle';
 

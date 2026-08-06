@@ -14,6 +14,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+- **The lease telemetry reaches the operator instead of being dropped on the floor.**
+  `LifecycleCycleResult` and `EngineStatus` gain `lease` — `workers` · `target` · `claimed` · `lost` · `stolen` ·
+  `sinceLastCycleMs` · `pollingTooSlowly`. The lease protocol *delegates* an alarm to its caller: it returns
+  `sinceLastCycleMs` documented as *"greater than `ttlMs` means you are polling too slowly and your own leases
+  are being judged dead — alarm on it"*, because it cannot see the caller's interval. The cycle kept `state` and
+  `held` and discarded the rest, so the one signal designed to surface a cadence misconfiguration **could not
+  reach anyone**. `pollingTooSlowly` also makes `healthy` false: nothing throws for it, but the worker is doing a
+  fraction of its work and abandoning the rest mid-flight.
+
+  It is **nested** under `lease` rather than flattened, because the lease layer's `sinceLastCycleMs` and the
+  status's top-level one measure different quantities — the gap between lease cycles versus how stale the reading
+  is — and two fields with one name meaning two things is how a dashboard ends up lying. Watch `lost` in steady
+  state: convergence churn after a deploy is normal and bounded; ongoing loss is thrash.
+
 - **Both fleet scans in a cycle now have a ceiling, and both are reachable from the engine.** Measured while
   trying to break it: the retention sweep and compaction discovery run in the *same* cycle off the *same*
   `registry.list()`, and only one of them was bounded. Peak heap, in-memory driver:
