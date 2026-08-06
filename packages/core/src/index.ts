@@ -179,6 +179,23 @@ export {
   LEASE_RENEW_DIVISOR,
 } from './core/lease';
 export type { LeaseState, LeaseOptions, LeaseDeps, LeaseCycleResult } from './core/lease';
+
+// The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
+// EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
+// with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
+export {
+  dueBucket,
+  dueBucketsAt,
+  dueNamespace,
+  dueIndexRef,
+  encodeDueName,
+  decodeDueName,
+  canIndex,
+  isDueIndexRow,
+  DUE_NAMESPACE_PREFIX,
+  DUE_BUCKET_MS,
+  MAX_NAME_LENGTH,
+} from './core/due-index';
 export type {
   RetireExpiredOptions,
   RetireExpiredResult,

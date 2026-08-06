@@ -64,6 +64,26 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
   A seconds-shaped value is refused **at the handle** rather than silently making the segment permanently empty.
 
+- **The due index — the structure that makes a retention cycle cost what is *expiring* rather than what the
+  fleet *holds*.** `dueBucket` / `dueNamespace` / `dueBucketsAt` / `dueIndexRef` / `encodeDueName` /
+  `decodeDueName` / `canIndex` / `isDueIndexRow`. Foundation only in this release — wiring it into the sweep
+  follows.
+
+  Today a sweep drains `registry.list()` and filters, so it reads the whole fleet every cycle even when nothing
+  expires. The index makes the day a segment expires into a **namespace**, so listing one due day yields exactly
+  the segments due that day. That shape is forced by the driver contract: `list()` filters by namespace and
+  nothing else — no cursor, no key range — so the only way to read a subset is to make the subset a namespace.
+
+  Buckets are **day indices**, not formatted dates: `core/` reads no ambient time, and a calendar would add a
+  timezone question for no benefit. Pointer names are **length-prefixed** (`${nsLength}.${ns}${segment}`) rather
+  than delimited, because every character the name grammar allows is legal *inside* a name, so no separator
+  could ever be unambiguous.
+
+  **It is a fast path, never the source of truth**, which is what makes a second index safe here: the sweep
+  re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse; and the
+  full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
+  means slower, never never.
+
 ### Changed
 
 - `drainRegistry` and compaction discovery skip the reserved lease namespace on an **unscoped** scan. A scan
