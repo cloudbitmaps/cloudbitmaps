@@ -151,6 +151,9 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `leaseRef(partition)` / `partitionOfLeaseRow(segment)` | the registry ref for a partition's lease row, and its inverse (`null` for any row we did not write — a foreign row in the reserved namespace is ignored, never adopted) |
 | `leaseRenewIntervalMs(ttlMs?)` → `number` | how long to wait between cycles: a third of the TTL, so one lost round trip is survivable |
 | `isReservedRow(record)` / `excludingReservedRows(listing)` | the coordination-row filter, as a predicate and as a stream wrapper. **Every unscoped fleet-wide enumeration must apply one of them** — a lease is not a segment. Both are exported because a caller writing their own fleet pass needs the same filter, not a second definition (the first cut of this had three call sites missed, including `subjectReport`, where the rows consumed an Art. 15 request's budget) |
+| `dueBucket(expiresAt)` · `dueNamespace(bucket)` · `dueBucketsAt(now, lookbackBuckets)` | **the due index** — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is *expiring* rather than what the fleet *holds*. A bucket is a **day index** (`Math.floor(expiresAt / 86_400_000)`) and becomes a namespace, because `list()` filters by namespace and nothing else — that single constraint is what shapes the design. `dueBucketsAt` includes past buckets so a sweep that did not run leaves nothing stranded, bounded by `lookbackBuckets` so a long outage costs a bounded number of list calls |
+| `dueIndexRef(bucket, ref)` · `encodeDueName(ref)` · `decodeDueName(name)` · `canIndex(ref)` · `isDueIndexRow(record)` | the pointer rows. A name is `${namespaceLength}.${namespace}${segment}` — **length-prefixed, not delimited**, because every character the grammar allows is legal *inside* a name, so no separator could be unambiguous. `canIndex` is false only for a ref whose encoding would exceed the 256-character cap; that is **not an error and not "never retired"** — the repair scan still sees the segment's own row, so it expires on the repair cadence instead of the fast one |
+| `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` | `cbm.due.` · one day · 256. **The index is a fast path, never the source of truth**: the sweep re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse, and the full `registry.list()` scan remains as a periodic **repair** pass, so a missing pointer is slower, never never |
 | types: `LeaseState` · `LeaseOptions` · `LeaseDeps` · `LeaseCycleResult` | the carried-between-cycles state, the per-worker options (`owner` must differ between live processes), the two ports the protocol needs (`registry` + `clock`), and the cycle's report (`held` · `claimed` · `lost` · `stolen` · `workers` · `target`) |
 
 ### Optional plug-ins you construct and pass in
@@ -367,6 +370,8 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `runLeaseCycle` · `releaseAll` · `emptyLeaseState` · `leaseRef` · `partitionOfLeaseRow` · `leaseRenewIntervalMs` ·
 `LEASE_NAMESPACE` · `DEFAULT_LEASE_TTL_MS` · `DEFAULT_PARTITIONS` · `MAX_PARTITIONS` · `MIN_LEASE_TTL_MS` ·
 `LEASE_RENEW_DIVISOR` · `isReservedRow` · `excludingReservedRows` ·
+`dueBucket` · `dueBucketsAt` · `dueNamespace` · `dueIndexRef` · `encodeDueName` · `decodeDueName` ·
+`canIndex` · `isDueIndexRow` · `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
 `RetryingRegistryDriver` · `RetryingColdChunkSource` · `CrbmWriter` · `CrbmReader` ·
 `BufferSink` · `BufferReader` · `CountingMetricsSink` · `NOOP_METRICS` ·
