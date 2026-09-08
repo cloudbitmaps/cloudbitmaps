@@ -65,7 +65,7 @@ The essentials, in order:
    newest-first), and [`docs/ROADMAP.md`](docs/ROADMAP.md). Docs must never lag reality.
 6. **Commit + push**; open the PR. **Squash-merge**, then delete the branch.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
-8. **Agent history** is working history, not documentation — durable conclusions land in tracked docs. Keeping the transcripts themselves is machine setup, not project setup: set `cleanupPeriodDays` explicitly and back `~/.claude` up to a private remote, per the handbook's [agent-history standard](https://github.com/sharvilk/meta-standards/blob/main/AGENT-HISTORY-STANDARD.md).
+8. **Agent history** is working history, not documentation — durable conclusions land in tracked docs. Keeping the transcripts themselves is machine setup, not project setup: set your agent's transcript retention explicitly and back the agent config directory up to a private remote.
 
 **Gate** (CI runs all; all must pass): `pnpm lint · lint:arch · format:check · typecheck · test · build`, plus
 `pnpm test:integration` against real backends via docker-compose. A fresh clone must pass
