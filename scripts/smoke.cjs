@@ -19,13 +19,7 @@ const { pathToFileURL } = require('node:url');
 // users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
-const SUBPATHS = [
-  '',
-  '/s3',
-  '/dynamodb',
-  '/gcs',
-  '/azure',
-];
+const SUBPATHS = ['', '/s3', '/dynamodb', '/gcs', '/azure'];
 
 async function exerciseCore(label, m) {
   for (const name of [
