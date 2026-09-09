@@ -19,11 +19,6 @@
     "dynamodb",
     "gcs",
     "azure",
-    "postgres",
-    "redis",
-    "mongodb",
-    "cassandra",
-    "mysql",
     "mariadb",
     "serverless",
     "tiered-storage",
@@ -75,31 +70,6 @@
       "types": "./dist/azure/index.d.ts",
       "import": "./dist/azure/index.js",
       "require": "./dist/azure/index.cjs"
-    },
-    "./postgres": {
-      "types": "./dist/postgres/index.d.ts",
-      "import": "./dist/postgres/index.js",
-      "require": "./dist/postgres/index.cjs"
-    },
-    "./redis": {
-      "types": "./dist/redis/index.d.ts",
-      "import": "./dist/redis/index.js",
-      "require": "./dist/redis/index.cjs"
-    },
-    "./mongodb": {
-      "types": "./dist/mongodb/index.d.ts",
-      "import": "./dist/mongodb/index.js",
-      "require": "./dist/mongodb/index.cjs"
-    },
-    "./cassandra": {
-      "types": "./dist/cassandra/index.d.ts",
-      "import": "./dist/cassandra/index.js",
-      "require": "./dist/cassandra/index.cjs"
-    },
-    "./mysql": {
-      "types": "./dist/mysql/index.d.ts",
-      "import": "./dist/mysql/index.js",
-      "require": "./dist/mysql/index.cjs"
     }
   },
   "files": [
@@ -119,12 +89,7 @@
     "@aws-sdk/client-dynamodb": "^3",
     "@aws-sdk/client-s3": "^3",
     "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^7",
-    "cassandra-driver": "^4",
-    "ioredis": "^5",
-    "mongodb": "^6",
-    "mysql2": "^3",
-    "pg": "^8"
+    "@google-cloud/storage": "^7"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-dynamodb": {
@@ -138,21 +103,6 @@
     },
     "@google-cloud/storage": {
       "optional": true
-    },
-    "cassandra-driver": {
-      "optional": true
-    },
-    "ioredis": {
-      "optional": true
-    },
-    "mongodb": {
-      "optional": true
-    },
-    "mysql2": {
-      "optional": true
-    },
-    "pg": {
-      "optional": true
     }
   },
   "devDependencies": {
@@ -160,12 +110,6 @@
     "@aws-sdk/client-s3": "^3.1075.0",
     "@azure/storage-blob": "^12",
     "@google-cloud/storage": "^7.0.0",
-    "cassandra-driver": "^4",
-    "ioredis": "^5",
-    "mongodb": "^6",
-    "mysql2": "^3.23.1",
-    "pg": "^8",
-    "@types/pg": "^8",
     "@types/node": "^22.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0"

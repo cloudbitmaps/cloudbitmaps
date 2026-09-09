@@ -23,11 +23,9 @@
 > what isn't — is set out in the [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt).
 > **Works today:** the core engine over **in-memory** and **local-filesystem** tiers, with every cloud driver on
 > its own `@cloudbitmaps/roaring/<backend>` subpath — **cold** object storage on **S3-compatible** (`/s3`), **GCS**
-> (`/gcs`), and **Azure Blob** (`/azure`); a **warm** tier on **DynamoDB** (`/dynamodb`), **PostgreSQL**
-> (`/postgres`), **Redis** (`/redis`), **MongoDB** (`/mongodb`), **Cassandra/ScyllaDB**
-> (`/cassandra`), and **MySQL/MariaDB** (`/mysql`); a **segment registry**
+> (`/gcs`), and **Azure Blob** (`/azure`); a **warm** tier on **DynamoDB** (`/dynamodb`); a **segment registry**
 > (memory / LocalFs / DynamoDB / **S3** — so a read-mostly deployment runs on **S3 alone**), and a
-> **crash-safe compaction daemon** (`compact-segments`) — `add` / `addMany` /
+> **crash-safe compaction** you schedule (`runCompactionCycle`) — `add` / `addMany` /
 > `remove` / `removeMany` / `claimMany` / `has` / `count` / `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, tombstone-correct
 > deletes, bulk-load, the `.crbm` archive format, a bounded HOT cache, real cross-process optimistic-concurrency
 > writes, **automatic retry with backoff** that rides out transient cloud faults without losing data,
@@ -141,12 +139,12 @@ and fetches **only the chunks present in both** — so two 100 MB segments overl
 transfer ~10 MB, not 200 MB, and the whole thing runs inside a 128 MB Lambda. This is the capability no
 embeddable OSS bitmap library offers off the shelf.
 
-**Compaction** *(shipped, Phase 4d)*. A background daemon (`compact-segments`) periodically stitches the
+**Compaction** *(shipped, Phase 4d)*. A compaction pass you schedule (`runCompactionCycle`, or `store.compact()` in-process) stitches the
 accumulated warm delta rows into a fresh immutable cold generation and purges the warm rows via a **2-phase
 commit** — checksum-verified, **version-fenced** (a write that lands mid-compaction is never lost), and
 recoverable from a crash at any step. It **streams** the merge straight into a multipart cold upload, so its
-memory footprint stays **flat on the cold side** (the warm delta set is still buffered — a deferred fix), and it runs as a separate process (`once` for
-Lambda/cron, `loop` for K8s/ECS), so it never slows your application path.
+memory footprint stays **flat on the cold side** (the warm delta set is still buffered — a deferred fix), and it runs wherever you schedule it (a cron,
+a Lambda on a timer, a `CronJob`), so it never slows your application path.
 
 **Encrypted at rest, with real erasure** *(shipped, Phase 4e)*. Turn on encryption by passing a **keystore** —
 the cold `.crbm` objects (payloads *and* index) are **AES-256-GCM**-encrypted, so a leaked bucket reveals
@@ -217,12 +215,6 @@ prefer). `core` itself has **zero runtime dependencies**.
 | `@cloudbitmaps/roaring/dynamodb` | `DynamoDbWarmDriver`, `DynamoDbRegistryDriver` | `@aws-sdk/client-dynamodb` |
 | `@cloudbitmaps/roaring/gcs` | `GcsColdDriver` (Google Cloud Storage cold tier) | `@google-cloud/storage` |
 | `@cloudbitmaps/roaring/azure` | `AzureBlobColdDriver` (Azure Blob cold tier) | `@azure/storage-blob` |
-| `@cloudbitmaps/roaring/postgres` | `PostgresWarmDriver`, `postgresWarmTableDDL` (Postgres warm tier) | `pg` (+ `@types/pg` for TS) |
-| `@cloudbitmaps/roaring/redis` | `RedisWarmDriver` (Redis warm tier) | `ioredis` |
-| `@cloudbitmaps/roaring/mongodb` | `MongoWarmDriver`, `ensureMongoWarmIndexes` (MongoDB/DocumentDB warm tier) | `mongodb` |
-| `@cloudbitmaps/roaring/cassandra` | `CassandraWarmDriver`, `cassandraWarmTableDDL` (Cassandra/ScyllaDB warm tier) | `cassandra-driver` |
-| `@cloudbitmaps/roaring/mysql` | `MysqlWarmDriver`, `mysqlWarmTableDDL` (MySQL/MariaDB warm tier) | `mysql2` |
-| `compact-segments` (CLI bin) | the out-of-process compaction daemon (`once` \| `loop`) | — |
 | `export-segments` (CLI bin) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
 The cloud SDKs are **optional peer dependencies** — the main entry never imports a cloud SDK (CI-enforced), so
@@ -286,7 +278,7 @@ code runs on any mix:
 | Tier | in-memory | local filesystem | cloud |
 |---|---|---|---|
 | **Cold** (durable base) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
-| **Warm** (live deltas) | `MemoryWarmDriver` | `LocalFsWarmDriver` | `DynamoDbWarmDriver` · `PostgresWarmDriver` · `RedisWarmDriver` · `MongoWarmDriver` · `CassandraWarmDriver` · `MysqlWarmDriver` |
+| **Warm** (live deltas) | `MemoryWarmDriver` | `LocalFsWarmDriver` | `DynamoDbWarmDriver` |
 | **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `DynamoDbRegistryDriver` · `S3RegistryDriver` |
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
@@ -335,7 +327,7 @@ new CloudRoaring({
 `bulkLoadCrbmGeneration` (seed a generation), `compactSegment` / `runCompactionCycle` (compaction),
 `destroySegment` / `eraseNamespace` (crypto-shred), `dropSegment` (retire + reclaim storage),
 `setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention` (the policy) and `retireExpired` (the
-sweep). The `compact-segments` CLI wraps the compaction path, and its opt-in `CR_RETIRE=1` phase wraps the sweep.
+sweep). Schedule them from a cron, a Lambda on a timer, or a `CronJob` — nothing here schedules itself.
 
 ### A durable alternative to Redis bitmaps
 
@@ -509,10 +501,10 @@ Built in phases, each shipped behind tests and an adversarial review:
 Beyond the milestones, the pre-1.0 **hardening backlog + an 8-discipline testing frontier** (soak · mutation ·
 fuzz · stress · DR · security · load/tail-latency · chaos) are complete, and the production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
-scale/tenancy deferrals are tracked openly). **Phase 7 — additional storage drivers** is complete: **GCS + Azure
-Blob cold and PostgreSQL + Redis + MongoDB + Cassandra/ScyllaDB + MySQL warm drivers have all shipped** (the
-object-store story is complete on AWS + GCP + Azure, and Postgres/Redis/Mongo/Cassandra/MySQL are non-AWS warm
-tiers — "use the datastore you already run"). Security and supply-chain hardening is in place: npm build
+scale/tenancy deferrals are tracked openly). **Phase 7 — additional storage drivers**: **GCS + Azure
+Blob cold drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the five non-AWS warm
+drivers that shipped alongside them in `0.9.x` were removed ahead of `1.0` as the library re-centres on
+write-once generations (see the `CHANGELOG`). Security and supply-chain hardening is in place: npm build
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
 prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 

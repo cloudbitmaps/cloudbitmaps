@@ -58,7 +58,7 @@ CloudBitmaps gives you three erasure levers with different guarantees. Use them 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
 | **Logical remove** | `segment.remove(id)` / `removeMany` | *Immediate* — reads exclude the ID at once (tombstone; `effective = (Cold ∪ adds) \ removes`). The bit **physically persists** in the immutable Cold `.crbm` until that chunk is next compacted. | everyday "take this user out of this audience" |
-| **Physical purge** | `store.compact(ref, { owner })` on demand, or the compaction daemon (`compact-segments` / `runCompactionCycle`) on a schedule | A compaction folds the tombstone into a fresh generation and **physically drops** the bit. | meeting a physical-deletion deadline — *run compaction (the daemon on a schedule, or `store.compact` on demand) inside your SLA* |
+| **Physical purge** | `store.compact(ref, { owner })` on demand, or `runCompactionCycle` on a schedule you own | A compaction folds the tombstone into a fresh generation and **physically drops** the bit. | meeting a physical-deletion deadline — *run compaction (the daemon on a schedule, or `store.compact` on demand) inside your SLA* |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is

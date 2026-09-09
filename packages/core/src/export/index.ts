@@ -28,7 +28,7 @@
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
  * succeeded — check `failed` (the CLI also exits non-zero when it's non-empty).
  */
-import { isReservedRow } from '../core/lease';
+import { isReservedRow } from '../core/registry-scan';
 import type { CodecInterface } from '../core/codec';
 import { requireCodec } from '../core/codec';
 import type { IRegistryDriver, SegmentRef } from '../core/ports';

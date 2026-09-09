@@ -36,14 +36,9 @@
 | `.crbm` archive read/write + a bounded HOT cache | ✅ |
 | **Bulk-load** a Cold generation from a large id stream (`bulkLoadCrbmGeneration`) | ✅ |
 | **DynamoDB warm tier** (`@cloudbitmaps/roaring/dynamodb`) — real cross-process OCC | ✅ |
-| **PostgreSQL warm tier** (`@cloudbitmaps/roaring/postgres`) — real cross-process SQL OCC; "use the Postgres you already run" (peer `pg` + `@types/pg` for TS; run `postgresWarmTableDDL()` once at deploy) | ✅ |
-| **Redis warm tier** (`@cloudbitmaps/roaring/redis`) — sub-ms writes; OCC via an atomic Lua compare-and-set (peer `ioredis`) | ✅ |
-| **MongoDB / DocumentDB warm tier** (`@cloudbitmaps/roaring/mongodb`) — per-document OCC; `ensureMongoWarmIndexes()` at deploy (peer `mongodb`) | ✅ |
-| **Cassandra / ScyllaDB warm tier** (`@cloudbitmaps/roaring/cassandra`) — OCC via a lightweight transaction; `cassandraWarmTableDDL()` at deploy (peer `cassandra-driver`) | ✅ |
-| **MySQL / MariaDB warm tier** (`@cloudbitmaps/roaring/mysql`) — plain-SQL OCC (`INSERT` + token-fenced `UPDATE`/`DELETE`); `mysqlWarmTableDDL()` at deploy (peer `mysql2`) | ✅ |
 | **Automatic retry + backoff** for transient faults (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / DynamoDB / **S3** — run read-mostly on S3 alone) — registry-resolved generation, no per-read scan | ✅ |
-| **Crash-safe compaction daemon** (`compact-segments`) — 2-phase commit, version-fenced | ✅ |
+| **Crash-safe compaction** (`runCompactionCycle` / `store.compact()`) — 2-phase commit, version-fenced; you schedule it | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment`/`eraseNamespace`) | ✅ |
 | **Observability** — optional metrics sink (`IMetricsSink`): cold/warm/cache/retry/intersect/op/compaction events | ✅ |
 | **Audit trail** — optional audit sink (`IAuditSink`): publish/compact/erase compliance events | ✅ |
@@ -57,7 +52,7 @@
 
 > **Only four backends ship a registry** — `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
 > (`@cloudbitmaps/roaring/s3`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). The seven
-> Phase-7 backends (`postgres` / `redis` / `mongodb` / `cassandra` / `mysql` warm; `gcs` / `azure` cold) are **tier-only — none
+> The GCS and Azure Blob cold drivers are **tier-only — none
 > ships a registry.** That matters because the crash-safe **compaction daemon** ([§8](#8-compaction-keeping-the-warm-tier-small))
 > needs a registry for its atomic `LATEST`-pointer swap + per-segment lease. So a deployment that compacts (i.e.
 > runs Topology-B) **must pair its tier with an S3 or DynamoDB registry** — e.g. an all-Redis or all-GCS
@@ -252,108 +247,9 @@ works for development — just point the client's `endpoint` at it.)
 
 ## Production wiring for the cloud drivers
 
-§4–§5 wired S3 and DynamoDB. The seven **Phase-7** backends follow the same shape — construct your own client,
-hand it to the driver, run the one-time schema step — but each carries a production footgun worth pinning up
-front. All seven are **tier-only** (no registry): a deployment that compacts must pair one with an S3 or
-DynamoDB registry (see [Choosing a registry](#choosing-a-registry)). Pair each `warm` driver below with a
-`cold` source (§1–§4) and a `registry` (§7); the cold drivers pair with a `warm` tier.
-
-### Redis warm (`@cloudbitmaps/roaring/redis`)
-
-```ts
-import Redis from 'ioredis';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { RedisWarmDriver } from '@cloudbitmaps/roaring/redis';
-// …construct a cold source `cold` (§4) + a registry `registry` (§7)…
-
-const client = new Redis(process.env.REDIS_URL); // ioredis; OCC via an atomic Lua compare-and-set
-const warm = new RedisWarmDriver({ client });
-const store = new CloudRoaring({ warm, cold, registry });
-```
-
-> ⚠️ **Footgun — eviction + persistence (the sharpest in the driver set).** Redis MUST run with
-> `maxmemory-policy noeviction` **and** AOF enabled (`appendonly yes`). The default `allkeys-lru` **silently
-> evicts** chunk hashes and their index entries *independently* → dropped/ghosted chunks → **wrong membership
-> answers, with no error raised**. Without AOF, a restart loses every un-compacted delta — and Redis is the one
-> warm backend that may hold the **only** durable copy of recent writes until compaction flushes them to cold.
-> (peer `ioredis`.)
-
-### PostgreSQL warm (`@cloudbitmaps/roaring/postgres`)
-
-```ts
-import { Pool } from 'pg';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { PostgresWarmDriver, postgresWarmTableDDL } from '@cloudbitmaps/roaring/postgres';
-
-const pool = new Pool({ connectionString: process.env.PG_URL });
-await pool.query(postgresWarmTableDDL()); // run once at deploy — idempotent CREATE TABLE
-const warm = new PostgresWarmDriver({ pool });
-const store = new CloudRoaring({ warm, cold, registry });
-```
-
-> **Checklist.** Run `postgresWarmTableDDL()` once at deploy; peer `pg` (+ `@types/pg` for TS). Postgres'
-> default collation is byte-exact, so keys match case-sensitively — if you ever pin a database collation, make
-> it a **deterministic/binary** one (a non-deterministic ICU collation could collapse case-differing segment
-> names).
-
-### MySQL / MariaDB warm (`@cloudbitmaps/roaring/mysql`)
-
-```ts
-import { createPool } from 'mysql2/promise';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { MysqlWarmDriver, mysqlWarmTableDDL } from '@cloudbitmaps/roaring/mysql';
-
-const pool = createPool(process.env.MYSQL_URL);
-await pool.query(mysqlWarmTableDDL()); // run once at deploy — pins utf8mb4_bin + ROW_FORMAT=DYNAMIC
-const warm = new MysqlWarmDriver({ pool });
-const store = new CloudRoaring({ warm, cold, registry });
-```
-
-> **Checklist.** Run `mysqlWarmTableDDL()` once at deploy (peer `mysql2`); it pins `utf8mb4_bin` collation —
-> MySQL's default `utf8mb4_0900_ai_ci` is **case-insensitive**, a correctness hole for case-differing segment
-> names — and requires `ROW_FORMAT=DYNAMIC` (the MySQL 5.7+/8.0 default) so the composite primary key fits
-> InnoDB's 3072-byte limit.
-
-### MongoDB / DocumentDB warm (`@cloudbitmaps/roaring/mongodb`)
-
-```ts
-import { MongoClient } from 'mongodb';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { MongoWarmDriver, ensureMongoWarmIndexes } from '@cloudbitmaps/roaring/mongodb';
-
-const db = (await MongoClient.connect(process.env.MONGO_URL)).db('cloudroaring');
-await ensureMongoWarmIndexes(db); // run once at deploy — builds the listChunks index
-const warm = new MongoWarmDriver({ db });
-const store = new CloudRoaring({ warm, cold, registry });
-```
-
-> **Checklist.** Run `ensureMongoWarmIndexes(db)` at deploy (peer `mongodb`); the warm collection MUST use the
-> **simple (binary) default collation** — a case-insensitive default collation can collapse case-differing
-> segments on `_id` uniqueness (the driver pins `{ locale: 'simple' }` on its own read/update/delete/list ops,
-> but the `_id`-index uniqueness follows the **collection** default). Point the `Db` at a **primary** read
-> preference so OCC reads are strong.
-
-### Cassandra / ScyllaDB warm (`@cloudbitmaps/roaring/cassandra`)
-
-```ts
-import { Client } from 'cassandra-driver';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { CassandraWarmDriver, cassandraWarmTableDDL } from '@cloudbitmaps/roaring/cassandra';
-
-const client = new Client({ contactPoints: ['db'], localDataCenter: 'dc1', keyspace: 'cloudroaring' });
-await client.connect();
-await client.execute(cassandraWarmTableDDL('cloudroaring')); // run once at deploy — you own keyspace + RF
-const warm = new CassandraWarmDriver({ client, keyspace: 'cloudroaring' });
-const store = new CloudRoaring({ warm, cold, registry }); // retry is ON by default — keep it (see below)
-```
-
-> **Checklist.** Create the keyspace (you choose the replication factor) and run
-> `cassandraWarmTableDDL(keyspace)` at deploy (peer `cassandra-driver`). OCC uses lightweight transactions
-> (LWT): reads run at `LOCAL_SERIAL`, writes default to `SERIAL` / `LOCAL_QUORUM`. **Keep automatic retry
-> enabled** (don't pass `retry: false`) — the store wraps `warm` in `RetryingWarmDriver` for you, and the raw
-> Cassandra driver throws transient `WriteTimeout` under Paxos contention that the retry layer rides out; this
-> matters more here than for the other four warm drivers. Each segment is a single partition → watch for hot
-> partitions.
+§4–§5 wired S3 and DynamoDB. The two remaining cloud **cold** drivers — GCS and Azure Blob — follow the same
+shape: construct your own client, hand it to the driver. Both are **tier-only** (no registry): pair them with an S3
+or DynamoDB registry (see [Choosing a registry](#choosing-a-registry)) and a `warm` tier (§5).
 
 ### GCS cold (`@cloudbitmaps/roaring/gcs`)
 
@@ -562,22 +458,11 @@ So: **skip it** for a write-once dated bucket that you retire with `dropSegment`
 — that data never reaches a steady state worth moving. **Run it** for a long-lived, continuously-updated segment,
 which is where all three columns above start to matter.
 
-If you call `store.compact()` in-process rather than running the daemon, note that it also collects the generation
-it supersedes — see the caveat at the end of this section.
+Whether you call `store.compact()` in-process or schedule `runCompactionCycle`, both collect the generation they
+supersede — see the caveat at the end of this section.
 
-The simplest way is the bundled CLI over the local filesystem:
-
-```bash
-# one cycle and exit (Lambda / cron):
-CR_COMPACT_ROOT=./.cloudroaring CR_COMPACT_MODE=once npx compact-segments
-# run forever, a cycle every 30s (K8s Deployment / ECS service):
-CR_COMPACT_ROOT=./.cloudroaring CR_COMPACT_MODE=loop CR_COMPACT_INTERVAL_MS=30000 npx compact-segments
-# scale out — worker 0 of 4, each owning a disjoint shard, ≤50 segments per cycle:
-CR_COMPACT_ROOT=./.cloudroaring CR_COMPACT_SHARD=0 CR_COMPACT_TOTAL_SHARDS=4 CR_COMPACT_MAX_SEGMENTS=50 CR_COMPACT_MODE=loop npx compact-segments
-```
-
-For a cloud deployment you wire your own tiny handler (so the daemon uses *your* S3/DynamoDB clients) — the
-two deploy modes are just "call once" vs "call on an interval":
+Nothing here schedules itself: you wire a tiny handler (so compaction uses *your* S3/DynamoDB clients) and run it
+from whatever already runs things for you — the two deploy modes are just "call once" vs "call on an interval":
 
 ```ts
 import { runCompactionCycle, CountingMetricsSink } from '@cloudbitmaps/roaring';
@@ -593,7 +478,7 @@ const deps = {
   metrics, // ← wire a sink to receive the per-attempt `compaction` metric (gap #2)
 };
 
-// Lambda handler (once) — or wrap in setInterval for a long-running daemon:
+// Lambda handler (once) — or wrap in setInterval for a long-running worker:
 export const handler = async (_event: unknown, context: { awsRequestId: string }) => {
   const cycle = await runCompactionCycle(deps, { owner: `lambda:${context.awsRequestId}`, keep: 1 });
   // cycle = { candidates, compacted, deferred, results }; metrics.snapshot().compaction has the counters.
@@ -613,23 +498,22 @@ grace window for in-flight readers). To compact a single segment directly, call
 >
 > | You call | Old generations collected? |
 > |---|---|
-> | `runCompactionCycle` (the daemon / CLI above) | **Yes** — it calls `gcOrphanGenerations` each cycle |
+> | `runCompactionCycle` (the scheduled pass above) | **Yes** — it calls `gcOrphanGenerations` each cycle |
 > | `store.compact(ref, { owner })` (in-process facade) | **Yes**, best-effort after a successful commit, with the same `keep: 1` grace window |
 > | `compactSegment(ref, deps, { owner })` (free function) | **No.** It is a single-responsibility primitive — call `gcOrphanGenerations(ref, { cold, registry }, { keep })` yourself |
 >
 > `store.compact` did **not** collect them in earlier releases (see the `CHANGELOG`), so a deployment that compacted in-process without
-> running the daemon accumulated `.crbm` objects indefinitely. Reads stayed correct the whole time — `currentGen`
+> a scheduled `runCompactionCycle` accumulated `.crbm` objects indefinitely. Reads stayed correct the whole time — `currentGen`
 > always pointed at a live object — so the only symptom was a storage bill that never went down. If that describes
 > your deployment, one `gcOrphanGenerations` pass per segment reclaims the backlog.
 
-**Running a fleet of workers.** To scale past one worker, run N daemons and give each a disjoint **shard**: set
-`CR_COMPACT_TOTAL_SHARDS=N` and worker _i_ `CR_COMPACT_SHARD=i` (or pass `shard`/`totalShards` to
-`runCompactionCycle`). Segments are partitioned by a stable hash of their name — the shards are disjoint and
+**Running a fleet of workers.** To scale past one worker, run N workers and give each a disjoint **shard**: pass
+`shard: i` / `totalShards: N` (or a `shards` set) to `runCompactionCycle`. Segments are partitioned by a stable hash of their name — the shards are disjoint and
 together cover the whole fleet, so no two workers ever drain or compact the same segment and no coordination is
 needed. (Each worker still enumerates the registry to find its shard, so the segment-**listing** cost stays
 proportional to the whole fleet per worker; sharding divides the expensive Warm drain and the compaction work,
 not the initial listing. An indexed enumeration that would divide the listing too is on the roadmap.)
-`CR_COMPACT_MAX_SEGMENTS` (`maxSegments`) caps the **compaction** work per cycle: the most-backed-up segments
+`maxSegments` caps the **compaction** work per cycle: the most-backed-up segments
 (most dirty chunks first, oldest-compacted as the tiebreak) are compacted and the rest deferred to the next
 cycle, so a burst on a few segments can't starve the tail. `runCompactionCycle` returns
 `{ candidates, compacted, deferred, results }` for logging or alarming on a cycle's own throughput.
@@ -640,7 +524,7 @@ can't wedge the worker or burn money on endless retries, and a success clears th
 `IMetricsSink` into your deps (as the handler above does), every attempt emits a `compaction` metric (committed /
 no-op / error, dirty-chunk count, rows purged, ms); either way, every commit stamps `lastCompactedAt` on the
 registry record and each cycle logs its `{ candidates, compacted, deferred }` summary — a **dead-man's-switch**
-to alarm on ("nothing compacted in the last hour" ⇒ the daemon is stuck or not running).
+to alarm on ("nothing compacted in the last hour" ⇒ the worker is stuck or not running).
 
 > **Picking up a new generation:** with a `registry` wired (see above), a `CrbmColdChunkSource` re-resolves the
 > current generation on a short TTL (`coldGenTtlMs`, default 2000 ms) and keys its HOT cache by generation, so a
@@ -971,7 +855,7 @@ See [`PRIVACY.md`](../../PRIVACY.md).
 
 > **Compact on demand.** `await store.compact({ segment, namespace }, { owner: 'worker' })` folds a segment's
 > Warm deltas into a fresh Cold generation in-process (same drivers, same `UnsupportedError` requirement) — a
-> one-shot alternative to running the `compact-segments` daemon for occasional/manual compaction.
+> one-shot alternative to a scheduled `runCompactionCycle` for occasional/manual compaction.
 
 ## 13.5 Retention, TTL and pruning — what exists and what doesn't
 
@@ -1294,32 +1178,24 @@ a correct answer:
 | Where you already run things | How to run the sweep |
 |---|---|
 | **AWS Lambda** | an EventBridge (CloudWatch Events) schedule → a handler that builds the store and calls `retireExpired` |
-| **Kubernetes** | a `CronJob`, or the compaction `Deployment` with `CR_RETIRE=1` |
-| **ECS / Fargate** | a scheduled task, or the compaction service with `CR_RETIRE=1` |
-| **A plain VM / container** | `cron` calling a one-shot script, or `compact-segments` in `loop` mode with `CR_RETIRE=1` |
+| **Kubernetes** | a `CronJob` |
+| **ECS / Fargate** | a scheduled task |
+| **A plain VM / container** | `cron` calling a one-shot script |
 | **A job queue you already have** | a recurring job |
 
-> ⚠️ **Run the sweep from ONE process.** It has no shard option (compaction does), so N replicas of a sharded
-> compaction Deployment would each sweep the *whole* registry and contend over the same segments. Either put
-> `CR_RETIRE=1` on a single replica / a `CronJob`, or call `retireExpired` from a job that runs once.
+> ⚠️ **Run the sweep from ONE process, or shard it.** N replicas each running the full sweep would contend over
+> the same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
+> disjoint slice with `shards` / `totalShards` — the same stable hash compaction discovery uses.
 
 **Once a day is enough** for daily buckets — retention windows are measured in days, so an hourly sweep just
 re-scans the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you
 want the deletion to feel.
 
-The bundled `compact-segments` CLI can run it in the same process as compaction, opt-in:
-
-```bash
-CR_COMPACT_ROOT=/data CR_COMPACT_MODE=loop CR_RETIRE=1 CR_RETIRE_DRY_RUN=1 compact-segments
-```
-
-The sweep runs on **its own interval** (`CR_RETIRE_INTERVAL_MS`, default daily), not the compaction one — a
-compaction loop ticks every 30 s, and sweeping at that cadence would re-scan the whole registry 2,880 times a day.
-On DynamoDB that is a billed full-table Scan each time, competing with your hot path for read capacity.
-
-It is a **separate phase after** the compaction cycle, not part of it: compaction's job is to make a segment
-cheap, retirement's is to delete it, and a destructive step running implicitly inside a maintenance cycle is the
-wrong default for someone who just wanted their Warm tier drained. Off unless you set `CR_RETIRE=1`.
+Keep the sweep on **its own schedule**, not compaction's: a compaction loop might tick every 30 s, and sweeping at
+that cadence would re-scan the whole registry 2,880 times a day — on DynamoDB a billed full-table Scan each time,
+competing with your hot path for read capacity. It is a **separate job after** compaction, not part of it:
+compaction's job is to make a segment cheap, retirement's is to delete it, and a destructive step running implicitly
+inside a maintenance cycle is the wrong default.
 
 **Start with `dryRun`.** In a loop `dropSegment`'s `confirmSegment` guard protects nothing (it is the same
 variable twice), so the sweep-level preview is the real safety net:
@@ -1669,10 +1545,6 @@ migration direction off Redis) and export are not built; the format field that w
 whether they get built depends on someone saying they need them. Everything reached through bitmap
 *operations* transfers today; everything reached through the bytes does not.
 
-> Redis stays first-class as a **warm tier** underneath this
-> ([`@cloudbitmaps/roaring/redis`](#redis-warm-cloudbitmapsroaringredis)) — the point above is about replacing
-> `SETBIT`-on-one-giant-key as your *data model*, not about replacing Redis as infrastructure.
-
 ## Intersecting segments (the crown jewel)
 
 `intersect` streams the ids present in **every** operand, ascending — and only ever downloads the Cold chunks
@@ -1832,7 +1704,7 @@ compaction are genuinely CPU-heavy. Measured on an M3 Pro:
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
 | `bulkLoadCrbmGeneration` (1M ids) | ~256 ms | **~19 ms** | a batch job or worker; survivable off the request path |
-| a compaction cycle | ~22 ms of bit math | ~19 ms | the `compact-segments` **daemon**, a separate process for exactly this reason |
+| a compaction cycle | ~22 ms of bit math | ~19 ms | a scheduled `runCompactionCycle` in a **separate process**, for exactly this reason |
 | `add` / `remove` / `has` / `count` / `intersect` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as

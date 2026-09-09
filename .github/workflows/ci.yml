@@ -71,7 +71,7 @@ jobs:
       - run: node scripts/audit.cjs
 
   integration:
-    name: integration (DynamoDB-Local + MinIO + fake-gcs-server + Azurite + Postgres + Redis + Mongo + Cassandra + MySQL)
+    name: integration (DynamoDB-Local + MinIO + fake-gcs-server + Azurite)
     runs-on: ubuntu-latest # needs Docker on the runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -81,7 +81,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Pull SERIALLY with backoff before starting anything. `docker compose up` pulls all nine images at once,
+      # Pull SERIALLY with backoff before starting anything. `docker compose up` pulls all the images at once,
       # and every public registry throttles a shared GitHub-runner IP: Docker Hub answers with a 6-hour quota
       # (`pull rate limit`), public.ecr.aws with a per-second rate (`Rate exceeded`). The second kind clears in
       # moments, so the fix that actually works is to stop asking for nine things simultaneously. Failing here

@@ -49,7 +49,7 @@ import {
   isWriteConflictError,
 } from './errors';
 import { segmentKey, shardOf } from './keys';
-import { DEFAULT_MAX_SCAN_SEGMENTS, validateMaxScanSegments } from './registry-scan';
+import { DEFAULT_MAX_SCAN_SEGMENTS, isReservedRow, validateMaxScanSegments } from './registry-scan';
 
 /**
  * Does this worker own the segment's shard? `shards` (a set) supersedes `shard` (a single slice) — a worker
@@ -66,7 +66,6 @@ function ownsShard(
   if (shards !== undefined) return shards.includes(mine);
   return shard === undefined || mine === shard;
 }
-import { isReservedRow } from './lease';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { writeCrbmGenerationStream } from './crbm-cold-source';
@@ -989,7 +988,7 @@ export async function findCompactable(
 
   const known = new Map<string, KnownSegment>();
   for await (const rec of deps.registry.list(options.namespace)) {
-    // Partition leases are not segments — skip them in an unscoped fleet scan. They would never pass the dirty
+    // Bookkeeping rows (due-index pointers) are not segments — skip them in an unscoped fleet scan. They would never pass the dirty
     // threshold, so this is hygiene rather than a correctness fix: a lease row must not appear in `scanned`, or
     // an operator watching discovery counts sees a fleet that is one-per-partition larger than it is.
     if (options.namespace === undefined && isReservedRow(rec)) continue;

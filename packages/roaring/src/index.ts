@@ -489,7 +489,7 @@ export class CloudRoaring {
     this.clock = clock;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). Compaction/erasure use raw drivers
-    // exactly like the out-of-process daemon (`bin/compact-segments`) — a one-shot admin op surfaces a transient
+    // exactly like an out-of-process `runCompactionCycle` — a one-shot admin op surfaces a transient
     // fault to the caller rather than retrying under the hood; the daemon re-runs the cycle.
     this.coldDriver = resolved.driver;
     this.warmDriver = options.warm;
@@ -725,7 +725,7 @@ export class CloudRoaring {
    * Requires the store built with a **raw cold driver + registry** (throws {@link UnsupportedError} otherwise);
    * like the daemon, it uses the raw drivers directly (a transient fault surfaces to you rather than retrying
    * under the hood). **Not for the request/hot path** — it reads and rewrites a whole Cold generation (streaming,
-   * constant-memory, but full-segment I/O). Use the `compact-segments` daemon (`runCompactionCycle`) for routine
+   * constant-memory, but full-segment I/O). Use a scheduled `runCompactionCycle` for routine
    * background compaction; reach for `store.compact()` for occasional/manual one-shots — a maintenance endpoint,
    * a small daemon-less deployment, or right after a targeted `remove`.
    */

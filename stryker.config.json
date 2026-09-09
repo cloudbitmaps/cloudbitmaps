@@ -9,10 +9,7 @@
     "packages/core/src/core/chunk.ts",
     "packages/core/src/core/concurrency.ts",
     "packages/core/src/core/bit-route.ts",
-    "packages/core/src/core/lease.ts",
-    "packages/core/src/core/due-index.ts",
-    "packages/core/src/core/lifecycle.ts",
-    "packages/core/src/core/engine-loop.ts"
+    "packages/core/src/core/due-index.ts"
   ],
   "reporters": ["html", "json", "clear-text", "progress"],
   "htmlReporter": {

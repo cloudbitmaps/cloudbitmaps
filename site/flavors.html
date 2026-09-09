@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       property="og:description"
-      content="A flavor decides how a chunk of ids is represented. Everything else — tiering, chunk-skipping, compaction, ten drivers — is codec-agnostic."
+      content="A flavor decides how a chunk of ids is represented. Everything else — tiering, chunk-skipping, compaction, five drivers — is codec-agnostic."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -96,7 +96,7 @@
             <h1>Pick the codec that matches your ids.</h1>
             <p class="hero-lede">
               <span class="m">@cloudbitmaps/core</span> is codec-agnostic. Tiering, chunk-skipping
-              intersection, compaction, encryption and the ten storage drivers live there and do not change. A
+              intersection, compaction, encryption and the five storage drivers live there and do not change. A
               flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
             </p>
             <p class="actions">
@@ -247,7 +247,7 @@
               <span class="m">intersect</span>, <span class="m">union</span>,
               <span class="m">andNot</span> — plus <span class="m">*Into</span> variants that write the result
               straight to a destination segment instead of returning it. A flavor is a
-              <span class="m">CodecInterface</span> implementation underneath ten drivers and three tiers, and
+              <span class="m">CodecInterface</span> implementation underneath five drivers and three tiers, and
               changes none of these signatures.
             </p>
           </div>

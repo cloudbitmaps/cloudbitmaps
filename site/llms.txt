@@ -9,9 +9,9 @@ is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks
 so intersecting two 2,000,000-id segments touches only the shared chunks, and `count()` on a published
 segment does zero payload reads.
 
-Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all ten storage
-drivers) arrives transitively. Ten backends ship as optional-peer subpaths: S3, GCS, Azure Blob, DynamoDB,
-Postgres, Redis, MongoDB, Cassandra, MySQL, and local filesystem.
+Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
+drivers) arrives transitively. Five backends ship as optional-peer subpaths: S3, GCS, Azure Blob, DynamoDB, and
+local filesystem.
 
 ## Measured, not modelled
 

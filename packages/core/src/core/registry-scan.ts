@@ -13,7 +13,7 @@
  * comfortably more than the 128–256 MB Lambda the guide suggests starting with, so it fails loudly instead.
  */
 import { BudgetExceededError, ValidationError } from './errors';
-import { isReservedRow } from './lease';
+import { isDueIndexRow } from './due-index';
 import type { IRegistryDriver, RegistryRecord } from './ports';
 
 /**
@@ -44,12 +44,10 @@ export async function drainRegistry(
   validateMaxScanSegments(maxScanSegments, op);
   const rows: RegistryRecord[] = [];
   for await (const rec of registry.list(options.namespace)) {
-    // A partition lease is not a segment. It lives in a reserved namespace, so an unscoped fleet scan would
-    // otherwise pay a strong `get` per lease row in `checkConsistency`, hand them to a retention sweep, and
-    // inflate every fleet-wide count. (It would NOT produce a false `missing-cold-generation` — the consistency
-    // check returns `ok` for `currentGen === null`. An earlier version of this comment claimed it would, which
-    // justified a real filter with a failure that cannot occur.) A caller that explicitly scopes to the lease
-    // namespace still sees them.
+    // A due-index pointer is bookkeeping, not a segment. It lives in a reserved namespace, so an unscoped fleet
+    // scan would otherwise pay a strong `get` per pointer row in `checkConsistency`, hand it to a retention
+    // sweep, and inflate every fleet-wide count. A caller that explicitly scopes to the reserved namespace
+    // still sees them.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rows.length >= maxScanSegments) {
       throw new BudgetExceededError(
@@ -61,4 +59,32 @@ export async function drainRegistry(
     rows.push(rec);
   }
   return rows;
+}
+
+/**
+ * Is this record **bookkeeping** rather than a segment? Covers every reserved family — today the due-index
+ * pointers ({@link isDueIndexRow}). **Every unscoped fleet-wide enumeration must skip these**: `drainRegistry`,
+ * compaction discovery, the export/eject scan, and the all-namespaces GDPR paths.
+ *
+ * This is the ONE place a reserved family is declared, and a new one belongs here rather than at the call
+ * sites. An earlier cut inlined the comparison per site and shipped with three missed — including
+ * `subjectReport`, where the rows consumed an Art. 15 request's per-op budget. A filter you have to remember at
+ * each site is a check that cannot fire.
+ */
+export function isReservedRow(record: Pick<RegistryRecord, 'namespace'>): boolean {
+  return isDueIndexRow(record);
+}
+
+/**
+ * Filter bookkeeping rows out of a registry listing **before** anything downstream pays for them. Needed where
+ * the enumeration is consumed inside a budgeted collector rather than a plain loop: charging a GDPR Art. 15
+ * request's per-op budget for pointer rows can refuse a subject report for a reason that has nothing to do with
+ * the subject.
+ */
+export async function* excludingReservedRows(
+  source: AsyncIterable<RegistryRecord>,
+): AsyncIterable<RegistryRecord> {
+  for await (const record of source) {
+    if (!isReservedRow(record)) yield record;
+  }
 }
