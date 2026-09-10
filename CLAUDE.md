@@ -15,11 +15,11 @@ Start with the [README](README.md), then the [getting-started guide](docs/guide/
 A **pnpm workspace of two packages**, both versioned in lockstep:
 
 - **`packages/core` → `@cloudbitmaps/core`** — the codec-agnostic engine (`SegmentEngine` + the `CodecInterface`
-  seam) and **every** storage driver as optional-peer subpaths (`/s3`, `/dynamodb`, `/gcs`, `/azure`, `/postgres`,
-  `/redis`, `/mongodb`, `/cassandra`, `/mysql`), plus the `.crbm` format, compaction, crypto, registry,
+  seam) and **every** storage driver as optional-peer subpaths (`/s3`, `/dynamodb`, `/gcs`, `/azure`), plus the
+  `.crbm` format, compaction, crypto, registry,
   consistency, budget, eject. **Zero runtime dependencies.**
 - **`packages/roaring` → `@cloudbitmaps/roaring`** — the roaring codec (`SafeBitmap`/`roaringCodec`), the
-  `CloudRoaring` facade, one-line re-export barrels per driver subpath, and the two CLIs. Depends on core.
+  `CloudRoaring` facade, one-line re-export barrels per driver subpath, and the `export-segments` CLI. Depends on core.
 - **Users install one flavor** — `npm i @cloudbitmaps/roaring` (+ only the backend SDK(s) they use);
   `@cloudbitmaps/core` arrives **transitively, never installed directly**.
 - **Tests live at the repo root under `tests/`** (many drive the facade + core internals together), with the
