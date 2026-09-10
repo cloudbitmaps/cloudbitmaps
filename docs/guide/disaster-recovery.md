@@ -114,27 +114,16 @@ The practical takeaway: **warm sets your RPO, cold sets your RTO.** Back warm co
 ### Per-backend backup & PITR mechanisms
 
 Which mechanism to enable depends on the tier you deployed. **The warm tier holds the freshest un-compacted
-deltas, so it sets your RPO** — and for a Redis warm tier it is the *only* durable copy of recent writes until
-compaction flushes them to cold. Back the warm tier accordingly: a mis-backed warm tier is silent, unbounded
+deltas, so it sets your RPO.** Back the warm tier accordingly: a mis-backed warm tier is silent, unbounded
 data loss nothing else in this runbook will warn you about.
 
 | Tier | Backend | Backup / PITR mechanism | RPO characteristic |
 |---|---|---|---|
 | Warm | DynamoDB | PITR (continuous) | ≈ seconds |
-| Warm | PostgreSQL | WAL / continuous archiving → PITR | near-continuous (≈ WAL archive interval) |
-| Warm | MySQL / MariaDB | binlog → PITR | near-continuous (≈ binlog flush/ship) |
-| Warm | MongoDB | snapshot + oplog for point-in-time (or replica-set + backups) | ≈ oplog window |
-| Warm | Cassandra / ScyllaDB | snapshots + commitlog archiving | ≈ commitlog archive interval |
-| Warm | Redis | AOF (`appendonly`) **+** RDB snapshots | ≈ AOF fsync policy — see caveat below |
 | Cold | S3 | versioning (+ optional Object Lock) | immutable generations (write-once) |
 | Cold | GCS | object versioning | immutable generations (write-once) |
 | Cold | Azure Blob | blob versioning + soft-delete | immutable generations (write-once) |
 
-> **Redis warm tier — two non-negotiables.** (1) Enable **both** AOF (`appendonly yes`) and RDB snapshots — it is
-> your only durable copy of un-compacted writes until they reach cold, so an RDB-only or unpersisted Redis loses
-> recent writes on restart. (2) Run Redis with **`maxmemory-policy noeviction`**; under any evicting policy Redis
-> silently drops warm chunks under memory pressure — data loss that happens *independent of your backups*, and
-> that `checkConsistency()` cannot see.
 
 All three cold backends store **write-once, immutable generations**, so the coherent restore point is
 backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). Likewise the **registry

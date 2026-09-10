@@ -67,7 +67,7 @@ export const ELEMENT_WIDTH_32 = 32;
  *
  * `.crbm` is a shared container: the index, the CRC32Cs, the AEAD framing and the generation model are all
  * codec-independent, and **only the chunk payload bytes belong to a flavor** (hence *Chunked Remote BitMap* —
- * see `04-CRBM-FORMAT`). This field is what lets one container hold either, the same way ZIP tags each member
+ * see the `.crbm` format section of the API reference). This field is what lets one container hold either, the same way ZIP tags each member
  * with a compression method.
  *
  * **Why this is not named `roaringSerializationId` any more.** It was, and the name was a trap waiting for the

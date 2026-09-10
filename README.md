@@ -114,7 +114,7 @@ operations group by chunk first (10,000 IDs spanning 12 chunks become **12 write
                      │ flush
                      ▼
                   WARM (NoSQL: one small delta row per dirty chunk, under optimistic concurrency)
-                     │ compaction daemon (background, separate process)
+                     │ compaction pass  (scheduled, separate process)
                      ▼
                   COLD (immutable .crbm archive objects in object storage)
   has(id) ─► HOT? ─► WARM? ─► COLD? (single-chunk byte-range read)
@@ -323,7 +323,7 @@ new CloudRoaring({
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
-**Out-of-process** free functions (wire their own deps — for daemons, CLIs, seed jobs):
+**Out-of-process** free functions (wire their own deps — for scheduled jobs, CLIs, seed jobs):
 `bulkLoadCrbmGeneration` (seed a generation), `compactSegment` / `runCompactionCycle` (compaction),
 `destroySegment` / `eraseNamespace` (crypto-shred), `dropSegment` (retire + reclaim storage),
 `setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention` (the policy) and `retireExpired` (the
@@ -488,7 +488,7 @@ Built in phases, each shipped behind tests and an adversarial review:
   a shared driver conformance suite + a deterministic, seed-replayable concurrency simulator. No cloud needed.
 - **M2 — Topology-A (the showcase)** *(complete)*: the S3 cold driver, bulk load, and the chunk-skipping
   intersection engine — the first shippable, the centerpiece.
-- **M3 — Topology-B** *(complete)*: the DynamoDB warm driver, live writes, a crash-safe **streaming** compaction daemon (cold-side constant memory; the warm delta set is still buffered — a deferred fix), and **encryption-at-rest + crypto-shred**.
+- **M3 — Topology-B** *(complete)*: the DynamoDB warm driver, live writes, a crash-safe **streaming** compaction pass (cold-side constant memory; the warm delta set is still buffered — a deferred fix), and **encryption-at-rest + crypto-shred**.
 - **M4 — production-grade** *(complete)*: an observability metrics sink, an honest cost estimator, a
   **benchmark-as-test** harness that turns the cost/perf claims into build-breaking CI assertions, a
   **cheap `count()`** (0 payload reads on a compacted segment), an **audit sink** (`IAuditSink` — a truthful
@@ -508,10 +508,21 @@ write-once generations (see the `CHANGELOG`). Security and supply-chain hardenin
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
 prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 
+**Where it is headed (September 2026).** `1.0` centres on the **loaded store**: compute a set upstream (a
+warehouse query, a job), `load` it as an immutable generation into your bucket, then `pin`, `has` and
+chunk-skipping-`intersect` it from anywhere — one bucket, no background process, nothing of ours in your request
+path. The **live tier** — per-call `add`/`remove` over a warm store, with the compaction daemon and partition
+leases that kept it healthy — is leaving this line: the lifecycle engine and the PostgreSQL, Redis, MongoDB,
+Cassandra and MySQL warm drivers are already removed (archived at the git tag `archive/live-warm-tier`; `0.9.x`
+stays on npm), and the DynamoDB warm tier with compaction follows. Why: every roaring-based engine that needs
+freshness meets it by micro-batching into immutable segments, never by mutating a stored bitmap per call — so
+that is the shape we build. Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that
+well. If a live tier returns, it will be immutable delta generations on the same bucket.
+
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs. The repo is a
 pnpm workspace of `@cloudbitmaps/core` (the codec-agnostic engine + every driver, zero runtime
-dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring` facade, and the two
-CLIs). You install one flavor; core arrives transitively.
+dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring` facade, and the
+`export-segments` CLI). You install one flavor; core arrives transitively.
 
 ## Documentation
 
