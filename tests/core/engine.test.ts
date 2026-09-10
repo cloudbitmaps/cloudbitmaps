@@ -1,93 +1,87 @@
-import {
-  CloudRoaring,
-  MemoryWarmDriver,
-  MemoryColdChunkSource,
-  IntegrityError,
-  type ColdChunkSource,
-  type Segment,
-} from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { CloudRoaring, IntegrityError, type Clock, type ColdChunkSource } from '@/index';
+import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
-function newStore(cold = new MemoryColdChunkSource()): {
-  cold: MemoryColdChunkSource;
-  cr: CloudRoaring;
-} {
-  return { cold, cr: new CloudRoaring({ warm: new MemoryWarmDriver(), cold }) };
+/** A controllable clock, so the store's generation refresh (`coldGenTtlMs`) is driven by the test, not wall time. */
+function fakeClock(): Clock & { advance: (ms: number) => void } {
+  let t = 0;
+  return { now: () => t, sleep: () => Promise.resolve(), advance: (ms) => (t += ms) };
 }
 
-async function members(seg: Segment): Promise<number[]> {
-  const out: number[] = [];
-  for await (const id of seg.iterate()) out.push(id);
-  return out;
-}
-
-describe('SegmentEngine (via CloudRoaring)', () => {
-  it('add / has / count / iterate basics', async () => {
-    const { cr } = newStore();
-    const s = cr.segment('users');
-    await s.add(5);
-    await s.add(100_000); // a different chunk
-    await s.add(5); // idempotent
+describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () => {
+  it('has / count / iterate basics across chunks', async () => {
+    const { store } = seededStore({ users: [5, 100_000] }); // 100_000 lives in a different chunk (key 1)
+    const s = store.segment('users');
     expect(await s.has(5)).toBe(true);
     expect(await s.has(7)).toBe(false);
+    expect(await s.has(100_000)).toBe(true);
     expect(await s.count()).toBe(2);
-    expect(await members(s)).toEqual([5, 100_000]);
+    expect(await collect(s.iterate())).toEqual([5, 100_000]);
   });
 
-  it('addMany / removeMany across chunks', async () => {
-    const { cr } = newStore();
-    const s = cr.segment('users');
-    await s.addMany([1, 2, 70_000, 70_001]);
-    await s.removeMany([2, 70_000]);
-    expect(await s.count()).toBe(2);
-    expect(await members(s)).toEqual([1, 70_001]);
+  it('a segment nothing has loaded reads as empty', async () => {
+    const { store } = seededStore();
+    const s = store.segment('nobody');
+    expect(await s.has(1)).toBe(false);
+    expect(await s.count()).toBe(0);
+    expect(await collect(s.iterate())).toEqual([]);
   });
 
-  it('removes down to empty (C12)', async () => {
-    const { cr } = newStore();
-    const s = cr.segment('users');
-    await s.add(42);
-    await s.remove(42);
+  it('a reload REPLACES the set — readers see the new generation, and only it', async () => {
+    // There is no add/remove: the only way ids leave a segment is a generation that does not hold them. A
+    // reader re-resolves the current generation after `coldGenTtlMs`, driven here by the injected clock.
+    const clock = fakeClock();
+    const { store, load, registry } = await loadedStore(
+      { users: [1, 2, 70_000, 70_001] },
+      { clock, coldGenTtlMs: 1 },
+    );
+    const s = store.segment('users');
+    expect(await collect(s.iterate())).toEqual([1, 2, 70_000, 70_001]);
+
+    await load('users', [1, 70_001, 200_000]); // generation 1: drops 2 and 70_000, adds 200_000
+    expect((await registry.get({ segment: 'users' }))!.currentGen).toBe(1);
+    clock.advance(1);
+    expect(await s.count()).toBe(3);
+    expect(await collect(s.iterate())).toEqual([1, 70_001, 200_000]);
+    expect(await s.has(2)).toBe(false);
+    expect(await s.has(70_000)).toBe(false);
+    expect(await s.has(200_000)).toBe(true);
+  });
+
+  it('a reload to an empty generation reads as empty (the segment still exists)', async () => {
+    const clock = fakeClock();
+    const { store, load, registry } = await loadedStore(
+      { users: [42] },
+      { clock, coldGenTtlMs: 1 },
+    );
+    const s = store.segment('users');
+    expect(await s.has(42)).toBe(true);
+
+    await load('users', []);
+    clock.advance(1);
     expect(await s.has(42)).toBe(false);
     expect(await s.count()).toBe(0);
-    expect(await members(s)).toEqual([]);
-  });
-
-  it('merges Cold ∪ adds \\ removes (V5)', async () => {
-    const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 'users', chunkKey: 0 }, SafeBitmap.fromValues([1, 2, 3]).serialize());
-    const cr = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    const s = cr.segment('users');
-    await s.add(9);
-    await s.remove(2);
-    expect(await s.count()).toBe(3);
-    expect(await members(s)).toEqual([1, 3, 9]);
-    expect(await s.has(2)).toBe(false);
-    expect(await s.has(1)).toBe(true);
-    expect(await s.has(9)).toBe(true);
-  });
-
-  it('re-add after remove restores membership', async () => {
-    const { cr } = newStore();
-    const s = cr.segment('users');
-    await s.add(7);
-    await s.remove(7);
-    await s.add(7);
-    expect(await s.has(7)).toBe(true);
-    expect(await s.count()).toBe(1);
+    expect(await collect(s.iterate())).toEqual([]);
+    expect((await registry.get({ segment: 'users' }))!.currentGen).toBe(1);
   });
 
   it('isolates namespaces', async () => {
-    const cr = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-    });
-    const a = cr.segment('seg', { namespace: 'acme' });
-    const b = cr.segment('seg', { namespace: 'globex' });
-    await a.add(1);
+    const { store, cold } = seededStore();
+    seedSegment(cold, { namespace: 'acme', segment: 'seg' }, [1]);
+    const a = store.segment('seg', { namespace: 'acme' });
+    const b = store.segment('seg', { namespace: 'globex' });
     expect(await a.has(1)).toBe(true);
     expect(await b.has(1)).toBe(false);
     expect(await b.count()).toBe(0);
+  });
+
+  it('round-trips boundary ids through the full read path', async () => {
+    const ids = [0, 0xffff, 0x1_0000, 0xffff_ffff];
+    const { store } = seededStore({ s: ids });
+    const s = store.segment('s');
+    expect(await s.count()).toBe(4);
+    expect(await collect(s.iterate())).toEqual(ids);
+    expect(await s.has(0)).toBe(true);
+    expect(await s.has(0xffff_ffff)).toBe(true);
   });
 
   it('rejects an out-of-range chunk key from a tier (IntegrityError)', async () => {
@@ -95,7 +89,7 @@ describe('SegmentEngine (via CloudRoaring)', () => {
       getChunk: () => Promise.resolve(null),
       listChunkKeys: () => Promise.resolve([70_000]), // > 0xffff
     };
-    const s = new CloudRoaring({ warm: new MemoryWarmDriver(), cold: badCold }).segment('users');
+    const s = new CloudRoaring({ cold: badCold }).segment('users');
     await expect(s.count()).rejects.toBeInstanceOf(IntegrityError);
   });
 });

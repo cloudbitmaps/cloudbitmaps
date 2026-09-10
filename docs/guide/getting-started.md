@@ -1,14 +1,12 @@
 # Getting started
 
 > **Status: `0.9.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
-> exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
-> **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
-> **Azure Blob** (with
-> chunk-skipping intersection), a **warm tier** on **DynamoDB**, the **segment registry**, **automatic
-> retry/backoff**, **crash-safe streaming compaction** (a pass you schedule), and **encryption-at-rest +
-> crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
-> Phase 7 driver set; the full v1 experience is sketched in
-> the usage walkthrough.
+> exposes, covered by the test suite. The API may still change before `1.0`. CloudBitmaps is a **loaded store**:
+> a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
+> **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
+> DynamoDB). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
+> and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
+> crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
 > **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the
 > *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
@@ -18,114 +16,93 @@
 > `@cloudbitmaps/core/s3` is equivalent if you prefer it).
 
 > **Every export at a glance:** for the complete list of everything you can import and call (across
-> `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure`, `/dynamodb`, `/postgres`, `/redis`, `/mongodb`,
-> `/cassandra`, `/mysql` subpaths), see the **[API Reference](api-reference.md)** — it's
-> kept in sync with the code by CI. This guide is the narrated walkthrough of that same surface.
+> `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure` and `/dynamodb` subpaths), see the
+> **[API Reference](api-reference.md)** — it's kept in sync with the code by CI. This guide is the narrated
+> walkthrough of that same surface.
 
 ## What works today
 
 | Capability | Status |
 |---|---|
-| `add` / `addMany` / `remove` / `removeMany` / `has` / `count` / `iterate` | ✅ |
-| **`intersect()` / `intersectInto()`** — chunk-skipping set intersection | ✅ |
-| Tombstone-correct deletes, merged over an immutable Cold tier | ✅ |
+| **Load** a segment as an immutable generation from any id stream — array, generator, warehouse cursor (`bulkLoadCrbmGeneration`) | ✅ |
+| `has` / `count` / `iterate` — `count()` summed from the `.crbm` index with **zero payload reads** | ✅ |
+| **`intersect()`** — chunk-skipping set intersection, streamed; `union()` / `andNot()`; `exclude` folds suppression into the same pass | ✅ |
+| **`intersectInto` / `unionInto` / `andNotInto`** — materialize a result as a **new generation** of another segment | ✅ |
 | In-memory drivers (zero setup) | ✅ |
 | Persistent **local filesystem** drivers (survive restart) | ✅ |
-| **S3-compatible** cold storage — AWS S3 / MinIO (`@cloudbitmaps/roaring/s3`) | ✅ |
+| **S3-compatible** cold storage — AWS S3 / MinIO (`@cloudbitmaps/roaring/s3`), multipart for large generations | ✅ |
 | **GCS + Azure Blob** cold storage (`@cloudbitmaps/roaring/gcs`, `@cloudbitmaps/roaring/azure`) — write-once immutable generations | ✅ |
 | `.crbm` archive read/write + a bounded HOT cache | ✅ |
-| **Bulk-load** a Cold generation from a large id stream (`bulkLoadCrbmGeneration`) | ✅ |
-| **DynamoDB warm tier** (`@cloudbitmaps/roaring/dynamodb`) — real cross-process OCC | ✅ |
 | **Automatic retry + backoff** for transient faults (on by default) | ✅ |
-| **Segment registry** (memory / LocalFs / DynamoDB / **S3** — run read-mostly on S3 alone) — registry-resolved generation, no per-read scan | ✅ |
-| **Crash-safe compaction** (`runCompactionCycle` / `store.compact()`) — 2-phase commit, version-fenced; you schedule it | ✅ |
-| **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment`/`eraseNamespace`) | ✅ |
-| **Observability** — optional metrics sink (`IMetricsSink`): cold/warm/cache/retry/intersect/op/compaction events | ✅ |
-| **Audit trail** — optional audit sink (`IAuditSink`): publish/compact/erase compliance events | ✅ |
+| **Segment registry** (memory / LocalFs / DynamoDB / **S3** — run on S3 alone) — one strong read resolves the current generation, no per-read scan | ✅ |
+| **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
+| **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
+| **Observability** — optional metrics sink (`IMetricsSink`): `cold.get` / `cache` / `retry` / `intersect` / `op` events | ✅ |
+| **Audit trail** — optional audit sink (`IAuditSink`): publish / rewrite / erase / dispose compliance events | ✅ |
 | **Cost estimator** — `CloudRoaring.estimateCost()` (planning) + grounded `segment.costReport()` | ✅ |
 | **Benchmark-as-test** — cost/perf claims are CI-gated; published [crossover chart](../benchmarks.md) | ✅ |
-| **Subject access & erasure** (GDPR Art. 15/17: `subjectReport` / `eraseSubject`) — explicit-scope guarded | ✅ |
-| **Per-op request budget** — denial-of-wallet ceiling on `count`/`iterate`/`intersect`/subject scans (on by default) | ✅ |
-| **Cross-tier consistency check** (`checkConsistency()`) — [torn-restore](disaster-recovery.md) detection | ✅ |
+| **Subject access & erasure** (GDPR Art. 15/17: `subjectReport` / `eraseSubject` — a rewrite, physically gone on return) | ✅ |
+| **Retention** — `setRetention` records a per-segment expiry; `retireExpired` is the sweep you schedule; `dropSegment` reclaims storage | ✅ |
+| **Per-op request budget** — denial-of-wallet ceiling on `count` / `iterate` / the combines / subject scans (on by default) | ✅ |
+| **Cross-store consistency check** (`checkConsistency()`) — [torn-restore](disaster-recovery.md) detection | ✅ |
+| **Export / eject** (`exportSegments` + the `export-segments` CLI) — portable `roaring` / `ndjson` | ✅ |
 
 ### Choosing a registry
 
-> **Only four backends ship a registry** — `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
-> (`@cloudbitmaps/roaring/s3`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). The seven
-> The GCS and Azure Blob cold drivers are **tier-only — none
-> ships a registry.** That matters because crash-safe **compaction** ([§8](#8-compaction-keeping-the-warm-tier-small))
-> needs a registry for its atomic `LATEST`-pointer swap + per-segment lease. So a deployment that compacts (i.e.
-> runs Topology-B) **must pair its tier with an S3 or DynamoDB registry** — e.g. an all-Redis or all-GCS
-> deployment can't self-host compaction; it takes on a cross-cloud dependency (an S3/DynamoDB registry) that you
-> must plan for. A **read-mostly** deployment that never compacts can run on **S3 alone** (§7). Full registry
-> details are in [§7](#7-the-segment-registry-resolving-the-current-generation).
+> **Four backends ship a registry** — `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
+> (`@cloudbitmaps/roaring/s3`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). The GCS and
+> Azure Blob drivers are **cold-only — neither ships a registry**, so pair them with an S3 or DynamoDB registry.
+> A registry is **optional for a read-only, cleartext store** (the store then list-scans the bucket for the
+> highest generation), and **required** for encrypted segments, the `*Into` verbs, and every lifecycle helper
+> (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
+> registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
 ## 1. The simplest thing: in-memory
 
-A `CloudRoaring` store is wired to a **warm** driver (live mutations) and a **cold** source (the immutable
-archive) — **those two are the only required options**; a `registry`, encryption, and cache/retry tuning are
-all optional and introduced as we go. A `segment` is one named bitmap. The in-memory drivers need no setup —
-ideal for tests and a first look:
+A `CloudRoaring` store is wired to a **cold** driver (where the `.crbm` generations live) — **the only required
+option** — and, for anything beyond a first look, a **registry** (the pointer that says which generation is
+current). A `segment` is one named bitmap. Data gets into a segment **by loading a generation**: you hand
+`bulkLoadCrbmGeneration` the ids, it writes one immutable object and publishes it. The in-memory drivers need no
+setup — ideal for tests and a first look:
 
 ```ts
-import { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } from '@cloudbitmaps/roaring';
+import {
+  CloudRoaring,
+  MemoryColdDriver,
+  MemoryRegistryDriver,
+  bulkLoadCrbmGeneration,
+  nextGeneration,
+} from '@cloudbitmaps/roaring';
 
-const store = new CloudRoaring({
-  warm: new MemoryWarmDriver(),
-  cold: new MemoryColdChunkSource(),
+const cold = new MemoryColdDriver();
+const registry = new MemoryRegistryDriver();
+const store = new CloudRoaring({ cold, registry });
+
+// Load a generation: any sync or async iterable of ids — an array here, a warehouse cursor in §3.
+const ref = { segment: 'high-value-shoppers' };
+const generation = await nextGeneration(ref, { cold, registry }); // → 0 on a brand-new segment
+await bulkLoadCrbmGeneration(cold, { ...ref, generation }, [5, 99_999, 1_234_567_890, 2_000_000_000], {
+  registry,
 });
 
+// Read it.
 const vips = store.segment('high-value-shoppers');
-
-await vips.add(1_234_567_890);
-await vips.addMany([5, 99_999, 2_000_000_000]); // grouped by chunk → one write per chunk
 await vips.has(1_234_567_890); // → true
-
-await vips.remove(1_234_567_890); // single-chunk tombstone — no scan, no rebuild
-await vips.has(1_234_567_890); // → false, immediately
-
-await vips.count(); // exact cardinality
+await vips.count(); // → 4, summed from the index — no chunk is fetched
 for await (const id of vips.iterate()) {
   // ascending ids
 }
 ```
 
-IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-bit remainder; `addMany`
-groups by chunk first, so 10,000 ids spanning 12 chunks become **12 writes, not 10,000**.
+IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-bit remainder, and a chunk is the unit
+of storage and transfer: `has()` fetches one chunk (or answers from the hot cache), `count()` fetches none, and
+`intersect()` fetches only the chunks two segments could share.
 
-`addMany`/`removeMany` accept a **sync or async iterable**, so a database cursor streams straight in:
-
-```ts
-async function* activeUsers() {
-  for await (const page of athena.paginate(query)) for (const row of page) yield row.user_id;
-}
-await store.segment('active').addMany(activeUsers()); // no hand-batching page → addMany(page)
-```
-
-Streaming is an **input-shape** choice, never a cost choice. Ids are grouped by chunk and each chunk is written
-**exactly once** however long the stream — pending ids are held compressed rather than buffered-and-flushed, so
-a stream costs no more backend writes than the equivalent array. (Measured: 5M pending ids occupy ~11 MB as
-bitmaps against ~212 MB held as plain numbers, which is what makes writing-once affordable.)
-
-> **Batch whenever you have more than one id — it is the difference between cents and dollars.** A chunk covers
-> 65,536 ids, and `addMany` issues one read-modify-write **per distinct chunk**, however many of that chunk's ids
-> you set. `add()` is handed a single id, so it must do one read-modify-write every time. Writing ten million ids
-> costs **~$7.50–$52** through `add()` in a loop (the $0.75/million rate is
-> [measured](../benchmarks.md#real-cloud-calibration--aws) for rows ≤1 KiB; DynamoDB bills writes per 1 KiB and a
-> chunk's delta grows as you fill it, so a full 8 KiB row is $5.25/million — density makes the loop *worse*)
-> versus **~$0.001–$0.05** through `addMany()`, and **~$0.00001** via
-> [bulk-load](#3-optional-bulk-load-a-cold-generation). Raising concurrency makes the loop *finish* sooner but
-> costs exactly the same — the bill is per request, so only issuing fewer requests reduces it. And nothing fails
-> if you get this wrong: every call succeeds and the answer is correct, so the mistake shows up on an invoice
-> rather than in your logs. Use `add()` for a single id, `addMany()` for a batch, and bulk-load when you are
-> replacing a segment rather than amending it — bulk-load rewrites the whole segment, so it cannot express "one
-> more user" or a removal at all.
->
-> **Streaming does not move this crossover.** Both `addMany` and bulk-load take an async iterable, so the same
-> 11M-row cursor pipes into either — and the choice between them is unchanged by that. Amending a segment is
-> `addMany`; *defining* one is bulk-load. Ids spread across the id space touch ~61,000 chunks, so `addMany`
-> writes ~61,000 warm rows where bulk-load writes one immutable object. The convenience of streaming is exactly
-> the situation in which it is easiest to reach for the wrong one.
+**There is no `add` or `remove` on a segment.** A segment changes by getting a *new generation* — the next load
+supersedes the previous one, an `*Into` verb writes a new generation of its destination ([§7](#7-materializing-the-into-verbs)),
+and a GDPR erasure rewrites the current generation without one id ([§13](#13-subject-access--erasure-gdpr-art-15--17)).
+A segment that has never been loaded reads as empty — `has(x) → false`, `count() → 0`, `iterate() → []` — without
+throwing, so there is nothing to create before the first load.
 
 ## 2. Persistent: the local filesystem
 
@@ -133,66 +110,106 @@ Same API, but state lives on disk and survives a restart. Pass the **raw** `Loca
 the store wraps it in the `.crbm` reader for you, so you wire each driver exactly once:
 
 ```ts
-import { CloudRoaring, LocalFsWarmDriver, LocalFsColdDriver } from '@cloudbitmaps/roaring';
+import {
+  CloudRoaring,
+  LocalFsColdDriver,
+  LocalFsRegistryDriver,
+  bulkLoadCrbmGeneration,
+  nextGeneration,
+} from '@cloudbitmaps/roaring';
 
-const store = new CloudRoaring({
-  warm: new LocalFsWarmDriver('./.cloudbitmaps/warm'),
-  cold: new LocalFsColdDriver('./.cloudbitmaps/cold'), // raw driver → reads .crbm generations; empty until seeded
-  cacheMaxChunks: 1024, // optional HOT-cache ceiling
-});
+const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
+const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
+const store = new CloudRoaring({ cold, registry, cacheMaxChunks: 1024 }); // optional HOT-cache ceiling
 
-const seg = store.segment('active-this-week');
-await seg.add(42);
-// ...a fresh process pointed at the same dirs sees 42 again — writes are durable.
+const ref = { segment: 'active-this-week' };
+await bulkLoadCrbmGeneration(
+  cold,
+  { ...ref, generation: await nextGeneration(ref, { cold, registry }) },
+  activeUserIds,
+  { registry },
+);
+// ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
 ```
 
 > **The `cold` option takes either shape.** Usually you pass a **raw `IColdDriver`** (`LocalFsColdDriver`,
 > `S3ColdDriver`, `MemoryColdDriver`) and the store builds the `.crbm` cold source — reading the
-> `registry` / `keystore` / `requireEncryption` you pass alongside in the same config (§7 registry, §9
-> encryption). Or pass an already-built **`ColdChunkSource`** — for a source-only backend (like the
-> `MemoryColdChunkSource` in §1, which has no underlying driver) or a `CrbmColdChunkSource` you configured with
-> advanced reader options (`tailBytes`, size caps). On that path, configure the registry/keystore **on the
-> source itself** — passing them at the top level is rejected as a wiring mistake. Same config, two ways to fill
-> the `cold` slot.
+> `registry` / `keystore` / `requireEncryption` you pass alongside in the same config (§5 registry, §9
+> encryption). Or pass an already-built **`ColdChunkSource`** — a `MemoryColdChunkSource` seeded chunk by chunk
+> in a test, or a `CrbmColdChunkSource` you configured with advanced reader options (`tailBytes`, size caps). On
+> that path, configure the registry/keystore **on the source itself** — passing them at the top level is rejected
+> as a wiring mistake — and the store is **read-only**: the `*Into` verbs and the lifecycle helpers need the raw
+> driver to write through and throw `UnsupportedError`.
 
-## 3. (Optional) bulk-load a Cold generation
+## 3. Loading a segment
 
-> **This is an *import* path, not an initialization step.** Nothing needs seeding. A brand-new segment is usable
-> the moment you construct the store: `addMany` / `has` / `remove` / `count` / `iterate` / `intersect` all work
-> against a segment with no Cold generation and no registry row, because a read merges
-> `(cold ∪ warm.adds) \ warm.removes` and an absent Cold tier just makes that merge trivial. Reach for bulk-load
-> when you *already have* the data somewhere else — a warehouse query, a Redis migration, a nightly rebuild — and
-> want it to land as a compact Cold archive instead of paying Warm write costs for the initial load.
+Loading is **the** write path. `bulkLoadCrbmGeneration` consumes a stream of ids, routes each into its chunk's
+bitmap, writes the whole set as one immutable `.crbm` object, and — when you pass a `registry` — publishes it so
+readers see it. Five things to know:
 
-The batch "seed/rebuild" path: build an immutable Cold archive directly from a (possibly huge, unsorted)
-stream of ids with `bulkLoadCrbmGeneration`. It folds ids into per-chunk bitmaps as they stream — input is
-consumed lazily and deduped, so you can pipe a query result or a file of billions of ids through it:
+**Any id source, any order, duplicates welcome.** The input is a sync *or* async iterable, consumed lazily and
+deduplicated on insert. An array, a `Set`, a generator, a file stream, a warehouse cursor:
 
 ```ts
-import {
-  CloudRoaring,
-  bulkLoadCrbmGeneration,
-  LocalFsColdDriver,
-  MemoryWarmDriver,
-} from '@cloudbitmaps/roaring';
-
-const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
-
-// ids can be any sync or async iterable — an array, a generator, a DB cursor, a file stream…
-const res = await bulkLoadCrbmGeneration(cold, { segment: 'active-this-week', generation: 1 }, [
-  1, 2, 3, 1_000_000, 2_000_000_000,
-]);
-console.log(res); // { size, sha256, chunkCount, cardinality }
-
-// Pass the same `cold` driver to the store — it serves that generation as the Cold base (warm deltas merge on top):
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-await store.segment('active-this-week').count(); // → 5
+async function* activeUsers() {
+  for await (const page of warehouse.paginate(query)) for (const row of page) yield row.user_id;
+}
+const ref = { namespace: 'audiences', segment: 'active-30d' };
+const res = await bulkLoadCrbmGeneration(
+  cold,
+  { ...ref, generation: await nextGeneration(ref, { cold, registry }) },
+  activeUsers(),
+  { registry },
+);
+res; // { size, sha256, chunkCount, cardinality } — the object written and what it holds
 ```
 
-> Pick a fresh `generation` number (on an empty segment, start at `0`); with no registry the store serves the
-> **highest** generation present, and re-using an existing one throws `WriteConflictError` (write-once).
-> For a generation you already hold as bitmaps, the lower-level `writeCrbmGeneration(driver, key, chunks)`
-> takes `{ chunkKey, bitmap }` entries directly.
+Memory is bounded by the **distinct set being built** — one compressed bitmap per non-empty chunk — not by the
+input length, so a billion duplicate-heavy ids stream through holding only the distinct result. (The staging
+buffer between input and bitmaps is capped at ~28 MB measured, whatever the key distribution.) It is `O(distinct
+set)`, though, not window-bounded like `intersect`: a load holds the whole generation in RAM, which suits a batch
+job and not a request handler — see [where to run it](#what-blocks-the-event-loop-and-where-to-run-it).
+
+**Generation numbering: take it from `nextGeneration`.** Generations are write-once — reusing a number throws
+`WriteConflictError` — and the number a writer should use next is one above the highest the registry points at
+*or* that is present in the bucket, whichever is higher. `nextGeneration(ref, { cold, registry })` computes exactly
+that (a brand-new segment starts at `0`). The two are both consulted on purpose: a load that wrote its object and
+crashed before publishing leaves an object *above* `currentGen`, and a writer consulting only the pointer would pick
+that same number and conflict on every retry.
+
+**Publish is forward-only, so a rerun is safe.** The object is written first; only once it is durable does
+`publishGeneration` advance the registry pointer — a compare-and-swap that never moves backwards. Run the same job
+twice and the second load is simply a newer identical generation; run two loads concurrently and the higher number
+wins while the other is left as an orphan below the pointer. A publish that finds a newer generation already
+current is a no-op rather than an error.
+
+**A crash never moves the pointer.** If the process dies mid-write, the object never completes (every cold driver
+commits atomically — a rename, a conditional PUT, a multipart complete) and the pointer still names the previous
+generation, which readers keep serving. If it dies between the write and the publish, the object is an orphan the
+next `nextGeneration` skips past and `gcOrphanGenerations` collects ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)).
+There is no half-loaded state a reader can observe: a read resolves one generation and reads whole,
+checksum-verified chunks from it.
+
+**An empty source writes an empty generation — and publishes it.** That is the correct result for a set that is
+genuinely empty, and the wrong one for a warehouse query that returned nothing because it failed upstream. Guard
+for that before you load: the library cannot tell the two apart (an empty guard with rollback is the next thing
+on the roadmap, as part of a higher-level `load()`).
+
+> **Do not load an empty segment "to create it".** A never-loaded segment already answers `count() → 0`,
+> `has(x) → false`, `iterate() → []`; an empty load just costs an object and a registry row you then have to
+> retire.
+
+For a generation you already hold as bitmaps, the lower-level `writeCrbmGeneration(driver, key, chunks)` takes
+`{ chunkKey, bitmap }` entries directly and does **not** publish — call `publishGeneration(registry, key)` after it.
+
+### A load is a batch job, not a request handler
+
+A load is I/O-heavy — it streams the object to the bucket (S3 multipart past one part) — and CPU-heavy in short
+bursts (serializing ~62,000 chunks for a segment spread across the id space). It yields the event loop
+periodically so it is a well-behaved neighbour, and its memory is bounded, but it still burns a core for a
+fraction of a second and holds a whole generation in RAM. Run it from a job runner, a queue consumer, a scheduled
+task or a short-lived container — the process that produced the set is usually the right one — and keep the
+request path for what it is good at: `has`, `count`, `intersect`.
 
 ## 4. Cold on S3 (or any S3-compatible store)
 
@@ -203,117 +220,169 @@ how you configure the client:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
-import { CloudRoaring, MemoryWarmDriver, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { S3ColdDriver } from '@cloudbitmaps/roaring/s3';
+import { CloudRoaring, bulkLoadCrbmGeneration, nextGeneration } from '@cloudbitmaps/roaring';
+import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 
 const client = new S3Client({ region: 'us-east-1' }); // or { endpoint, forcePathStyle: true } for MinIO
 const cold = new S3ColdDriver({ client, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const registry = new S3RegistryDriver({ client, bucket: 'my-bitmaps', prefix: 'cloudroaring' }); // same bucket
 
-// Seed a generation straight to S3, then query it through the engine:
-await bulkLoadCrbmGeneration(cold, { segment: 'active-this-week', generation: 0 }, [1, 2, 3]);
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold }); // raw S3 driver, wrapped for you
-await store.segment('active-this-week').count(); // → 3, read from S3
+// Load a generation straight to S3, then read it through the engine:
+const ref = { segment: 'active-this-week' };
+await bulkLoadCrbmGeneration(cold, { ...ref, generation: await nextGeneration(ref, { cold, registry }) }, ids, {
+  registry,
+});
+const store = new CloudRoaring({ cold, registry }); // raw S3 driver, wrapped for you
+await store.segment('active-this-week').count(); // read from the .crbm index on S3 — no payload GET
 ```
 
 It's the same `IColdDriver` contract as the local-filesystem driver (it passes the identical conformance
 suite), so everything above — reads, `count`, `iterate`, `intersect`, generation pinning — works unchanged.
 Generations are **write-once** (a conditional `If-None-Match:*` PUT; requires a backend that honors it — AWS
-S3 or recent MinIO). Large objects upload via **S3 multipart automatically** (Phase 4f) — write memory stays
+S3 or recent MinIO). Large objects upload via **S3 multipart automatically** — write memory stays
 ~one part (default 8 MiB); the object ceiling defaults to ≈80 GiB and grows via `partBytes` / `maxObjectBytes`
 up to S3's 5 TiB max, with write-once preserved (conditional `CompleteMultipartUpload`).
 
-## 5. Warm tier on DynamoDB
+## 5. The segment registry (resolving the current generation)
 
-For a **live, durable, multi-writer** warm tier (vs the local-filesystem one), pass a `DynamoDbWarmDriver`
-from the **`@cloudbitmaps/roaring/dynamodb`** subpath (`@aws-sdk/client-dynamodb` is an optional peer
-dependency — `npm i @aws-sdk/client-dynamodb`). It gives **real cross-process optimistic concurrency** — concurrent
-writers to the same chunk never lose updates — via DynamoDB conditional writes:
+Each segment is a series of immutable, generation-numbered `.crbm` objects; reads need to know **which
+generation is current**. Without a registry, the store finds it by *listing* every generation and taking the
+max — one storage scan per segment, cleartext only, and read-only. The **registry** replaces that with a single
+authoritative record (`currentGen`) read once, and it is what every write publishes through:
 
 ```ts
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { DynamoDbWarmDriver } from '@cloudbitmaps/roaring/dynamodb';
-import { S3ColdDriver } from '@cloudbitmaps/roaring/s3';
-// …construct an s3 cold driver `cold` as in §4…
+import {
+  CloudRoaring,
+  bulkLoadCrbmGeneration,
+  LocalFsColdDriver,
+  LocalFsRegistryDriver,
+} from '@cloudbitmaps/roaring';
 
-const warm = new DynamoDbWarmDriver({ client: new DynamoDBClient({ region: 'us-east-1' }), tableName: 'cloudbitmaps' });
-const store = new CloudRoaring({ warm, cold });
-await store.segment('active-this-week').add(42); // a conditional, conflict-safe write to DynamoDB
+const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
+const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
+
+// Load a generation AND publish it to the registry in one call:
+await bulkLoadCrbmGeneration(cold, { segment: 'active', generation: 0 }, [1, 2, 3], { registry });
+
+// Pass the raw driver + registry — the store resolves currentGen via the registry (no list-scan):
+const store = new CloudRoaring({ cold, registry });
+await store.segment('active').count(); // → 3, generation resolved from the registry
 ```
 
-The table is a **single table** (`PK = ns#…|seg#…`, `SK = chunk#…`) you provision once with a `(PK, SK)`
-string key schema. An optional `keyPrefix` lets several logical stores share one table. (DynamoDB-Local
-works for development — just point the client's `endpoint` at it.)
+**Read staleness after a publish is bounded.** With a registry wired, a long-running store re-resolves each
+segment's current generation on a short TTL (`coldGenTtlMs`, default **2000 ms**), so reads are **bounded
+eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
+TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
+registry reads (`0` pins the first generation resolved for the store's lifetime). The hot cache is keyed by
+generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
+`intersect` — the generation is resolved **once** and every chunk comes from it, so a load landing mid-call cannot
+tear the result. Without a registry the generation is pinned for the source's lifetime (single-process/local use).
+
+**Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your cold choice; pick
+per deployment:
+
+| Backend | Import | Use for |
+| --- | --- | --- |
+| `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
+| `LocalFsRegistryDriver` | `@cloudbitmaps/roaring` | single node / on-prem |
+| `S3RegistryDriver` | `@cloudbitmaps/roaring/s3` | **the same bucket as your cold data — one store, no second service** |
+| `DynamoDbRegistryDriver` | `@cloudbitmaps/roaring/dynamodb` | many segments republished often (single-digit-ms pointer swaps vs an S3 GET+PUT); GCS / Azure cold |
+
+The **`S3RegistryDriver`** keeps the current-generation pointer as a tiny object in the *same bucket* as your
+Cold data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a deployment runs on
+**S3 only**:
+
+```ts
+import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+
+const cold = new S3ColdDriver({ client: s3, bucket: 'my-bitmaps' });
+const registry = new S3RegistryDriver({ client: s3, bucket: 'my-bitmaps' }); // same bucket, no DynamoDB
+const store = new CloudRoaring({ cold, registry });
+```
+
+> **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
+> MinIO), the IAM principal needs **`s3:ListBucket`** (else a missing key returns `403` not `404`, and
+> discovery can't list), and **don't put a lifecycle-expiration rule on the `registry/` prefix** (deleted rows are
+> tombstoned for the pointer's ABA-safety). DynamoDB is the better fit when pointers move very frequently.
+
+The **DynamoDB** registry is one item per segment in a single table (`PK = ns#…|seg#…`, `SK = reg#`) you provision
+once with a `(PK, SK)` string key schema; an optional `keyPrefix` lets several logical stores share one table, and
+DynamoDB-Local works for development:
+
+```ts
+import { DynamoDbRegistryDriver } from '@cloudbitmaps/roaring/dynamodb';
+const registry = new DynamoDbRegistryDriver({ client: dynamo, tableName: 'cloudbitmaps' });
+```
+
+> **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding cold
+> objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
+> any error it survives to handle, but it cannot abort one whose process no longer exists — a killed container
+> or an OOM leaves the parts behind. Those parts are **billed and invisible**: they never appear in an object
+> listing, so nothing but the bill will tell you. This is the one case where cost can accumulate quietly, which
+> matters more here than it would elsewhere, because a low idle bill is the point of the library.
+
+The record also carries `status` (`active`, or the `destroyed` tombstone a crypto-shred or drop leaves), the
+wrapped data-key(s) of an encrypted segment (§9), and the `retention` policy (§13.5). `currentGen` can be
+**`null`** — a row `setRetention` minted before the first load — which reads exactly like a segment with no row
+and takes the first publish. To publish a generation you wrote yourself, call
+`publishGeneration(registry, { segment, generation })` (forward-only — it never regresses the pointer).
 
 ## Production wiring for the cloud drivers
 
-§4–§5 wired S3 and DynamoDB. The two remaining cloud **cold** drivers — GCS and Azure Blob — follow the same
-shape: construct your own client, hand it to the driver. Both are **tier-only** (no registry): pair them with an S3
-or DynamoDB registry (see [Choosing a registry](#choosing-a-registry)) and a `warm` tier (§5).
+§4–§5 wired S3 and the two cloud registries. The two remaining cloud **cold** drivers — GCS and Azure Blob —
+follow the same shape: construct your own client, hand it to the driver. Both are **cold-only** (no registry): pair
+them with an S3 or DynamoDB registry (see [Choosing a registry](#choosing-a-registry)).
 
 ### GCS cold (`@cloudbitmaps/roaring/gcs`)
 
 ```ts
 import { Storage } from '@google-cloud/storage';
-import { CloudRoaring, MemoryWarmDriver } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsColdDriver } from '@cloudbitmaps/roaring/gcs';
 
 const storage = new Storage(); // ADC; or { apiEndpoint } to point at fake-gcs-server locally
 const cold = new GcsColdDriver({ storage, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold }); // pair a warm tier + registry per §5/§7
+const store = new CloudRoaring({ cold, registry }); // registry: S3 or DynamoDB, per §5
 ```
 
 > **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
-> simple and resumable upload paths). GCS ships **no registry** — pair with an S3 or DynamoDB registry to run
-> compaction (see [Choosing a registry](#choosing-a-registry)).
+> simple and resumable upload paths). GCS ships **no registry** — pair with an S3 or DynamoDB registry.
 
 ### Azure Blob cold (`@cloudbitmaps/roaring/azure`)
 
 ```ts
 import { BlobServiceClient } from '@azure/storage-blob';
-import { CloudRoaring, MemoryWarmDriver } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { AzureBlobColdDriver } from '@cloudbitmaps/roaring/azure';
 
 const containerClient = BlobServiceClient.fromConnectionString(process.env.AZURE_CONN)
   .getContainerClient('bitmaps');
 const cold = new AzureBlobColdDriver({ containerClient, prefix: 'cloudroaring' });
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold }); // pair a warm tier + registry per §5/§7
+const store = new CloudRoaring({ cold, registry }); // registry: S3 or DynamoDB, per §5
 ```
 
 > **Checklist.** Peer `@azure/storage-blob`; inject a container-scoped `ContainerClient`; generations are
-> write-once via `If-None-Match: '*'`. Azure ships **no registry** — pair with an S3 or DynamoDB registry to run
-> compaction.
+> write-once via `If-None-Match: '*'`. Azure ships **no registry** — pair with an S3 or DynamoDB registry.
 
 Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the
 [disaster-recovery runbook](disaster-recovery.md).
 
-> **Read cost knob — `warmReadConsistency`.** Reads (`has`/`count`/`iterate`/`intersect`) are strongly
-> consistent by default (read-your-writes). For a read-heavy, staleness-tolerant workload, set
-> `new CloudRoaring({ warm, cold, warmReadConsistency: 'eventual' })` — warm reads then bill **~½ the DynamoDB
-> RCU** (a strong read costs 2× an eventual one), at the price of read-after-write. The compaction/OCC **write**
-> path stays strongly consistent regardless, so correctness is unaffected; the in-memory/LocalFs drivers ignore
-> it (always strong). **Write throughput knob — `writeConcurrency`** (default **4**): the distinct chunks of a
-> wide `addMany`/`removeMany` are flushed in parallel, each being its own conflict-safe row. Set it to `1` for
-> strictly serial writes, or higher if your backend is provisioned for the fan-out — 4 is chosen to stay well
-> inside what the transient-retry path absorbs when a provisioned-capacity backend throttles the burst.
-
 ## 6. Reliability: retries, backoff & timeouts
 
-Cloud storage throttles, returns 5xx, and drops connections. CloudBitmaps handles that for you: **every
-warm/cold call automatically retries transient faults** (throttling, 5xx, dropped connections, request
-timeouts) with bounded exponential backoff + full jitter. It's **on by default** — you don't have to do
-anything:
+Cloud storage throttles, returns 5xx, and drops connections. CloudBitmaps handles that for you: **every cold
+read automatically retries transient faults** (throttling, 5xx, dropped connections, request timeouts) with
+bounded exponential backoff + full jitter. It's **on by default** — you don't have to do anything:
 
 ```ts
-const store = new CloudRoaring({ warm, cold }); // retries already enabled
+const store = new CloudRoaring({ cold, registry }); // retries already enabled
 ```
 
 Tune it, or turn it off, per store:
 
 ```ts
 const store = new CloudRoaring({
-  warm,
   cold,
+  registry,
   // Tune the policy (these are the defaults):
   retry: { maxAttempts: 4, baseDelayMs: 50, maxDelayMs: 2_000, backoffFactor: 2, jitter: 'full' },
   // …or `retry: false` to disable our wrappers entirely (e.g. your client already retries).
@@ -324,8 +393,8 @@ const store = new CloudRoaring({
 **What's retried vs not.** Only **transient** infrastructure faults are retried — surfaced as
 `TransientError` (with `TimeoutError` a subclass). Deterministic errors are **never** retried (retrying them
 can't help or would be wrong): `ValidationError` (bad input), `IntegrityError` (corrupt bytes),
-`NotFoundError`, and `WriteConflictError` (an optimistic-concurrency conflict, which the engine resolves with
-its own re-read-and-retry loop).
+`NotFoundError`, and `WriteConflictError` (a write-once generation number was reused, or the registry pointer
+was contended past its own re-read-and-retry loop).
 
 **Set a timeout on your client.** CloudBitmaps intentionally has no homegrown timeout (it would abandon
 in-flight requests). Instead, give your injected S3/DynamoDB client a request timeout — the resulting timeout
@@ -333,205 +402,97 @@ is treated as transient and retried:
 
 ```ts
 import { NodeHttpHandler } from '@smithy/node-http-handler';
-const client = new DynamoDBClient({
+const client = new S3Client({
   region: 'us-east-1',
   requestHandler: new NodeHttpHandler({ requestTimeout: 3_000, connectionTimeout: 1_000 }),
 });
 ```
 
-**Your data is safe across a retry.** A write that times out *after* it committed is detected on retry (the
-OCC token has advanced → a clean `WriteConflictError`, never a double-apply); cold generations are write-once
-(no half-written object a reader could pick up); and all bytes are checksum-verified before use. So a
-transient outage costs you latency, not correctness.
+**Your data is safe across a retry.** Generations are write-once (no half-written object a reader could pick
+up); the publish is a compare-and-swap that is idempotent and forward-only (a retried publish can never regress
+the pointer or double-apply); and all bytes are checksum-verified before use. So a transient outage costs you
+latency, not correctness. The lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, …) run over the
+raw drivers **without** the retry wrapper on purpose — a one-shot admin operation surfaces a transient fault to
+its caller (as a ledger entry or a throw) rather than retrying under the hood.
 
 > Writing your own driver? Throw `TransientError` for your backend's retryable faults and the shared retry
-> layer handles the rest — or wrap any driver yourself with `RetryingWarmDriver` / `RetryingColdChunkSource`
-> / `RetryingColdDriver`. The low-level `withRetry(op, policy, { clock, rng })` primitive is exported too.
+> layer handles the rest — or wrap any driver yourself with `RetryingColdChunkSource` / `RetryingColdDriver` /
+> `RetryingRegistryDriver`. The low-level `withRetry(op, policy, { clock, rng })` primitive is exported too.
 
-## 7. The segment registry (resolving the current generation)
+## 7. Materializing: the `*Into` verbs
 
-Each segment's Cold tier is a series of immutable, generation-numbered `.crbm` objects; reads need to know
-**which generation is current**. Without a registry, the store finds it by *listing* every generation and
-taking the max — one storage scan per segment. The **registry** replaces that with a single authoritative
-record (`currentGen`) you read once:
+The three combines each have a materializing twin — `intersectInto`, `unionInto`, `andNotInto` — that writes the
+result as a **new generation of a destination segment** instead of streaming it to you:
 
 ```ts
-import {
-  CloudRoaring,
-  MemoryWarmDriver,
-  bulkLoadCrbmGeneration,
-  LocalFsColdDriver,
-  LocalFsRegistryDriver,
-} from '@cloudbitmaps/roaring';
+const shoppers = store.segment('high-value-shoppers');
+const active = store.segment('active-this-week');
+const optedOut = store.segment('global-opt-out');
 
-const cold = new LocalFsColdDriver('./.cloudbitmaps/cold');
-const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
-
-// Seed a generation AND publish it to the registry in one call:
-await bulkLoadCrbmGeneration(cold, { segment: 'active', generation: 0 }, [1, 2, 3], { registry });
-
-// Pass the raw driver + registry — the store resolves currentGen via the registry (no list-scan):
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry });
-await store.segment('active').count(); // → 3, generation resolved from the registry
+const res = await shoppers.intersectInto(store.segment('campaign-targets'), [active], {
+  exclude: [optedOut],
+});
+res; // { generation, cardinality, chunkCount, size } — what was written
 ```
 
-The `registry` is **optional**: omit it and the store falls back to the list-scan (so the in-memory and
-simple local setups keep working with no registry). **With a registry, a long-running store picks up a
-newly-compacted generation automatically**: it re-resolves the current generation on a short TTL
-(`coldGenTtlMs`, default **2000 ms**), so reads are **bounded eventually-consistent** — after a background
-compaction commits a new generation, a reader may see the prior one for up to the TTL, then converges (tune it
-down for fresher reads, up to trade a little staleness for fewer registry reads). Without a registry the
-generation is pinned for the source's lifetime (single-process/local use — no separate process to cause drift).
-For production, use the **DynamoDB** registry (co-located with your warm rows in the same table):
+Three properties, all consequences of "a write is a load":
+
+- **The destination is superseded, not added to.** `campaign-targets` now holds exactly this result; whatever it
+  held before is the previous generation. Re-running a window into the same target each day is therefore correct
+  — each run is a fresh generation — and there is no accumulating-window hazard.
+- **Readers of the destination see the old generation or the new one, never a partial.** The result streams into
+  one immutable object under a bounded memory window (`concurrency × operands × chunk`), and the pointer moves
+  only once the object is durable.
+- **It deletes nothing.** The destination's previous generation stays in the bucket until you collect it — see
+  [§8](#8-generation-bookkeeping-what-a-load-leaves-behind).
+
+An empty result publishes an empty generation. The verbs need the store built with a raw cold driver **and** a
+registry (they publish through it) and throw `UnsupportedError` otherwise. To suppress the result of an
+intersection, pass `exclude` to `intersectInto` rather than materializing a temp segment and then `andNotInto` —
+the suppression folds into the same chunk-aligned pass and each exclude is read only where the intersection
+survived.
+
+## 8. Generation bookkeeping: what a load leaves behind
+
+Cold objects are immutable and generation-keyed, so **every load, every `*Into`, every erasure rewrite leaves its
+predecessor in the bucket**, still billed. Reads are unaffected — the pointer always names a live object — so the
+only symptom of never collecting them is a storage bill that never goes down. Something has to delete them, and
+in a library with no background process that something is a call you make:
 
 ```ts
-import { DynamoDbRegistryDriver } from '@cloudbitmaps/roaring/dynamodb';
-const registry = new DynamoDbRegistryDriver({ client: dynamo, tableName: 'cloudbitmaps' });
+import { gcOrphanGenerations } from '@cloudbitmaps/roaring';
+
+// After a successful load: delete every generation below the current one, keeping the newest 1 as a grace window.
+const deleted = await gcOrphanGenerations(ref, { cold, registry }, { keep: 1 });
 ```
 
-**Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your warm/cold
-choice; pick per deployment:
+What it does, precisely: deletes generations **strictly below `currentGen`**, keeping the most recent `keep` of
+them (default `1`) so a reader pinned to the just-superseded generation is not cut off mid-call. It never touches
+the current generation or anything above it (a load that is mid-write), and it deletes nothing while
+`currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an orphan, and
+the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred tombstone)
+**every** generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
 
-| Backend | Import | Use for |
-| --- | --- | --- |
-| `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
-| `LocalFsRegistryDriver` | `@cloudbitmaps/roaring` | single node / on-prem |
-| `DynamoDbRegistryDriver` | `@cloudbitmaps/roaring/dynamodb` | write-heavy (co-locate with warm in one table) |
-| `S3RegistryDriver` | `@cloudbitmaps/roaring/s3` | **read-mostly on S3 alone — no DynamoDB** |
+Who calls it today:
 
-The **`S3RegistryDriver`** keeps the current-generation pointer as a tiny object in the *same bucket* as your
-Cold data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a read-mostly
-deployment runs on **S3 only**:
-
-```ts
-import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
-
-const cold = new S3ColdDriver({ client: s3, bucket: 'my-bitmaps' });
-const registry = new S3RegistryDriver({ client: s3, bucket: 'my-bitmaps' }); // same bucket, no DynamoDB
-const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry });
-```
-
-> **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
-> MinIO), the IAM principal needs **`s3:ListBucket`** (else a missing key returns `403` not `404`, and
-> discovery can't list), and **don't put a lifecycle-expiration rule on the `registry/` prefix** (erase
-> tombstones must persist for the pointer's ABA-safety). DynamoDB is the better fit when writes are frequent
-> (single-digit-ms swaps vs an S3 GET+PUT). **Infra scales with the workload** — read-mostly needs only S3.
-
-> **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding cold
-> objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
-> any error it survives to handle, but it cannot abort one whose process no longer exists — a killed container
-> or an OOM leaves the parts behind. Those parts are **billed and invisible**: they never appear in an object
-> listing, so nothing but the bill will tell you. This is the one case where cost can accumulate quietly, which
-> matters more here than it would elsewhere, because a low idle bill is the point of the library.
-
-The record also reserves `status`, `dirtyChunkCount` (compaction discovery), and a wrapped-DEK `keyId` slot
-(encryption) — populated by compaction and crypto-shred in later phases. To publish a generation
-you wrote yourself, call `publishGeneration(registry, { segment, generation })` (forward-only — it never
-regresses the pointer).
-
-## 8. Compaction: keeping the warm tier small
-
-Every `add`/`remove` lands in a **warm** delta row. **Compaction** folds those deltas into a fresh immutable
-**cold** generation and clears the warm rows. It's a separate background process (it never slows your app path),
-and it's **crash-safe**: a 2-phase commit means a write that lands mid-compaction is never lost, and a crash at
-any step recovers cleanly on the next run.
-
-### Do you actually need it?
-
-**Not for correctness — never.** A read always merges `(cold ∪ warm.adds) \ warm.removes`, so a segment that has
-never been compacted answers `has` / `count` / `iterate` / `intersect` exactly as correctly as one that has. If
-you skip compaction forever, your answers stay right.
-
-Nor does read cost grow with the number of writes, which an earlier version of this section got wrong. There is
-**one delta row per 65,536-id chunk**, not one per write: 20 rounds of 1,000 `addMany` ids leaves **one** row, and
-`has()` reads one row per chunk however many rounds produced it. What grows is that row's *size*, not the count.
-
-What compaction actually buys you:
-
-| | Why |
+| Path | Collects? |
 |---|---|
-| **Storage price** | Warm is DynamoDB/Redis-priced; Cold is S3-priced — 10–100× cheaper per byte. A long-lived segment wants its steady state in Cold. |
-| **Smaller rewrites** | Once the bulk is in Cold, the Warm row holds only the recent delta, so each write re-serializes a small blob instead of a large one. This compounds: see the write-shape table in [Coming from Redis bitmaps?](#coming-from-redis-bitmaps) |
-| **Free `count()`** | A compacted segment with no Warm deltas counts straight from the `.crbm` index — **zero payload reads**. A warm-only segment must fetch and merge every chunk. |
+| your load job, after `bulkLoadCrbmGeneration` or an `*Into` | **you** — call `gcOrphanGenerations` on your own cadence (right after the load, or a nightly pass) |
+| `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call |
+| `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
+| `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
-So: **skip it** for a write-once dated bucket that you retire with `dropSegment` (a dedup wave, a daily sent-list)
-— that data never reaches a steady state worth moving. **Run it** for a long-lived, continuously-updated segment,
-which is where all three columns above start to matter.
+> **Picking `keep`.** `1` is the safe default: a reader that resolved the previous generation just before your
+> publish can still finish its call. If the swept generation *is* pulled out from under a reader (`keep: 0`, or a
+> long-running call), the cold source catches the `NotFoundError`, re-resolves to the current generation and
+> retries the read once — the query serves the newer, committed generation rather than failing. That is a
+> monotonic move forward, never a torn object; but it is a re-read you can avoid by leaving the grace window on.
 
-Whether you call `store.compact()` in-process or schedule `runCompactionCycle`, both collect the generation they
-supersede — see the caveat at the end of this section.
-
-Nothing here schedules itself: you wire a tiny handler (so compaction uses *your* S3/DynamoDB clients) and run it
-from whatever already runs things for you — the two deploy modes are just "call once" vs "call on an interval":
-
-```ts
-import { runCompactionCycle, CountingMetricsSink } from '@cloudbitmaps/roaring';
-import { S3ColdDriver } from '@cloudbitmaps/roaring/s3';
-import { DynamoDbWarmDriver, DynamoDbRegistryDriver } from '@cloudbitmaps/roaring/dynamodb';
-
-const metrics = new CountingMetricsSink(); // or your own IMetricsSink → CloudWatch / StatsD
-const deps = {
-  cold: new S3ColdDriver({ client: s3, bucket: 'my-bitmaps' }),
-  warm: new DynamoDbWarmDriver({ client: dynamo, tableName: 'cloudbitmaps' }),
-  registry: new DynamoDbRegistryDriver({ client: dynamo, tableName: 'cloudbitmaps' }),
-  clock: { now: () => Date.now() },
-  metrics, // ← wire a sink to receive the per-attempt `compaction` metric (gap #2)
-};
-
-// Lambda handler (once) — or wrap in setInterval for a long-running worker:
-export const handler = async (_event: unknown, context: { awsRequestId: string }) => {
-  const cycle = await runCompactionCycle(deps, { owner: `lambda:${context.awsRequestId}`, keep: 1 });
-  // cycle = { candidates, compacted, deferred, results }; metrics.snapshot().compaction has the counters.
-  return { ...cycle, compaction: metrics.snapshot().compaction };
-};
-```
-
-It discovers segments that have accumulated enough warm deltas, compacts each under a per-segment **lease**
-(so multiple workers don't duplicate work), and garbage-collects superseded cold generations (keeping a small
-grace window for in-flight readers). To compact a single segment directly, call
-`compactSegment(ref, deps, { owner })`.
-
-> ### ⚠️ Who collects the old generations
->
-> Cold objects are immutable and generation-keyed, so **every compaction leaves its predecessor on disk.**
-> Something has to delete them, and which "something" depends on how you compact:
->
-> | You call | Old generations collected? |
-> |---|---|
-> | `runCompactionCycle` (the scheduled pass above) | **Yes** — it calls `gcOrphanGenerations` each cycle |
-> | `store.compact(ref, { owner })` (in-process facade) | **Yes**, best-effort after a successful commit, with the same `keep: 1` grace window |
-> | `compactSegment(ref, deps, { owner })` (free function) | **No.** It is a single-responsibility primitive — call `gcOrphanGenerations(ref, { cold, registry }, { keep })` yourself |
->
-> `store.compact` did **not** collect them in earlier releases (see the `CHANGELOG`), so a deployment that compacted in-process without
-> a scheduled `runCompactionCycle` accumulated `.crbm` objects indefinitely. Reads stayed correct the whole time — `currentGen`
-> always pointed at a live object — so the only symptom was a storage bill that never went down. If that describes
-> your deployment, one `gcOrphanGenerations` pass per segment reclaims the backlog.
-
-**Running a fleet of workers.** To scale past one worker, run N workers and give each a disjoint **shard**: pass
-`shard: i` / `totalShards: N` (or a `shards` set) to `runCompactionCycle`. Segments are partitioned by a stable hash of their name — the shards are disjoint and
-together cover the whole fleet, so no two workers ever drain or compact the same segment and no coordination is
-needed. (Each worker still enumerates the registry to find its shard, so the segment-**listing** cost stays
-proportional to the whole fleet per worker; sharding divides the expensive Warm drain and the compaction work,
-not the initial listing. An indexed enumeration that would divide the listing too is on the roadmap.)
-`maxSegments` caps the **compaction** work per cycle: the most-backed-up segments
-(most dirty chunks first, oldest-compacted as the tiebreak) are compacted and the rest deferred to the next
-cycle, so a burst on a few segments can't starve the tail. `runCompactionCycle` returns
-`{ candidates, compacted, deferred, results }` for logging or alarming on a cycle's own throughput.
-
-**Staying healthy.** A segment whose compaction keeps failing (say, one corrupt warm row) is **quarantined**
-after a few consecutive failures and skipped until a cooldown passes, then retried once — one poison segment
-can't wedge the worker or burn money on endless retries, and a success clears the streak. If you wire an
-`IMetricsSink` into your deps (as the handler above does), every attempt emits a `compaction` metric (committed /
-no-op / error, dirty-chunk count, rows purged, ms); either way, every commit stamps `lastCompactedAt` on the
-registry record and each cycle logs its `{ candidates, compacted, deferred }` summary — a **dead-man's-switch**
-to alarm on ("nothing compacted in the last hour" ⇒ the worker is stuck or not running).
-
-> **Picking up a new generation:** with a `registry` wired (see above), a `CrbmColdChunkSource` re-resolves the
-> current generation on a short TTL (`coldGenTtlMs`, default 2000 ms) and keys its HOT cache by generation, so a
-> long-running reader converges to a freshly-compacted generation within the TTL — no restart needed. Without a
-> registry it pins its generation for the source's lifetime (single-process/local use). (If GC sweeps the exact
-> generation a reader pinned while it's mid-read, the source detects it and re-resolves to the current generation
-> rather than failing — so compaction's cleanup never breaks an in-flight query.)
+**Read staleness, restated for the whole picture.** With a registry, a store notices a new generation within
+`coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a stale decoded chunk
+for a new generation. Within one read op the generation is resolved once. A `count()` is a single index read, so
+it is always internally consistent; a long `intersect` that straddles a TTL boundary *and* a publish may read its
+remaining chunks from the newer generation — whole and verified, never torn.
 
 ## 9. Encryption at rest + crypto-shred
 
@@ -539,15 +500,15 @@ Encrypt the Cold `.crbm` objects so a leaked bucket reveals **neither ids nor ca
 chunk index are encrypted; the object's segment name + generation are still visible in its key, and its byte
 size still implies a rough upper bound on size — no padding), and support **crypto-shred** — GDPR "right to
 erasure" that works even on immutable/backed-up storage. Encryption is **opt-in**: pass a *keystore* and it's
-on; omit it and everything stays cleartext (today's behaviour).
+on; omit it and everything stays cleartext.
 
 You hold one root key — a **KEK** (32 bytes) — and bring it yourself (BYOK); there's **no required cloud
 dependency**. Each segment gets its own random **DEK** that's wrapped under your KEK and stored in the registry;
-the Cold chunks + index are AES-256-GCM-encrypted with the DEK.
+the Cold chunks + index are AES-256-GCM-encrypted with the DEK, under an AAD bound to `(segment, generation)`.
 
 ```ts
 import { CloudRoaring, InProcessKeystore, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { LocalFsColdDriver, LocalFsWarmDriver, LocalFsRegistryDriver } from '@cloudbitmaps/roaring';
+import { LocalFsColdDriver, LocalFsRegistryDriver } from '@cloudbitmaps/roaring';
 
 // Your KEK(s) — load from your secrets manager; keyId-aware so you can rotate without re-encrypting data.
 const keystore = new InProcessKeystore({
@@ -556,25 +517,36 @@ const keystore = new InProcessKeystore({
   // recoveryKeyId: 'offline-escrow',         // optional: also wrap under an offline recovery KEK
 });
 
-const cold = new LocalFsColdDriver('./.cloudroaring');
-const registry = new LocalFsRegistryDriver('./.cloudroaring');
+const cold = new LocalFsColdDriver('./.cloudroaring/cold');
+const registry = new LocalFsRegistryDriver('./.cloudroaring/registry');
 
-// Seed encrypted (the DEK is minted + wrapped into the registry on first write):
+// Load encrypted (the DEK is minted + wrapped into the registry on the first publish; later loads reuse it):
 await bulkLoadCrbmGeneration(cold, { segment: 'pii', generation: 0 }, ids, { registry, keystore });
 
 // Read encrypted — pass the raw driver + registry + keystore; the store unwraps the DEK and decrypts transparently:
-const store = new CloudRoaring({
-  warm: new LocalFsWarmDriver('./.cloudroaring'),
-  cold,
-  registry,
-  keystore,
-});
+const store = new CloudRoaring({ cold, registry, keystore });
 await store.segment('pii').count(); // works; without the keystore this throws KeyUnavailableError
 ```
 
-Pass the **same `keystore`** to your compaction deps (`runCompactionCycle`/`compactSegment`) so compaction can
-reuse the segment's DEK. To enforce encryption everywhere, set `requireEncryption: true` (on the store config,
-on `bulkLoadCrbmGeneration`, and on the compaction deps) — any cleartext write/read then throws.
+Every later write to that segment reuses its DEK: a reload through `bulkLoadCrbmGeneration` (pass the keystore —
+loading a cleartext generation onto an encrypted segment is refused with `KeyUnavailableError`, because that
+would let a later crypto-shred over-attest), an `*Into` verb on a store wired with the keystore, and the erasure
+rewrite. To enforce encryption everywhere, set `requireEncryption: true` (on the store config, on
+`bulkLoadCrbmGeneration`, and on `eraseIdFromSegment`'s deps) — any cleartext write/read then throws.
+
+**A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
+does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
+with `requireEncryption: true` it is refused with a `ValidationError` rather than silently downgraded. The reason
+is that one segment cannot be half-encrypted — a reader pinned to a superseded cleartext generation would find
+bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
+while the older cleartext objects stay readable from any of them. The same rule from the other side: publishing
+an encrypted generation onto a segment whose row carries no key material is refused, because the only two silent
+outcomes are an unreadable generation or an over-attesting audit trail.
+
+So **to encrypt data that is already stored, load it into a new segment with the keystore wired and drop the old
+one** (`dropSegment`, or `destroySegment` if the old segment was itself encrypted). This matters because a
+keystore is wired on the *store*, so it is in scope for every segment that store touches — including the ones
+you meant to leave cleartext.
 
 ### Crypto-shred (erase a segment / namespace)
 
@@ -582,14 +554,17 @@ on `bulkLoadCrbmGeneration`, and on the compaction deps) — any cleartext write
 import { destroySegment, eraseNamespace } from '@cloudbitmaps/roaring';
 
 // Irreversible — you must name the exact segment as confirmation:
-await destroySegment({ segment: 'pii' }, { registry, warm }, { confirmSegment: 'pii' });
+await destroySegment({ segment: 'pii' }, { registry }, { confirmSegment: 'pii' });
 // or a whole namespace:
-await eraseNamespace('tenant-42', { registry, warm }, { confirmNamespace: 'tenant-42' });
+await eraseNamespace('tenant-42', { registry }, { confirmNamespace: 'tenant-42' });
 ```
 
-This deletes the segment's wrapped DEK from the registry (a `destroyed` audit tombstone) and clears its Warm
-rows. The encrypted Cold objects are left in place — but with the key gone they're **permanently unreadable,
-everywhere, including backups**. The segment then reads as empty.
+This deletes the segment's wrapped DEK from the registry (a `destroyed` tombstone). The encrypted Cold objects
+are left in place — but with the key gone they're **permanently unreadable, everywhere, including backups**. The
+segment then reads as empty, and the tombstone is a fence: `bulkLoadCrbmGeneration` and `publishGeneration`
+refuse a destroyed segment, so a load racing an erasure cannot resurrect it. To also reclaim the storage, use
+`dropSegment` ([§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt)), which crypto-shreds an
+encrypted segment *and* deletes its objects.
 
 ### ⚠️ Read this before you turn on encryption — key management
 
@@ -599,7 +574,7 @@ everywhere, including backups**. The segment then reads as empty.
 - **If you lose every KEK for a segment, its at-rest bytes are gone — by design.** There is no backdoor (that's
   the whole point — a leaked bucket has no backdoor either). This is also what makes crypto-shred *work*.
 - **But it's usually not catastrophic:** CloudBitmaps segments are almost always **derived data** (audience /
-  membership sets built from your primary datastore), so a lost KEK means **re-seed the segment from source**
+  membership sets built from your primary datastore), so a lost KEK means **reload the segment from source**
   (`bulkLoadCrbmGeneration`), not permanent business-data loss.
 - **Rotate, don't lose.** Add a new KEK, point `activeKeyId` at it, and **keep the old KEK** — old segments keep
   decrypting with no data re-encryption. Use a **recovery KEK** (kept offline) so losing the active one isn't
@@ -609,27 +584,37 @@ everywhere, including backups**. The segment then reads as empty.
 
 ## 10. Observability: metrics
 
-CloudBitmaps can report what it's doing — cold GETs and bytes, warm reads/writes, cache hit rate, retries,
-intersection efficiency, and op latency — through an optional **metrics sink**. It's **off by default** (a
-no-op — emission is skipped entirely when unused); pass one and the library pushes typed events to it:
+CloudBitmaps can report what it's doing — cold GETs and bytes, cache hit rate, retries, intersection efficiency,
+and op latency — through an optional **metrics sink**. It's **off by default** (a no-op — emission is skipped
+entirely when unused); pass one and the library pushes typed events to it:
 
 ```ts
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 
 const metrics = new CountingMetricsSink(); // a ready-made tally sink
-const store = new CloudRoaring({ warm, cold, metrics });
+const store = new CloudRoaring({ cold, registry, metrics });
 
 await store.segment('users').has(42);
 console.log(metrics.snapshot());
-// { cold: { gets, bytes, totalMs }, warm: {…}, cache: { hits, misses }, retries: {…}, intersect: {…}, ops: {…} }
+// { cold: { gets, bytes, totalMs }, cache: { hits, misses }, retries: { transient },
+//   intersect: { calls, fetchedChunks, skippedChunks }, ops: { has, count, intersectInto, unionInto, andNotInto } }
 ```
 
-The library emits **vendor-neutral events** (`cold.get`, `cache`, `warm.read`, `warm.write`, `retry`,
-`intersect`, `op`) so it isn't coupled to any telemetry system — you map the handful you care about. A quick
-look in dev is one line:
+The library emits **vendor-neutral events** — five kinds — so it isn't coupled to any telemetry system; you map
+the handful you care about:
+
+| Event | Carries | Fired |
+| --- | --- | --- |
+| `cold.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Cold (a hot-cache miss) |
+| `cache` | `hit` | every hot-cache lookup |
+| `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
+| `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
+| `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
+
+A quick look in dev is one line:
 
 ```ts
-const store = new CloudRoaring({ warm, cold, metrics: { onEvent: (e) => console.log(e) } });
+const store = new CloudRoaring({ cold, registry, metrics: { onEvent: (e) => console.log(e) } });
 ```
 
 **OpenTelemetry** (or Datadog, CloudWatch, …) is a ~12-line adapter you write — CloudBitmaps adds no telemetry
@@ -642,8 +627,8 @@ const coldBytes = meter.createCounter('cloudroaring.cold.bytes');
 const cacheHits = meter.createCounter('cloudroaring.cache.hits');
 
 const store = new CloudRoaring({
-  warm,
   cold,
+  registry,
   metrics: {
     onEvent(e) {
       if (e.kind === 'cold.get') coldBytes.add(e.bytes); // NB: see the label caveat below
@@ -655,7 +640,7 @@ const store = new CloudRoaring({
 ```
 
 Events carry **raw observations** (bytes, counts, ms); turning those into dollars is the cost estimator's job
-(shipped in Phase 5b — see [§11 below](#11-cost-estimate-it-then-ground-it) and the usage guide §12). Two things to keep in mind:
+(see [§11 below](#11-cost-estimate-it-then-ground-it)). Two things to keep in mind:
 
 - **`onEvent` runs synchronously on the I/O path** — keep it cheap and non-blocking; offload batching or
   network calls to your own async queue.
@@ -664,12 +649,14 @@ Events carry **raw observations** (bytes, counts, ms); turning those into dollar
   bucket, or scrub inside the sink instead). Events never contain bitmap contents or ids — only names, counts,
   bytes, and timings.
 
-A sink that throws can never break a read or write — its exceptions are swallowed (best-effort).
+A sink that throws can never break a read — its exceptions are swallowed (best-effort).
 
 ## 11. Cost: estimate it, then ground it
 
 CloudBitmaps can tell you what a workload *will* cost — and, uniquely, what your **real** segments *are*
 costing — because the library owns the storage + cache, so it can ground estimates no external calculator can.
+The model has four terms and no per-id write: object-store **GETs** for point reads and for intersection chunk
+fetches, object-store **PUTs** for loads, and **storage**.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
@@ -678,12 +665,19 @@ import { CloudRoaring } from '@cloudbitmaps/roaring';
 
 const report = CloudRoaring.estimateCost({
   segments: [{ sizeBytes: 1.2e9 }], // or { cardinality } / { count }
-  workload: { readsPerSec: 200, writesPerSec: 5, cacheHitRate: 0.8 },
-  topology: 'B',
+  workload: {
+    readsPerSec: 200, // point reads; each cache miss is one GET
+    cacheHitRate: 0.8, // hits are free
+    intersectsPerSec: 1,
+    chunksPerIntersect: 10, // the chunk-skipping survivors
+    loadsPerMonth: 30, // one refresh a day…
+    requestsPerLoad: 3, // …as a small multipart upload
+  },
 });
-report.monthlyUSD.total; // ≈ 92 — ~$66 writes + ~$26 reads + a few cents storage, vs $346 flat Redis
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈10.5, storage: ≈0.03, loads: ≈0.0005 }
+report.monthlyUSD.total; // ≈ 53 — vs $346 flat Redis-HA
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
-report.redisCrossover; // { writesPerSec: ~26, readsPerSec: ~2633 } — at THIS report's 80% cache-hit rate
+report.redisCrossover.readsPerSec; // ≈ 1,646 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
 ```
 
 **Grounded** (real sizes from the `.crbm` index — exact, no payload reads):
@@ -695,72 +689,25 @@ const report = await store.segment('active-us').costReport({
 report.assumptions.grounded; // true — storage is this segment's real, measured size
 ```
 
-Rates are a pluggable `PricingProfile` (default `aws-us-east-1-ondemand`, from the fact-checked research);
-override it for your region/cloud, or model a **provisioned** Warm tier (`wruPerMillion: 0`) to watch the write
-crossover disappear. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
-lists the model's simplifications (S3→same-region egress free; request cost from your supplied workload rates —
-deriving it from live metrics is a later refinement).
+Rates are a pluggable `PricingProfile` — `{ name, cold: { getPerMillion, putPerMillion, storagePerGiBMonth },
+redis: { monthlyUSD } }`, default `aws-us-east-1-ondemand` from the fact-checked published pricing; override it
+for your region/cloud. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
+lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
+deriving it from live metrics is a later refinement; and, when you leave `loadsPerMonth` unset, that **loads are
+not modeled** — disclosed rather than silently under-counted).
 
-### Past the write crossover
+### The read crossover
 
-`redisCrossover.writesPerSec` is where the metered bill overtakes a flat node. It is not a ceiling on the
-library — it is a property of **four inputs**, three of which default to their worst plausible value so the
-published figure cannot flatter us, and two of which remove the crossover entirely:
+`redisCrossover.readsPerSec` is the sustained point-read rate at which pay-per-use GETs alone cost more than the
+flat always-on baseline. It is not a ceiling on the library — it is a property of two inputs:
 
 | Input | Default | Change it and |
 | --- | --- | --- |
-| `avgItemKiB` | `8` | DynamoDB bills writes per KiB **rounded up**, so an 8 KiB chunk is 8 write units, not 1. Narrower delta rows move the crossover by the same factor. |
-| `cacheHitRate` | `0` | Every read is billed. A working hot cache moves the *read* crossover by the reciprocal of the miss rate. |
-| `pricing.warm.wruPerMillion` | on-demand | Set it to `0` and you have modelled a **provisioned or flat** Warm tier. `writesPerSec` returns `Infinity` — there is no per-request meter left to cross. |
-| `topology` | `'B'` | `'A'` takes writes by bulk-load, so it carries **no per-op write charge at all**. `writesPerSec` returns `Infinity`. |
+| `cacheHitRate` | `0` | Every read is billed. A working hot cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` (it never crosses). |
+| `pricing.cold.getPerMillion` | `$0.40` | Your region's or your committed rate; the formula is the spec, the rate is yours. |
 
-A flat Warm tier is provisioned DynamoDB capacity, or any store you wrap in the `IWarmDriver` contract on an
-instance you already run. A warm store holds only recent chunk deltas while the corpus stays in Cold object
-storage, so it is sized for your write rate rather than for your whole history. You keep tiering and chunk-skipping and stop paying per request; what you give up is the one property
-a flat tier cannot have, which is costing nothing while idle.
-
-Watch also for the `batchable-writes` advisory — it fires when the modelled write count far exceeds the number
-of distinct Warm rows the data can occupy, which means the same row is being rewritten repeatedly and
-`addMany()` would collapse it.
-
-> **Model compaction — the usually-dominant cost.** Compaction re-reads a segment's whole Cold generation each
-> cycle, so it often dwarfs live traffic. Set `workload.compactionsPerMonth` to fold it in (with
-> `chunksPerCompaction`, default = the modeled cold set's chunk count, and an optional `dirtyChunksPerCompaction`
-> for the Warm-purge term); it shows up as `monthlyUSD.byOp.compaction`. Left unset it stays `0`, but the report
-> **discloses** the omission in `assumptions.notes` rather than quietly under-counting.
-
-### `advisories` — is this cheaper than it needs to be?
-
-`verdict` only ever compares you to the flat Redis baseline. That leaves a blind spot: a workload can beat Redis
-by 40× and still be paying ~100× more than **this same library** would charge for the same outcome — and the
-verdict calls that `win-big` and says nothing. `report.advisories` closes it.
-
-```ts
-const report = CloudRoaring.estimateCost({
-  segments: [{ cardinality: 10_000_000 }],
-  workload: { writesPerSec: 4 }, // ~10M writes/month, one id at a time
-  topology: 'B',
-});
-
-report.verdict; // 'win' — still far under the $346 flat baseline
-for (const a of report.advisories) {
-  console.warn(a.code, a.message); // 'batchable-writes' — each Warm row rewritten ~150x
-  a.currentUSD; // what the write term costs as modeled
-  a.batchedFloorUSD; // the floor if those ids were batched one-write-per-chunk
-}
-```
-
-- **`advisories` is always an array** — empty in the normal case, so you can iterate unconditionally.
-- **Branch on `code`, not the message.** `'batchable-writes'` is the stable identity; the message carries the
-  numbers that triggered it and is safe to log verbatim.
-- **`batchedFloorUSD` is a floor, not a promise.** It assumes perfect batching into one write per chunk. Real
-  batching lands somewhere between it and `currentUSD`, depending on how your ids actually arrive — which the
-  estimator can't know.
-- **It never changes the dollar figures**, only comments on them.
-- **A hit is a prompt to check, not an accusation.** If those ids genuinely arrive one at a time — real-time
-  qualification — then `add()` is the correct path and that is simply what it costs. The advisory fires on the
-  *shape*; only you know the arrival pattern. See
-  [picking the write path](../../README.md#picking-the-write-path).
+Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month is
+about $0.51. The term exists so the report can say so rather than assume it.
 
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
 Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the
@@ -770,12 +717,12 @@ numbers can never drift ahead of reality.
 
 Separate from metrics — which reports *volume* (bytes, latency, hit rate) — the **audit sink** records the
 handful of **compliance-relevant state changes** an auditor cares about: when a segment's data was published,
-compacted, or **erased**. It's the natural feed for an append-only audit log / SIEM, and doubles as your
+**rewritten**, or **erased**. It's the natural feed for an append-only audit log / SIEM, and doubles as your
 GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it's an injected `IAuditSink`, it's
 **off by default** (a no-op), and a throwing sink can never break the operation it observes.
 
 Unlike metrics, audit isn't a store-constructor option — the events fire from the **lifecycle operations**
-(compaction, bulk-load, erasure), which are separate entry points, so you pass `audit` to each:
+(a load, an erasure, a drop, the retention sweep), which are separate entry points, so you pass `audit` to each:
 
 ```ts
 import { RecordingAuditSink, bulkLoadCrbmGeneration, destroySegment } from '@cloudbitmaps/roaring';
@@ -784,22 +731,26 @@ const audit = new RecordingAuditSink(); // a ready-made in-memory recorder (or b
 
 // A generation is published (the segment is encrypted — a keystore is wired, see §9):
 await bulkLoadCrbmGeneration(cold, { segment: 'users', generation: 0 }, ids, { registry, keystore, audit });
-// A GDPR erasure (crypto-shred — the key wrappings are dropped):
-await destroySegment({ segment: 'users' }, deps, { confirmSegment: 'users', audit });
+// A subject erasure — a rewrite of the current generation without one id:
+await store.eraseSubject(userId, { namespace: 'eu', audit });
+// A GDPR crypto-shred — the key wrappings are dropped:
+await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit });
 
 audit.snapshot();
 // [ { kind: 'segment.publish', segment: 'users', generation: 0 },
+//   { kind: 'segment.rewrite', namespace: 'eu', segment: '…', fromGeneration: 4, generation: 5 },
 //   { kind: 'segment.erase',   segment: 'users' } ]
 // (segment.erase fires only for an ENCRYPTED segment — a cleartext tombstone leaves the bytes readable.)
 ```
 
-The events are **vendor-neutral** — four kinds, all carrying the segment/namespace name:
+The events are **vendor-neutral** — five kinds, all carrying the segment/namespace name:
 
 | Event | Fired when | Extra fields |
 | --- | --- | --- |
-| `segment.publish` | a bulk-load makes a generation the current one (needs a `registry`; not on a forward-only no-op) | `generation` |
-| `segment.compact` | compaction **commits** a new generation (at the commit, before the Warm purge) | `generation` |
+| `segment.publish` | a load makes a generation the current one (needs a `registry`; not on a forward-only no-op) | `generation` |
+| `segment.rewrite` | a generation derived from the segment itself became current in place of `fromGeneration` — today, an erasure rewrite (`eraseSubject` / `eraseIdFromSegment`), emitted at the publish, before the superseded generation is collected | `fromGeneration`, `generation` |
 | `segment.erase` | a **genuine crypto-shred** — not the idempotent re-run, and not a cleartext tombstone (bytes stay readable) | — |
+| `segment.dispose` | `dropSegment` tombstoned a segment and swept its storage — the weaker, storage-reclamation attestation; an encrypted drop emits **both** this and `segment.erase` | `generationsDeleted` |
 | `namespace.erase` | `eraseNamespace` runs; also one `segment.erase` per segment actually shredded | `segmentsShredded` |
 
 Same two caveats as metrics apply: **`onEvent` runs synchronously** on the operation (keep it cheap; offload
@@ -818,9 +769,10 @@ For a worked example that routes metrics, cost, and audit to real dashboards, se
 
 Two admin helpers answer "what do you hold about this person?" and "forget this person everywhere." Both scan
 the **registered** segments (no reverse index — nothing taxes the hot path), so they're complete over what's
-registered and cost `O(registered segments)` per call. The scan fans out at a **bounded `concurrency`** (default
-8; pass `{ concurrency }`) — parallel enough to stay quick over a large fleet, bounded so it can't stampede your
-backend; `eraseSubject` isolates a per-segment fault so one bad segment never aborts the ledger.
+registered — every loaded segment has a row, so wire the registry the loads used — and cost `O(registered
+segments)` per call. The scan fans out at a **bounded `concurrency`** (default 8; pass `{ concurrency }`) —
+parallel enough to stay quick over a large fleet, bounded so it can't stampede your backend; `eraseSubject`
+isolates a per-segment fault so one bad segment never aborts the ledger.
 
 **Scope is explicit.** Ids live in one **global u32 space shared across namespaces**, so a namespace-less call is
 a *fleet-wide* sweep over every tenant. To keep that from being the accidental default, both helpers require
@@ -830,31 +782,45 @@ with neither throws `ValidationError`.
 ```ts
 // Art. 15 — which segments is this id in? (scope to one tenant)
 const report = await store.subjectReport(userId, { namespace: 'eu' });
-report.segments; // [{ segment, namespace }, …]
+report.segments; // [{ segment, namespace }, …]   report.scannedSegments — the completeness denominator
 
 // Art. 17 — remove the id everywhere, across all tenants (explicit fleet-wide ack)
-const ledger = await store.eraseSubject(userId, { allNamespaces: true, owner: 'privacy-worker' });
-ledger.erasedFrom; // [{ segment, namespace, removed: true, physicallyPurged: true, toGen }, …]
+const ledger = await store.eraseSubject(userId, { allNamespaces: true, audit });
+ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, generation: 5 }, …]
 ```
 
-Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
-built with a raw cold driver + a `registry` (it force-compacts); `subjectReport` needs only a `registry` (it just
-enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a pre-built-`ColdChunkSource`
-store can't run `eraseSubject` (use the `compactSegment` free function out-of-process). `eraseSubject` writes a
-logical `remove` **and force-compacts** each affected segment on the spot, so the bit is physically gone from Cold
-on return — even for an idle/archival segment a scheduled compaction would never revisit. The returned `erasedFrom` list is
-your **erasure ledger** (proof of deletion) — a return value only, so persist it or route it to your audit sink.
-One caveat: don't concurrently re-add the id while erasing it. A `physicallyPurged: false` entry means the
-logical removal held but the physical purge didn't run this call — a live compaction lease (`note: 'leased-by-other'`,
-that compaction finishes it) or an isolated fault (`note: 'error: …'`, per-segment faults are caught so one segment
-can't discard the whole ledger); **recover it with `store.compact(ref)`** (re-running `eraseSubject` won't — a
-written tombstone makes `has()` read false, so the segment is skipped). For whole-segment / whole-tenant erasure,
-use crypto-shred (`destroySegment` / `eraseNamespace`, §9) — the only erasure that survives immutable backups.
-See [`PRIVACY.md`](../../PRIVACY.md).
+**An erasure is a rewrite.** There is no per-id delete on an immutable object and no mutable tier to hold a
+tombstone, so `eraseSubject` does what every other write in the library does: for each registered segment the id
+is a member of, it streams the current generation through — every chunk copied, the one chunk holding the id
+re-encoded with that bit cleared — verifies the new object, publishes it forward-only, and then **deletes the
+generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit is physically gone from the
+bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
-> **Compact on demand.** `await store.compact({ segment, namespace }, { owner: 'worker' })` folds a segment's
-> Warm deltas into a fresh Cold generation in-process (same drivers, same `UnsupportedError` requirement) — a
-> one-shot alternative to a scheduled `runCompactionCycle` for occasional/manual compaction.
+Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
+built with a raw cold driver + a `registry` (it writes generations); `subjectReport` needs only a `registry` (it
+just enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a
+pre-built-`ColdChunkSource` store can't run `eraseSubject`; use the `eraseIdFromSegment(ref, id, { cold, registry,
+keystore? })` free function out-of-process instead. The returned `erasedFrom` list is your **erasure ledger**
+(proof of deletion) — a return value only, so persist it or route it to your audit sink (a `segment.rewrite` event
+is also emitted per rewrite when you pass `audit`).
+
+**An `erased: false` entry means the id is still there**, and `note` says why:
+
+- `'superseded'` — a load published a newer generation of that segment while the rewrite was in flight; the
+  rewrite was written but not made current (forward-only). Re-run against the new generation.
+- `` `error: <message>` `` — an isolated per-segment fault (a transient cold fault, a missing keystore for an
+  encrypted segment). Fix it and re-run.
+
+Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. **One contract the
+library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite
+carries whatever its source held, and the library cannot know that source was meant to exclude the id — quiesce
+loads of the affected segments for the duration, or fix the source first and load after. A load that lands
+*during* the rewrite is caught (`'superseded'`).
+
+**What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
+their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred
+(`destroySegment` / `eraseNamespace`, §9) — which is per segment: a per-**id** shred is infeasible because one DEK
+covers the whole segment. See [`PRIVACY.md`](../../PRIVACY.md).
 
 ## 13.5 Retention, TTL and pruning — what exists and what doesn't
 
@@ -871,17 +837,6 @@ whole shape of this section:
 
 If you arrived here asking "does it support TTL?", the answer is: **for a segment, yes; for an id, no, by design.**
 
-> ⚠️ **Never enable your backend's native row expiry on the Warm table.** DynamoDB TTL, or any external cleanup
-> job — either will **silently lose writes.**
->
-> Warm rows are **un-compacted deltas**: the `adds` and `removes` that have not yet been folded into a Cold
-> generation. Compaction is what durably applies them, and it purges them itself, version-fenced. If the
-> backend deletes a Warm row first, those adds and removes are simply gone — and the next read returns the
-> Cold generation *without* them. **No error is raised**; the answer is just quietly wrong.
->
-> "The Warm table is growing, I'll put a TTL on it" is a reasonable instinct and a data-loss bug. The correct
-> answer to a growing Warm table is **run compaction more often** — that is precisely what it is for.
-
 ### Why there is no per-id TTL
 
 A bitmap stores **ids, not `(id, timestamp)` pairs.** Expiring individual ids means keeping a timestamp
@@ -892,13 +847,16 @@ than a plain list. So per-id aging isn't deferred work, it's incompatible with t
 ### The pattern that gives you the same outcome
 
 Put time in the **name** instead of in the data, and let set algebra do the window. Use a **namespace per
-family and the date as the segment** — not one long name:
+family and the date as the segment** — not one long name — and load one bucket per day:
 
 ```ts
 const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' });
 
-// Write into a bucket per day.
-await bucket(today).addMany(idsSeenToday);
+// Load today's bucket — a generation, from wherever today's ids come from.
+const ref = { namespace: 'active-daily', segment: today };
+await bulkLoadCrbmGeneration(cold, { ...ref, generation: await nextGeneration(ref, { cold, registry }) }, idsSeenToday, {
+  registry,
+});
 
 // "Active in the last 7 days" — a union over the buckets you still keep.
 const [head, ...rest] = last7Days.map(bucket);
@@ -914,40 +872,19 @@ for await (const id of head.union(rest)) { /* … */ }
 > `active-2026-08-01` is legal too, but then finding "every daily bucket" means string-matching names.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
-[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window — but
-**materialize it into a fresh dated target, not a reused one**:
+[the operations table](#the-operations). If a 7-way union per read is too much, materialize the window with
+`unionInto` — into a dated target, or into one rolling target; either is correct, because an `*Into` verb
+**supersedes** its destination rather than adding to it, so a rolling `active-7d` re-materialized each day holds
+exactly that day's window:
 
 ```ts
-// Right: today's window is its own segment, and yesterday's is dropped when it ages out.
-const window = store.segment(`w-${today}`, { namespace: 'active-7d' });
-await days[0].unionInto(window, days.slice(1));
+const window = store.segment('active-7d', { namespace: 'windows' });
+await days[0].unionInto(window, days.slice(1)); // window's previous generation is superseded, not merged into
 ```
 
-> ⚠️ **`unionInto` is purely additive — it never clears the destination.** Re-using one rolling `active-7d`
-> segment day after day therefore *accumulates*: union `{07-01, 07-02}` then `{07-02, 07-03}` into the same
-> target and you get `{07-01, 07-02, 07-03}`. The set grows monotonically and **silently stops being a 7-day
-> window**, with no error. An earlier revision of this guide recommended exactly that; it was wrong.
-
-**The best case for this pattern is a dedup or "already sent" window, where the bucket key _is_ the
-semantics.** Suppose you send a daily wave and a user must not be sent to twice in the same local day. Then the
-key is the window:
-
-```ts
-// The bucket IS the re-eligibility rule. `sent-daily` groups the family; the date names the bucket.
-const sent = store.segment(localDay, { namespace: 'sent-daily' });
-if (await sent.has(userId)) return; // already sent today
-await sent.add(userId);
-```
-
-There is **no per-user expiry bookkeeping at all** — no timers, no sweep, no 9-million-entry TTL table. A user
-becomes re-eligible the instant the wave moves to tomorrow's key, because tomorrow's segment is a different,
-empty set. A tighter guard (a nightly wave needing ~10 minutes of protection) is still satisfied by a day-scoped
-bucket, so the coarser key is usually the right one.
-
-Reach for a genuine rolling window — *"sent in the last 4 hours"*, exactly — only when the approximation
-actually matters. Then it is `remove`/`removeMany` aging individual ids out on a sweep, which is a real
-tombstone write per id and costs accordingly. Dated buckets are cheaper, simpler and sufficient for anything
-whose window is naturally a calendar boundary.
+Loading a bucket a day is the natural shape for a "seen this period" set: today's bucket is a different, empty set
+until you load it, and the union is your window. A genuine rolling window — *"seen in the last 4 hours"*, exactly
+— is a smaller bucket, loaded more often; there is no per-id write to age individual ids out with.
 
 ### Pruning a segment today — and the honest limits
 
@@ -957,76 +894,19 @@ you have recorded a policy. Four levers exist, and they answer different questio
 | | what it does | when |
 |---|---|---|
 | **`store.retireExpired({ … })`** | enumerates the registry and retires every segment whose recorded `expiresAt` has passed, **through `dropSegment`**. Bounded, previewable, returns a per-segment ledger. You schedule it | **a policy-driven rolling window** — the usual answer, [below](#the-sweep--storeretireexpired) |
-| **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, deletes its **Warm** rows, deletes its Cold generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
-| `destroySegment(ref, { registry, warm }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Cold bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
-| `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming compaction garbage, not live data |
+| **`store.dropSegment(ref, { confirmSegment })`** | tombstones the segment, then deletes its Cold generations (re-swept, with any residual reported in `generationsRemaining`). Works on a cleartext segment; on an encrypted one it *also* discards the DEK, so it is a strict superset there. Afterwards the segment **reads as empty** — see the caveat below | **retiring a bucket and reclaiming the storage** |
+| `destroySegment(ref, { registry }, { confirmSegment })` | **crypto-shred**: discards the DEK so the Cold bytes are unreadable *everywhere including backups and WORM* — but leaves the objects in your bucket, still billed. **Requires encryption** (no key, nothing to shred) | erasure that must reach immutable copies |
+| `gcOrphanGenerations(ref, { cold, registry }, { keep })` | deletes only **superseded** generations, keeping `keep` as a reader grace window | reclaiming what loads leave behind ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind)), not live data |
 
 Deleting an object does not reach a noncurrent version, a cross-region replica, or a PITR snapshot; discarding
 the key does. So if your requirement is *"the data must become unreadable"* rather than *"stop paying for it"*,
 encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted segment gives you both at once.
 
-### The accumulator pattern — a segment as a pure runtime set
-
-The shape a dedup or sent-list workload actually wants: create it by writing to it, accumulate during a wave,
-retire it when the window closes. **No seed, no warehouse export, no compaction, no scheduled job.**
-
-```ts
-// Nothing to create. Writing to it IS creating it — no registry row exists yet and none is needed.
-const ref = { namespace: 'sent-daily', segment: '2026-08-05' };
-const sent = store.segment(ref.segment, { namespace: ref.namespace });
-
-// Dedup with claimMany, not has()+add(): it returns only the ids THIS worker won, so two workers
-// racing the same recipient cannot both send. has() then add() has a window between them.
-const toSend = await sent.claimMany(candidateIds);
-for (const id of toSend) enqueue(id);
-
-// When the window closes:
-const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
-// → { dropped: true, reason: 'warm-only', warmRowsDeleted: 138, generationsDeleted: [] }
-```
-
-**Do not do this**, even though it looks harmless:
-
-```ts
-await bulkLoadCrbmGeneration(cold, { ...ref, generation: 0 }, [], { registry }); // ← pointless
-```
-
-An empty seed writes a real `.crbm` object and publishes a registry row, so you pay for an object and a row per
-wave for a segment that had no data — and then have to clean both up. A never-touched segment already answers
-`count() → 0`, `has(x) → false`, `iterate() → []` without throwing.
-
-**Reading the result of a retirement.** Branch on `dropped`; use `reason` to understand *how*:
-
-| `dropped` | `reason` | Meaning |
-|---|---|---|
-| `true` | `'warm-only'` | An accumulator was retired — Warm rows cleared, no tombstone written (and none wanted: a `destroyed` row per retired daily bucket would be registry litter). **Only for a segment with no registry row** — see the note below |
-| `true` | `undefined` | An ordinary drop — tombstone written, Cold generations swept |
-| `true` | `'already'` | Already tombstoned. **Not** a no-op: it also clears Warm rows that landed after the tombstone |
-| `false` | `'absent'` | **Nothing existed.** The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
-
-> **Upgrading from an older release?** A successful `'warm-only'` retirement used to be reported as
-> `{ dropped: false, reason: 'absent' }` with a non-zero `warmRowsDeleted` — see the fix in the
-> [CHANGELOG](../../CHANGELOG.md). A cron written as `if (!res.dropped) alert()` fired on every success; if you
-> wrote that workaround, `dropped` is now the field to trust.
-
-> **`'warm-only'` stops appearing once you set a retention policy on the segment**, and the reason is worth
-> knowing before you key monitoring on it. `setRetention` mints a registry row (that is what makes the segment
-> enumerable, and therefore sweepable), so a later `dropSegment` takes the ordinary row-bearing path instead: you
-> get `dropped: true` with `reason: undefined` and a `destroyed` tombstone, not `'warm-only'`. Nothing is lost —
-> `dropped` still answers "is this segment empty as a result of this call?" — and `retireExpired` cleans that
-> tombstone up for you. But an alert written as `if (res.reason !== 'warm-only') alarm()` would start firing the
-> day you adopt retention, which is why `dropped` is the field to branch on and `reason` is for understanding.
-
-**⚠️ And never put a native row TTL on the Warm table.** No DynamoDB TTL, no Redis `EXPIRE`, no Mongo TTL index.
-Warm rows are **un-compacted deltas**, so expiring them discards adds and removes that were never folded into
-Cold. In accumulator mode this is worse than anywhere else, because *everything* you have is Warm — a Warm TTL
-silently deletes the entire dataset with no error at all. Retire the segment, not the rows.
-
 ### Retiring a bucket
 
 `store.dropSegment` needs the store built with a **raw cold driver + a registry** (it has to enumerate and
-delete generations, which a pre-built `ColdChunkSource` cannot do) — the same requirement as `compact` and
-`eraseSubject` in §13. Without it you get an `UnsupportedError`.
+delete generations, which a pre-built `ColdChunkSource` cannot do) — the same requirement as `eraseSubject` in
+§13. Without it you get an `UnsupportedError`.
 
 ```ts
 // The namespace is part of the identity. Omit it and you address a DIFFERENT segment, and the call is a
@@ -1035,16 +915,23 @@ const ref = { namespace: 'active-daily', segment: oldDay };
 
 // Look before you leap — reports the generations it WOULD delete, changes nothing.
 const preview = await store.dropSegment(ref, { confirmSegment: ref.segment, dryRun: true });
-// `wouldDelete` is unbounded — it lists every generation still in Cold, and a segment compacted repeatedly
-// without a scheduled compaction's generation GC accumulates them. Log the count and a sample, not the whole array.
+// `wouldDelete` is unbounded — it lists every generation still in Cold, and a segment reloaded daily without a
+// `gcOrphanGenerations` pass accumulates them. Log the count and a sample, not the whole array.
 const gens = preview.wouldDelete ?? [];
 console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join(', ')}${gens.length > 10 ? ' …' : ''}`);
 
 // Then do it.
 const result = await store.dropSegment(ref, { confirmSegment: ref.segment });
-// → { dropped: true, warmRowsDeleted: 140, generationsDeleted: [0, 1],
-//      generationsRemaining: [], cryptoShredded: false }
+// → { dropped: true, generationsDeleted: [0, 1], generationsRemaining: [], cryptoShredded: false }
 ```
+
+**Reading the result.** Branch on `dropped`; use `reason` to understand *how*:
+
+| `dropped` | `reason` | Meaning |
+|---|---|---|
+| `true` | `undefined` | An ordinary drop — tombstone written, Cold generations swept |
+| `true` | `'already'` | Already tombstoned. **Not** a no-op: it re-sweeps Cold, so it is how a residual in `generationsRemaining` is collected |
+| `false` | `'absent'` | **Nothing existed** — no row and no objects. The one case to alert on — usually a mistyped name or an omitted `namespace`, both of which address a *different* segment than you meant |
 
 Then the whole retention job is a loop, and the dangerous part is inside the library — though if the cutoff is a
 property of the *segment* rather than of your code, [`setRetention` + `retireExpired`](#recording-the-expiry-on-the-segment-itself)
@@ -1055,9 +942,9 @@ for await (const rec of registry.list('active-daily')) {
   if (rec.segment >= cutoffDay) continue;              // ISO dates sort lexicographically
   const ref = { namespace: rec.namespace, segment: rec.segment };
   const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
-  // Non-empty means bytes survived — a compaction already in flight staged one more object after the
-  // tombstone. The segment reads as empty either way, so this is a billing leak, not a correctness one;
-  // re-run to collect it (a scheduled compaction also will).
+  // Non-empty means bytes survived — a load that was already writing when the tombstone landed finished its
+  // object. The segment reads as empty either way, so this is a billing leak, not a correctness one; re-run
+  // to collect it (the retention sweep also will, for a tombstoned segment).
   if (res.generationsRemaining.length > 0) {
     console.warn(`${ref.segment}: ${res.generationsRemaining.length} generation(s) not reclaimed`);
   }
@@ -1070,28 +957,28 @@ would take; a retention bug you can read in a log is worth more than one you fin
 
 ### Why the order inside it matters, and why you should not hand-roll it
 
-`dropSegment` does Warm → registry → Cold, and each position is load-bearing:
+`dropSegment` does registry → Cold, and each position is load-bearing:
 
-1. **Warm first.** A tombstoned segment reads Cold as empty, but Warm is consulted *separately and earlier*, so
-   a tombstone with live Warm deltas would still answer `true` for ids in those deltas.
-2. **Registry second.** After the tombstone nothing resolves a generation, so no reader can reach for bytes
-   about to disappear.
-3. **Cold last, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
+1. **Registry first.** After the tombstone nothing resolves a generation, so no reader can reach for bytes about
+   to disappear — and no writer can publish onto it: `bulkLoadCrbmGeneration` and `publishGeneration` both refuse
+   a `destroyed` row, so a load racing the drop cannot resurrect the segment.
+2. **Cold second, best-effort, and swept more than once.** Once the pointer is a tombstone the segment reads as
    empty and is *correct*, so a failure part-way through leaks **bytes, not correctness** — and re-running
-   collects the remainder. The sweep repeats because a compaction that was already in flight when the tombstone
-   landed still finishes *staging* a generation, built from data it read beforehand: its commit fails on the
-   voided lease, but the object survives and holds the full effective set. **Check `generationsRemaining`** —
-   non-empty means bytes are still there and the drop should be repeated. A scheduled compaction also
-   collects them, since `gcOrphanGenerations` takes every generation of a tombstoned segment.
+   collects the remainder. The sweep repeats (up to three passes) because a load that was already writing its
+   object when the tombstone landed still finishes the write: its publish is then refused, but the object
+   survives and holds the complete set. **Check `generationsRemaining`** — non-empty means bytes are still there
+   and the drop should be repeated. The retention sweep also collects them, since `gcOrphanGenerations` takes
+   every generation of a tombstoned segment.
 
 Two limits worth knowing before you automate it:
 
-- **Writes must have stopped.** Nothing prevents a Warm write *after* step 1. The drop makes a second Warm pass
-  after the tombstone, which converges for anything in flight — but a writer that keeps writing keeps
-  resurrecting the segment, and compaction will not reap those rows (it refuses a destroyed segment).
-- **"Reads as empty" needs a clock.** The `coldGenTtlMs` bound below applies to a reader whose cold source has a
+- **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
+  `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
+  tombstone (below), or use a fresh dated name — which is the pattern anyway.
+- **"Reads as empty" needs a clock.** The `coldGenTtlMs` bound applies to a reader whose cold source has a
   clock, a registry, *and* a positive TTL. Built without a clock, or with `coldGenTtlMs: 0` ("pin forever"), a
-  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely.
+  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely —
+  restart it.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
 > the registry still points at them, which is exactly the state
@@ -1115,26 +1002,26 @@ writer**, who is the only one who actually knows what the segment means:
 const DAY = 86_400_000;
 const ref = { namespace: 'active-daily', segment: today };
 
-await bucket(today).addMany(idsSeenToday);
-await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY });
+await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // before or after the load — either works
+await bulkLoadCrbmGeneration(cold, { ...ref, generation: await nextGeneration(ref, { cold, registry }) }, idsSeenToday, {
+  registry,
+});
 ```
 
 That is **one registry write, and nothing else happens.** Nothing is deleted, and no timer starts — the sweep
 that acts on the policy is a separate call you schedule (below). Call it once when you create the bucket, not on
-every write; it is idempotent, so re-running is harmless, but it is a write.
+every load; it is idempotent, so re-running is harmless, but it is a write.
 
 **Why an absolute instant rather than `retentionDays`.** A duration has to be measured from *something*, and
-every anchor the library could use is wrong. `updatedAt` and `currentGen` are both rewritten by compaction, so
-"expire 30 days after the last write" would push a busy bucket's expiry forward on every cycle — the segment
-would stay alive precisely *because* compaction was keeping it cheap. The writer computes the instant; the
+every anchor the library could use is wrong. `updatedAt` and `currentGen` are both rewritten by every load, so
+"expire 30 days after the last write" would push a daily-reloaded bucket's expiry forward on every refresh — the
+segment would stay alive precisely *because* it is being kept fresh. The writer computes the instant; the
 library stores it verbatim and never moves it.
 
-**On an accumulator this also makes the segment visible.** A segment you created by writing to it has no
-registry row at all, so `registry.list()` cannot see it — and neither can any fleet-wide operation, including the
-sweep. `setRetention` mints the row (the result says `createdRow: true`) with **no Cold generation**, which is
-what keeps reads identical: generation resolution takes the same path it takes for a segment with no row, Cold
-contributes nothing, and the Warm delta alone answers. This is the whole reason the accumulator pattern can have
-retention at all.
+**It works before the first load.** A segment with no registry row yet gets one (the result says `createdRow:
+true`) with **no Cold generation** (`currentGen: null`), so the policy is recorded ahead of the data and the
+segment is already enumerable by the sweep; the first load then publishes onto that row. Reads are unaffected —
+a pointer-less row resolves exactly like a segment with no row.
 
 Two guards worth knowing:
 
@@ -1160,13 +1047,13 @@ into the setter as a magic value is how a typo becomes a deletion.
 ### The sweep — `store.retireExpired()`
 
 A policy is inert until something acts on it. `retireExpired` enumerates the registry, selects the segments whose
-`expiresAt` has passed, and retires each one **through `dropSegment`** — so the Warm → registry → Cold ordering,
-the re-sweep for a generation staged by an in-flight compaction, and the `generationsRemaining` report all come
-from one implementation instead of two.
+`expiresAt` has passed, and retires each one **through `dropSegment`** — so the registry → Cold ordering, the
+re-sweep for an object a load was still writing, and the `generationsRemaining` report all come from one
+implementation instead of two.
 
 ```ts
 const swept = await store.retireExpired({ namespace: 'active-daily' });
-// → { scanned, eligible, retired, tombstonesPurged, limited, dryRun, entries }
+// → { scanned, eligible, retired, wouldRetire, tombstonesPurged, limited, dryRun, entries }
 ```
 
 **It is a call, not a daemon.** Nothing in this library schedules itself, and that is a deliberate limit rather
@@ -1180,21 +1067,21 @@ a correct answer:
 | **Kubernetes** | a `CronJob` |
 | **ECS / Fargate** | a scheduled task |
 | **A plain VM / container** | `cron` calling a one-shot script |
-| **A job queue you already have** | a recurring job |
+| **A job queue you already have** | a recurring job — the one that runs your loads is a natural home |
 
 > ⚠️ **Run the sweep from ONE process, or shard it.** N replicas each running the full sweep would contend over
 > the same segments. Either call `retireExpired` from a job that runs once (a `CronJob`), or give each replica a
-> disjoint slice with `shards` / `totalShards` — the same stable hash compaction discovery uses.
+> disjoint slice with `shards` / `totalShards` — a stable hash of the segment key, so a worker owns the same slice
+> across restarts.
 
 **Once a day is enough** for daily buckets — retention windows are measured in days, so an hourly sweep just
 re-scans the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you
-want the deletion to feel.
-
-Keep the sweep on **its own schedule**, not compaction's: a compaction loop might tick every 30 s, and sweeping at
-that cadence would re-scan the whole registry 2,880 times a day — on DynamoDB a billed full-table Scan each time,
-competing with your hot path for read capacity. It is a **separate job after** compaction, not part of it:
-compaction's job is to make a segment cheap, retirement's is to delete it, and a destructive step running implicitly
-inside a maintenance cycle is the wrong default.
+want the deletion to feel. On DynamoDB a fleet scan is a billed full-table `Scan`, and on S3 a `LIST` — the
+default `'fleet'` scan costs what the fleet *holds*; `scan: 'index'` reads only the due buckets of the **due
+index** and costs what is *expiring*. The index is a fast path, not the source of truth: each candidate's live
+row is re-read before anything is decided, and a policy written before the index existed has no pointer, so run
+the `'fleet'` scan periodically as the repair pass (`lookbackBuckets`, default 7, is how many past days a fast
+scan also reads so a sweep that did not run leaves nothing stranded).
 
 **Start with `dryRun`.** In a loop `dropSegment`'s `confirmSegment` guard protects nothing (it is the same
 variable twice), so the sweep-level preview is the real safety net:
@@ -1219,12 +1106,12 @@ for (const e of swept.entries) {
 if (swept.limited) scheduleAnotherPassSoon(); // more are still eligible
 ```
 
-**Two bounds worth setting deliberately.** Retirements are **sequential** — roughly 8 round trips each, so at a
-15 ms RTT the default `limit` of 100 is about 22 s of wall clock, comfortably inside a Lambda. `limit` is therefore
-a *time* knob as much as a safety one: raising it to 5,000 after a backlog is ~18 minutes and will time out
-mid-sweep (harmlessly — re-run). And `maxScanSegments` (default 250,000) caps how many registry rows one sweep
-holds resident; past it the call throws `BudgetExceededError` rather than half-sweeping, because a scan that cannot
-fit is not a partial result to be mistaken for a complete one. Narrow with `namespace` before raising it.
+**Two bounds worth setting deliberately.** Retirements are **sequential** — several round trips each, so the
+default `limit` of 100 is comfortably inside a Lambda; `limit` is therefore a *time* knob as much as a safety one,
+and raising it by orders of magnitude after a backlog will time out mid-sweep (harmlessly — re-run). And
+`maxScanSegments` (default 250,000) caps how many registry rows one sweep holds resident; past it the call throws
+`BudgetExceededError` rather than half-sweeping, because a scan that cannot fit is not a partial result to be
+mistaken for a complete one. Narrow with `namespace` before raising it.
 
 Every `skipped` reason is worth an alert, for a different reason:
 
@@ -1232,19 +1119,19 @@ Every `skipped` reason is worth an alert, for a different reason:
   probably believes it is.
 - **`limit`** — eligible, but this cycle's cap (default **100**) was spent; `limited: true` says the same at the
   top level. That cap is what stands between a bad `expiresAt` backfill (or clock skew) and a retired fleet, so it
-  defers rather than drops — re-run to continue.
+  defers rather than drops — re-run to continue. The cap is charged on **attempts**, not successes, so a partial
+  Cold outage cannot march through the fleet with the cap never engaging.
 - **`policy-changed`** — the live row no longer says "expired": a `clearRetention`, a new `expiresAt`, or someone
   else's drop landed between the enumeration and this segment's turn. **Not an error** — the sweep re-reads the
   authoritative row immediately before every deletion, precisely so cancelling an expiry works on a sweep that is
   already running.
 - **`tombstone-not-empty`** — see below.
-- **`failed: …`** — that one segment's retirement threw. Note that `dropSegment` clears Warm and writes the
-  tombstone *before* the Cold sweep, deliberately, so a fault there leaks **bytes, not correctness**; re-running
-  collects them, and so does a scheduled compaction.
+- **`failed: …`** — that one segment's retirement threw. Note that `dropSegment` writes the tombstone *before* the
+  Cold sweep, deliberately, so a fault there leaks **bytes, not correctness**; a fault *after* the tombstone landed
+  is reported as `retired` with a `fault`, because that segment really is retired. Re-running collects the bytes.
 
-**Tombstones are purged, narrowly.** A retired segment that had a registry row leaves a `destroyed` row behind,
-and one dead row per retired daily bucket accumulates forever — the same registry litter `dropSegment` already
-refuses to create for a row-less accumulator. The sweep deletes those rows too, but only when all three hold,
+**Tombstones are purged, narrowly.** A retired segment leaves a `destroyed` row behind, and one dead row per
+retired daily bucket accumulates forever. The sweep deletes those rows too, but only when all three hold,
 because deleting the row is what makes the name writable again:
 
 1. the row carries the **sweep's own retirement stamp**. This is a positive marker `retireExpired` writes on the
@@ -1254,13 +1141,12 @@ because deleting the row is what makes the name writable again:
    expired policy**. Deleting that row would destroy the local attestation for an Art. 17 execution and un-fence
    the name. A marker cannot be forged that way, so a `destroyed` row the sweep did not create is never touched;
 2. a **grace period** has passed since that stamp (default 24 h). While the row exists every writer refuses the
-   segment, and that is what stops an in-flight write from resurrecting it;
-3. Warm **and** Cold are provably empty for it. If Cold still holds a straggler generation — a compaction that was
-   staging when the tombstone landed — the sweep **collects it first** (`gcOrphanGenerations` takes every
-   generation of a destroyed row, and nothing else would ever call it for a tombstoned segment), then purges. Only
-   if the storage still cannot be proven gone does the row stay, with `tombstone-not-empty`: without it
-   `gcOrphanGenerations` can no longer see the segment at all, and live Warm deltas would read as a fresh
-   accumulator holding exactly the ids the retirement was meant to remove.
+   segment, and that is what stops an in-flight load from resurrecting it;
+3. Cold is provably empty for it. If Cold still holds a straggler generation — a load that was writing when the
+   tombstone landed — the sweep **collects it first** (`gcOrphanGenerations` takes every generation of a destroyed
+   row, and nothing else would ever call it for a tombstoned segment), then purges. Only if the storage still
+   cannot be proven gone does the row stay, with `tombstone-not-empty`: without the row `gcOrphanGenerations` can
+   no longer see the segment at all, and the objects would be billed forever.
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
@@ -1269,9 +1155,9 @@ and one option whose zero is the opposite of another's is a trap for whoever tun
 
 ## 14. Export / eject your data
 
-Your data isn't locked in. `store.exportSegments(sink, options)` dumps **every registered segment's current effective
-set** (tier-merged) through an injected sink, using only public read APIs — so it's readable **without
-CloudBitmaps**. Two formats:
+Your data isn't locked in. `store.exportSegments(sink, options)` dumps **every registered segment's current
+generation** through an injected sink, using only public read APIs — so it's readable **without CloudBitmaps**.
+Two formats:
 
 - `roaring` (default) — one **portable RoaringBitmap32** per segment (`<segment>.roaring`), loadable by any
   roaring library (Java/Go/Python/Rust/C++/…).
@@ -1286,7 +1172,7 @@ re-run). It exits non-zero if any segment couldn't be read (see _fault isolation
 CR_EXPORT_ROOT=./.cloudroaring CR_EXPORT_OUT=./dump npx export-segments
 # → dump/manifest.json + dump/<namespace|_default>/<segment>.roaring   (CR_EXPORT_FORMAT=ndjson for .ndjson)
 # CR_EXPORT_NAMESPACE=eu             scope the dump to one namespace
-# CR_EXPORT_SEGMENTS=live,eu/vips    also export all-warm segments not yet in the registry (see below)
+# CR_EXPORT_ROOT holds the local-filesystem store: <root>/cold and <root>/registry
 ```
 
 In-process (any store with a registry), with your own sink (an fs writer, an S3 upload, stdout, a test buffer):
@@ -1296,7 +1182,7 @@ import type { ExportSink } from '@cloudbitmaps/roaring';
 const mySink: ExportSink = /* your sink: open(ref, ext) → { write, close, abort? } */;
 const manifest = await store.exportSegments(mySink, {
   format: 'roaring', // or 'ndjson'
-  candidates: [{ segment: 'live' }], // optional: include all-warm segments not yet in the registry
+  namespace: 'eu', // optional: scope to one namespace
 });
 // manifest: { version, format, totalSegments, totalIds,
 //             segments: [{ segment, namespace?, count, bytes }],
@@ -1313,14 +1199,11 @@ const { RoaringBitmap32, DeserializationFormat } = roaring;
 const ids = RoaringBitmap32.deserialize(readFileSync('dump/_default/vips.roaring'), DeserializationFormat.portable).toArray();
 ```
 
-Notes: `exportSegments` needs a `registry` (throws `UnsupportedError` otherwise); warm deltas are folded into the
-exported set; encrypted segments are **decrypted** transparently if the store has the keystore — so the export is
-**cleartext** (protect it). Crypto-shredded segments are skipped.
-
-**Warm-only segments.** Enumeration is the registry's known set — segments with a committed cold generation. A
-brand-new segment written only via real-time `add()`/`remove()` (never compacted) isn't in the registry yet, so
-it's **not** exported unless you name it in `candidates` (CLI: `CR_EXPORT_SEGMENTS`) or compact/bulk-load it once
-first. (This mirrors compaction discovery's contract.)
+Notes: `exportSegments` needs a `registry` (throws `UnsupportedError` otherwise). Enumeration is the registry's
+known set, and **every loaded segment has a row** — the publish writes it — so the registry is complete by
+construction; a segment loaded *without* a registry is not exportable here (wire the registry the loads used).
+Encrypted segments are **decrypted** transparently if the store has the keystore — so the export is **cleartext**
+(protect it). Crypto-shredded segments are skipped.
 
 **Fault isolation.** A segment that can't be read — a corrupt cold object, or an encrypted segment when the store
 has no keystore (the CLI wires none, so it can't decrypt those) — is recorded in the manifest's `failed[]` and the
@@ -1330,23 +1213,23 @@ also exits non-zero when it's non-empty).
 
 Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
 disappeared — export to a **fresh directory** for a clean dump. For a *current* dump, run against a freshly-built
-store (a store's cold source pins each segment's generation for its lifetime — the CLI builds a fresh store per
-run); for a *consistent* dump across segments, quiesce writes or export from a read-only replica. This is also a
-building block for a **data-portability** response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's "Your
-data stays yours".
+store (a long-lived store may be up to `coldGenTtlMs` behind a publish — the CLI builds a fresh store per run);
+for a *consistent* dump across segments, pause your loads or export from a quiet window. This is also a building
+block for a **data-portability** response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's "Your data stays
+yours".
 
 ## 15. Cost ceiling: the per-op fan-out budget
 
 On a shared/serverless backend, one pathological call — an `intersect` over two enormous barely-overlapping
-segments, or a fleet-wide `eraseSubject` — can quietly run up a large bill (a "denial-of-wallet"). CloudBitmaps
-caps the **number of backend calls a single operation may fan out to** (Cold chunk fetches, or segments scanned)
-and refuses (throws `BudgetExceededError`) rather than running away:
+segments, a wide `union`, or a fleet-wide `eraseSubject` — can quietly run up a large bill (a "denial-of-wallet").
+CloudBitmaps caps the **number of backend calls a single operation may fan out to** (Cold chunk fetches, or
+segments scanned) and refuses (throws `BudgetExceededError`) rather than running away:
 
 ```ts
 import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
 
 // on by default — generous (1,000,000 units); set your own store-wide ceiling:
-const store = new CloudRoaring({ warm, cold, budget: { maxRequests: 50_000 } }); // warm/cold: your drivers, §1–§5
+const store = new CloudRoaring({ cold, registry, budget: { maxRequests: 50_000 } });
 
 try {
   for await (const id of store.segment('huge').intersect([store.segment('other')])) {
@@ -1359,10 +1242,10 @@ try {
 }
 ```
 
-The store-level `budget` guards `count` / `iterate` / `intersect` / `subjectReport` / `eraseSubject` — the
-operations whose cost scales with data size. The ops that take options — `intersect`, `subjectReport`,
-`eraseSubject` — also accept a **per-op override** (a partial override inherits the store ceiling; it never
-resets it to the generous default):
+The store-level `budget` guards `count` / `iterate` / `intersect` / `union` / `andNot` / `subjectReport` /
+`eraseSubject` — the operations whose cost scales with data size. The ops that take options — the combines,
+`subjectReport`, `eraseSubject` — also accept a **per-op override** (a partial override inherits the store ceiling;
+it never resets it to the generous default):
 
 ```ts
 // tighten or lift the ceiling for a specific call:
@@ -1373,13 +1256,15 @@ for await (const _ of store.segment('a').intersect([store.segment('b')], { budge
 ```
 
 The ceiling is checked **once, before fan-out**, against the already-known work size, so it adds **nothing to the
-hot path** (`add` / `has` / `remove` are single-call and never budgeted). Byte volume needs no separate limit:
+hot path** (`has` is single-call and never budgeted). The units are the chunk reads the op will actually issue —
+for an `intersect`, the surviving keys × the operands present at each, plus only those excludes that hold the
+key, so a large suppression list is not charged for keys it cannot affect. Byte volume needs no separate limit:
 every chunk read is size-capped by the safe deserializer, so bounding the fan-out transitively bounds bytes too.
-(`count` on the default cold source is already cheap — clean chunks are counted straight from the `.crbm` index
-with zero reads — so it only approaches the ceiling on a source that can't serve cardinalities.) Leave it on;
-lower it on untrusted/multi-tenant surfaces; raise it (or `budget: false`) for trusted bulk jobs.
+`count` on a loaded segment is summed from the `.crbm` index with zero reads, so it only approaches the ceiling on
+a source that can't serve cardinalities (the in-memory `MemoryColdChunkSource`). Leave it on; lower it on
+untrusted/multi-tenant surfaces; raise it (or `budget: false`) for trusted bulk jobs.
 
-## 16. Disaster recovery: check cross-tier consistency
+## 16. Disaster recovery: check cross-store consistency
 
 CloudBitmaps spans two independent stores — the **object store** (cold `.crbm` generations) and the **registry**
 (which generation is current per segment). A restore that brings them back at **different points in time** can
@@ -1403,26 +1288,28 @@ if (report.errored.length > 0) {
 ```
 
 Run it **after any restore** and as a periodic health check. It needs a raw cold driver + a `registry` (same
-requirement as compaction; throws `UnsupportedError` otherwise) and fans out at a bounded `concurrency` (default
-8). A single unreadable segment never aborts the scan — it lands in `errored` so you still get the full picture;
-and each segment is checked against its authoritative **live** pointer (a strong read), not the enumeration
-snapshot, so a concurrent compaction that advanced the generation during the scan isn't misreported as a tear.
-See the [disaster-recovery runbook](disaster-recovery.md) for the full restore procedure, RPO/RTO guidance, and
-why the registry must be point-in-time-recoverable alongside the object store.
+requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
+`concurrency` (default 8). A single unreadable segment never aborts the scan — it lands in `errored` so you still
+get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
+the enumeration snapshot, so a concurrent load that advanced the generation during the scan isn't misreported as
+a tear. See the [disaster-recovery runbook](disaster-recovery.md) for the full restore procedure, RPO/RTO
+guidance, and why the registry must be point-in-time-recoverable alongside the object store.
 
 ## The operations
 
 | Method | Returns | Notes |
 |---|---|---|
-| `add(id)` / `remove(id)` | `Promise<void>` | single id; `ValidationError` if `id ∉ [0, 2³²)`. One read-modify-write per call — **never loop this over a batch** ([why](#1-the-simplest-thing-in-memory)) |
-| `addMany(ids)` / `removeMany(ids)` | `Promise<void>` | `ids` is a **sync or async** iterable; grouped by chunk ⇒ **one write per chunk, not per id**, however long the stream; **not atomic across chunks** |
-| `has(id)` | `Promise<boolean>` | |
-| `count()` | `Promise<number>` | exact cardinality; `budget`-guarded ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
-| `iterate()` | `AsyncIterable<number>` | ascending; `budget`-guarded |
-| `intersect(others, { exclude? })` | `AsyncIterable<number>` | ascending; chunk-skipping; `concurrency` + `budget` options. `exclude` subtracts suppression segments **in the same pass** |
-| `union(others, { exclude? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
-| `andNot(excludes)` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
-| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<void>` | materialize the result into `dest`; **not atomic** |
+| `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The hot cache, else **one** ranged GET of that id's chunk — never budgeted |
+| `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
+| `iterate()` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded |
+| `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
+| `union(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `andNot(excludes, { concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
+| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a raw cold driver + registry |
+| `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
+
+There is no per-id write on a segment: data enters as a generation — `bulkLoadCrbmGeneration`
+([§3](#3-loading-a-segment)) or an `*Into` verb — and leaves the same way (`eraseSubject`, `dropSegment`).
 
 **What each combine has to read** — a property of the set operation, not of the implementation:
 
@@ -1436,113 +1323,49 @@ All three are charged against the same per-op budget, so a wide `union` is refus
 To suppress the result of an intersection, pass `exclude` rather than chaining — chaining materializes an
 intermediate segment and reads the suppression list in full.
 
-Failures are **typed errors** (`ValidationError`, `WriteConflictError`, `IntegrityError`, …), never thrown
-strings — so callers can branch on *why* something failed.
+Failures are **typed errors** (`ValidationError`, `WriteConflictError`, `IntegrityError`, `UnsupportedError`, …),
+never thrown strings — so callers can branch on *why* something failed.
 
 ### Coming from Redis bitmaps?
 
-**This is a durable, cloud-native alternative to Redis bitmaps for *set-shaped* workloads** — audiences, dedup,
-suppression, membership — where the sets are large, mostly idle, have to survive a restart, and are written in
-**batches**. That is the job it is built for, and it does it without an always-on cluster or a VPC for your
-functions.
+**This is a durable, cloud-native home for *set-shaped* data** — audiences, suppression lists, membership,
+eligibility — where the sets are large, mostly read, have to survive a restart, and are **computed in batches**
+upstream. It does that without an always-on cluster or a VPC for your functions.
 
-**It is not a drop-in replacement.** Two limits, stated up front rather than discovered later: there is no
-addressable-bit surface (`BITPOS`, `BITFIELD`, byte-range `BITCOUNT`, `BITOP NOT`, or reading the raw bytes), and a
-per-id write loop costs roughly **3,000×** a batched one. Both are detailed below.
+**It is not a drop-in replacement, and the difference is the write model.** Redis mutates one bit in place per
+call; here a segment changes only by getting a **new generation** — you compute the set, load it, and read it.
+There is no per-id write at all, so a `SETBIT` loop has nothing to port to: if your set is defined by a query,
+run the query and load the result; if it is defined by events arriving one at a time, accumulate them in the
+system that receives them (Redis does that well) and load the set on a cadence.
 
-There is no separate "plain bitmap" flavor and there is not going to be one, because this is it — a Roaring
-bitmap **is** a plain bitset wherever a plain bitset is the right answer. Each 65,536-id chunk is stored in
-whichever of three encodings is smallest for that chunk, and past **4,096 ids** in a chunk (6.25% of it) the
-winner is a flat bit array: the same bytes you have now, chosen per chunk instead of assumed for all of them.
-Below that threshold you stop paying for the empty span.
-
-Your operations carry over one-for-one:
+The *read* side carries over one-for-one:
 
 | Redis | Here | Difference |
 |---|---|---|
-| `SETBIT key id 1` / `SETBIT key id 0` | `add(id)` / `remove(id)` | none in meaning — an id is a bit offset, both `u32` |
-| `GETBIT key id` | `has(id)` | none in meaning |
+| `GETBIT key id` | `has(id)` | none in meaning — an id is a bit offset, both `u32` |
 | `BITCOUNT key` | `count()` | exact, and served from the index without fetching payloads |
-| `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute |
+| `BITOP AND dst a b` | `a.intersect([b])` / `a.intersectInto(dst, [b])` | streams, and skips chunks that cannot contribute; `dst` becomes a new generation |
 | `BITOP OR dst a b` | `a.union([b])` / `unionInto` | none in meaning |
 | `BITOP DIFF dst a b` (Redis 8.2+) | `a.andNot([b])` / `andNotInto` | none in meaning; reads `b` only where it overlaps `a` |
 | `BITOP ANDOR dst x y1 y2` (Redis 8.2+) | — | no single call; it is `x ∩ (y1 ∪ y2)` — `unionInto` a temp, then `intersect` |
 | `BITOP XOR` | — | no single call; compose as `(a ∪ b) \ (a ∩ b)` |
 | `BITOP NOT` · `BITOP ONE` | — | no equivalent |
+| `SETBIT key id 1` / `SETBIT key id 0` | — | **no per-id write.** Build the set upstream and `bulkLoadCrbmGeneration` it; remove one id everywhere with `eraseSubject` (a rewrite, for compliance — not a hot-path verb) |
 | `EXPIRE key seconds` | `store.setRetention(ref, { expiresAt })` + `store.retireExpired()` | per **segment**, never per id (a bitmap stores ids, not timestamps), and the sweep is **yours to schedule** — this library starts no timer, so it behaves the same in a Lambda and a server. [§13.5](#135-retention-ttl-and-pruning--what-exists-and-what-doesnt) |
 
-**And one operation Redis has that needed building: `SETBIT` returning the prior bit.** That return value is not a
-convenience — it is what makes a per-recipient *"have I already sent to this user?"* claim exactly-once when two
-workers race the same id. `has()` then `add()` cannot do it: both read absent, both proceed.
-
-| Redis | Here | Difference |
-|---|---|---|
-| `prior = SETBIT sent:wave id 1` | `const won = await sent.claimMany(ids)` | takes a **batch** and returns the ids it won. Exactly-once per id; one write per *chunk*, not per id |
-
-```ts
-// Exactly-once send, no always-on cluster.
-const sent = store.segment(day, { namespace: 'sent-daily' });
-const toSend = await sent.claimMany(candidateIds); // only the ids this worker won
-for (const id of toSend) enqueue(id);              // ...so no other worker will send them
-```
-
-### The one thing not to port literally: one op per user
-
-Redis `SETBIT` flips a single bit in place. Here, a Warm row holds **one roaring bitmap per 65,536-id chunk**, and
-every write re-serializes and re-writes that whole blob. So the per-id loop is the single most expensive way to
-use this library. Measured, same 5,000 ids, three write shapes:
-
-| Shape | Warm writes | Bytes written |
-|---|---|---|
-| `add(id)` per user, 5,000× | **5,000** | **23,762 KB** |
-| `addMany(ids)` in 500-id batches | 10 | 51 KB |
-| one `addMany(ids)` | **1** | **8 KB** |
-
-Nearly **3,000× more bytes** for the loop. Batch, and you are far cheaper than Redis; port the loop literally and
-you are far more expensive. `claimMany` exists in batch form for exactly this reason.
-
-**What that costs depends on your Warm backend's pricing model** — the write and byte counts are backend-independent
-(they are what any driver receives), the bill is not:
-
-- **Per-request metered** (DynamoDB on-demand, Astra, serverless KV): a direct line item. DynamoDB charges one write
-  unit per **1 KB rounded up, per item**, so the ~4.75 KB average per-id write bills 5 units each — ~25,000 for the
-  loop against 8 for one call.
-- **Provisioned capacity**: not extra dollars until it is. It eats capacity you already pay for, so the first
-  symptom is **throttling and retry latency**, and the bill only moves when you scale up to stop it.
-- **Instance-priced** (ElastiCache/Redis, RDS Postgres/MySQL, Mongo Atlas, self-hosted Cassandra): no per-op charge
-  at all, so it surfaces as IOPS, CPU and latency headroom rather than an invoice line — easier to miss, not cheaper.
-
-Rates are region-specific and the vendor's to change; [benchmarks](../benchmarks.md#write-shape--the-cost-of-one-op-per-id)
-uses the repo's default `aws-us-east-1-ondemand` profile, and `estimateCost()` takes a `PricingProfile` so you can
-plug in your own contract rather than trusting ours.
-
-Volume, by contrast, works in your favour: **200,000 ids spread over a 9M-id space cost 138 Warm rows**, not
-200,000 — one row per 64K of id space you actually touch.
-
-### You do not need a seed job, and compaction is optional
-
-Two things the rest of this guide implies but never says plainly, because it leads with the scaling story:
-
-- **A brand-new segment is immediately usable.** Construct a store and call `addMany` — `add` / `addMany` / `has`
-  / `remove` / `count` / `iterate` / `intersect` / `union` / `andNot` all work on a segment with **no Cold
-  generation and no registry row at all**, because a read merges `(cold ∪ warm.adds) \ warm.removes` and an
-  absent Cold tier just makes that merge trivial. [§3](#3-optional-bulk-load-a-cold-generation) is an **import**
-  path for data you already have somewhere else — not an initialization step.
-- **Compaction is never required for correctness.** See [§8](#8-compaction-keeping-the-warm-tier-small). For a
-  write-once dated bucket — a dedup wave, a daily sent-list — you can skip it entirely and `dropSegment` the
-  segment when it expires.
-
-`BITFIELD`, `BITPOS`, and the byte-range forms of `BITCOUNT` have no equivalent either. This is a set of ids,
-not an addressable bit buffer, so anything that treats the key as a positional buffer does not port — and
-`BITOP NOT` in particular has nothing to complement against, because there is no bounded universe here, only
-the `u32` id space.
+You are not giving up the bitmap: each 65,536-id chunk is stored in whichever of Roaring's three encodings is
+smallest for that chunk, and past **4,096 ids** in a chunk (6.25% of it) the winner is a flat bit array — the same
+bytes you have now, chosen per chunk instead of assumed for all of them. Below that threshold you stop paying for
+the empty span.
 
 **What does not carry over: the raw bytes.** A `.crbm` object is not a flat bit array, so anything that reads
 your Redis bitmap's underlying string — a job that `GET`s the key and indexes into it, a byte-for-byte backup,
-another service that already parses that layout — will not read ours. Raw bit-position **import** (the
-migration direction off Redis) and export are not built; the format field that would name them exists, and
-whether they get built depends on someone saying they need them. Everything reached through bitmap
-*operations* transfers today; everything reached through the bytes does not.
+another service that already parses that layout — will not read ours. `BITFIELD`, `BITPOS`, and the byte-range
+forms of `BITCOUNT` have no equivalent either: this is a set of ids, not an addressable bit buffer, and
+`BITOP NOT` in particular has nothing to complement against, because there is no bounded universe here, only the
+`u32` id space. Raw bit-position **import** (the migration direction off Redis) and export are not built; whether
+they get built depends on someone saying they need them. Everything reached through bitmap *operations*
+transfers today; everything reached through the bytes does not.
 
 ## Intersecting segments (the crown jewel)
 
@@ -1563,13 +1386,20 @@ for await (const id of shoppers.intersect([active, store.segment('opted-in')])) 
   /* … */
 }
 
-// or materialize the result into a new segment
-await shoppers.intersectInto(store.segment('campaign-targets'), [active]);
+// minus a suppression list, in the same pass — the opt-out list is read only where the intersection survived
+for await (const id of shoppers.intersect([active], { exclude: [store.segment('global-opt-out')] })) {
+  /* … */
+}
+
+// or materialize the result as a new generation of another segment
+const res = await shoppers.intersectInto(store.segment('campaign-targets'), [active]);
+res.cardinality; // how many ids the new generation holds
 ```
 
 It holds only a bounded window of chunks in memory at a time (tune with `{ concurrency }`), so it runs over
 enormous segments in a small/serverless process. `intersect` is commutative: `a.intersect([b])` ≡
-`b.intersect([a])`.
+`b.intersect([a])`. Each operand's generation is resolved once, up front, so a load publishing mid-call cannot
+tear the result.
 
 ## Deploying to AWS Lambda
 
@@ -1591,7 +1421,7 @@ Pick whichever you already use:
 Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
 CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` in an AL2023 container and
 loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer ships too: `pnpm build-lambda-layer`
-(Phase 8) produces `dist-lambda/cloud-roaring-lambda-layer.zip`.)*
+produces `dist-lambda/cloud-roaring-lambda-layer.zip`.)*
 
 ## Troubleshooting
 
@@ -1659,73 +1489,61 @@ that flag, either drop it for the process that loads CloudBitmaps or allow this 
 **What not to do:** `--no-deprecation` silences *every* deprecation warning in your application, including ones
 about your own code. Suppressing a whole diagnostic channel to hide one known-benign line is a bad trade.
 
-### Two different limits: `budget` (cost) and `maxWarmScanBytes` (memory)
+### Two different limits: `budget` (cost) and the memory ceilings
 
 They are separate on purpose, and it is worth knowing which one you just hit.
 
-| | `budget` | `maxWarmScanBytes` |
+| | `budget` | the memory ceilings |
 | --- | --- | --- |
-| bounds | **cost** — backend requests a single op may fan out into | **memory** — warm-delta bytes one segment scan holds resident |
-| default | generous; `budget: false` disables it | **64 MiB**, and **`budget: false` does not disable it** |
-| covers | `count` · `iterate` · `intersect` · `subjectReport` · `eraseSubject` | every read op, `intersect` included |
+| bounds | **cost** — backend requests a single op may fan out into | **memory** — what a process holds resident, whatever the segments' size |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cacheMaxChunks` (decoded hot chunks, default 1024) · `coldReaderCacheMax` / `coldReaderCacheMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap — **`budget: false` lifts none of them** |
+| covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
 
-Why not one control? Because `intersect`'s budget is `common keys × operands` — a *product* — and a single wide
-operand can legitimately hold far more warm rows than that product while staying entirely within contract. A
-request budget therefore cannot express a memory bound for it. And `budget: false` is a reasonable choice ("I
-know my fan-out"), which must not silently also mean "unbounded RAM".
+Why not one control? Because `intersect`'s budget is a *product* — surviving keys × operands — while its memory is
+the *window*: `concurrency × operands × chunk`, independent of segment size. A request budget cannot express a
+memory bound, and `budget: false` is a reasonable choice ("I know my fan-out") that must not silently also mean
+"unbounded RAM". A wide segment's parsed index can be several MB, which is why the reader cache is bounded by
+bytes as well as by count — lower `coldReaderCacheMaxBytes` for a memory-tight deployment (a 128 MB Lambda) that
+reads across many wide segments.
 
-**Neither limits how many ids a segment can hold.** That is worth saying plainly, because the names invite the
-opposite reading. A segment holds up to the full 32-bit id space — ~4.29 billion members — and no ceiling here
-changes that.
-
-- `maxScanSegments` counts **segments** (distinct named bitmaps in the registry), not members. 500 audience
-  segments count as 500, whatever their size; you would need a quarter of a million *distinct segments* to
-  reach the default.
-- `maxWarmScanBytes` counts **warm bytes written since the last compaction**, not the segment's size. Measured
-  on randomly distributed ids: 1M members added between compactions is ~3.6 MiB (6% of the default) and 10M is
-  ~20.7 MiB (32%). Once compaction runs, warm is empty and the data lives in Cold, which this ceiling does not
-  touch — a compacted segment with a billion members scans **zero** warm bytes.
-
-So if you ever do hit `maxWarmScanBytes`, read it as **"compaction is not keeping up"** rather than "this
-segment is too large". Check the compaction job before raising the number.
-
-Both refuse with `BudgetExceededError`, and both abandon the scan at the ceiling rather than completing it —
-so the error reports the limit rather than an exact total, because computing the total is the cost being
-refused. If you hit the memory ceiling, raise `maxWarmScanBytes`, narrow the segment, or compact it so fewer
-chunks carry warm deltas; raising `budget` will not help.
+**Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space — ~4.29
+billion members — and no ceiling here changes that. `maxScanSegments` (on the sweep and the consistency check)
+counts **segments** — distinct named bitmaps in the registry — not members: 500 audience segments count as 500,
+whatever their size.
 
 ## What blocks the event loop, and where to run it
 
 Node is single-threaded, so CPU-heavy work stalls **every** other request on that instance. Most of this library
-is network-bound and irrelevant here — a warm `has()` spends ~0.04% of its time on bit math — but bulk-load and
-compaction are genuinely CPU-heavy. Measured on an M3 Pro:
+is network-bound and irrelevant here — a `has()` spends a negligible fraction of its time on bit math — but a
+**load** and an **erasure rewrite** are genuinely CPU-heavy, because each one touches a whole generation. Measured
+on an M3 Pro:
 
 | path | cost | longest single stall | where it belongs |
 | --- | --- | --- | --- |
 | `bulkLoadCrbmGeneration` (1M ids) | ~256 ms | **~19 ms** | a batch job or worker; survivable off the request path |
-| a compaction cycle | ~22 ms of bit math | ~19 ms | a scheduled `runCompactionCycle` in a **separate process**, for exactly this reason |
-| `add` / `remove` / `has` / `count` / `intersect` | microseconds of CPU; dominated by network | — | anywhere |
+| `eraseSubject` / `eraseIdFromSegment` | decodes and re-encodes every chunk of the segment — same order of work as a load | yields on the same cadence | an admin job, never a request handler |
+| `has` / `count` / `intersect` / `union` / `andNot` | microseconds of CPU; dominated by network | — | anywhere |
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
-cost. Bulk-load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
+cost. A load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
 in between — other requests interleave rather than queueing behind the whole load. Before that fix the two
 columns were the same number: a 1M-id load blocked the loop for **450 ms straight**, long enough for a health
 check to time out and the instance to be pulled from its load balancer.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
-which the flavor package pre-binds. If you call `@cloudbitmaps/core` directly, pass one (`clock`) or the load
-runs uninterrupted as it did before.
+which the flavor package pre-binds into `bulkLoadCrbmGeneration` and `eraseIdFromSegment`. If you call
+`@cloudbitmaps/core` directly, pass one (`clock`) or the work runs uninterrupted.
 
-**The rule is unchanged:** anything that touches a whole generation belongs out of the request path. Yielding
-makes a load a well-behaved neighbour, not a cheap one — it still burns a core for a quarter-second and holds
-the whole generation in memory. Use a job runner, a queue consumer, or a short-lived task, and run the
-compaction as the separate scheduled process it is meant to be.
+**The rule:** anything that touches a whole generation belongs out of the request path. Yielding makes a load a
+well-behaved neighbour, not a cheap one — it still burns a core for a fraction of a second, holds the whole
+generation in memory, and streams a multipart upload. Use a job runner, a queue consumer, or a short-lived task —
+and keep `has`, `count` and `intersect` where the requests are.
 
 ## Where next
 
 - [Roadmap](../ROADMAP.md) — what's shipped, the **validated envelope** (what's proven and what isn't), the
   path to `1.0`, and what we've deliberately said no to.
-- Usage walkthrough — the full end-to-end user journey.
+- [API Reference](api-reference.md) — every export, kept in sync with the code by CI.
 - Writing your own storage driver? A shared **conformance suite** (`packages/roaring/src/testing/conformance.ts`) is the bar
   every driver must pass. It remains an internal SDK helper (consumed in-repo via the `@/` alias) — it is not
   exported as a public `./testing` package subpath.

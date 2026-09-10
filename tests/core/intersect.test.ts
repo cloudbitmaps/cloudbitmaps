@@ -1,16 +1,18 @@
 import fc from 'fast-check';
-import { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } from '@/index';
-import { roaringCodec } from '@/roaring-codec';
+import { CloudRoaring, MemoryColdChunkSource, type Clock } from '@/index';
+import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
-import { SafeBitmap } from '@/roaring-codec';
-import { splitId, joinId } from '@/core/bit-route';
+import { joinId } from '@/core/bit-route';
 import { ValidationError } from '@/core/errors';
 import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
-/** A ColdChunkSource that records every getChunk call — to prove chunk-skipping (non-overlapping keys
- * are never fetched). Delegates to an in-memory source. */
+/**
+ * A ColdChunkSource that records every getChunk call — to prove chunk-skipping (non-overlapping keys are never
+ * fetched). Delegates to an in-memory source; seed it through `inner`.
+ */
 class CountingCold implements ColdChunkSource {
-  private readonly inner = new MemoryColdChunkSource();
+  readonly inner = new MemoryColdChunkSource();
   readonly fetched: string[] = [];
 
   async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -20,58 +22,50 @@ class CountingCold implements ColdChunkSource {
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
     return this.inner.listChunkKeys(ref);
   }
-  seedChunk(ref: ChunkRef, ids: number[]): void {
-    this.inner.seed(ref, SafeBitmap.fromValues(ids).serialize());
-  }
 }
 
-async function collect(it: AsyncIterable<number>): Promise<number[]> {
-  const out: number[] = [];
-  for await (const id of it) out.push(id);
-  return out;
+/** A store over a counting source; `seed` writes a segment's chunks exactly as a `.crbm` generation holds them. */
+function harness(): {
+  cold: CountingCold;
+  store: CloudRoaring;
+  seed: (segment: string, ids: number[]) => void;
+} {
+  const cold = new CountingCold();
+  const store = new CloudRoaring({ cold });
+  return { cold, store, seed: (segment, ids) => void seedSegment(cold.inner, segment, ids) };
 }
 
-/** Seed a segment's Cold tier from a flat id list, grouped by chunk. */
-function seedCold(cold: CountingCold, segment: string, ids: number[]): void {
-  const byChunk = new Map<number, number[]>();
-  for (const id of ids) {
-    const { chunkKey, remainder } = splitId(id);
-    (byChunk.get(chunkKey) ?? byChunk.set(chunkKey, []).get(chunkKey)!).push(remainder);
-  }
-  for (const [chunkKey, rems] of byChunk) cold.seedChunk({ segment, chunkKey }, rems);
+function fakeClock(): Clock & { advance: (ms: number) => void } {
+  let t = 0;
+  return { now: () => t, sleep: () => Promise.resolve(), advance: (ms) => (t += ms) };
 }
 
 describe('chunk-skipping intersection (Phase 3a)', () => {
   it('returns the set-intersection, ascending', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3, 100, 200_000]);
-    seedCold(cold, 'b', [2, 3, 4, 200_000, 999]);
-    const a = store.segment('a');
-    const b = store.segment('b');
-    expect(await collect(a.intersect([b]))).toEqual([2, 3, 200_000]);
+    const { store, seed } = harness();
+    seed('a', [1, 2, 3, 100, 200_000]);
+    seed('b', [2, 3, 4, 200_000, 999]);
+    expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([
+      2, 3, 200_000,
+    ]);
   });
 
   it('is commutative', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3, 70_000]);
-    seedCold(cold, 'b', [3, 70_000, 4]);
+    const { store, seed } = harness();
+    seed('a', [1, 2, 3, 70_000]);
+    seed('b', [3, 70_000, 4]);
     const a = store.segment('a');
     const b = store.segment('b');
     expect(await collect(a.intersect([b]))).toEqual(await collect(b.intersect([a])));
   });
 
   it('NEVER fetches chunks for non-overlapping keys (the core saving)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+    const { cold, store, seed } = harness();
     // Chunk keys: a = {0, 5, 12}; b = {0, 9, 12}; common = {0, 12}.
-    seedCold(cold, 'a', [joinId(0, 1), joinId(0, 2), joinId(5, 1), joinId(12, 7)]);
-    seedCold(cold, 'b', [joinId(0, 2), joinId(0, 3), joinId(9, 1), joinId(12, 8)]);
-    const a = store.segment('a');
-    const b = store.segment('b');
+    seed('a', [joinId(0, 1), joinId(0, 2), joinId(5, 1), joinId(12, 7)]);
+    seed('b', [joinId(0, 2), joinId(0, 3), joinId(9, 1), joinId(12, 8)]);
 
-    await collect(a.intersect([b]));
+    await collect(store.segment('a').intersect([store.segment('b')]));
 
     // Exact fetched set: ONLY the common keys {0,12} of BOTH operands — no non-overlapping key (5/9) and
     // no operand×key over-fetch. Pinning the exact set (not just "no 5/9") is what makes this a real bar.
@@ -79,65 +73,35 @@ describe('chunk-skipping intersection (Phase 3a)', () => {
   });
 
   it('returns ∅ with zero payload fetches when no keys overlap', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [joinId(1, 1)]);
-    seedCold(cold, 'b', [joinId(2, 1)]);
-    const a = store.segment('a');
-    const b = store.segment('b');
-    expect(await collect(a.intersect([b]))).toEqual([]);
+    const { cold, store, seed } = harness();
+    seed('a', [joinId(1, 1)]);
+    seed('b', [joinId(2, 1)]);
+    expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([]);
     expect(cold.fetched).toEqual([]); // index maps aligned; no chunk bytes downloaded
   });
 
-  it('merges tiers on both operands (warm adds + tombstones honored)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3]);
-    seedCold(cold, 'b', [2, 3]);
-    const a = store.segment('a');
-    const b = store.segment('b');
-    await a.add(50); // warm-only add on a
-    await b.add(50); // warm-only add on b → 50 now in both
-    await a.remove(3); // tombstone on a → 3 no longer in a's effective set
-    expect(await collect(a.intersect([b]))).toEqual([2, 50]);
-  });
-
-  it('intersects a warm-only chunk against a cold-only chunk', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    const a = store.segment('a');
-    const b = store.segment('b');
-    await a.addMany([7, 8, 9]); // a is entirely warm (no cold seed)
-    seedCold(cold, 'b', [8, 9, 10]); // b is entirely cold
-    expect(await collect(a.intersect([b]))).toEqual([8, 9]);
-  });
-
   it('intersects three or more segments', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3, 4, 5]);
-    seedCold(cold, 'b', [2, 3, 4, 5]);
-    seedCold(cold, 'c', [3, 4, 5, 6]);
+    const { store, seed } = harness();
+    seed('a', [1, 2, 3, 4, 5]);
+    seed('b', [2, 3, 4, 5]);
+    seed('c', [3, 4, 5, 6]);
     const [a, b, c] = [store.segment('a'), store.segment('b'), store.segment('c')];
     expect(await collect(a.intersect([b, c]))).toEqual([3, 4, 5]);
   });
 
   it('intersect with no others yields the segment itself', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3]);
-    await store.segment('a').add(70_000);
+    const { store, seed } = harness();
+    seed('a', [1, 2, 3, 70_000]);
     expect(await collect(store.segment('a').intersect([]))).toEqual([1, 2, 3, 70_000]);
   });
 
   it('gives the same result regardless of the concurrency window', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+    const { store, seed } = harness();
     // ids spanning several chunks so the window matters
     const idsA = Array.from({ length: 400 }, (_v, i) => i * 700);
     const idsB = idsA.filter((_v, i) => i % 2 === 0);
-    seedCold(cold, 'a', idsA);
-    seedCold(cold, 'b', idsB);
+    seed('a', idsA);
+    seed('b', idsB);
     const a = store.segment('a');
     const b = store.segment('b');
     const c1 = await collect(a.intersect([b], { concurrency: 1 }));
@@ -148,26 +112,10 @@ describe('chunk-skipping intersection (Phase 3a)', () => {
     expect(c64).toEqual(c1);
   });
 
-  it('materializes into a destination segment (intersectInto)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3, 70_000, 200_000]);
-    seedCold(cold, 'b', [2, 3, 200_000]);
+  it('intersecting a segment with itself yields the segment (self-intersection)', async () => {
+    const { store, seed } = harness();
+    seed('a', [1, 3, 500, 70_000]);
     const a = store.segment('a');
-    const b = store.segment('b');
-    const dest = store.segment('dest');
-    await a.intersectInto(dest, [b]);
-    expect(await collect(dest.iterate())).toEqual([2, 3, 200_000]);
-    expect(await dest.count()).toBe(3);
-  });
-
-  it('intersecting a segment with itself yields its effective set (self-intersection)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3, 70_000]);
-    const a = store.segment('a');
-    await a.add(500);
-    await a.remove(2);
     expect(await collect(a.intersect([a]))).toEqual([1, 3, 500, 70_000]);
   });
 
@@ -175,42 +123,38 @@ describe('chunk-skipping intersection (Phase 3a)', () => {
   // but intersect (joinId masking + assertChunkKeyInRange's `< 65536` edge + ascending merge across the full
   // span) was only sampled below chunk key 4 — a regression at the ceiling would have had no test.
   it('intersects at the maximum chunk-key span (id 0xFFFFFFFF, chunk 65535)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+    const { store, seed } = harness();
     const TOP = joinId(65_535, 65_535); // = 0xFFFF_FFFF, the u32 ceiling
     expect(TOP).toBe(0xffff_ffff);
     // Common in chunk 0 (id 1) and the top chunk (id TOP); b also has a non-overlapping id in the top chunk.
-    seedCold(cold, 'a', [joinId(0, 1), TOP]);
-    seedCold(cold, 'b', [joinId(0, 1), TOP, joinId(65_535, 1)]);
-    const a = store.segment('a');
-    const b = store.segment('b');
+    seed('a', [joinId(0, 1), TOP]);
+    seed('b', [joinId(0, 1), TOP, joinId(65_535, 1)]);
     // Correct set-intersection, ascending, spanning chunk 0 → chunk 65535 with the id at the very ceiling.
-    expect(await collect(a.intersect([b]))).toEqual([joinId(0, 1), TOP]);
+    expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([
+      joinId(0, 1),
+      TOP,
+    ]);
   });
 
-  // Boundary: a chunk key present in BOTH operands' indexes, but fully tombstoned (empty effective set) in one
-  // → intersectChunk must yield null and be skipped, NOT produce a phantom id. Proving the chunk was still
-  // fetched (index keys aligned) pins the empty-chunk short-circuit rather than an accidental index-level skip.
-  it('drops a common chunk whose effective set is empty in one operand (fetched, then skipped)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [joinId(3, 10), joinId(3, 20)]); // a's only chunk is key 3
-    seedCold(cold, 'b', [joinId(3, 10)]); // b shares chunk key 3
-    const a = store.segment('a');
-    const b = store.segment('b');
-    await a.remove(joinId(3, 10)); // tombstone every id in a's chunk 3 → effective set empty
-    await a.remove(joinId(3, 20));
-    expect(await collect(a.intersect([b]))).toEqual([]); // no phantom id from the fully-cancelled chunk
-    // The common chunk WAS fetched on both operands (keys aligned) — the drop is the empty-effective-set
+  // Boundary: a chunk key present in BOTH operands' indexes, but whose payload decodes to nothing in one of them
+  // → combineChunk must yield null and be skipped, NOT produce a phantom id. The `.crbm` writer never stores an
+  // empty chunk, so this is a hand-seeded (or foreign) object — still bytes read back from a tier, so still
+  // handled. Proving the chunk WAS fetched (index keys aligned) pins the empty-chunk short-circuit rather than
+  // an accidental index-level skip.
+  it('drops a common chunk whose payload is empty in one operand (fetched, then skipped)', async () => {
+    const { cold, store, seed } = harness();
+    cold.inner.seed({ segment: 'a', chunkKey: 3 }, SafeBitmap.fromValues([]).serialize()); // listed, empty
+    seed('b', [joinId(3, 10)]); // b shares chunk key 3
+    expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([]); // no phantom id
+    // The common chunk WAS fetched on both operands (keys aligned) — the drop is the empty-payload
     // short-circuit, not index-level chunk-skipping.
     expect(new Set(cold.fetched)).toEqual(new Set(['/|a|3', '/|b|3']));
   });
 
   it('does not mutate the operands / poison the cache (andInPlace safety)', async () => {
-    const cold = new CountingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-    seedCold(cold, 'a', [1, 2, 3]);
-    seedCold(cold, 'b', [2, 3, 4]);
+    const { store, seed } = harness();
+    seed('a', [1, 2, 3]);
+    seed('b', [2, 3, 4]);
     const a = store.segment('a');
     const b = store.segment('b');
     await collect(a.intersect([b])); // populates the HOT cache + runs andInPlace on fetched chunks
@@ -222,11 +166,7 @@ describe('chunk-skipping intersection (Phase 3a)', () => {
   });
 
   it('rejects an empty operand list and a bad concurrency at the engine boundary', async () => {
-    const engine = new SegmentEngine({
-      codec: roaringCodec,
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-    });
+    const engine = new SegmentEngine({ codec: roaringCodec, cold: new MemoryColdChunkSource() });
     // The public Segment.intersect always includes `this`; exercise the engine guards directly.
     await expect(
       collect(engine.intersect([{ segment: 's' }, { segment: 't' }], { concurrency: NaN })),
@@ -238,56 +178,122 @@ describe('chunk-skipping intersection (Phase 3a)', () => {
   });
 });
 
+describe('intersectInto — the result is a NEW GENERATION of the destination', () => {
+  it("materializes the intersection as the destination's generation 0 and reads it back", async () => {
+    const { store, registry } = await loadedStore({
+      a: [1, 2, 3, 70_000, 200_000],
+      b: [2, 3, 200_000],
+    });
+    const result = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')]);
+    expect(result).toEqual({
+      generation: 0,
+      cardinality: 3,
+      chunkCount: 2, // {2, 3} share chunk 0; 200_000 is chunk 3
+      size: expect.any(Number),
+    });
+    expect(result.size).toBeGreaterThan(0);
+    expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(0);
+    const dest = store.segment('dest');
+    expect(await collect(dest.iterate())).toEqual([2, 3, 200_000]);
+    expect(await dest.count()).toBe(3);
+  });
+
+  it('REPLACES the destination — its previous contents are superseded, not added to', async () => {
+    const clock = fakeClock();
+    const { store, registry } = await loadedStore(
+      { a: [1, 2, 3], b: [2, 3, 4], dest: [999, 70_000] },
+      { clock, coldGenTtlMs: 1 },
+    );
+    const dest = store.segment('dest');
+    expect(await collect(dest.iterate())).toEqual([999, 70_000]); // dest's own generation 0, readable first
+
+    const result = await store.segment('a').intersectInto(dest, [store.segment('b')]);
+    expect(result.generation).toBe(1);
+    expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(1);
+
+    clock.advance(1); // the reader's generation snapshot refreshes after coldGenTtlMs
+    expect(await collect(dest.iterate())).toEqual([2, 3]); // 999 / 70_000 are gone: nothing was merged
+    expect(await dest.has(999)).toBe(false);
+    expect(await dest.count()).toBe(2);
+  });
+
+  it('an empty result publishes an empty generation (the destination reads as empty)', async () => {
+    const { store, registry } = await loadedStore({ a: [1, 2], b: [70_000] });
+    const result = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')]);
+    expect(result).toMatchObject({ generation: 0, cardinality: 0, chunkCount: 0 });
+    expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(0);
+    expect(await store.segment('dest').count()).toBe(0);
+    expect(await collect(store.segment('dest').iterate())).toEqual([]);
+  });
+
+  it('honours exclude and concurrency on the materialized path too', async () => {
+    const { store } = await loadedStore({ a: [1, 2, 3, 70_000], b: [2, 3, 70_000], x: [3] });
+    const result = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')], {
+        exclude: [store.segment('x')],
+        concurrency: 1,
+      });
+    expect(result.cardinality).toBe(2);
+    expect(await collect(store.segment('dest').iterate())).toEqual([2, 70_000]);
+  });
+});
+
 describe('intersection vs Set oracle (property)', () => {
   const ID = fc.integer({ min: 0, max: 300_000 });
-  const ids = fc.array(ID, { maxLength: 60 });
+  const BOUNDARY = [0, 1, 65_534, 65_535, 65_536, 65_537, 131_071, 131_072, 4_294_967_295];
 
-  it('matches Set-intersection across random multi-tier segments', async () => {
-    const warmIds = fc.array(ID, { maxLength: 15 });
+  /**
+   * Four subsets of ONE shared universe, plus the chunk-boundary ids explicitly.
+   *
+   * Three independent `fc.array(ID)` draws — the previous spelling — almost never overlap: measured over 200
+   * samples, exactly **one** produced a non-empty two-way intersection and none touched a chunk boundary, so a
+   * three-way intersection was effectively always empty and this property was asserting `[] === []`. Subsets of
+   * a shared universe overlap by construction (92 of 200 two-way, 114 touching a boundary). The generator's
+   * reach is asserted in `tests/engine.property.test.ts`, which uses the same construction.
+   */
+  const universe = fc.uniqueArray(
+    fc.oneof(
+      { weight: 3, arbitrary: ID },
+      { weight: 2, arbitrary: fc.constantFrom(...BOUNDARY) },
+      { weight: 2, arbitrary: fc.integer({ min: 65_500, max: 65_600 }) },
+    ),
+    { minLength: 1, maxLength: 24 },
+  );
+  const quad = universe.chain((u) =>
+    fc.tuple(fc.subarray(u), fc.subarray(u), fc.subarray(u), fc.subarray(u)),
+  );
+
+  it('matches Set-intersection (minus an exclude) across random seeded segments and windows', async () => {
     await fc.assert(
       fc.asyncProperty(
-        ids,
-        ids,
-        ids, // cold seeds for a, b, c
-        fc.array(ID, { maxLength: 15 }), // warm adds (applied to all three)
-        fc.tuple(warmIds, warmIds, warmIds), // independent warm removes per operand (a, b, c)
+        quad, // a, b, c and a suppression segment — all subsets of one universe
         fc.integer({ min: 1, max: 12 }), // randomized concurrency window
-        async (ca, cb, cc, warmAdds, [remA, remB, remC], concurrency) => {
-          const cold = new CountingCold();
-          const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
-          seedCold(cold, 'a', ca);
-          seedCold(cold, 'b', cb);
-          seedCold(cold, 'c', cc);
-          const a = store.segment('a');
-          const b = store.segment('b');
-          const c = store.segment('c');
-
-          const oa = new Set(ca);
+        async ([ca, cb, cc, cx], concurrency) => {
+          const { store, seed } = harness();
+          seed('a', ca);
+          seed('b', cb);
+          seed('c', cc);
+          seed('x', cx);
+          const [a, b, c, x] = ['a', 'b', 'c', 'x'].map((n) => store.segment(n)) as [
+            ReturnType<CloudRoaring['segment']>,
+            ReturnType<CloudRoaring['segment']>,
+            ReturnType<CloudRoaring['segment']>,
+            ReturnType<CloudRoaring['segment']>,
+          ];
           const ob = new Set(cb);
           const oc = new Set(cc);
-          for (const id of warmAdds) {
-            await a.add(id);
-            await b.add(id);
-            await c.add(id);
-            oa.add(id);
-            ob.add(id);
-            oc.add(id);
-          }
-          // Independent removes per operand — so a bug honoring tombstones on only the first operand fails.
-          for (const [seg, oracle, rems] of [
-            [a, oa, remA],
-            [b, ob, remB],
-            [c, oc, remC],
-          ] as const) {
-            for (const id of rems) {
-              await seg.remove(id);
-              oracle.delete(id);
-            }
-          }
+          const ox = new Set(cx);
 
-          const want = [...oa].filter((x) => ob.has(x) && oc.has(x)).sort((x, y) => x - y);
-          const got = await collect(a.intersect([b, c], { concurrency }));
-          expect(got).toEqual(want);
+          const want = [...new Set(ca)].filter((v) => ob.has(v) && oc.has(v)).sort((p, q) => p - q);
+          expect(await collect(a.intersect([b, c], { concurrency }))).toEqual(want);
+          expect(await collect(a.intersect([b, c], { exclude: [x], concurrency }))).toEqual(
+            want.filter((v) => !ox.has(v)),
+          );
         },
       ),
       { numRuns: 150 },

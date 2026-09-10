@@ -1,14 +1,15 @@
 /**
  * Bridges the `.crbm` archive format to the engine's Cold seam (decision 4).
  *
- * `CrbmColdChunkSource` implements the Phase-1 {@link ColdChunkSource} over an {@link IColdDriver}: it
- * pins a segment's latest generation, opens its {@link CrbmReader} once, and serves per-chunk payloads —
- * so the **engine is unchanged**, it just reads real on-disk generations now. `writeCrbmGeneration` is
- * the inverse seed primitive (a generation built from in-memory bitmaps), the basis for the Phase-3
- * bulk-load and Phase-4 compaction writers.
+ * `CrbmColdChunkSource` implements the {@link ColdChunkSource} the engine reads through, over an
+ * {@link IColdDriver}: it resolves a segment's current generation, opens its {@link CrbmReader} once, and serves
+ * per-chunk payloads. `writeCrbmGeneration` / `writeCrbmGenerationStream` are the write primitives (a generation
+ * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the load path over them, and
+ * `publishGeneration` is the forward-only pointer advance every write ends with.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import {
+  IntegrityError,
   CapabilityError,
   KeyUnavailableError,
   ValidationError,
@@ -48,7 +49,7 @@ export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
    * Phase-4c retirement of that scan. When absent, the source falls back to the `list`-scan (so the
    * in-memory / simple setups keep working with no registry). The resolved generation is cached and
    * **re-resolved on a short TTL** ({@link currentGenTtlMs}, needs a {@link clock}) so a long-lived source
-   * observes a compaction's new generation within the TTL instead of pinning one generation forever (gap #4).
+   * observes a load's new generation within the TTL instead of pinning one generation forever.
    */
   readonly registry?: IRegistryDriver;
   /**
@@ -73,7 +74,7 @@ export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
   readonly clock?: Pick<Clock, 'now'>;
   /**
    * How long (ms) a resolved `currentGen` is trusted before the next read re-resolves it (default 2000) — the
-   * bound on read staleness after a compaction: a reader may serve the prior generation for up to this long,
+   * bound on read staleness after a load publishes: a reader may serve the prior generation for up to this long,
    * then converges. Lazy (checked on read — no timer); ≤ one cheap registry read per segment per window, and a
    * new {@link CrbmReader} is opened only when the generation actually changed. `0` (or no clock) ⇒ pin forever.
    */
@@ -118,7 +119,7 @@ interface Snapshot {
   readonly installedAtMs: number;
 }
 
-/** Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-compaction read staleness. */
+/** Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-publish read staleness. */
 const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
 /**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
@@ -144,7 +145,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   /**
    * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmColdChunkSourceOptions.currentGenTtlMs},
    * needs a clock). Within the TTL a segment's Cold bytes are treated as an immutable snapshot; when the TTL
-   * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a compaction committed),
+   * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
    * opens the new generation — so a long-lived source observes new generations within the TTL rather than
    * pinning one forever (gap #4). The engine pairs this with a **generation-keyed** HOT cache so a bump never
    * serves a stale decoded chunk. Without a clock or a registry the source pins the first generation for its
@@ -267,7 +268,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   private expired(installedAtMs: number): boolean {
     // Refresh needs a clock (the TTL) AND a registry (the *cheap* `currentGen` read the design assumes —
     // without one, re-resolution is a full cold `list`-scan, and a registry-less setup is single-process
-    // local, not the separate-daemon Topology-B where stale reads arise). Otherwise: pin for the lifetime.
+    // local, not the shared bucket that separate loaders publish into). Otherwise: pin for the lifetime.
     return (
       this.clock !== undefined &&
       this.registry !== undefined &&
@@ -277,8 +278,8 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
-   * The segment's current generation number (gap #4) — the engine keys its HOT chunk cache by this so a
-   * compaction bump is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
+   * The segment's current generation number — the engine keys its HOT chunk cache by this so a generation bump
+   * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
    */
   async currentGeneration(ref: SegmentRef): Promise<number | null> {
@@ -314,10 +315,10 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       if (record === null) return null;
       // A crypto-shredded segment reads as empty — its DEK is gone, so its Cold bytes are unrecoverable.
       if (record.status === 'destroyed') return null;
-      // A row with no Cold generation yet (a warm-only accumulator that has a row so admin tools can see it)
-      // resolves exactly like a segment with NO row: Cold contributes nothing and the Warm delta alone answers.
-      // Returning `null` here rather than a generation is the whole reason such a row is safe to create — the
-      // alternative, pointing at a generation that does not exist, is the `missing-cold-generation` state.
+      // A row with no Cold generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools
+      // can see the segment) resolves exactly like a segment with NO row: every read answers empty. Returning
+      // `null` here rather than a generation is the whole reason such a row is safe to create — the alternative,
+      // pointing at a generation that does not exist, is the `missing-cold-generation` state.
       if (record.currentGen === null) return null;
       return { generation: record.currentGen, wrappedDeks: record.wrappedDeks };
     }
@@ -380,7 +381,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
-   * Run `read` against the pinned snapshot, healing the one torn-read window compaction's GC can open: if the
+   * Run `read` against the pinned snapshot, healing the one torn-read window generation GC can open: if the
    * generation we pinned was superseded *and* swept (the grace window elapsed) mid-read, the Cold driver throws
    * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
@@ -436,8 +437,7 @@ export function writeCrbmGeneration(
     for (const { chunkKey, bitmap } of sorted) {
       if (bitmap.isEmpty) continue;
       // Run-encode before serializing. Cold generations are immutable and read many times, so the one-off cost
-      // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors and for
-      // why the per-operation warm path does not do this.
+      // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors.
       bitmap.optimize?.();
       await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
       const pause = tick();
@@ -451,19 +451,19 @@ export function writeCrbmGeneration(
 export interface StreamWriteResult {
   readonly size: number;
   readonly sha256: string;
-  /** Non-empty chunk keys written, in ascending order (for the compaction verify, since the stream is consumed). */
+  /** Non-empty chunk keys written, in ascending order (for the post-write verify, since the stream is consumed). */
   readonly chunkKeys: number[];
   /** Total ids written. */
   readonly cardinality: number;
 }
 
 /**
- * Streaming variant of {@link writeCrbmGeneration} for **constant-memory** compaction (Phase 4f): consumes an
- * **already-ascending** async stream of `{ chunkKey, bitmap }`, feeding each to the codec and freeing it,
- * instead of materializing the whole generation. Paired with a streaming cold sink (S3 multipart / LocalFs temp
- * file), peak memory is ~one chunk + one part. Returns a tally so the caller can verify the re-opened object
- * without re-iterating the (now-consumed) stream. Input **must** be ascending by `chunkKey` — the codec rejects
- * an out-of-order chunk; empty bitmaps are skipped.
+ * Streaming variant of {@link writeCrbmGeneration} for a **constant-memory** rewrite (the erasure rewrite, a
+ * sorted load): consumes an **already-ascending** async stream of `{ chunkKey, bitmap }`, feeding each to the
+ * codec and freeing it, instead of materializing the whole generation. Paired with a streaming cold sink (S3
+ * multipart / LocalFs temp file), peak memory is ~one chunk + one part. Returns a tally so the caller can verify
+ * the re-opened object without re-iterating the (now-consumed) stream. Input **must** be ascending by `chunkKey`
+ * — the codec rejects an out-of-order chunk; empty bitmaps are skipped.
  */
 export async function writeCrbmGenerationStream(
   driver: IColdDriver,
@@ -473,7 +473,7 @@ export async function writeCrbmGenerationStream(
 ): Promise<StreamWriteResult> {
   const chunkKeys: number[] = [];
   let cardinality = 0;
-  // Compaction runs this over a whole segment. The `for await` is not itself a yield — a stream backed by
+  // A rewrite runs this over a whole segment. The `for await` is not itself a yield — a stream backed by
   // already-resident chunks resolves on a microtask — so it needs the same periodic macrotask as the
   // non-streaming writer above.
   const tick = yieldEvery(options.clock);
@@ -500,15 +500,29 @@ export async function writeCrbmGenerationStream(
  * out-of-order/duplicate publish never regresses the pointer); otherwise it advances via compare-and-swap,
  * retrying a few times under contention. Separated from the Cold write so callers can publish atomically
  * after the immutable object is durable (write-then-publish).
+ *
+ * **`expectFrom` turns forward-only into read-modify-write.** Forward-only is the right rule for a writer whose
+ * content does not depend on what was current — a load computes its ids upstream, so publishing over a newer
+ * generation loses nothing the loader knew about. It is the WRONG rule for a writer that *derived* its content
+ * from a particular generation: the erasure rewrite streams generation `from` and clears one bit, so publishing
+ * it over a newer generation silently discards whatever that generation added. Passing `expectFrom` makes the
+ * publish land only while the pointer is still exactly there, and return `false` otherwise, so the caller can
+ * report `superseded` and re-derive. The compare-and-swap itself carries the token read in the same iteration,
+ * so the check and the write see the same row.
  */
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: { wrappedDeks?: readonly WrappedDek[] } = {},
+  options: { wrappedDeks?: readonly WrappedDek[]; expectFrom?: number } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const record = await registry.get(key);
     try {
+      if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
+        // The pointer is no longer where the caller derived its content from — including the cases where the row
+        // has vanished or has no generation at all. Not an error: the caller re-reads and re-derives.
+        return false;
+      }
       if (record === null) {
         // First publish for the segment — carry the wrapped DEK(s) so encrypted reads can resolve the key.
         await registry.create(key, {
@@ -534,8 +548,8 @@ export async function publishGeneration(
             `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
         );
       } else if (record.currentGen === null) {
-        // The row exists with no Cold generation yet (a warm-only accumulator that has a row so fleet-wide ops
-        // can see it). There is no pointer to regress past, so this publish advances it — and carries the wrapped
+        // The row exists with no Cold generation yet (a retention policy recorded ahead of the first load). There
+        // is no pointer to regress past, so this publish advances it — and carries the wrapped
         // DEK(s) exactly like a first publish onto no row, since no generation is encrypted under the row's
         // current wrappings (there is no generation at all).
         //
@@ -552,6 +566,26 @@ export async function publishGeneration(
       } else if (record.currentGen === key.generation) {
         return true; // already exactly current (an idempotent re-publish) — nothing to advance
       } else {
+        // Advancing over an existing generation. `wrappedDeks` is deliberately NOT carried here, and a caller
+        // that supplies it is refused rather than served.
+        //
+        // Reaching this branch with a freshly minted DEK means an encrypted generation is being published onto a
+        // lineage whose current generation the row already describes — i.e. onto a segment whose existing
+        // generations are cleartext. Both ways of resolving that silently are damaging: dropping the wrapping
+        // (what this branch used to do) advances the pointer to an object encrypted under a key that exists
+        // nowhere, so the data is unrecoverable the moment the call returns; carrying it makes the row advertise
+        // encryption over a lineage that still holds readable cleartext objects, which is what makes
+        // `destroySegment` emit `segment.erase` — "unreadable everywhere, backups included" — over plaintext.
+        // Two independent reviews reproduced the first one from two different entry points (a re-load with a
+        // keystore newly wired, and an `*Into` on a keystore-wired store whose destination was cleartext), and
+        // it needed no race. So the state is refused before the pointer moves; the object stays an orphan.
+        if (options.wrappedDeks !== undefined && options.wrappedDeks.length > 0) {
+          throw new ValidationError(
+            `publishGeneration: refusing to publish generation ${key.generation} of "${key.segment}" with new ` +
+              `key material onto a segment that already has generation ${record.currentGen} — its existing ` +
+              `generations are not encrypted under this key. Encrypt a new segment and load into that instead.`,
+          );
+        }
         await registry.compareAndSwap(key, record.token, { currentGen: key.generation });
       }
       return true; // created or advanced the pointer to key.generation → it is now current
@@ -583,6 +617,18 @@ export interface BulkLoadResult {
   readonly chunkCount: number;
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
+  /**
+   * Whether this generation is now the segment's **current** one — `undefined` when no `registry` was wired, so
+   * there is no pointer and no publish step to report on.
+   *
+   * `false` means the object is durable but a **concurrent writer published a higher generation first**, so this
+   * one is an orphan that no reader will ever resolve. The write succeeded and the *load* did not: whatever this
+   * call was asked to make the segment contain, the segment does not contain. That is not a detail a caller can
+   * be left to infer — a `*Into` materialisation used to report the generation it wrote as "the destination's
+   * new current generation" on exactly this path, which is a plain untruth — so the flag is on the result and the
+   * verbs that promise a published generation check it.
+   */
+  readonly becameCurrent?: boolean;
 }
 
 /**
@@ -600,11 +646,10 @@ export interface BulkLoadResult {
  * source is consumed lazily, so a bad id aborts mid-stream without writing a partial object (the driver
  * commits only after the callback resolves). An empty source writes a valid empty generation.
  *
- * Writing a fresh full snapshot of a segment; merging a new delta into the *existing* Cold (compaction) is
- * Phase 4. The caller picks the generation number in `key` and a `ColdChunkSource` serves the **highest**, so
- * pick a known-fresh number (on an empty segment, `0`): a too-high number silently shadows real data, and
- * re-using an existing generation throws {@link WriteConflictError} (write-once). Registry-assigned
- * generations arrive in Phase 4.
+ * Writes a fresh full snapshot of a segment. The caller picks the generation number in `key` — `nextGeneration`
+ * computes the right one from the registry and the bucket — and re-using an existing generation throws
+ * {@link WriteConflictError} (write-once). Without a registry a `ColdChunkSource` serves the **highest**
+ * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
 export async function bulkLoadCrbmGeneration(
   driver: IColdDriver,
@@ -736,8 +781,8 @@ export async function bulkLoadCrbmGeneration(
     );
   }
 
-  // An encrypted row with no keystore is a lost key, not a cleartext segment — the same fail-fast compaction
-  // does. Without it this wrote a CLEARTEXT generation onto a row that still advertises `wrappedDeks`, and the
+  // An encrypted row with no keystore is a lost key, not a cleartext segment — the same fail-fast the erasure
+  // rewrite does. Without it this wrote a CLEARTEXT generation onto a row that still advertises `wrappedDeks`, and the
   // damage is not just a confusing state: `destroySegment` keys `cryptoShredded` off the *presence* of wrappings,
   // so shredding that segment emits `segment.erase` — the audit event defined as "these bytes are unreadable
   // everywhere, backups included" — over bytes that are plaintext and stay readable from any copy. An audit trail
@@ -753,13 +798,33 @@ export async function bulkLoadCrbmGeneration(
     );
   }
 
-  // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on first write.
+  // Encryption (opt-in): reuse the segment's existing DEK, or mint a fresh one on its FIRST generation.
+  //
+  // The segment's own posture decides, not the presence of a keystore. A keystore is wired on the store, so it is
+  // in scope for every segment that store touches — including ones deliberately left cleartext — and minting on
+  // that basis alone is what made "load it again with a keystore wired" destroy the data: the minted wrapping has
+  // nowhere to live on a row whose pointer is already set (see `publishGeneration`'s advance branch), so the
+  // generation ends up encrypted under a key that exists in no persistent store. `requireEncryption` is the way
+  // to *demand* encryption, and on an already-cleartext lineage it fails fast rather than silently downgrading.
   let crypto: CrbmCrypto | undefined;
   let newWrapped: readonly WrappedDek[] | undefined;
   if (options.keystore !== undefined) {
     if (existing?.wrappedDeks !== undefined && existing.wrappedDeks.length > 0) {
       const aead = await options.keystore.openDek(existing.wrappedDeks); // reuse the segment's DEK
       crypto = { aead, aadFor: (scope) => aadFor(key, key.generation, scope) };
+    } else if (existing !== null && existing.currentGen !== null) {
+      // An existing lineage with no key material on the row: the segment is cleartext, and one segment cannot be
+      // half-encrypted — a reader pinned to a superseded generation would find bytes its key cannot open, and a
+      // later `destroySegment` would attest that shredding one DEK made every copy unreadable while the older
+      // cleartext objects stay readable from any of them.
+      if (options.requireEncryption === true) {
+        throw new ValidationError(
+          `requireEncryption: segment "${key.segment}" already has generation ${existing.currentGen} in ` +
+            `cleartext, so this load cannot be encrypted — encryption is chosen when a segment is first ` +
+            `loaded. Load into a new segment with the keystore wired, then drop this one.`,
+        );
+      }
+      // Otherwise the segment stays what it is: cleartext.
     } else {
       const minted = await options.keystore.createDek();
       newWrapped = minted.wrapped;
@@ -788,6 +853,51 @@ export async function bulkLoadCrbmGeneration(
         generation: key.generation,
       });
     }
+    return { size, sha256, chunkCount: chunks.length, cardinality, becameCurrent };
   }
   return { size, sha256, chunkCount: chunks.length, cardinality };
+}
+
+/**
+ * Open a {@link CrbmReader} on one generation over the cold driver's range/tail reads (decrypting if `crypto`).
+ * The reader the write paths use to re-read what they wrote, and the erasure rewrite uses to stream the old
+ * generation; the engine's read path goes through {@link CrbmColdChunkSource} instead, which caches these.
+ */
+export function openGenerationReader(
+  cold: IColdDriver,
+  key: GenKey,
+  crypto: CrbmCrypto | undefined,
+  options: Omit<CrbmReaderOptions, 'crypto'> = {},
+): Promise<CrbmReader> {
+  return CrbmReader.open(coldBlobReader(cold, key), { ...options, crypto });
+}
+
+/**
+ * Re-open a freshly written generation and assert it round-trips exactly what was streamed into it: the same
+ * per-chunk key set *and* the same total cardinality (on top of the codec's own per-chunk CRC + footer checks).
+ * `expected` is the streaming writer's tally (the stream is consumed, so it can't be re-iterated) — the key-set
+ * comparison catches a dropped/extra chunk that a cardinality-only check could miss when two errors cancel out.
+ * Throws {@link IntegrityError}: the object is on disk but must not be published.
+ */
+export async function verifyGeneration(
+  cold: IColdDriver,
+  key: GenKey,
+  expected: { readonly chunkKeys: readonly number[]; readonly cardinality: number },
+  crypto: CrbmCrypto | undefined,
+): Promise<void> {
+  const expectedKeys = [...expected.chunkKeys].sort((a, b) => a - b);
+  const reader = await openGenerationReader(cold, key, crypto);
+  const actualKeys = [...reader.chunkKeys()].sort((a, b) => a - b);
+  const keysMatch =
+    actualKeys.length === expectedKeys.length && actualKeys.every((k, i) => k === expectedKeys[i]);
+  if (!keysMatch) {
+    throw new IntegrityError(
+      `verify failed for ${key.segment}.${key.generation}: chunk-key set mismatch (${actualKeys.length} vs ${expectedKeys.length})`,
+    );
+  }
+  if (reader.count() !== expected.cardinality) {
+    throw new IntegrityError(
+      `verify failed for ${key.segment}.${key.generation}: cardinality ${reader.count()} != ${expected.cardinality}`,
+    );
+  }
 }

@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps architecture — only the chunks that can contribute" />
     <meta
       property="og:description"
-      content="Keys are metadata, remainders are payload, and they live apart. Intersecting two 2,000,000-id segments fetches 100 chunks of 2,000 in 25.3 ms."
+      content="Keys are metadata, remainders are payload, and they live apart. Intersecting two 2,000,000-id segments fetches 100 chunks of 2,000 in 24.6 ms."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/architecture" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -114,9 +114,9 @@
             <div class="panel-head label">One measured intersection</div>
             <p class="panel-row is-pair"><span>Chunks fetched</span><span class="is-live">100 / 2,000</span></p>
             <p class="panel-row is-pair"><span>Reads skipped</span><span>3,800</span></p>
-            <p class="panel-row is-pair"><span>Cold bytes read</span><span>403,200</span></p>
+            <p class="panel-row is-pair"><span>Cold bytes read</span><span>3,000</span></p>
             <p class="panel-row is-pair"><span>Ids returned</span><span>100,000</span></p>
-            <p class="panel-row is-pair"><span>Elapsed</span><span class="is-live">25.3 ms</span></p>
+            <p class="panel-row is-pair"><span>Elapsed</span><span class="is-live">24.6 ms</span></p>
             <p class="link-row"><a href="demo.html">Where these came from →</a></p>
           </aside>
         </div>
@@ -178,6 +178,16 @@
         <ol class="rowlist">
           <li>
             <span class="rl-mark">01</span>
+            <span class="rl-what">Resolve the generation</span>
+            <span class="rl-fig">once per operand</span>
+            <span class="rl-note">
+              Each segment's current generation is read from its registry row <em>before</em> any fan-out, and
+              every chunk this operation fetches comes from that generation. A read is never a merge of two
+              sources, so it cannot be torn.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
             <span class="rl-what"><span class="m">keys(A) ∩ keys(B)</span></span>
             <span class="rl-fig is-live">100 / 2,000</span>
             <span class="rl-note">
@@ -186,7 +196,7 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">02</span>
+            <span class="rl-mark">03</span>
             <span class="rl-what">Plan the fetch</span>
             <span class="rl-fig">3,800 skipped</span>
             <span class="rl-note">
@@ -195,24 +205,14 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">03</span>
-            <span class="rl-what">Merge warm deltas</span>
-            <span class="rl-fig">one range read</span>
-            <span class="rl-note">
-              Adds and removes since the last publish, read as a range rather than scanned.
-            </span>
-          </li>
-          <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">Stream the AND</span>
-            <span class="rl-fig">403,200 bytes</span>
+            <span class="rl-fig">3,000 bytes</span>
             <span class="rl-note">
-              The cold payload footprint is bounded by
-              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size. Warm is
-              the other term, and it is not in that window: each operand's warm rows are snapshotted up front,
-              so an intersection also holds <span class="m">operands × warm-per-segment</span>, each capped by
-              <span class="m">maxWarmScanBytes</span> (64 MiB by default). Sizing a function for a many-operand
-              intersection has to budget for both.
+              The payload footprint is bounded by
+              <span class="m">concurrency × operands × chunk</span> — the window, not the segment size. That
+              is the whole term: there is no second source to snapshot alongside it, so sizing a function for a
+              many-operand intersection is those three numbers multiplied and nothing else.
             </span>
           </li>
         </ol>
@@ -222,22 +222,26 @@
         </p>
       </section>
 
-      <!-- ── THE THREE TIERS ──────────────────────────────────────────────── -->
+      <!-- ── THE TWO TIERS ────────────────────────────────────────────────────
+           The middle row used to be a NoSQL delta tier. There is no delta tier: a segment is immutable cold
+           generations with a RAM cache in front, and the third row is now the one-row pointer that decides
+           WHICH generation — which is the fact the rest of the page rests on, and was previously unstated. -->
       <section>
-        <h2>Three tiers, and what each one is for</h2>
+        <h2>Two tiers, and the pointer that picks the generation</h2>
         <p class="lede">
-          A segment is not moved between tiers — it exists in all three at once, and a read is resolved from
-          the cheapest tier that can answer it.
+          A segment is not moved between tiers — it lives in the object store, and the hot tier is a cache in
+          front of it. Only the pointer decides what a read sees.
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
-            <span class="label">Tiers</span><span class="label">Scrolls sideways on narrow screens</span>
+            <span class="label">Two tiers, one pointer</span
+            ><span class="label">Scrolls sideways on narrow screens</span>
           </div>
           <div class="tscroll">
             <table>
               <thead>
                 <tr>
-                  <th>Tier</th>
+                  <th>Layer</th>
                   <th>Role</th>
                   <th class="num">Cost shape</th>
                 </tr>
@@ -246,27 +250,27 @@
                 <tr>
                   <td><span class="tier-chip t-hot">HOT · RAM</span></td>
                   <td class="from">
-                    A bounded LRU of decoded chunks in your own process. Optional and evictable —
-                    <strong>correctness never depends on it</strong>, only latency.
+                    A bounded LRU of decoded chunks in your own process, keyed by generation. Optional and
+                    evictable — <strong>correctness never depends on it</strong>, only latency.
                   </td>
                   <td class="num">your memory</td>
-                </tr>
-                <tr>
-                  <td><span class="tier-chip t-warm">WARM · NoSQL</span></td>
-                  <td class="from">
-                    Per-chunk delta rows holding adds and removes since the last publish. A write touches one
-                    small row instead of rewriting a chunk, which is why writes are metered at
-                    <strong>$0.75 per million</strong> rather than costing a PUT each.
-                  </td>
-                  <td class="num">$0.75 / 1M writes</td>
                 </tr>
                 <tr>
                   <td><span class="tier-chip t-cold">COLD · .crbm</span></td>
                   <td class="from">
                     Immutable, generation-keyed objects in your bucket. Never mutated in place, so a reader
-                    always sees a consistent generation and an old one can be kept as a snapshot.
+                    always sees a whole generation and a superseded one can be kept as a snapshot.
                   </td>
                   <td class="num">$0.03/mo · 1.2 GiB</td>
+                </tr>
+                <tr>
+                  <td><span class="tier-chip t-gen">GEN · REGISTRY</span></td>
+                  <td class="from">
+                    Not a tier: one small row per segment holding <span class="m">currentGen</span>. It stores
+                    no bits — it is the compare-and-swap target a publish advances, and the thing a read
+                    resolves once so that every chunk it fetches comes from the same generation.
+                  </td>
+                  <td class="num">one row per segment</td>
                 </tr>
               </tbody>
             </table>
@@ -275,12 +279,13 @@
 
         <div class="matters" style="margin-top: 26px">
           <div class="limit">
-            <p class="label">Compaction</p>
+            <p class="label">Loading a generation</p>
             <p>
-              Deltas accumulate; reads get slower and warm storage gets fuller. Compaction folds them into a
-              new cold generation and drops the rows. It is a background job <strong>you schedule</strong> —
-              not a stop-the-world event, and not something the read path waits on. Publish cost is
-              <strong>$5.88 per million segments</strong>, so batch it.
+              Data enters exactly one way: <span class="m">bulkLoadCrbmGeneration</span> streams a set of ids
+              into one immutable object, then <span class="m">publishGeneration</span> advances the pointer.
+              There is no per-id write, so there is nothing to fold back in later and
+              <strong>no background job on the read path</strong>. A publish costs
+              <strong>$5.88 per million segments</strong>, so batch the refresh.
             </p>
           </div>
           <div class="limit">
@@ -294,13 +299,14 @@
         </div>
       </section>
 
-      <!-- ── A DELETE, AND A PUBLISH ────────────────────────────────────────
-           These were table rows. `(cold ∪ adds) \ removes` is a sentence a reader has to parse; four rows of
-           cells where the tombstone visibly punches a hole in the result is something they can just see. Same
-           for the generation flip — "cold objects are never overwritten" is a claim, while watching gen 7
+      <!-- ── AN ERASURE, AND A PUBLISH ──────────────────────────────────────
+           The left figure used to show a delta tier punching a tombstone through a cold chunk. There is no
+           delta tier, and erasing an id is now a REWRITE — so the cells show the one bit leaving a streamed
+           copy of the generation, which is the mechanism a reader has to trust for a GDPR answer. The right
+           one is unchanged in kind: "cold objects are never overwritten" is a claim, while watching gen 7
            arrive beside gen 6 and the pointer move afterwards is the mechanism. -->
       <section>
-        <h2>A delete, and a publish</h2>
+        <h2>An erasure, and a publish</h2>
         <p class="lede">
           The two operations most systems get wrong. Both are shown rather than asserted, and in both the
           order of events is the point.
@@ -308,43 +314,38 @@
         <div class="dgms">
           <figure class="dgm">
             <div class="dgm-head">
-              <span class="label">A delete</span><span class="label">One chunk, no rebuild</span>
+              <span class="label">An erasure</span><span class="label">One bit, one rewrite</span>
             </div>
             <div class="dgm-body">
               <div class="dgm-row">
-                <span class="dgm-key">Cold</span>
+                <span class="dgm-key">Gen 6</span>
                 <span class="dgm-cells" aria-hidden="true">
                   <i class="set"></i><i></i><i class="set"></i><i class="set"></i><i></i><i class="set"></i><i></i><i class="set"></i><i></i><i></i><i class="set"></i><i></i>
                 </span>
               </div>
               <div class="dgm-row">
-                <span class="dgm-key">Warm · adds</span>
-                <span class="dgm-cells" aria-hidden="true">
-                  <i></i><i class="add"></i><i></i><i></i><i></i><i></i><i class="add"></i><i></i><i></i><i></i><i></i><i></i>
-                </span>
-              </div>
-              <div class="dgm-row">
-                <span class="dgm-key">Warm · removes</span>
+                <span class="dgm-key">The id</span>
                 <span class="dgm-cells" aria-hidden="true">
                   <i></i><i></i><i></i><i class="tomb"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
                 </span>
               </div>
               <div class="dgm-row is-result">
-                <span class="dgm-key">Effective</span>
+                <span class="dgm-key">Gen 7</span>
                 <span class="dgm-cells" aria-hidden="true">
-                  <i class="set"></i><i class="add"></i><i class="set"></i><i class="gone"></i><i></i><i class="set"></i><i class="add"></i><i class="set"></i><i></i><i></i><i class="set"></i><i></i>
+                  <i class="set"></i><i></i><i class="set"></i><i class="gone"></i><i></i><i class="set"></i><i></i><i class="set"></i><i></i><i></i><i class="set"></i><i></i>
                 </span>
               </div>
             </div>
             <p class="dgm-legend">
-              <span><i class="swatch sw-set"></i>in cold</span>
-              <span><i class="swatch sw-add"></i>added since</span>
-              <span><i class="swatch sw-tomb"></i>tombstone</span>
+              <span><i class="swatch sw-set"></i>in generation 6</span>
+              <span><i class="swatch sw-tomb"></i>the id being erased</span>
+              <span><i class="swatch b-none"></i>cleared in generation 7</span>
             </p>
             <p class="dgm-formula">
-              effective = <b>(cold &cup; warm.adds) &#xFF3C; warm.removes</b> &mdash; the tombstone is
-              outlined because it marks an <b>absence</b>, and it wins. A delete is one small row write, not a
-              scan and not a rebuild.
+              <span class="m">eraseSubject</span> streams the current generation, clears <b>one bit</b>,
+              verifies the result and publishes it forward-only &mdash; then collects the generation that held
+              the bit. There is no tombstone to honour on the read path, and nothing to compact later: when the
+              call returns, the bit is <b>physically gone</b> from the bucket.
             </p>
           </figure>
 
@@ -354,7 +355,7 @@
             </div>
             <div class="dgm-body">
               <div class="dgm-row">
-                <span class="dgm-key">Compaction scan</span>
+                <span class="dgm-key">Load · stream</span>
                 <span class="dgm-scan" aria-hidden="true"><i></i></span>
               </div>
               <div class="dgm-row">
@@ -365,7 +366,7 @@
                 </span>
               </div>
               <div class="dgm-row is-result">
-                <span class="dgm-key">LATEST</span>
+                <span class="dgm-key">Pointer</span>
                 <span class="dgm-ptr" aria-hidden="true">
                   &rarr; <span class="old">segment.6.crbm</span><span class="new">segment.7.crbm</span>
                 </span>
@@ -373,10 +374,10 @@
             </div>
             <p class="dgm-formula">
               The new generation is written <b>beside</b> the old one, and the pointer flips
-              <b>last</b>. Until it does, every reader still sees generation 6 &mdash; which is why a
-              half-finished publish cannot be observed, and why an old generation can be kept as a snapshot.
-              Warm rows are then purged <b>conditionally on the version that was archived</b>, so a write
-              landing mid-scan survives.
+              <b>last</b>, by compare-and-swap, and only <b>forward</b>. Until it does, every reader still sees
+              generation 6 &mdash; so a half-written publish cannot be observed, a crash between the two steps
+              leaves 6 authoritative, and the superseded object stays readable for a grace window before the
+              sweep collects it. Every write in the library is this same protocol.
             </p>
           </figure>
         </div>
@@ -418,14 +419,17 @@
             <span class="rl-what">All tier bytes are untrusted</span>
             <span class="rl-fig">safe decode + cap</span>
             <span class="rl-note">
-              Payloads pass the safe deserialiser behind a hard size cap before they reach the native addon. A
-              corrupt or hostile row is a typed error, not a crash.
+              Payloads pass the safe deserialiser behind a hard size cap before they reach the native addon,
+              and every chunk key and value coming back from storage is range-checked. A corrupt or hostile
+              chunk is a typed error, not a crash.
             </span>
           </li>
         </ul>
         <p class="note" style="max-width: 82ch">
-          1,156 tests run on every commit, and the compaction and OCC paths carry property and concurrency
-          tests specifically.
+          Every hard correctness invariant carries named tests — property tests checking a loaded generation
+          against a plain <span class="m">Set</span> oracle, and crash and race tests over the
+          write-then-publish path — and the whole suite runs on every commit. The test count is deliberately
+          not printed here: it moves with almost every commit, and the invariants do not.
         </p>
       </section>
 
@@ -469,10 +473,10 @@
                 <tr>
                   <td><span class="m">WriteConflictError</span></td>
                   <td class="from">
-                    Someone else wrote the chunk you were holding a version of. Optimistic concurrency working,
-                    not failing.
+                    Another writer already took the generation number you were writing. Write-once storage
+                    refusing to be overwritten — working, not failing.
                   </td>
-                  <td><span class="status is-manual">Re-read first</span></td>
+                  <td><span class="status is-manual">New generation</span></td>
                 </tr>
                 <tr>
                   <td><span class="m">IntegrityError</span></td>
@@ -501,9 +505,11 @@
           <p class="tpanel-foot">
             <strong>Deterministic failures are never retried.</strong> Replaying a request that failed for a
             reason that has not changed either cannot help or is actively wrong — and a retry loop that hides a
-            corruption is worse than the corruption. Write conflicts are the one middle case: they get their own
-            loop, in the engine, which <em>re-reads and re-applies</em> rather than replaying the same call,
-            because blindly repeating a read-modify-write is how you lose the other writer's change.
+            corruption is worse than the corruption. Write conflicts are the one middle case, and they split in
+            two: the publish's compare-and-swap <em>re-reads the row and tries again</em>, because advancing a
+            pointer forward is idempotent, while a write-once collision on the object is
+            <em>never</em> replayed — the identical PUT would fail identically, and the fix is a fresh
+            generation number rather than another attempt at the same one.
           </p>
         </div>
       </section>
@@ -535,35 +541,42 @@
           <li>
             <span class="rl-mark">02</span>
             <span class="rl-what">Where the bytes and the milliseconds went</span>
-            <span class="rl-fig">cold.get · warm.read · cache</span>
+            <span class="rl-fig">cold.get · cache · op</span>
             <span class="rl-note">
-              Every tier crossing reports its bytes and its duration, and the cache reports hit or miss. Events
-              carry raw observations rather than dollars — turning bytes into money is the cost model's job, so
-              rates stay yours to change.
+              Every object-store GET reports its bytes and its duration, the cache reports hit or miss, and
+              <span class="m">op</span> times <span class="m">has</span>, <span class="m">count</span> and the
+              <span class="m">*Into</span> verbs on the injected clock. Events carry raw observations rather
+              than dollars — turning bytes into money is the cost model's job, so rates stay yours to change.
             </span>
           </li>
           <li>
             <span class="rl-mark">03</span>
-            <span class="rl-what">Retries and compaction are events, not silence</span>
-            <span class="rl-fig">retry · compaction</span>
+            <span class="rl-what">Retries and state changes are events, not silence</span>
+            <span class="rl-fig">retry · audit</span>
             <span class="rl-note">
-              A retry reports its reason — <span class="m">occ</span> or
-              <span class="m">transient</span> — with the attempt number and the delay, so backoff storms are
-              visible rather than inferred. Compaction reports whether it ran and how many chunks were dirty.
+              A retry reports its reason with the attempt number and the delay, so backoff storms are visible
+              rather than inferred — and there is exactly one reason,
+              <span class="m">transient</span>, because nothing does a read-modify-write to lose a race over.
+              Every change of state is an audit event beside it:
+              <span class="m">segment.publish</span>, <span class="m">segment.rewrite</span>,
+              <span class="m">segment.erase</span>, <span class="m">segment.dispose</span>,
+              <span class="m">namespace.erase</span>.
             </span>
           </li>
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And why any of this should be believed</span>
-            <span class="rl-fig">one seed</span>
+            <span class="rl-fig">a Set oracle</span>
             <span class="rl-note">
-              A deterministic simulator, in the FoundationDB tradition, runs the real engine against a virtual
-              clock, a seeded scheduler and a seeded RNG, checking it against a plain
-              <span class="m">Set</span> oracle at every quiescent point — under injected conflicts, transient
-              faults, compaction racing the live write path, and a compaction crashed mid-commit. Because time
-              and randomness are injected rather than ambient, a failure is reported <em>with its seed</em> and
-              that seed replays the same interleaving. A concurrency bug is therefore reproducible instead of
-              being a story about a flaky test.
+              Every generation in the property tests is written through the real load path and then checked,
+              read back chunk by chunk, against a plain <span class="m">Set</span> — deliberately the dumbest
+              possible model of "a segment is a set of u32", so a dropped chunk, a mis-routed remainder or a
+              stale generation shows up as a mismatch. The write protocol gets named tests of its own for the
+              cases that are otherwise arguments: a crash between the object write and the publish leaves the
+              previous generation authoritative; a publish arriving out of order, or onto a destroyed segment,
+              is refused rather than applied; and a load that lost the write-once race takes the generation
+              above the object that beat it, leaving that object intact. Time and randomness are injected
+              rather than ambient, so a failure is reproducible instead of being a story about a flaky test.
             </span>
           </li>
         </ul>
@@ -575,35 +588,40 @@
       <section>
         <h2>What this design costs you</h2>
         <p class="lede">
-          Every architecture is a set of trades. These are ours, measured rather than estimated.
+          Every architecture is a set of trades. These are ours — and where a figure is owed rather than
+          measured, the row says so instead of rounding it into a claim.
         </p>
         <ul class="rowlist">
           <li>
             <span class="rl-mark">01</span>
-            <span class="rl-what">A warm round trip is milliseconds, not microseconds</span>
-            <span class="rl-fig is-live">p50 5.27 ms · p99 12.71 ms</span>
+            <span class="rl-what">A miss in the hot cache is a trip to object storage</span>
+            <span class="rl-fig">one ranged GET</span>
             <span class="rl-note">
-              Measured in-region in <span class="m">us-east-1</span> on 2026-07-27 over 2,000 samples, against
-              the published package rather than a local build. Inside budget for most request paths, and
-              disqualifying for some.
+              A membership check the LRU cannot answer costs exactly one ranged GET against your bucket —
+              there is no middle tier to answer it more cheaply. Object-store latency, in other words, and no
+              in-region percentile for it is published: that run is
+              <a href="benchmarks.html#owed">listed as owed</a>, not measured.
             </span>
           </li>
           <li>
             <span class="rl-mark">02</span>
-            <span class="rl-what">Sustained high write rates lose to a flat node</span>
-            <span class="rl-fig is-live">26.33 writes/s</span>
+            <span class="rl-what">Sustained high read rates lose to a flat node</span>
+            <span class="rl-fig is-live">329.15 reads/s</span>
             <span class="rl-note">
-              Past that rate the metered bill overtakes $346/mo for a Redis-HA node. We publish the crossover
-              rather than waiting to be asked. <a href="benchmarks.html">See it</a>.
+              Past that rate, with a cold cache, the metered bill overtakes $346/mo for a Redis-HA node. Cache
+              hits move it in your favour; we publish the crossover at a 0% hit rate rather than waiting to be
+              asked. <a href="benchmarks.html">See it</a>.
             </span>
           </li>
           <li>
             <span class="rl-mark">03</span>
-            <span class="rl-what">Compaction is an operational responsibility</span>
-            <span class="rl-fig">a job you own</span>
+            <span class="rl-what">There is no small change</span>
+            <span class="rl-fig">a whole generation</span>
             <span class="rl-note">
-              Skip it and reads degrade as deltas pile up. It is a scheduled job, like a vacuum — there is no
-              version of this design where nobody has to run it.
+              A set changes only by loading a new generation, so correcting one id costs a rewrite of the
+              segment that holds it. Immutability is what buys the untearable read and the physical erasure;
+              the price is that nothing is cheap to edit, and that the retention sweep which collects
+              superseded generations is a job you schedule.
             </span>
           </li>
         </ul>
@@ -616,7 +634,8 @@
             <h2>See it on a real run.</h2>
             <p class="lede" style="margin: 0">
               The demo steps through the intersection above with the recorded counters, and the benchmarks
-              carry the real-backend timings, and the rate past which a flat tier is cheaper.
+              carry the measured costs, the real-cloud calibration, and the rate past which a flat node is
+              cheaper.
             </p>
             <div class="actions">
               <a class="btn btn-primary" href="demo.html">Step through it →</a>

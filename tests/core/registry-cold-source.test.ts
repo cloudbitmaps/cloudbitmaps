@@ -6,7 +6,6 @@ import {
   CrbmColdChunkSource,
   LocalFsColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
   publishGeneration,
 } from '@/index';
@@ -25,7 +24,7 @@ afterAll(async () => {
 });
 const freshCold = (): LocalFsColdDriver => new LocalFsColdDriver(join(root, `d${n++}`));
 const count = (source: CrbmColdChunkSource): Promise<number> =>
-  new CloudRoaring({ warm: new MemoryWarmDriver(), cold: source }).segment('s').count();
+  new CloudRoaring({ cold: source }).segment('s').count();
 
 describe('registry-aware CrbmColdChunkSource (Phase 4c)', () => {
   it('resolves currentGen via the registry (no list-scan) and bulk-load publishes it', async () => {
@@ -83,6 +82,47 @@ describe('registry-aware CrbmColdChunkSource (Phase 4c)', () => {
 
     await publishGeneration(registry, gen(5)); // newer — advances
     expect((await registry.get(SEG))!.currentGen).toBe(5);
+  });
+
+  it('coalesces a concurrent burst at the TTL boundary into ONE registry re-resolve', async () => {
+    // The in-flight refresh is installed **synchronously**, before any await, so every reader that arrives in
+    // the window past the TTL shares the one re-resolve instead of each issuing its own registry read. On a hot
+    // segment that difference is the whole cost of the refresh: N concurrent reads at the boundary become one
+    // strong read, not N.
+    //
+    // Its only test went with `live-invalidation.test.ts`, and nothing else in the suite counts registry reads —
+    // so a refactor that awaited before installing the promise would have been invisible. Counting them is the
+    // only way to see it; the observable answers are identical either way.
+    const cold = freshCold();
+    const base = new MemoryRegistryDriver();
+    let gets = 0;
+    const registry = {
+      capabilities: () => base.capabilities(),
+      get: (ref: SegmentRef) => {
+        gets += 1;
+        return base.get(ref);
+      },
+      create: base.create.bind(base),
+      compareAndSwap: base.compareAndSwap.bind(base),
+      list: base.list.bind(base),
+      delete: base.delete.bind(base),
+    };
+    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2, 3], { registry: base });
+
+    let t = 1_000;
+    const source = new CrbmColdChunkSource(cold, {
+      registry,
+      currentGenTtlMs: 10,
+      clock: { now: () => t },
+    });
+    await source.currentGeneration(SEG); // prime the snapshot
+    const primed = gets;
+
+    t += 50; // past the TTL: the next read must refresh
+    const burst = await Promise.all(Array.from({ length: 8 }, () => source.currentGeneration(SEG)));
+
+    expect(burst).toEqual(Array.from({ length: 8 }, () => 0)); // every reader got the right answer…
+    expect(gets - primed).toBe(1); // …from a single registry read, not eight
   });
 
   it('self-heals when GC sweeps the exact generation a reader pinned mid-read (I5, no torn read)', async () => {

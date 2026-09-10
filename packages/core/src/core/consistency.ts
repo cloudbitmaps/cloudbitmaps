@@ -11,7 +11,7 @@
  * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which can be
  * eventually-consistent (an unindexed Scan) and lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
- * the scan). Residual: a full compaction+GC landing in the tiny per-segment get→list gap can still yield a
+ * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→list gap can still yield a
  * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run
  * to confirm a reported tear.
  */
@@ -25,13 +25,12 @@ import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
 /**
  * Default ceiling on how many registry records one consistency check may hold resident: 250,000.
  *
- * **Named `maxScanSegments`, not `maxSegments`, on purpose.** Compaction already has a `maxSegments`
- * (`maxSegments`) that caps how much work one cycle does and then *continues normally*. This one
- * caps how much a scan may hold and *refuses* past it. Same-sounding names with opposite behaviour at the
- * limit is a trap; pairing this with `maxWarmScanBytes` instead makes both read as what they are — ceilings on
- * a scan that fail closed.
+ * **Named `maxScanSegments`, not `maxSegments`, on purpose.** A `maxSegments`-style option caps how much work
+ * one cycle does and then *continues normally* (the retention sweep's `limit` is that shape). This one caps how
+ * much a scan may hold and *refuses* past it. Same-sounding names with opposite behaviour at the limit is a
+ * trap; the name says what it is — a ceiling on a scan that fails closed.
  *
- * Generous — the compaction docs target 100K+ segment fleets — while still bounding a DR drill's memory to
+ * Generous — fleets of 100K+ segments are the design target — while still bounding a DR drill's memory to
  * something a modest operator box survives. Raisable, because a ceiling you cannot lift is a landmine.
  */
 // Re-exported from its original home so `@cloudbitmaps/core`'s public name does not move; the value and the loop
@@ -113,8 +112,8 @@ export async function runConsistencyCheck(
       // enumerate + skip destroyed segments.
       const live = await deps.registry.get(ref);
       if (!live || live.status === 'destroyed') return { kind: 'ok' }; // vanished/shredded — no live pointer
-      // A row with no Cold generation is *deliberately* Cold-less — a warm-only accumulator that has a row so it
-      // is enumerable at all. There is no generation that ought to exist, so nothing can be missing. Reporting it
+      // A row with no Cold generation is *deliberately* Cold-less — a retention policy recorded before the first
+      // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing can be missing. Reporting it
       // would make `missing-cold-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };

@@ -1,14 +1,8 @@
 import { readFileSync } from 'node:fs';
-import {
-  CloudRoaring,
-  MemoryWarmDriver,
-  MemoryColdChunkSource,
-  ValidationError,
-  VERSION,
-} from '@/index';
+import { CloudRoaring, MemoryColdChunkSource, ValidationError, VERSION } from '@/index';
 
 function store(): CloudRoaring {
-  return new CloudRoaring({ warm: new MemoryWarmDriver(), cold: new MemoryColdChunkSource() });
+  return new CloudRoaring({ cold: new MemoryColdChunkSource() });
 }
 
 describe('public API', () => {
@@ -39,10 +33,45 @@ describe('public API', () => {
 
   it('exposes the store lifecycle methods', () => {
     const cr = store();
-    expect(typeof cr.compact).toBe('function');
-    expect(typeof cr.eraseSubject).toBe('function');
-    expect(typeof cr.subjectReport).toBe('function');
-    expect(typeof cr.exportSegments).toBe('function');
+    for (const method of [
+      'eraseSubject',
+      'subjectReport',
+      'dropSegment',
+      'setRetention',
+      'getRetention',
+      'clearRetention',
+      'retireExpired',
+      'checkConsistency',
+      'exportSegments',
+    ] as const) {
+      expect(typeof cr[method]).toBe('function');
+    }
+  });
+
+  it('exposes the segment verbs, and no write verb', () => {
+    const seg = store().segment('s');
+    for (const method of [
+      'has',
+      'count',
+      'iterate',
+      'intersect',
+      'union',
+      'andNot',
+      'intersectInto',
+      'unionInto',
+      'andNotInto',
+      'costReport',
+    ] as const) {
+      expect(typeof seg[method]).toBe('function');
+    }
+    // The write verbs are gone with the warm tier — data enters a segment as a whole generation. Asserted so a
+    // re-introduction has to be deliberate rather than accidental (an `add` that quietly returned would be the
+    // worst possible regression: it would look like it worked).
+    for (const gone of ['add', 'addMany', 'remove', 'removeMany', 'claimMany']) {
+      expect(seg).not.toHaveProperty(gone);
+      expect((seg as unknown as Record<string, unknown>)[gone]).toBeUndefined();
+    }
+    expect(store()).not.toHaveProperty('compact');
   });
 
   it('rejects names that could traverse or inject (S2)', () => {

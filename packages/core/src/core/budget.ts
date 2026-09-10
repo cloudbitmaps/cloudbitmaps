@@ -9,8 +9,8 @@
  *
  * **What the count is.** For the read ops it is the number of Cold **chunk fetches** (`count`/`iterate`: one per
  * effective chunk; `intersect`: surviving keys × operands). For the admin scans it is the number of **segments
- * fanned out to** (`subjectReport`: one tier-merged `has()` each; `eraseSubject`: one force-compaction each) —
- * i.e. it bounds the *breadth* of the fan-out, not the request total of each segment's own compaction. That's
+ * fanned out to** (`subjectReport`: one `has()` each; `eraseSubject`: one generation rewrite each) — i.e. it
+ * bounds the *breadth* of the fan-out, not the request total of each segment's own rewrite. That's
  * the right lever for a runaway (a million-segment sweep); it is not a byte/request meter.
  */
 

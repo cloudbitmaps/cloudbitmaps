@@ -1,7 +1,7 @@
 /**
  * The **bitmap-codec seam**.
  *
- * `core/` is **codec-agnostic**: `SegmentEngine`, compaction, and the `.crbm` read/write helpers only ever
+ * `core/` is **codec-agnostic**: `SegmentEngine`, the erasure rewrite, and the `.crbm` read/write helpers only ever
  * construct and combine bitmaps through the {@link CodecInterface} factory + the {@link CodecBitmap} value type
  * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, today in
  * `core/bitmap.ts`; it moves to `@cloudbitmaps/roaring` when the package split lands); `@cloudbitmaps/bitset`
@@ -79,11 +79,10 @@ export interface CodecBitmap {
    * run-encoding needs **0.2 KiB** (570×), and a 2,000-run shape 536.5 KiB against **8.5 KiB** (63×). Sparse
    * data is unchanged, because there are no runs to find — the pass is not a gamble.
    *
-   * WHY ONLY ON THE COLD PATH. This is called where a whole immutable generation is written, so its cost
-   * amortizes over a write that is already serializing and checksumming every chunk. It is deliberately NOT
-   * called on the warm delta path (`chunk.ts`), which runs per operation: the hot path must not pay for a
-   * rare-ish win, per KISS/YAGNI. Warm rows are short-lived and get folded into a cold generation by
-   * compaction, where they are optimized then.
+   * WHY ONLY AT WRITE TIME. This is called where a whole immutable generation is written, so its cost amortizes
+   * over a write that is already serializing and checksumming every chunk — and a generation is read many times
+   * after. It is deliberately NOT called on the read path (a clone made for a combine is transient): the hot path
+   * must not pay for a win that only the stored bytes collect, per KISS/YAGNI.
    */
   optimize?(): void;
 }
@@ -109,7 +108,7 @@ export interface CodecInterface {
  * Resolve a codec that a **public core entry point** was given, failing fast when it is missing.
  *
  * Why these entry points take `codec?` rather than a required field: `bulkLoadCrbmGeneration` /
- * `compactSegment` / `runExport` are call-compatible public API, and core cannot supply a default (the concrete
+ * `eraseIdFromSegment` / `runExport` are call-compatible public API, and core cannot supply a default (the concrete
  * codec lives in a *flavor* package that depends on core — a default here would invert that arrow). A **flavor**
  * package binds the codec for its users (`@cloudbitmaps/roaring` re-exports codec-bound wrappers), so an
  * application never reaches this throw; only someone calling `@cloudbitmaps/core` directly — i.e. a flavor or

@@ -57,20 +57,49 @@ function docAnchor(label) {
   }
   return Number(m[1]);
 }
-const writeCost = docAnchor('Incremental');
+// There is no per-id write line any more, and there must not be one: data enters a segment only as a whole
+// generation, so the two operations a reader can be billed for are a read and a publish.
 const countCost = docAnchor('count\\(\\)');
 const publishCost = docAnchor('Segment publish');
+if (/\|[^|\n]*[Ii]ncremental[^|\n]*\|\s*\*\*\$[\d.]+ per million/.test(doc)) {
+  fail(
+    'docs/benchmarks.md prices an "incremental write" per million — there is no per-id write path; a set ' +
+      'changes by publishing a new generation, so that row would price an operation the library cannot perform',
+  );
+}
 
-// ── the latency claim, also parsed ────────────────────────────────────────────────────────────────────────
-const p50 = /\*\*p50\*\*\s*\|\s*\*\*([\d.]+) ms\*\*/.exec(doc);
-const p99 = /\|\s*p99\s*\|\s*\*\*([\d.]+) ms\*\*/.exec(doc);
-if (!p50 || !p99) fail('docs/benchmarks.md no longer states the p50/p99 warm has() figures');
+// ── latency: deliberately unpublished, and that has to be enforced rather than trusted ────────────────────
+// The p50/p99 figures this gate used to parse came from a run that metered a delta tier the library no longer
+// has, so they are gone from the page. What replaces them is not a looser check but an INVERSE one: the page
+// must not publish a millisecond latency for a read verb until an in-region run measures one. Without this,
+// re-quoting the old numbers is a docs edit that CI would wave through.
+const strayLatency = /\|\s*(?:\*\*)?p(?:50|95|99)(?:\*\*)?\s*\|/.exec(doc);
+if (strayLatency) {
+  fail(
+    'docs/benchmarks.md states a p50/p95/p99 latency row — in-region read latency is listed as owed, not ' +
+      'measured (see "What is still owed"); publishing one needs a run behind it',
+  );
+}
 
 // ── the estimator's own accuracy (K3) ─────────────────────────────────────────────────────────────────────
-// This is the claim every other figure on the page rests on, since they all come out of estimateCost(). Parsed
-// rather than transcribed so that loosening it in the docs cannot leave a tighter number published on the site.
-const k3 = /prediction lands within ±(\d+)% of the engine's actual measured/.exec(doc);
-if (!k3) fail("docs/benchmarks.md no longer states the estimator's ±N% accuracy claim (K3)");
+// This is the claim every other figure on the page rests on, since they all come out of estimateCost(). It used
+// to be a tolerance ("within ±N%") and is now a DIRECTION: priced against the cold GETs a metrics sink actually
+// observed, the prediction must land on or above the measured cost. The direction is the stronger claim — a
+// tolerance permits an under-quote of N%, and an estimator that under-quotes your bill is the one failure mode
+// that matters — so what is gated is that the page still states it, and states it as a floor rather than a band.
+const k3 = /never quotes a cheaper bill than the engine incurs/.test(doc);
+if (!k3) {
+  fail(
+    'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim (K3: "never quotes a cheaper ' +
+      'bill than the engine incurs")',
+  );
+}
+if (/prediction lands within ±\d+%/.test(doc)) {
+  fail(
+    'docs/benchmarks.md states the estimator accuracy as a ±N% band — K3 asserts a floor (never cheaper than ' +
+      'measured), and a band would publish a weaker claim than the test makes',
+  );
+}
 
 // ── the real-cloud calibration receipt ────────────────────────────────────────────────────────────────────
 // The only figures on the page that are what AWS ACTUALLY CHARGED rather than what the model predicts, so they
@@ -90,10 +119,26 @@ const calRows = [
 ]
   .map((m) => ({ term: m[1].trim(), qty: m[2].trim(), cost: m[3] }))
   .filter((r) => /Dynamo|S3|Total/i.test(r.term));
-if (calRows.length < 5) {
+// Two line items, both S3 — the object-store half of the run. The other half metered a delta tier the library
+// no longer has, and its rows are not restated: they would put a price on a code path you cannot take.
+if (calRows.length !== 2) {
   fail(
-    `docs/benchmarks.md's calibration table parsed to ${calRows.length} rows, expected 5 ` +
-      '(4 line items + total) — did its shape change?',
+    `docs/benchmarks.md's calibration table parsed to ${calRows.length} rows, expected 2 ` +
+      '(the two S3 line items) — did its shape change?',
+  );
+}
+// And no total, checked rather than assumed. A "total" over two terms of four is a number no run produced, so
+// the page says so in prose; this makes re-adding one a build failure instead of a plausible-looking edit.
+if (calRows.some((r) => /Total/i.test(r.term))) {
+  fail(
+    "docs/benchmarks.md's calibration table publishes a Total — the run's other half is withheld, so a total " +
+      'over the remaining rows would be a figure no run produced',
+  );
+}
+if (calRows.some((r) => /Dynamo/i.test(r.term))) {
+  fail(
+    "docs/benchmarks.md's calibration table restates a DynamoDB line item — those terms metered the removed " +
+      'delta tier; publishing them prices a path the library no longer has',
   );
 }
 
@@ -128,19 +173,16 @@ const atRestShown = atRestExact.toFixed(2); // "0.03"
 if (Number(atRestShown) === 0) fail(`atRest.monthlyUSD (${atRestExact}) rounds to $0.00 at 2dp`);
 
 const anchors = [
-  ['1M incremental writes', writeCost === null ? null : `$${writeCost.toFixed(2)}`],
   ['1M count() calls', countCost === null ? null : `$${countCost.toFixed(2)}`],
   ['1M segment publishes', publishCost === null ? null : `$${publishCost.toFixed(2)}`],
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
   ['Redis-HA baseline', `$${results.redisBaselineUSD}`],
-  ['write crossover', `${results.writeCrossoverPerSec}`],
+  // One crossover, because there is one metered axis: reads against a standing node. The write side is not a
+  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` × `requestsPerLoad` and a
+  // "writes per second" figure would describe an operation nobody performs.
   ['read crossover', `${results.readCrossoverPerSec}`],
-  ['item size assumption', `${results.assumptions.avgItemKiB} KiB`],
-  ['warm has() p50', p50 ? `${p50[1]} ms` : null],
-  ['warm has() p99', p99 ? `${p99[1]} ms` : null],
-  ['estimator accuracy (K3)', k3 ? `±${k3[1]}%` : null],
   ['baseline topology', baselineTopology],
   ['baseline instance class', baselineInstance],
   ['baseline single-node', baseline ? `$${baseline[3]}` : null],
@@ -172,9 +214,19 @@ const anchors = [
 // requiring every anchor to appear on it would force the estimator's p50, the calibration run id and the
 // crossover topologies onto a page whose job is not to carry them. What must never happen is Home stating a
 // figure no source accounts for.
+//
+// The inverse check covers every page that states money, not just those two. /architecture, /usage and /flavors
+// each quote the unit economics and the $346 baseline in their own prose, and none of them was gated — the same
+// hole this file exists to close, one directory over. They are `requireAll: false` for the same reason Home is:
+// each quotes a deliberate subset, and requiring the full anchor set would force the calibration run id and the
+// baseline instance class onto pages whose job is not to carry them.
 const PAGES = [
   { rel: 'site/benchmarks.html', requireAll: true },
   { rel: 'site/index.html', requireAll: false },
+  { rel: 'site/architecture.html', requireAll: false },
+  { rel: 'site/usage.html', requireAll: false },
+  { rel: 'site/flavors.html', requireAll: false },
+  { rel: 'site/flavors/roaring.html', requireAll: false },
 ];
 
 for (const page of PAGES) {
@@ -226,7 +278,6 @@ for (const page of PAGES) {
     );
   } else if (chart) {
     for (const [what, want] of [
-      ['the write crossover', chartLabel(results.writeCrossoverPerSec)],
       ['the read crossover', chartLabel(results.readCrossoverPerSec)],
       ['the Redis baseline', `$${results.redisBaselineUSD}/mo`],
     ]) {
@@ -273,15 +324,19 @@ for (const page of PAGES) {
 // it there left the figure with nothing holding it true. That is the exact shape of the failure this script was
 // written for: a number on a page with no source behind it.
 //
-// `3 tiers` is deliberately NOT anchored. Hot/warm/cold is the architecture — it cannot drift without a rewrite
-// that would touch every page and every doc, so a check for it is one that CANNOT FAIL, the same reason the
-// bare "22"/"23" calibration quantities above are left out. Two of the three figures can drift silently while
-// CI stays green, and those are the two derived below.
+// The tier count is deliberately NOT anchored. Hot RAM over cold object storage is the architecture — it cannot
+// drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
+// took), so a check for it is one that CANNOT FAIL, the same reason the bare "22"/"23" calibration quantities
+// above are left out. The two figures that CAN drift silently while CI stays green are derived below.
 const specAnchors = [];
 {
-  // Registry drivers are excluded on purpose: they store the segment registry, not bitmap chunks, and are a
-  // separate axis from the tiering the page is describing. `Memory` is the in-process dev/test pair, `Retrying`
-  // is a decorator wrapping another driver — neither is a backend a reader could point at.
+  // A backend counts once, whether it stores the chunks or the pointer. Registry drivers used to be excluded
+  // as "a separate axis from the tiering the page is describing" — but with one storage tier left, the axis the
+  // page describes IS this one: which services the library can talk to. DynamoDB is the case that makes the
+  // distinction untenable, since it is now a registry driver and nothing else, and dropping it would make the
+  // count disagree with the `/dynamodb` subpath the install line advertises.
+  // `Memory` is the in-process dev/test pair and `Retrying` is a decorator wrapping another driver — neither is
+  // a backend a reader could point at.
   const NOT_A_BACKEND = new Set(['memory', 'retrying']);
   const backends = new Set();
   const walk = (dir) => {
@@ -291,7 +346,7 @@ const specAnchors = [];
       else if (e.name.endsWith('.ts')) {
         for (const m of fs
           .readFileSync(p, 'utf8')
-          .matchAll(/export class (\w+?)(?:Warm|Cold)\w*Driver\b/g)) {
+          .matchAll(/export class (\w+?)(?:Cold|Registry)\w*Driver\b/g)) {
           const backend = m[1].toLowerCase();
           if (!NOT_A_BACKEND.has(backend)) backends.add(backend);
         }
@@ -305,7 +360,7 @@ const specAnchors = [];
   // silence by editing the page rather than the derivation.
   if (backends.size === 0) {
     fail(
-      'the driver-count derivation matched no `export class …WarmDriver/…ColdDriver` under packages/core/src — ' +
+      'the driver-count derivation matched no `export class …ColdDriver/…RegistryDriver` under packages/core/src — ' +
         'the classes moved or were renamed, so this check is no longer measuring anything',
     );
   }
@@ -321,35 +376,21 @@ const specAnchors = [];
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
 
-  // ── the default warm-scan ceiling, wherever the site quotes it ─────────────────────────────────────────
-  // /architecture and /usage now publish this because the pages state the COLD footprint formula precisely and
-  // used to say nothing at all about Warm — and Warm is a separate term outside that window, one per operand.
-  // A reader sizing a function for a many-operand intersection needs both, so the figure had to be published;
-  // and once published it needs a source, or it becomes the next stale number on the site.
-  const engineSrc = fs.readFileSync(
-    path.join(ROOT, 'packages', 'core', 'src', 'core', 'engine.ts'),
-    'utf8',
-  );
-  const scanCap = /DEFAULT_MAX_WARM_SCAN_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024\b/.exec(
-    engineSrc,
-  );
-  if (!scanCap) {
-    fail(
-      'engine.ts no longer defines DEFAULT_MAX_WARM_SCAN_BYTES as `N * 1024 * 1024` — the site quotes this ' +
-        'ceiling in MiB, so either the constant changed shape or the derivation needs updating',
-    );
-  } else {
-    const want = `${scanCap[1]} MiB`;
-    for (const rel of ['site/architecture.html', 'site/usage.html']) {
-      const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-      // Only assert on the page that actually quotes a figure; /usage names the option without a number.
-      if (/maxWarmScanBytes/.test(html) && /\d+ MiB/.test(html) && !html.includes(want)) {
-        fail(
-          `${rel} quotes a warm-scan ceiling that is not ${want} (engine.ts's DEFAULT_MAX_WARM_SCAN_BYTES)`,
-        );
-      }
+  // ── no warm-scan ceiling to publish, and the site must not claim one ───────────────────────────────────
+  // This block used to derive `DEFAULT_MAX_WARM_SCAN_BYTES` and gate the MiB figure /architecture and /usage
+  // quoted for it. Both the constant and the tier it bounded are gone: an intersection's memory is now one
+  // term, the chunk-aligned window, with no per-operand delta snapshot outside it. The check is inverted
+  // rather than deleted — a page that still quotes a warm ceiling is quoting a bound nothing enforces.
+  for (const rel of [
+    'site/architecture.html',
+    'site/usage.html',
+    'site/benchmarks.html',
+    'site/index.html',
+  ]) {
+    const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (/maxWarmScanBytes/.test(html)) {
+      fail(`${rel} names \`maxWarmScanBytes\` — that option no longer exists`);
     }
-    specAnchors.push(['default warm-scan ceiling', want]);
   }
 
   // ── the encoding benchmark's factors, wherever /flavors/roaring quotes them ─────────────────────────────

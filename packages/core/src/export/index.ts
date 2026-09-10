@@ -9,18 +9,16 @@
  *   segment.
  * - `'ndjson'` — newline-delimited ids, streamed (constant memory, any segment size); zero dependencies to read.
  *
- * The engine is **storage-agnostic and I/O-free**: it enumerates via an {@link IRegistryDriver}, reads the
- * tier-merged effective set via a store's `segment(...).iterate()`, and writes bytes through an injected
+ * The engine is **storage-agnostic and I/O-free**: it enumerates via an {@link IRegistryDriver}, reads each
+ * segment's current generation via a store's `segment(...).iterate()`, and writes bytes through an injected
  * {@link ExportSink} — so it never imports `node:fs` (the `export-segments` CLI supplies a filesystem sink; a
  * test supplies an in-memory one; you could supply an S3 uploader). Crypto-shredded (`destroyed`) segments are
  * skipped (their bytes are unrecoverable); an encrypted segment is decrypted transparently **iff** the store was
  * wired with its keystore — so the export is **cleartext**, and protecting it is on you.
  *
- * **Enumeration** = the registry's known set (segments with a committed cold generation) **plus** any explicit
- * {@link ExportOptions.candidates}. A brand-new **all-warm** segment — written only via real-time
- * `add()`/`remove()`, never compacted — isn't in the registry yet, so name it in `candidates` (CLI:
- * `CR_EXPORT_SEGMENTS`) to include it, or compact/bulk-load it once first. This mirrors the compaction daemon's
- * discovery contract (see `findCompactable`).
+ * **Enumeration** = the registry's known set. Every loaded segment has a registry row (the publish writes it),
+ * so the registry is complete by construction; a segment loaded without a registry is not exportable here — wire
+ * the registry the store was loaded with.
  *
  * **Per-segment fault isolation:** a segment that can't be read (a corrupt cold object, or an encrypted segment
  * when the store has no keystore) is recorded in the manifest's {@link ExportManifest.failed} list and the export
@@ -68,13 +66,6 @@ export interface ExportOptions {
   readonly namespace?: string;
   /** `ndjson` flush threshold in ~bytes (ids are ASCII, so ≈ chars); defaults to 64 KiB. */
   readonly ndjsonBatchBytes?: number;
-  /**
-   * Extra segments to export beyond the registry's known set. The registry only lists segments with a committed
-   * cold generation, so an **all-warm** segment (written via real-time `add()`/`remove()`, never compacted) must
-   * be named here to be included (CLI: `CR_EXPORT_SEGMENTS`). Deduped against the registry set; when `namespace`
-   * is set, only candidates in that namespace are exported.
-   */
-  readonly candidates?: readonly SegmentRef[];
 }
 
 /** Per-segment result recorded in the {@link ExportManifest}. */
@@ -121,12 +112,10 @@ export interface SegmentReader {
 const DEFAULT_NDJSON_BATCH_BYTES = 64 * 1024;
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-/** A dedup key for a ref; namespace can't contain a space (grammar), and '' uniquely denotes the default ns. */
-const refKey = (ref: SegmentRef): string => `${ref.namespace ?? ''} ${ref.segment}`;
 
 /**
- * Export every enumerated segment's effective set through `sink`. Enumerates via `registry` (+ any
- * `options.candidates`), reads via `reader` (the store). Returns a manifest. `CloudRoaring.exportSegments` is the
+ * Export every registered segment's current generation through `sink`. Enumerates via `registry`, reads via
+ * `reader` (the store). Returns a manifest. `CloudRoaring.exportSegments` is the
  * public entry — it calls this with its own store + registry (so enumeration and the read path provably share one
  * registry).
  *
@@ -136,8 +125,9 @@ const refKey = (ref: SegmentRef): string => `${ref.namespace ?? ''} ${ref.segmen
  *
  * Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
  * disappeared — export to a fresh directory for a clean dump. For a *current* image, run against a
- * freshly-constructed store: a store's cold source pins each segment's generation for its lifetime, so a
- * long-lived store that has since been compacted would export the pinned (stale) view.
+ * freshly-constructed store: a store's cold source re-resolves each segment's generation on a short TTL (or pins
+ * it for its lifetime when built without a clock or registry), so a long-lived store may export a view one load
+ * behind.
  */
 export async function runExport(
   reader: SegmentReader,
@@ -148,20 +138,16 @@ export async function runExport(
   const format = options.format ?? 'roaring';
   const ext = format === 'roaring' ? '.roaring' : '.ndjson';
   const batchCap = options.ndjsonBatchBytes ?? DEFAULT_NDJSON_BATCH_BYTES;
-  const candidates = options.candidates ?? [];
   const segments: ExportedSegment[] = [];
   const failed: ExportFailure[] = [];
   let totalIds = 0;
-  // Only track seen keys when there are candidates to dedup against — keeps the common (no-candidates) path from
-  // building a set over the whole registry.
-  const seen = candidates.length > 0 ? new Set<string>() : null;
 
   const exportRef = async (ref: SegmentRef): Promise<void> => {
     let writer: ExportWriter | undefined;
     let count = 0;
     let bytes = 0;
     try {
-      validateSegmentRef(ref); // defense-in-depth: registry rows AND user-named candidates are untrusted here
+      validateSegmentRef(ref); // defense-in-depth: registry rows are untrusted bytes here
       const ids = reader.segment(ref.segment, { namespace: ref.namespace }).iterate();
       writer = await sink.open(ref, ext);
       if (format === 'roaring') {
@@ -222,15 +208,7 @@ export async function runExport(
     // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export
-    if (seen !== null) seen.add(refKey(rec));
     await exportRef({ segment: rec.segment, namespace: rec.namespace });
-  }
-  for (const ref of candidates) {
-    if (options.namespace !== undefined && ref.namespace !== options.namespace) continue; // respect the ns filter
-    const key = refKey(ref);
-    if (seen !== null && seen.has(key)) continue; // already exported via the registry (or a duplicate candidate)
-    seen?.add(key);
-    await exportRef(ref);
   }
   return { version: 1, format, totalSegments: segments.length, totalIds, segments, failed };
 }

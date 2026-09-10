@@ -666,7 +666,8 @@ section > .lede {
 .tier-chip {
   font-family: var(--cb-mono);
   font-size: 10.5px;
-  /* `WARM · NoSQL` broke across two lines inside the tier table and the bezel came apart with it. */
+  /* A two-word chip (`GEN · REGISTRY`) broke across two lines inside the tier table and the bezel came
+     apart with it. */
   white-space: nowrap;
   letter-spacing: 0.1em;
   line-height: normal;
@@ -678,7 +679,7 @@ section > .lede {
   color: var(--cb-hot);
 }
 
-.tier-chip.t-warm {
+.tier-chip.t-gen {
   color: var(--cb-warm);
 }
 
@@ -1246,7 +1247,7 @@ section > .lede {
   color: var(--cb-hot);
 }
 
-.trow.r-warm .tkey {
+.trow.r-gen .tkey {
   color: var(--cb-warm);
 }
 
@@ -1276,7 +1277,7 @@ section > .lede {
   background: var(--cb-hot);
 }
 
-.r-warm .tfill i.f {
+.r-gen .tfill i.f {
   background: var(--cb-warm);
 }
 
@@ -2224,8 +2225,8 @@ section > .lede {
 }
 
 /* The value column. `tabular-nums` earns its place here, unlike in the mono-only
-   figures where the face is already fixed-width — this column mixes 25.3 ms with
-   403,200 and the digits have to line up. */
+   figures where the face is already fixed-width — this column mixes 24.6 ms with
+   100,000 and the digits have to line up. */
 .tpanel .num {
   text-align: right;
   font-family: var(--cb-mono);
@@ -3216,13 +3217,19 @@ section > .lede {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   TWO ARCHITECTURE DIAGRAMS — a delete, and a publish.
+   TWO ARCHITECTURE DIAGRAMS — an erasure, and a publish.
 
-   These replace table rows. `(cold ∪ adds) \ removes` is a sentence a reader has to
-   parse; four rows of cells where the tombstone visibly punches a hole in the
-   result is a thing they can just see. Same for a generation flip: "cold objects
-   are never overwritten" is a claim, whereas watching gen 7 appear beside gen 6 and
-   the pointer move is the mechanism.
+   These replace table rows. "the rewrite carries every other chunk through
+   byte-for-byte and clears one bit" is a sentence a reader has to parse; three rows
+   of cells where the marked id visibly stops being set in the next generation is a
+   thing they can just see. Same for a generation flip: "cold objects are never
+   overwritten" is a claim, whereas watching gen 7 appear beside gen 6 and the
+   pointer move is the mechanism.
+
+   The left figure was a delta tier punching a tombstone through a cold chunk until
+   the warm tier was removed; the cells and their hues carry over because the shape
+   of the claim did — one marked id, and a later row where it is absent — but the
+   mechanism they illustrate is now a whole-generation rewrite.
 
    Both are built here rather than ported, because the old site's versions were
    never styled: `site/architecture.html` references .merge, .bits, .add, .gen,
@@ -3299,21 +3306,16 @@ section > .lede {
   border-color: var(--cb-muted);
 }
 
-/* added since the last publish */
-.dgm-cells i.add {
-  background: var(--cb-cyan);
-  border-color: var(--cb-cyan);
-}
-
-/* a tombstone: outlined, never filled — it marks an ABSENCE, and filling it in would
-   say the opposite of what it means */
+/* the id being erased: outlined, never filled — it marks the ONE BIT the rewrite is
+   about, and filling it in would make it look like any other member */
 .dgm-cells i.tomb {
   background: none;
   border: 2px solid var(--cb-hot);
 }
 
-/* The hole the tombstone punches. Appears after the tombstone does, which is the
-   causal order and the only reason the figure is worth having. */
+/* That bit in the NEXT generation: cleared, where every neighbour was carried
+   through. Appears after the marked cell does, which is the causal order and the
+   only reason the figure is worth having. */
 .dgm-cells i.gone {
   background: none;
   border-color: var(--cb-rule);
@@ -3384,10 +3386,6 @@ section > .lede {
 
 .swatch.sw-set {
   background: var(--cb-muted);
-}
-
-.swatch.sw-add {
-  background: var(--cb-cyan);
 }
 
 .swatch.sw-tomb {

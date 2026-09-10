@@ -1,17 +1,17 @@
 /**
  * `DynamoDbRegistryDriver` — an {@link IRegistryDriver} over DynamoDB (Phase 4c).
  *
- * One item per segment, **co-located with that segment's warm rows** in the single table:
- * `PK = ns#…|seg#…`, `SK = reg#`. OCC mirrors the warm tier — a conditional `UpdateItem` with `ADD v :one`
+ * One item per segment in a single table: `PK = ns#…|seg#…`, `SK = reg#`. OCC is a conditional `UpdateItem`
+ * with `ADD v :one`, which
  * gives a monotonic, never-reused token; a delete **tombstones** (`del=true`, counter advances) so a
  * recreate's token is always greater (ABA-safe). The record body is stored as a JSON string (`r`); the OCC
  * token is the counter `v` (so the body never has to encode its own token).
  *
  * `compareAndSwap` is a read-merge-conditional-write: it fetches the current body to apply the caller's
  * `patch`, then writes under `#v = :expected` — so a concurrent change between the read and the write fails
- * the condition (no lost update), exactly like the engine's chunk OCC.
+ * the condition (no lost update).
  *
- * `list` is a `Scan` with a `reg#` filter (discovery is infrequent — the compaction daemon, Phase 4d). On a
+ * `list` is a `Scan` with a `reg#` filter (discovery is infrequent — a retention sweep, an export). On a
  * large shared table that reads every partition; a namespace-keyed GSI is the scale-up, deferred until a
  * deployment needs it (YAGNI). `@aws-sdk/client-dynamodb` is an optional peer dependency.
  */
@@ -59,7 +59,7 @@ const FALSE: AttributeValue = { BOOL: false };
 
 export interface DynamoDbRegistryDriverOptions {
   readonly client: DynamoDBClient;
-  /** The single table holding warm + registry rows. Must already exist. */
+  /** The table holding the registry rows. Must already exist. */
   readonly tableName: string;
   /** Optional partition-key prefix so several logical stores can share one table. */
   readonly keyPrefix?: string;
@@ -276,12 +276,7 @@ function serializeBody(record: RegistryRecord): string {
     currentGen: record.currentGen,
     wrappedDeks: record.wrappedDeks,
     keyId: record.keyId,
-    dirtyChunkCount: record.dirtyChunkCount,
     status: record.status,
-    leaseOwner: record.leaseOwner,
-    leaseExpiresAt: record.leaseExpiresAt,
-    lastCompactedAt: record.lastCompactedAt,
-    consecutiveFailures: record.consecutiveFailures,
     retention: record.retention,
     residency: record.residency,
     createdAt: record.createdAt,

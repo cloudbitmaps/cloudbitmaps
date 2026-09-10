@@ -1,9 +1,10 @@
 # CLAUDE.md — CloudBitmaps
 
-Distributed, cloud-native Roaring Bitmaps. Maps each 16-bit Roaring chunk onto tiered pluggable cloud storage
-(**hot** RAM LRU → **warm** NoSQL/SQL deltas → **cold** immutable `.crbm` objects), wrapping `roaring-node`/CRoaring
-for the bit math. The crown jewel is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks
-that can possibly contribute.
+Distributed, cloud-native Roaring Bitmaps. A segment is a set of **write-once `.crbm` generations** in object
+storage behind one registry pointer; each 16-bit Roaring chunk is addressable inside a generation, and reads are
+served from a **hot** RAM LRU over that **cold** immutable tier, wrapping `roaring-node`/CRoaring for the bit
+math. Data enters by **loading** a new generation, never by mutating a stored one. The crown jewel is
+**serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks that can possibly contribute.
 
 Start with the [README](README.md), then the [getting-started guide](docs/guide/getting-started.md) and the
 [API reference](docs/guide/api-reference.md) — the complete callable surface, kept in sync with the exports by CI.
@@ -14,10 +15,10 @@ Start with the [README](README.md), then the [getting-started guide](docs/guide/
 
 A **pnpm workspace of two packages**, both versioned in lockstep:
 
-- **`packages/core` → `@cloudbitmaps/core`** — the codec-agnostic engine (`SegmentEngine` + the `CodecInterface`
-  seam) and **every** storage driver as optional-peer subpaths (`/s3`, `/dynamodb`, `/gcs`, `/azure`), plus the
-  `.crbm` format, compaction, crypto, registry,
-  consistency, budget, eject. **Zero runtime dependencies.**
+- **`packages/core` → `@cloudbitmaps/core`** — the codec-agnostic read engine (`SegmentEngine` + the
+  `CodecInterface` seam) and **every** storage driver as optional-peer subpaths (`/s3`, `/dynamodb`, `/gcs`,
+  `/azure`), plus the `.crbm` format, the load/publish write path, generation GC, erasure-by-rewrite, crypto,
+  registry, consistency, budget, eject. **Zero runtime dependencies.**
 - **`packages/roaring` → `@cloudbitmaps/roaring`** — the roaring codec (`SafeBitmap`/`roaringCodec`), the
   `CloudRoaring` facade, one-line re-export barrels per driver subpath, and the `export-segments` CLI. Depends on core.
 - **Users install one flavor** — `npm i @cloudbitmaps/roaring` (+ only the backend SDK(s) they use);
@@ -32,7 +33,7 @@ Build by these:
 
 - **SOLID** — one responsibility per module; extend via composition / new driver impls, not edits; substitutable implementations (same conformance suite); small interfaces; depend on abstractions (inject drivers, `Clock`, `Rng`).
 - **DRY** — one source of truth; **derive state, don't duplicate it**; reuse before adding.
-- **KISS / YAGNI — simplicity and performance are non-negotiable.** The simplest thing that works; build for today's requirement (reserve format space for the future, build it when real). **Don't over-complicate anything, and never ship something that hurts performance** — a feature most users won't use must not tax the hot path (`add`/`has`/`remove`/`count`/`intersect`) everyone pays for. No always-on write-amplification, extra storage copies, or per-op overhead to speed up a rare operation; push it to wiring-time, create-time, the daemon, an admin call, a recipe, or docs instead. Over-engineering is itself a failure.
+- **KISS / YAGNI — simplicity and performance are non-negotiable.** The simplest thing that works; build for today's requirement (reserve format space for the future, build it when real). **Don't over-complicate anything, and never ship something that hurts performance** — a feature most users won't use must not tax the hot path (`has`/`count`/`iterate`/`intersect`) everyone pays for. No always-on extra storage copies or per-op overhead to speed up a rare operation; push it to wiring-time, load-time, an admin call, a recipe, or docs instead. Over-engineering is itself a failure.
 - **Fail fast, typed errors** — validate at boundaries; typed errors (`WriteConflictError`, `IntegrityError`, …) over thrown strings; never silently swallow.
 - **Security by default** — all tier bytes are untrusted (safe-deserialize + size cap); least privilege; never log keys/PII/bitmap contents.
 - **Determinism** — inject `Clock`/`Rng`; keep `packages/core/src/core/` a pure, storage-agnostic seam (no I/O, time, randomness, or cloud SDK), lint-enforced.
@@ -52,8 +53,8 @@ The essentials, in order:
 
 1. **Branch off `main`** — `feature/`/`fix/`/`chore/`; docs-only may go straight to `main`.
 2. **Build with tests, not after** — new behavior ships with tests in the same commit; each
-   [hard invariant](#hard-correctness-invariants) gets named tests (property/concurrency for the compaction and
-   OCC paths).
+   [hard invariant](#hard-correctness-invariants) gets named tests (property tests over loaded generations, and
+   crash/race tests for the write-then-publish path).
 3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build`; every one
    must pass before review. **`pnpm typecheck` is required exactly like `test`/`lint`** — zero `tsc` errors *and*
    zero editor red squiggles; never deferred or `@ts-ignore`-d.
@@ -77,12 +78,12 @@ Releases are automated, tokenless and human-gated — see [`RELEASING.md`](RELEA
 
 ## Hard correctness invariants
 
-These are the protocol fixes the design *must* honor — each one reshapes the data model, and each came out of an adversarial review before a line was written:
+These are the protocol rules the design *must* honor — each one shapes the data model, and each came out of an adversarial review rather than from a bug:
 
-1. **Tombstones are first-class.** A chunk carries `adds` + `removes`; effective set = `(Cold ∪ Warm.adds) \ Warm.removes`. There is a real `remove()`. (Fixes the "OR-merge can't delete" hole.)
-2. **Generation + per-chunk version fencing.** Compaction purges Warm rows **conditionally** on the version it archived; post-scan writes survive. Cold objects are **generation-keyed and immutable** (`segment.<gen>.crbm` + a `LATEST` pointer); never overwrite in place.
-3. **Compaction merges Cold ∪ Warm**, never rebuilds from Warm alone.
-4. **Reads are tier-merging** where a chunk can co-reside; a single-tier fast path is allowed only where provably safe.
-5. **All tier bytes are untrusted input.** Use the **safe** roaring deserializer + a hard size cap before the native addon; never the trusting variant.
-6. **Bounded memory & cost, always.** Hard LRU ceiling; bounded intersection concurrency; per-op budgets. The headline cost story must be honest (per-1KB DynamoDB write billing; published crossover vs Redis).
+1. **Write-once generations, published forward-only.** A write never touches a stored object: it writes a *new* generation and then advances the segment's registry pointer, which only ever moves forward (an out-of-order or duplicate publish is refused, never a regression). So a load, a `*Into` materialisation and an erasure rewrite are the same protocol, and a crash before the publish leaves the previous generation authoritative.
+2. **Cold objects are immutable and generation-keyed** (`segment.<gen>.crbm`), and the pointer is moved by compare-and-swap. Never overwrite in place; never reuse a generation number (a colliding put fails write-once).
+3. **One generation per read operation.** A read resolves the segment's current generation *once*, before any fan-out, and every chunk it fetches comes from that generation — whole and checksum-verified. A read is never a merge of two sources, so it can never be torn.
+4. **GC never touches the current generation.** Only generations strictly below the pointer are collectable, keeping a configurable grace window for readers pinned to a just-superseded one; the sole exception is a `destroyed` (crypto-shredded) segment, where every generation is garbage because no reader can resolve it.
+5. **All tier bytes are untrusted input.** Use the **safe** roaring deserializer plus a hard size cap before the native addon (never the trusting variant), and range-check every chunk key and payload value that comes back from storage.
+6. **Bounded memory & cost, always.** Hard LRU ceiling; bounded intersection concurrency; per-op budgets. The headline cost story must be honest (published read crossover vs an always-on Redis node).
 7. **Storage-agnostic *and* runtime-agnostic core.** `packages/core/src/core/` imports no cloud SDK and no driver impl — only the driver interfaces; the main entry stays SDK-free and core never imports a flavor package. It also imports **no `node:*` builtin**, so the seam loads where none exists (a V8 isolate); randomness, time and I/O arrive through injected seams (`Clock`, `Rng`, `BlobReader`, the driver ports). Anything needing a builtin belongs in a driver. All four rules are eslint `no-restricted-imports` rules (eslint.config.js) enforced by `pnpm lint`, and `pnpm lint:arch` (`tests/arch`) proves each one fires and that the import graph is acyclic.

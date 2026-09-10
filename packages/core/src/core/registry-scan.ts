@@ -64,7 +64,7 @@ export async function drainRegistry(
 /**
  * Is this record **bookkeeping** rather than a segment? Covers every reserved family — today the due-index
  * pointers ({@link isDueIndexRow}). **Every unscoped fleet-wide enumeration must skip these**: `drainRegistry`,
- * compaction discovery, the export/eject scan, and the all-namespaces GDPR paths.
+ * the export/eject scan, and the all-namespaces GDPR paths.
  *
  * This is the ONE place a reserved family is declared, and a new one belongs here rather than at the call
  * sites. An earlier cut inlined the comparison per site and shipped with three missed — including

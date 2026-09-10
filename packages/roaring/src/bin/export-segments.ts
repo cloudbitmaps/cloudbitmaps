@@ -22,23 +22,16 @@
  * `store.exportSegments(sink, { format })` with your own sink — the binary stays SDK-free.
  *
  * Config is read from the environment (12-factor-friendly):
- *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding cold/ warm/ registry/
+ *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding cold/ registry/
  *   CR_EXPORT_OUT        (required) — the output directory for the dump
  *   CR_EXPORT_FORMAT     roaring | ndjson                (default: roaring)
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
- *   CR_EXPORT_SEGMENTS   comma-separated extra segments to include (all-warm / not-yet-registered): `seg` or `ns/seg`
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { validateSegmentRef } from '@cloudbitmaps/core';
-import {
-  CloudRoaring,
-  LocalFsColdDriver,
-  LocalFsRegistryDriver,
-  LocalFsWarmDriver,
-} from '../index';
+import { CloudRoaring, LocalFsColdDriver, LocalFsRegistryDriver } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -46,30 +39,6 @@ export interface ExportConfig {
   readonly out: string;
   readonly format: ExportFormat;
   readonly namespace?: string;
-  /** Extra segments to include beyond the registry (all-warm / not-yet-registered); from `CR_EXPORT_SEGMENTS`. */
-  readonly segments?: readonly SegmentRef[];
-}
-
-/**
- * Parse `CR_EXPORT_SEGMENTS` — comma-separated `segment` or `namespace/segment` entries — into refs, or
- * `undefined` when unset/empty. Names are validated up front so a typo fails fast rather than silently landing in
- * the manifest's `failed[]`.
- */
-function parseSegments(raw: string | undefined): readonly SegmentRef[] | undefined {
-  const entries = (raw ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (entries.length === 0) return undefined;
-  return entries.map((entry) => {
-    const slash = entry.indexOf('/'); // segment/namespace names can't contain '/', so the first one splits cleanly
-    const ref: SegmentRef =
-      slash === -1
-        ? { segment: entry }
-        : { namespace: entry.slice(0, slash), segment: entry.slice(slash + 1) };
-    validateSegmentRef(ref); // fail fast on a bad name (empty part, illegal chars)
-    return ref;
-  });
 }
 
 /** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
@@ -87,7 +56,7 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
     throw new Error(`CR_EXPORT_FORMAT must be "roaring" or "ndjson"; got ${format}`);
   }
   const namespace = env.CR_EXPORT_NAMESPACE || undefined; // treat '' (an unset shell var) as "no filter"
-  return { root, out, format, namespace, segments: parseSegments(env.CR_EXPORT_SEGMENTS) };
+  return { root, out, format, namespace };
 }
 
 /**
@@ -149,14 +118,12 @@ export async function main(
   const registry = new LocalFsRegistryDriver(join(config.root, 'registry'));
   const store = new CloudRoaring({
     cold: new LocalFsColdDriver(join(config.root, 'cold')),
-    warm: new LocalFsWarmDriver(join(config.root, 'warm')),
     registry,
   });
 
   const manifest = await store.exportSegments(fsSink(config.out), {
     format: config.format,
     namespace: config.namespace,
-    candidates: config.segments,
   });
 
   // The manifest is written LAST (after every segment file is committed), so its presence marks a finished run —

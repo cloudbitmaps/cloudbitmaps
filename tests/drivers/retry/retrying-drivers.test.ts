@@ -1,19 +1,18 @@
 import {
   RetryingColdChunkSource,
   RetryingColdDriver,
-  RetryingWarmDriver,
+  RetryingRegistryDriver,
 } from '@/drivers/retry/retrying-drivers';
 import type { RetryingOptions } from '@/drivers/retry/retrying-drivers';
 import { TransientError, WriteConflictError } from '@/core/errors';
-import { NO_ROW } from '@/core/ports';
 import type {
   ChunkRef,
   ColdChunkSource,
   GenKey,
   IColdDriver,
-  IWarmDriver,
+  IRegistryDriver,
+  RegistryRecord,
   SegmentRef,
-  WarmRow,
 } from '@/core/ports';
 import type { Clock, Rng } from '@/core/determinism';
 
@@ -44,103 +43,6 @@ function flaky<T>(fails: number, err: unknown, value: T): () => Promise<T> {
   let n = 0;
   return () => (++n <= fails ? Promise.reject(err) : Promise.resolve(value));
 }
-
-describe('RetryingWarmDriver', () => {
-  it('retries a transient get and returns the eventual value, on the exact backoff schedule', async () => {
-    const clock = recordingClock();
-    const row: WarmRow = { token: '1', bytes: Uint8Array.of(7) };
-    const get = flaky(2, new TransientError('blip'), row);
-    const inner = { get: () => get() } as unknown as IWarmDriver;
-    const d = new RetryingWarmDriver(inner, opts(clock));
-    expect(await d.get(ref)).toBe(row);
-    // policy: base 1, factor 2, jitter 'none' ⇒ exact delays [1, 2] (catches a wrong-delay/index mutation).
-    expect(clock.sleeps).toEqual([1, 2]);
-  });
-
-  it('does NOT retry a WriteConflictError (OCC is the engine loop’s job)', async () => {
-    const clock = recordingClock();
-    let calls = 0;
-    const inner = {
-      putConditional: () => {
-        calls++;
-        return Promise.reject(new WriteConflictError('conflict'));
-      },
-    } as unknown as IWarmDriver;
-    const d = new RetryingWarmDriver(inner, opts(clock));
-    await expect(d.putConditional(ref, Uint8Array.of(1), NO_ROW)).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
-    expect(calls).toBe(1);
-    expect(clock.sleeps).toEqual([]);
-  });
-
-  it('re-enumerates listChunks from the start on a transient fault while establishing the scan', async () => {
-    const clock = recordingClock();
-    let attempts = 0;
-    const rows: Array<{ chunkKey: number } & WarmRow> = [
-      { chunkKey: 1, token: '1', bytes: Uint8Array.of(1) },
-      { chunkKey: 2, token: '1', bytes: Uint8Array.of(2) },
-    ];
-    const inner: Pick<IWarmDriver, 'listChunks'> = {
-      async *listChunks() {
-        attempts++;
-        if (attempts === 1) throw new TransientError('mid-list blip'); // fails before any yield
-        yield* rows;
-      },
-    };
-    const d = new RetryingWarmDriver(inner as IWarmDriver, opts(clock));
-    const out: number[] = [];
-    for await (const r of d.listChunks(seg)) out.push(r.chunkKey);
-    expect(out).toEqual([1, 2]); // no duplicates — full re-enumeration on retry
-    expect(attempts).toBe(2);
-  });
-
-  // Both of these pin the same fix. `listChunks` is the only wrapper that drives its inner iterator by hand
-  // (deliberately — buffering it would defeat the engine's resident-memory bound), so it is the only one where
-  // abandonment has to be cleaned up explicitly. Without the `finally`, the inner generator stays suspended at
-  // its `yield` forever, holding whatever it had open: a Mongo cursor, a Cassandra stream.
-  //
-  // Two exits, because the engine uses the second one. `collectWarm` throws `BudgetExceededError` from INSIDE
-  // its `for await` over this method, so the throw path is the one that actually fires in production.
-  const abandonable = (): { inner: IWarmDriver; closed: () => boolean } => {
-    let closed = false;
-    const inner: Pick<IWarmDriver, 'listChunks'> = {
-      async *listChunks() {
-        try {
-          yield { chunkKey: 1, token: '1', bytes: Uint8Array.of(1) };
-          yield { chunkKey: 2, token: '1', bytes: Uint8Array.of(2) };
-        } finally {
-          closed = true; // stands in for a real driver releasing its cursor
-        }
-      },
-    };
-    return { inner: inner as IWarmDriver, closed: () => closed };
-  };
-
-  it('closes the inner scan when the consumer breaks out early', async () => {
-    const { inner, closed } = abandonable();
-    const d = new RetryingWarmDriver(inner, opts(recordingClock()));
-    for await (const row of d.listChunks(seg)) {
-      expect(row.chunkKey).toBe(1);
-      break;
-    }
-    expect(closed()).toBe(true);
-  });
-
-  it('closes the inner scan when the consumer throws mid-stream (the engine’s ceiling path)', async () => {
-    const { inner, closed } = abandonable();
-    const d = new RetryingWarmDriver(inner, opts(recordingClock()));
-    await expect(
-      (async () => {
-        for await (const row of d.listChunks(seg)) {
-          void row;
-          throw new Error('maxWarmScanBytes exceeded');
-        }
-      })(),
-    ).rejects.toThrow('maxWarmScanBytes exceeded');
-    expect(closed()).toBe(true);
-  });
-});
 
 describe('RetryingColdChunkSource', () => {
   it('retries a transient getChunk', async () => {
@@ -231,6 +133,68 @@ describe('RetryingColdDriver', () => {
     const out: number[] = [];
     for await (const g of d.list(seg)) out.push(g.generation);
     expect(out).toEqual([0, 1]); // no duplicate gen-0 despite the first attempt yielding it before faulting
+    expect(attempts).toBe(2);
+  });
+});
+
+describe('RetryingRegistryDriver', () => {
+  const record: RegistryRecord = {
+    segment: 's',
+    currentGen: 0,
+    status: 'active',
+    createdAt: 1,
+    updatedAt: 1,
+    token: 't',
+  };
+
+  it('retries a transient get and returns the eventual value, on the exact backoff schedule', async () => {
+    const clock = recordingClock();
+    const inner: Pick<IRegistryDriver, 'get'> = {
+      get: flaky(2, new TransientError('blip'), record),
+    };
+    const d = new RetryingRegistryDriver(inner as IRegistryDriver, opts(clock));
+    await expect(d.get(seg)).resolves.toBe(record);
+    expect(clock.sleeps).toEqual([1, 2]); // base, base×factor — capped at maxDelayMs, no jitter
+  });
+
+  it('does NOT retry a WriteConflictError from compareAndSwap — the publish loop owns that', async () => {
+    // The conflict IS the answer: it means the pointer moved, and a blind replay would re-apply the patch
+    // against a token that is already stale. `publishGeneration` re-reads and retries at its own level, where
+    // the decision (advance, no-op, or refuse) can actually be made.
+    const clock = recordingClock();
+    let calls = 0;
+    const inner: Pick<IRegistryDriver, 'compareAndSwap'> = {
+      compareAndSwap: () => {
+        calls += 1;
+        return Promise.reject(new WriteConflictError('token moved'));
+      },
+    };
+    const d = new RetryingRegistryDriver(inner as IRegistryDriver, opts(clock));
+    await expect(d.compareAndSwap(seg, 't', { currentGen: 1 })).rejects.toBeInstanceOf(
+      WriteConflictError,
+    );
+    expect(calls).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+  });
+
+  it('re-enumerates list() from the start on a transient fault (buffered, no duplicates)', async () => {
+    const clock = recordingClock();
+    let attempts = 0;
+    const inner: Pick<IRegistryDriver, 'list'> = {
+      async *list() {
+        attempts += 1;
+        if (attempts === 1) {
+          yield record; // yielded INTERNALLY, then faults — must not reach the consumer twice
+          throw new TransientError('mid-scan blip');
+        }
+        yield record;
+        yield { ...record, segment: 'other' };
+      },
+    };
+    const d = new RetryingRegistryDriver(inner as IRegistryDriver, opts(clock));
+    const seen: string[] = [];
+    for await (const r of d.list()) seen.push(r.segment);
+    expect(seen).toEqual(['s', 'other']);
     expect(attempts).toBe(2);
   });
 });

@@ -1,4 +1,5 @@
 import {
+  applyRegistryPatch,
   assertRegistrySchemaVersion,
   assertStoredRecordShape,
   parseRegistryEnvelope,
@@ -10,40 +11,89 @@ import type { RegistryRecord } from '@/core/ports';
 import { IntegrityError, UnsupportedError } from '@/core/errors';
 
 /**
- * Phase D added two OPTIONAL registry fields (`consecutiveFailures`, `lastCompactedAt`). The read-back guard
- * must keep accepting rows written *before* Phase D (no such keys) — otherwise an upgrade makes every existing
- * row unreadable. The conformance round-trip can't catch a regression here because a freshly created row always
- * carries the fields; this pins the back-compat + the value-validation directly on the shared guard.
+ * **A row written by an older build must still read.** D2 removed five fields the compaction daemon used —
+ * `dirtyChunkCount`, `lastCompactedAt`, `consecutiveFailures`, `leaseOwner`, `leaseExpiresAt` — from the record
+ * and patch types, and with them the validation that used to police their values. What must NOT change is that
+ * a stored row still *carrying* them parses: an upgrade that made every pre-D2 registry row unreadable would
+ * take the segment with it, since the row is the only pointer to the generation.
+ *
+ * The direction of the guarantee is the point, and it runs both ways: the fields are **tolerated on read** and
+ * **dropped on the next write** (`applyRegistryPatch` rebuilds the record from the fields this build knows), so
+ * they age out of the fleet rather than being carried forever. The conformance round-trip cannot catch a
+ * regression here because a freshly created row never has them; this pins it on the shared guard directly.
  */
-describe('assertStoredRecordShape — daemon-health field back-compat (Phase D)', () => {
+describe('assertStoredRecordShape — a pre-D2 row with the removed daemon fields still reads', () => {
   const base = {
     segment: 's',
     currentGen: 0,
-    dirtyChunkCount: 0,
     status: 'active',
     createdAt: 1,
     updatedAt: 1,
     token: 't',
   };
 
-  it('accepts a pre-Phase-D row with neither consecutiveFailures nor lastCompactedAt', () => {
-    expect(() => assertStoredRecordShape({ ...base }, 'back-compat')).not.toThrow();
+  it('accepts a row written by this build (none of the removed fields present)', () => {
+    expect(() => assertStoredRecordShape({ ...base }, 'current')).not.toThrow();
   });
 
-  it('accepts valid daemon-health fields (including a legitimate 0)', () => {
+  it('accepts a pre-D2 row carrying every removed field', () => {
     expect(() =>
-      assertStoredRecordShape({ ...base, consecutiveFailures: 0, lastCompactedAt: 123 }, 'ok'),
+      assertStoredRecordShape(
+        {
+          ...base,
+          dirtyChunkCount: 12,
+          lastCompactedAt: 1_725_000_000_000,
+          consecutiveFailures: 3,
+          leaseOwner: 'host:pid:uuid',
+          leaseExpiresAt: 1_725_000_060_000,
+          status: 'compacting', // the transient status a daemon left behind — still a valid value, now reserved
+        },
+        'pre-D2',
+      ),
     ).not.toThrow();
-    expect(() => assertStoredRecordShape({ ...base, consecutiveFailures: 5 }, 'ok')).not.toThrow();
   });
 
-  it('rejects corrupt daemon-health fields (invariant 5: untrusted bytes)', () => {
-    expect(() => assertStoredRecordShape({ ...base, consecutiveFailures: -1 }, 'bad')).toThrow();
-    expect(() => assertStoredRecordShape({ ...base, consecutiveFailures: 1.5 }, 'bad')).toThrow();
-    expect(() => assertStoredRecordShape({ ...base, lastCompactedAt: -5 }, 'bad')).toThrow();
+  it('does not police the values of fields it no longer reads', () => {
+    // A nonsensical `consecutiveFailures` was rejected while something acted on it. Nothing does now, so
+    // rejecting the row would make a segment unreadable over a field with no consumer — strictly worse than
+    // ignoring it. (What is still policed: `currentGen`, `status`, the wrapped DEKs and the governance blobs —
+    // every field a reader actually resolves through. Those cases live below and in the conformance suite.)
     expect(() =>
-      assertStoredRecordShape({ ...base, lastCompactedAt: Number.POSITIVE_INFINITY }, 'bad'),
-    ).toThrow();
+      assertStoredRecordShape({ ...base, consecutiveFailures: -1, lastCompactedAt: -5 }, 'inert'),
+    ).not.toThrow();
+  });
+
+  it('still rejects a row whose LIVE fields are corrupt', () => {
+    expect(() => assertStoredRecordShape({ ...base, currentGen: -1 }, 'bad')).toThrow();
+    expect(() => assertStoredRecordShape({ ...base, status: 'nonsense' }, 'bad')).toThrow();
+    expect(() => assertStoredRecordShape({ ...base, retention: null }, 'bad')).toThrow();
+  });
+
+  it('drops the removed fields on the next write, so they age out of the fleet', () => {
+    // The other half of the guarantee, and the reason "tolerated" does not mean "carried forever":
+    // `applyRegistryPatch` rebuilds the record from the fields this build knows, so one ordinary CAS on a
+    // pre-D2 row leaves it clean. Asserted rather than described, because the merge is spelled field by field
+    // and a stray `...prev` would silently reintroduce them.
+    const legacy = {
+      ...base,
+      dirtyChunkCount: 12,
+      consecutiveFailures: 3,
+      leaseOwner: 'host:pid:uuid',
+      leaseExpiresAt: 1,
+      lastCompactedAt: 2,
+    } as unknown as RegistryRecord;
+    const next = applyRegistryPatch(legacy, { currentGen: 1 }, 99, '1');
+    expect(next.currentGen).toBe(1);
+    expect(next.createdAt).toBe(base.createdAt); // identity + audit history preserved
+    for (const gone of [
+      'dirtyChunkCount',
+      'consecutiveFailures',
+      'leaseOwner',
+      'leaseExpiresAt',
+      'lastCompactedAt',
+    ]) {
+      expect(next).not.toHaveProperty(gone);
+    }
   });
 });
 
@@ -57,9 +107,7 @@ describe('registry envelope schema version (Phase G1, format freeze)', () => {
   const record: RegistryRecord = {
     segment: 's',
     currentGen: 0,
-    dirtyChunkCount: 0,
     status: 'active',
-    consecutiveFailures: 0,
     createdAt: 1,
     updatedAt: 1,
     token: '0',

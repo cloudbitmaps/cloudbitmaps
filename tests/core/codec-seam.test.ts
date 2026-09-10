@@ -5,13 +5,18 @@
  *
  * `SetCodec` is a deliberately naive `CodecInterface` over a plain JS `Set<number>` (serialize = JSON). It is
  * NOT a real codec (no compression, not the `bitset`/`soaring` we'll ship) — just enough to exercise every
- * operation the engine calls through the interface: construct, (de)serialize with a size cap, the set algebra
- * for tier-merge (`orInPlace`/`andNotInPlace`/`andInPlace`), membership, count, ascending iteration.
+ * operation the engine calls through the interface: construct, deserialize under a size cap, membership,
+ * count, ascending iteration, and the set algebra the combines run on (`clone`/`andInPlace`/`orInPlace`/
+ * `andNotInPlace`).
+ *
+ * Generations are seeded as bytes the codec under test produced — a chunk of a generation is exactly "what
+ * this codec's `serialize()` wrote", so seeding is the whole write side of the seam.
  */
 import { SegmentEngine } from '@/core/engine';
-import { MemoryWarmDriver, MemoryColdChunkSource } from '@/index';
+import { MemoryColdChunkSource } from '@/index';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { IntegrityError } from '@/core/errors';
+import { collect } from '../helpers/loaded';
 
 class SetBitmap implements CodecBitmap {
   constructor(readonly s: Set<number> = new Set()) {}
@@ -70,25 +75,24 @@ const setCodec: CodecInterface = {
   },
 };
 
-async function collect(it: AsyncIterable<number>): Promise<number[]> {
-  const out: number[] = [];
-  for await (const v of it) out.push(v);
-  return out;
+/** Seed one chunk of a segment with bytes the codec under test produced (remainders, as a chunk holds). */
+function seed(
+  cold: MemoryColdChunkSource,
+  segment: string,
+  chunkKey: number,
+  rems: number[],
+): void {
+  cold.seed({ segment, chunkKey }, setCodec.fromValues(rems).serialize());
 }
 
 describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
   const seg = { segment: 'a' } as const;
 
-  it('add / has / remove / count / iterate all work through an injected SetCodec', async () => {
-    const engine = new SegmentEngine({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-      codec: setCodec,
-    });
-    await engine.add(seg, 5);
-    await engine.add(seg, 70_000); // spans a second 16-bit chunk
-    await engine.addMany(seg, [1, 2, 3]);
-    await engine.remove(seg, 2);
+  it('has / count / iterate all work through an injected SetCodec', async () => {
+    const cold = new MemoryColdChunkSource();
+    seed(cold, 'a', 0, [1, 3, 5]);
+    seed(cold, 'a', 1, [70_000 & 0xffff]); // spans a second 16-bit chunk
+    const engine = new SegmentEngine({ cold, codec: setCodec });
 
     expect(await engine.has(seg, 5)).toBe(true);
     expect(await engine.has(seg, 2)).toBe(false);
@@ -96,23 +100,37 @@ describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
     expect(await collect(engine.iterate(seg))).toEqual([1, 3, 5, 70_000]);
   });
 
-  it('tier-merges a cold base under a warm delta — the (cold ∪ adds) \\ removes path via the codec', async () => {
+  it('runs the combine set algebra through the codec — union, andNot, and a folded-in exclude', async () => {
+    // Every in-place op the engine calls is exercised here: `orInPlace` (union), `andInPlace` (intersect),
+    // `andNotInPlace` (the exclude/andNot fold), over a `clone()` of the first operand's cached chunk.
     const cold = new MemoryColdChunkSource();
-    // Seed chunk 0 (ids 10,20,30) with SetCodec-serialized bytes — the engine must decode them via the codec.
-    cold.seed({ ...seg, chunkKey: 0 }, setCodec.fromValues([10, 20, 30]).serialize());
-    const engine = new SegmentEngine({ warm: new MemoryWarmDriver(), cold, codec: setCodec });
+    seed(cold, 'a', 0, [10, 20, 30]);
+    seed(cold, 'b', 0, [20, 30, 40]);
+    seed(cold, 'sup', 0, [30]);
+    const engine = new SegmentEngine({ cold, codec: setCodec });
+    const a = { segment: 'a' };
+    const b = { segment: 'b' };
+    const sup = { segment: 'sup' };
 
-    await engine.add(seg, 40); // warm add
-    await engine.remove(seg, 20); // warm tombstone over the cold base
-    expect(await collect(engine.iterate(seg))).toEqual([10, 30, 40]);
-    expect(await engine.count(seg)).toBe(3);
+    expect(await collect(engine.union([a, b]))).toEqual([10, 20, 30, 40]);
+    expect(await collect(engine.andNot(a, [sup]))).toEqual([10, 20]);
+    expect(await collect(engine.intersect([a, b], { exclude: [sup] }))).toEqual([20]);
   });
 
   it('chunk-skipping intersect works through the codec (crown jewel, codec-agnostic)', async () => {
     const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 'a', chunkKey: 0 }, setCodec.fromValues([1, 2, 3]).serialize());
-    cold.seed({ segment: 'b', chunkKey: 0 }, setCodec.fromValues([2, 3, 4]).serialize());
-    const engine = new SegmentEngine({ warm: new MemoryWarmDriver(), cold, codec: setCodec });
+    seed(cold, 'a', 0, [1, 2, 3]);
+    seed(cold, 'b', 0, [2, 3, 4]);
+    const engine = new SegmentEngine({ cold, codec: setCodec });
     expect(await collect(engine.intersect([{ segment: 'a' }, { segment: 'b' }]))).toEqual([2, 3]);
+  });
+
+  it('the size cap is the codec’s to enforce, and the engine hands it down', async () => {
+    // The engine never decodes bytes itself, so the untrusted-input cap (invariant 5) is only real if
+    // `maxBitmapBytes` actually reaches `safeDeserialize`. A 1-byte cap makes any real chunk fail.
+    const cold = new MemoryColdChunkSource();
+    seed(cold, 'a', 0, [1, 2, 3]);
+    const engine = new SegmentEngine({ cold, codec: setCodec, maxBitmapBytes: 1 });
+    await expect(engine.has(seg, 1)).rejects.toThrow(IntegrityError);
   });
 });

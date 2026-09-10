@@ -6,8 +6,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 > **SemVer starts here.** `0.1.0` is the first published release and the first versioned section below.
 > Everything before it accumulated as a running dev log; from now on changes land under **[Unreleased]** and
-> are cut into a version on release. For granular per-phase detail see the roadmap and phase docs, and for
-> *why* decisions were made the decision log.
+> are cut into a version on release. For what is shipped and how far it is proven see
+> [`docs/ROADMAP.md`](docs/ROADMAP.md); for *why* a change is shaped the way it is, the entries below say so, and
+> so do the module headers in the code.
 >
 > **Pre-1.0 means the format and API can still move.** Breaking changes are possible in a minor bump until
 > `1.0`, at which point the `.crbm` format freezes and normal SemVer guarantees apply.
@@ -16,48 +17,70 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Removed
 
-- **The lifecycle engine and five warm drivers — never released, removed before they were.** The partition
-  leases (`runLeaseCycle` and its family), the lifecycle cycle (`runLifecycleCycle`), the engine loop
-  (`createEngineLoop`) and the `compact-segments` CLI, together with the PostgreSQL, Redis, MongoDB,
-  Cassandra/ScyllaDB and MySQL warm drivers and their `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql`
-  subpaths, are gone from this line. None of the engine ever shipped in a release; the five drivers shipped through
-  `0.9.x`, which stays on npm. The reason is a change of direction, not a defect: the library's front door is
-  becoming the *loaded* store — write-once generations on object storage, read and intersected from anywhere —
-  and every roaring-based engine that needs freshness meets it by micro-batching into immutable segments, never by
-  mutating a stored bitmap per call. A future live tier, if there is demand, will be built as immutable delta
-  generations on the same bucket. The removed code is archived intact at the git tag `archive/live-warm-tier`.
+- **The live write tier is gone: the warm tier, the write verbs, and compaction.** This line is a **loaded
+  store** — a segment is a set of write-once `.crbm` generations in object storage behind one registry pointer,
+  and data enters only by loading a new generation. The reason is a change of direction, not a defect: every
+  roaring-based engine that needs freshness meets it by micro-batching into immutable segments, never by mutating
+  a stored bitmap per call, and object storage is immutable-object storage — so REPLACE is the native verb and
+  MUTATE was the add-on we had backwards. Hot-path *reads* are what this library is for; hot-path *writes* belong
+  in RAM. A future live tier, if there is demand, will be built as immutable **delta generations** on the same
+  bucket. Everything removed here is archived intact at the git tag `archive/live-warm-tier`, and **`0.9.x` stays
+  on npm** with all of it.
 
-  **What this means for you today:** the DynamoDB warm driver, `store.compact()`, `compactSegment`,
-  `runCompactionCycle`, `findCompactable` and `gcOrphanGenerations` are unchanged — compaction is something you
-  schedule (a cron, a Lambda on a timer, a `CronJob`) rather than a daemon we ship, which is what the docs now
-  say. `retireExpired` is unchanged and takes `shards` / `totalShards` for a multi-replica sweep. If a pre-release
-  engine ever wrote `cbm.leases` rows to your registry, they are harmless bookkeeping and can be deleted.
-  `isReservedRow` / `excludingReservedRows` remain — the due-index pointers are the one reserved family — and now
-  live beside `drainRegistry`.
+  Removed, in one list:
+
+  - **The warm tier.** `IWarmDriver`, `WarmRow`, `WarmReadOptions`, the `NO_ROW` create sentinel,
+    `MemoryWarmDriver`, `LocalFsWarmDriver`, `DynamoDbWarmDriver` and `RetryingWarmDriver`. The `/dynamodb`
+    subpath now exports the **registry** driver only. Warm rows in an existing table are inert — delete them
+    when you are done with `0.9.x`.
+  - **The write verbs.** `add`, `addMany`, `remove`, `removeMany` and `claimMany` on a segment handle, and the
+    optimistic-concurrency read-modify-write behind them (with `DEFAULT_OCC_BACKOFF` and the `occBackoff`,
+    `writeConcurrency`, `warmReadConsistency` and `maxWarmScanBytes` store options).
+  - **Compaction.** `compactSegment`, `runCompactionCycle`, `findCompactable`, `store.compact()`,
+    `validateCompactionOptions`, every `Compaction*` type, and the `owner` / lease options — plus the partition
+    leases (`runLeaseCycle` and family), the lifecycle cycle (`runLifecycleCycle`), the engine loop
+    (`createEngineLoop`) and the `compact-segments` CLI, none of which ever shipped in a release. There is
+    nothing left to compact: a generation is already the merged whole.
+  - **The five non-AWS warm drivers** — PostgreSQL, Redis, MongoDB, Cassandra/ScyllaDB and MySQL — and their
+    `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql` subpaths. They shipped through `0.9.x`.
+  - **Registry bookkeeping the daemon needed:** `dirtyChunkCount`, `lastCompactedAt`, `consecutiveFailures`,
+    `leaseOwner` and `leaseExpiresAt` leave `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch`. A row
+    written by an older build **still reads** — the fields are ignored and dropped on its next write.
+    `RegistryStatus` keeps its four values, with `'compacting'` / `'erasing'` now reserved and set by nothing.
+  - **Observability that described the removed path:** the `warm.read`, `warm.write` and `compaction` metric
+    events and their `MetricsSnapshot` counters, the `retry` event's `'occ'` reason, the `add`/`remove`/
+    `addMany`/`removeMany`/`claimMany` `op` names, and the `segment.compact` audit event.
+  - **The write half of the cost model** (see *Changed*), the export `candidates` option and its
+    `CR_EXPORT_SEGMENTS` environment variable, the fault-injecting write/compaction simulator
+    (`testing/simulator/*`) and the `IWarmDriver` conformance suite, and the bench harnesses that drove the
+    write path (`calibrate-aws`, `chaos-localstack`, `load-localstack`, `stress`, and the `chaos` / `load` /
+    `stress` / `calibrate:aws` package scripts).
+
+  If a pre-release engine ever wrote `cbm.leases` rows to your registry, they are harmless bookkeeping and can be
+  deleted. `isReservedRow` / `excludingReservedRows` remain — the due-index pointers are the one reserved family —
+  and now live beside `drainRegistry`.
 
 ### Added
 
-- **Compaction discovery now has a ceiling.** The retention sweep and compaction discovery both drain the same
-  `registry.list()`, and only one of them was bounded. Peak heap, in-memory driver:
+- **Subject erasure is now a generation rewrite, and the deletion is physical on return.** New core function
+  `eraseIdFromSegment(ref, id, deps)` streams a segment's current generation through a fresh one with the single
+  bit cleared, verifies it, publishes it forward-only, and then collects the generation that held the bit — so
+  when it returns, the id is **gone from the bucket**, not masked by a tombstone. Constant memory (one chunk in
+  flight). `store.eraseSubject(id, …)` runs it across every registered segment the id is in and returns the
+  ledger; it no longer takes an `owner`, and each entry is
+  `{ segment, namespace?, erased, fromGeneration?, generation?, note? }`. A load that publishes mid-rewrite is
+  caught by the forward-only publish and reported as `note: 'superseded'` — re-run. Emits the new
+  `segment.rewrite` audit event (with both generation numbers) at the publish, before the old generation is
+  collected.
 
-  | fleet | compaction discovery | retention fleet scan |
-  |---|---|---|
-  | 250k | +128 MB | +123 MB |
-  | 500k | **+209 MB** | `BudgetExceededError` |
-  | 1M | **+362 MB** | `BudgetExceededError` |
-
-  `findCompactable` gains `maxScanSegments` (charged on the row, *before* the shard filter: a sharded worker's scan
-  is not smaller, and the module has always said so). This makes the limit **loud**, not smaller — the scan is
-  still O(fleet) per worker because the shard filter needs a key only the enumeration yields.
-
-- **`DiscoveryOptions` takes `shards` (a set) alongside the single `shard`**, and discovery still costs one
-  registry scan however many shards are listed — so one worker can compact several slices of the fleet.
+- **`nextGeneration(ref, { cold, registry })` and a `generation-gc` module.** `nextGeneration` picks the number
+  for a segment's next object — one above the highest the registry *or* the bucket knows, so an object left by a
+  crashed load is skipped rather than collided with. `gcOrphanGenerations` moved here from the compaction module
+  unchanged (`keep` still defaults to 1; `keep: 0` is what makes the erasure rewrite's deletion immediate).
 
 - **`retireExpired` takes `shards` / `totalShards`.** It had no shard option, so N replicas each ran the full sweep
-  and contended over the same segments — the hazard the compaction path has documented since `0.8.0`. It uses
-  the **same stable hash as compaction discovery**, so a worker retires and compacts the same slice. `shardOf`
-  moved to one definition for that reason: if the two disagreed, the union across workers would be neither
-  disjoint nor complete.
+  and contended over the same segments. It uses a stable hash of the segment key, so a worker owns the same slice
+  across restarts.
 
 - **Docs — a runbook for the one retention failure that does not self-heal.**
   [disaster-recovery.md](docs/guide/disaster-recovery.md) gains *"an unstamped tombstone after a hard kill"*.
@@ -149,6 +172,155 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   first cut inlined it and shipped with three sites missed, and the due index then leaked into the retention
   sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a reserved
   namespace still sees its rows.
+
+- **`intersectInto` / `unionInto` / `andNotInto` publish a new generation of the destination.** They used to
+  `addMany` the result into `dest`, adding to whatever was there; now they write the result as one immutable
+  object and advance `dest`'s pointer to it — the same write-once-then-publish protocol as a load — and return
+  `{ generation, cardinality, chunkCount, size }` instead of `void`. So `dest` is **replaced, not appended to**,
+  a reader of `dest` sees either the old generation or the new one and never a partial result, and the operation
+  is no longer "not atomic across chunks". They need the store built with a raw cold driver and a registry.
+  An empty result publishes an empty generation (the general guard for that case lands with `load()`) — with one
+  exception: a call in which **any handle has expired** is now refused with a `ValidationError` naming the
+  segments, because an expired handle reads as empty and would otherwise turn a materialisation into a silent
+  wipe of the destination. The read verbs are unchanged: there, expiry still degrades to empty.
+
+- **`CloudRoaringOptions` takes `cold` alone as its required seam.** `warm` is gone, as are
+  `warmReadConsistency`, `writeConcurrency`, `maxWarmScanBytes` and `occBackoff`. `registry` stays optional for
+  reads but is required by every lifecycle helper and by the `*Into` verbs (they publish through it), and the
+  error naming that out now names the operation you called.
+
+- **The cost model covers the loaded store only.** `PricingProfile` loses its whole `warm` block (`rruPerMillion`,
+  `wruPerMillion`, `readUnitKiB`, `writeUnitKiB`, `stronglyConsistent`, warm storage); `Workload` loses
+  `writesPerSec`, `avgItemKiB` and the four compaction fields and gains **`loadsPerMonth`** and
+  **`requestsPerLoad`** (a multipart load bills `parts + 2` PUT-class requests); `CostReport.monthlyUSD.byOp` is
+  `{ reads, intersects, storage, loads }` with no `byTier`; `redisCrossover` keeps **`readsPerSec` only**; and
+  the `Topology` type, the `topology` input and the `batchable-writes` advisory (with `CostAdvisory` and
+  `CostReport.advisories`) are gone — there is no write axis to advise about. The published crossover is
+  therefore one number: at a cold cache, pay-per-use passes the $346/month always-on baseline at **~329 reads/s**.
+  `bench/results.json`, the crossover chart, `docs/benchmarks.md` and the CI anchor test drop the write axis with
+  it.
+
+- **`dropSegment`, `destroySegment`, `eraseNamespace` and `retireExpired` no longer touch a warm tier.**
+  `EraseDeps` is `{ registry }`, `DropDeps` is `{ registry, cold }`, and the retention sweep takes
+  `{ registry, cold }`. `DestroyResult` loses `warmRowsDeleted`; `DropResult` loses `warmRowsDeleted` and
+  `wouldDeleteWarmRows`, and its `reason` loses `'warm-only'` (the accumulator case it described cannot exist —
+  a segment with no generation has no data). The ordering contract is now **registry tombstone, then sweep the
+  objects**, still re-swept so an object a load was mid-write when the tombstone landed is collected.
+
+- **`SegmentEngine` is read-only** — `has`, `count`, `iterate`, `intersect`, `union`, `andNot` — and `EngineDeps`
+  is `{ cold, cache?, codec, clock?, metrics?, budget?, maxBitmapBytes? }`. `DEFAULT_WRITE_CONCURRENCY` and
+  `DEFAULT_MAX_WARM_SCAN_BYTES` are gone. A read resolves the generation once and every chunk comes from it, so
+  the engine no longer merges tiers per chunk; the hot cache stays generation-keyed, which is what makes a
+  freshly published generation miss it instead of serving stale bytes.
+
+- **`count()` is free on every loaded segment.** With no warm deltas there are no dirty chunks to merge, so the
+  cheap path is the only path: the cardinality is summed from the `.crbm` index with **zero payload reads**
+  whenever the cold source can report it.
+
+- **The seven hard correctness invariants are restated for this model** (write-once generations published
+  forward-only · immutable generation-keyed objects behind a CAS'd pointer · one generation per read · GC never
+  touches the current generation · untrusted tier bytes · bounded memory and cost · a storage- and
+  runtime-agnostic core). See `CLAUDE.md`.
+
+### Fixed
+
+Five defects found by this change's own adversarial review, none of which the suite could see. Each one now has a
+test that fails without its fix, verified by re-introducing the bug (`tests/core/publish-fences.test.ts`).
+
+- **The subject-erasure rewrite could discard a concurrent write, and attest an erasure that had been undone.**
+  `eraseIdFromSegment` derives its new generation from the current one — `from` minus one bit — but published it
+  *forward-only*, and `nextGeneration` deliberately picks a number above everything in the bucket. So the rewrite
+  always out-ranked a generation published while it was working, and the `keep: 0` collection then deleted that
+  generation's object. Two consequences, both reproduced: a load that landed mid-rewrite had its entire set
+  discarded silently (it returned a normal `BulkLoadResult` and emitted `segment.publish`), and two concurrent
+  erasures each returned `erased: true` with a `segment.rewrite` audit event while the second one's generation
+  put the first one's id **back** — a false Art. 17 receipt, which is the worst output that module can produce.
+  The tell was that both receipts named `fromGeneration: 0`.
+
+  `publishGeneration` now takes **`expectFrom`**, which makes a publish land only while the pointer is still
+  exactly where the caller derived its content from, and the rewrite passes it; anything else is reported as
+  `reason: 'superseded'`, `erased: false`, for the caller to re-run. The predecessor (`compactSegment`) had the
+  same fence as an explicit re-read and it was lost in the move to `nextGeneration`. A load still publishes
+  forward-only — its ids come from upstream, so it loses nothing by winning, and that asymmetry is the point.
+
+- **Encryption could not be turned on for an existing segment: it destroyed the data.** `bulkLoadCrbmGeneration`
+  minted a DEK whenever a keystore was supplied and the row carried none — including a row whose `currentGen` was
+  already set — and `publishGeneration`'s plain-advance branch did not carry `wrappedDeks`. The pointer therefore
+  advanced to a generation encrypted under a key that was never persisted: unrecoverable the moment the call
+  returned, and reported as a success. No race was needed, and it was reachable two ways — the documented "load
+  it again with a keystore wired" upgrade, and any `*Into` on a keystore-wired store whose destination already
+  had a cleartext generation.
+
+  **A segment's encryption is now decided at its first generation.** A keystore is wired on the *store*, so it is
+  in scope for segments deliberately left cleartext; the segment's own posture wins instead. A load onto an
+  existing cleartext lineage stays cleartext, and with `requireEncryption: true` it is refused with a
+  `ValidationError` naming the way forward (load into a new segment, drop the old one). `publishGeneration`
+  refuses new key material on an advance rather than dropping it — the alternative, carrying it, would make the
+  row advertise encryption over readable cleartext objects, which is what makes `destroySegment` emit
+  `segment.erase` ("unreadable everywhere, backups included") over plaintext.
+
+- **A union whose every operand had expired silently dropped `exclude`.** The all-expired shortcut returned the
+  base segment's `iterate()`, which takes no options, so the suppression list did not apply — on a library whose
+  headline is composable suppression, reached by nothing more exotic than a rolling segment handle passing its
+  deadline. `exclude` is not an operand of the union, it is a subtraction applied to the result, so it survives:
+  `(this ∪ nothing) \ exclude`.
+
+- **`MaterializeResult.generation` could name a generation that never became current.** `BulkLoadResult` did not
+  surface its publish outcome, so a `*Into` whose forward-only publish no-oped — a concurrent writer published a
+  higher generation of `dest` first — resolved successfully naming an orphan, while `dest` held the other
+  writer's content. `BulkLoadResult` now carries **`becameCurrent`** (absent with no registry, since there is
+  then no pointer), and the `*Into` verbs throw `WriteConflictError` rather than report a generation that is not
+  the destination's.
+
+- **The erasure rewrite could re-encode a corrupt chunk into a fresh generation.** It put every chunk through
+  the safe deserializer and the size cap but not the remainder-range half of invariant 5, so a chunk holding a
+  value above `MAX_REMAINDER` — one not written by this codec — was carried forward, `verifyGeneration` (chunk
+  keys and cardinality) did not see it, and the call reported `erased: true` over a segment that still could not
+  be read. It now refuses, naming the chunk: "this segment is corrupt" is what the operator needs to hear, and a
+  successful-looking erasure says nothing. One `maximum()` call per chunk, on a path that is re-encoding every
+  chunk anyway.
+
+- **A `*Into` publish left no audit record.** It is the one write path that could make a generation current
+  without a trace in the compliance trail: `materialize` never threaded an audit sink and the verbs exposed no
+  way to pass one. The combine options now take **`audit`**, read only by the `*Into` verbs (the streaming verbs
+  write nothing, so they emit nothing) and emitting `segment.publish` exactly as a load does.
+
+### Documentation
+
+- Corrections found by the same review, in code that pointed readers at machinery that no longer exists or made
+  a claim stronger than the code keeps: the erasure module documented a concurrency fence it did not have; its
+  rewrite generator claimed to re-validate "every chunk (invariant 5)" when it applied only half of it — which
+  turned out to be worth fixing in the code rather than the comment, see above; `UnsupportedError` still offered
+  `compact` as its example; `withRetry` and
+  the DynamoDB error classifier still deferred pointer conflicts to "the engine's read-modify-write / OCC loop".
+  The engine's generation-ordering comment now says how much that ordering actually buys under one storage tier
+  — it is the order that is correct for any source satisfying the port, rather than one a test can currently
+  distinguish — instead of restating a rationale that only held while a delta tier existed.
+- **Four places pointed readers at a design corpus this repository does not contain.** `docs/README.md` sent
+  contributors to an `internal/` tree that is not here, `README.md` claimed the specs and decision log "live
+  under `docs/`", and the API reference and this changelog deferred *why* to the decision log. Each now points at
+  where the reasoning actually is — the module headers, which lead with the decision they encode and what the
+  alternative cost, and the [hard correctness invariants](CLAUDE.md#hard-correctness-invariants) — and
+  `docs/README.md` says plainly that the design corpus is maintained privately and that nothing here should send
+  you to it. A doc that promises a reader something the repo does not have is worse than one that says less.
+
+### Tests
+
+- **Three guards were being carried untested**, each found by mutating it and watching all 1,114 tests pass: the
+  erasure rewrite's `verifyGeneration` (the integrity gate on the one path that rewrites a whole segment for a
+  GDPR erasure), the chunk-key range check on the index-only `count()` path (invariant 5, on the headline read
+  verb — the existing out-of-range test exercises the fallback path instead), and the throw when a rewrite
+  published but could not collect (the branch that decides whether an erasure ledger over-attests).
+- **The property-test generators barely produced overlapping operands.** Drawing each operand independently from
+  `fc.integer({ max: 300_000 })`, one sample in 200 produced a non-empty two-way intersection, none produced
+  identical operands, an `exclude` that removed everything, or an id at a chunk boundary — so the intersect and
+  suppression properties were comparing `[]` against `[]` almost every run. Operands are now subsets of one
+  shared universe that includes the boundary ids explicitly (92 of 200 overlap, 114 touch a boundary, 28 are
+  fully suppressed), and the generator's **reach is itself asserted**, so it cannot silently go degenerate again.
+- **The TTL-boundary coalescing test is restored.** `CrbmColdChunkSource` installs its in-flight refresh
+  synchronously so a burst of readers past the TTL shares one registry read; its only test went with
+  `live-invalidation.test.ts`, and nothing else in the suite counted registry reads, so awaiting before
+  installing the promise would have been invisible.
 
 ## [0.9.0] — 2026-08-05
 
@@ -1919,7 +2091,7 @@ provenance. Everything below is the work that got it here.
   [getting-started guide](docs/guide/getting-started.md), and the usage guide; fixed the
   "three barrel files" → nine count and completed the driver-option-types index in
   [the API reference](docs/guide/api-reference.md); corrected the `tsup.config.ts` entry comment
-  ("AWS SDK" → the per-driver backend SDKs). Marked **Phase 7 complete** in the roadmap and phase doc.
+  ("AWS SDK" → the per-driver backend SDKs).
 
 ### Fixed
 

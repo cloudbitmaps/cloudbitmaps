@@ -10,8 +10,11 @@
  *
  * It deliberately does **not** retry deterministic failures ({@link WriteConflictError},
  * {@link ValidationError}, {@link IntegrityError}, {@link NotFoundError}, …): retrying those either can't
- * help or would be incorrect. OCC conflicts are retried by a *separate* loop (the engine's read-modify-write)
- * because each retry must re-read and re-apply, not blindly replay the same call.
+ * help or would be incorrect. A pointer conflict is retried by a *separate* loop inside
+ * `publishGeneration`, because each attempt must re-read the row and re-decide — a blind replay of the same
+ * compare-and-swap would either fail again on a stale token or, worse, advance a pointer whose state has
+ * changed underneath it. A write-once object collision is never replayed at all: the generation number is
+ * taken, so the caller has to pick a new one.
  */
 import type { Clock, Rng } from './determinism';
 import { isTransientError, ValidationError } from './errors';
@@ -45,15 +48,6 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   jitter: 'full',
 };
 
-/** Backoff for the engine's OCC conflict loop — local contention resolves fast, so smaller + tighter. */
-export const DEFAULT_OCC_BACKOFF: RetryPolicy = {
-  maxAttempts: 1, // attempts are owned by the engine's loop; this policy only supplies the delay schedule
-  baseDelayMs: 5,
-  maxDelayMs: 200,
-  backoffFactor: 2,
-  jitter: 'full',
-};
-
 export interface RetryDeps {
   readonly clock: Clock;
   readonly rng: Rng;
@@ -70,7 +64,7 @@ export function isTransient(err: unknown): boolean {
 
 /**
  * Backoff delay (ms) for the retry that follows a given 1-based attempt, before jitter is applied. Exposed
- * for tests and the engine's OCC loop. `attempt` 1 ⇒ `baseDelayMs`, 2 ⇒ `base·factor`, … capped at `maxDelayMs`.
+ * for tests. `attempt` 1 ⇒ `baseDelayMs`, 2 ⇒ `base·factor`, … capped at `maxDelayMs`.
  */
 export function backoffDelayMs(policy: RetryPolicy, attempt: number): number {
   const raw = policy.baseDelayMs * policy.backoffFactor ** (attempt - 1);

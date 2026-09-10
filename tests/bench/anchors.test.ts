@@ -1,18 +1,17 @@
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryWarmDriver,
-  MemoryColdChunkSource,
   MemoryColdDriver,
   CrbmColdChunkSource,
-  writeCrbmGeneration,
   SafeBitmap,
+  writeCrbmGeneration,
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   type MetricsSnapshot,
   type PricingProfile,
 } from '@/index';
-import { splitId, joinId } from '@/core/bit-route';
+import { joinId } from '@/core/bit-route';
+import { collect, loadedStore, seededStore } from '../helpers/loaded';
 
 /**
  * Benchmark-as-test anchors (Phase 5c). These are the **defensible-floor** cost/perf claims turned into CI
@@ -21,37 +20,16 @@ import { splitId, joinId } from '@/core/bit-route';
  * offline `pnpm bench`, too noisy for shared CI runners). A failing anchor is a build failure.
  *
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
- * Redis-HA, write- and read-crossover vs the published rates, and the estimator within ±20% of the engine's
- * measured backend cost (K3).
+ * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the cold requests
+ * the engine actually issued (K3).
  */
 
 const SECONDS_PER_MONTH = 730 * 3600; // matches the estimator's convention
-
-async function drain(it: AsyncIterable<number>): Promise<number[]> {
-  const out: number[] = [];
-  for await (const id of it) out.push(id);
-  return out;
-}
-
-/** Seed a segment's Cold tier from a flat id list, grouped by chunk; returns total bytes seeded. */
-function seedCold(cold: MemoryColdChunkSource, segment: string, ids: number[]): number {
-  const byChunk = new Map<number, number[]>();
-  for (const id of ids) {
-    const { chunkKey, remainder } = splitId(id);
-    (byChunk.get(chunkKey) ?? byChunk.set(chunkKey, []).get(chunkKey)!).push(remainder);
-  }
-  let bytes = 0;
-  for (const [chunkKey, rems] of byChunk) {
-    const serialized = SafeBitmap.fromValues(rems).serialize();
-    cold.seed({ segment, chunkKey }, serialized);
-    bytes += serialized.length;
-  }
-  return bytes;
-}
+const GIB = 1024 ** 3;
 
 describe('bench-as-test anchors (Phase 5c)', () => {
-  it('count() performs 0 payload reads on a warm-delta-free segment (the cheap-count claim)', async () => {
-    // A cold-only, fully-compacted segment across several .crbm chunks — the Topology-A steady state.
+  it('count() performs 0 payload reads on a loaded segment (the cheap-count claim)', async () => {
+    // A loaded segment across several .crbm chunks — the steady state of every segment in this model.
     const driver = new MemoryColdDriver();
     await writeCrbmGeneration(driver, { segment: 'counted', generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3]) },
@@ -59,11 +37,7 @@ describe('bench-as-test anchors (Phase 5c)', () => {
       { chunkKey: 12, bitmap: SafeBitmap.fromValues([7]) },
     ]);
     const metrics = new CountingMetricsSink();
-    const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new CrbmColdChunkSource(driver),
-      metrics,
-    });
+    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver), metrics });
     const n = await store.segment('counted').count();
     const snap = metrics.snapshot();
     expect(n).toBe(8); // 3 + 4 + 1, summed straight from the .crbm index
@@ -75,17 +49,18 @@ describe('bench-as-test anchors (Phase 5c)', () => {
     // 20 chunks per segment; exactly one shared chunk key (19) → 5% overlap.
     const aChunks = Array.from({ length: 20 }, (_, k) => k); // keys 0..19
     const bChunks = Array.from({ length: 20 }, (_, k) => k + 19); // keys 19..38 → shares only key 19
-    const metrics = new CountingMetricsSink();
-    const cold = new MemoryColdChunkSource();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, metrics });
-
     // ~1000 ids per chunk so payloads are non-trivial and comparable in size.
     const idsFor = (keys: number[]): number[] =>
       keys.flatMap((k) => Array.from({ length: 1000 }, (_, r) => joinId(k, r)));
-    const fullBytes = seedCold(cold, 'a', idsFor(aChunks)) + seedCold(cold, 'b', idsFor(bChunks));
+
+    const metrics = new CountingMetricsSink();
+    const { store, cold } = seededStore({ a: idsFor(aChunks), b: idsFor(bChunks) }, { metrics });
+    const fullBytes =
+      (await cold.sizeOf({ segment: 'a' }))!.sizeBytes +
+      (await cold.sizeOf({ segment: 'b' }))!.sizeBytes;
 
     metrics.reset();
-    await drain(store.segment('a').intersect([store.segment('b')]));
+    await collect(store.segment('a').intersect([store.segment('b')]));
     const snap = metrics.snapshot();
 
     // Only the single shared key (19) survives the key-alignment: 1 common key, fetched from BOTH
@@ -111,79 +86,66 @@ describe('bench-as-test anchors (Phase 5c)', () => {
     expect(report.monthlyUSD.total).toBeCloseTo(1.2 * 0.023, 4);
   });
 
-  it('the modeled write crossover is ≥ the published ~26 writes/sec (we never understate the loss)', () => {
+  it('the modeled read crossover matches the published ~329 reads/sec, over the $346 baseline', () => {
+    // The published chart plots the read crossover and the flat baseline it crosses — gate both, so the
+    // benchmarks page's "every number is CI-asserted" promise actually holds. 346 / (2,628,000 × $0.40/M).
     const report = estimateCost({
       segments: [{ sizeBytes: 0 }],
-      topology: 'B',
-      workload: { avgItemKiB: 8 },
-    });
-    expect(report.redisCrossover.writesPerSec).toBeGreaterThanOrEqual(26);
-    expect(report.redisCrossover.writesPerSec).toBeLessThan(27); // sanity ceiling
-  });
-
-  it('the modeled read crossover (Topology-B) matches the published ~527 reads/sec, over the $346 baseline', () => {
-    // The published chart plots BOTH crossovers and the flat baseline they cross — gate both (and the
-    // baseline) so the benchmarks page's "every number is CI-asserted" promise actually holds.
-    const report = estimateCost({
-      segments: [{ sizeBytes: 0 }],
-      topology: 'B',
-      workload: { avgItemKiB: 8, cacheHitRate: 0 },
+      workload: { cacheHitRate: 0 },
     });
     expect(AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD).toBe(346);
-    expect(report.redisCrossover.readsPerSec).toBeGreaterThanOrEqual(526);
-    expect(report.redisCrossover.readsPerSec).toBeLessThan(527);
+    expect(report.redisCrossover.readsPerSec).toBeGreaterThanOrEqual(329);
+    expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
   });
 
-  it('K3: the estimator predicts the engine measured backend cost within ±20%', async () => {
+  it('K3: the estimator never understates the cold requests the engine actually issued', async () => {
+    // The engine's only billable request on a read path is a cold GET of one chunk, and the sink counts them.
+    // So the anchor is: price what the sink OBSERVED, then check the model — fed the same read rate and the
+    // same observed cache posture — lands on it from above. That is what keeps the published crossover
+    // honest: a units slip (per-request vs per-million, a wrong seconds-per-month) shows up here as a gap.
+    const CHUNKS = 64;
+    const IDS_PER_CHUNK = 4;
+    const ids = Array.from({ length: CHUNKS }, (_, k) =>
+      Array.from({ length: IDS_PER_CHUNK }, (_, r) => joinId(k, r)),
+    );
     const metrics = new CountingMetricsSink();
-    const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-      metrics,
-    });
-    const seg = store.segment('bench');
+    const { store, load } = await loadedStore({}, { metrics });
+    const { size } = await load('bench', ids.flat());
 
-    const W = 500; // writes (add)
-    const R = 2000; // reads (has)
-    for (let i = 0; i < W; i++) await seg.add(i);
-    for (let i = 0; i < R; i++) await seg.has(i % W);
+    metrics.reset();
+    const seg = store.segment('bench');
+    for (const chunk of ids) for (const id of chunk) expect(await seg.has(id)).toBe(true);
     const snap = metrics.snapshot();
 
-    const measuredUSD = priceSnapshot(snap, AWS_US_EAST_1_ONDEMAND);
-    const avgWriteKiB = snap.warm.writes ? snap.warm.writeBytes / snap.warm.writes / 1024 : 1;
-    const predicted = estimateCost({
-      segments: [{ sizeBytes: 0 }],
-      topology: 'B',
-      workload: {
-        readsPerSec: R / SECONDS_PER_MONTH,
-        writesPerSec: W / SECONDS_PER_MONTH,
-        avgItemKiB: avgWriteKiB,
-        cacheHitRate: 0,
-      },
-    }).monthlyUSD.total;
+    const reads = CHUNKS * IDS_PER_CHUNK;
+    // One GET per chunk; the other three reads of each chunk are served by the HOT cache.
+    expect(snap.cold.gets).toBe(CHUNKS);
+    expect(snap.cache.hits).toBe(reads - CHUNKS);
+    const observedHitRate = snap.cache.hits / (snap.cache.hits + snap.cache.misses);
 
-    // The residual gap is the read-modify-write RRU the estimator's write model omits (one warm read per
-    // add); here that's ~10% of ~$6.3e-4 — a known, bounded simplification well inside the ±20% budget.
-    const relErr = Math.abs(predicted - measuredUSD) / measuredUSD;
+    const measuredUSD = priceSnapshot(snap, AWS_US_EAST_1_ONDEMAND, size);
+    const predicted = (
+      await seg.costReport({
+        workload: { readsPerSec: reads / SECONDS_PER_MONTH, cacheHitRate: observedHitRate },
+      })
+    ).monthlyUSD.total;
+
     expect(measuredUSD).toBeGreaterThan(0);
     expect(predicted).toBeGreaterThan(0);
-    expect(relErr).toBeLessThanOrEqual(0.2);
+    // Direction first (the claim that matters: we never quote a cheaper bill than the engine incurs), then a
+    // ±20% band so an over-statement can't drift unbounded either.
+    expect(predicted).toBeGreaterThanOrEqual(measuredUSD);
+    expect(Math.abs(predicted - measuredUSD) / measuredUSD).toBeLessThanOrEqual(0.2);
   });
 });
 
-/** Price the engine's actual backend requests (from the metrics snapshot) with a pricing profile. */
-function priceSnapshot(snap: MetricsSnapshot, p: PricingProfile): number {
-  const rru = p.warm.rruPerMillion / 1e6;
-  const wru = p.warm.wruPerMillion / 1e6;
-  const rruMult = p.warm.stronglyConsistent ? 1 : 0.5;
-  const avgReadKiB = snap.warm.reads ? snap.warm.readBytes / snap.warm.reads / 1024 : 0;
-  const avgWriteKiB = snap.warm.writes ? snap.warm.writeBytes / snap.warm.writes / 1024 : 0;
-  const readUnits = Math.max(1, Math.ceil(avgReadKiB / p.warm.readUnitKiB));
-  const writeUnits = Math.max(1, Math.ceil(avgWriteKiB / p.warm.writeUnitKiB));
-  const coldGet = p.cold.getPerMillion / 1e6;
+/**
+ * Price the engine's actual backend requests (from the metrics snapshot) with a pricing profile: cold GETs at
+ * the published rate, plus the real generation bytes at rest. Reads are the only per-request charge a loaded
+ * store's read path can incur.
+ */
+function priceSnapshot(snap: MetricsSnapshot, p: PricingProfile, coldBytes: number): number {
   return (
-    snap.warm.reads * readUnits * rruMult * rru +
-    snap.warm.writes * writeUnits * wru +
-    snap.cold.gets * coldGet
+    snap.cold.gets * (p.cold.getPerMillion / 1e6) + (coldBytes / GIB) * p.cold.storagePerGiBMonth
   );
 }

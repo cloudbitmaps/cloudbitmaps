@@ -3,7 +3,7 @@
  * into MEASURED evidence at 1K → 10K → 100K segments.
  *
  * The audit's "NOT READY" verdict rested on three concerns, all since fixed (docs honesty → Phase A,
- * unbounded reader cache → Phase C, daemon fleet-scale → Phase D). This harness measures that those fixes
+ * unbounded reader cache → Phase C, fleet-scale admin passes → Phase D). This harness measures that those fixes
  * actually deliver at scale:
  *   M1  Bounded memory (headline)   reading the WHOLE fleet under a fixed reader-cache cap holds the post-GC
  *                                   LIVE HEAP ~flat as the fleet grows — memory is a function of the cap, not the
@@ -13,11 +13,16 @@
  *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
  *                                   OFF-HEAP native memory (the read/intersect path with decoded bitmaps) is
  *                                   proved bounded over time by the soak (T1, `getRoaringUsedMemory()`).
- *   M2  Discovery cost              time findCompactable() across fleet sizes + a sharding sweep — the honest
- *                                   O(total) registry-enumeration floor the deferred cursor (gap #3) would bound.
+ *   M2  Fleet-scan cost             time the one bounded drain of `registry.list()` (`drainRegistry`, what every
+ *                                   fleet-wide admin pass — `checkConsistency`, `retireExpired`, `eraseSubject` —
+ *                                   pays before it does any work) across fleet sizes: the honest O(total)
+ *                                   registry-enumeration floor the deferred cursor (gap #3) would bound. No read
+ *                                   verb calls it: `has`, `count`, `iterate` and `intersect` address one segment
+ *                                   each and never enumerate.
  *   M3  Intersection chunk-skipping two large multi-chunk segments, ~5% overlap: fetchedChunks ≪ total + latency
  *                                   (the crown jewel, on the ids-per-segment axis).
- *   M4  Seed throughput             segments/sec during bulk-load (a coarse write-path number).
+ *   M4  Load throughput             segments/sec while the fleet is bulk-loaded — one published generation per
+ *                                   segment, which is the only write path the store has (a coarse write number).
  *
  * Each fleet size is measured in a FRESH CHILD PROCESS so RSS is clean (RSS is monotonic within a process, so
  * running all sizes in one would contaminate the 100K baseline with 1K/10K residue). Run with --expose-gc so
@@ -57,12 +62,12 @@ const {
   CrbmColdChunkSource,
   LocalFsColdDriver,
   LocalFsRegistryDriver,
-  MemoryWarmDriver,
   MemoryColdDriver,
   MemoryRegistryDriver,
   CloudRoaring,
   CountingMetricsSink,
-  findCompactable,
+  drainRegistry,
+  DEFAULT_MAX_SCAN_SEGMENTS,
 } = require('@cloudbitmaps/roaring');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -89,7 +94,7 @@ async function ms(fn) {
   const out = await fn();
   return { ms: Number(process.hrtime.bigint() - t) / 1e6, out };
 }
-/** Deterministic id set for a seeded segment: IDS_PER_SEG ids spread across a handful of chunks. */
+/** Deterministic id set for a loaded segment: IDS_PER_SEG ids spread across a handful of chunks. */
 function segmentIds() {
   const CHUNKS = 4;
   const per = Math.max(1, Math.floor(IDS_PER_SEG / CHUNKS));
@@ -116,7 +121,8 @@ async function measureFleet(n) {
     const registry = new LocalFsRegistryDriver(dir, { now: () => Date.now() });
     const ids = segmentIds();
 
-    // M4 — seed throughput (build the fleet on disk: one immutable .crbm + one registry row per segment).
+    // M4 — load throughput (build the fleet on disk: one immutable .crbm generation + one registry row per
+    // segment, published forward-only — the store's only write path).
     const seed = await ms(async () => {
       for (let i = 0; i < n; i++) {
         await bulkLoadCrbmGeneration(cold, { segment: `s${i}`, generation: 0 }, ids, { registry });
@@ -144,14 +150,20 @@ async function measureFleet(n) {
     const heapRetainedMiB = process.memoryUsage().heapUsed / 1024 / 1024;
     const rssAfterGcMiB = rssMiB();
 
-    // M2 — discovery cost. Time findCompactable over the fleet (warm empty ⇒ this isolates the O(total)
-    // registry-enumeration floor — the irreducible per-cycle cost gap #3's deferred cursor would bound; a
-    // quiescent fleet still pays it, which is exactly the concern). Sharding (totalShards) splits the Warm
-    // drain but not this enumeration, and with empty warm the drain is ~free, so a shard sweep here is
-    // uninformative — it's covered in prose instead of a noisy measurement.
-    const warm = new MemoryWarmDriver();
-    const deps = { warm, registry, clock: { now: () => Date.now() } };
-    const disc1 = await ms(() => findCompactable(deps, {}));
+    // M2 — fleet-scan cost. Time `drainRegistry`, the one bounded drain of `registry.list()` that every
+    // fleet-wide admin pass runs first (`checkConsistency`, `retireExpired`, `eraseSubject`). This isolates the
+    // O(total) registry-enumeration floor — the irreducible per-cycle cost gap #3's deferred cursor would bound;
+    // a quiescent fleet still pays it, which is exactly the concern. No read verb enumerates, so nothing on the
+    // hot path pays this.
+    const disc = await ms(() =>
+      drainRegistry(registry, {
+        maxScanSegments: DEFAULT_MAX_SCAN_SEGMENTS,
+        op: 'bench:scale discovery',
+      }),
+    );
+    // Rows the sweep would then act on — those carrying a retention deadline. 0 on a fleet with no policies,
+    // which is what makes this a clean read of the enumeration floor rather than of the work it finds.
+    const discoveryCandidates = disc.out.filter((r) => r.retention?.expiresAt !== undefined).length;
 
     return {
       n,
@@ -163,8 +175,8 @@ async function measureFleet(n) {
       rssPeakMiB: round(rssPeak, 1), // informational high-water (native + transient garbage)
       rssAfterGcMiB: round(rssAfterGcMiB, 1),
       cap: CAP,
-      discoveryMs: round(disc1.ms, 1),
-      discoveryCandidates: disc1.out.length,
+      discoveryMs: round(disc.ms, 1),
+      discoveryCandidates,
     };
   } finally {
     rmTmp(dir);
@@ -193,12 +205,7 @@ async function measureIntersect() {
   await bulkLoadCrbmGeneration(cold, { segment: 'B', generation: 0 }, idsB, { registry });
 
   const metrics = new CountingMetricsSink();
-  const client = new CloudRoaring({
-    cold,
-    warm: new MemoryWarmDriver(),
-    registry,
-    metrics,
-  });
+  const client = new CloudRoaring({ cold, registry, metrics });
   metrics.reset();
   let resultCount = 0;
   const run = await ms(async () => {

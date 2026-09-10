@@ -2,14 +2,14 @@
  * The retention **sweep** (Phase 6) — the thing that acts on the policies `setSegmentRetention` records.
  *
  * `retireExpired` enumerates the registry, selects the segments whose `expiresAt` has passed, and retires each
- * one through {@link dropSegment}. It deliberately **delegates rather than reimplements**: the Warm → registry →
- * Cold ordering, the re-sweep for a generation staged by an in-flight compaction, and the `generationsRemaining`
- * report are all load-bearing and already live there. A sweep that open-coded the deletions would be a second
+ * one through {@link dropSegment}. It deliberately **delegates rather than reimplements**: the registry → Cold
+ * ordering, the re-sweep for an object a load was still writing, and the `generationsRemaining` report are all
+ * load-bearing and already live there. A sweep that open-coded the deletions would be a second
  * implementation of the most dangerous ordering in the library.
  *
  * **This is a call, not a daemon.** Nothing here schedules itself. You run it from whatever heartbeat your
- * deployment already has — an EventBridge rule, a Kubernetes CronJob, a queue consumer, the compaction worker's
- * loop — and the library stays a library: it has to behave identically in a Lambda, an edge isolate and a
+ * deployment already has — an EventBridge rule, a Kubernetes CronJob, a queue consumer, the job that runs your
+ * loads — and the library stays a library: it has to behave identically in a Lambda, an edge isolate and a
  * long-lived server, and a timer that only works in one of those is worse than none.
  *
  * Three properties make it safe to point at a fleet:
@@ -28,13 +28,13 @@
  * gets a `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the
  * registry litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on
  * purpose: only a tombstone that still carries an **expired retention policy** (so it is attributably ours, never
- * a GDPR crypto-shred), only after a grace period, and only once Warm and Cold are provably empty for it —
+ * a GDPR crypto-shred), only after a grace period, and only once Cold is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
  * `gcOrphanGenerations`.
  */
 import { type IAuditSink } from './audit';
 import { BudgetExceededError, ValidationError, isWriteConflictError } from './errors';
-import { gcOrphanGenerations } from './compaction';
+import { gcOrphanGenerations } from './generation-gc';
 import { drainRegistry } from './registry-scan';
 import { dropSegment } from './erasure';
 import type { DropDeps, DropResult } from './erasure';
@@ -50,7 +50,7 @@ import {
 } from './due-index';
 import { segmentKey, shardOf } from './keys';
 import type { IRegistryDriver, RegistryRecord } from './ports';
-import type { GovernanceMeta, IColdDriver, IWarmDriver, SegmentRef } from './ports';
+import type { GovernanceMeta, IColdDriver, SegmentRef } from './ports';
 
 /** Default cap on retirements per sweep — a bounded batch, so a policy mistake costs one batch, not the fleet. */
 export const DEFAULT_RETIRE_LIMIT = 100;
@@ -58,8 +58,8 @@ export const DEFAULT_RETIRE_LIMIT = 100;
 /**
  * Default delay before a retirement's own tombstone row is purged: 24 h.
  *
- * The row is a fence — while it exists, `publishGeneration`, `bulkLoadCrbmGeneration` and `compactSegment` all
- * refuse the segment, so a writer that was mid-operation when the drop landed cannot resurrect it. That window is
+ * The row is a fence — while it exists, `publishGeneration` and `bulkLoadCrbmGeneration` refuse the segment, so
+ * a load that was mid-write when the drop landed cannot resurrect it. That window is
  * seconds to minutes in practice; a day of margin costs one tiny row and removes any need to reason about it.
  */
 export const DEFAULT_TOMBSTONE_GRACE_MS = 86_400_000;
@@ -97,9 +97,8 @@ export interface RetireExpiredOptions {
   readonly scan?: 'fleet' | 'index';
   /**
    * **The shards this worker owns**, with {@link totalShards}. Without them every replica sweeps the whole
-   * fleet and contends over the same segments — the hazard the compaction CLI documents and that a
-   * multi-process engine would otherwise reintroduce. Uses the same stable hash as compaction discovery, so a
-   * worker retires and compacts the *same* slice.
+   * fleet and contends over the same segments. A stable hash of the segment key, so a worker owns the same slice
+   * across restarts.
    */
   readonly shards?: readonly number[];
   /** Total shards the fleet is split into. Required with {@link shards}; ignored without it. */
@@ -166,7 +165,7 @@ export type RetireEntry =
        * schema). Reported rather than ignored: reading as "never expires" on a segment someone believes is
        * expiring is the silence that costs a retention commitment.
        * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
-       * `'tombstone-not-empty'` — a tombstone whose Warm rows or Cold generations are not gone even after a GC
+       * `'tombstone-not-empty'` — a tombstone whose Cold generations are not gone even after a GC
        * attempt, so its row is kept: the row is what keeps the segment reachable by `gcOrphanGenerations` and
        * refused by every writer.
        * `'policy-changed'` — the live row no longer says "expired" (a `clearRetention`, a new `expiresAt`, or
@@ -351,10 +350,10 @@ export async function retireExpired(
   let tombstonesPurged = 0;
   let limited = false;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
-  // deletes Warm and writes the tombstone BEFORE sweeping Cold, so a fault in the Cold phase is a segment that is
+  // writes the tombstone BEFORE sweeping Cold, so a fault in the Cold phase is a segment that is
   // already retired — counting only successes meant a partial cold outage marched through the entire fleet with
   // the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing") while
-  // every Warm row in the namespace was deleted. Reproduced by two independent reviews.
+  // every segment in the namespace was tombstoned. Reproduced by two independent reviews.
   let attempted = 0;
 
   for (const rec of mine) {
@@ -381,8 +380,8 @@ export async function retireExpired(
       try {
         if (!(await isFullyReclaimed(deps, ref))) {
           // Self-heal rather than report-and-wait: `gcOrphanGenerations` takes EVERY generation of a destroyed
-          // row, and nothing else will ever call it for this segment (a tombstone is never a compaction candidate,
-          // and the GC only runs after a successful compaction). Without this the row is stuck forever, the
+          // row, and nothing else will ever call it for this segment (no load publishes onto a tombstone, and the
+          // erasure rewrite refuses one). Without this the row is stuck forever, the
           // objects are billed forever, and the sweep pays two list calls per cycle to say so again. Measured.
           if (!dryRun) await gcOrphanGenerations(ref, deps).catch(() => undefined);
           if (!(await isFullyReclaimed(deps, ref))) {
@@ -475,7 +474,7 @@ export async function retireExpired(
       // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
       // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
       await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt);
-      if (result.warmRowsDeleted === 0 && result.generationsDeleted.length === 0) {
+      if (result.generationsDeleted.length === 0) {
         // The segment was already empty, so `dropSegment` has just written a tombstone for a name that held
         // nothing. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
         // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing existed,
@@ -504,7 +503,6 @@ export async function retireExpired(
           result: {
             ...base,
             dropped: true,
-            warmRowsDeleted: 0,
             generationsDeleted: [],
             generationsRemaining: [],
             cryptoShredded: false,
@@ -567,32 +565,23 @@ async function stampRetirement(
 }
 
 /**
- * Whether a tombstoned segment's storage is provably gone — no Cold generations **and** no Warm rows.
+ * Whether a tombstoned segment's storage is provably gone — no Cold generations.
  *
- * Both halves matter, and both are about what deleting the row would break rather than about tidiness:
+ * The check is about what deleting the row would break rather than about tidiness: `gcOrphanGenerations` reads
+ * the registry row to decide what to collect and returns empty when there is none, so deleting the row while
+ * objects remain strands them permanently — billed forever, reachable by nothing. (An object a load was still
+ * writing when the tombstone landed is exactly how they get there, which is why `dropSegment` reports
+ * `generationsRemaining` at all.)
  *
- *  - **Cold.** `gcOrphanGenerations` reads the registry row to decide what to collect and returns empty when there
- *    is none, so deleting the row while objects remain strands them permanently — billed forever, reachable by
- *    nothing. (A generation staged by a compaction that was in flight when the tombstone landed is exactly how
- *    they get there, which is why `dropSegment` reports `generationsRemaining` at all.)
- *  - **Warm.** The Warm tier is consulted independently of the registry, so a row-less segment with live Warm
- *    deltas is not an empty segment — it is a warm-only accumulator holding data. Deleting the tombstone over the
- *    top of one resurrects it, complete with the ids a writer added after the drop.
- *
- * Leaving the tombstone in place is self-healing: a running compaction daemon collects the orphan generations
- * (`gcOrphanGenerations` takes *every* generation of a destroyed row), a re-run of the drop clears late Warm rows,
- * and the next sweep purges the row.
+ * Leaving the tombstone in place is self-healing: this sweep collects the orphan generations itself
+ * (`gcOrphanGenerations` takes *every* generation of a destroyed row), and the next cycle purges the row.
  */
 async function isFullyReclaimed(
-  deps: { readonly cold: IColdDriver; readonly warm: IWarmDriver },
+  deps: { readonly cold: IColdDriver },
   ref: SegmentRef,
 ): Promise<boolean> {
   for await (const key of deps.cold.list(ref)) {
     void key;
-    return false;
-  }
-  for await (const row of deps.warm.listChunks(ref)) {
-    void row;
     return false;
   }
   return true;

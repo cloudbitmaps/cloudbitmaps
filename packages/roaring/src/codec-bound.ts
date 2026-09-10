@@ -15,16 +15,14 @@
  */
 import {
   bulkLoadCrbmGeneration as coreBulkLoad,
-  compactSegment as coreCompactSegment,
-  runCompactionCycle as coreRunCompactionCycle,
+  eraseIdFromSegment as coreEraseIdFromSegment,
   runExport as coreRunExport,
 } from '@cloudbitmaps/core';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
 type BulkLoad = typeof coreBulkLoad;
-type CompactSegment = typeof coreCompactSegment;
-type RunCompactionCycle = typeof coreRunCompactionCycle;
+type EraseIdFromSegment = typeof coreEraseIdFromSegment;
 type RunExport = typeof coreRunExport;
 
 /**
@@ -44,13 +42,14 @@ export const bulkLoadCrbmGeneration: BulkLoad = (driver, key, ids, options = {})
     clock: options.clock ?? new SystemClock(),
   });
 
-/** {@link coreCompactSegment} with the roaring codec pre-bound. */
-export const compactSegment: CompactSegment = (ref, deps, options) =>
-  coreCompactSegment(ref, { ...deps, codec: deps.codec ?? roaringCodec }, options);
-
-/** {@link coreRunCompactionCycle} with the roaring codec pre-bound. */
-export const runCompactionCycle: RunCompactionCycle = (deps, options) =>
-  coreRunCompactionCycle({ ...deps, codec: deps.codec ?? roaringCodec }, options);
+/** {@link coreEraseIdFromSegment} with the roaring codec and a real (cooperative) clock pre-bound. */
+export const eraseIdFromSegment: EraseIdFromSegment = (ref, id, deps, options) =>
+  coreEraseIdFromSegment(
+    ref,
+    id,
+    { ...deps, codec: deps.codec ?? roaringCodec, clock: deps.clock ?? new SystemClock() },
+    options,
+  );
 
 /** {@link coreRunExport} with the roaring codec pre-bound (only the `'roaring'` format needs it). */
 export const runExport: RunExport = (reader, registry, sink, options = {}) =>

@@ -6,7 +6,6 @@ import {
   IntegrityError,
   LocalFsColdDriver,
   LocalFsRegistryDriver,
-  MemoryWarmDriver,
   NotFoundError,
   bulkLoadCrbmGeneration,
   runConsistencyCheck,
@@ -30,8 +29,8 @@ import type { SegmentRef } from '@/index';
  *     closed with `IntegrityError` (CRC). The drill asserts both the honest blind spot and the read-time catch,
  *     then restores from backup.
  *
- * Cold + registry are the two tiers that back up / restore independently (the whole reason a torn restore
- * exists), so segments here are cold-only (no Warm delta) to keep each failure signal crisp.
+ * The objects and the registry back up / restore independently — which is the whole reason a torn restore
+ * exists — so every segment here is one published generation, and each failure signal stays crisp.
  */
 
 const NS = '_default'; // LocalFs default-namespace directory segment
@@ -48,8 +47,7 @@ const FLEET: Record<string, number[]> = {
 function stores(root: string) {
   const cold = new LocalFsColdDriver(root);
   const registry = new LocalFsRegistryDriver(root, { now: () => Date.now() });
-  // Warm is memory: the DR failure modes here live in cold+registry; segments carry no Warm delta.
-  const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry, retry: false });
+  const store = new CloudRoaring({ cold, registry, retry: false });
   return { cold, registry, store };
 }
 

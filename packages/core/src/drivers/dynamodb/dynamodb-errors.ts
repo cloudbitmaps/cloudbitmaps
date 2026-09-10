@@ -24,7 +24,8 @@ const TRANSIENT_NAMES = new Set([
 /**
  * A transient DynamoDB fault that is safe to retry: throttling / capacity-exceeded, any 5xx, a dropped or
  * timed-out connection, or anything the SDK itself marks retryable. A failed condition is **never** transient
- * (it's a deterministic OCC outcome — the engine's read-modify-write loop owns that retry, not the wrapper).
+ * (it is a deterministic compare-and-swap outcome — `publishGeneration`'s own re-read-and-retry loop owns that,
+ * not this wrapper, because the row has to be read again before the next attempt can decide anything).
  */
 export function isTransient(err: unknown): boolean {
   if (isConditionalCheckFailed(err)) return false;

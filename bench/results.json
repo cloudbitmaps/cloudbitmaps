@@ -3,12 +3,9 @@
   "pricing": "aws-us-east-1-ondemand",
   "redisBaselineUSD": 346,
   "assumptions": {
-    "avgItemKiB": 8,
-    "cacheHitRate": 0,
-    "topology": "B"
+    "cacheHitRate": 0
   },
-  "writeCrossoverPerSec": 26.33,
-  "readCrossoverPerSec": 526.64,
+  "readCrossoverPerSec": 329.15,
   "atRest": {
     "sizeGiB": 1.2,
     "monthlyUSD": 0.0276,

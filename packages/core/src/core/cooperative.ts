@@ -37,11 +37,10 @@
 /**
  * The only part of a `Clock` that yielding actually needs.
  *
- * Deliberately looser than `Clock` so the compaction path can opt in: `CompactionDeps.clock` is declared as
- * `Pick<Clock, 'now'>` plus optional yield members, because its callers (including out-of-process runners)
- * have always supplied a bare `{ now }`. Requiring a full `Clock` there would have been a breaking change for
- * every one of them — which is exactly why the compaction yield shipped as dead code: the type could not carry
- * a clock capable of yielding.
+ * Deliberately looser than `Clock` so a write path can opt in with whatever it has: a bulk load or a rewrite
+ * yields when its caller supplies a clock that can, and simply runs unbroken when handed nothing (or a bare
+ * `{ now }`). Requiring a full `Clock` would make every out-of-process caller wire one just to write a
+ * generation.
  */
 export interface Yielder {
   yieldNow?(): Promise<void>;

@@ -1,4 +1,4 @@
-import { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } from '@/index';
+import { CloudRoaring, MemoryColdChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
 
@@ -77,7 +77,7 @@ async function drain(it: AsyncIterable<number>): Promise<number> {
 
 async function peakFor(chunks: number, concurrency?: number) {
   const cold = new ConcurrencyTrackingCold();
-  const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+  const store = new CloudRoaring({ cold });
   seedOverlapping(cold, chunks);
   const yielded = await drain(
     store.segment('a').intersect([store.segment('b')], concurrency ? { concurrency } : undefined),
@@ -139,7 +139,7 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
     // The ceiling is `concurrency × operands`, so it must move with operand count in the way documented —
     // a bound that only holds for the two-segment case would be a bound on the test, not the code.
     const cold = new ConcurrencyTrackingCold();
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+    const store = new CloudRoaring({ cold });
     for (let key = 0; key < 120; key++) {
       for (const seg of ['a', 'b', 'c']) cold.seedChunk({ segment: seg, chunkKey: key }, [1, 2, 3]);
     }
@@ -156,7 +156,7 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
     // hurt most in production.
     for (const op of ['andNot', 'union'] as const) {
       const cold = new ConcurrencyTrackingCold();
-      const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold });
+      const store = new CloudRoaring({ cold });
       seedOverlapping(cold, 150);
       const a = store.segment('a');
       const b = store.segment('b');

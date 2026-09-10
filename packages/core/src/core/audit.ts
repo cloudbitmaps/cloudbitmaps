@@ -2,10 +2,11 @@
  * Audit sink (Phase 5d) — an injected, no-op-by-default seam for **security/compliance** events, distinct
  * from the metrics sink (5a). Different audience (an audit log / SIEM, not a dashboard), different retention,
  * and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics sink).
- * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, compactions, and erasures.
+ * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, rewrites, and erasures.
  *
- * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the lifecycle operations that emit — compaction,
- * bulk-load, erasure) and wrapped exception-safe, so a buggy sink can never break the operation it observes.
+ * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the lifecycle operations that emit — bulk-load, the
+ * erasure rewrite, crypto-shred, disposal) and wrapped exception-safe, so a buggy sink can never break the
+ * operation it observes.
  * Events are vendor-neutral and carry no timestamp/actor — the sink runs synchronously at the event, so it
  * stamps its own time / attaches the caller identity (keeps `core/` free of ambient time). As with metrics,
  * `segment`/`namespace` are caller-controlled strings that may be PII — treat them accordingly when routing.
@@ -25,10 +26,17 @@ export type AuditEvent =
       readonly generation: number;
     }
   | {
-      /** Compaction committed a new generation (emitted at the durable commit, before Warm-row purge). */
-      readonly kind: 'segment.compact';
+      /**
+       * A generation was **rewritten**: a new generation derived from `fromGeneration` became current in its
+       * place. Today the one emitter is `eraseIdFromSegment` (a subject erasure clearing one id), and the event is
+       * emitted at the publish — before the superseded generation is collected — so the record exists the moment
+       * the generation without the id is authoritative. A `segment.publish` is NOT also emitted for a rewrite: a
+       * rewrite derives its content from the segment itself, a publish brings content in from outside.
+       */
+      readonly kind: 'segment.rewrite';
       readonly namespace?: string;
       readonly segment: string;
+      readonly fromGeneration: number;
       readonly generation: number;
     }
   | {
@@ -43,8 +51,8 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment was **disposed of** — tombstoned and its storage reclaimed (Warm rows + Cold generations
-       * deleted) by `dropSegment`, *without* a key shred.
+       * A segment was **disposed of** — tombstoned and its storage reclaimed (its Cold generations deleted) by
+       * `dropSegment`, *without* a key shred.
        *
        * Deliberately a separate kind from {@link AuditEvent} `segment.erase`, and the distinction is the point.
        * `segment.erase` attests that bytes are unreadable **everywhere, backups included** — the only claim that

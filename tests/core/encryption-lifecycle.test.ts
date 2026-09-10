@@ -4,179 +4,209 @@ import {
   CrbmColdChunkSource,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
-  compactSegment,
   destroySegment,
+  eraseIdFromSegment,
   eraseNamespace,
+  nextGeneration,
   publishGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
-import type { CompactionDeps, IKeystore, SegmentRef } from '@/index';
+import type { EraseIdDeps, IKeystore, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { segment: 's' };
-const OWNER = 'worker-1';
 const k = (): Uint8Array => randomBytes(32);
 
+/**
+ * A world of cold objects + a registry, plus the two things that write generations: `load` (a bulk load at the
+ * next generation) and the erasure rewrite's deps.
+ *
+ * `store(ks)` opens a *fresh* reader each call, which is deliberate: a store pins the generation it resolved
+ * (`coldGenTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
+ * since — the honest model of a different reader, with no clock to advance.
+ */
 function world(keystore?: IKeystore) {
   const cold = new MemoryColdDriver();
-  const warm = new MemoryWarmDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: CompactionDeps = { cold, warm, registry, clock: { now: () => Date.now() }, keystore };
+  const deps: EraseIdDeps = { cold, registry, keystore };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({
-      warm,
       cold: new CrbmColdChunkSource(cold, { registry, keystore: ks }),
       retry: false,
+      coldGenTtlMs: 0,
     });
-  return { cold, warm, registry, deps, store };
+  const load = async (ids: number[], ref: SegmentRef = SEG, ks = keystore): Promise<number> => {
+    const generation = await nextGeneration(ref, { cold, registry });
+    await bulkLoadCrbmGeneration(cold, { ...ref, generation }, ids, { registry, keystore: ks });
+    return generation;
+  };
+  return { cold, registry, deps, store, load };
 }
 
-async function members(store: CloudRoaring): Promise<number[]> {
+async function members(store: CloudRoaring, ref: SegmentRef = SEG): Promise<number[]> {
   const out: number[] = [];
-  for await (const id of store.segment('s').iterate()) out.push(id);
+  for await (const id of store.segment(ref.segment, { namespace: ref.namespace }).iterate()) {
+    out.push(id);
+  }
   return out;
 }
 
-describe('encryption lifecycle — compaction (Phase 4e)', () => {
-  it('compaction reuses the segment DEK: decrypts gen g, re-encrypts gen g+1 (I3 preserved)', async () => {
+/**
+ * The per-segment DEK is minted once and **reused by every later write to that segment** — every load, and the
+ * erasure rewrite. That is what makes crypto-shred a single, total act: one key covers every generation the
+ * segment has ever had, so discarding it makes all of them unreadable at once. If a write ever minted a second
+ * DEK instead, shredding would leave whichever generations used the other key perfectly readable, and
+ * `destroySegment`'s attestation ("unreadable everywhere, backups included") would be false.
+ *
+ * These cases therefore assert the same thing from three directions: the wrapped-DEK list on the row never
+ * changes, every generation still decrypts with the one key, and a reader without the keystore can read none
+ * of them.
+ */
+describe('encryption lifecycle — one DEK per segment, across every generation', () => {
+  it('a second load reuses the segment DEK: the wrapped list is unchanged and the new generation decrypts', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3, 100_000], {
-      registry: w.registry,
-      keystore,
-    });
+    await w.load([1, 2, 3, 100_000]);
     const wrappedBefore = (await w.registry.get(SEG))!.wrappedDeks;
+    expect(wrappedBefore).toHaveLength(1);
 
-    await w.store().segment('s').add(4);
-    await w.store().segment('s').remove(2);
-
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-    expect(res).toMatchObject({ compacted: true, fromGen: 0, toGen: 1 });
-    // Same DEK reused (the wrapped list is unchanged), and the new generation is still encrypted + correct.
+    expect(await w.load([1, 3, 4, 100_000])).toBe(1); // generation 1, same key
     expect((await w.registry.get(SEG))!.wrappedDeks).toEqual(wrappedBefore);
     expect(await members(w.store())).toEqual([1, 3, 4, 100_000]);
   });
 
-  it('compaction bootstrap mints a DEK for an all-warm segment', async () => {
+  it('the first load mints the DEK, and the generation is genuinely encrypted', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await w.store().segment('s').addMany([1, 2, 3]);
+    await w.load([1, 2, 3]);
 
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-    expect(res).toMatchObject({ compacted: true, fromGen: null, toGen: 0 });
     expect((await w.registry.get(SEG))!.wrappedDeks).toHaveLength(1);
     expect(await members(w.store())).toEqual([1, 2, 3]);
-    // The bootstrapped generation is genuinely encrypted: a source without the keystore can't read it.
+    // Genuinely encrypted, not merely marked as such: a reader with no keystore cannot decode it.
     const noKeystore = new CloudRoaring({
-      warm: w.warm,
       cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
       retry: false,
     });
     await expect(members(noKeystore)).rejects.toBeInstanceOf(KeyUnavailableError);
   });
 
-  it('requireEncryption refuses to compact a cleartext segment without a keystore', async () => {
-    const w = world(); // no keystore
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
-      registry: w.registry,
-    });
-    await w.store().segment('s').add(3);
-    await expect(
-      compactSegment(SEG, { ...w.deps, requireEncryption: true }, { owner: OWNER }),
-    ).rejects.toBeInstanceOf(ValidationError);
-  });
-
-  it('reuses the same DEK + correct data across multiple generations (0 → 1 → 2)', async () => {
+  it('reuses the same DEK + correct data across three generations (0 → 1 → 2)', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-      registry: w.registry,
-      keystore,
-    });
+    await w.load([1, 2, 3]);
     const wrapped0 = (await w.registry.get(SEG))!.wrappedDeks;
 
-    await w.store().segment('s').add(4);
-    expect((await compactSegment(SEG, w.deps, { owner: OWNER })).toGen).toBe(1);
-    await w.store().segment('s').add(5);
-    expect((await compactSegment(SEG, w.deps, { owner: OWNER })).toGen).toBe(2);
+    expect(await w.load([1, 2, 3, 4])).toBe(1);
+    expect(await w.load([1, 2, 3, 4, 5])).toBe(2);
 
     expect((await w.registry.get(SEG))!.currentGen).toBe(2);
-    // The DEK is reused across every generation (the wrapped list never changes), and each gen decrypts.
     expect((await w.registry.get(SEG))!.wrappedDeks).toEqual(wrapped0);
     expect(await members(w.store())).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('compacting an encrypted segment without the keystore fails fast (KeyUnavailableError, never a silent decode)', async () => {
+  it('a load onto an encrypted segment without the keystore fails fast, never writing cleartext onto it', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    // Bootstrap an encrypted gen 0 — the registry row carries the wrapped DEK.
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-      registry: w.registry,
-      keystore,
-    });
-    await w.store().segment('s').add(4); // a Warm row to fold
-    // The daemon now runs WITHOUT the keystore: it must refuse (can't open the DEK), never mis-decode the
-    // ciphertext. A lost key is a genuine fault that propagates, not a silent wrong answer.
+    await w.load([1, 2, 3]);
+
+    // The trap this closes: writing a CLEARTEXT generation onto a row that still advertises wrapped DEKs.
+    // `destroySegment` keys `cryptoShredded` off the presence of those wrappings, so shredding that segment
+    // would emit `segment.erase` — "unreadable everywhere, backups included" — over bytes that stay readable
+    // from any copy. Over-attestation is the one failure an audit trail exists to prevent.
     await expect(
-      compactSegment(SEG, { ...w.deps, keystore: undefined }, { owner: OWNER }),
-    ).rejects.toThrow(KeyUnavailableError);
+      bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [9], { registry: w.registry }),
+    ).rejects.toBeInstanceOf(KeyUnavailableError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0); // the pointer never moved
+    expect(await members(w.store())).toEqual([1, 2, 3]);
+  });
+
+  it('the erasure rewrite reuses the DEK too: gen g decrypts, gen g+1 is re-encrypted under the same key', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await w.load([1, 2, 3, 100_000]);
+    const wrappedBefore = (await w.registry.get(SEG))!.wrappedDeks;
+
+    const res = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
+    expect((await w.registry.get(SEG))!.wrappedDeks).toEqual(wrappedBefore);
+    expect(await members(w.store())).toEqual([1, 3, 100_000]);
+    // And the rewrite is encrypted, not quietly downgraded to cleartext on the way through.
+    const noKeystore = new CloudRoaring({
+      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
+      retry: false,
+    });
+    await expect(members(noKeystore)).rejects.toBeInstanceOf(KeyUnavailableError);
+  });
+
+  it('the erasure rewrite without the keystore fails fast (never a silent mis-decode)', async () => {
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await w.load([1, 2, 3]);
+    // A lost key is a genuine fault that propagates — not a wrong answer, and not a cleartext rewrite.
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, keystore: undefined })).rejects.toThrow(
+      KeyUnavailableError,
+    );
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
+  });
+
+  it('requireEncryption refuses to rewrite a cleartext segment', async () => {
+    const w = world(); // no keystore anywhere
+    await w.load([1, 2]);
+    await expect(
+      eraseIdFromSegment(SEG, 1, { ...w.deps, requireEncryption: true }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
   });
 });
 
-describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)', () => {
-  it('shreds the DEK + clears Warm; the segment reads empty and is unrecoverable even WITH the keystore', async () => {
+describe('crypto-shred — destroySegment / eraseNamespace', () => {
+  it('shreds the DEK; the segment reads empty and is unrecoverable even WITH the keystore', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-      registry: w.registry,
-      keystore,
-    });
-    await w.store().segment('s').add(4); // a live Warm row too
+    await w.load([1, 2, 3]);
+    await w.load([1, 2, 3, 4]); // two generations, one key — both must go together
     expect(await members(w.store())).toEqual([1, 2, 3, 4]);
 
     const res = await destroySegment(SEG, w.deps, { confirmSegment: 's' });
-    expect(res.destroyed).toBe(true);
-    expect(res.warmRowsDeleted).toBeGreaterThanOrEqual(1);
+    expect(res).toMatchObject({ destroyed: true, cryptoShredded: true });
 
     const rec = (await w.registry.get(SEG))!;
     expect(rec.status).toBe('destroyed');
-    expect(rec.wrappedDeks).toBeUndefined(); // the key is gone — the .crbm bytes are now unreadable forever
+    expect(rec.wrappedDeks).toBeUndefined(); // the key is gone — the .crbm bytes are unreadable forever
 
-    // Reads empty even though we still hold the KEK: there is no DEK left to unwrap.
+    // Reads empty even though we still hold the KEK: there is no DEK left to unwrap. Note the objects are
+    // still in the bucket (that is `dropSegment`'s job) — this is unreadability, not reclamation.
     expect(await members(w.store())).toEqual([]);
+    const stillThere: number[] = [];
+    for await (const key of w.cold.list(SEG)) stillThere.push(key.generation);
+    expect(stillThere).toEqual([0, 1]);
   });
 
-  it('refuses to report a destruction it could not finish — warm rows contended on every pass', async () => {
-    // The defect this pins: `eraseWarm` retries contended rows a bounded number of times (MAX_WARM_PASSES) and
-    // used to fall out of that loop and simply `return deleted`. `shredSegment` then CAS'd the `destroyed`
-    // tombstone regardless, so `destroySegment` answered `destroyed: true` on a segment whose Warm rows — which
-    // this module documents as CLEARTEXT — were still readable. On a right-to-erasure command that is a false
-    // attestation, and nothing in the result could reveal it: `warmRowsDeleted` counts successes only.
-    //
-    // Note WHY asserting the throw is not enough on its own, and why the registry assertion below is the real
-    // test: the ordering in `shredSegment` clears Warm BEFORE flipping the tombstone, so the fix is only correct
-    // if the failure leaves the segment un-destroyed and retryable. A version that threw AFTER the CAS would
-    // still pass a throws-assertion while leaving exactly the state we are trying to prevent.
+  it('requires the exact segment name as confirmation (guards against accidental shred)', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-      registry: w.registry,
-      keystore,
-    });
-    await w.store().segment('s').add(4); // the live Warm row that will stay contended
+    await w.load([1]);
+    await expect(destroySegment(SEG, w.deps, { confirmSegment: 'wrong' })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect((await w.registry.get(SEG))!.status).toBe('active'); // untouched
+  });
 
-    // A warm driver whose conditional delete always loses the race, as if another writer rewrote the row
-    // between our list and our delete — every pass, forever.
-    // A Proxy rather than a spread-and-override: the driver's methods live on its prototype and touch private
-    // fields, so a spread copies none of them and a hand-listed subset silently depends on which methods the
-    // interface happens to have today. Forwarding with `receiver = target` keeps `this` the real instance.
-    const contended = new Proxy(w.warm, {
+  it('reports contention rather than a destruction it could not finish', async () => {
+    // The registry CAS is now the only step a shred takes, and it is bounded. A row that keeps moving under it
+    // — a concurrent publish, a policy write — must surface as a `WriteConflictError` with the segment left
+    // ACTIVE and still holding its key, so a retry can finish the job. The failure mode being guarded is the
+    // opposite: reporting `destroyed: true` while the key (and therefore the data) is still there.
+    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
+    const w = world(keystore);
+    await w.load([1, 2, 3]);
+
+    const contended = new Proxy(w.registry, {
       get(target, prop) {
-        if (prop === 'deleteConditional') {
+        if (prop === 'compareAndSwap') {
           return async (): Promise<never> => {
-            throw new WriteConflictError('row rewritten mid-erase');
+            throw new WriteConflictError('row moved under the shred');
           };
         }
         const value = Reflect.get(target, prop, target) as unknown;
@@ -185,70 +215,43 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
     });
 
     await expect(
-      destroySegment(SEG, { ...w.deps, warm: contended }, { confirmSegment: 's' }),
+      destroySegment(SEG, { ...w.deps, registry: contended }, { confirmSegment: 's' }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
-    // The point of the fix: NOT destroyed, and still holding its key, so a retry can finish the job.
     const rec = (await w.registry.get(SEG))!;
     expect(rec.status).toBe('active');
     expect(rec.wrappedDeks).toBeDefined();
-    // And the data is demonstrably still there — which is the honest state, and the state the old code
-    // reported as `destroyed: true`.
-    expect(await members(w.store())).toEqual([1, 2, 3, 4]);
-  });
-
-  it('requires the exact segment name as confirmation (guards against accidental shred)', async () => {
-    const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-    const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], {
-      registry: w.registry,
-      keystore,
-    });
-    await expect(destroySegment(SEG, w.deps, { confirmSegment: 'wrong' })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-    expect((await w.registry.get(SEG))!.status).toBe('active'); // untouched
+    expect(await members(w.store())).toEqual([1, 2, 3]); // demonstrably still there — the honest state
   });
 
   it('refuses to publish a generation for a segment destroyed WHILE it was being written', async () => {
     // The window: `bulkLoadCrbmGeneration` reads the registry once and refuses if the segment is already
     // destroyed — then spends a KMS call and a whole object write before publishing. A `destroySegment` landing
-    // inside that window used to be invisible to `publishGeneration`, which compares only `currentGen`, so the
-    // pointer advanced on a destroyed record and left an object encrypted with the DEK destroy had just
-    // shredded: unreadable, still stored, attached to a segment the registry says was erased.
-    //
-    // Simulated by destroying between the write and the publish, which is exactly what the race produces. This
-    // is the "later hardening" erasure.ts's header refers to, for the publish step.
+    // inside that window is invisible to the load, so the fence lives in `publishGeneration` itself, where the
+    // record is re-read moments before the CAS. Without it the pointer would advance on a destroyed row,
+    // leaving an object encrypted under a DEK that no longer exists: unreadable, still billed, and attached to
+    // a segment the registry says was erased.
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
-      registry: w.registry,
-      keystore,
-    });
+    await w.load([1, 2]);
     await destroySegment(SEG, w.deps, { confirmSegment: 's' });
-    expect((await w.registry.get(SEG))!.status).toBe('destroyed');
 
-    // A late publish for a *newer* generation — what the in-flight bulk load would have attempted.
     await expect(publishGeneration(w.registry, { ...SEG, generation: 1 })).rejects.toBeInstanceOf(
       ValidationError,
     );
-
-    // The pointer did not move, so the destroyed segment did not acquire an unreadable "current" generation.
-    const rec = (await w.registry.get(SEG))!;
-    expect(rec.status).toBe('destroyed');
-    expect(rec.currentGen).toBe(0);
+    expect((await w.registry.get(SEG))!.status).toBe('destroyed');
   });
 
   it('is idempotent — destroying an already-destroyed segment is a no-op success', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], {
-      registry: w.registry,
-      keystore,
-    });
+    await w.load([1]);
     await destroySegment(SEG, w.deps, { confirmSegment: 's' });
+
     const again = await destroySegment(SEG, w.deps, { confirmSegment: 's' });
-    expect(again).toMatchObject({ destroyed: true, reason: 'already' });
+    // `destroyed: true` (the state is what was asked for) but NOT a fresh crypto-shred — there was no key left
+    // to discard, and an audit trail that recorded a second irreversible destruction would be lying.
+    expect(again).toMatchObject({ destroyed: true, cryptoShredded: false, reason: 'already' });
   });
 
   it('eraseNamespace keeps a complete ledger when one segment cannot be erased', async () => {
@@ -263,32 +266,21 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
     for (const seg of ['a', 'b', 'c']) {
-      await bulkLoadCrbmGeneration(
-        w.cold,
-        { namespace: 'ns', segment: seg, generation: 0 },
-        [1, 2],
-        { registry: w.registry, keystore },
-      );
+      await w.load([1, 2], { namespace: 'ns', segment: seg });
     }
-    // Give 'b' a live warm row and make only ITS conditional delete lose the race, every time — so 'b' burns
-    // through every erase pass while 'a' and 'c' are untouched.
-    await new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry, keystore }),
-      retry: false,
-    })
-      .segment('b', { namespace: 'ns' })
-      .add(9);
-    const warm = new Proxy(w.warm, {
+
+    // Only 'b' loses its CAS race, every time — so 'b' burns through the shred's attempts while 'a' and 'c'
+    // are untouched.
+    const registry = new Proxy(w.registry, {
       get(target, prop) {
         const value = Reflect.get(target, prop, target) as unknown;
-        if (prop === 'deleteConditional') {
+        if (prop === 'compareAndSwap') {
           // A rest parameter, NOT `arguments`: this is an arrow function, so `arguments` would resolve to the
-          // enclosing trap's own args and forward the property NAME as the expected token. Every real delete
+          // enclosing trap's own args and forward the property NAME as the expected token. Every real CAS
           // would then fail on a bad token and the test would "pass" while proving nothing about isolation.
           return async (...args: unknown[]): Promise<unknown> => {
             const ref = args[0] as { segment: string };
-            if (ref.segment === 'b') throw new WriteConflictError('row rewritten mid-erase');
+            if (ref.segment === 'b') throw new WriteConflictError('row moved under the shred');
             return (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
           };
         }
@@ -296,11 +288,7 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
       },
     });
 
-    const { destroyed } = await eraseNamespace(
-      'ns',
-      { ...w.deps, warm },
-      { confirmNamespace: 'ns' },
-    );
+    const { destroyed } = await eraseNamespace('ns', { registry }, { confirmNamespace: 'ns' });
 
     // The ledger is COMPLETE — every segment appears, including the one that failed.
     expect(destroyed.map((d) => d.segment).sort()).toEqual(['a', 'b', 'c']);
@@ -320,19 +308,11 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
     for (const seg of ['a', 'b']) {
-      await bulkLoadCrbmGeneration(
-        w.cold,
-        { namespace: 'ns', segment: seg, generation: 0 },
-        [1, 2],
-        {
-          registry: w.registry,
-          keystore,
-        },
-      );
+      await w.load([1, 2], { namespace: 'ns', segment: seg });
     }
     const { destroyed } = await eraseNamespace('ns', w.deps, { confirmNamespace: 'ns' });
     expect(destroyed.map((d) => d.segment).sort()).toEqual(['a', 'b']);
-    expect(destroyed.every((d) => d.destroyed)).toBe(true);
+    expect(destroyed.every((d) => d.destroyed && d.cryptoShredded)).toBe(true);
     for (const seg of ['a', 'b']) {
       expect((await w.registry.get({ namespace: 'ns', segment: seg }))!.status).toBe('destroyed');
     }
@@ -340,24 +320,24 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
 
   it('refuses to shred a cleartext segment (no key to shred) unless allowCleartext', async () => {
     const w = world(); // no keystore
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
-      registry: w.registry,
-    });
+    await w.load([1, 2]);
     const res = await destroySegment(SEG, w.deps, { confirmSegment: 's' });
     expect(res).toMatchObject({ destroyed: false, reason: 'cleartext' });
     expect((await w.registry.get(SEG))!.status).toBe('active');
+
+    // Opting in writes the tombstone, but is honest that no key was discarded: the bytes stay readable from
+    // any copy, so this is not the irreversible erasure `cryptoShredded` attests to.
+    const opted = await destroySegment(SEG, w.deps, { confirmSegment: 's', allowCleartext: true });
+    expect(opted).toMatchObject({ destroyed: true, cryptoShredded: false });
   });
 
-  it('refuses to resurrect a destroyed segment: bulk-load throws, compaction skips it', async () => {
+  it('refuses to resurrect a destroyed segment: a load throws, and a rewrite declines', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
-      registry: w.registry,
-      keystore,
-    });
+    await w.load([1, 2]);
     await destroySegment(SEG, w.deps, { confirmSegment: 's' });
 
-    // Bulk-loading a new generation would mint a DEK that could never be reached → refuse outright.
+    // Loading a new generation would mint a DEK that could never be reached → refuse outright.
     await expect(
       bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [9], {
         registry: w.registry,
@@ -365,10 +345,9 @@ describe('crypto-shred — destroySegment / eraseNamespace (Phase 4e, L1–L4)',
       }),
     ).rejects.toBeInstanceOf(ValidationError);
 
-    // Compaction won't resurrect it either — a destroyed segment is terminal.
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-    expect(res).toMatchObject({ compacted: false, reason: 'destroyed' });
-    // The original Cold data is unrecoverable; the segment reads empty.
+    // The erasure rewrite won't resurrect it either — a destroyed segment is terminal, and already unreadable.
+    const res = await eraseIdFromSegment(SEG, 1, w.deps);
+    expect(res).toMatchObject({ erased: false, reason: 'destroyed' });
     expect(await members(w.store())).toEqual([]);
   });
 });

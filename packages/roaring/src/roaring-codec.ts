@@ -68,8 +68,8 @@ export class SafeBitmap implements CodecBitmap {
    * a different baseline that happens to land near 63× on the run shape too. `pnpm bench:encoding` prints both
    * columns; don't carry a figure between them without checking which denominator it had.
    *
-   * Called by the engine only when writing an immutable cold generation — see {@link CodecBitmap.optimize} for
-   * why the per-operation warm path deliberately does not.
+   * Called only when writing an immutable cold generation — see {@link CodecBitmap.optimize} for why the read
+   * path deliberately does not.
    */
   optimize(): void {
     this.bitmap.runOptimize();

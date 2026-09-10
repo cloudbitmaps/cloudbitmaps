@@ -1,67 +1,87 @@
 # CloudBitmaps
 
-> Distributed, cloud-native Roaring Bitmaps. Query and intersect billion-scale integer sets over tiered
-> cloud storage (RAM → warm NoSQL/SQL → cold immutable objects) at a fraction of an always-on cache, with
-> the familiar in-memory API: `add`, `has`, `remove`, `count`, `intersect`.
+> Distributed, cloud-native Roaring Bitmaps. Query and intersect billion-scale integer sets straight out of
+> object storage — a bounded RAM cache over immutable `.crbm` generations in your own bucket — at a fraction
+> of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
+> `andNot`.
 
-CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage tiers. The distinguishing capability
-is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks that can possibly contribute,
-so intersecting two 2,000,000-id segments touches only the shared chunks, and `count()` on a published
-segment does zero payload reads.
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a hot in-process LRU over a cold
+tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
+current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
+chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
+and `count()` on a published segment does zero payload reads.
 
 Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
-drivers) arrives transitively. Five backends ship as optional-peer subpaths: S3, GCS, Azure Blob, DynamoDB, and
-local filesystem.
+drivers) arrives transitively. Five storage backends: S3, GCS, Azure Blob and DynamoDB as optional-peer
+subpaths, plus the local filesystem in the main entry.
+
+## How data gets in
+
+Only by loading a whole new generation. `bulkLoadCrbmGeneration(cold, {segment, generation}, ids, {registry})`
+streams an array, a Set or an async cursor into one immutable object and then advances the registry pointer,
+forward-only. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
+authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
+remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
+publishing their result as a new generation of the destination segment.
+
+Reads see one whole, checksum-verified generation: has (hot cache, else one ranged GET), count (exact, summed
+from the .crbm index with zero payload reads), iterate, and intersect/union/andNot — the chunk-skipping
+composites, with `exclude` suppression folded into the same pass.
 
 ## Measured, not modelled
 
 Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with DynamoDB capacity taken from
-AWS's own ConsumedCapacity: $0.75 per million incremental writes, $0.14 per million count()s, $5.88 per
-million segment publishes, against an always-on Redis-HA line of $346/month standing.
+AWS's own ConsumedCapacity: $0.14 per million count()s and $5.88 per million segment publishes, against an
+always-on Redis-HA line of $346/month standing, and $0.03/month for 1.2 GiB of segments at rest. One crossover
+is published: past 329.15 sustained reads a second, with every read missing the hot cache, metered GETs pass
+the standing node — a warmer cache moves that line up.
 
 ## Coming from Redis bitmaps
 
-A durable alternative to Redis bitmaps for set-shaped workloads — audiences, dedup, suppression, membership —
-where the sets are large, mostly idle, must survive a restart, and are written in batches. Operations map
-one-for-one for everything set-shaped: SETBIT/GETBIT/BITCOUNT become add|addMany/has/count, BITOP AND/OR/DIFF
-become intersect/union/andNot, and `prior = SETBIT` becomes claimMany(ids), which adds a batch and returns only
-the ids that were not already present (the exactly-once dedup primitive; one write per 65,536-id chunk rather
-than one per id).
+A durable home for set-shaped work — audiences, dedup, suppression, membership, eligibility — where the sets
+are large, mostly read, must survive a restart, and are computed in batches upstream. The read side maps
+one-for-one: GETBIT/BITCOUNT become has/count, BITOP AND/OR/DIFF become intersect/union/andNot, and intersect
+skips the chunks that cannot contribute. You are not giving up the bitmap either: past 4,096 ids in a
+65,536-id chunk (6.25% of it) Roaring stores that chunk as a flat bit array, byte for byte what a Redis bitmap
+holds.
 
 Not a drop-in replacement, and the two limits are load-bearing rather than footnotes:
 
-1. No addressable-bit surface. BITPOS, BITFIELD, byte-range BITCOUNT and BITOP NOT have no equivalent — this is
+1. No per-id write, and that is the difference. SETBIT has no equivalent: a segment changes only by publishing
+   a new generation, so a SETBIT loop has nothing to port to. If the set is defined by a query, run the query
+   and load the result; if it is defined by events arriving one at a time, accumulate them where they arrive
+   (Redis is genuinely good at that) and load the set on a cadence. A load bills per object, not per id — ten
+   million ids are a handful of PUTs. Removing one id everywhere is a compliance operation (eraseSubject, a
+   generation rewrite), not a hot-path verb.
+2. No addressable-bit surface. BITPOS, BITFIELD, byte-range BITCOUNT and BITOP NOT have no equivalent — this is
    a set of ids, not a positional bit buffer, and NOT has no bounded universe to complement against. The raw
    bytes are not interoperable either: a .crbm object is not a flat bit array, and raw bit-position import is
    not built.
-2. Do not port a per-id write loop. SETBIT flips one bit in place and is O(1); here a warm write re-serializes
-   a whole 65,536-id chunk. Measured: 5,000 ids added one at a time cost 5,000 writes and 23,762 KB, against 1
-   write and 8 KB for the same ids in one call — roughly 3,000x the bytes. Batched, it is far cheaper than
-   Redis; looped, far more expensive. What that costs depends on the backend's pricing model: a direct line item
-   on per-request metered stores (DynamoDB on-demand), consumed throughput and throttling on provisioned
-   capacity, and IOPS/CPU/latency headroom rather than an invoice line on instance-priced stores (ElastiCache,
-   RDS, Atlas).
 
 Retention is per segment and built in: setRetention(ref, {expiresAt}) records when a segment becomes eligible
 for retirement, and retireExpired() is the sweep that acts on it, retiring each expired segment through
 dropSegment. The expiry is an absolute instant the writer sets, not a duration derived from anything observed,
-because compaction rewrites every basis such a duration could use. The sweep is a function you schedule -- this
+because every load rewrites the basis such a duration would use. The sweep is a function you schedule -- this
 library starts no timer, so the same code behaves identically in a Lambda, an edge isolate and a long-running
 server. There is no per-id TTL: a bitmap stores ids, not timestamps, and a per-id timestamp costs more than the
-compression saves. Never enable a backend's native row expiry on the warm table -- a data-loss footgun, because
-warm rows are un-compacted deltas. No seed step is
-required — a segment with no cold generation and no registry row is fully functional — and compaction is a cost
-optimization, never a correctness requirement.
+compression saves.
 
-Redis also remains supported as a warm tier underneath, so "replacing Redis bitmaps" means replacing
-SETBIT-on-one-giant-key as the data model, not necessarily replacing Redis as infrastructure.
+## No background process, and nothing to seed
+
+There is no daemon, no compaction pass and no lifecycle worker. A segment exists once a generation has been
+loaded into it, and the only scheduled work is the retention sweep above (plus gcOrphanGenerations, which never
+touches the current generation, if you want superseded ones collected sooner). Compliance is built in:
+subjectReport (Art. 15), eraseSubject (Art. 17 -- a generation rewrite that deletes the generation holding the
+bit, so it is physically gone from the bucket when the call returns), destroySegment/eraseNamespace
+(crypto-shred), dropSegment, checkConsistency, and exportSegments -- eject every segment to portable roaring or
+ndjson, which is the exit path.
 
 ## When NOT to use it
 
 If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: a check that
-misses the hot cache costs a network round trip, where an in-process RAM store costs a memory read. CloudBitmaps is for sets
-that are large, mostly read, and shouldn't cost $346/month to keep warm. In-region latency is not yet
-calibrated and no in-region figure is published.
+misses the hot cache costs a ranged GET against object storage, where an in-process RAM store costs a memory
+read. CloudBitmaps is for sets that are large, mostly read, and shouldn't cost $346/month to keep warm.
+In-region latency is not yet calibrated and no in-region figure is published.
 
 ## Status
 

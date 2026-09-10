@@ -14,7 +14,8 @@ import type {
   Token,
 } from '@/core/ports';
 
-/** The valid {@link RegistryStatus} values — used to validate both caller input and stored bytes. */
+/** The valid {@link RegistryStatus} values — used to validate both caller input and stored bytes. `compacting` and
+ * `erasing` are reserved (no writer in this build sets them) but stay valid so an older row still reads. */
 const STATUSES: readonly string[] = ['active', 'compacting', 'erasing', 'destroyed'];
 /** Cap on a serialized governance blob (retention/residency) — bounds row size so a row can't be bricked. */
 const MAX_GOVERNANCE_BYTES = 64 * 1024;
@@ -54,19 +55,6 @@ function validatePatchGeneration(patch: RegistryPatch): void {
     );
   }
   validateGeneration(patch.currentGen);
-}
-
-function validateCount(count: number, field = 'dirtyChunkCount'): void {
-  if (!Number.isInteger(count) || count < 0) {
-    throw new ValidationError(`${field} must be a non-negative integer; got ${count}`);
-  }
-}
-
-/** Validate an epoch-ms timestamp (non-negative, finite). */
-function validateTimestamp(ms: number, field: string): void {
-  if (!Number.isFinite(ms) || ms < 0) {
-    throw new ValidationError(`${field} must be a non-negative finite number; got ${ms}`);
-  }
 }
 
 function validateStatus(status: string): void {
@@ -134,7 +122,6 @@ function validateWrappedDeks(value: unknown, isStored: boolean): void {
 /** Validate the caller-settable fields at `create`. */
 export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
   validateGeneration(rec.currentGen);
-  if (rec.dirtyChunkCount !== undefined) validateCount(rec.dirtyChunkCount);
   if (rec.status !== undefined) validateStatus(rec.status);
   validateWrappedDeks(rec.wrappedDeks, false);
   validateGovernance(rec.retention, 'retention');
@@ -144,11 +131,6 @@ export function validateNewRegistryRecord(rec: NewRegistryRecord): void {
 /** Validate the caller-settable fields in a `compareAndSwap` patch. */
 export function validateRegistryPatch(patch: RegistryPatch): void {
   validatePatchGeneration(patch);
-  if (patch.dirtyChunkCount !== undefined) validateCount(patch.dirtyChunkCount);
-  if (patch.consecutiveFailures !== undefined)
-    validateCount(patch.consecutiveFailures, 'consecutiveFailures');
-  if (patch.lastCompactedAt !== undefined)
-    validateTimestamp(patch.lastCompactedAt, 'lastCompactedAt');
   if (patch.status !== undefined) validateStatus(patch.status);
   if ('wrappedDeks' in patch) validateWrappedDeks(patch.wrappedDeks, false);
   if ('retention' in patch) validateGovernance(patch.retention, 'retention');
@@ -263,9 +245,7 @@ export function recordFromNew(
     currentGen: rec.currentGen,
     wrappedDeks: rec.wrappedDeks,
     keyId: rec.keyId,
-    dirtyChunkCount: rec.dirtyChunkCount ?? 0,
     status: rec.status ?? 'active',
-    consecutiveFailures: 0, // daemon health (Phase D); lastCompactedAt stays absent until first compaction
     retention: rec.retention,
     residency: rec.residency,
     createdAt: now,
@@ -285,7 +265,6 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
     typeof r.segment !== 'string' ||
     (r.namespace !== undefined && typeof r.namespace !== 'string') ||
     (r.currentGen !== null && typeof r.currentGen !== 'number') ||
-    typeof r.dirtyChunkCount !== 'number' ||
     typeof r.status !== 'string' ||
     typeof r.createdAt !== 'number' ||
     typeof r.updatedAt !== 'number'
@@ -297,32 +276,12 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (r.currentGen !== null && (!Number.isInteger(r.currentGen) || r.currentGen < 0)) {
     throw new IntegrityError(`registry record has an invalid currentGen (${r.currentGen}): ${ctx}`);
   }
-  if (!Number.isInteger(r.dirtyChunkCount) || r.dirtyChunkCount < 0) {
-    throw new IntegrityError(`registry record has an invalid dirtyChunkCount: ${ctx}`);
-  }
   if (!STATUSES.includes(r.status)) {
     throw new IntegrityError(`registry record has an unknown status (${r.status}): ${ctx}`);
   }
-  if (r.leaseOwner !== undefined && typeof r.leaseOwner !== 'string') {
-    throw new IntegrityError(`registry record has an invalid leaseOwner: ${ctx}`);
-  }
-  if (r.leaseExpiresAt !== undefined && typeof r.leaseExpiresAt !== 'number') {
-    throw new IntegrityError(`registry record has an invalid leaseExpiresAt: ${ctx}`);
-  }
-  if (
-    r.consecutiveFailures !== undefined &&
-    (!Number.isInteger(r.consecutiveFailures) || (r.consecutiveFailures as number) < 0)
-  ) {
-    throw new IntegrityError(`registry record has an invalid consecutiveFailures: ${ctx}`);
-  }
-  if (
-    r.lastCompactedAt !== undefined &&
-    (typeof r.lastCompactedAt !== 'number' ||
-      !Number.isFinite(r.lastCompactedAt) ||
-      (r.lastCompactedAt as number) < 0)
-  ) {
-    throw new IntegrityError(`registry record has an invalid lastCompactedAt: ${ctx}`);
-  }
+  // Rows written by earlier builds may carry the retired compaction bookkeeping (`dirtyChunkCount`, the lease
+  // fields, `lastCompactedAt`, `consecutiveFailures`). They are ignored on read and dropped on the next write —
+  // `applyRegistryPatch` rebuilds the record from the fields this build knows.
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
@@ -345,6 +304,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
  * Apply a patch to an existing record, returning a new one with a fresh `updatedAt` + `token` (identity and
  * `createdAt` are preserved). Optional fields use `'k' in patch` so a patch can *clear* them (set to
  * `undefined`, e.g. dropping `keyId` on crypto-shred); required fields use `??` (they always have a value).
+ * Fields this build does not know (an older row's compaction bookkeeping) are not carried over.
  */
 export function applyRegistryPatch(
   prev: RegistryRecord,
@@ -362,12 +322,7 @@ export function applyRegistryPatch(
     currentGen: 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen,
     wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
-    dirtyChunkCount: patch.dirtyChunkCount ?? prev.dirtyChunkCount,
     status: patch.status ?? prev.status,
-    leaseOwner: 'leaseOwner' in patch ? patch.leaseOwner : prev.leaseOwner,
-    leaseExpiresAt: 'leaseExpiresAt' in patch ? patch.leaseExpiresAt : prev.leaseExpiresAt,
-    lastCompactedAt: 'lastCompactedAt' in patch ? patch.lastCompactedAt : prev.lastCompactedAt,
-    consecutiveFailures: patch.consecutiveFailures ?? prev.consecutiveFailures ?? 0,
     retention: 'retention' in patch ? patch.retention : prev.retention,
     residency: 'residency' in patch ? patch.residency : prev.residency,
     createdAt: prev.createdAt,

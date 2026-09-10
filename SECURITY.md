@@ -12,8 +12,9 @@ release.
 
 ## Trust boundary (what the library defends)
 
-CloudBitmaps treats **all bytes read back from any tier as untrusted input**. Every `.crbm` object and Warm
-delta is length-checked and CRC-verified, and deserialized with the **safe** RoaringBitmap reader (never the
+CloudBitmaps treats **all bytes read back from storage as untrusted input**. Every `.crbm` object — its chunk
+payloads, its index and its footer — is length-checked and CRC-verified, and deserialized with the **safe**
+RoaringBitmap reader (never the
 trusting variant) behind a hard size cap, before the native addon sees it. The decoded **values** are then
 range-checked too: a chunk payload holds 16-bit remainders, and one outside `[0, 65535]` is rejected rather
 than silently masked into a fabricated id in another chunk's space. That last check matters because size caps

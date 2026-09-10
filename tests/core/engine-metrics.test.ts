@@ -1,118 +1,86 @@
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryWarmDriver,
   MemoryColdChunkSource,
-  SafeBitmap,
   TransientError,
   ValidationError,
-  WriteConflictError,
 } from '@/index';
-import type { Clock, Rng } from '@/index';
+import type { ChunkRef, Clock, ColdChunkSource, Rng, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
-import type { ChunkRef, IWarmDriver, NoRow, SegmentRef, Token, WarmRow } from '@/core/ports';
+import { joinId } from '@/core/bit-route';
+import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
 // Deterministic + instant backoff for the retry tests (no real setTimeout waits).
 const instantClock: Clock = { now: () => 0, sleep: () => Promise.resolve() };
 const zeroRng: Rng = { next: () => 0 };
 
-/**
- * A Warm driver that delegates to an in-memory driver but injects a bounded number of faults, so the
- * OCC-retry and transient-retry metric paths can be exercised deterministically.
- */
-class FaultyWarm implements IWarmDriver {
+/** A cold source that delegates to an in-memory one but fails its first `transientOnGet` payload reads. */
+class FaultyCold implements ColdChunkSource {
   private gets = 0;
-  private puts = 0;
   constructor(
-    private readonly inner: MemoryWarmDriver,
-    private readonly plan: { transientOnGet?: number; conflictOnPut?: number } = {},
+    private readonly inner: MemoryColdChunkSource,
+    private readonly transientOnGet: number,
   ) {}
-  async get(ref: ChunkRef): Promise<WarmRow | null> {
+  async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
     this.gets += 1;
-    if (this.plan.transientOnGet && this.gets <= this.plan.transientOnGet) {
-      throw new TransientError('injected transient');
-    }
-    return this.inner.get(ref);
+    if (this.gets <= this.transientOnGet) throw new TransientError('injected transient');
+    return this.inner.getChunk(ref);
   }
-  async putConditional(
-    ref: ChunkRef,
-    bytes: Uint8Array,
-    expected: Token | NoRow,
-  ): Promise<{ token: Token }> {
-    this.puts += 1;
-    if (this.plan.conflictOnPut && this.puts <= this.plan.conflictOnPut) {
-      throw new WriteConflictError('injected conflict');
-    }
-    return this.inner.putConditional(ref, bytes, expected);
-  }
-  deleteConditional(ref: ChunkRef, expected: Token): Promise<void> {
-    return this.inner.deleteConditional(ref, expected);
-  }
-  listChunks(ref: SegmentRef): AsyncIterable<{ chunkKey: number } & WarmRow> {
-    return this.inner.listChunks(ref);
+  listChunkKeys(ref: SegmentRef): Promise<number[]> {
+    return this.inner.listChunkKeys(ref);
   }
 }
 
 describe('metrics emission (via CloudRoaring)', () => {
   it('works with no metrics sink wired (no-op default)', async () => {
-    const cr = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-    });
-    const s = cr.segment('users');
-    await s.add(5);
-    expect(await s.has(5)).toBe(true);
+    const { store } = seededStore({ users: [5] });
+    expect(await store.segment('users').has(5)).toBe(true);
   });
 
-  it('add() emits warm.read + warm.write + op:add', async () => {
+  it('has() emits cache miss + cold.get + op:has on the first read, a cache hit on the second', async () => {
     const counter = new CountingMetricsSink();
-    const cr = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-      metrics: counter,
-    });
-    await cr.segment('users').add(5);
-    const snap = counter.snapshot();
-    expect(snap.warm.reads).toBe(1); // the read-modify-write reads first
-    expect(snap.warm.writes).toBe(1);
-    expect(snap.warm.writeBytes).toBeGreaterThan(0);
-    expect(snap.ops.add.count).toBe(1);
-  });
-
-  it('reads emit cache miss + cold.get first, cache hit on the second read', async () => {
-    const counter = new CountingMetricsSink();
-    const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 'users', chunkKey: 0 }, SafeBitmap.fromValues([5]).serialize());
-    const cr = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, metrics: counter });
-    const s = cr.segment('users');
+    const { store } = seededStore({ users: [5] }, { metrics: counter });
+    const s = store.segment('users');
 
     expect(await s.has(5)).toBe(true);
     let snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 1 });
     expect(snap.cold.gets).toBe(1);
-    expect(snap.warm.reads).toBe(1); // the warm.get before falling through to cold
+    expect(snap.cold.bytes).toBeGreaterThan(0);
     expect(snap.ops.has.count).toBe(1);
 
     expect(await s.has(5)).toBe(true);
     snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 1, misses: 1 });
     expect(snap.cold.gets).toBe(1); // served from cache — no new cold read
+    expect(snap.ops.has.count).toBe(2);
+  });
+
+  it('count() emits op:count — index-only on a loaded segment (0 GETs), one GET per chunk on the fallback', async () => {
+    const counter = new CountingMetricsSink();
+    const { store } = await loadedStore({ s: [1, 70_000, 140_000] }, { metrics: counter });
+    expect(await store.segment('s').count()).toBe(3);
+    let snap = counter.snapshot();
+    expect(snap.ops.count.count).toBe(1);
+    expect(snap.cold.gets).toBe(0); // summed from the .crbm index
+
+    const fallback = new CountingMetricsSink();
+    const seeded = seededStore({ s: [1, 70_000, 140_000] }, { metrics: fallback });
+    expect(await seeded.store.segment('s').count()).toBe(3);
+    snap = fallback.snapshot();
+    expect(snap.ops.count.count).toBe(1);
+    expect(snap.cold.gets).toBe(3); // no index on the in-memory source → one fetch per chunk
   });
 
   it('intersect emits fetched vs skipped chunk counts (the chunk-skipping saving)', async () => {
     const counter = new CountingMetricsSink();
-    const cold = new MemoryColdChunkSource();
+    const { store, cold } = seededStore({}, { metrics: counter });
     // segment a: chunk keys {0, 1, 2}; segment b: {1, 3}. Shared: {1}. Distinct across both: {0,1,2,3}.
-    cold.seed({ segment: 'a', chunkKey: 0 }, SafeBitmap.fromValues([1]).serialize());
-    cold.seed({ segment: 'a', chunkKey: 1 }, SafeBitmap.fromValues([7]).serialize());
-    cold.seed({ segment: 'a', chunkKey: 2 }, SafeBitmap.fromValues([1]).serialize());
-    cold.seed({ segment: 'b', chunkKey: 1 }, SafeBitmap.fromValues([7]).serialize());
-    cold.seed({ segment: 'b', chunkKey: 3 }, SafeBitmap.fromValues([1]).serialize());
-    const cr = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, metrics: counter });
+    seedSegment(cold, 'a', [joinId(0, 1), joinId(1, 7), joinId(2, 1)]);
+    seedSegment(cold, 'b', [joinId(1, 7), joinId(3, 1)]);
 
-    const out: number[] = [];
-    for await (const id of cr.segment('a').intersect([cr.segment('b')])) out.push(id);
+    const out = await collect(store.segment('a').intersect([store.segment('b')]));
 
     const snap = counter.snapshot();
     expect(snap.intersect.calls).toBe(1);
@@ -121,78 +89,66 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(out).toEqual([65_543]); // chunk 1, remainder 7 → 65536 + 7
   });
 
-  it('emits an occ retry when a conditional write conflicts, then succeeds', async () => {
+  it('emits a transient retry when a cold read throws TransientError, then serves the read', async () => {
     const counter = new CountingMetricsSink();
-    const warm = new FaultyWarm(new MemoryWarmDriver(), { conflictOnPut: 1 });
-    const cr = new CloudRoaring({
-      warm,
-      cold: new MemoryColdChunkSource(),
+    const inner = new MemoryColdChunkSource();
+    seedSegment(inner, 'users', [5]);
+    const store = new CloudRoaring({
+      cold: new FaultyCold(inner, 1),
       metrics: counter,
       clock: instantClock,
       rng: zeroRng,
     });
-    const s = cr.segment('users');
-    await s.add(5);
+    expect(await store.segment('users').has(5)).toBe(true);
     const snap = counter.snapshot();
-    expect(snap.retries.occ).toBe(1);
-    expect(snap.warm.writes).toBe(1); // emitted only on the successful (2nd) attempt, never on the conflict
-    expect(await s.has(5)).toBe(true);
+    expect(snap.retries.transient).toBe(1);
+    expect(snap.cold.gets).toBe(1); // the retry happens inside the one GET the engine observes
   });
 
-  it('emits a transient retry when a driver call throws TransientError', async () => {
-    const counter = new CountingMetricsSink();
-    const warm = new FaultyWarm(new MemoryWarmDriver(), { transientOnGet: 1 });
-    const cr = new CloudRoaring({
-      warm,
-      cold: new MemoryColdChunkSource(),
-      metrics: counter,
-      clock: instantClock,
-      rng: zeroRng,
-    });
-    const s = cr.segment('users');
-    await s.add(5);
-    expect(counter.snapshot().retries.transient).toBe(1);
-    expect(await s.has(5)).toBe(true);
-  });
-
-  it('a throwing metrics sink never breaks a read/write', async () => {
-    const cr = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-      metrics: {
-        onEvent() {
-          throw new Error('sink boom');
+  it('a throwing metrics sink never breaks a read', async () => {
+    const { store } = seededStore(
+      { users: [5] },
+      {
+        metrics: {
+          onEvent() {
+            throw new Error('sink boom');
+          },
         },
       },
-    });
-    const s = cr.segment('users');
-    await expect(s.add(5)).resolves.toBeUndefined();
+    );
+    const s = store.segment('users');
     expect(await s.has(5)).toBe(true);
+    expect(await s.count()).toBe(1);
   });
 
   it('emits op even when the op throws (finally-timed)', async () => {
     const counter = new CountingMetricsSink();
-    const cr = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-      metrics: counter,
-    });
-    const s = cr.segment('users');
-    await expect(s.add(-1)).rejects.toThrow(ValidationError); // bad id → throws before any write
-    expect(counter.snapshot().ops.add.count).toBe(1); // op still recorded on the throw path
+    const { store } = seededStore({}, { metrics: counter });
+    await expect(store.segment('users').has(-1)).rejects.toThrow(ValidationError); // bad id → throws before any read
+    expect(counter.snapshot().ops.has.count).toBe(1); // op still recorded on the throw path
+  });
+
+  it('the *Into verbs emit their own op events (timed at the facade)', async () => {
+    const counter = new CountingMetricsSink();
+    const { store } = await loadedStore({ a: [1, 2, 3], b: [2, 3, 4] }, { metrics: counter });
+    const a = store.segment('a');
+    const b = store.segment('b');
+    await a.intersectInto(store.segment('i'), [b]);
+    await a.unionInto(store.segment('u'), [b]);
+    await a.andNotInto(store.segment('d'), [b]);
+    const { ops } = counter.snapshot();
+    expect(ops.intersectInto.count).toBe(1);
+    expect(ops.unionInto.count).toBe(1);
+    expect(ops.andNotInto.count).toBe(1);
+    expect(ops.has.count).toBe(0);
   });
 
   it('no cache configured → cold.get still emitted, no cache events (direct engine)', async () => {
     const counter = new CountingMetricsSink();
     const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 'users', chunkKey: 0 }, SafeBitmap.fromValues([5]).serialize());
+    seedSegment(cold, 'users', [5]);
     // No `cache` in EngineDeps → the cache branch is skipped entirely.
-    const engine = new SegmentEngine({
-      codec: roaringCodec,
-      warm: new MemoryWarmDriver(),
-      cold,
-      metrics: counter,
-    });
+    const engine = new SegmentEngine({ codec: roaringCodec, cold, metrics: counter });
     expect(await engine.has({ segment: 'users' }, 5)).toBe(true);
     const snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 0 }); // no spurious cache events without a cache

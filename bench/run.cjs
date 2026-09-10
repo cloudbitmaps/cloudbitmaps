@@ -1,15 +1,19 @@
 /*
  * Offline benchmark + crossover-chart generator (Phase 5c).
  *
- * Draws the CloudRoaring pay-per-use cost curves against a flat Redis-HA node and marks where they cross,
+ * Draws the CloudRoaring pay-per-use read-cost curve against a flat Redis-HA node and marks where they cross,
  * straight from the SHIPPED estimator (`estimateCost`) + the default pricing — so the published chart can
  * never drift from the library's own numbers. Wall-clock latency lives here (not in CI) because shared
  * runners are too noisy to gate on; the deterministic anchors are gated in tests/bench/anchors.test.ts.
  *
+ * There is ONE axis, sustained point reads, because the loaded store has no per-id write: data enters as a
+ * generation (one object PUT, a few when multipart), which the estimator prices as `loadsPerMonth` rather than
+ * as a rate. A write panel would plot a term the model does not have.
+ *
  * Run with `pnpm bench` (builds first). Regenerates, in place and deterministically (no timestamps):
  *   - bench/crossover.svg           self-contained chart (used by docs/benchmarks.md)
  *   - bench/results.json            the numbers behind the chart
- *   - site/benchmarks.html          chart inlined + stats table (between BENCH markers)
+ *   - site/benchmarks.html          chart inlined (between BENCH markers)
  *   - docs/benchmarks.md            chart <img> + stats table (between BENCH markers)
  *
  * Imports the CJS build (@cloudbitmaps/roaring) on purpose: the ESM bundle pulls `roaring`'s named exports, which
@@ -26,26 +30,17 @@ const REDIS = P.redis.monthlyUSD;
 const GIB = 1024 ** 3;
 
 // ── The numbers, all from the shipped estimator ──────────────────────────────────────────────────
-const base = { avgItemKiB: 8, cacheHitRate: 0, topology: 'B' };
-const costWrites = (x) =>
-  estimateCost({
-    segments: [{ sizeBytes: 0 }],
-    topology: 'B',
-    workload: { ...base, writesPerSec: x },
-  }).monthlyUSD.total;
+// Cache off is the pessimal posture, chosen so the published figure cannot flatter us: every point read is one
+// object GET. The estimator evaluates the crossover at whatever hit rate it is given, so a caller with a warm
+// cache gets a higher number from the same function.
+const base = { cacheHitRate: 0 };
 const costReads = (x) =>
   estimateCost({
     segments: [{ sizeBytes: 0 }],
-    topology: 'B',
     workload: { ...base, readsPerSec: x },
   }).monthlyUSD.total;
 
-const crossReport = estimateCost({
-  segments: [{ sizeBytes: 0 }],
-  topology: 'B',
-  workload: base,
-});
-const writeCross = crossReport.redisCrossover.writesPerSec;
+const crossReport = estimateCost({ segments: [{ sizeBytes: 0 }], workload: base });
 const readCross = crossReport.redisCrossover.readsPerSec;
 
 const atRestBytes = 1.2 * GIB; // reference: ~1.2 GiB at rest, no traffic
@@ -56,11 +51,8 @@ const results = {
   pricing: P.name,
   redisBaselineUSD: REDIS,
   assumptions: {
-    avgItemKiB: base.avgItemKiB,
     cacheHitRate: base.cacheHitRate,
-    topology: base.topology,
   },
-  writeCrossoverPerSec: round(writeCross, 2),
   readCrossoverPerSec: round(readCross, 2),
   atRest: {
     sizeGiB: round(atRestBytes / GIB, 3),
@@ -99,18 +91,26 @@ const FONT = "var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', syst
 const W = 760;
 const HEADER = 96;
 const PANEL_H = 300;
-const H = HEADER + PANEL_H * 2;
-const Y_MAX = 600; // shared y-axis ceiling for both panels
-const X_MAX_WRITES = 45;
-const X_MAX_READS = 850;
+const H = HEADER + PANEL_H;
+const Y_MAX = 600; // y-axis ceiling; the ticks below must end on it
+const Y_TICKS = [0, 200, 400, 600];
+const X_MAX_READS = 500;
+const X_TICKS_READS = [0, 100, 200, 300, 400, 500];
 
-// Fail loud if a curve would exceed the axis — py()'s clamp would otherwise silently flatten it, exactly the
+// Fail loud if the curve would exceed the axis — py()'s clamp would otherwise silently flatten it, exactly the
 // kind of drift this chart exists to prevent. Raise Y_MAX (and re-run `pnpm bench`) if pricing pushes higher.
 {
-  const peakCost = Math.max(costWrites(X_MAX_WRITES), costReads(X_MAX_READS), REDIS);
+  const peakCost = Math.max(costReads(X_MAX_READS), REDIS);
   if (peakCost > Y_MAX) {
     throw new Error(
       `chart Y_MAX=${Y_MAX} is below the peak plotted cost $${peakCost.toFixed(0)} — raise Y_MAX in bench/run.cjs`,
+    );
+  }
+  // And the other direction: a crossover past the x-axis would have no marker to draw, and the reader would see
+  // a curve that never crosses — the opposite of the honest picture.
+  if (readCross > X_MAX_READS) {
+    throw new Error(
+      `read crossover ${readCross.toFixed(2)}/s is past X_MAX_READS=${X_MAX_READS} — widen the axis in bench/run.cjs`,
     );
   }
 }
@@ -121,25 +121,16 @@ const svg = [
   `<rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="0" fill="${COL.card}" stroke="${COL.hair}"/>`,
   // header
   `<text x="28" y="34" font-size="17" font-weight="700" fill="${COL.ink}">Where pay-per-use crosses a flat Redis-HA node</text>`,
-  `<text x="28" y="56" font-size="12.5" fill="${COL.muted}">${esc(P.name)} · ${base.avgItemKiB} KiB items · cache off · flat Redis-HA = $${REDIS}/mo</text>`,
+  `<text x="28" y="56" font-size="12.5" fill="${COL.muted}">${esc(P.name)} · cache off · flat Redis-HA = $${REDIS}/mo</text>`,
   // legend on its own row so it never collides with the title
   legend(28, 78),
   panel(
     HEADER,
-    'Sustained writes — the metered cost driver',
-    'writes / sec',
-    costWrites,
-    writeCross,
-    [0, 15, 30, 45],
-    X_MAX_WRITES,
-  ),
-  panel(
-    HEADER + PANEL_H,
-    'Sustained reads (Topology-B warm, strongly-consistent)',
+    'Sustained point reads (object GETs, cache off)',
     'reads / sec',
     costReads,
     readCross,
-    [0, 250, 500, 750],
+    X_TICKS_READS,
     X_MAX_READS,
   ),
   `</svg>`,
@@ -175,7 +166,7 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
   const plotH = plotB - plotT;
 
   const yMax = Y_MAX;
-  const yTicks = [0, 200, 400, 600];
+  const yTicks = Y_TICKS;
   const px = (x) => plotL + (x / xMax) * plotW;
   const py = (v) => plotB - (Math.min(v, yMax) / yMax) * plotH;
 
@@ -230,7 +221,7 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
     `<circle cx="${crX.toFixed(1)}" cy="${redisY.toFixed(1)}" r="4.5" fill="${COL.cr}"/>`,
     // BELOW the baseline, not above it. The curve crosses the flat Redis line exactly here by definition, so
     // a label at `redisY - 10` is guaranteed to be printed over the curve's own stroke — which it was, most
-    // illegibly on the reads panel. Below-right of the crossing is the one quadrant the curve has just left.
+    // illegibly. Below-right of the crossing is the one quadrant the curve has just left.
     `<text x="${(crX + 8).toFixed(1)}" y="${(redisY + 20).toFixed(1)}" font-size="12" font-weight="700" fill="${COL.cr}">crossover ≈ ${crossover.toFixed(crossover < 100 ? 1 : 0)} /s</text>`,
   );
   out.push(`</g>`);
@@ -246,23 +237,17 @@ const rows = [
     esc(results.atRest.verdict),
   ],
   [
-    'Write crossover',
-    `${results.writeCrossoverPerSec} writes/s`,
-    '8 KiB items',
-    'past here a flat tier is cheaper',
-  ],
-  [
     'Read crossover',
     `${results.readCrossoverPerSec} reads/s`,
-    'Topology-B, cache off',
+    'object GETs, cache off',
     'past here a flat tier is cheaper',
   ],
   ['Redis-HA baseline', `$${REDIS}/mo`, 'flat', 'the comparison line'],
 ];
 // NOTE — there is deliberately no HTML table here any more. site/benchmarks.html hand-writes its own
-// "Cost anchors" panel, which is a superset of these four rows (it adds count(), segment publishes and the
-// A ∩ B chunk-skipping row) in the site's own .tpanel form with verdict chips and a basis column. Injecting
-// this table beside it would print four of those numbers twice in two different styles. The site's copies are
+// "Cost anchors" panel, which is a superset of these three rows (it adds segment publishes and the A ∩ B
+// chunk-skipping row) in the site's own .tpanel form with verdict chips and a basis column. Injecting this
+// table beside it would print three of those numbers twice in two different styles. The site's copies are
 // instead verified against bench/results.json by scripts/site-figures.cjs, in BOTH directions — every anchor
 // must appear, and no money figure may appear that no source accounts for. The markdown table below is still
 // injected, because docs/benchmarks.md has no hand-written equivalent.
@@ -316,5 +301,5 @@ function log(rel) {
 }
 
 console.log(
-  `bench: writeCross=${results.writeCrossoverPerSec}/s readCross=${results.readCrossoverPerSec}/s atRest=$${results.atRest.monthlyUSD}/mo (${results.atRest.pctOfRedis}% of Redis, ${results.atRest.verdict})`,
+  `bench: readCross=${results.readCrossoverPerSec}/s atRest=$${results.atRest.monthlyUSD}/mo (${results.atRest.pctOfRedis}% of Redis, ${results.atRest.verdict})`,
 );

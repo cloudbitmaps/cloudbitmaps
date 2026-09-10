@@ -4,9 +4,12 @@
 > `estimateCost()` + the default `aws-us-east-1-ondemand` pricing, so they can never drift from the
 > library's own numbers. The polished, shareable version lives on the [site](../site/benchmarks.html)
 
-
 CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
-sustained write/read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
+sustained read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
+
+There is **one** crossover, not two, because a loaded store has no per-id write to plot: data enters as a whole
+generation — one object PUT, a few when multipart — which the estimator prices as `loadsPerMonth` rather than as a
+rate. Reads are the axis where a flat, always-on node competes.
 
 ## The crossover chart
 
@@ -18,8 +21,7 @@ sustained write/read rate, pay-per-use is far cheaper; above it, the flat node w
 | Scenario | Value | Basis | Verdict |
 | --- | --- | --- | --- |
 | At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of Redis | win-big |
-| Write crossover | **26.33 writes/s** | 8 KiB items | past here a flat tier is cheaper |
-| Read crossover | **526.64 reads/s** | Topology-B, cache off | past here a flat tier is cheaper |
+| Read crossover | **329.15 reads/s** | object GETs, cache off | past here a flat tier is cheaper |
 | Redis-HA baseline | **$346/mo** | flat | the comparison line |
 <!-- BENCH:STATS:END -->
 
@@ -29,50 +31,46 @@ Every number above is turned into a **deterministic, build-breaking CI assertion
 [`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts) — a regression or an overclaim fails the
 build:
 
-- **Counting is free** — `count()` on a warm-delta-free segment performs **0 payload reads**, summing
-  cardinality straight from the `.crbm` index (only chunks with pending writes are fetched).
+- **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, summing cardinality
+  straight from the `.crbm` index.
 - **Chunk-skipping works** — a 5%-overlap intersection fetches ≤ 10% of a full two-segment download
   (measured through the metrics sink).
 - **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of a Redis-HA node.
-- **We don't understate the loss** — the modeled write crossover is ≥ the published rate.
-- **The estimator is trustworthy (K3)** — its prediction lands within ±20% of the engine's actual measured
-  backend cost for a real workload.
+- **The published crossover is the modelled one** — the estimator's read crossover, at the pessimal cache
+  posture, is asserted against the rate this page prints, over the same $346 baseline.
+- **The estimator never quotes a cheaper bill than the engine incurs** — priced against the cold GETs a metrics
+  sink actually observed for a real read workload, the prediction must land on or above the measured cost.
 
 ## Real-cloud calibration — AWS
 
 > ✅ **MEASURED** against real S3 + DynamoDB on **2026-07-25**, `us-east-1`, run id `2026-07-25-60291`.
-> Everything else on this page is either the cost **model** (`estimateCost`) or a **local/emulated** run. This is
-> the section that reports what AWS actually charged and how AWS actually responded.
+> Everything else on this page is either the cost **model** (`estimateCost`) or a **local** run. This is the
+> section that reports what AWS actually charged.
 
-**The workload:** 20 segments · 2,000 incremental writes (`add`, DynamoDB warm + OCC) · 20 segment publishes
-(bulk-load → S3 PUT) · 2,000 reads (`count`, tier-merging across S3 ∪ DynamoDB) · client concurrency 16 ·
-on-demand billing on a throwaway bucket + table, both torn down at the end.
+**This is half of a run.** Its other half metered a NoSQL delta tier that the library no longer has, so those
+line items, their unit rates and the latency table they produced are **not** restated here — republishing them
+would put a price on a code path you cannot take. What is left is the object-store half, and the object store is
+now the whole write path and the whole read path.
 
-Raw artifact: [`bench/calibrate-aws-results.json`](../bench/calibrate-aws-results.json). Reproduce with
-`pnpm calibrate:aws` (projection only; `--run` spends money and requires an explicit region + typed
-confirmation).
+The harness that produced the run, and its raw artifact, were removed along with the tier they were built to
+meter. The figures below are the record.
 
 ### What it cost
 
-**$0.001911 — under two tenths of a cent** for 6,355 billed requests.
-
 | Term | Billed quantity | Rate (`us-east-1` on-demand) | Cost |
 | --- | --- | --- | --- |
-| DynamoDB write | 2,020 WRU | $0.625/M | $0.001263 |
-| DynamoDB read | 4,233 RRU | $0.125/M | $0.000529 |
 | S3 PUT/LIST | 22 | $5.00/M | $0.000110 |
 | S3 GET | 23 | $0.40/M | $0.000009 |
-| **Total** | **6,355 requests** | | **$0.001911** |
 
-The DynamoDB capacity units are **AWS's own `ConsumedCapacity`**, read off every response — not a
-size→ceiling→units estimate. The harness cross-checks them against the request count and refuses to present the
-figure as measured if they fall short; the check passed at 99.2% (6,253 units across 6,306 DynamoDB requests).
+No total is published for the run: the rows above are two terms out of four, and a "total" over a subset would be
+a number no run produced.
 
-**Unit economics that fall out of it:**
+**Unit economics that fall out of it** — both are paths the loaded store still takes, so both still describe what
+you would pay. Each is a whole operation end to end, so it includes the registry round trip that resolves or
+advances the segment's current generation:
 
 | Operation | Measured cost |
 | --- | --- |
-| Incremental `add()` (read-modify-write + OCC) | **$0.75 per million** |
 | `count()` on a published segment | **$0.14 per million** |
 | Segment publish (bulk-load → one S3 PUT) | **$5.88 per million** |
 
@@ -83,261 +81,94 @@ baseline without knowing whether it is sized for the reference dataset or severa
 the instance class and check us.
 
 "Redis" is the legible example of the axis, not the opponent: the axis is **reserved capacity vs metered
-requests**, and any always-on node crosses any per-request meter somewhere. Redis is also one of our own Warm
-drivers — see below.
-
-**One honest floor.** AWS bills a failed conditional write at 1 WCU, but the 53
-`ConditionalCheckFailedException` responses carried no `ConsumedCapacity`, so the meter could not recover those
-units. True total is ≈ **$0.001944**; the published figure understates by $0.000033 (1.7% of the write term).
-
-### Why the projection said $0.18 and the bill was $0.0019
-
-The harness refuses to run until its **projection** fits under a spend ceiling, and that projection assumes
-*every* write exhausts all 16 of the engine's OCC retries. The real conflict rate at 16-way concurrency was
-**2.65%** — 53 retries across 2,053 write attempts, **1.027 attempts per write**. Hence the 95× gap. The ceiling
-is a genuine upper bound, not a forecast; a run that fits under it cannot surprise you, and one that does not fit
-gets refused rather than trimmed.
-
-### Cost-safety evidence
-
-A calibration run's real job is catching the ways a cloud library quietly bills you more than its model says.
-What the wire-level meter shows:
-
-| Failure mode | Evidence it did not happen |
-| --- | --- |
-| **SDK retry storm** (throttling/5xx backoff — each attempt billed) | `attempts` equals `commands` for **every** command type: 6,355 = 6,355. Zero retries. |
-| **Runaway OCC loop** | 1.027 attempts per write against a bound of 17. |
-| **LIST-per-read** (LIST bills at the PUT rate, **12.5× a GET**) | `cold.list = 0`. The read path issues none. |
-| **Cold re-fetch per read** | 22 S3 GETs served 2,000 reads — each of the 20 segments fetched ~once, then served from the bounded HOT LRU. |
-| **Standing hourly charges** | Table created `PAY_PER_REQUEST`; no streams, PITR, versioning, or Contributor Insights. Nothing bills by the hour. |
-| **Orphaned resources** | Teardown deleted both, and a follow-up `list-buckets` / `list-tables` sweep plus direct probes confirmed 404 / `ResourceNotFoundException`. |
-
-The 55 attempts that returned an error are all accounted for, and all billed-but-expected: 1 `HeadBucket` 404 and
-1 `DescribeTable` `ResourceNotFound` (the pre-create probes), plus the 53 OCC conflicts. Control-plane calls
-(`Create*`/`Describe*`/`Delete*`) and S3 DELETE are free; storage-time was ~23 KB for ~90 s (≈$10⁻⁹) and egress
-~25 KB, inside the free monthly allowance.
-
-### What it cost in latency — and why the number is what it is
-
-| Phase | ops/s | p50 | p99 | p999 | max |
-| --- | --- | --- | --- | --- | --- |
-| WRITE (`add` → DynamoDB OCC) | 73 | 197.72 ms | 476 ms | 775.81 ms | 776.79 ms |
-| PUBLISH (bulk-load → S3 PUT) | 18 | 633.91 ms | — | — | 733.26 ms |
-| READ (`count` → S3 ∪ DynamoDB) | 140 | 95.47 ms | 309.73 ms | 378.68 ms | 479.97 ms |
-
-`—` where a 20-observation sample cannot support the percentile; we print `—` rather than three "statistics"
-derived from one data point.
-
-**These are client-outside-the-region numbers, and they are almost entirely network transit.** The run was
-driven from a laptop over a corporate network, so before reading anything into the table, here is the measured
-floor from the same machine at the same time — median of 10 raw TCP connects, no AWS call, no charge:
-
-| Path | 1 raw TCP round trip to `us-east-1` |
-| --- | --- |
-| `dynamodb.us-east-1.amazonaws.com` | **96.0 ms** (min 89.3) |
-| `s3.us-east-1.amazonaws.com` | **92.6 ms** (min 87.1) |
-
-Line that up against the phases and the whole table decodes:
-
-- **READ p50 95.47 ms ≈ one round trip (96.0 ms).** A `count()` on a published segment is one DynamoDB round
-  trip; the engine's own work, and DynamoDB's service time, are inside the measurement noise at this distance.
-- **WRITE p50 197.72 ms ≈ two round trips (192 ms).** An `add()` is read-modify-write under OCC — a `GetItem`
-  then a conditional `UpdateItem`, necessarily sequential. Exactly 2× the read, as the protocol requires.
-- **Throughput is the concurrency window, not a ceiling.** 16 ÷ 0.198 s ≈ 81/s against 73/s measured; 16 ÷
-  0.0955 s ≈ 168/s against 140/s measured. Both track concurrency ÷ latency to within the mean-vs-median gap.
-  Raising concurrency raises throughput near-linearly; the engine is not the limit.
-
-So this run **calibrates the cost claim and does not calibrate the in-region latency claim** — it cannot. The
-North Star target for a warm `has()` is a single-digit-to-~25 ms round trip, and the
-network floor here is 96 ms, roughly **4× that entire budget**. Nothing in this table contradicts the target;
-nothing in it confirms the target either. Confirming it needed a client inside the region — which is what the
-next section does.
-
-### In-region latency — measured 2026-07-27
-
-Run from **AWS CloudShell in `us-east-1`**, so the 96 ms transit floor above is gone. The workload seeds
-**warm-only** and never compacts, so no Cold generation exists and every `has()` must reach DynamoDB; the HOT
-cache holds decoded *Cold* chunks, so it cannot mask a warm read. The **published npm package** is installed
-rather than a local build, so this measures what you get from `npm i`.
-
-| warm `has()` | n = 2,000 | n = 300 (independent run) |
-| --- | --- | --- |
-| min | 2.04 ms | 2.22 ms |
-| **p50** | **5.27 ms** | 4.83 ms |
-| p90 | 6.36 ms | 6.29 ms |
-| p95 | 7.15 ms | 7.23 ms |
-| p99 | **12.71 ms** | 12.55 ms |
-| max | 39.61 ms | 224.95 ms |
-
-**The target is met: p50 5.27 ms and p99 12.71 ms both sit inside the single-digit-to-~25 ms budget.** The
-in-region p50 is roughly **20× below run 1's network floor alone**, which is why that run could say nothing
-either way. Two independent runs agree on every percentile to within ~0.5 ms — that agreement, not either run
-by itself, is the reason to believe the distribution rather than a single sample.
-
-**What this does not claim.** The `max` is **above** the budget, so the honest statement is *"p99 inside
-budget"*, not *"always inside budget"*. The 224.95 ms outlier in the smaller run did **not** recur at 6.7× the
-sample count, so it was a one-off transient — an SDK retry, a GC pause, a DynamoDB hiccup; one occurrence cannot
-distinguish them — rather than a tail shape. **p999 is not published**: at n=2,000 it is ~2 samples deep, which
-is not a number anyone should plan against. And CloudShell measures the **engine**; a Lambda run would measure
-the *serverless* story with cold-start and init included, which is a different figure and a separate follow-up.
-
-### Is that acceptable for a segmentation engine?
-
-Worth answering directly, because "197 ms per write" invites the wrong conclusion. **Per-operation latency is
-not the metric that governs a segmentation workload**, and the paths that do govern it are the ones the
-architecture is built around:
-
-- **Building or refreshing a segment of N million users** is `bulkLoadCrbmGeneration` → **one (or a few
-  multipart) S3 PUTs**, bounded by the *compressed bytes* of the roaring bitmap, not by N. Ingesting ten million
-  users is a multi-MB upload, not ten million round trips.
-- **Membership checks at query time** are absorbed by the bounded HOT LRU — the 22-GETs-for-2,000-reads result
-  above is that effect. The irreducible floor is the warm-delta read that
-  tier-merging correctness requires; callers who can tolerate read-after-write lag
-  drop it to ~½ RCU with `warmReadConsistency: 'eventual'`.
-- **Audience counts are free.** `count()` on a warm-delta-free segment performs **0 payload reads**, summing
-  cardinality from the `.crbm` index — so counting a ten-million-user segment does not scale with N.
-- **Intersections skip.** Two 2,000,000-id segments intersect by fetching only the shared chunks — [measured
-  above](#at-scale--measured-1k--10k--100k-segments) at 100 of 2,000 chunks per segment in 25.3 ms. This is the case where
-  an always-on RAM store has to hold both bitmaps resident and CloudBitmaps does not.
-
-**The one pattern that does not scale to millions is `add()` in a loop — a routing decision, not a performance
-bug.** At the measured $0.75 per million writes, streaming 10M users in one at a time costs ~$7.50 and, at this
-run's 73 writes/s, takes on the order of a day and a half. The same ids batched through `addMany()` collapse to
-**one write per 65,536-id chunk** — roughly 150 writes for a dense 10M set — and bulk-loaded they become a
-handful of S3 PUTs:
-
-| 10M ids via | Backend ops | Cost | Basis |
-| --- | --- | --- | --- |
-| `add()` in a loop | 10,000,000 read-modify-writes | ~$7.50 – $52 | **measured** rate; range is warm-row size |
-| `addMany()` in batches | ~150 chunk writes (dense) → ≤65,536 (sparse) | ~$0.001 – $0.05 | derived from the measured unit rates |
-| `bulkLoadCrbmGeneration()` | a handful of S3 PUTs | ~$0.00001 | derived |
-
-The loop is a **range, not a number**, because DynamoDB bills writes per 1 KiB and a chunk's warm delta grows as
-you fill it. The $0.75/M measured above is a small row (1 RRU + 1 WRU) — what this run exercised, at ~500 ids per
-segment. A chunk carrying a full ~8 KiB roaring bitmap costs 2 RRU + 8 WRU on every subsequent `add()`, i.e.
-**$5.25/M**. So the denser the data, the worse the loop gets — and density is exactly the condition under which
-bulk-load was the obvious call.
-
-So the rule is **batch when you can, and bulk-load when you are replacing rather than amending**: `add()`/
-`addMany()` for deltas (a user newly qualifies), bulk-load for segment builds and refreshes. Bulk-load cannot
-express "one more user" or a removal at all — it replaces a whole generation — which is why all three paths
-exist rather than one. The guide says the same, and the cost model prices all of them.
-
-Where an always-on RAM store still wins: a sub-millisecond in-region p99 on a working set that does not fit the
-HOT cache. That trade is stated plainly in
-the design docs, and it has not changed.
+requests**, and any always-on node crosses any per-request meter somewhere.
 
 ### What this section is not
 
-- **It is prices × wire-metered ops, plus a reconciliation — not the invoice.** AWS billing lags hours and has no
-  per-run granularity, so the run tags its resources (`cloudbitmaps-calibration=<runId>`) and the Cost Explorer
-  comparison follows a day later.
-- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put` event — a known observability gap). That is why the meter sits at the AWS
-  SDK layer instead. PUTs bill at 12.5× a GET, so an ingest-heavy workload priced without them is materially
-  understated — which is exactly the flaw in the LocalStack figures above.
-- **One run, one region, one client, one workload shape.** Method, safety properties, and the explicit list of
-  what it does *not* cover is recorded with the run.
-
-## Write shape — the cost of one op per id
-
-A Warm row holds **one roaring bitmap per 65,536-id chunk**, and every write re-serializes and re-writes that whole
-blob. So how you batch your writes dominates your write bill, by orders of magnitude. Same 5,000 ids, three shapes,
-counting actual writes and bytes at the Warm driver:
-
-| Shape | Warm writes | Bytes written | vs. one call |
-|---|---|---|---|
-| `add(id)` per id, 5,000× | 5,000 | 23,762 KB | **~2,970× the bytes** |
-| `addMany(ids)` in 500-id batches | 10 | 51 KB | ~6× the bytes |
-| one `addMany(ids)` | 1 | 8 KB | — |
-
-DynamoDB bills writes per 1 KB, so the per-id loop is ~23,762 WCU where the single call is 8. **This is the one
-place a Redis habit ports badly:** `SETBIT` flips a bit in place and is genuinely O(1), so a per-recipient loop is
-the natural Redis shape and the worst possible shape here. Batch and you are far cheaper than Redis; port the loop
-literally and you are far more expensive. `claimMany(ids)` exists in batch form for this reason.
-
-Volume itself is cheap — it is *op count* that costs. **200,000 ids spread over a 9M-id space occupy 138 Warm
-rows**, not 200,000: one row per 64K of id space actually touched.
-
-### What that costs you depends on the backend's pricing model
-
-The **write and byte counts above are backend-independent** — they are what *any* Warm driver receives, so they are
-a property of how you batch, not of where you store. What they *cost* is not:
-
-| Warm backend pricing model | How the amplification shows up |
-| --- | --- |
-| **Per-request metered** — DynamoDB on-demand, Astra, most serverless KV | A direct line item. DynamoDB charges one write unit per **1 KB, rounded up, per item**, so small frequent writes are penalized twice: once by the per-request floor and again by rounding. The ~4.75 KB average per-id write above bills 5 units each — ~25,000 units for the loop against 8 for one call |
-| **Provisioned capacity** — DynamoDB provisioned, reserved throughput | Not extra dollars, until it is: it consumes capacity you already pay for, so the first symptom is **throttling and retry latency**, and the bill moves only when you scale the table up to stop it |
-| **Instance-priced** — ElastiCache/Redis, RDS Postgres/MySQL, Mongo Atlas, self-hosted Cassandra | **No per-op charge at all.** The amplification is real but shows up as IOPS, CPU and latency headroom rather than an invoice line — which makes it easier to miss, not cheaper |
-
-So the per-id loop is a **pricing** problem on a metered backend and a **capacity** problem on an instance-priced
-one. Either way, batching removes it.
-
-> **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
-> repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the *ratios* as the durable
-> finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
-> `PricingProfile` so you can plug your real rates in rather than trusting ours.
-
-**Method.** In-memory Warm driver wrapped in a counting proxy, byte totals taken from the encoded delta handed to
-`putConditional`, so the figures are the payload the driver would send — not an estimate. Ids are `i * 3` over 5,000
-ids (dense, one chunk) for the first table and `i * 45` over 200,000 for the row count. Backend-independent: the
-write and byte counts are what any Warm driver receives, though what each *charges* differs. Reproduced by
-`tests/core/claim-many.test.ts` ("costs one write per chunk"), which fails if the per-chunk batching regresses.
+- **It is prices × wire-metered ops — not the invoice.** AWS billing lags hours and has no per-run granularity,
+  so the run tagged its resources (`cloudbitmaps-calibration=<runId>`) and the Cost Explorer comparison followed
+  a day later.
+- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put`
+  event — a known observability gap). That is why the meter sat at the AWS SDK layer instead. PUTs bill at 12.5×
+  a GET, so an ingest-heavy workload priced without them is materially understated.
+- **It says nothing about latency.** The run was driven from a laptop outside the region, so its wall-clock
+  figures were dominated by internet transit and calibrated the **cost** claim only. In-region latency for the
+  loaded read path is [owed](#what-is-still-owed), not published.
+- **One run, one region, one client, one workload shape.**
 
 ## At scale — measured (1K → 10K → 100K segments)
 
-> **Measured, not modeled.** Unlike the cost curves above (which come from the estimator), the numbers here are
+> **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
 > disk and reads across all of it. They're machine-dependent — a point-in-time snapshot, **not** a CI gate.
 
-The production-readiness audit flagged three scale risks — an unbounded
-`.crbm` reader cache, `O(total)` compaction discovery, and intersection unproven under load. Phases C/D/G closed
-them; this is the measured evidence at fleet scale:
+The production-readiness audit flagged three scale risks — an unbounded `.crbm` reader cache, an `O(total)`
+fleet-wide registry scan, and intersection unproven under load. This is the measured evidence at fleet scale:
 
 <!-- BENCH:SCALE:START -->
 | Fleet | Retained heap (cap 1024) | Peak RSS | Discovery scan |
 | --- | --- | --- | --- |
-| 1,000 segments | 7.8 MiB | 63.1 MiB | 80.2 ms |
-| 10,000 segments | 7.9 MiB | 114.7 MiB | 1,522.7 ms |
-| 100,000 segments | 7.0 MiB | 178.0 MiB | 12,954.4 ms |
+| 1,000 segments | 8.2 MiB | 68.1 MiB | 87.6 ms |
+| 10,000 segments | 8.3 MiB | 86.8 MiB | 1,067.9 ms |
+| 100,000 segments | 7.4 MiB | 162.2 MiB | 11,606.4 ms |
 
-Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 25.3 ms.
+Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fetched only 100 of the 2,000 chunks per segment** — the shared keys; the rest skipped by key alignment — in 24.6 ms.
 
-_Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the retained heap** (post-GC), flat at 7.8 MiB @ 1,000 · 7.9 MiB @ 10,000 · 7 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~42–55 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
+_Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
 - **Memory is a function of the working set, not the fleet.** The cold-reader cache is capped by open-segment
   _count_ (`maxOpenSegments`, default 1024) **and** aggregate parsed-index _bytes_ (`maxOpenIndexBytes`, default
   64 MiB), so **retained live heap after reading the _entire_ fleet is flat from 1K to 100K segments** — a 100×
-  larger fleet holds the same resident reader set (audit gap #1), and unusually _wide_ segments can't pin
-  gigabytes of indices while the count looks "in bounds". Peak RSS is shown for context only: it is a **process
-  high-water** that also folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after
-  GC), so it grows with fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column
-  is the bound. Note: live heap + the soak's native-memory watch prove **no leak**
-  on the read path; a hard RSS ceiling under a cgroup `--memory` limit **shipped in Phase 8 as `pnpm rss-gate`**
-  (a soak under a hard `docker --memory` ceiling with swap off; an OOM-kill → exit 137).
-- **Discovery is `O(total segments)`** per cycle (the registry enumeration) — the near-linear discovery column.
-  Sharding (`totalShards`) splits the Warm drain but not the enumeration; the `O(dirty)` indexed-enumeration
-  cursor is a documented deferral (gap #3).
+  larger fleet holds the same resident reader set, and unusually _wide_ segments can't pin gigabytes of indices
+  while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
+  folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
+  fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column is the bound. Live
+  heap plus the soak's native-memory watch prove **no leak** on the read path; the hard RSS ceiling under a
+  cgroup `--memory` limit ships as `pnpm rss-gate` (a soak under a hard `docker --memory` ceiling with swap off;
+  an OOM-kill → exit 137).
+- **The fleet-wide registry scan is `O(total segments)`** — the near-linear "discovery" column is the
+  enumeration that every admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`) pays before it does any
+  work. **No read verb enumerates**: `has`, `count`, `iterate` and `intersect` each address one segment. An
+  indexed-enumeration cursor that would bound it is a documented deferral.
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
-  shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis).
+  shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
+  load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend
+  on how the ids inside a chunk are distributed. The accompanying **bytes** figure does: this fixture seeds each
+  chunk with a contiguous run of ids, which Roaring stores as a run container of a few dozen bytes, so ~30 bytes
+  per fetched chunk is a **best case for the encoding** rather than a typical segment. Real ids at that density
+  are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
+  small and bounded", not as a size to plan a bill around — for that, price the requests.
 
 ## Caveats
 
-- **Default pricing** (`aws-us-east-1-ondemand`, 8 KiB items, cache off, strongly-consistent warm reads).
-  Your region/cloud/provisioned capacity/cache-hit rate move the crossover — feed your own `PricingProfile`
-  and workload to `estimateCost()`.
+- **Default pricing** (`aws-us-east-1-ondemand`, cache off). Your region, cloud, committed term and cache-hit
+  rate all move the crossover — feed your own `PricingProfile` and workload to `estimateCost()`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
-  the at-scale table is _measured memory + latency_ (real run on local disk, machine-dependent, never CI-gated —
-  shared runners are too noisy); and the real-cloud section is _measured AWS cost + latency_ (owner-run against a
-  real account, 2026-07-25). Only the third is cloud-calibrated, and even then the dollars are published prices
-  applied to wire-metered requests plus an invoice reconciliation, not the invoice itself.
-- **Two different latency measurements, do not mix them.** The 2026-07-25 cost run's latency figures are
-  **client-outside-the-region**, dominated by a measured 96 ms internet round trip, and calibrate the **cost**
-  claim only. The **in-region** figures (p50 5.27 ms, p99 12.71 ms) come from a separate 2026-07-27 run inside
-  `us-east-1` — see [In-region latency](#in-region-latency--measured-2026-07-27). Neither is an SLA: both are
-  single-region, single-account samples, and `max` exceeds the target in the in-region run.
+  the at-scale table is _measured memory + wall-clock_ (real run on local disk, machine-dependent, never
+  CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
+  a real account, 2026-07-25). Only the third is cloud-calibrated, and even then the dollars are published prices
+  applied to wire-metered requests, not the invoice itself.
+- **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
+  repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the _ratios_ as the durable
+  finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
+  `PricingProfile` so you can plug your real rates in rather than trusting ours.
+
+## What is still owed
+
+The loaded store's own measurements are the next benchmark pass, and none of them is published yet:
+
+- **Load throughput** — sustained `bulkLoadCrbmGeneration` rate and cost against a real object store, at the
+  segment sizes a real refresh produces. The at-scale table's seed rate is local disk, fsync-bound, and is not
+  that number.
+- **Intersect latency** — in-region wall-clock for a chunk-skipping `A ∩ B`, and for `andNot` with a large
+  `exclude`, against a real object store rather than local disk.
+- **RSS soak** — a recorded envelope from `pnpm rss-gate`. The gate exists and has teeth (an OOM-kill fails the
+  build), but no measured RSS figure from it is published here.
+
+Nothing above should be read as covering any of the three.
 
 ## Reproduce
 
@@ -345,10 +176,10 @@ _Measured on Apple M3 Pro (arm64, node v24.14.1). **The bound is the retained he
 pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results.json, and the cost table here + the site
 pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, rewrites the at-scale table
 SCALE_FLEETS=1000,10000 pnpm bench:scale   # smaller + faster for a quick check
-pnpm calibrate:aws # real-cloud cost/latency. Prints a projection and exits; `--run` needs an explicit region
-                   # + typed confirmation and SPENDS REAL MONEY. Rehearse it free against LocalStack first —
-                   #md
+pnpm soak          # sustained loaded-store reads + combines + re-loads; heap/native creep verdict
+pnpm rss-gate      # the same soak under a hard cgroup --memory ceiling (needs Docker)
 ```
 
-See the cost-model spec for the formulas and the
-[getting-started guide](guide/getting-started.md) for the estimator API.
+The formulas are in `packages/core/src/core/cost.ts` — every rate, the crossover derivation and what each term
+does and does not model are stated there — and the
+[getting-started guide](guide/getting-started.md) covers the estimator API.

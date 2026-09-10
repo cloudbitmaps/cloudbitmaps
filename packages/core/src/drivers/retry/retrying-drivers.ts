@@ -1,32 +1,21 @@
 /**
- * Retry decorators (Phase 4b).
+ * Retry decorators.
  *
  * Transparent wrappers that add bounded, jittered retry of **transient** faults to any driver, using the one
- * shared `core/retry` primitive — so every backend (DynamoDB, S3, LocalFS, …) inherits the same, simulator-
- * replayable policy instead of each rolling its own. Pure composition over the port interfaces (no SDK, no
- * I/O of their own); the wrapped driver is responsible for *classifying* its transient faults (raising
- * {@link TransientError}); these decorators decide *whether and when* to retry.
+ * shared `core/retry` primitive — so every backend (S3, GCS, Azure, DynamoDB, LocalFS, …) inherits the same
+ * policy instead of each rolling its own. Pure composition over the port interfaces (no SDK, no I/O of their
+ * own); the wrapped driver is responsible for *classifying* its transient faults (raising {@link TransientError});
+ * these decorators decide *whether and when* to retry.
  *
- * **Streaming methods split into two shapes**, and the difference is deliberate — a partially-consumed async
- * iterator cannot be resumed mid-stream (it would re-yield earlier items), so each method picks between
- * buffering and bounded memory:
- *
- *   · `RetryingColdDriver.list` / `RetryingRegistryDriver.list` **buffer**, inside `withRetry`, so the whole
- *     enumeration is retried by re-running it from the start. Both are discovery scans over a generation or
- *     namespace listing, where the result set is small and whole-scan retry is worth the memory.
- *   · `RetryingWarmDriver.listChunks` does **not** buffer. It retries only until the first row arrives and
- *     then streams live, because buffering it defeated the engine's resident-memory bound outright — see the
- *     measured account on the method itself. A mid-stream fault therefore propagates rather than being
- *     retried, which is the documented trade there.
+ * **Streaming methods buffer**, deliberately: a partially-consumed async iterator cannot be resumed mid-stream
+ * (it would re-yield earlier items), so `RetryingColdDriver.list` and `RetryingRegistryDriver.list` collect the
+ * whole enumeration inside `withRetry` and re-run it from the start on a fault. Both are discovery scans over a
+ * generation or namespace listing, where the result set is small and whole-scan retry is worth the memory.
  *
  * Point methods are retried in place, with nothing to buffer.
  *
- * (This paragraph previously said streaming methods buffer, full stop. That described `listChunks` as it was
- * before the bound was fixed, and the stale wording had also been copied into the Postgres and MySQL warm
- * drivers — so three comments promised a mid-stream resilience that the hot read path does not have.)
- *
- * What is **not** retried here: {@link WriteConflictError} (OCC — the engine's read-modify-write loop owns
- * that; a blind replay would re-apply against a stale token), and every deterministic error
+ * What is **not** retried here: {@link WriteConflictError} (OCC — the publish loop owns that; a blind replay
+ * would re-apply against a stale token), and every deterministic error
  * (`ValidationError`/`IntegrityError`/`NotFoundError`/…). Default classifier: {@link isTransient}.
  */
 import type { Clock, Rng } from '../../core/determinism';
@@ -39,17 +28,13 @@ import type {
   GenKey,
   IColdDriver,
   IRegistryDriver,
-  IWarmDriver,
   NewRegistryRecord,
-  NoRow,
   RegCaps,
   RegistryPatch,
   RegistryRecord,
   SegmentRef,
   SegmentSize,
   Token,
-  WarmReadOptions,
-  WarmRow,
 } from '../../core/ports';
 import type { BlobSink } from '../../core/blob';
 
@@ -83,95 +68,6 @@ function toRetry(opts: RetryingOptions): {
       onRetry: opts.onRetry,
     },
   };
-}
-
-/** Wrap a warm driver so its calls retry transient faults. OCC conflicts are deliberately not retried here. */
-export class RetryingWarmDriver implements IWarmDriver {
-  private readonly inner: IWarmDriver;
-  private readonly policy: RetryPolicy;
-  private readonly deps: ReturnType<typeof toRetry>['deps'];
-
-  constructor(inner: IWarmDriver, opts: RetryingOptions) {
-    this.inner = inner;
-    const r = toRetry(opts);
-    this.policy = r.policy;
-    this.deps = r.deps;
-  }
-
-  get(ref: ChunkRef, opts?: WarmReadOptions): Promise<WarmRow | null> {
-    return withRetry(() => this.inner.get(ref, opts), this.policy, this.deps);
-  }
-
-  putConditional(
-    ref: ChunkRef,
-    bytes: Uint8Array,
-    expected: Token | NoRow,
-  ): Promise<{ token: Token }> {
-    return withRetry(() => this.inner.putConditional(ref, bytes, expected), this.policy, this.deps);
-  }
-
-  deleteConditional(ref: ChunkRef, expected: Token): Promise<void> {
-    return withRetry(() => this.inner.deleteConditional(ref, expected), this.policy, this.deps);
-  }
-
-  /**
-   * Stream the inner driver's rows, retrying only until the first one arrives.
-   *
-   * **This used to buffer the whole scan** — `for await (…) out.push(row)` inside `withRetry`, then
-   * `yield* out` — which made the retry trivially safe and quietly defeated every bound above it. The engine's
-   * `collectWarm` refuses *during* enumeration precisely so resident memory is `O(ceiling)` rather than
-   * `O(segment)`; with the buffering wrapper in place (and it is wired by default) it saw its first row only
-   * after the entire segment was already in memory. Measured on a 500-row segment under
-   * `budget: { maxRequests: 3 }`: **500 rows materialised with the default wiring, 4 with `retry: false`**.
-   * Both paths threw the same `BudgetExceededError`, which is why no test caught it — the error was never the
-   * distinguishing observable, the row count was.
-   *
-   * **The trade this makes.** A mid-stream fault now propagates instead of being retried. It cannot be retried
-   * honestly: rows have already been handed to the consumer, so restarting the iterator would re-yield them,
-   * and the driver interface exposes no resumption token to continue from. Retry is kept where it pays —
-   * establishing the scan, which is where transient connect/throttle failures actually land — and bounded
-   * memory wins the conflict, because invariant 6 ("bounded memory & cost, always") is a hard invariant and
-   * mid-scan retry is not. A caller who needs whole-scan retry can wrap the operation at their own level,
-   * where re-reading from the start is safe.
-   */
-  async *listChunks(
-    ref: SegmentRef,
-    opts?: WarmReadOptions,
-  ): AsyncIterable<{ chunkKey: number } & WarmRow> {
-    // Each attempt builds a FRESH iterator, so a retried establishment cannot duplicate rows.
-    const started = await withRetry(
-      async () => {
-        const iterator = this.inner.listChunks(ref, opts)[Symbol.asyncIterator]();
-        const first = await iterator.next();
-        return { iterator, first };
-      },
-      this.policy,
-      this.deps,
-    );
-    if (started.first.done === true) return;
-    // The `finally` is load-bearing, and this is the only generator in the codebase that needs one written by
-    // hand. Everywhere else either drives the inner scan with `for await` — which closes it automatically on an
-    // abrupt exit — or has nothing to close (Postgres/MySQL/DynamoDB page statelessly, so each page's client is
-    // already back in the pool). This method drives the inner iterator manually, precisely so it does NOT buffer,
-    // and that means abandonment has to be handled explicitly.
-    //
-    // Abandonment is not hypothetical here, it is the designed path: `engine.ts` throws `BudgetExceededError`
-    // from INSIDE its `for await` over this method ("the scan was abandoned there rather than completed"). That
-    // closes this generator at a `yield`, and without the `finally` the inner generator stays suspended forever
-    // — holding an open Mongo cursor or Cassandra stream, since those two are the drivers that keep one across
-    // yields. The leak therefore fired exactly when the memory ceiling was doing its job, which is the worst
-    // possible time to also be leaking a connection.
-    try {
-      yield started.first.value;
-      for (;;) {
-        const next = await started.iterator.next();
-        if (next.done === true) return;
-        yield next.value;
-      }
-    } finally {
-      await started.iterator.return?.();
-    }
-  }
 }
 
 /** Wrap a cold chunk source so its reads retry transient faults. */

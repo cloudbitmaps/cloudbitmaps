@@ -36,7 +36,7 @@ The `@cloudbitmaps` family split makes this repo a workspace
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `dynamodb` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, compaction, crypto, registry, consistency, budget, eject |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `dynamodb` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, one-line re-export barrels for each driver subpath, the `export-segments` CLI, and the test-only conformance SDK |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the two packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | benchmarks, fuzz targets, gate scripts, the static site, and the docs trees below |
@@ -106,7 +106,7 @@ below runs after sub-phases too, not just whole phases. For each, in order:
 1. **Branch off `main`** per the conventions above. **Docs-only** changes may go straight to `main`.
 2. **Build with tests, not after.** No untested code — new behavior ships with tests in the same commit.
    The [correctness invariants](CLAUDE.md#hard-correctness-invariants) each get named tests, including
-   property/concurrency tests for the compaction and OCC paths.
+   property tests over loaded generations and crash/race tests for the write-then-publish path.
 3. **Run the full local gate — and it must be green.** Before review or merge, run every gate command and
    confirm each passes: `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · **`pnpm typecheck`** ·
    `pnpm test` · `pnpm build`. **`pnpm typecheck` (`tsc --noEmit`) is a required gate exactly like lint and
@@ -125,15 +125,15 @@ below runs after sub-phases too, not just whole phases. For each, in order:
    - **code quality & standards** — SOLID/DRY/KISS/YAGNI, TS idioms, naming, typed errors, dead code,
    - **testing quality** — are the invariants + edge cases actually covered? property/oracle adequacy,
      determinism, no flaky/slow tests,
-   - **docs & spec fidelity** — does the code match the specs (``–`09`) and its own
-     doc-comments? are the roadmap/guide/changelog current?
+   - **docs & spec fidelity** — does the code match its own doc-comments and the
+     [hard invariants](CLAUDE.md#hard-correctness-invariants)? are the roadmap/guide/changelog current?
    - **anything else** the domain suggests.
 
-   Triage → fix the real ones in the same change, or log to the roadmap /
-   the phase doc with a severity + deferral. After substantive fixes, an **adversarial verification pass**
+   Triage → fix the real ones in the same change, or record them in the PR
+   body and the roadmap with a severity + deferral. After substantive fixes, an **adversarial verification pass**
    (re-review the fixed code, ideally mutation-tested) before merging. This is **mandatory, not optional**.
 5. **Keep the docs current** — see [Documentation](#documentation--keeping-it-current) below (guide,
-   README, CHANGELOG, DECISIONS, roadmap), *in the same change*.
+   README, CHANGELOG, roadmap), *in the same change*.
 6. **Commit and push always.** Commit logically, push the branch to `origin` (don't sit on local-only
    work). Open/update the PR.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
@@ -176,8 +176,8 @@ presented as one when they are the other. See [`docs/benchmarks.md`](docs/benchm
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
   package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-two-packages)) keeps that
-  mirror intact across the split. Integration tests under `tests/integration/`. Concurrency/property tests for
-  compaction, OCC, and tier-merge.
+  mirror intact across the split. Integration tests under `tests/integration/`. Property tests over loaded
+  generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**
   ([`packages/roaring/src/testing/conformance.ts`](packages/roaring/src/testing/conformance.ts)) every driver
   (incl. community ones) must pass.

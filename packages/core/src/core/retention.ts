@@ -6,9 +6,9 @@
  * call the operator schedules. That split is deliberate — see the "who owns what" note below.
  *
  * **The expiry is an absolute epoch-ms the writer sets, not a duration the library derives.** A relative TTL
- * anchored to anything the library knows would be wrong: compaction republishes `currentGen` and touches
+ * anchored to anything the library knows would be wrong: every load republishes `currentGen` and touches
  * `updatedAt`, so a "30 days since last write" rule would keep a daily bucket alive forever precisely because
- * the daemon is doing its job. The caller who knows what the segment *means* computes the instant:
+ * it keeps being reloaded. The caller who knows what the segment *means* computes the instant:
  *
  * ```ts
  * const DAY = 86_400_000;
@@ -24,9 +24,9 @@
  *
  * **Storage.** The policy lives in the registry row's free-form `retention` metadata, which already round-trips
  * through every driver and is carried by `list()` — so a fleet-wide sweep reads it from the enumeration with no
- * per-segment `get()`. A segment that has no row yet (a warm-only accumulator) gets one, with
+ * per-segment `get()`. A segment that has no row yet (a policy recorded before the first load) gets one, with
  * `currentGen: null`: the row exists so the segment is *enumerable*, and it claims no Cold generation, so every
- * read still resolves exactly as it did before.
+ * read answers empty until the first load publishes onto it.
  */
 import { ValidationError, WriteConflictError, isWriteConflictError } from './errors';
 import { canIndex, dueBucket, dueIndexRef } from './due-index';
@@ -52,8 +52,8 @@ export const MIN_EXPIRES_AT_MS = 1_000_000_000_000;
 /** A segment's retention policy: the instant it becomes eligible for retirement. */
 export interface RetentionPolicy {
   /**
-   * Absolute epoch-**milliseconds**. Once `now >= expiresAt`, a retention sweep may retire the segment — delete
-   * its Warm rows and its Cold generations. A value in the past is legal (backfilling a policy onto existing
+   * Absolute epoch-**milliseconds**. Once `now >= expiresAt`, a retention sweep may retire the segment — tombstone
+   * it and delete its Cold generations. A value in the past is legal (backfilling a policy onto existing
    * buckets is a normal thing to do) and means "eligible on the next sweep".
    */
   readonly expiresAt: number;
@@ -69,9 +69,9 @@ export interface SetRetentionResult {
   /** The policy now stored on the row. */
   readonly expiresAt: number;
   /**
-   * True iff this call **minted the registry row**. That is the warm-only-accumulator case: the segment existed
-   * only as Warm deltas, invisible to `registry.list()` and therefore to every fleet-wide operation, and it is
-   * now enumerable. The row claims no Cold generation (`currentGen: null`), so reads are unaffected.
+   * True iff this call **minted the registry row** — a policy recorded before the segment's first load. The
+   * segment is now enumerable by `registry.list()` and therefore by every fleet-wide operation; the row claims no
+   * Cold generation (`currentGen: null`), so reads answer empty until the first load publishes onto it.
    */
   readonly createdRow: boolean;
   /**
@@ -215,9 +215,9 @@ export async function setSegmentRetention(
     try {
       previousExpiresAt = readExpiresAt(record);
       if (record === null) {
-        // The warm-only accumulator case. `currentGen: null` is what makes this safe: the row exists purely so
+        // A policy ahead of the first load. `currentGen: null` is what makes this safe: the row exists purely so
         // the segment is enumerable, and it claims no Cold generation, so generation resolution takes the same
-        // path it takes for a segment with no row at all.
+        // path it takes for a segment with no row at all — and the first publish advances it.
         await deps.registry.create(ref, {
           currentGen: null,
           retention: { [EXPIRES_AT]: policy.expiresAt },
@@ -241,7 +241,7 @@ export async function setSegmentRetention(
       };
     } catch (err) {
       if (!isWriteConflictError(err)) throw err;
-      // Lost the race (a compaction commit, a dirty-count hint, another policy write) — re-read and retry.
+      // Lost the race (a load's publish, another policy write) — re-read and retry.
     }
   }
   throw new WriteConflictError(

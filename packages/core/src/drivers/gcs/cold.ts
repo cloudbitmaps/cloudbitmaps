@@ -10,7 +10,7 @@
  * precondition ("create only if it does not exist") makes the publish atomic — a second write to the same
  * object fails with 412 → {@link WriteConflictError}, never a silent overwrite (C13), the GCS analogue of S3's
  * `If-None-Match: *` and LocalFs's atomic `link`. **Writes stream in constant memory:** the codec's bytes are
- * piped into a GCS resumable-upload `Writable` (chunked/freed by the SDK as they go), so the daemon's write
+ * piped into a GCS resumable-upload `Writable` (chunked/freed by the SDK as they go), so a load's write
  * footprint stays bounded regardless of segment size, up to the advertised `maxObjectBytes`. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
  */

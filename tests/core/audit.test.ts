@@ -4,36 +4,43 @@ import {
   CrbmColdChunkSource,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   NOOP_AUDIT,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
-  compactSegment,
   destroySegment,
+  eraseIdFromSegment,
   eraseNamespace,
-  runCompactionCycle,
 } from '@/index';
-import type { AuditEvent, CompactionDeps, IKeystore, SegmentRef } from '@/index';
+import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
 import { safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { ValidationError } from '@/core/errors';
+
+/**
+ * The audit sink and every event the library emits: `segment.publish` (a load became current),
+ * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
+ * reclaimed) and `namespace.erase`.
+ *
+ * Two properties are load-bearing throughout, because an audit trail exists to prevent exactly these:
+ * **never over-attest** (no event for an operation that did not happen — a no-op publish, an idempotent
+ * re-shred, a cleartext tombstone) and **never under-attest** (a state change that really happened is
+ * recorded even if a later step throws). A throwing sink must also never break the operation it observes.
+ */
 
 const SEG: SegmentRef = { segment: 's' };
-const OWNER = 'worker-1';
 const k = (): Uint8Array => randomBytes(32);
 
 function world(keystore?: IKeystore) {
   const cold = new MemoryColdDriver();
-  const warm = new MemoryWarmDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: CompactionDeps = { cold, warm, registry, clock: { now: () => Date.now() }, keystore };
+  // Wide enough for every emitter here: `{ registry }` is all the crypto-shred paths need, and the erasure
+  // rewrite additionally reads/writes objects. The codec is pre-bound by the facade's `eraseIdFromSegment`.
+  const deps = { cold, registry, keystore };
   const store = (): CloudRoaring =>
     new CloudRoaring({
-      warm,
       cold: new CrbmColdChunkSource(cold, { registry, keystore }),
       retry: false,
     });
-  return { cold, warm, registry, deps, store };
+  return { cold, registry, deps, store };
 }
 
 const THROWS: IAuditSinkLike = {
@@ -51,10 +58,10 @@ describe('RecordingAuditSink', () => {
   it('records events in emission order', () => {
     const a = new RecordingAuditSink();
     a.onEvent({ kind: 'segment.publish', segment: 's', generation: 0 });
-    a.onEvent({ kind: 'segment.compact', segment: 's', generation: 1 });
+    a.onEvent({ kind: 'segment.rewrite', segment: 's', fromGeneration: 0, generation: 1 });
     expect(a.snapshot()).toEqual([
       { kind: 'segment.publish', segment: 's', generation: 0 },
-      { kind: 'segment.compact', segment: 's', generation: 1 },
+      { kind: 'segment.rewrite', segment: 's', fromGeneration: 0, generation: 1 },
     ]);
   });
 
@@ -146,11 +153,11 @@ describe('audit: segment.publish (bulk-load)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Emission — compaction
+// Emission — the erasure rewrite
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('audit: segment.compact', () => {
-  it('emits compact once per committed generation (namespace + generation), no purge coupling', async () => {
+describe('audit: segment.rewrite (subject erasure)', () => {
+  it('emits rewrite once at the publish, carrying namespace + fromGeneration/generation', async () => {
     const w = world();
     await bulkLoadCrbmGeneration(
       w.cold,
@@ -158,41 +165,43 @@ describe('audit: segment.compact', () => {
       [1, 2, 3, 100_000],
       { registry: w.registry },
     );
-    await w.store().segment('s', { namespace: 'ns' }).add(4); // one dirty chunk
     const audit = new RecordingAuditSink();
 
-    const res = await compactSegment({ namespace: 'ns', segment: 's' }, w.deps, {
-      owner: OWNER,
-      audit,
-    });
-    expect(res).toMatchObject({ compacted: true, toGen: 1 });
+    const res = await eraseIdFromSegment({ namespace: 'ns', segment: 's' }, 2, w.deps, { audit });
+
+    expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(audit.snapshot()).toEqual([
-      { kind: 'segment.compact', namespace: 'ns', segment: 's', generation: 1 },
+      { kind: 'segment.rewrite', namespace: 'ns', segment: 's', fromGeneration: 0, generation: 1 },
     ]);
   });
 
-  it('emits generation 0 on a bootstrap (all-warm) compaction', async () => {
+  it('does NOT also emit segment.publish — a rewrite derives its content from the segment itself', async () => {
+    // The distinction the two kinds exist for: `segment.publish` means content arrived from outside, and a
+    // dashboard that counted a rewrite as a publish would report data ingest that never happened.
     const w = world();
-    await w.store().segment('s').addMany([1, 2, 3]);
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+      registry: w.registry,
+    });
     const audit = new RecordingAuditSink();
 
-    await compactSegment(SEG, w.deps, { owner: OWNER, audit });
-    expect(audit.snapshot()).toEqual([{ kind: 'segment.compact', segment: 's', generation: 0 }]);
+    await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+
+    expect(audit.snapshot().map((e) => e.kind)).toEqual(['segment.rewrite']);
   });
 
-  it('emits nothing on a no-op (clean) compaction', async () => {
+  it('emits nothing when the id is not a member (nothing was rewritten)', async () => {
     const w = world();
     await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();
 
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER, audit });
-    expect(res.compacted).toBe(false);
+    const res = await eraseIdFromSegment(SEG, 9, w.deps, { audit });
+    expect(res).toMatchObject({ erased: false, reason: 'not-member' });
     expect(audit.snapshot()).toEqual([]);
   });
 
-  it('emits nothing when the segment is destroyed (a no-op contention/terminal path)', async () => {
+  it('emits nothing when the segment is a crypto-shred tombstone (already unreadable)', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
     await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
@@ -202,44 +211,24 @@ describe('audit: segment.compact', () => {
     await destroySegment(SEG, w.deps, { confirmSegment: 's' }); // now a tombstone
     const audit = new RecordingAuditSink();
 
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER, audit });
+    const res = await eraseIdFromSegment(SEG, 1, w.deps, { audit });
     expect(res.reason).toBe('destroyed');
     expect(audit.snapshot()).toEqual([]);
   });
 
-  it('a throwing audit sink never breaks the compaction commit', async () => {
+  it('a throwing audit sink never breaks the rewrite (the physical half still completes)', async () => {
     const w = world();
-    await w.store().segment('s').add(1);
-    const res = await compactSegment(SEG, w.deps, { owner: OWNER, audit: THROWS });
-    expect(res.compacted).toBe(true); // the commit + purge still succeeded
-    expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-  });
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+      registry: w.registry,
+    });
 
-  it('runCompactionCycle threads the audit sink through, emitting the right generation per segment', async () => {
-    const w = world();
-    for (const seg of ['a', 'b']) {
-      await bulkLoadCrbmGeneration(
-        w.cold,
-        { namespace: 'ns', segment: seg, generation: 0 },
-        [1, 2],
-        { registry: w.registry },
-      );
-      await w.store().segment(seg, { namespace: 'ns' }).add(3);
-    }
-    const audit = new RecordingAuditSink();
+    const res = await eraseIdFromSegment(SEG, 1, w.deps, { audit: THROWS });
 
-    const { results } = await runCompactionCycle(w.deps, { owner: OWNER, namespace: 'ns', audit });
-    expect(results.filter((r) => r.compacted)).toHaveLength(2);
-    expect(
-      audit
-        .snapshot()
-        .sort((x, y) =>
-          (x as { segment: string }).segment.localeCompare((y as { segment: string }).segment),
-        ),
-    ).toEqual([
-      { kind: 'segment.compact', namespace: 'ns', segment: 'a', generation: 1 },
-      { kind: 'segment.compact', namespace: 'ns', segment: 'b', generation: 1 },
-    ]);
+    expect(res).toMatchObject({ erased: true, generation: 1, collected: [0] });
+    expect((await w.registry.get(SEG))!.currentGen).toBe(1);
+    const out: number[] = [];
+    for await (const id of w.store().segment('s').iterate()) out.push(id);
+    expect(out).toEqual([2]);
   });
 });
 
@@ -371,36 +360,6 @@ describe('audit: segment.erase / namespace.erase', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Config validation at the compaction boundary
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe('compaction option validation (fail fast at the boundary)', () => {
-  it('rejects an empty owner', async () => {
-    const w = world();
-    await expect(compactSegment(SEG, w.deps, { owner: '' })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-  });
-
-  it('rejects a non-positive / non-finite leaseMs', async () => {
-    const w = world();
-    for (const leaseMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      await expect(compactSegment(SEG, w.deps, { owner: OWNER, leaseMs })).rejects.toBeInstanceOf(
-        ValidationError,
-      );
-    }
-  });
-
-  it('runCompactionCycle fails fast on a bad owner / bad leaseMs even with zero candidates', async () => {
-    const w = world(); // no segments discovered
-    await expect(runCompactionCycle(w.deps, { owner: '' })).rejects.toBeInstanceOf(ValidationError);
-    await expect(runCompactionCycle(w.deps, { owner: OWNER, leaseMs: -5 })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
-  });
-});
-
 // A real compile-time exhaustiveness guard over the AuditEvent union (replaces a hand-written literal list):
 // if a variant is added/removed without updating this switch, `tsc` fails on the `never` assignment.
 describe('AuditEvent union', () => {
@@ -409,7 +368,7 @@ describe('AuditEvent union', () => {
       switch (e.kind) {
         case 'segment.publish':
           return e.segment;
-        case 'segment.compact':
+        case 'segment.rewrite':
           return e.segment;
         case 'segment.erase':
           return e.segment;
