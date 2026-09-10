@@ -8,8 +8,8 @@
  */
 import { join } from 'node:path';
 import { ValidationError } from '@/core/errors';
-import { validateChunkRef, validateSegmentRef } from '@/core/validate';
-import type { ChunkRef, GenKey, SegmentRef } from '@/core/ports';
+import { validateSegmentRef } from '@/core/validate';
+import type { GenKey, SegmentRef } from '@/core/ports';
 import { namespacePart } from '../_shared/keys';
 
 /** Directory holding all of a namespace's segment objects. */
@@ -45,21 +45,6 @@ export function parseGeneration(segment: string, filename: string): number | nul
   return Number.isSafeInteger(gen) ? gen : null;
 }
 
-const WARM_ROW_SUFFIX = '.row';
-const CHUNK_KEY_MAX = 0xffff;
-
-/** Directory holding a segment's Warm rows (one file per dirty chunk). */
-export function warmSegmentDir(root: string, ref: SegmentRef): string {
-  validateSegmentRef(ref);
-  return join(root, namespacePart(ref.namespace), 'warm', ref.segment);
-}
-
-/** Absolute path of one chunk's Warm row file. */
-export function warmRowPath(root: string, ref: ChunkRef): string {
-  validateChunkRef(ref); // segment/namespace grammar + chunkKey range, one source of truth
-  return join(warmSegmentDir(root, ref), `${ref.chunkKey}${WARM_ROW_SUFFIX}`);
-}
-
 const REGISTRY_SUFFIX = '.reg';
 
 /** Directory holding a namespace's registry rows (one file per segment). */
@@ -75,8 +60,8 @@ export function registryRowPath(root: string, ref: SegmentRef): string {
 
 /**
  * Parse a segment name out of a `<segment>.reg` filename, or `null` if it doesn't match — including any
- * file whose stem isn't a valid segment name. A stricter parser (mirroring `parseChunkRow`) means a stray
- * or planted `.reg` file makes `list()` *skip* it, never abort the whole enumeration on a boundary throw.
+ * file whose stem isn't a valid segment name. A strict parser means a stray or planted `.reg` file makes
+ * `list()` *skip* it, never abort the whole enumeration on a boundary throw.
  */
 export function parseRegistryRow(filename: string): string | null {
   if (!filename.endsWith(REGISTRY_SUFFIX)) return null;
@@ -87,13 +72,4 @@ export function parseRegistryRow(filename: string): string | null {
     return null;
   }
   return segment;
-}
-
-/** Parse a chunk key out of a `<chunkKey>.row` filename, or `null` if it doesn't match (canonical only). */
-export function parseChunkRow(filename: string): number | null {
-  if (!filename.endsWith(WARM_ROW_SUFFIX)) return null;
-  const middle = filename.slice(0, filename.length - WARM_ROW_SUFFIX.length);
-  if (!/^(0|[1-9]\d*)$/.test(middle)) return null;
-  const chunkKey = Number(middle);
-  return chunkKey <= CHUNK_KEY_MAX ? chunkKey : null;
 }

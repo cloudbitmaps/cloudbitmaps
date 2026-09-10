@@ -79,7 +79,7 @@ export default tseslint.config(
             {
               // core-no-node-builtins: core/ is runtime-agnostic, not just storage-agnostic — it must run
               // unchanged in a V8 isolate where no node builtin exists. Randomness, time and I/O reach it
-              // through injected seams (Clock, Rng, BlobReader, the driver ports); see DECISIONS #5.
+              // through injected seams (Clock, Rng, BlobReader, the driver ports).
               regex:
                 '^(?:node:.*|(?:assert|async_hooks|buffer|child_process|cluster|console|constants|crypto|dgram|diagnostics_channel|dns|domain|events|fs|http|http2|https|inspector|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|string_decoder|sys|timers|tls|trace_events|tty|url|util|v8|vm|wasi|worker_threads|zlib)(?:/.*)?)$',
               message:

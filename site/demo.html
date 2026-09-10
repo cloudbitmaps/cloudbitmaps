@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 403,200 bytes are read in 25.3 ms — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes are read in 24.6 ms — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -96,8 +96,8 @@
         <h1>100 of 2,000 keys. The rest are never read.</h1>
         <p class="hero-lede" style="max-width: 74ch">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them reads
-          <strong>403,200 bytes</strong> and returns <strong>100,000 ids</strong> in
-          <strong>25.3 ms</strong> — because keys are compared before any bytes move, and
+          <strong>3,000 bytes</strong> and returns <strong>100,000 ids</strong> in
+          <strong>24.6 ms</strong> — because keys are compared before any bytes move, and
           <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note" style="max-width: 78ch">
@@ -222,10 +222,10 @@
           data-chunks="2000"
           data-shared="100"
           data-skipped="3800"
-          data-bytes="403200"
-          data-bytes-per-chunk="4032"
+          data-bytes="3000"
+          data-bytes-per-chunk="30"
           data-ids="100000"
-          data-ms="25.3"
+          data-ms="24.6"
           data-density="1000"
         >
           <!-- The beat rail. Real buttons: a beat is a destination, and a reader who wants to sit on beat
@@ -315,8 +315,8 @@
               </div>
               <div class="tally-cell">
                 <span class="label">Bytes read</span>
-                <span class="tally-fig" id="t-bytes">403,200</span>
-                <span class="tally-note">4,032 per fetched chunk</span>
+                <span class="tally-fig" id="t-bytes">3,000</span>
+                <span class="tally-note">30 per fetched chunk</span>
               </div>
             </div>
           </div>
@@ -342,15 +342,15 @@
               </p>
             </article>
             <article class="beat" data-beat="2">
-              <p class="beat-head"><span class="beat-n">03</span> 403,200 bytes, 100 chunks</p>
+              <p class="beat-head"><span class="beat-n">03</span> 3,000 bytes, 100 chunks</p>
               <p>
-                Only the hundred aligned chunks are requested, 4,032 bytes each. The other
+                Only the hundred aligned chunks are requested, 30 bytes each. The other
                 <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never issued. On
                 object storage that is 3,800 GET requests you are not charged for.
               </p>
             </article>
             <article class="beat" data-beat="3">
-              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 25.3 ms</p>
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.6 ms</p>
               <p>
                 One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
                 reported. The result is <em>derivable from the setup</em> as well as observed, which is the
@@ -417,12 +417,12 @@
                   </tr>
                   <tr>
                     <td>Cold bytes read</td>
-                    <td class="num">403,200</td>
+                    <td class="num">3,000</td>
                     <td class="from">metrics sink</td>
                   </tr>
                   <tr>
                     <td>Wall time</td>
-                    <td class="num">25.3 ms</td>
+                    <td class="num">24.6 ms</td>
                     <td class="from">timer around the drained stream</td>
                   </tr>
                   <tr>
@@ -457,8 +457,8 @@
                   </tr>
                   <tr>
                     <td>Bytes per fetched chunk</td>
-                    <td class="num">4,032</td>
-                    <td class="from">403,200 bytes &divide; 100 chunks</td>
+                    <td class="num">30</td>
+                    <td class="from">3,000 bytes &divide; 100 chunks</td>
                   </tr>
                   <tr>
                     <td>Key-space extent</td>
@@ -510,9 +510,18 @@
             </p>
           </div>
           <div class="limit">
+            <p class="label">The bytes are a best case; the chunk count is not</p>
+            <p>
+              Key alignment does not care how ids sit inside a chunk, so <em>100 of 2,000</em> holds for any
+              segment. The byte figure does care: this run seeds each chunk with a contiguous run, which Roaring
+              stores in a few dozen bytes. Scattered ids at the same density land nearer 2 KB per chunk. Read
+              3,000 bytes as "the window is small and bounded", not as a number to plan a bill around.
+            </p>
+          </div>
+          <div class="limit">
             <p class="label">Memory drivers, not S3</p>
             <p>
-              25.3 ms is compute, not cloud latency. It is the right number for
+              24.6 ms is compute, not cloud latency. It is the right number for
               <em>how many</em> requests happen and the wrong one for how long they take — the
               <a href="benchmarks.html">benchmarks</a> carry real-backend timings, and the rate past which a flat
               tier is cheaper.

@@ -9,7 +9,6 @@ import {
   LocalFsRegistryDriver,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
@@ -37,7 +36,7 @@ async function members(
   keystore?: IKeystore,
 ): Promise<number[]> {
   const source = new CrbmColdChunkSource(cold, { registry, keystore });
-  const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold: source, retry: false });
+  const store = new CloudRoaring({ cold: source, retry: false });
   const out: number[] = [];
   for await (const id of store.segment('s').iterate()) out.push(id);
   return out;
@@ -137,7 +136,7 @@ describe('CrbmColdChunkSource — encryption end-to-end (Phase 4e)', () => {
   });
 });
 
-// The Memory tiers clone object references; this proves the wrapped-DEK list survives a real JSON
+// The Memory drivers clone object references; this proves the wrapped-DEK list survives a real JSON
 // serialize↔parse round-trip through the persistent LocalFs cold + registry drivers (the realistic failure mode).
 describe('CrbmColdChunkSource — encryption over persistent (LocalFs) drivers', () => {
   let root: string;
@@ -160,7 +159,6 @@ describe('CrbmColdChunkSource — encryption over persistent (LocalFs) drivers',
     expect(rec.wrappedDeks).toHaveLength(1); // survived the JSON envelope on disk
 
     const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
       cold: new CrbmColdChunkSource(cold, { registry, keystore }),
       retry: false,
     });

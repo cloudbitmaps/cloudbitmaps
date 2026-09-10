@@ -54,7 +54,7 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
-    '24.14.1',
+    '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],
   [
@@ -225,7 +225,7 @@ describe('site version badges', () => {
 
   it('every FOREIGN_VERSIONS entry is still somewhere it is needed', () => {
     // An allowlist nobody prunes is how the check quietly widens: the day the benchmark methodology is re-run
-    // on a newer Node, `24.14.1` stops appearing and its entry starts silently exempting nothing — or worse,
+    // on a newer Node, `24.18.1` stops appearing and its entry starts silently exempting nothing — or worse,
     // exempts that number if it ever becomes OUR version. Entries must justify themselves every run.
     //
     // Read across BOTH surfaces, because the map is shared by both. Scoped to the site alone this would fail

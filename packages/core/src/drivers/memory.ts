@@ -1,8 +1,7 @@
 /**
- * In-memory drivers — the Phase-1 backing for the engine.
+ * In-memory drivers — the reference backing for tests and quick experiments.
  * They store **serialized bytes + an OCC token** (not live objects), so the engine's
- * serialize / safe-deserialize / size-cap / OCC paths are genuinely exercised. In Phase 2 these
- * become the conformance-suite's first target and the simulator's fault-injecting fakes.
+ * safe-deserialize / size-cap paths and the registry's OCC paths are genuinely exercised.
  *
  * Not in `core/` (this is a driver), so it may hold concrete state.
  */
@@ -12,7 +11,6 @@ import type { BlobSink } from '../core/blob';
 import { NotFoundError, ValidationError, WriteConflictError } from '../core/errors';
 import { chunkRefKey, segmentKey, segmentPrefix } from '../core/keys';
 import { validateChunkRef, validateSegmentRef } from '../core/validate';
-import { NO_ROW } from '../core/ports';
 import type {
   ChunkRef,
   ColdCaps,
@@ -20,16 +18,13 @@ import type {
   GenKey,
   IColdDriver,
   IRegistryDriver,
-  IWarmDriver,
   NewRegistryRecord,
-  NoRow,
   RegCaps,
   RegistryPatch,
   RegistryRecord,
   SegmentRef,
   SegmentSize,
   Token,
-  WarmRow,
 } from '../core/ports';
 import {
   applyRegistryPatch,
@@ -37,70 +32,6 @@ import {
   validateNewRegistryRecord,
   validateRegistryPatch,
 } from './_shared/registry';
-
-interface StoredRow {
-  token: Token;
-  bytes: Uint8Array;
-  chunkKey: number;
-  prefix: string;
-}
-
-export class MemoryWarmDriver implements IWarmDriver {
-  private readonly rows = new Map<string, StoredRow>();
-  private seq = 0;
-
-  // Monotonic, unique-per-write token → equality-safe and ABA-free.
-  private nextToken(): Token {
-    this.seq += 1;
-    return String(this.seq);
-  }
-
-  // In-memory reads are always strongly consistent — the `WarmReadOptions` hint would be a no-op, so the
-  // structurally-optional param is simply omitted (still satisfies IWarmDriver).
-  async get(ref: ChunkRef): Promise<WarmRow | null> {
-    validateChunkRef(ref);
-    const row = this.rows.get(chunkRefKey(ref));
-    return row ? { token: row.token, bytes: row.bytes } : null;
-  }
-
-  async putConditional(
-    ref: ChunkRef,
-    bytes: Uint8Array,
-    expected: Token | NoRow,
-  ): Promise<{ token: Token }> {
-    validateChunkRef(ref);
-    const key = chunkRefKey(ref);
-    const existing = this.rows.get(key);
-    if (expected === NO_ROW) {
-      if (existing) throw new WriteConflictError(`row already exists for chunk ${ref.chunkKey}`);
-    } else if (!existing || existing.token !== expected) {
-      throw new WriteConflictError(`OCC token mismatch for chunk ${ref.chunkKey}`);
-    }
-    const token = this.nextToken();
-    this.rows.set(key, { token, bytes, chunkKey: ref.chunkKey, prefix: segmentPrefix(ref) });
-    return { token };
-  }
-
-  async deleteConditional(ref: ChunkRef, expected: Token): Promise<void> {
-    validateChunkRef(ref);
-    const key = chunkRefKey(ref);
-    const existing = this.rows.get(key);
-    if (!existing || existing.token !== expected) {
-      throw new WriteConflictError(`OCC token mismatch for chunk ${ref.chunkKey}`);
-    }
-    this.rows.delete(key);
-  }
-
-  async *listChunks(ref: SegmentRef): AsyncIterable<{ chunkKey: number } & WarmRow> {
-    validateSegmentRef(ref);
-    const prefix = segmentPrefix(ref);
-    const rows = [...this.rows.values()].filter((r) => r.prefix === prefix);
-    rows.sort((a, b) => a.chunkKey - b.chunkKey); // ascending chunkKey
-    for (const row of rows) {
-      yield { chunkKey: row.chunkKey, token: row.token, bytes: row.bytes };
-    }
-  }
-}
 
 export class MemoryColdChunkSource implements ColdChunkSource {
   private readonly chunks = new Map<string, Uint8Array>();
@@ -133,7 +64,7 @@ export class MemoryColdChunkSource implements ColdChunkSource {
     return found ? { sizeBytes } : null;
   }
 
-  /** Test/seed helper — populate immutable Cold bytes for a chunk (no bulk-load path until Phase 3). */
+  /** Test/seed helper — populate immutable Cold bytes for a chunk directly (bypassing the `.crbm` format). */
   seed(ref: ChunkRef, bytes: Uint8Array): void {
     validateChunkRef(ref); // keep seed symmetric with the validated read path
     this.chunks.set(chunkRefKey(ref), bytes);
@@ -148,7 +79,7 @@ export interface MemoryRegistryDriverOptions {
 /**
  * In-memory {@link IRegistryDriver} — one record per segment under OCC. The token is a single global,
  * monotonic, never-reused counter (so a record recreated after `delete` always gets a strictly-greater
- * token → ABA-safe even though `delete` removes the row physically). Mirrors {@link MemoryWarmDriver}.
+ * token → ABA-safe even though `delete` removes the row physically).
  */
 export class MemoryRegistryDriver implements IRegistryDriver {
   private readonly rows = new Map<string, RegistryRecord>();
@@ -219,8 +150,8 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 
 /**
  * In-memory {@link IColdDriver} — write-once immutable generation objects as opaque bytes. A "dumb byte
- * mover" (understands neither roaring nor `.crbm`), so it's a faithful cold backend for tests, the compaction
- * simulator, and a zero-setup local cold tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
+ * mover" (understands neither roaring nor `.crbm`), so it's a faithful cold backend for tests and a zero-setup
+ * local cold tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
  */
 export class MemoryColdDriver implements IColdDriver {
   private readonly objects = new Map<string, Uint8Array>();

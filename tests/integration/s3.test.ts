@@ -4,8 +4,7 @@ import { S3ColdDriver } from '@/drivers/s3/cold';
 import { S3RegistryDriver } from '@/drivers/s3/registry';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { bulkLoadCrbmGeneration } from '@/index';
-import { CloudRoaring, MemoryWarmDriver } from '@/index';
+import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
@@ -133,10 +132,7 @@ describe('S3ColdDriver specifics (MinIO)', () => {
     await bulkLoadCrbmGeneration(driverA, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driverB, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
 
-    const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new CrbmColdChunkSource(driverA),
-    });
+    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driverA) });
     expect(await store.segment('a').count()).toBe(4);
 
     const got: number[] = [];

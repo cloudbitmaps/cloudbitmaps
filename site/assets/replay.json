@@ -8,8 +8,8 @@
     "sharedChunks": 100,
     "fetchedChunks": 100,
     "skippedChunks": 3800,
-    "coldBytesRead": 403200,
-    "intersectMs": 25.3,
+    "coldBytesRead": 3000,
+    "intersectMs": 24.6,
     "resultCount": 100000
   },
   "format": {
@@ -20,7 +20,7 @@
   },
   "derived": {
     "density": 1000,
-    "bytesPerFetchedChunk": 4032,
+    "bytesPerFetchedChunk": 30,
     "axisKeys": 4000,
     "bands": {
       "shared": {
@@ -59,13 +59,13 @@
     {
       "id": "fetch",
       "label": "Fetch",
-      "headline": "403,200 bytes, 100 chunks",
-      "body": "Only the 100 aligned chunks are requested — 4,032 bytes each. The other 3,800 chunk reads never happen, and are never billed."
+      "headline": "3,000 bytes, 100 chunks",
+      "body": "Only the 100 aligned chunks are requested — 30 bytes each. The other 3,800 chunk reads never happen, and are never billed."
     },
     {
       "id": "result",
       "label": "Result",
-      "headline": "100,000 ids in 25.3 ms",
+      "headline": "100,000 ids in 24.6 ms",
       "body": "100 shared keys times 1,000 ids per key is 100,000 ids — which is what the run reported."
     }
   ]

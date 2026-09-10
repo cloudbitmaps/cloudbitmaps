@@ -1,9 +1,8 @@
 import { CreateTableCommand, DescribeTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { registryConformance, warmConformance } from '@/testing/conformance';
-import { DynamoDbWarmDriver } from '@/drivers/dynamodb/warm';
+import { registryConformance } from '@/testing/conformance';
 import { DynamoDbRegistryDriver } from '@/drivers/dynamodb/registry';
-import { NO_ROW } from '@/core/ports';
 import { WriteConflictError } from '@/core/errors';
+import { CloudRoaring, MemoryColdDriver, bulkLoadCrbmGeneration } from '@/index';
 
 // Runs against DynamoDB-Local from docker-compose: `docker compose up -d` then `pnpm test:integration`.
 const ENDPOINT = process.env.DYNAMODB_ENDPOINT ?? 'http://127.0.0.1:8000';
@@ -76,16 +75,10 @@ beforeAll(async () => {
   }
 });
 
-let n = 0;
 // Each makeDriver() call gets a unique key prefix → isolated within the shared table (makeDriver is sync,
-// so per-call table creation isn't an option; the keyPrefix is the isolation seam).
-warmConformance(
-  'DynamoDbWarmDriver (DynamoDB-Local)',
-  () => new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: `conf${n++}` }),
-);
-
-// Registry rows co-locate with warm rows in the same single table; a unique keyPrefix per
-// driver isolates each conformance run. A monotonic clock keeps updatedAt advancing.
+// so per-call table creation isn't an option; the keyPrefix is the isolation seam). A monotonic clock keeps
+// updatedAt advancing.
+let n = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;
   return () => (t += 1);
@@ -114,39 +107,75 @@ describe('DynamoDbRegistryDriver specifics (DynamoDB-Local)', () => {
   });
 });
 
-describe('DynamoDbWarmDriver specifics (DynamoDB-Local)', () => {
-  const fresh = (): DynamoDbWarmDriver =>
-    new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: `spec${n++}` });
-  const ref = (chunkKey: number) => ({ segment: 's', chunkKey });
-  const bytes = (...b: number[]): Uint8Array => Uint8Array.of(...b);
+describe('DynamoDbRegistryDriver row semantics (DynamoDB-Local)', () => {
+  const fresh = (): DynamoDbRegistryDriver =>
+    new DynamoDbRegistryDriver({ client, tableName: TABLE, keyPrefix: `spec${n++}` });
+  const ref = { segment: 's' };
 
-  it('does real cross-process OCC: a second driver instance sees the conflict', async () => {
-    // Two independent driver instances (no shared in-process lock) racing the same row — only one wins.
-    const a = new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: 'xproc' });
-    const b = new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: 'xproc' });
-    const { token } = await a.putConditional(ref(1), bytes(1), NO_ROW);
-    await a.putConditional(ref(1), bytes(2), token); // advances the token
-    // b still holds the stale token → its conditional update must fail.
-    await expect(b.putConditional(ref(1), bytes(9), token)).rejects.toBeInstanceOf(
+  it('keeps the OCC token monotonic across delete→recreate (ABA-safe)', async () => {
+    // A delete tombstones the row and advances the counter, so a recreate can never hand back a token an
+    // earlier holder still has — otherwise a stale token would authorise a write against a different row.
+    const d = fresh();
+    const { token: t0 } = await d.create(ref, { currentGen: 0 });
+    await d.delete(ref);
+    expect(await d.get(ref)).toBeNull(); // tombstoned
+    const { token: t1 } = await d.create(ref, { currentGen: 0 }); // recreate over the tombstone
+    expect(Number(t1)).toBeGreaterThan(Number(t0)); // never reused
+    await expect(d.compareAndSwap(ref, t0, { currentGen: 9 })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
   });
 
-  it('keeps the OCC token monotonic across delete→recreate (ABA-safe)', async () => {
-    const d = fresh();
-    const { token: t0 } = await d.putConditional(ref(1), bytes(1), NO_ROW);
-    await d.deleteConditional(ref(1), t0);
-    expect(await d.get(ref(1))).toBeNull(); // tombstoned
-    const { token: t1 } = await d.putConditional(ref(1), bytes(2), NO_ROW); // recreate over the tombstone
-    expect(Number(t1)).toBeGreaterThan(Number(t0)); // never reused
-    await expect(d.putConditional(ref(1), bytes(9), t0)).rejects.toBeInstanceOf(WriteConflictError);
+  it('isolates rows by keyPrefix within the one table', async () => {
+    const a = new DynamoDbRegistryDriver({ client, tableName: TABLE, keyPrefix: 'isoA' });
+    const b = new DynamoDbRegistryDriver({ client, tableName: TABLE, keyPrefix: 'isoB' });
+    await a.create(ref, { currentGen: 7 });
+    expect(await b.get(ref)).toBeNull(); // b's prefix space is independent
+    expect((await a.get(ref))!.currentGen).toBe(7);
+  });
+});
+
+describe('DynamoDbRegistryDriver as the store registry (DynamoDB-Local)', () => {
+  // The registry is the store's generation pointer, so this is the read path over a REAL registry: every load
+  // publishes through DynamoDB, and each read resolves `currentGen` from it with one strong get.
+  it('a loaded generation is published to DynamoDB and read back through the store', async () => {
+    const registry = new DynamoDbRegistryDriver({
+      client,
+      tableName: TABLE,
+      keyPrefix: `store${n++}`,
+    });
+    const cold = new MemoryColdDriver();
+    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3, 200_000], {
+      registry,
+    });
+    await bulkLoadCrbmGeneration(cold, { segment: 'b', generation: 0 }, [2, 3, 4, 200_000], {
+      registry,
+    });
+
+    const store = new CloudRoaring({ cold, registry, retry: false });
+    expect((await registry.get({ segment: 'a' }))!.currentGen).toBe(0);
+    expect(await store.segment('a').count()).toBe(4);
+
+    const got: number[] = [];
+    for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
+    expect(got).toEqual([2, 3, 200_000]);
   });
 
-  it('isolates rows by keyPrefix within the one table', async () => {
-    const a = new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: 'isoA' });
-    const b = new DynamoDbWarmDriver({ client, tableName: TABLE, keyPrefix: 'isoB' });
-    await a.putConditional(ref(1), bytes(7), NO_ROW);
-    expect(await b.get(ref(1))).toBeNull(); // b's prefix space is independent
-    expect((await a.get(ref(1)))!.bytes).toEqual(bytes(7));
+  it('a second load supersedes the first — reads follow the pointer forward', async () => {
+    const registry = new DynamoDbRegistryDriver({
+      client,
+      tableName: TABLE,
+      keyPrefix: `store${n++}`,
+    });
+    const cold = new MemoryColdDriver();
+    await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 0 }, [1, 2], { registry });
+    await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 1 }, [7, 8, 9], { registry });
+
+    expect((await registry.get({ segment: 's' }))!.currentGen).toBe(1);
+    // A FRESH store, so the generation is resolved after both loads rather than pinned before them.
+    const store = new CloudRoaring({ cold, registry, retry: false });
+    const ids: number[] = [];
+    for await (const id of store.segment('s').iterate()) ids.push(id);
+    expect(ids).toEqual([7, 8, 9]); // the superseded generation is never merged in
   });
 });

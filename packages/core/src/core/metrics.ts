@@ -1,12 +1,12 @@
 /**
- * Metrics seam (Phase 5a) — an injected sink the engine pushes typed events
- * to, exactly like the `Clock`/`Rng`/driver seams keep `core/` pure and storage-agnostic.
+ * Metrics seam — an injected sink the engine pushes typed events to, exactly like the `Clock`/driver seams
+ * keep `core/` pure and storage-agnostic.
  *
  * Design: the library emits **neutral domain events** and stays vendor-agnostic — you (or a ~12-line
  * adapter) map them to OpenTelemetry / Datadog / a log line. The default is a **no-op**, and emission is
  * skipped entirely when no sink is wired (near-zero overhead, no telemetry dependency). Events carry **raw
- * observations** (bytes, counts, ms); turning those into billable units / dollars is the cost model's job
- * (Phase 5b), which keeps rates pluggable.
+ * observations** (bytes, counts, ms); turning those into billable units / dollars is the cost model's job,
+ * which keeps rates pluggable.
  *
  * Two caveats for sink authors: `onEvent` runs **synchronously on the I/O path**, so keep it cheap and
  * non-blocking (offload batching/network to your own async queue); and `segment`/`namespace` are
@@ -16,17 +16,7 @@
  */
 
 /** The segment operations that emit an `op` latency event (timed with the injected clock, at the facade). */
-export type MetricOpName =
-  | 'add'
-  | 'remove'
-  | 'addMany'
-  | 'removeMany'
-  | 'claimMany'
-  | 'has'
-  | 'count'
-  | 'intersectInto'
-  | 'unionInto'
-  | 'andNotInto';
+export type MetricOpName = 'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto';
 
 /**
  * One observability event. A discriminated union on `kind` — new variants can be added over time without
@@ -49,23 +39,9 @@ export type MetricEvent =
     }
   | { readonly kind: 'cache'; readonly hit: boolean }
   | {
-      readonly kind: 'warm.read';
-      readonly namespace?: string;
-      readonly segment: string;
-      /** Bytes read — a single-row get, or the summed rows of a list scan. */
-      readonly bytes: number;
-    }
-  | {
-      readonly kind: 'warm.write';
-      readonly namespace?: string;
-      readonly segment: string;
-      /** Bytes of the committed delta row (emitted only on a successful conditional write). */
-      readonly bytes: number;
-    }
-  | {
       readonly kind: 'retry';
-      /** `occ` = optimistic-concurrency conflict backoff; `transient` = infrastructure-fault backoff. */
-      readonly reason: 'occ' | 'transient';
+      /** Infrastructure-fault backoff (throttling, 5xx, a dropped connection) — the one kind of retry the store does. */
+      readonly reason: 'transient';
       /** 1-based number of the attempt about to be retried. */
       readonly attempt: number;
       readonly delayMs: number;
@@ -99,21 +75,6 @@ export type MetricEvent =
        */
       readonly skippedChunks: number;
     }
-  | {
-      readonly kind: 'compaction';
-      readonly namespace?: string;
-      readonly segment: string;
-      /** True iff this call committed a new generation. */
-      readonly compacted: boolean;
-      /** Why nothing was committed (when `compacted` is false) — the `CompactionResult.reason` (Phase D). */
-      readonly reason?: string;
-      /** Dirty Warm chunks pinned at scan time. */
-      readonly dirtyChunks: number;
-      /** Archived Warm rows actually purged (≤ dirtyChunks). */
-      readonly purged: number;
-      /** Elapsed wall time of the attempt (injected clock, ≥ 0; 0 under the no-wait test clock). */
-      readonly ms: number;
-    }
   | { readonly kind: 'op'; readonly name: MetricOpName; readonly ms: number };
 
 /**
@@ -142,7 +103,7 @@ export function safeMetrics(sink: IMetricsSink): IMetricsSink {
       try {
         sink.onEvent(event);
       } catch {
-        /* swallow — a metrics sink must never break a read/write */
+        /* swallow — a metrics sink must never break a read */
       }
     },
   };
@@ -151,25 +112,12 @@ export function safeMetrics(sink: IMetricsSink): IMetricsSink {
 /** Accumulated totals — the shape returned by {@link CountingMetricsSink.snapshot}. */
 export interface MetricsSnapshot {
   readonly cold: { readonly gets: number; readonly bytes: number; readonly totalMs: number };
-  readonly warm: {
-    readonly reads: number;
-    readonly readBytes: number;
-    readonly writes: number;
-    readonly writeBytes: number;
-  };
   readonly cache: { readonly hits: number; readonly misses: number };
-  readonly retries: { readonly occ: number; readonly transient: number };
+  readonly retries: { readonly transient: number };
   readonly intersect: {
     readonly calls: number;
     readonly fetchedChunks: number;
     readonly skippedChunks: number;
-  };
-  readonly compaction: {
-    readonly attempts: number;
-    readonly committed: number;
-    readonly dirtyChunks: number;
-    readonly purged: number;
-    readonly totalMs: number;
   };
   readonly ops: Readonly<
     Record<MetricOpName, { readonly count: number; readonly totalMs: number }>
@@ -177,27 +125,23 @@ export interface MetricsSnapshot {
 }
 
 const OP_NAMES: readonly MetricOpName[] = [
-  'add',
-  'remove',
-  'addMany',
-  'removeMany',
   'has',
   'count',
   'intersectInto',
+  'unionInto',
+  'andNotInto',
 ];
 
 /**
  * A ready-made sink that tallies events into a {@link MetricsSnapshot} — handy for tests, quick scripts,
- * and (Phase 5b) as the grounded-request-cost source behind `costReport()`. `snapshot()` returns an
- * independent copy; `reset()` zeroes the counters.
+ * and as the grounded-request-cost source behind `costReport()`. `snapshot()` returns an independent copy;
+ * `reset()` zeroes the counters.
  */
 export class CountingMetricsSink implements IMetricsSink {
   private cold = { gets: 0, bytes: 0, totalMs: 0 };
-  private warm = { reads: 0, readBytes: 0, writes: 0, writeBytes: 0 };
   private cache = { hits: 0, misses: 0 };
-  private retries = { occ: 0, transient: 0 };
+  private retries = { transient: 0 };
   private intersect = { calls: 0, fetchedChunks: 0, skippedChunks: 0 };
-  private compaction = { attempts: 0, committed: 0, dirtyChunks: 0, purged: 0, totalMs: 0 };
   private ops: Record<MetricOpName, { count: number; totalMs: number }> =
     CountingMetricsSink.zeroOps();
 
@@ -219,32 +163,18 @@ export class CountingMetricsSink implements IMetricsSink {
         if (event.hit) this.cache.hits += 1;
         else this.cache.misses += 1;
         break;
-      case 'warm.read':
-        this.warm.reads += 1;
-        this.warm.readBytes += event.bytes;
-        break;
-      case 'warm.write':
-        this.warm.writes += 1;
-        this.warm.writeBytes += event.bytes;
-        break;
       case 'retry':
-        if (event.reason === 'occ') this.retries.occ += 1;
-        else this.retries.transient += 1;
+        this.retries.transient += 1;
         break;
       case 'intersect':
         this.intersect.calls += 1;
         this.intersect.fetchedChunks += event.fetchedChunks;
         this.intersect.skippedChunks += event.skippedChunks;
         break;
-      case 'compaction':
-        this.compaction.attempts += 1;
-        if (event.compacted) this.compaction.committed += 1;
-        this.compaction.dirtyChunks += event.dirtyChunks;
-        this.compaction.purged += event.purged;
-        this.compaction.totalMs += event.ms;
-        break;
       case 'op': {
-        const op = this.ops[event.name];
+        // A name outside `OP_NAMES` (a JS caller) is counted nowhere rather than crashing the sink.
+        const op = this.ops[event.name] as { count: number; totalMs: number } | undefined;
+        if (op === undefined) break;
         op.count += 1;
         op.totalMs += event.ms;
         break;
@@ -261,22 +191,18 @@ export class CountingMetricsSink implements IMetricsSink {
     for (const name of OP_NAMES) ops[name] = { ...this.ops[name] };
     return {
       cold: { ...this.cold },
-      warm: { ...this.warm },
       cache: { ...this.cache },
       retries: { ...this.retries },
       intersect: { ...this.intersect },
-      compaction: { ...this.compaction },
       ops,
     };
   }
 
   reset(): void {
     this.cold = { gets: 0, bytes: 0, totalMs: 0 };
-    this.warm = { reads: 0, readBytes: 0, writes: 0, writeBytes: 0 };
     this.cache = { hits: 0, misses: 0 };
-    this.retries = { occ: 0, transient: 0 };
+    this.retries = { transient: 0 };
     this.intersect = { calls: 0, fetchedChunks: 0, skippedChunks: 0 };
-    this.compaction = { attempts: 0, committed: 0, dirtyChunks: 0, purged: 0, totalMs: 0 };
     this.ops = CountingMetricsSink.zeroOps();
   }
 }

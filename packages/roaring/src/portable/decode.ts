@@ -5,12 +5,12 @@
  * isolate — Cloudflare Workers, Deno Deploy, Vercel Edge — can load a native addon under any compatibility
  * flag, so the shipped flavor cannot answer a membership question at the edge no matter how the rest of the
  * stack is arranged. The engine seam is already portable (`packages/core/src/core/` imports zero node builtins
- * and core has zero runtime dependencies); the codec is the only thing in the way. See internal ADR 76.
+ * and core has zero runtime dependencies); the codec is the only thing in the way.
  *
- * WHY A READER IS ENOUGH. `SegmentEngine.has()` against a segment with no warm tier calls exactly two codec
- * capabilities — deserialize a chunk, and test one value in it. It never reaches `add`, `remove`, `orInPlace`,
- * `andNotInPlace`, `optimize`, `clone` or `serialize`. So read-only membership over a compacted cold generation
- * needs a decoder, not a reimplementation of CRoaring, and this file is deliberately the former.
+ * WHY A READER IS ENOUGH. `SegmentEngine.has()` calls exactly two codec capabilities — deserialize a chunk, and
+ * test one value in it. It never reaches `add`, `remove`, `orInPlace`, `andNotInPlace`, `optimize`, `clone` or
+ * `serialize`. So read-only membership over a loaded generation needs a decoder, not a reimplementation of
+ * CRoaring, and this file is deliberately the former.
  *
  * WHAT IT IS NOT. There is no mutation here and there will not be. A set you can query is a much smaller and
  * much more verifiable artifact than a set you can modify, and the write path has a perfectly good native

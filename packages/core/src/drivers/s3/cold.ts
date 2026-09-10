@@ -13,7 +13,7 @@
  * precondition would break write-once immutability. **Writes stream (Phase 4f):** the object is uploaded in
  * constant memory — a small object is a single conditional `PutObject`; a large one is a **multipart upload**
  * (parts flushed as the codec writes, freed as they go) finished with a conditional `CompleteMultipartUpload`,
- * so the daemon's footprint stays ~one part regardless of segment size, up to the advertised `maxObjectBytes`
+ * so a load's footprint stays ~one part regardless of segment size, up to the advertised `maxObjectBytes`
  * (default `partBytes × 10,000` — S3's per-upload part limit). Drivers may use `node:crypto`; only `core/`
  * is bound by the determinism lint.
  */

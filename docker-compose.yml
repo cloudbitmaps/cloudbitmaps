@@ -70,7 +70,3 @@ services:
       # Memory-only, like fake-gcs's `-backend memory`: state is dropped on restart so a reused container never
       # accumulates blobs across runs and collides on the write-once `conf/N` keys (the suite assumes a fresh emulator).
       - '--inMemoryPersistence'
-
-  # PostgreSQL for the PostgresWarmDriver integration lane (Phase 7). A real Postgres (not an emulator) — the
-  # OCC is plain SQL (INSERT … ON CONFLICT / token-fenced UPDATE/DELETE). PINNED to a major (16); the test
-  # creates its table via postgresWarmTableDDL() in beforeAll. `tmpfs` keeps the data dir in RAM (fast, ephemeral).

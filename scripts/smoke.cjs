@@ -7,7 +7,7 @@
  * it crashes Node's ESM loader (its static lexer can't see the CJS exports). We load the package **by name**
  * — so the package.json `exports` map and its `import`/`require` conditions are exercised too, not just the
  * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every subpath, then run the
- * roaring-backed add/has path. The roaring interop is exercised specifically by the main `.` entry (only it
+ * roaring-backed load/read path. The roaring interop is exercised specifically by the main `.` entry (only it
  * pulls in the SafeBitmap); the `/s3` + `/dynamodb` entries additionally guard the exports map and their
  * AWS-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
  * too. Any regression fails the build. Run via `pnpm smoke` (builds first) or `node scripts/smoke.cjs`.
@@ -21,36 +21,43 @@ const { pathToFileURL } = require('node:url');
 const PKG = '@cloudbitmaps/roaring';
 const SUBPATHS = ['', '/s3', '/dynamodb', '/gcs', '/azure'];
 
+// The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
+// `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
+// narrowest round-trip that actually exercises the native codec through the built bundle — the ids span two
+// 16-bit chunks, so chunk routing and the roaring encode/decode both run rather than a single-container no-op.
 async function exerciseCore(label, m) {
   for (const name of [
     'CloudRoaring',
     'estimateCost',
-    'MemoryWarmDriver',
+    'MemoryColdDriver',
+    'MemoryRegistryDriver',
     'MemoryColdChunkSource',
+    'bulkLoadCrbmGeneration',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  const store = new m.CloudRoaring({
-    warm: new m.MemoryWarmDriver(),
-    cold: new m.MemoryColdChunkSource(),
+  const cold = new m.MemoryColdDriver();
+  const registry = new m.MemoryRegistryDriver({ now: () => 0 });
+  await m.bulkLoadCrbmGeneration(cold, { segment: 'smoke', generation: 0 }, [42, 70_000], {
+    registry,
   });
-  const seg = store.segment('smoke');
-  await seg.add(42);
-  if (!(await seg.has(42))) throw new Error(`${label}: add/has round-trip failed`);
+  const seg = new m.CloudRoaring({ cold, registry }).segment('smoke');
+  const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
+  if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
 }
 
 /*
  * Cross-bundle error identity. A driver subpath (`/dynamodb`, `/s3`) is a SEPARATE bundle with
  * its OWN copy of the core error classes, so `instanceof` against the core entry's class fails in CJS — which
- * silently defeated OCC/transient retry + compaction race-handling. The brand-based predicates must still
+ * silently defeated transient-retry and publish-race handling. The brand-based predicates must still
  * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
- * where the whole test suite — one source graph — could not see it). Trigger: the DynamoDb driver validates its
- * `keyPrefix` synchronously and throws a ValidationError from its own bundle.
+ * where the whole test suite — one source graph — could not see it). Trigger: the DynamoDb registry driver
+ * validates its `keyPrefix` synchronously in the constructor and throws a ValidationError from its own bundle.
  */
 function exerciseCrossBundleErrors(label, coreMod, dynamoMod) {
   let caught;
   try {
-    new dynamoMod.DynamoDbWarmDriver({ client: {}, tableName: 't', keyPrefix: 'a|b' });
+    new dynamoMod.DynamoDbRegistryDriver({ client: {}, tableName: 't', keyPrefix: 'a|b' });
   } catch (e) {
     caught = e;
   }

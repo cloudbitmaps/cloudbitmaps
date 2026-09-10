@@ -1,12 +1,15 @@
 import {
-  chunkKeyPair,
-  chunkSortKey,
-  chunkSortKeyPrefix,
-  parseChunkSortKey,
+  assertValidKeyPrefix,
   partitionKey,
+  registryKeyPair,
+  registrySortKey,
 } from '@/drivers/dynamodb/keys';
 import { ValidationError } from '@/core/errors';
 
+// The single-table key grammar. It used to carry `chunk#<key>` sort keys for the warm rows alongside the
+// registry's `reg#`; the warm tier is gone and with it those helpers, but the *scheme* is deliberately
+// unchanged — a table that still holds `chunk#…` items from an older build is simply never queried for them,
+// rather than having its keys reinterpreted. So the prefix convention stays pinned here.
 describe('DynamoDB single-table key grammar', () => {
   describe('partitionKey', () => {
     it('maps a segment ref to ns#…|seg#…', () => {
@@ -25,42 +28,46 @@ describe('DynamoDB single-table key grammar', () => {
     });
   });
 
-  describe('chunkSortKey', () => {
-    it('zero-pads so lexicographic order == ascending chunkKey', () => {
-      expect(chunkSortKey(0)).toBe('chunk#00000');
-      expect(chunkSortKey(42)).toBe('chunk#00042');
-      expect(chunkSortKey(65_535)).toBe('chunk#65535');
-      // The property that matters: sorted strings == sorted numbers.
-      const keys = [65_535, 0, 13, 9, 1024, 2];
-      const bySk = [...keys].sort((a, b) => chunkSortKey(a).localeCompare(chunkSortKey(b)));
-      expect(bySk).toEqual([...keys].sort((a, b) => a - b));
+  describe('assertValidKeyPrefix', () => {
+    it('accepts an absent or empty prefix, and any string free of the delimiters', () => {
+      for (const ok of [undefined, '', 'shardA', 'tenant-7', 'a.b_c']) {
+        expect(() => assertValidKeyPrefix(ok)).not.toThrow();
+      }
     });
-  });
-
-  describe('chunkKeyPair', () => {
-    it('returns the (pk, sk) and validates the chunk ref', () => {
-      expect(chunkKeyPair({ segment: 's', chunkKey: 7 })).toEqual({
-        pk: 'ns#_default|seg#s',
-        sk: 'chunk#00007',
-      });
-      for (const bad of [70_000, -1, 1.5, NaN]) {
-        expect(() => chunkKeyPair({ segment: 's', chunkKey: bad })).toThrow(ValidationError);
+    it('rejects a prefix that could alias another prefix through the PK delimiters', () => {
+      // Prefix isolation is structural, not conventional: a prefix containing the delimiters could make one
+      // logical store's partition key equal another's, which is a cross-tenant read.
+      for (const bad of ['a|b', 'a#b']) {
+        expect(() => assertValidKeyPrefix(bad)).toThrow(ValidationError);
       }
     });
   });
 
-  describe('parseChunkSortKey', () => {
-    it('round-trips chunkSortKey and ignores registry / foreign rows', () => {
-      for (const k of [0, 1, 42, 65_535]) expect(parseChunkSortKey(chunkSortKey(k))).toBe(k);
-      expect(parseChunkSortKey('reg#currentGen')).toBeNull(); // registry row, not a chunk
-      expect(parseChunkSortKey('chunk#42')).toBeNull(); // not zero-padded (non-canonical)
-      expect(parseChunkSortKey('chunk#000042')).toBeNull(); // 6 digits
-      expect(parseChunkSortKey('chunk#abcde')).toBeNull();
-      expect(parseChunkSortKey('garbage')).toBeNull();
+  describe('registryKeyPair', () => {
+    it('returns the (pk, sk) of a segment’s single registry row and validates the ref', () => {
+      expect(registryKeyPair({ segment: 's' })).toEqual({
+        pk: 'ns#_default|seg#s',
+        sk: 'reg#',
+      });
+      expect(registryKeyPair({ namespace: 't1', segment: 's' }, 'shardA')).toEqual({
+        pk: 'shardA|ns#t1|seg#s',
+        sk: 'reg#',
+      });
+      for (const bad of ['..', 'a/b', '']) {
+        expect(() => registryKeyPair({ segment: bad })).toThrow(ValidationError);
+      }
     });
-    it('the query prefix excludes registry rows', () => {
-      expect('chunk#00001'.startsWith(chunkSortKeyPrefix())).toBe(true);
-      expect('reg#currentGen'.startsWith(chunkSortKeyPrefix())).toBe(false);
+
+    it('the registry sort key is a constant, so a segment can hold exactly one row', () => {
+      expect(registrySortKey()).toBe('reg#');
+      expect(registryKeyPair({ segment: 'a' }).sk).toBe(registryKeyPair({ segment: 'b' }).sk);
+    });
+
+    it('a chunk row left by an older build cannot collide with the registry row', () => {
+      // `list` filters on the `reg#` sort key, so pre-D2 `chunk#…` items in the same partition are inert.
+      // This is the property that makes them safe to leave behind rather than requiring a migration.
+      expect(registrySortKey().startsWith('chunk#')).toBe(false);
+      expect('chunk#00042'.startsWith(registrySortKey())).toBe(false);
     });
   });
 });

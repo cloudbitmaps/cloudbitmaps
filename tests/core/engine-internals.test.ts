@@ -1,20 +1,15 @@
 import {
   CloudRoaring,
-  MemoryWarmDriver,
   MemoryColdChunkSource,
-  IntegrityError,
   TransientError,
-  WriteConflictError,
-  type ColdChunkSource,
-  type IWarmDriver,
   type ChunkRef,
-  type SegmentRef,
   type Clock,
+  type ColdChunkSource,
   type Rng,
-  type Segment,
+  type SegmentRef,
 } from '@/index';
-import type { NoRow, Token, WarmRow } from '@/core/ports';
 import { SafeBitmap } from '@/roaring-codec';
+import { loadedStore, seedSegment } from '../helpers/loaded';
 
 function fakeClock(): Clock & { advance: (ms: number) => void } {
   let t = 0;
@@ -34,12 +29,6 @@ function recordingClock(): Clock & { sleeps: number[] } {
   };
 }
 const zeroRng: Rng = { next: () => 0 };
-
-async function members(seg: Segment): Promise<number[]> {
-  const out: number[] = [];
-  for await (const id of seg.iterate()) out.push(id);
-  return out;
-}
 
 /** Cold source that counts physical reads, to prove the HOT cache is wired. */
 class CountingCold implements ColdChunkSource {
@@ -61,13 +50,7 @@ describe('HOT cache (C6) — wired through the engine', () => {
     inner.seed({ segment: 's', chunkKey: 1 }, SafeBitmap.fromValues([0]).serialize()); // id 65536
     const cold = new CountingCold(inner);
     const clock = fakeClock();
-    const s = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold,
-      clock,
-      cacheTtlMs: 100,
-      cacheMaxChunks: 1,
-    }).segment('s');
+    const s = new CloudRoaring({ cold, clock, cacheTtlMs: 100, cacheMaxChunks: 1 }).segment('s');
 
     await s.has(1);
     expect(cold.getChunkCalls).toBe(1);
@@ -82,158 +65,83 @@ describe('HOT cache (C6) — wired through the engine', () => {
     await s.has(1); // chunk 0 was evicted → physical re-read
     expect(cold.getChunkCalls).toBe(4);
   });
+
+  it('is keyed by generation: a reload misses the cache instead of serving a stale decoded chunk', async () => {
+    // The hazard: id 1 is decoded and cached from generation 0; a reload publishes generation 1 without it. A
+    // cache keyed by chunk alone would keep answering `true` — the id would "resurrect" from a superseded
+    // chunk, which is exactly what an erasure must never allow.
+    const clock = fakeClock();
+    const { store, load } = await loadedStore({ s: [1, 2] }, { clock, coldGenTtlMs: 1 });
+    const s = store.segment('s');
+    expect(await s.has(1)).toBe(true); // chunk 0 @ generation 0 is now hot
+
+    await load('s', [2]); // generation 1: the same chunk key, id 1 gone
+    clock.advance(1);
+    expect(await s.has(1)).toBe(false);
+    expect(await s.has(2)).toBe(true);
+  });
 });
 
-/** Warm driver that injects `WriteConflictError` on the first `failTimes` writes. */
-class ConflictingWarm implements IWarmDriver {
+/** A cold source that fails its first `failTimes` payload reads with a transient fault, then behaves. */
+class FlakyCold implements ColdChunkSource {
   private fails = 0;
   constructor(
-    private readonly inner: MemoryWarmDriver,
+    private readonly inner: MemoryColdChunkSource,
     private readonly failTimes: number,
   ) {}
-  get(ref: ChunkRef): Promise<WarmRow | null> {
-    return this.inner.get(ref);
-  }
-  putConditional(
-    ref: ChunkRef,
-    bytes: Uint8Array,
-    expected: Token | NoRow,
-  ): Promise<{ token: Token }> {
+  getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
     if (this.fails < this.failTimes) {
       this.fails += 1;
-      return Promise.reject(new WriteConflictError('injected conflict'));
+      return Promise.reject(new TransientError('injected blip'));
     }
-    return this.inner.putConditional(ref, bytes, expected);
+    return this.inner.getChunk(ref);
   }
-  deleteConditional(ref: ChunkRef, expected: Token): Promise<void> {
-    return this.inner.deleteConditional(ref, expected);
-  }
-  listChunks(ref: SegmentRef): AsyncIterable<{ chunkKey: number } & WarmRow> {
-    return this.inner.listChunks(ref);
+  listChunkKeys(ref: SegmentRef): Promise<number[]> {
+    return this.inner.listChunkKeys(ref);
   }
 }
 
-describe('OCC retry (read-modify-write)', () => {
-  it('retries past transient conflicts and succeeds', async () => {
-    const warm = new ConflictingWarm(new MemoryWarmDriver(), 3);
-    const s = new CloudRoaring({ warm, cold: new MemoryColdChunkSource() }).segment('s');
-    await s.add(42); // 3 conflicts < 16 retries → succeeds
-    expect(await s.has(42)).toBe(true);
-  });
-
-  it('throws WriteConflictError when retries are exhausted', async () => {
-    const warm = new ConflictingWarm(new MemoryWarmDriver(), 999);
-    const s = new CloudRoaring({ warm, cold: new MemoryColdChunkSource() }).segment('s');
-    await expect(s.add(42)).rejects.toBeInstanceOf(WriteConflictError);
-  });
-});
-
-describe('untrusted tier metadata', () => {
-  it('rejects an out-of-range chunk key from the WARM tier (IntegrityError)', async () => {
-    const badWarm: IWarmDriver = {
-      get: () => Promise.resolve(null),
-      putConditional: () => Promise.resolve({ token: '1' }),
-      deleteConditional: () => Promise.resolve(),
-      listChunks: async function* () {
-        yield { chunkKey: 70_000, token: '1', bytes: new Uint8Array() };
-      },
-    };
-    const s = new CloudRoaring({ warm: badWarm, cold: new MemoryColdChunkSource() }).segment('s');
-    await expect(s.count()).rejects.toBeInstanceOf(IntegrityError);
-  });
-});
-
-describe('cold-only and boundary ids', () => {
-  it('reads a cold-only segment (no warm) correctly', async () => {
-    const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([1, 2, 3]).serialize());
-    const s = new CloudRoaring({ warm: new MemoryWarmDriver(), cold }).segment('s');
-    expect(await s.count()).toBe(3);
-    expect(await members(s)).toEqual([1, 2, 3]);
-    expect(await s.has(2)).toBe(true);
-    expect(await s.has(9)).toBe(false);
-  });
-
-  it('round-trips boundary ids through the full op path', async () => {
-    const s = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new MemoryColdChunkSource(),
-    }).segment('s');
-    await s.addMany([0, 0xffff, 0x1_0000, 0xffff_ffff]);
-    expect(await s.count()).toBe(4);
-    expect(await members(s)).toEqual([0, 0xffff, 0x1_0000, 0xffff_ffff]);
-    expect(await s.has(0xffff_ffff)).toBe(true);
-  });
-});
-
-describe('OCC backoff + resilience (Phase 4b)', () => {
-  it('backs off on a jittered schedule between OCC conflict retries', async () => {
+describe('transient-retry resilience (wired by default)', () => {
+  it('backs off on the policy schedule between transient retries, then serves the read', async () => {
     const clock = recordingClock();
+    const inner = new MemoryColdChunkSource();
+    seedSegment(inner, 's', [42]);
+    const attempts: number[] = [];
     const s = new CloudRoaring({
-      warm: new ConflictingWarm(new MemoryWarmDriver(), 2), // two conflicts, then the write lands
-      cold: new MemoryColdChunkSource(),
+      cold: new FlakyCold(inner, 2), // two transient faults, then the bytes arrive
       clock,
       rng: zeroRng,
-      retry: false, // isolate the engine's OCC backoff — don't also wrap the warm driver
-      occBackoff: {
-        maxAttempts: 1,
-        baseDelayMs: 5,
-        maxDelayMs: 200,
-        backoffFactor: 2,
-        jitter: 'none',
-      },
+      retry: { maxAttempts: 4, baseDelayMs: 5, maxDelayMs: 200, backoffFactor: 2, jitter: 'none' },
+      onRetry: (info) => attempts.push(info.attempt),
     }).segment('s');
 
-    await s.add(42);
     expect(await s.has(42)).toBe(true);
     // One backoff sleep before each of the two retries, on the exact exponential schedule (5, 10) — a
-    // mutation that dropped the OCC backoff sleep, or mis-indexed the attempt, would fail here.
+    // mutation that dropped the sleep, or mis-indexed the attempt, would fail here.
     expect(clock.sleeps).toEqual([5, 10]);
+    expect(attempts).toEqual([1, 2]);
   });
 
-  /** Commits the first write server-side, then throws a transient as if the response was lost. */
-  class PhantomCommitWarm implements IWarmDriver {
-    private readonly store = new MemoryWarmDriver();
-    private phantomDone = false;
-    get(ref: ChunkRef): Promise<WarmRow | null> {
-      return this.store.get(ref);
-    }
-    async putConditional(
-      ref: ChunkRef,
-      bytes: Uint8Array,
-      expected: Token | NoRow,
-    ): Promise<{ token: Token }> {
-      if (!this.phantomDone) {
-        this.phantomDone = true;
-        await this.store.putConditional(ref, bytes, expected); // the write DID commit…
-        throw new TransientError('response lost after commit'); // …but the caller never heard back
-      }
-      return this.store.putConditional(ref, bytes, expected);
-    }
-    deleteConditional(ref: ChunkRef, expected: Token): Promise<void> {
-      return this.store.deleteConditional(ref, expected);
-    }
-    listChunks(ref: SegmentRef): AsyncIterable<{ chunkKey: number } & WarmRow> {
-      return this.store.listChunks(ref);
-    }
-  }
-
-  it('a timed-out-but-committed write is recovered with no double-apply and no lost write', async () => {
+  it('surfaces the transient fault once the attempts are exhausted', async () => {
     const clock = recordingClock();
+    const inner = new MemoryColdChunkSource();
+    seedSegment(inner, 's', [42]);
     const s = new CloudRoaring({
-      warm: new PhantomCommitWarm(), // first add: commits, then the response is "lost" (transient)
-      cold: new MemoryColdChunkSource(),
+      cold: new FlakyCold(inner, 99),
       clock,
       rng: zeroRng,
-    }).segment('s'); // retry ON by default → the decorator retries the transient put
+      retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 4, backoffFactor: 2, jitter: 'none' },
+    }).segment('s');
+    await expect(s.has(42)).rejects.toBeInstanceOf(TransientError);
+    expect(clock.sleeps).toEqual([1, 2]); // two backoffs for three attempts
+  });
 
-    // add(10): phantom commit of {10} → transient → decorator retries put(NO_ROW) → row now exists →
-    // WriteConflict (not retried by the decorator) → engine re-reads {10}, re-applies add(10), put(token) → ok.
-    await s.add(10); // both ids share chunk 0, so they contend on the same warm row
-    await s.add(20); // normal write on top of {10}
-
-    // No write lost (10 survived the phantom path), no double-apply / corruption.
-    expect(await members(s)).toEqual([10, 20]);
-    expect(await s.count()).toBe(2);
+  it('`retry: false` disables the wrapper — the first fault surfaces unretried', async () => {
+    const clock = recordingClock();
+    const inner = new MemoryColdChunkSource();
+    seedSegment(inner, 's', [42]);
+    const s = new CloudRoaring({ cold: new FlakyCold(inner, 1), clock, retry: false }).segment('s');
+    await expect(s.has(42)).rejects.toBeInstanceOf(TransientError);
+    expect(clock.sleeps).toEqual([]);
   });
 });

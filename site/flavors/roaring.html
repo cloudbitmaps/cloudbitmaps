@@ -112,7 +112,7 @@
               segment routinely holds all three at once.
             </p>
             <p class="actions">
-              <a class="btn btn-primary" href="../usage.html">Six-line quickstart →</a>
+              <a class="btn btn-primary" href="../usage.html">Zero-setup quickstart →</a>
               <a class="btn" href="../demo.html">See the intersection</a>
             </p>
             <p class="meta">
@@ -257,11 +257,12 @@
             Redis has no Roaring type of its own — there is a third-party module that wraps
             CRoaring, but a managed Redis service generally will not load arbitrary modules. So the
             honest comparison is not
-            <em>us versus Redis</em>: it is Roaring versus a fixed representation. And because Redis
-            is one of our <a href="../usage.html#drivers">warm drivers</a>, you can have the
-            adaptive one <strong>inside</strong> Redis — the node then holds compressed chunk deltas
-            instead of an uncompressed bit array, and your history stays in cold object storage
-            rather than in RAM.
+            <em>us versus Redis</em>: it is Roaring versus a fixed representation. And the two are
+            not exclusive. Redis is not one of our drivers — the storage here is
+            <a href="../usage.html#drivers">your own bucket</a> — but it is the easiest place to
+            collect ids as events arrive one at a time, and a
+            <a href="../usage.html#api">load</a> is what turns what collected there into a single
+            immutable object your intersections can skip through.
           </p>
         </div>
       </section>
@@ -300,8 +301,12 @@
               <tbody>
                 <tr>
                   <td><span class="m">SETBIT key id 1</span></td>
-                  <td><span class="call">add</span> / <span class="call">addMany</span></td>
-                  <td class="from">None in meaning. Ids are u32, same as a bit offset.</td>
+                  <td class="from"><strong>No equivalent</strong> — no per-id write exists.</td>
+                  <td class="from">
+                    Ids are u32, same as a bit offset, but a segment changes only by getting a new
+                    generation. Compute the set upstream and
+                    <span class="call">bulkLoadCrbmGeneration</span> it as one object.
+                  </td>
                 </tr>
                 <tr>
                   <td><span class="m">GETBIT key id</span></td>
@@ -331,21 +336,27 @@
                   </td>
                 </tr>
                 <tr>
-                  <td><span class="m">prior = SETBIT key id 1</span></td>
-                  <td><span class="call is-key">claimMany</span></td>
+                  <td><span class="m">BITOP AND dest a b</span></td>
+                  <td><span class="call is-key">intersectInto</span></td>
                   <td class="from">
-                    Takes a batch and returns only the ids it won — the prior-bit return is what
-                    makes an <em>already sent to this id?</em> check exactly-once. One write per
-                    chunk, not per id.
+                    The destination form, which is the only form Redis has. The result becomes a
+                    <strong>new generation</strong> of <span class="m">dest</span> — superseded, not
+                    added to — published forward-only, and you get back what it wrote.
+                    <span class="call">unionInto</span> and <span class="call">andNotInto</span> are
+                    the same for OR and DIFF.
                   </td>
                 </tr>
                 <tr>
                   <td><span class="m">EXPIRE key ttl</span></td>
-                  <td><span class="call">dropSegment</span></td>
+                  <td>
+                    <span class="call">setRetention</span> +
+                    <span class="call">retireExpired</span>
+                  </td>
                   <td class="from">
-                    Per <em>segment</em>, not per id: <span class="call">setRetention</span> records
-                    when it expires and <span class="call">retireExpired</span> is the sweep you
-                    schedule. Never enable your backend's own row expiry on the warm table.
+                    Per <em>segment</em>, not per id: the writer records an absolute
+                    <span class="m">expiresAt</span> and the sweep is a call you schedule — nothing
+                    here starts a timer. Never point an object-lifecycle rule at the bucket on its
+                    own; it deletes bytes the pointer still names.
                   </td>
                 </tr>
               </tbody>
@@ -362,36 +373,31 @@
           <p class="tpanel-foot">
             <span class="label">Read this twice</span> <span class="m">SETBIT</span> flips one bit
             in place and is genuinely O(1), so a per-recipient loop is the natural Redis shape — and
-            the worst shape here. A warm row holds one roaring bitmap per 65,536-id chunk, so every
-            write re-serializes that whole blob:
-            <strong
-              >5,000 ids added one at a time cost 5,000 writes and 23,762&nbsp;KB, against 1 write
-              and 8&nbsp;KB for the same ids in one call.</strong
-            >
-            Batch and you are far cheaper than Redis; port the loop literally and you are far more
-            expensive.
+            here it has nothing to port to. The loop becomes two decisions instead:
+            <strong>where the ids collect as they arrive, and how often you load the set.</strong>
+            If the set is defined by a query, run the query and load its result; if it is defined by
+            events, accumulate them where they land and load on a cadence. A load bills per
+            <em>object</em>, not per id — ten million ids are a handful of PUTs — so what you are
+            paying for is the cadence, not the id count.
           </p>
           <p class="tpanel-foot">
-            <span class="label">What that costs</span> The write and byte counts are
-            backend-independent &mdash; they are what any warm driver receives. The bill is not. On
-            a <strong>per-request metered</strong> backend (DynamoDB on-demand, Astra) it is a
-            direct line item, and DynamoDB rounds up per 1&nbsp;KB per item, so small frequent
-            writes are penalised twice. On <strong>provisioned capacity</strong> it eats throughput
-            you already pay for, so the first symptom is throttling rather than dollars. On an
-            <strong>instance-priced</strong> backend (ElastiCache, RDS, Atlas, self-hosted
-            Cassandra) there is no per-op charge at all &mdash; it surfaces as IOPS, CPU and latency
-            headroom, which makes it easier to miss, not cheaper. Rates are region-specific and the
-            vendor's to change; every figure we publish uses the default
-            <span class="m">aws-us-east-1-ondemand</span> profile, and
-            <span class="call">estimateCost</span> accepts your own rates.
+            <span class="label">What that costs</span> Two line items, and no third. A
+            <strong>read</strong> that misses the hot cache is one ranged GET; a
+            <strong>publish</strong> is one object PUT plus the pointer write. Storage is the
+            segment sitting there, which is the cheap part. Nothing bills per id, and nothing bills
+            while the segment is idle &mdash; which is the whole difference from a node you keep
+            standing. Rates are region-specific and the vendor's to change; every figure we publish
+            uses the default <span class="m">aws-us-east-1-ondemand</span> profile, and
+            <span class="call">estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">
-            <span class="label">No seed step</span> A brand-new segment is usable immediately —
-            <span class="call">addMany</span>, <span class="call">has</span>,
-            <span class="call">remove</span>, <span class="call">count</span> and the set algebra
-            all work with no cold generation and no registry row. Bulk-load is an
-            <em>import</em> path for data you already have elsewhere, and compaction is a cost
-            optimisation, never a correctness requirement.
+            <span class="label">One way in, and nothing to run</span> A segment exists once you have
+            loaded a generation into it; before that every read answers empty rather than erroring.
+            There is no daemon, no compaction pass and no lifecycle worker &mdash; the only
+            scheduled work is the retention sweep you trigger yourself (<span class="call"
+              >retireExpired</span
+            >), plus <span class="call">gcOrphanGenerations</span> if you want superseded
+            generations collected sooner than that.
           </p>
         </div>
 
@@ -567,16 +573,17 @@
           <div class="limit">
             <p class="label">Sub-millisecond p99</p>
             <p>
-              No codec fixes this. A RAM store answers a single membership check 10–20× faster than
-              any warm-tier round trip. <strong>Use Redis.</strong>
+              No codec fixes this. A membership check that misses the hot cache costs one ranged GET
+              against object storage, where a RAM store costs a memory read.
+              <strong>Use Redis.</strong>
             </p>
           </div>
           <div class="limit">
             <p class="label">Very small segments</p>
             <p>
-              A few thousand ids fit in a single cache entry anywhere. The tiering, the compaction
-              and the key alignment are all overhead you do not need until a segment stops fitting
-              in memory.
+              A few thousand ids fit in a single cache entry anywhere. The tiering, the generation
+              bookkeeping and the key alignment are all overhead you do not need until a segment
+              stops fitting in memory.
             </p>
           </div>
         </div>
@@ -600,16 +607,19 @@
           </div>
           <div class="install">
             <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> { CloudRoaring, MemoryWarmDriver, MemoryColdChunkSource } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryColdDriver, MemoryRegistryDriver,
+  bulkLoadCrbmGeneration } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
-  warm: <span class="k">new</span> MemoryWarmDriver(),
-  cold: <span class="k">new</span> MemoryColdChunkSource(),
-});
+<span class="k">const</span> cold = <span class="k">new</span> MemoryColdDriver();
+<span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
 
-<span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
-<span class="k">await</span> vips.addMany([<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
-<span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
+<span class="c">// the whole set, as one immutable generation</span>
+<span class="k">await</span> bulkLoadCrbmGeneration(cold,
+  { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
+
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ cold, registry });
+<span class="k">await</span> store.segment(<span class="s">'high-value-shoppers'</span>).has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
             <p class="link-row"><a href="../usage.html">Every driver and its peer deps →</a></p>
           </div>
         </div>

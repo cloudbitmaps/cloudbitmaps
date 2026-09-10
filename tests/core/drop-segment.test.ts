@@ -4,10 +4,10 @@ import {
   CrbmColdChunkSource,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
   dropSegment,
   gcOrphanGenerations,
+  publishGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
@@ -16,21 +16,21 @@ import {
   ValidationError,
   WriteConflictError,
 } from '@/core/errors';
-import type { IKeystore, SegmentRef } from '@/index';
+import type { DropDeps, IKeystore, SegmentRef } from '@/index';
+import { loadedStore } from '../helpers/loaded';
 
 /**
  * `dropSegment` — the operational sibling of crypto-shred: it deletes the objects.
  *
- * The reason this function exists is that the ORDER of its three steps is easy to get catastrophically wrong,
+ * The reason this function exists is that the ORDER of its two steps is easy to get catastrophically wrong,
  * and the wrong order fails silently. So the tests below are mostly about order and about the states each
  * ordering produces, not about the happy path:
  *
- *   Warm first    — a `destroyed` tombstone with live Warm deltas still answers `true`, because Warm is read
- *                   separately from and earlier than Cold.
- *   Registry next — after the tombstone nothing resolves a generation, so no reader can reach bytes that are
- *                   about to vanish.
- *   Cold last     — and best-effort, so a partial failure leaves orphaned bytes (a billing problem) rather
- *                   than a live pointer into a hole (a correctness problem).
+ *   Registry first — after the tombstone nothing resolves a generation, so no reader can reach bytes that are
+ *                    about to vanish, and no writer can publish onto the name (`publishGeneration` and
+ *                    `bulkLoadCrbmGeneration` both refuse a `destroyed` row).
+ *   Cold last      — and best-effort, re-swept, so a partial failure leaves orphaned bytes (a billing problem)
+ *                    rather than a live pointer into a hole (a correctness problem).
  *
  * The `leaves no torn pointer` test is the one that would have caught the workaround this function replaces:
  * an object-store lifecycle rule deleting the bytes while the registry still points at them.
@@ -43,36 +43,25 @@ import type { IKeystore, SegmentRef } from '@/index';
 const SEG: SegmentRef = { namespace: 'active-daily', segment: '2026-08-01' };
 const CONFIRM = { confirmSegment: SEG.segment };
 
-function world(keystore?: IKeystore) {
-  const cold = new MemoryColdDriver();
-  const warm = new MemoryWarmDriver();
-  const registry = new MemoryRegistryDriver();
-  const store = new CloudRoaring({
-    warm,
-    cold: new CrbmColdChunkSource(cold, { registry, keystore }),
-    retry: false,
-  });
-  return { cold, warm, registry, store, deps: { cold, warm, registry } };
+async function world(keystore?: IKeystore) {
+  const w = await loadedStore({}, { keystore, retry: false });
+  const deps: DropDeps = { cold: w.cold, registry: w.registry };
+  return { ...w, deps };
 }
+type World = Awaited<ReturnType<typeof world>>;
 
-async function seed(
-  w: ReturnType<typeof world>,
-  ids: number[],
-  keystore?: IKeystore,
-  generation = 0,
-): Promise<void> {
-  await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation }, ids, {
-    registry: w.registry,
-    keystore,
-  });
-}
+/** Load `ids` as the segment's next generation (through the fixture's keystore when the world has one). */
+const seed = (w: World, ids: number[]): Promise<unknown> => w.load(SEG, ids);
 
 /** The segment handle — namespace INCLUDED, because it is part of the identity and omitting it silently
  *  addresses a different segment in the default namespace. (Which it did, while writing these tests.) */
-const handle = (w: ReturnType<typeof world>) =>
-  w.store.segment(SEG.segment, { namespace: SEG.namespace });
+const handle = (w: World) => w.store.segment(SEG.segment, { namespace: SEG.namespace });
 
-async function generationsInCold(w: ReturnType<typeof world>): Promise<number[]> {
+/** A reader that has cached nothing — sees the truth at once (see the "only eventually empty" test). */
+const fresh = (w: World): CloudRoaring =>
+  new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+
+async function generationsInCold(w: World): Promise<number[]> {
   const gens: number[] = [];
   for await (const key of w.cold.list(SEG)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
@@ -80,7 +69,7 @@ async function generationsInCold(w: ReturnType<typeof world>): Promise<number[]>
 
 describe('dropSegment', () => {
   it('deletes the Cold objects — which crypto-shred does not', async () => {
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2, 3, 70_000]);
     expect(await generationsInCold(w)).toHaveLength(1);
 
@@ -95,7 +84,7 @@ describe('dropSegment', () => {
   it('works on a CLEARTEXT segment — crypto-shred refuses one', async () => {
     // destroySegment rejects a cleartext segment (no key to discard) unless you pass allowCleartext, and even
     // then leaves the Cold bytes readable. Disposal has no such requirement, and most segments are cleartext.
-    const w = world();
+    const w = await world();
     await seed(w, [5, 6]);
     const result = await dropSegment(SEG, w.deps, CONFIRM);
     expect(result.dropped).toBe(true);
@@ -107,8 +96,8 @@ describe('dropSegment', () => {
     // Deleting an object does not reach a noncurrent version, a replica or a PITR snapshot; discarding the key
     // does. On an encrypted segment we want both, and the result has to say which happened.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-    const w = world(keystore);
-    await seed(w, [7, 8], keystore);
+    const w = await world(keystore);
+    await seed(w, [7, 8]);
     const result = await dropSegment(SEG, w.deps, CONFIRM);
     expect(result.cryptoShredded).toBe(true);
     expect(result.generationsDeleted).toHaveLength(1);
@@ -119,7 +108,7 @@ describe('dropSegment', () => {
     // still points at them) produces `missing-cold-generation`: reads throw NotFoundError, intermittently,
     // because the hot cache masks it until eviction. Ordering the tombstone BEFORE the delete is what converts
     // that into a benign empty read, so assert the benign outcome rather than the ordering directly.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2, 3]);
     await dropSegment(SEG, w.deps, CONFIRM);
 
@@ -136,7 +125,7 @@ describe('dropSegment', () => {
     // `dropSegment`. It hand-deletes Cold and asserts the engine throws, so it is a control on the ENGINE, and it
     // cannot fail if `dropSegment`'s ordering regresses. The real ordering proof is the mid-drop observation in
     // the `ordering` describe below; this one only establishes that the torn state is in fact observable.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2, 3]);
     for (const generation of await generationsInCold(w)) {
       await w.cold.delete({ ...SEG, generation });
@@ -145,23 +134,10 @@ describe('dropSegment', () => {
     await expect(handle(w).has(1)).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('deletes the Warm deltas, so a tombstone cannot still answer true', async () => {
-    // Warm is consulted separately from and earlier than Cold, so a `destroyed` row with live Warm adds would
-    // report membership for ids in those deltas — a deleted segment answering `true`. Warm must go first.
-    const w = world();
-    await seed(w, [1]);
-    await handle(w).addMany([500, 501, 502]); // warm adds, not yet compacted
-
-    const result = await dropSegment(SEG, w.deps, CONFIRM);
-
-    expect(result.warmRowsDeleted).toBeGreaterThan(0);
-    await expect(handle(w).has(500)).resolves.toBe(false);
-  });
-
   it('dryRun reports what would go and changes nothing', async () => {
     // The confirmSegment guard protects a hand-typed literal. In the loop this function is for, the same
     // variable appears twice and the guard is ceremony — a dry run is the guard that survives automation.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2]);
 
     const preview = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
@@ -175,7 +151,7 @@ describe('dropSegment', () => {
   });
 
   it('is idempotent — a second drop is a no-op that says so', async () => {
-    const w = world();
+    const w = await world();
     await seed(w, [1]);
     await dropSegment(SEG, w.deps, CONFIRM);
     const again = await dropSegment(SEG, w.deps, CONFIRM);
@@ -186,14 +162,14 @@ describe('dropSegment', () => {
 
   it('reports an absent segment rather than throwing', async () => {
     // A retention loop will inevitably name a bucket that was already collected. That is not an error.
-    const w = world();
+    const w = await world();
     const result = await dropSegment(SEG, w.deps, CONFIRM);
     expect(result.dropped).toBe(false);
     expect(result.reason).toBe('absent');
   });
 
   it('refuses a mismatched confirmSegment', async () => {
-    const w = world();
+    const w = await world();
     await seed(w, [1]);
     await expect(
       dropSegment(SEG, w.deps, { confirmSegment: 'something-else' }),
@@ -203,11 +179,12 @@ describe('dropSegment', () => {
   });
 
   it('deletes every generation, not just the current one', async () => {
-    // A segment that has been compacted holds superseded generations too. Disposal that left them behind would
-    // keep billing for the bytes it claimed to remove — the exact complaint that motivated this function.
-    const w = world();
+    // A segment that has been reloaded holds superseded generations too until something collects them. Disposal
+    // that left them behind would keep billing for the bytes it claimed to remove — the exact complaint that
+    // motivated this function.
+    const w = await world();
     await seed(w, [1, 2]);
-    await seed(w, [3, 4], undefined, 1);
+    await seed(w, [3, 4]);
     expect((await generationsInCold(w)).length).toBeGreaterThan(1);
 
     const result = await dropSegment(SEG, w.deps, CONFIRM);
@@ -220,7 +197,7 @@ describe('dropSegment', () => {
     // Cold deletion is last and best-effort on purpose. Once the tombstone is written the segment reads as
     // empty and is CORRECT, so a failure here is a billing problem; failing the whole call instead would leave
     // callers retrying a drop that already succeeded semantically.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2]);
     w.cold.delete = (): Promise<void> => Promise.reject(new Error('S3 is having a day'));
 
@@ -237,7 +214,7 @@ describe('dropSegment', () => {
     // documents — dashboards.md calls it the compliance *receipt* — define as proof of irreversible destruction.
     // Deleting an object is weaker than discarding a key: a noncurrent version, a replica or a PITR snapshot
     // still holds the cleartext. A dashboard built on our own docs would have over-attested.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2]);
     const events: unknown[] = [];
     const audit = { onEvent: (e: unknown): void => void events.push(e) };
@@ -257,8 +234,8 @@ describe('dropSegment', () => {
     // The positive control for the test above. Without it, "no event" could be true because the audit sink is
     // never called at all, and the assertion above would pass against a `dropSegment` that audits nothing ever.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-    const w = world(keystore);
-    await seed(w, [1, 2], keystore);
+    const w = await world(keystore);
+    await seed(w, [1, 2]);
     const events: Array<{ kind: string }> = [];
 
     await dropSegment(SEG, w.deps, { ...CONFIRM, audit: { onEvent: (e) => void events.push(e) } });
@@ -270,12 +247,13 @@ describe('dropSegment', () => {
   it('is only eventually empty to a reader that had already cached the segment', async () => {
     // The docs said "afterwards the segment reads as empty", full stop. False for up to `coldGenTtlMs`
     // (default 2s): a resolved generation is cached and decoded chunks sit in the hot LRU, so a store that
-    // touched the segment BEFORE the drop keeps answering from cache. My original tests all passed only because
+    // touched the segment BEFORE the drop keeps answering from cache. The original tests all passed only because
     // none of them read first — the blind spot was in the fixture, not the assertion.
     //
     // Asserted as a bound rather than a timing: a FRESH store over the same drivers must see empty at once,
-    // which pins the cause on caching rather than on the drop having failed.
-    const w = world();
+    // which pins the cause on caching rather than on the drop having failed. (The fixture passes no clock, so
+    // this store pins its snapshot for its lifetime — the documented `coldGenTtlMs: 0` case.)
+    const w = await world();
     await seed(w, [1, 2, 3]);
     await expect(handle(w).has(1)).resolves.toBe(true); // warms the snapshot + LRU
 
@@ -288,12 +266,7 @@ describe('dropSegment', () => {
     await expect(handle(w).has(1)).resolves.toBe(true);
 
     // A reader that never cached it sees the truth immediately — so the data really is gone.
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
+    await expect(fresh(w).segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
       false,
     );
   });
@@ -315,64 +288,46 @@ function hook<T extends object>(target: T, prop: string, impl: (...args: never[]
   });
 }
 
-async function warmRowCount(w: ReturnType<typeof world>): Promise<number> {
-  let n = 0;
-  for await (const _row of w.warm.listChunks(SEG)) {
-    void _row;
-    n += 1;
-  }
-  return n;
-}
-
 /**
- * ORDERING — the tests that were missing, and whose absence let three separate ordering inversions through.
+ * ORDERING — the tests that were missing, and whose absence let ordering inversions through.
  *
  * Every test in the suite above asserts the POST-HOC steady state, and the steady state is identical whichever
- * order the three steps run in: the tombstone lands either way, so reads end up empty either way. Mutation
+ * order the two steps run in: the tombstone lands either way, so reads end up empty either way. Mutation
  * testing confirmed it — deleting the Cold objects BEFORE the tombstone (the exact `missing-cold-generation`
- * failure this function exists to prevent) passed all 17 tests here and all 1238 in the repo.
+ * failure this function exists to prevent) passed every test here and every test in the repo.
  *
  * The torn state is only observable *during* the window. So these observe mid-drop.
  */
 describe('dropSegment ordering (observed mid-drop, not after)', () => {
-  it('at the instant the tombstone lands, Warm is already clear and Cold is still intact', async () => {
-    // One observation point pins the whole contract, because each inversion moves it a different way:
-    //   registry-before-Warm  → warmRows would be 1
-    //   Cold-before-registry  → coldGens would be []
-    const w = world();
+  it('at the instant the tombstone lands, Cold is still intact', async () => {
+    // One observation point pins the contract: a Cold-before-registry inversion would show coldGens as [].
+    const w = await world();
     await seed(w, [1, 2, 3]);
-    await handle(w).addMany([500]); // a live Warm row that step 1 must clear
 
-    let atCas: { warmRows: number; coldGens: number[] } | null = null;
+    let atCas: number[] | null = null;
     const registry = hook(w.registry, 'compareAndSwap', async (...args: never[]) => {
       const [ref, expected, patch] = args as unknown as [SegmentRef, string, { status?: string }];
-      if (patch.status === 'destroyed') {
-        atCas = { warmRows: await warmRowCount(w), coldGens: await generationsInCold(w) };
-      }
+      if (patch.status === 'destroyed') atCas = await generationsInCold(w);
       return w.registry.compareAndSwap(ref, expected, patch as never);
     });
 
     await dropSegment(SEG, { ...w.deps, registry }, CONFIRM);
 
-    expect(atCas).toEqual({ warmRows: 0, coldGens: [0] });
+    expect(atCas).toEqual([0]);
+    expect(await generationsInCold(w)).toEqual([]); // and the sweep then took it
   });
 
   it('no reader can ever see a live pointer into a deleted object — observed at each delete', async () => {
     // A reader arriving at the exact instant an object vanishes must see EMPTY, never NotFoundError. With the
     // tombstone already written it resolves no generation at all, so it never reaches for the missing bytes.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2, 3]);
 
     const observations: Array<{ ok: boolean; err?: string }> = [];
     const cold = hook(w.cold, 'delete', async (...args: never[]) => {
       await w.cold.delete(args[0] as never);
-      const fresh = new CloudRoaring({
-        warm: w.warm,
-        cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-        retry: false,
-      });
       try {
-        await fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(1);
+        await fresh(w).segment(SEG.segment, { namespace: SEG.namespace }).has(1);
         observations.push({ ok: true });
       } catch (err) {
         observations.push({ ok: false, err: (err as Error).constructor.name });
@@ -386,23 +341,23 @@ describe('dropSegment ordering (observed mid-drop, not after)', () => {
 });
 
 describe('dropSegment vs a concurrent writer', () => {
-  it('sweeps again to catch a generation staged by a compaction already in flight', async () => {
-    // A compaction that took its lease before the drop still finishes STAGING, from data it read beforehand. Its
-    // commit then fails on the lease the tombstone voided — but the object it wrote survives, and it holds the
-    // COMPLETE effective set including the Warm deltas the drop just deleted. For a cleartext segment those bytes
-    // are readable, and nothing in the library reclaims them: gcOrphanGenerations only looks below currentGen and
-    // checkConsistency skips destroyed segments. A single list-then-delete missed it entirely.
+  it('sweeps again to catch an object a load already in flight finishes writing', async () => {
+    // A load that was mid-write when the tombstone landed still finishes its object. Its publish is then refused
+    // (the tombstone is the fence) — but the object survives, and it holds the COMPLETE set. For a cleartext
+    // segment those bytes are readable, and nothing else reclaims them promptly: `gcOrphanGenerations` only runs
+    // from the retention sweep and `checkConsistency` skips destroyed segments. A single list-then-delete missed
+    // it entirely.
     //
-    // Simulated at the driver, not by racing a real daemon: a `put` that lands during the sweep is exactly what a
-    // late staging is, and it keeps the test deterministic.
-    const w = world();
+    // Simulated at the driver, not by racing a real load: a `put` that lands during the sweep is exactly what a
+    // late writer is, and it keeps the test deterministic.
+    const w = await world();
     await seed(w, [1, 2, 3]);
 
     let staged = false;
     const cold = hook(w.cold, 'delete', async (...args: never[]) => {
       await w.cold.delete(args[0] as never);
       if (!staged) {
-        staged = true; // one late staging, as a single in-flight worker would produce
+        staged = true; // one late object, as a single in-flight writer would produce
         await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 7 }, [1, 2, 3, 500], {});
       }
     });
@@ -417,8 +372,8 @@ describe('dropSegment vs a concurrent writer', () => {
 
   it('reports what it could not reclaim instead of implying a clean drop', async () => {
     // The residual has to be visible. `dropped: true` with a populated generationsDeleted and no reason used to
-    // be returned while an object holding the full effective set sat in the bucket.
-    const w = world();
+    // be returned while an object holding the full set sat in the bucket.
+    const w = await world();
     await seed(w, [1, 2, 3]);
     const cold = hook(w.cold, 'delete', async () => {
       throw new Error('bucket unreachable');
@@ -432,9 +387,9 @@ describe('dropSegment vs a concurrent writer', () => {
   });
 
   it('keeps the generations it did delete when only some deletes fail', async () => {
-    const w = world();
-    await seed(w, [1], undefined, 0);
-    await seed(w, [2], undefined, 1);
+    const w = await world();
+    await seed(w, [1]);
+    await seed(w, [2]);
     const cold = hook(w.cold, 'delete', async (...args: never[]) => {
       const key = args[0] as unknown as { generation: number };
       if (key.generation === 1) throw new Error('this one only');
@@ -447,75 +402,61 @@ describe('dropSegment vs a concurrent writer', () => {
     expect(result.generationsRemaining).toEqual([1]);
   });
 
-  it('a Warm write landing after the drop does not make the segment answer true forever', async () => {
-    // The write path is deliberately uncoupled from the tombstone, so a late write DOES land. What made it a bug
-    // rather than a scope note is that the row was IMMORTAL: compaction returns `destroyed` before it can fold or
-    // purge it, so nothing ever reaped it and a FRESH reader (no cache involved) reported the dropped segment as
-    // non-empty forever. A second Warm pass after the tombstone converges for anything in flight at drop time.
-    const w = world();
-    await seed(w, [1]);
-
-    let wrote = false;
-    const registry = hook(w.registry, 'compareAndSwap', async (...args: never[]) => {
-      const [ref, expected, patch] = args as unknown as [SegmentRef, string, { status?: string }];
-      const out = await w.registry.compareAndSwap(ref, expected, patch as never);
-      if (patch.status === 'destroyed' && !wrote) {
-        wrote = true; // a writer that had not yet noticed, landing just after the tombstone
-        await handle(w).add(999);
-      }
-      return out;
-    });
-
-    const result = await dropSegment(SEG, { ...w.deps, registry }, CONFIRM);
-
-    expect(result.warmRowsDeleted).toBeGreaterThan(0);
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(999)).resolves.toBe(
-      false,
-    );
-  });
-
-  it('re-dropping a tombstoned segment clears warm rows that landed after the tombstone', async () => {
-    // So a second drop is NOT a no-op, and must not be — it is the recovery path for a writer that kept going.
-    const w = world();
+  it('the tombstone fences every writer: a load and a bare publish onto it are refused', async () => {
+    // The write path is coupled to the tombstone at exactly one point — the publish — and that point is what
+    // makes the registry-first ordering safe: whatever a late writer finishes, it can never become current, so
+    // a dropped segment cannot resurrect.
+    const w = await world();
     await seed(w, [1]);
     await dropSegment(SEG, w.deps, CONFIRM);
-    await handle(w).add(600); // a late write against a destroyed segment
+
+    // A load with the registry wired refuses before writing anything.
+    await expect(
+      bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: w.registry,
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(await generationsInCold(w)).toEqual([]);
+    // A writer that already had its object down (written before it saw the tombstone) is refused at the publish.
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 2 }, [999], {});
+    await expect(publishGeneration(w.registry, { ...SEG, generation: 2 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    const row = (await w.registry.get(SEG))!;
+    expect(row.status).toBe('destroyed');
+    expect(row.currentGen).toBe(0); // the pointer never moved onto the late object
+    await expect(
+      fresh(w).segment(SEG.segment, { namespace: SEG.namespace }).has(999),
+    ).resolves.toBe(false);
+  });
+
+  it('re-dropping a tombstoned segment collects an object a fenced writer left behind', async () => {
+    // So a second drop is NOT a no-op, and must not be — it is the recovery path for a writer that kept going.
+    const w = await world();
+    await seed(w, [1]);
+    await dropSegment(SEG, w.deps, CONFIRM);
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 3 }, [600], {}); // late object, unpublishable
 
     const again = await dropSegment(SEG, w.deps, CONFIRM);
 
     expect(again.reason).toBe('already');
-    expect(again.warmRowsDeleted).toBeGreaterThan(0);
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(600)).resolves.toBe(
-      false,
-    );
+    expect(again.generationsDeleted).toEqual([3]);
+    expect(await generationsInCold(w)).toEqual([]);
   });
 
-  it('counts every warm row it deleted, even when the tombstone CAS has to retry', async () => {
-    // The tally used to be declared INSIDE the CAS retry loop, so only the last attempt's count survived: one
-    // benign concurrent registry write made attempt 1 conflict, attempt 2 re-listed an empty Warm set, and the
-    // call reported 0 rows deleted after physically deleting all of them. Under-attesting on an erasure record.
-    const w = world();
+  it('retries the tombstone CAS under contention and still sweeps Cold', async () => {
+    // A benign concurrent registry write (a policy update) makes the first CAS conflict; the shred re-reads and
+    // converges, and the sweep that follows must not be skipped or under-report because of the retry.
+    const w = await world();
     await seed(w, [1]);
-    await handle(w).addMany([500, 501, 502, 70_000]);
-    const realCount = await warmRowCount(w);
-    expect(realCount).toBeGreaterThan(0);
+    await seed(w, [2, 70_000]);
 
     let conflicted = false;
     const registry = hook(w.registry, 'compareAndSwap', async (...args: never[]) => {
       const [ref, expected, patch] = args as unknown as [SegmentRef, string, { status?: string }];
       if (!conflicted && patch.status === 'destroyed') {
         conflicted = true;
-        throw new WriteConflictError('a lease acquisition advanced the row');
+        throw new WriteConflictError('a policy write advanced the row');
       }
       return w.registry.compareAndSwap(ref, expected, patch as never);
     });
@@ -524,30 +465,12 @@ describe('dropSegment vs a concurrent writer', () => {
 
     expect(conflicted).toBe(true);
     expect(result.dropped).toBe(true);
-    expect(result.warmRowsDeleted).toBe(realCount);
-  });
-
-  it('refuses to report a drop it could not finish — warm rows contended on every pass', async () => {
-    // Strictly worse than the destroySegment bug this mirrors: swallowing the conflict would leave the cleartext
-    // Warm rows readable AND delete the Cold bytes AND attest success. It must throw with nothing destroyed.
-    const w = world();
-    await seed(w, [1]);
-    await handle(w).add(500);
-    const warm = hook(w.warm, 'deleteConditional', async () => {
-      throw new WriteConflictError('row rewritten mid-erase');
-    });
-
-    await expect(dropSegment(SEG, { ...w.deps, warm }, CONFIRM)).rejects.toBeInstanceOf(
-      WriteConflictError,
-    );
-
-    expect((await w.registry.get(SEG))?.status).toBe('active'); // NOT tombstoned
-    expect(await generationsInCold(w)).toEqual([0]); // bytes NOT deleted — the drop is retryable
-    await expect(handle(w).has(500)).resolves.toBe(true);
+    expect(result.generationsDeleted).toEqual([0, 1]);
+    expect((await w.registry.get(SEG))?.status).toBe('destroyed');
   });
 
   it('two concurrent drops converge — one drops, one reports already', async () => {
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2]);
     const [a, b] = await Promise.all([
       dropSegment(SEG, w.deps, CONFIRM),
@@ -561,36 +484,10 @@ describe('dropSegment vs a concurrent writer', () => {
 });
 
 describe('dropSegment on a segment with no registry row', () => {
-  it('clears the cleartext Warm rows of an all-warm segment', async () => {
-    // A never-compacted segment has NO registry row — the write path never creates one. Its rows are the
-    // cleartext ones, so this is the case where a "nothing here" answer must still do work.
-    //
-    // This test originally asserted `reason === 'absent'`, which codified the defect rather than the contract: it
-    // proved the rows were deleted while accepting a result that said nothing happened. See the accumulator
-    // describe below for why that combination was actively misleading to a caller.
-    const w = world();
-    await handle(w).addMany([500, 501, 70_000]);
-    expect(await w.registry.get(SEG)).toBeNull();
-
-    const result = await dropSegment(SEG, w.deps, CONFIRM);
-
-    expect(result.reason).toBe('warm-only');
-    expect(result.dropped).toBe(true);
-    expect(result.warmRowsDeleted).toBeGreaterThan(0);
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(500)).resolves.toBe(
-      false,
-    );
-  });
-
   it('leaves NO registry row behind when the segment truly does not exist', async () => {
     // The typo case the facade docs warn about. Claiming the identity here would be registry litter — and worse,
     // a `destroyed` row would refuse a later legitimate load of that name forever.
-    const w = world();
+    const w = await world();
     const result = await dropSegment(SEG, w.deps, CONFIRM);
     expect(result.reason).toBe('absent');
     expect(result.dropped).toBe(false);
@@ -603,7 +500,7 @@ describe('dropSegment on a segment with no registry row', () => {
     // no tombstone at all — skipping the one step that makes the ordering safe while still running the
     // destructive one. Two measured outcomes: a dangling `currentGen: 0, status: 'active'` pointer at no object
     // (the forbidden `missing-cold-generation` state), or a full resurrection when the racing writer published.
-    const w = world();
+    const w = await world();
     await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {}); // no registry → no row
     expect(await w.registry.get(SEG)).toBeNull();
     expect(await generationsInCold(w)).toEqual([0]);
@@ -620,13 +517,11 @@ describe('dropSegment on a segment with no registry row', () => {
       bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3], {
         registry: w.registry,
       }),
-    ).rejects.toThrow();
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    await expect(fresh.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(publishGeneration(w.registry, { ...SEG, generation: 0 })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(fresh(w).segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
       false,
     );
   });
@@ -636,11 +531,14 @@ describe('dropSegment result fields', () => {
   it('reports generations ascending even when Cold lists them out of order', async () => {
     // Every other assertion in this file is `toHaveLength` — a count, never the contents or the order. So the
     // documented "ascending" was unproven, and the sort was unreachable by test because the fixture seeded in
-    // order anyway.
-    const w = world();
-    await seed(w, [1], undefined, 2);
-    await seed(w, [2], undefined, 0);
-    await seed(w, [3], undefined, 1);
+    // order anyway. Written with explicit generation numbers: the pointer lands on 2 and the later 0/1 publishes
+    // are forward-only no-ops, so the bucket holds three objects listed in write order 2, 0, 1.
+    const w = await world();
+    for (const generation of [2, 0, 1]) {
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation }, [generation + 1], {
+        registry: w.registry,
+      });
+    }
 
     const preview = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
     expect(preview.wouldDelete).toEqual([0, 1, 2]);
@@ -656,8 +554,8 @@ describe('dropSegment result fields', () => {
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
     });
-    const w = world(keystore);
-    await seed(w, [1, 2], keystore);
+    const w = await world(keystore);
+    await seed(w, [1, 2]);
     expect((await w.registry.get(SEG))?.wrappedDeks).toHaveLength(1);
 
     await dropSegment(SEG, w.deps, CONFIRM);
@@ -667,26 +565,24 @@ describe('dropSegment result fields', () => {
     expect(row?.wrappedDeks).toBeUndefined();
   });
 
-  it('dryRun distinguishes absent from already, and previews both irreversible facts', async () => {
+  it('dryRun distinguishes absent from already, and previews the irreversible half', async () => {
     // `reason` on a dry run was entirely uncovered — both branches. A retention sweep dry-running yesterday's
     // already-collected bucket is the primary use case, and `reason` is how it tells "will delete" from "gone".
     const keystore = new InProcessKeystore({
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
     });
-    const w = world(keystore);
+    const w = await world(keystore);
 
     const before = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
     expect(before.reason).toBe('absent');
     expect(before.wouldDelete).toEqual([]);
     expect(before.wouldCryptoShred).toBe(false);
 
-    await seed(w, [1, 2], keystore);
-    await handle(w).addMany([500, 501]);
+    await seed(w, [1, 2]);
     const armed = await dropSegment(SEG, w.deps, { ...CONFIRM, dryRun: true });
     expect(armed.reason).toBeUndefined();
     expect(armed.wouldDelete).toEqual([0]);
-    expect(armed.wouldDeleteWarmRows).toBeGreaterThan(0); // cleartext deltas, worth previewing
     expect(armed.wouldCryptoShred).toBe(true); // irreversible EVERYWHERE, backups included
 
     await dropSegment(SEG, w.deps, CONFIRM);
@@ -705,8 +601,8 @@ describe('dropSegment result fields', () => {
       keys: { k1: randomBytes(32) },
       activeKeyId: 'k1',
     });
-    const w = world(keystore);
-    await seed(w, [1, 2], keystore);
+    const w = await world(keystore);
+    await seed(w, [1, 2]);
 
     const events: Array<{ kind: string }> = [];
     const cold = hook(w.cold, 'list', () => {
@@ -731,20 +627,15 @@ describe('dropSegment result fields', () => {
 
 describe('store.dropSegment (facade)', () => {
   it('needs no drivers passed — the store already holds them', async () => {
-    // The point of the facade wrapper: a user should not re-wire registry/warm/cold to delete a segment.
-    const cold = new MemoryColdDriver();
-    const warm = new MemoryWarmDriver();
-    const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
+    // The point of the facade wrapper: a user should not re-wire registry/cold to delete a segment.
+    const w = await world();
+    await seed(w, [1, 2, 3]);
 
-    const store = new CloudRoaring({ warm, cold, registry, retry: false });
-    const result = await store.dropSegment(SEG, CONFIRM);
+    const result = await w.store.dropSegment(SEG, CONFIRM);
 
     expect(result.dropped).toBe(true);
     expect(result.generationsDeleted).toHaveLength(1);
-    await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
-      false,
-    );
+    await expect(handle(w).has(1)).resolves.toBe(false);
   });
 
   it('forwards the audit sink — an encrypted drop still emits the receipt', async () => {
@@ -752,14 +643,11 @@ describe('store.dropSegment (facade)', () => {
     // `segment.erase` is the documented compliance receipt, so a facade that silently dropped the sink would have
     // passed the whole suite.
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-    const cold = new MemoryColdDriver();
-    const warm = new MemoryWarmDriver();
-    const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2], { registry, keystore });
+    const w = await world(keystore);
+    await seed(w, [1, 2]);
 
-    const store = new CloudRoaring({ warm, cold, registry, keystore, retry: false });
     const events: Array<{ kind: string }> = [];
-    const result = await store.dropSegment(SEG, {
+    const result = await w.store.dropSegment(SEG, {
       ...CONFIRM,
       audit: { onEvent: (e) => events.push(e) },
     });
@@ -769,12 +657,10 @@ describe('store.dropSegment (facade)', () => {
   });
 
   it('throws UnsupportedError when the store has no raw cold driver', async () => {
-    // The docstring promises this, and nothing asserted it. Note the irony that this file's own `world()` helper
-    // builds exactly such a store — which is why every test above uses the free function.
+    // The docstring promises this, and nothing asserted it.
     const cold = new MemoryColdDriver();
     const registry = new MemoryRegistryDriver();
     const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
       cold: new CrbmColdChunkSource(cold, { registry }),
       retry: false,
     });
@@ -784,18 +670,13 @@ describe('store.dropSegment (facade)', () => {
   });
 
   it('dry-runs through the facade too', async () => {
-    const cold = new MemoryColdDriver();
-    const warm = new MemoryWarmDriver();
-    const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1], { registry });
+    const w = await world();
+    await seed(w, [1]);
 
-    const store = new CloudRoaring({ warm, cold, registry, retry: false });
-    const preview = await store.dropSegment(SEG, { ...CONFIRM, dryRun: true });
+    const preview = await w.store.dropSegment(SEG, { ...CONFIRM, dryRun: true });
 
     expect(preview.wouldDelete).toHaveLength(1);
-    await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).has(1)).resolves.toBe(
-      true,
-    );
+    await expect(handle(w).has(1)).resolves.toBe(true);
   });
 });
 
@@ -805,14 +686,14 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
     // generation at all, so nothing is or can become pinned — and nothing else would ever collect these: the
     // reconcile path that deletes generations above `currentGen` returns early on a destroyed row. Without this,
     // a residual left by a drop whose sweep failed is billed forever.
-    const w = world();
-    await seed(w, [1], undefined, 0);
+    const w = await world();
+    await seed(w, [1]);
     const cold = hook(w.cold, 'delete', async () => {
       throw new Error('bucket unreachable');
     });
     const failed = await dropSegment(SEG, { ...w.deps, cold }, CONFIRM);
     expect(failed.generationsRemaining).toEqual([0]); // tombstoned, bytes still there
-    // A late staging lands on top of the tombstone, exactly as an in-flight compaction would.
+    // A late object lands on top of the tombstone, exactly as a load already in flight would leave.
     await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 5 }, [1, 2], {});
     expect(await generationsInCold(w)).toEqual([0, 5]);
 
@@ -824,10 +705,10 @@ describe('gcOrphanGenerations on a destroyed segment', () => {
 
   it('still honours the grace window on a live segment', async () => {
     // The negative control: the destroyed branch must not have widened the live one.
-    const w = world();
-    await seed(w, [1], undefined, 0);
-    await seed(w, [2], undefined, 1);
-    await seed(w, [3], undefined, 2); // currentGen = 2
+    const w = await world();
+    await seed(w, [1]);
+    await seed(w, [2]);
+    await seed(w, [3]); // currentGen = 2
     const collected = await gcOrphanGenerations(SEG, w.deps, { keep: 1 });
     expect(collected).toEqual([0]); // gen 1 kept as the window, gen 2 is current
     expect(await generationsInCold(w)).toEqual([1, 2]);
@@ -840,7 +721,7 @@ describe('segment.dispose audit event', () => {
     // `segment.erase` is defined by four documents as proof of an irreversible crypto-shred, and reusing it for an
     // object delete would make a compliance dashboard over-attest. Silence was the honest interim state; a
     // separate kind is the actual fix.
-    const w = world();
+    const w = await world();
     await seed(w, [1, 2, 3]);
     const events: Array<{ kind: string; generationsDeleted?: number }> = [];
 
@@ -852,8 +733,8 @@ describe('segment.dispose audit event', () => {
 
   it('an ENCRYPTED drop emits both — the shred and the reclamation each really happened', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-    const w = world(keystore);
-    await seed(w, [1, 2], keystore);
+    const w = await world(keystore);
+    await seed(w, [1, 2]);
     const events: Array<{ kind: string }> = [];
 
     const result = await dropSegment(SEG, w.deps, {
@@ -868,7 +749,7 @@ describe('segment.dispose audit event', () => {
   });
 
   it('an absent segment emits nothing at all — it disposed of nothing', async () => {
-    const w = world();
+    const w = await world();
     const events: Array<{ kind: string }> = [];
     const result = await dropSegment(SEG, w.deps, {
       ...CONFIRM,
@@ -879,7 +760,7 @@ describe('segment.dispose audit event', () => {
   });
 
   it('a dry run emits nothing — it is a preview, not a state change', async () => {
-    const w = world();
+    const w = await world();
     await seed(w, [1]);
     const events: Array<{ kind: string }> = [];
     await dropSegment(SEG, w.deps, {
@@ -888,175 +769,5 @@ describe('segment.dispose audit event', () => {
       audit: { onEvent: (e) => events.push(e) },
     });
     expect(events).toEqual([]);
-  });
-});
-
-describe('store.compact collects the generation it supersedes (#47)', () => {
-  /**
-   * Cold generations are immutable and generation-keyed, so EVERY compaction leaves its predecessor on disk.
-   * `runCompactionCycle` (the daemon) always collected them; `compactSegment` never did — so a deployment that
-   * compacted in-process without running the daemon grew its Cold footprint without bound, forever, silently.
-   * Reads stayed correct throughout, which is exactly why nothing surfaced it.
-   */
-  const wire = () => {
-    const cold = new MemoryColdDriver();
-    const warm = new MemoryWarmDriver();
-    const registry = new MemoryRegistryDriver();
-    return {
-      cold,
-      warm,
-      registry,
-      store: new CloudRoaring({ cold, warm, registry, retry: false }),
-    };
-  };
-  const gens = async (cold: MemoryColdDriver): Promise<number[]> => {
-    const out: number[] = [];
-    for await (const k of cold.list(SEG)) out.push(k.generation);
-    return out.sort((a, b) => a - b);
-  };
-
-  it('does not accumulate generations across repeated in-process compactions', async () => {
-    const w = wire();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
-      registry: w.registry,
-    });
-    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
-
-    for (let round = 0; round < 4; round++) {
-      await seg.add(1000 + round);
-      await w.store.compact(SEG, { owner: 'test' });
-    }
-
-    // Without the GC this would be [0,1,2,3,4]: five objects, four of them dead.
-    // The `keep: 1` grace window is deliberate — a reader that resolved the just-superseded generation a moment
-    // ago must not have its object yanked away, so exactly one superseded generation survives.
-    const present = await gens(w.cold);
-    expect(present.length).toBeLessThanOrEqual(2);
-    // ...and the data is intact, which is the thing a GC must never break.
-    await expect(seg.has(1)).resolves.toBe(true);
-    await expect(seg.has(1003)).resolves.toBe(true);
-    await expect(seg.count()).resolves.toBe(7);
-  });
-
-  it('leaves the current generation alone when there is nothing superseded yet', async () => {
-    const w = wire();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
-    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
-    await seg.add(2);
-    await w.store.compact(SEG, { owner: 'test' });
-    // gen 1 is current, gen 0 is the single kept grace window — nothing has been lost.
-    expect(await gens(w.cold)).toEqual([0, 1]);
-    await expect(seg.count()).resolves.toBe(2);
-  });
-
-  it('a compaction that commits is not reported as failed when GC cannot run', async () => {
-    // GC is housekeeping. A committed compaction must not surface as an error because cleanup failed — the next
-    // cycle collects what this one missed.
-    const w = wire();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
-    const seg = w.store.segment(SEG.segment, { namespace: SEG.namespace });
-    await seg.add(2);
-    await w.store.compact(SEG, { owner: 'test' }); // gen 1, so gen 0 becomes collectable
-    await seg.add(3);
-
-    let deletes = 0;
-    const brittle = hook(w.cold, 'delete', async () => {
-      deletes += 1;
-      throw new Error('DELETE denied');
-    });
-    const store = new CloudRoaring({
-      cold: brittle,
-      warm: w.warm,
-      registry: w.registry,
-      retry: false,
-    });
-
-    const result = await store.compact(SEG, { owner: 'test' });
-
-    expect(result.compacted).toBe(true); // the commit stands
-    expect(deletes).toBeGreaterThan(0); // GC was attempted
-    await expect(store.segment(SEG.segment, { namespace: SEG.namespace }).count()).resolves.toBe(3);
-  });
-});
-
-/**
- * THE ACCUMULATOR LIFECYCLE — a segment used as a pure runtime set.
- *
- * Created by writing to it, never bulk-loaded, never compacted: no registry row, no Cold objects, everything in
- * Warm. It is a documented, supported way to use the library, and it had **no coverage in this file at all** —
- * every other test seeds a Cold generation first. That gap is why `dropSegment` reported a successful retirement
- * of an accumulator as `dropped: false, reason: 'absent'` with a non-zero `warmRowsDeleted`, which the first real
- * consumer hit immediately: a retention cron written as `if (!res.dropped) alert()` fires on every success.
- */
-describe('dropSegment on a pure accumulator (warm-only, never compacted)', () => {
-  it('reports a successful retirement, not "absent"', async () => {
-    const w = world();
-    await handle(w).addMany([101, 202, 70_000]); // a wave — no seed, no compaction
-    expect(await w.registry.get(SEG)).toBeNull(); // the shape under test: no registry row
-    expect(await generationsInCold(w)).toEqual([]); // ...and no Cold objects
-
-    const res = await dropSegment(SEG, w.deps, CONFIRM);
-
-    expect(res.dropped).toBe(true); // the data IS gone — say so
-    expect(res.reason).toBe('warm-only'); // ...and say which route got there
-    expect(res.warmRowsDeleted).toBeGreaterThan(0);
-    expect(res.generationsDeleted).toEqual([]);
-    expect(res.generationsRemaining).toEqual([]);
-  });
-
-  it('really is empty afterwards, to a reader that never cached it', async () => {
-    const w = world();
-    await handle(w).addMany([101, 202, 70_000]);
-    await dropSegment(SEG, w.deps, CONFIRM);
-
-    const fresh = new CloudRoaring({
-      warm: w.warm,
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
-      retry: false,
-    });
-    const seg = fresh.segment(SEG.segment, { namespace: SEG.namespace });
-    await expect(seg.count()).resolves.toBe(0);
-    await expect(seg.has(101)).resolves.toBe(false);
-  });
-
-  it('leaves no registry row behind — a retired accumulator must not become litter', async () => {
-    // Tombstoning every retired daily bucket would accumulate a `destroyed` row per day forever, and would
-    // refuse that exact name if it were ever legitimately reused. Deleting the Warm rows is the whole retirement.
-    const w = world();
-    await handle(w).addMany([1]);
-    await dropSegment(SEG, w.deps, CONFIRM);
-    expect(await w.registry.get(SEG)).toBeNull();
-  });
-
-  it('still says "absent" when there was genuinely nothing — the case worth alerting on', async () => {
-    // The negative control, and the reason `dropped` cannot simply be hardcoded true. A mistyped name or an
-    // omitted namespace addresses a different segment; that must stay loudly distinguishable from success.
-    const w = world();
-    const res = await dropSegment(SEG, w.deps, CONFIRM);
-    expect(res.dropped).toBe(false);
-    expect(res.reason).toBe('absent');
-    expect(res.warmRowsDeleted).toBe(0);
-  });
-
-  it('the whole wave lifecycle: claim, dedup a retry, retire', async () => {
-    // What the accumulator pattern actually looks like end to end, with claimMany rather than has+add so the
-    // dedup is exactly-once rather than racy.
-    const w = world();
-    const seg = handle(w);
-
-    const wave = await seg.claimMany([1, 2, 3]);
-    expect(wave.sort((a, b) => a - b)).toEqual([1, 2, 3]);
-
-    const retry = await seg.claimMany([2, 3, 4, 5]); // overlapping retry
-    expect(retry.sort((a, b) => a - b)).toEqual([4, 5]); // 2 and 3 suppressed
-
-    await expect(seg.count()).resolves.toBe(5);
-
-    const res = await dropSegment(SEG, w.deps, CONFIRM);
-    expect({ dropped: res.dropped, reason: res.reason }).toEqual({
-      dropped: true,
-      reason: 'warm-only',
-    });
-    await expect(seg.count()).resolves.toBe(0);
   });
 });

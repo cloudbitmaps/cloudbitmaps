@@ -8,8 +8,8 @@
  * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./dynamodb`
  * subpaths — and the builder inlines `core/errors` into each. A driver in a subpath bundle therefore throws a
  * *different* class object than the one the core engine/retry code would `instanceof`-check, so `instanceof`
- * silently returns false across that boundary in the published CJS package (defeating OCC/transient retry and
- * compaction race-handling). These `Symbol.for` brands are identity-stable across bundles/realms; classify
+ * silently returns false across that boundary in the published CJS package (defeating transient retry and the
+ * publish path's conflict handling). These `Symbol.for` brands are identity-stable across bundles/realms; classify
  * errors with the exported predicates below (never `instanceof`) anywhere an error may cross the boundary.
  */
 const ERROR_BRAND: unique symbol = Symbol.for('cloud-roaring.error');
@@ -47,7 +47,7 @@ export class NotFoundError extends CloudRoaringError {}
  * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version, an
  * encrypted file before the crypto path exists) — distinct from `IntegrityError` (corruption); and (2)
  * **store configuration** — an operation this store's wiring doesn't support (e.g. a lifecycle helper like
- * `compact`/`eraseSubject` called on a store built without a raw cold driver + registry). Raised at
+ * `eraseSubject`/`retireExpired` called on a store built without a raw cold driver + registry). Raised at
  * operation time, before any mutation.
  */
 export class UnsupportedError extends CloudRoaringError {}

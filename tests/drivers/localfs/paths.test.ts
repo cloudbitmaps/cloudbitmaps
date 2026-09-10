@@ -1,4 +1,4 @@
-import { coldObjectFilename, parseChunkRow, parseGeneration } from '@/drivers/localfs/paths';
+import { coldObjectFilename, parseGeneration } from '@/drivers/localfs/paths';
 
 describe('parseGeneration', () => {
   it('parses the canonical <segment>.<gen>.crbm filename', () => {
@@ -25,22 +25,5 @@ describe('parseGeneration', () => {
     for (const gen of [0, 1, 7, 65_535, 1_000_000]) {
       expect(parseGeneration('seg', coldObjectFilename('seg', gen))).toBe(gen);
     }
-  });
-});
-
-describe('parseChunkRow', () => {
-  it('parses canonical <chunkKey>.row filenames in range', () => {
-    expect(parseChunkRow('0.row')).toBe(0);
-    expect(parseChunkRow('7.row')).toBe(7);
-    expect(parseChunkRow('65535.row')).toBe(65_535);
-  });
-
-  it('rejects non-canonical, out-of-range, and foreign names', () => {
-    expect(parseChunkRow('00007.row')).toBeNull(); // leading zero spoof
-    expect(parseChunkRow('65536.row')).toBeNull(); // past u16 range
-    expect(parseChunkRow('7.row.tmp')).toBeNull(); // orphan temp
-    expect(parseChunkRow('x.row')).toBeNull(); // non-numeric
-    expect(parseChunkRow('7')).toBeNull(); // no suffix
-    expect(parseChunkRow('README.txt')).toBeNull(); // foreign
   });
 });

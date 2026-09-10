@@ -18,7 +18,7 @@ const TAG_BYTES = 16; // GCM tag
 
 /** AES-256-GCM AEAD bound to one 32-byte key. A fresh CSPRNG 96-bit nonce per `seal`; `aad` is authenticated,
  * never stored. Nonce-reuse safety: the random-96-bit birthday bound is ~q²/2⁹⁷, negligible below ~2³² seals
- * under one key. A per-segment DEK is **reused across all generations** (compaction re-encrypts under it), so
+ * under one key. A per-segment DEK is **reused across all generations** (every load and rewrite encrypts under it), so
  * seal count is cumulative over the segment's life — a segment approaching ~2³² lifetime chunk-seals should be
  * re-seeded (a fresh segment ⇒ fresh DEK). Far beyond any realistic workload; noted for completeness. */
 export class NodeAead implements Aead {

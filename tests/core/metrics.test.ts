@@ -1,4 +1,10 @@
-import { CountingMetricsSink, NOOP_METRICS, type IMetricsSink, type MetricEvent } from '@/index';
+import {
+  CountingMetricsSink,
+  NOOP_METRICS,
+  type IMetricsSink,
+  type MetricEvent,
+  type MetricOpName,
+} from '@/index';
 import { safeMetrics } from '@/core/metrics';
 
 describe('CountingMetricsSink', () => {
@@ -10,27 +16,49 @@ describe('CountingMetricsSink', () => {
       { kind: 'cache', hit: true },
       { kind: 'cache', hit: false },
       { kind: 'cache', hit: false },
-      { kind: 'warm.read', segment: 's', bytes: 10 },
-      { kind: 'warm.write', segment: 's', bytes: 20 },
-      { kind: 'retry', reason: 'occ', attempt: 1, delayMs: 5 },
       { kind: 'retry', reason: 'transient', attempt: 2, delayMs: 8 },
       { kind: 'retry', reason: 'transient', attempt: 3, delayMs: 8 },
       { kind: 'intersect', operands: 2, fetchedChunks: 3, skippedChunks: 7 },
-      { kind: 'op', name: 'add', ms: 2 },
-      { kind: 'op', name: 'add', ms: 4 },
+      { kind: 'intersect', op: 'union', operands: 3, fetchedChunks: 4, skippedChunks: 0 },
+      { kind: 'op', name: 'has', ms: 2 },
+      { kind: 'op', name: 'has', ms: 4 },
       { kind: 'op', name: 'count', ms: 9 },
+      { kind: 'op', name: 'intersectInto', ms: 11 },
     ];
     for (const e of events) c.onEvent(e);
 
     const s = c.snapshot();
     expect(s.cold).toEqual({ gets: 2, bytes: 150, totalMs: 8 });
     expect(s.cache).toEqual({ hits: 1, misses: 2 });
-    expect(s.warm).toEqual({ reads: 1, readBytes: 10, writes: 1, writeBytes: 20 });
-    expect(s.retries).toEqual({ occ: 1, transient: 2 });
-    expect(s.intersect).toEqual({ calls: 1, fetchedChunks: 3, skippedChunks: 7 });
-    expect(s.ops.add).toEqual({ count: 2, totalMs: 6 });
+    expect(s.retries).toEqual({ transient: 2 });
+    expect(s.intersect).toEqual({ calls: 2, fetchedChunks: 7, skippedChunks: 7 });
+    expect(s.ops.has).toEqual({ count: 2, totalMs: 6 });
     expect(s.ops.count).toEqual({ count: 1, totalMs: 9 });
-    expect(s.ops.has).toEqual({ count: 0, totalMs: 0 }); // untouched ops are present and zero
+    expect(s.ops.intersectInto).toEqual({ count: 1, totalMs: 11 });
+    expect(s.ops.unionInto).toEqual({ count: 0, totalMs: 0 }); // untouched ops are present and zero
+    expect(s.ops.andNotInto).toEqual({ count: 0, totalMs: 0 });
+  });
+
+  it('the snapshot has exactly the loaded-store shape — no warm/compaction tallies, transient retries only', () => {
+    const s = new CountingMetricsSink().snapshot();
+    expect(Object.keys(s).sort()).toEqual(['cache', 'cold', 'intersect', 'ops', 'retries']);
+    expect(Object.keys(s.retries)).toEqual(['transient']);
+    expect(Object.keys(s.ops).sort()).toEqual([
+      'andNotInto',
+      'count',
+      'has',
+      'intersectInto',
+      'unionInto',
+    ]);
+  });
+
+  it('an op name outside the known set (a JS caller) is counted nowhere rather than crashing the sink', () => {
+    const c = new CountingMetricsSink();
+    expect(() => c.onEvent({ kind: 'op', name: 'add' as MetricOpName, ms: 1 })).not.toThrow();
+    expect(() => c.onEvent({ kind: 'op', name: '__proto__' as MetricOpName, ms: 1 })).not.toThrow();
+    const s = c.snapshot();
+    expect(Object.values(s.ops).every((o) => o.count === 0)).toBe(true);
+    expect(s.ops).not.toHaveProperty('add');
   });
 
   it('snapshot() returns an independent copy (later events do not mutate it)', () => {
@@ -44,12 +72,14 @@ describe('CountingMetricsSink', () => {
 
   it('reset() zeroes all counters', () => {
     const c = new CountingMetricsSink();
-    c.onEvent({ kind: 'warm.write', segment: 's', bytes: 5 });
-    c.onEvent({ kind: 'op', name: 'add', ms: 1 });
+    c.onEvent({ kind: 'cold.get', segment: 's', bytes: 5, ms: 1 });
+    c.onEvent({ kind: 'retry', reason: 'transient', attempt: 1, delayMs: 1 });
+    c.onEvent({ kind: 'op', name: 'has', ms: 1 });
     c.reset();
     const s = c.snapshot();
-    expect(s.warm.writes).toBe(0);
-    expect(s.ops.add).toEqual({ count: 0, totalMs: 0 });
+    expect(s.cold).toEqual({ gets: 0, bytes: 0, totalMs: 0 });
+    expect(s.retries).toEqual({ transient: 0 });
+    expect(s.ops.has).toEqual({ count: 0, totalMs: 0 });
   });
 });
 

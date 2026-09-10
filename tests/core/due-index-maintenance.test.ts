@@ -7,32 +7,24 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
-  CloudRoaring,
   drainRegistry,
   dueBucket,
   dueIndexRef,
   dueNamespace,
   type SegmentRef,
 } from '@/index';
+import { loadedStore } from '../helpers/loaded';
 
 const DAY = 86_400_000;
 const T0 = 1_754_000_000_000;
 const SEG: SegmentRef = { namespace: 'active', segment: 'd-2026-08-05' };
 
-function harness() {
+async function harness() {
   let t = T0;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const registry = new MemoryRegistryDriver({ now: clock.now });
-  const store = new CloudRoaring({
-    warm: new MemoryWarmDriver(),
-    cold: new MemoryColdDriver(),
-    registry,
-    clock,
-  });
-  return { store, registry, clock, advance: (ms: number) => (t += ms) };
+  const w = await loadedStore({}, { clock });
+  return { ...w, clock, advance: (ms: number) => (t += ms) };
 }
 
 /** Every pointer currently in one bucket. */
@@ -47,7 +39,7 @@ async function pointersIn(registry: MemoryRegistryDriver, bucket: number): Promi
 
 describe('due index — maintained by the policy write path', () => {
   it('setRetention writes the pointer for the expiry day', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     const expiresAt = T0 + 30 * DAY;
 
     const res = await store.setRetention(SEG, { expiresAt });
@@ -59,7 +51,7 @@ describe('due index — maintained by the policy write path', () => {
   });
 
   it('moving an expiry moves the pointer — the old bucket is left clean', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     const first = T0 + 10 * DAY;
     const second = T0 + 40 * DAY;
 
@@ -71,7 +63,7 @@ describe('due index — maintained by the policy write path', () => {
   });
 
   it('two writes inside the same day do not duplicate the pointer', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     const bucket = dueBucket(T0 + 10 * DAY);
 
     await store.setRetention(SEG, { expiresAt: T0 + 10 * DAY });
@@ -85,7 +77,7 @@ describe('due index — maintained by the policy write path', () => {
   });
 
   it('clearRetention removes the pointer', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     const expiresAt = T0 + 10 * DAY;
     await store.setRetention(SEG, { expiresAt });
 
@@ -97,8 +89,8 @@ describe('due index — maintained by the policy write path', () => {
   it('pointers are invisible to every unscoped fleet enumeration', async () => {
     // The exact leak this caused when first wired: the retention sweep's own `scanned` count jumped from 4 to 7
     // because the pointers were being counted as segments. A reserved family has to be declared in ONE place.
-    const { store, registry } = harness();
-    await store.segment(SEG.segment, { namespace: SEG.namespace }).addMany([1, 2, 3]);
+    const { store, registry, load } = await harness();
+    await load(SEG, [1, 2, 3]);
     await store.setRetention(SEG, { expiresAt: T0 + 10 * DAY });
 
     const fleet = await drainRegistry(registry, { maxScanSegments: 1000, op: 'test' });
@@ -109,9 +101,9 @@ describe('due index — maintained by the policy write path', () => {
 
 describe('due index — the drift directions that make it safe', () => {
   it('a pointer left behind cannot retire anything — the live row is re-read', async () => {
-    const { store, registry } = harness();
+    const { store, registry, load } = await harness();
     const expiresAt = T0 + 10 * DAY;
-    await store.segment(SEG.segment, { namespace: SEG.namespace }).addMany([1, 2, 3]);
+    await load(SEG, [1, 2, 3]);
     await store.setRetention(SEG, { expiresAt });
 
     // Simulate the pointer surviving a policy change it should not have: clear the policy, then put the
@@ -126,9 +118,9 @@ describe('due index — the drift directions that make it safe', () => {
   });
 
   it('a missing pointer cannot lose data — the full scan still finds the policy', async () => {
-    const { store, registry } = harness();
+    const { store, registry, load } = await harness();
     const expiresAt = T0 + 10 * DAY;
-    await store.segment(SEG.segment, { namespace: SEG.namespace }).addMany([1, 2, 3]);
+    await load(SEG, [1, 2, 3]);
     await store.setRetention(SEG, { expiresAt });
 
     // Delete the pointer, leaving the policy in place — the state of a segment whose policy was written before
@@ -143,7 +135,7 @@ describe('due index — the drift directions that make it safe', () => {
   });
 
   it('an unindexable ref still gets its policy, and reports that it was not indexed', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     // Encodes to more than the 256-character name limit, so there is no single row name that can hold it.
     const huge: SegmentRef = { namespace: 'n'.repeat(200), segment: 's'.repeat(200) };
     const expiresAt = T0 + 10 * DAY;
@@ -159,7 +151,7 @@ describe('due index — the drift directions that make it safe', () => {
   });
 
   it('a pointer write failure does not fail the policy write', async () => {
-    const { store, registry } = harness();
+    const { store, registry } = await harness();
     const original = registry.create.bind(registry);
     let failIndexWrites = false;
     registry.create = async (ref, record) => {

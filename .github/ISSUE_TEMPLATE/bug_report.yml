@@ -36,18 +36,16 @@ body:
     id: drivers
     attributes:
       label: Storage drivers in play
-      description: Which tier drivers were wired up. Pick every one involved.
+      description: Which drivers were wired up — the cold object store, and the registry if you wired one. Pick every one involved.
       multiple: true
       options:
-        - Cold — S3
+        - Cold — S3 / S3-compatible
         - Cold — GCS
         - Cold — Azure Blob
-        - Warm — DynamoDB
-        - Warm — PostgreSQL
-        - Warm — MySQL / MariaDB
-        - Warm — Redis
-        - Warm — MongoDB
-        - Warm — Cassandra / ScyllaDB
+        - Cold — local filesystem
+        - Registry — S3
+        - Registry — DynamoDB
+        - Registry — local filesystem
         - In-memory / no cloud backend
     validations:
       required: false

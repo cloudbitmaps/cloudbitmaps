@@ -1,41 +1,48 @@
 /*
- * Soak / endurance harness (test-strategy T1).
+ * Soak / endurance harness (test-strategy T1) — the LOADED store under sustained mixed load.
  *
- * G4 proved the memory bound as a *snapshot* (read a fleet once → flat live heap). Soak proves it over *time*:
- * a store under **sustained mixed load** — continuous writes (grow the Warm delta), reads across the population,
- * combines (intersect / andNot), and compaction (fold Warm→Cold) — must not leak or creep. We sample post-GC
- * live heap at intervals for the whole run and assert the last-third median hasn't grown past the first-third
- * median beyond a small band. This is the "true steady state" a long-running server actually sees.
+ * bench/scale.cjs proves the memory bound as a *snapshot* (read a whole fleet once → flat retained heap). Soak
+ * proves it over *time*: a store under **sustained mixed load** — point reads across the population (`has`,
+ * `count`, `iterate`), chunk-skipping combines (`intersect` / `union` / `andNot`, each with an `exclude` list),
+ * and periodic **re-loads** (a new `.crbm` generation published over a random segment, its superseded object then
+ * collected) — must not leak or creep. We sample post-GC live heap at intervals for the whole run and assert the
+ * last-third median hasn't grown past the first-third median beyond a small band. This is the "true steady
+ * state" a long-running server actually sees.
  *
- * COMBINES WERE MISSING, AND THE RSS GATE CLAIMED THEM ANYWAY. This harness ran writes, reads and compaction and
- * issued no `intersect` calls at all — while `.github/workflows/ci.yml` described the cgroup RSS gate built on it
- * as the definitive bound on "HOT LRU / cold-reader cache / **intersection window**". That third clause could not
- * fire: a workload with no combines cannot observe combine memory. The public site was the honest one (it
- * disclosed "the intersection window is not soak-tested" as a stated limitation), so nothing misleading shipped,
- * but the gate's own description outran it. Combines are now part of the sustained load, which is what makes the
- * creep verdict cover the crown jewel.
+ * WHY EVERY VERB IS IN THE LOOP. Each one owns a different piece of the memory story:
+ *   - `has`       fills the HOT LRU (decoded chunks) — the count-bounded cache must evict, not grow.
+ *   - `count`     parses `.crbm` indices into the cold reader cache — the count+byte-bounded cache under `SOAK_CAP`.
+ *   - `iterate`   streams a whole segment one chunk at a time — nothing may accumulate across the stream.
+ *   - combines    the crown jewel: the chunk-aligned window holds at most `concurrency × operands` payloads, and
+ *                 `exclude` operands are read only at surviving keys. The *structural* half of that bound is proven
+ *                 deterministically in `tests/core/intersect-window-bounded.test.ts`; this file covers what a unit
+ *                 test cannot — that nothing accumulates across many combines over time. A run that performed no
+ *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
+ *                 combines, and the RSS gate built on it claimed to bound the window anyway.
+ *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
+ *                 refresh (`coldGenTtlMs`) and the HOT LRU's generation-keyed entries do real work: a stale reader
+ *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with
+ *                 no re-loads cannot observe either, so zero re-loads is likewise INCONCLUSIVE.
  *
- * The *structural* half of that bound — that the window holds at most `concurrency × operands` chunk payloads
- * and does not grow with segment size — is proven deterministically and per-commit in
- * `tests/core/intersect-window-bounded.test.ts`, which counts concurrent payload reads directly. This file
- * covers the half a unit test cannot: that nothing accumulates across many combines over time.
- *
- * It also closes G4's logged follow-up — **isolated read-path footprint**: a FRESH reader-only child opens the
- * fleet (its post-soak on-disk state) and reads across all of it (count + has, so it DECODES bitmaps) with no
- * seed-phase arena contamination. Post-GC *heap* is one bound to watch (distinct from the seed-inflated in-process
- * heap G4 measured). But JS heap misses the roaring bitmaps' **native/off-heap** memory (the addon allocates its
- * containers outside V8), so the verdict now watches **both**: post-GC JS heap AND `getRoaringUsedMemory()` (the
- * addon's live native bytes, decremented on free/GC-finalize) — a run PASSes only if neither creeps.
+ * It also reports an **isolated read-path footprint**: a FRESH reader-only child opens the fleet (its post-soak
+ * on-disk state) and reads across all of it (count + has, so it DECODES bitmaps) with no seed-phase arena
+ * contamination, then runs a burst of combines. Post-GC *heap* is one bound to watch. But JS heap misses the
+ * roaring bitmaps' **native/off-heap** memory (the addon allocates its containers outside V8), so the verdict
+ * watches **both**: post-GC JS heap AND `getRoaringUsedMemory()` (the addon's live native bytes, decremented on
+ * free/GC-finalize) — a run PASSes only if neither creeps.
  *
  * SCOPE (be honest): live-native proves **no off-heap leak** — it does NOT prove **RSS is bounded**. The malloc
- * allocator can retain freed arenas, so RSS climbs (the committed runs show ~64→~106 MiB) while live heap+native
- * stay flat; the counter can't see that retention. The definitive RSS ceiling is a hard cgroup `--memory` gate,
- * which needs Linux runners and is **deferred to the public launch** (gap #12). RSS is reported here only as a
- * floor sanity-check (dominated by the fixed Node + addon floor, ~65 MiB on this arch).
+ * allocator can retain freed arenas, so RSS climbs while live heap+native stay flat; the counter can't see that
+ * retention. The definitive RSS ceiling is `scripts/rss-gate.sh`, which copies THIS file into a container and
+ * runs it under a hard cgroup `--memory` limit (swap off) in CI — an OOM kill there is exit 137. RSS is reported
+ * here only as a floor sanity-check (dominated by the fixed Node + addon floor).
  *
- * Offline + machine-dependent (wall-clock + RSS) — NOT a CI gate, same rationale as bench/run.cjs and
- * bench/scale.cjs; the deterministic claims stay gated in tests/. Run with --expose-gc. On a laptop, prevent
- * sleep (`caffeinate -dis`) so the duration isn't corrupted by suspend.
+ * LocalFs drivers, not memory ones, on purpose: the fleet must live on disk so the reader child can open the
+ * same post-soak state in a fresh process, and so a re-load is a real durable object write + pointer CAS.
+ *
+ * Offline + machine-dependent (wall-clock + RSS) — NOT a CI gate by itself (the cgroup gate is); the
+ * deterministic claims stay gated in tests/. Run with --expose-gc. On a laptop, prevent sleep (`caffeinate -dis`)
+ * so the duration isn't corrupted by suspend.
  *
  * Run: `pnpm soak` (builds first). Env knobs:
  *   SOAK_SECONDS=90   duration        SOAK_SEGMENTS=400   fleet size     SOAK_CAP=64   cold reader-cache cap
@@ -51,15 +58,13 @@ const { execFileSync } = require('node:child_process');
 const {
   CloudRoaring,
   LocalFsColdDriver,
-  LocalFsWarmDriver,
   LocalFsRegistryDriver,
   bulkLoadCrbmGeneration,
-  compactSegment,
-  findCompactable,
   gcOrphanGenerations,
+  nextGeneration,
 } = require('@cloudbitmaps/roaring');
 // The roaring addon allocates bitmap containers OUTSIDE the V8 heap, so heapUsed can't see them. This is the
-// process-wide live native byte count — the off-heap component the memory verdict must watch (auditor F2).
+// process-wide live native byte count — the off-heap component the memory verdict must watch.
 const { getRoaringUsedMemory } = require('roaring');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -71,6 +76,8 @@ const SEED = int(process.env.SOAK_SEED, 1);
 const IDS_PER_SEG = 128;
 const CHUNKS_PER_SEG = 8; // spread ids across multiple 16-bit chunks (NOT all chunkKey 0)
 const REMAINDER = 4096; // remainder within a chunk
+const RELOAD_EVERY = 5; // iterations between re-load rounds
+const RELOADS_PER_ROUND = 4; // segments re-loaded (new generation published) per round
 
 function int(v, d) {
   const n = Number(v);
@@ -106,32 +113,41 @@ function mkTmp() {
 function segName(i) {
   return `s${i}`;
 }
+function pick(rand) {
+  return (rand() * SEGMENTS) | 0;
+}
 /** A random id spread across CHUNKS_PER_SEG distinct 16-bit chunks (id = chunkKey·65536 + remainder). */
 function randId(rand) {
   return ((rand() * CHUNKS_PER_SEG) | 0) * 65536 + ((rand() * REMAINDER) | 0);
 }
+function randIds(rand) {
+  const ids = [];
+  for (let k = 0; k < IDS_PER_SEG; k++) ids.push(randId(rand));
+  return ids;
+}
+function openDrivers(dir) {
+  return {
+    cold: new LocalFsColdDriver(dir),
+    registry: new LocalFsRegistryDriver(dir, { now: () => Date.now() }),
+  };
+}
 
-/** Seed a LocalFs fleet of cold gen-0 segments; returns the drivers. */
+/** Seed a LocalFs fleet: one generation per segment, published through the registry. */
 async function seedFleet(dir) {
-  const cold = new LocalFsColdDriver(dir);
-  const warm = new LocalFsWarmDriver(dir);
-  const registry = new LocalFsRegistryDriver(dir, { now: () => Date.now() });
+  const { cold, registry } = openDrivers(dir);
   const rand = rng(SEED);
   for (let i = 0; i < SEGMENTS; i++) {
-    const ids = [];
-    for (let k = 0; k < IDS_PER_SEG; k++) ids.push(randId(rand));
-    await bulkLoadCrbmGeneration(cold, { segment: segName(i), generation: 0 }, ids, { registry });
+    await bulkLoadCrbmGeneration(cold, { segment: segName(i), generation: 1 }, randIds(rand), {
+      registry,
+    });
   }
-  return { cold, warm, registry };
+  return { cold, registry };
 }
 
 // ── the reader-only child: open the post-soak fleet, read across all of it, report isolated heap+RSS ──
 async function readerChild() {
-  const dir = process.env.SOAK_DIR;
-  const cold = new LocalFsColdDriver(dir);
-  const warm = new LocalFsWarmDriver(dir);
-  const registry = new LocalFsRegistryDriver(dir, { now: () => Date.now() });
-  const store = new CloudRoaring({ cold, warm, registry, coldReaderCacheMax: CAP });
+  const { cold, registry } = openDrivers(process.env.SOAK_DIR);
+  const store = new CloudRoaring({ cold, registry, coldReaderCacheMax: CAP });
   const rand = rng(SEED);
   // Two full passes so a bounded cache cycles eviction (each segment re-opened after eviction). Each segment is
   // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded hot cache, so
@@ -143,15 +159,17 @@ async function readerChild() {
       await seg.has(randId(rand));
     }
   }
-  // Isolated COMBINE footprint, on the same fresh process: a run of intersections across the fleet, with no
-  // seed-phase arena and no write path in the picture. This is the closest thing to the Lambda case the harness
-  // can express — a cold process whose entire job is combining two large segments — so it is the number worth
-  // reporting beside the read-path one.
+  // Isolated COMBINE footprint, on the same fresh process: a run of chunk-skipping intersections across the
+  // fleet, each with an exclude operand, with no seed-phase arena and no load in the picture. This is the closest
+  // thing to the Lambda case the harness can express — a cold process whose entire job is combining segments —
+  // so it is the number worth reporting beside the read-path one.
   let combines = 0;
   let combineIds = 0;
-  for (let i = 0; i + 1 < SEGMENTS; i += 2) {
-    const pair = store.segment(segName(i)).intersect([store.segment(segName(i + 1))]);
-    for await (const id of pair) combineIds += id >= 0 ? 1 : 0;
+  for (let i = 0; i + 2 < SEGMENTS; i += 3) {
+    const a = store.segment(segName(i));
+    const b = store.segment(segName(i + 1));
+    const c = store.segment(segName(i + 2));
+    for await (const id of a.intersect([b], { exclude: [c] })) combineIds += id >= 0 ? 1 : 0;
     combines++;
   }
   gc();
@@ -166,68 +184,77 @@ async function readerChild() {
   );
 }
 
-// ── the soak loop: sustained writes + reads + combines + compaction; sample post-GC heap over time ──
+// ── the soak loop: sustained reads + combines + re-loads; sample post-GC heap over time ──
 async function soak() {
   const dir = mkTmp();
   try {
-    const { cold, warm, registry } = await seedFleet(dir);
-    const store = new CloudRoaring({ cold, warm, registry, coldReaderCacheMax: CAP });
-    const deps = { cold, warm, registry, clock: { now: () => Date.now() } };
+    const { cold, registry } = await seedFleet(dir);
+    const store = new CloudRoaring({ cold, registry, coldReaderCacheMax: CAP });
+    const deps = { cold, registry };
     const rand = rng(SEED ^ 0x9e3779b9);
 
     const samples = [];
     const startedAt = Date.now();
     let lastSample = 0;
     let iters = 0;
-    let compactions = 0;
+    let reloads = 0;
     let combines = 0;
     let combineIds = 0;
     let combineChecksum = 0;
+    let iterated = 0;
 
     while (Date.now() - startedAt < SECONDS * 1000) {
-      // Writes — a few adds + removes on random segments (grows the Warm delta).
-      for (let w = 0; w < 8; w++) {
-        const seg = store.segment(segName((rand() * SEGMENTS) | 0));
-        const id = randId(rand);
-        if (rand() < 0.5) await seg.add(id);
-        else await seg.remove(id);
+      // Re-loads — every few iterations, publish a NEW generation over a handful of random segments (the only
+      // write path the store has). Then GC the superseded generation (keep the newest one as the grace window
+      // for a reader still pinned to it) so on-disk storage stays bounded over a long run. `nextGeneration` is
+      // the library's own bookkeeping for "which number comes next", so the re-load takes the same path a real
+      // loader does — including the forward-only publish.
+      if (iters % RELOAD_EVERY === 0) {
+        for (let r = 0; r < RELOADS_PER_ROUND; r++) {
+          const ref = { segment: segName(pick(rand)) };
+          const generation = await nextGeneration(ref, deps);
+          await bulkLoadCrbmGeneration(cold, { ...ref, generation }, randIds(rand), { registry });
+          reloads++;
+          // Best-effort: a transient FS fault here must not abort the soak — it's disk hygiene, not the verdict.
+          await gcOrphanGenerations(ref, deps, { keep: 1 }).catch(() => undefined);
+        }
       }
-      // Reads — count + has across random segments (exercises the bounded cold reader cache).
+      // Reads — count + has across random segments (exercises the bounded cold reader cache AND, right after a
+      // re-load, the generation refresh that must swap a stale reader rather than stack a second one).
       for (let r = 0; r < 12; r++) {
-        const seg = store.segment(segName((rand() * SEGMENTS) | 0));
+        const seg = store.segment(segName(pick(rand)));
         await seg.count();
         await seg.has(randId(rand));
       }
-      // Combines — the crown jewel, and the path this harness used to skip entirely. Every segment's ids live in
-      // chunks 0..CHUNKS_PER_SEG-1, so any two segments overlap on most keys: these really do fetch, decode and
-      // AND chunk payloads through the bounded window rather than short-circuiting on a disjoint key set. Fully
-      // drained (a combine is an async generator — abandoning it mid-stream would measure a different thing, and
-      // leave the window's last slots unobserved). andNot is included because suppression is the case where an
-      // unbounded window would hurt most in production.
+      // Iterate — one whole segment streamed, one chunk at a time.
+      for await (const id of store.segment(segName(pick(rand))).iterate()) {
+        iterated++;
+        combineChecksum = (combineChecksum ^ id) >>> 0;
+      }
+      // Combines — every segment's ids live in chunks 0..CHUNKS_PER_SEG-1, so any two segments overlap on most
+      // keys: these really do fetch, decode and combine chunk payloads through the bounded window rather than
+      // short-circuiting on a disjoint key set. Each carries an `exclude` operand, read only at surviving keys.
+      // Fully drained (a combine is an async generator — abandoning it mid-stream would measure a different
+      // thing, and leave the window's last slots unobserved). andNot is included because suppression is the case
+      // where an unbounded window would hurt most in production.
       for (let c = 0; c < 2; c++) {
-        const a = store.segment(segName((rand() * SEGMENTS) | 0));
-        const b = store.segment(segName((rand() * SEGMENTS) | 0));
+        const a = store.segment(segName(pick(rand)));
+        const b = store.segment(segName(pick(rand)));
+        const x = store.segment(segName(pick(rand)));
+        const roll = rand();
+        const stream =
+          roll < 1 / 3
+            ? a.intersect([b], { exclude: [x] })
+            : roll < 2 / 3
+              ? a.union([b], { exclude: [x] })
+              : a.andNot([b, x]);
         // XOR the ids rather than discarding them: the drained values are then genuinely consumed, and a change
         // that left the combine yielding *nothing* would move `combineChecksum` instead of being invisible.
-        for await (const id of rand() < 0.5 ? a.intersect([b]) : a.andNot([b])) {
+        for await (const id of stream) {
           combineIds++;
           combineChecksum = (combineChecksum ^ id) >>> 0;
         }
         combines++;
-      }
-      // Compaction — every few iterations, fold Warm→Cold for a handful of dirty segments (keeps Warm
-      // bounded), then GC superseded Cold generations so cold on-disk storage stays bounded over a long run.
-      if (iters % 5 === 0) {
-        const candidates = await findCompactable(deps, {});
-        for (const c of candidates.slice(0, 8)) {
-          const res = await compactSegment(c.ref, deps, { owner: 'soak' });
-          if (res.compacted) {
-            compactions++;
-            // Best-effort post-commit cleanup (mirrors the library's own guarded call in runCompactionCycle):
-            // a transient FS fault here must not abort the soak — it's disk hygiene, not part of the verdict.
-            await gcOrphanGenerations(c.ref, deps, { keep: 1 }).catch(() => undefined);
-          }
-        }
       }
       iters++;
 
@@ -259,7 +286,13 @@ async function soak() {
       /* reader child is a bonus; soak verdict stands without it */
     }
 
-    return analyze(samples, iters, compactions, reader, { combines, combineIds, combineChecksum });
+    return analyze(samples, iters, reader, {
+      reloads,
+      combines,
+      combineIds,
+      combineChecksum,
+      iterated,
+    });
   } finally {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -272,9 +305,9 @@ async function soak() {
 /**
  * Creep verdict: compare first-third vs last-third medians for BOTH post-GC JS heap AND the roaring addon's
  * live native bytes; PASS only if neither grows past its band. Watching native memory too is what makes this
- * evidence for the RSS envelope, not just the heap (auditor F2: a native creep slips a heap-only gate).
+ * evidence for the RSS envelope, not just the heap (a native creep slips a heap-only gate).
  */
-function analyze(samples, iters, compactions, reader, combineWork) {
+function analyze(samples, iters, reader, work) {
   const median = (xs) => {
     const a = [...xs].sort((x, y) => x - y);
     return a.length ? a[Math.floor(a.length / 2)] : 0;
@@ -286,8 +319,8 @@ function analyze(samples, iters, compactions, reader, combineWork) {
   // native jitter is sub-MiB (empirically ~0, since global.gc() reclaims dropped roaring memory fully), so a
   // 1 MiB native floor would rubber-stamp a ~10× leak on a ~0.1 MiB native baseline — native gets a 0.25 MiB
   // floor instead. Miss direction is fail-safe (a real leak compounds well past the band).
-  const creepOf = (pick, floorMiB) => {
-    const xs = samples.map(pick);
+  const creepOf = (pickSample, floorMiB) => {
+    const xs = samples.map(pickSample);
     const firstMed = median(xs.slice(0, third));
     const lastMed = median(xs.slice(-third));
     const creep = round(lastMed - firstMed, 2);
@@ -296,12 +329,11 @@ function analyze(samples, iters, compactions, reader, combineWork) {
   };
   const heap = creepOf((s) => s.heapMiB, 1);
   const native = creepOf((s) => s.nativeMiB, 0.25);
-  // A run that performed no combines is INCONCLUSIVE, never PASS — regardless of how flat the samples were.
-  // This harness spent its whole life reporting clean PASSes while covering no combine at all, and the RSS gate
-  // built on it advertised the intersection window anyway. The verdict now refuses to claim coverage it does not
-  // have, so removing the combine phase breaks the build instead of quietly narrowing what PASS means.
+  // A run that performed no combines, or no re-loads, is INCONCLUSIVE, never PASS — regardless of how flat the
+  // samples were. The verdict refuses to claim coverage it does not have, so removing either phase breaks the
+  // build instead of quietly narrowing what PASS means.
   const verdict =
-    samples.length < 3 || combineWork.combines === 0
+    samples.length < 3 || work.combines === 0 || work.reloads === 0
       ? 'inconclusive'
       : heap.ok && native.ok
         ? 'PASS'
@@ -313,16 +345,24 @@ function analyze(samples, iters, compactions, reader, combineWork) {
       arch: process.arch,
       cpu: (os.cpus()[0] || {}).model || 'unknown',
     },
-    config: { seconds: SECONDS, segments: SEGMENTS, cap: CAP, sampleMs: SAMPLE_MS },
+    config: {
+      seconds: SECONDS,
+      segments: SEGMENTS,
+      cap: CAP,
+      sampleMs: SAMPLE_MS,
+      idsPerSegment: IDS_PER_SEG,
+      chunksPerSegment: CHUNKS_PER_SEG,
+    },
     iters,
     itersPerSec: round(iters / SECONDS, 1),
-    compactions,
+    // Generations published over live segments during the run — the write path, and what exercises the reader
+    // cache's generation refresh. Part of the evidence, like `combines`: a zero here is an inconclusive run.
+    reloads: work.reloads,
     // Recorded so a reader can confirm the combine path was actually exercised rather than trusting that it was.
-    // A soak that reports zero combines is the state this harness was in while the RSS gate claimed to bound the
-    // intersection window, so the count is part of the evidence, not decoration.
-    combines: combineWork.combines,
-    combineIds: combineWork.combineIds,
-    combineChecksum: combineWork.combineChecksum,
+    combines: work.combines,
+    combineIds: work.combineIds,
+    combineChecksum: work.combineChecksum,
+    iterated: work.iterated,
     samples,
     firstThirdHeapMiB: heap.firstMed,
     lastThirdHeapMiB: heap.lastMed,
@@ -361,19 +401,15 @@ function round(n, d) {
   console.log(
     `soak: ${SECONDS}s · ${SEGMENTS} segments · cap ${CAP} · sampling every ${SAMPLE_MS}ms …`,
   );
-  const result = await soak();
-  const r = result;
+  const r = await soak();
   console.log(
-    `\nsoak: verdict=${r.verdict} · heap creep=${r.creepMiB}MiB (${r.firstThirdHeapMiB}→${r.lastThirdHeapMiB}, limit ${r.creepLimitMiB}) · native creep=${r.nativeCreepMiB}MiB (${r.firstThirdNativeMiB}→${r.lastThirdNativeMiB}, limit ${r.nativeCreepLimitMiB}) over ${r.samples.length} samples · ${r.iters} iters (${r.itersPerSec}/s) · ${r.compactions} compactions · ${r.combines} combines (${r.combineIds} ids)` +
+    `\nsoak: verdict=${r.verdict} · heap creep=${r.creepMiB}MiB (${r.firstThirdHeapMiB}→${r.lastThirdHeapMiB}, limit ${r.creepLimitMiB}) · native creep=${r.nativeCreepMiB}MiB (${r.firstThirdNativeMiB}→${r.lastThirdNativeMiB}, limit ${r.nativeCreepLimitMiB}) over ${r.samples.length} samples · ${r.iters} iters (${r.itersPerSec}/s) · ${r.reloads} re-loads · ${r.combines} combines (${r.combineIds} ids) · ${r.iterated} iterated` +
       (r.readerProcess
         ? ` · reader-child heap=${r.readerProcess.heapMiB}MiB native=${r.readerProcess.nativeMiB}MiB (bounds) rss=${r.readerProcess.rssMiB}MiB (~Node floor) after ${r.readerProcess.combines} isolated combines`
         : ''),
   );
   if (process.env.SOAK_INJECT === '1') {
-    fs.writeFileSync(
-      path.join(ROOT, 'bench/soak-results.json'),
-      JSON.stringify(result, null, 2) + '\n',
-    );
+    fs.writeFileSync(path.join(ROOT, 'bench/soak-results.json'), JSON.stringify(r, null, 2) + '\n');
     console.log('  wrote bench/soak-results.json');
   } else {
     console.log('  (dry run — set SOAK_INJECT=1 to persist bench/soak-results.json)');

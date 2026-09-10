@@ -1,5 +1,5 @@
 /**
- * Shared filesystem helpers for the LocalFs drivers (cold/warm, and the Phase-4 registry) — one source
+ * Shared filesystem helpers for the LocalFs drivers (cold and registry) — one source
  * of truth for error-code matching, the symlink-refusal flag, and directory durability.
  */
 import { constants as FS } from 'node:fs';

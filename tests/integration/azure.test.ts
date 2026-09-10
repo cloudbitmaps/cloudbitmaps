@@ -7,8 +7,7 @@ import { AzureBlobColdDriver } from '@/drivers/azure/cold';
 import { isConditionalConflict } from '@/drivers/azure/azure-errors';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
-import { bulkLoadCrbmGeneration } from '@/index';
-import { CloudRoaring, MemoryWarmDriver } from '@/index';
+import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
@@ -189,10 +188,7 @@ describe('AzureBlobColdDriver end-to-end through the engine (Azurite)', () => {
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
 
-    const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new CrbmColdChunkSource(driver),
-    });
+    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
     expect(await store.segment('a').count()).toBe(4);
 
     const iterated: number[] = [];

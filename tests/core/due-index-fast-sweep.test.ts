@@ -7,47 +7,40 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  CloudRoaring,
   DEFAULT_LOOKBACK_BUCKETS,
-  MemoryColdDriver,
-  MemoryRegistryDriver,
-  MemoryWarmDriver,
   dueBucket,
   dueIndexRef,
   dueNamespace,
   type SegmentRef,
 } from '@/index';
+import { type LoadedStore, loadedStore } from '../helpers/loaded';
 
 const DAY = 86_400_000;
 const T0 = 1_754_000_000_000;
 
-function harness() {
+async function harness() {
   let t = T0;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const registry = new MemoryRegistryDriver({ now: clock.now });
-  const store = new CloudRoaring({
-    warm: new MemoryWarmDriver(),
-    cold: new MemoryColdDriver(),
-    registry,
-    clock,
-  });
-  return { store, registry, advance: (ms: number) => (t += ms) };
+  const w = await loadedStore({}, { clock });
+  return { ...w, advance: (ms: number) => (t += ms) };
 }
 
-async function seed(store: CloudRoaring, segment: string, expiresAt?: number): Promise<SegmentRef> {
+/** One loaded segment in namespace `active`, optionally carrying a retention policy. */
+async function seed(w: LoadedStore, segment: string, expiresAt?: number): Promise<SegmentRef> {
   const ref: SegmentRef = { namespace: 'active', segment };
-  await store.segment(segment, { namespace: 'active' }).addMany([1, 2, 3]);
-  if (expiresAt !== undefined) await store.setRetention(ref, { expiresAt });
+  await w.load(ref, [1, 2, 3]);
+  if (expiresAt !== undefined) await w.store.setRetention(ref, { expiresAt });
   return ref;
 }
 
 describe('sweep — scan: index', () => {
   it('retires exactly what the fleet scan would', async () => {
-    const { store } = harness();
+    const w = await harness();
+    const { store } = w;
     const soon = T0 + DAY;
-    await seed(store, 'expires-soon', soon);
-    await seed(store, 'expires-later', T0 + 90 * DAY);
-    await seed(store, 'no-policy');
+    await seed(w, 'expires-soon', soon);
+    await seed(w, 'expires-later', T0 + 90 * DAY);
+    await seed(w, 'no-policy');
 
     const swept = await store.retireExpired({ scan: 'index', now: soon + 1 });
 
@@ -59,10 +52,11 @@ describe('sweep — scan: index', () => {
   });
 
   it('does not read the fleet — the whole point, and invisible to a correctness test', async () => {
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    await seed(store, 'expires-soon', soon);
-    for (let i = 0; i < 20; i++) await seed(store, `unrelated-${i}`); // fleet noise, no policies
+    await seed(w, 'expires-soon', soon);
+    for (let i = 0; i < 20; i++) await seed(w, `unrelated-${i}`); // fleet noise, no policies
 
     const listed: (string | undefined)[] = [];
     const realList = registry.list.bind(registry);
@@ -80,9 +74,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('reads past buckets, so a sweep that did not run leaves nothing stranded', async () => {
-    const { store } = harness();
+    const w = await harness();
+    const { store } = w;
     const threeDaysAgo = T0 - 3 * DAY;
-    await seed(store, 'missed', threeDaysAgo + 1);
+    await seed(w, 'missed', threeDaysAgo + 1);
 
     // Nothing ran when it expired; the next cycle is days later and must still find it.
     const swept = await store.retireExpired({ scan: 'index', now: T0 });
@@ -91,9 +86,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('a bucket older than the lookback is left to the fleet repair pass', async () => {
-    const { store } = harness();
+    const w = await harness();
+    const { store } = w;
     const longAgo = T0 - 30 * DAY;
-    await seed(store, 'ancient', longAgo);
+    await seed(w, 'ancient', longAgo);
 
     expect((await store.retireExpired({ scan: 'index', now: T0 })).retired).toBe(0);
     // …and the backstop still catches it, which is why the omission is survivable.
@@ -101,9 +97,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('a stale pointer costs a read and retires nothing', async () => {
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    const ref = await seed(store, 'reprieved', soon);
+    const ref = await seed(w, 'reprieved', soon);
     await store.clearRetention(ref);
     await registry.create(dueIndexRef(dueBucket(soon), ref), { currentGen: null }); // interrupted reindex
 
@@ -116,9 +113,10 @@ describe('sweep — scan: index', () => {
   it('a segment reachable from two buckets is retired once, not twice', async () => {
     // `reindex` writes the new pointer before deleting the old, so an interruption leaves both. A phantom
     // second entry in the ledger would make an operator think two segments went away.
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    const ref = await seed(store, 'double-pointed', soon);
+    const ref = await seed(w, 'double-pointed', soon);
     await registry.create(dueIndexRef(dueBucket(soon) - 1, ref), { currentGen: null });
 
     const swept = await store.retireExpired({ scan: 'index', now: soon + 1 });
@@ -128,9 +126,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('forgets the pointer once a segment is retired, so buckets do not grow forever', async () => {
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    await seed(store, 'gone', soon);
+    await seed(w, 'gone', soon);
     const bucket = dueNamespace(dueBucket(soon));
 
     await store.retireExpired({ scan: 'index', now: soon + 1 });
@@ -141,9 +140,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('ignores a foreign row in a due bucket rather than acting on it', async () => {
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    await seed(store, 'real', soon);
+    await seed(w, 'real', soon);
     await registry.create(
       { namespace: dueNamespace(dueBucket(soon)), segment: 'not-a-pointer' },
       {
@@ -158,10 +158,11 @@ describe('sweep — scan: index', () => {
   });
 
   it('respects the namespace filter', async () => {
-    const { store } = harness();
+    const w = await harness();
+    const { store } = w;
     const soon = T0 + DAY;
-    await seed(store, 'in-scope', soon);
-    await store.segment('elsewhere', { namespace: 'other' }).addMany([9]);
+    await seed(w, 'in-scope', soon);
+    await w.load({ namespace: 'other', segment: 'elsewhere' }, [9]);
     await store.setRetention({ namespace: 'other', segment: 'elsewhere' }, { expiresAt: soon });
 
     const swept = await store.retireExpired({ scan: 'index', namespace: 'other', now: soon + 1 });
@@ -171,9 +172,10 @@ describe('sweep — scan: index', () => {
 
   it('an unindexed policy is invisible to the fast path and caught by the repair pass', async () => {
     // The documented boundary: `scan: 'index'` alone is not a complete retention strategy.
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    const ref = await seed(store, 'unpointed', soon);
+    const ref = await seed(w, 'unpointed', soon);
     await registry.delete(dueIndexRef(dueBucket(soon), ref));
 
     expect((await store.retireExpired({ scan: 'index', now: soon + 1 })).retired).toBe(0);
@@ -181,9 +183,10 @@ describe('sweep — scan: index', () => {
   });
 
   it('defaults to the fleet scan, so upgrading changes nothing', async () => {
-    const { store, registry } = harness();
+    const w = await harness();
+    const { store, registry } = w;
     const soon = T0 + DAY;
-    const ref = await seed(store, 'unpointed', soon);
+    const ref = await seed(w, 'unpointed', soon);
     await registry.delete(dueIndexRef(dueBucket(soon), ref)); // only the fleet scan can see this one
 
     expect((await store.retireExpired({ now: soon + 1 })).retired).toBe(1);

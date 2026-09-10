@@ -19,7 +19,7 @@
     <title>CloudBitmaps flavors — one engine, pluggable codecs</title>
     <meta
       name="description"
-      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. Tiering, chunk-skipping intersection, compaction and the five storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
+      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. The hot cache over immutable generations, the load-and-publish write path, chunk-skipping intersection, retention and the five storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       property="og:description"
-      content="A flavor decides how a chunk of ids is represented. Everything else — tiering, chunk-skipping, compaction, five drivers — is codec-agnostic."
+      content="A flavor decides how a chunk of ids is represented. Everything else — the hot cache, the load-and-publish write path, chunk-skipping, five drivers — is codec-agnostic."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -95,13 +95,14 @@
             <p class="eyebrow">Flavors · one engine, pluggable codecs</p>
             <h1>Pick the codec that matches your ids.</h1>
             <p class="hero-lede">
-              <span class="m">@cloudbitmaps/core</span> is codec-agnostic. Tiering, chunk-skipping
-              intersection, compaction, encryption and the five storage drivers live there and do not change. A
-              flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
+              <span class="m">@cloudbitmaps/core</span> is codec-agnostic. The hot cache over immutable
+              generations, the load-and-publish write path, chunk-skipping intersection, generation GC,
+              erasure-by-rewrite, encryption, retention and the five storage drivers live there and do not
+              change. A flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="flavors/roaring.html">How Roaring works →</a>
-              <a class="btn" href="usage.html">Six-line quickstart</a>
+              <a class="btn" href="usage.html">Zero-setup quickstart</a>
             </p>
             <p class="meta">Choose on the shape of your id space, not on a benchmark.</p>
           </div>
@@ -109,10 +110,10 @@
           <aside class="panel">
             <div class="panel-head label">Shared by every flavor</div>
             <p class="panel-row is-pair"><span>Storage drivers</span><span class="is-live">5</span></p>
-            <p class="panel-row is-pair"><span>Tiers</span><span>RAM · warm · cold</span></p>
+            <p class="panel-row is-pair"><span>Tiers</span><span>RAM cache · cold objects</span></p>
             <p class="panel-row is-pair">
               <span>API surface</span
-              ><span class="m">add has remove count intersect</span>
+              ><span class="m">has count intersect union andNot</span>
             </p>
             <p class="panel-row is-pair"><span>Chunk-skipping intersect</span><span>codec-independent</span></p>
             <p class="panel-row is-pair"><span>Runtime deps</span><span class="is-live">1</span></p>
@@ -207,14 +208,15 @@
         <h2>Where the choice does not matter</h2>
         <p class="lede">
           Every flavor is a codec plugged into the same store. Swapping one is an import change and a
-          re-publish of your segments — the drivers, the tier policy, the compaction pass and the container
-          format around the payload all stay put.
+          re-load of your segments — the drivers, the forward-only pointer protocol, the hot cache and the
+          container format around the payload all stay put.
         </p>
         <div class="matters">
           <div class="limit">
             <p class="label">Cost</p>
             <p>
-              <strong>$0.75</strong> per million incremental writes, against <strong>$346/mo</strong> standing
+              <strong>$0.14</strong> per million <span class="m">count()</span>s and
+              <strong>$5.88</strong> per million segment publishes, against <strong>$346/mo</strong> standing
               for a Redis-HA node. Billed by the request either way — a codec changes bytes, not the pricing
               model.
             </p>
@@ -231,8 +233,8 @@
             <p class="label">When to walk away</p>
             <p>
               <strong>No flavor fixes this.</strong> Sub-millisecond p99 on a working set that fits a bounded
-              hot cache is a different machine; a RAM store answers a single membership check 10–20× faster
-              than any warm-tier round trip. Use Redis.
+              hot cache is a different machine; a membership check that misses the hot cache costs one ranged
+              GET against object storage, where a RAM store costs a memory read. Use Redis.
             </p>
           </div>
           <!-- This card used to say "one API surface" without ever naming it, which left a reader to assume
@@ -242,13 +244,14 @@
           <div class="limit">
             <p class="label">The API, whichever you pick</p>
             <p>
-              <span class="m">add</span> · <span class="m">has</span> · <span class="m">remove</span> ·
-              <span class="m">count</span>, and the full set algebra —
+              <span class="m">has</span> · <span class="m">count</span> ·
+              <span class="m">iterate</span>, and the full set algebra —
               <span class="m">intersect</span>, <span class="m">union</span>,
-              <span class="m">andNot</span> — plus <span class="m">*Into</span> variants that write the result
-              straight to a destination segment instead of returning it. A flavor is a
-              <span class="m">CodecInterface</span> implementation underneath five drivers and three tiers, and
-              changes none of these signatures.
+              <span class="m">andNot</span> — plus <span class="m">*Into</span> variants that publish the
+              result as a new generation of a destination segment instead of returning it. Data arrives the one
+              way whichever you pick — <span class="m">bulkLoadCrbmGeneration</span>, one immutable object
+              then a forward-only pointer move. A flavor is a <span class="m">CodecInterface</span>
+              implementation underneath five drivers and two tiers, and changes none of these signatures.
             </p>
           </div>
         </div>

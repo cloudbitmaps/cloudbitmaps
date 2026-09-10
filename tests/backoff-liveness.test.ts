@@ -1,43 +1,51 @@
-import { CloudRoaring, MemoryColdChunkSource, MemoryWarmDriver, WriteConflictError } from '@/index';
-import type { IWarmDriver } from '@/index';
+import { CloudRoaring, MemoryColdChunkSource, TransientError } from '@/index';
+import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import { seedSegment } from './helpers/loaded';
 
 /**
- * Regression for the OCC-backoff *premature-exit* bug (found by the T4 hot-row contention stress).
+ * Regression for the backoff *premature-exit* bug (found by the T4 hot-row contention stress).
  *
  * The default clock's `sleep` used to `unref()` its backoff timer. Because that `sleep` only ever backs a
- * caller-awaited, bounded retry (the engine's OCC read-modify-write and the driver `withRetry` loop), an
- * unref'd timer let a short-lived process — CLI, Lambda, a bare script — whose only remaining handle was that
- * backoff timer exit 0 *mid-retry*, silently dropping the awaited write (neither applied nor thrown).
+ * caller-awaited, bounded retry, an unref'd timer let a short-lived process — CLI, Lambda, a bare script —
+ * whose only remaining handle was that backoff timer exit 0 *mid-retry*, silently dropping the awaited
+ * operation (neither a result nor a thrown error).
  *
  * The failure is a property of process lifetime, so it cannot be observed from inside the test runner (Vitest's
  * own event loop keeps the process alive, so even an unref'd timer still fires). We therefore assert the
  * *mechanism* the fix guarantees — the default clock's backoff timer stays ref'd — by watching whether `unref`
- * is called on the timer the real backoff creates. The bare-process end-to-end guard (which reproduces the
- * exit-0 symptom itself) lands with the T4 stress PR; this unit test guards the mechanism the fix relies on.
+ * is called on the timer the real backoff creates.
+ *
+ * WHAT DRIVES THE BACKOFF NOW. This used to inject an optimistic-concurrency conflict on a warm write, because
+ * that was the retry loop everyone hit. With the warm tier gone the surviving user of `Clock.sleep` is the
+ * driver transient-retry loop (`withRetry`, wrapped around the cold source by default), so the fault injected
+ * here is a transient cold read. The mechanism under test is unchanged — it is the same `SystemClock.sleep` —
+ * and the reason it matters is if anything sharper: a Lambda whose only pending handle is a retry of the one
+ * GET its whole invocation depends on.
  */
-describe('OCC backoff liveness (default clock keeps a pending retry alive)', () => {
-  it('does not unref the backoff timer created during a real OCC conflict', async () => {
-    // A Warm driver that rejects the first conditional write with a conflict, then behaves normally — so the
-    // engine performs exactly one real backoff on the default (SystemClock) clock before it succeeds.
-    const inner = new MemoryWarmDriver();
-    let injected = false;
-    const flaky = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'putConditional') {
-          return (...args: Parameters<IWarmDriver['putConditional']>) => {
-            if (!injected) {
-              injected = true;
-              return Promise.reject(new WriteConflictError('injected conflict'));
-            }
-            return inner.putConditional(...args);
-          };
-        }
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    }) as IWarmDriver;
 
-    // Wrap every timer created while the write is in flight and record any `unref()` call on it.
+/** A cold source whose first `getChunk` fails transiently, then behaves normally. */
+class FlakyOnce implements ColdChunkSource {
+  readonly inner = new MemoryColdChunkSource();
+  failed = false;
+
+  async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
+    if (!this.failed) {
+      this.failed = true;
+      throw new TransientError('backend blinked');
+    }
+    return this.inner.getChunk(ref);
+  }
+  listChunkKeys(ref: SegmentRef): Promise<number[]> {
+    return this.inner.listChunkKeys(ref);
+  }
+}
+
+describe('transient-retry backoff liveness (the default clock keeps a pending retry alive)', () => {
+  it('does not unref the backoff timer created during a real transient retry', async () => {
+    const cold = new FlakyOnce();
+    seedSegment(cold.inner, 's', [42]);
+
+    // Wrap every timer created while the read is in flight and record any `unref()` call on it.
     const realSetTimeout = globalThis.setTimeout;
     let timersCreated = 0;
     let unrefCalls = 0;
@@ -60,20 +68,18 @@ describe('OCC backoff liveness (default clock keeps a pending retry alive)', () 
 
     try {
       const store = new CloudRoaring({
-        warm: flaky,
-        cold: new MemoryColdChunkSource(),
+        cold,
         // Fixed jitter ⇒ a deterministic non-zero backoff delay, so a real timer is always created. The clock is
         // left as the default SystemClock on purpose — that is the code under test.
         rng: { next: () => 0.5 },
       });
 
-      await store.segment('s').add(42);
+      // The awaited read survives the blink AND returns the right answer (no swallowed fault).
+      expect(await store.segment('s').has(42)).toBe(true);
 
-      expect(injected).toBe(true); // the conflict path really fired…
+      expect(cold.failed).toBe(true); // the transient path really fired…
       expect(timersCreated).toBeGreaterThan(0); // …so a backoff timer was created…
       expect(unrefCalls).toBe(0); // …and it must stay ref'd, or a bare process could exit mid-retry.
-      // The awaited write also actually landed (no lost update).
-      expect(await store.segment('s').has(42)).toBe(true);
     } finally {
       spy.mockRestore();
     }

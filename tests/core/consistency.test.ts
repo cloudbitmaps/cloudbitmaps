@@ -3,7 +3,6 @@ import {
   CrbmColdChunkSource,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
   runConsistencyCheck,
   UnsupportedError,
@@ -97,8 +96,8 @@ describe('runConsistencyCheck (gap #11 — torn cross-tier restore)', () => {
     const cold = new MemoryColdDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 0 }, [1], { registry });
-    await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 1 }, [1], { registry }); // compaction
-    await cold.delete({ segment: 's', generation: 0 }); // GC reclaims the old gen — live is now gen 1 only
+    await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 1 }, [1], { registry }); // a second load
+    await cold.delete({ segment: 's', generation: 0 }); // GC reclaims the superseded gen — live is gen 1 only
     // Make registry.list() yield a STALE currentGen 0 (an eventually-consistent enumeration lagging the live
     // pointer), while the strong registry.get() reflects the live gen 1 and Cold has only gen 1. A check that
     // trusted the list snapshot would cry torn on gen 0; reading the live pointer per segment must not.
@@ -127,7 +126,7 @@ describe('store.checkConsistency (facade)', () => {
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(cold, { segment: 's', generation: 0 }, [1], { registry });
     await tearRestore(registry, { segment: 's' });
-    const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry, retry: false });
+    const store = new CloudRoaring({ cold, registry, retry: false });
     const report = await store.checkConsistency();
     expect(report.inconsistent.map((i) => i.segment)).toEqual(['s']);
   });
@@ -135,7 +134,6 @@ describe('store.checkConsistency (facade)', () => {
   it('needs a raw cold driver + registry (throws with a pre-built ColdChunkSource)', async () => {
     const registry = new MemoryRegistryDriver();
     const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
       // A pre-built source resolves generations itself — the store has no raw IColdDriver to scan.
       cold: new CrbmColdChunkSource(new MemoryColdDriver(), { registry }),
       retry: false,

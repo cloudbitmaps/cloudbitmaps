@@ -5,12 +5,12 @@ import {
   MemoryColdChunkSource,
   MemoryColdDriver,
   MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CapabilityError, KeyUnavailableError, ValidationError } from '@/core/errors';
 import type { IColdDriver, SegmentRef } from '@/index';
+import { seededStore } from '../helpers/loaded';
 
 // PR A: the store takes ONE config shape — `cold` is a raw IColdDriver (wrapped into the .crbm cold source
 // here, so drivers are wired once) OR an already-built ColdChunkSource (for source-only / pre-configured
@@ -18,7 +18,6 @@ import type { IColdDriver, SegmentRef } from '@/index';
 // These tests pin the resolution, that each option is actually threaded through the wrap, and the fail-fast guards.
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
-const warm = (): MemoryWarmDriver => new MemoryWarmDriver();
 
 describe('CloudRoaring constructor — one config shape (cold: raw driver | source)', () => {
   it('wraps a raw IColdDriver and pins the registry currentGen (not the max on disk)', async () => {
@@ -31,7 +30,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
 
     // The point of PR A: pass the RAW driver + registry — no manual CrbmColdChunkSource wrap. If `registry`
     // were dropped when wrapping, this would read the max gen (5) instead of the pinned gen 0 (3).
-    const store = new CloudRoaring({ warm: warm(), cold, registry });
+    const store = new CloudRoaring({ cold, registry });
     expect(await store.segment('s').count()).toBe(3);
     expect(await store.segment('s').has(2)).toBe(true); // forces a payload getChunk through the wrapped source
     expect(await store.segment('s').has(5)).toBe(false); // 5 lives only in the unpublished gen 1
@@ -42,14 +41,14 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
     const cold = new MemoryColdDriver();
     await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2, 3]);
     await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
-    const store = new CloudRoaring({ warm: warm(), cold }); // no registry → highest generation
+    const store = new CloudRoaring({ cold }); // no registry → highest generation
     expect(await store.segment('s').count()).toBe(5);
   });
 
   it('accepts an already-built ColdChunkSource unchanged (source-only backend)', async () => {
-    // A pre-built source is used as-is. A warm-only round-trip proves the store is live.
-    const store = new CloudRoaring({ warm: warm(), cold: new MemoryColdChunkSource() });
-    await store.segment('s').add(42);
+    // A pre-built source is used as-is: reads route straight at it, with no .crbm wrap in between (this
+    // source has no index, so `count` falls back to fetching the chunk — still the source we handed over).
+    const { store } = seededStore({ s: [42] });
     expect(await store.segment('s').has(42)).toBe(true);
     expect(await store.segment('s').count()).toBe(1);
   });
@@ -59,7 +58,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [7, 8], { registry });
     const source = new CrbmColdChunkSource(cold, { registry, tailBytes: 4096 });
-    const store = new CloudRoaring({ warm: warm(), cold: source });
+    const store = new CloudRoaring({ cold: source });
     expect(await store.segment('s').count()).toBe(2);
   });
 
@@ -72,7 +71,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
       keystore,
     });
 
-    const store = new CloudRoaring({ warm: warm(), cold, registry, keystore });
+    const store = new CloudRoaring({ cold, registry, keystore });
     expect(await store.segment('s').count()).toBe(3); // decrypts the .crbm index
     expect(await store.segment('s').has(2)).toBe(true); // decrypts a chunk payload (getChunk)
   });
@@ -86,7 +85,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
       keystore,
     });
 
-    const store = new CloudRoaring({ warm: warm(), cold, registry }); // no keystore
+    const store = new CloudRoaring({ cold, registry }); // no keystore
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
 
@@ -98,7 +97,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
 
     // requireEncryption:true must reach the wrapped source; reading cleartext then throws. If the flag were
     // dropped when wrapping, count() would return 3 instead.
-    const store = new CloudRoaring({ warm: warm(), cold, registry, requireEncryption: true });
+    const store = new CloudRoaring({ cold, registry, requireEncryption: true });
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
 
@@ -107,15 +106,11 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
       const source = (): MemoryColdChunkSource => new MemoryColdChunkSource();
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
       const registry = new MemoryRegistryDriver();
-      expect(() => new CloudRoaring({ warm: warm(), cold: source(), registry })).toThrow(
+      expect(() => new CloudRoaring({ cold: source(), registry })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ cold: source(), keystore })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ cold: source(), requireEncryption: true })).toThrow(
         ValidationError,
       );
-      expect(() => new CloudRoaring({ warm: warm(), cold: source(), keystore })).toThrow(
-        ValidationError,
-      );
-      expect(
-        () => new CloudRoaring({ warm: warm(), cold: source(), requireEncryption: true }),
-      ).toThrow(ValidationError);
     });
 
     it('allows requireEncryption:false with a pre-built source (the no-op default)', () => {
@@ -123,7 +118,6 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
       expect(
         () =>
           new CloudRoaring({
-            warm: warm(),
             cold: new MemoryColdChunkSource(),
             requireEncryption: false,
           }),
@@ -132,28 +126,27 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
 
     it('rejects a keystore on a raw driver with no registry (nowhere to store the wrapped DEK)', () => {
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-      expect(
-        () => new CloudRoaring({ warm: warm(), cold: new MemoryColdDriver(), keystore }),
-      ).toThrow(CapabilityError);
+      expect(() => new CloudRoaring({ cold: new MemoryColdDriver(), keystore })).toThrow(
+        CapabilityError,
+      );
     });
 
     it('rejects requireEncryption on a raw driver with no registry (encryption can’t be enforced)', () => {
       expect(
-        () =>
-          new CloudRoaring({ warm: warm(), cold: new MemoryColdDriver(), requireEncryption: true }),
+        () => new CloudRoaring({ cold: new MemoryColdDriver(), requireEncryption: true }),
       ).toThrow(CapabilityError);
     });
 
     it('rejects a `cold` that is neither an IColdDriver nor a ColdChunkSource', () => {
       const notCold = {} as unknown as IColdDriver; // e.g. a typo / wrong object
-      expect(() => new CloudRoaring({ warm: warm(), cold: notCold })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ cold: notCold })).toThrow(ValidationError);
     });
 
     it('rejects a nullish `cold` with a typed error (not a raw TypeError)', () => {
       for (const bad of [undefined, null]) {
-        expect(
-          () => new CloudRoaring({ warm: warm(), cold: bad as unknown as IColdDriver }),
-        ).toThrow(ValidationError);
+        expect(() => new CloudRoaring({ cold: bad as unknown as IColdDriver })).toThrow(
+          ValidationError,
+        );
       }
     });
 
@@ -162,7 +155,7 @@ describe('CloudRoaring constructor — one config shape (cold: raw driver | sour
         getChunk: () => null,
         putImmutable: () => ({ size: 0, sha256: '' }),
       } as unknown as IColdDriver;
-      expect(() => new CloudRoaring({ warm: warm(), cold: hybrid })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ cold: hybrid })).toThrow(ValidationError);
     });
   });
 });

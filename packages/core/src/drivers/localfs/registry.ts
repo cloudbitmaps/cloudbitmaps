@@ -2,7 +2,7 @@
  * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver} (Phase 4c).
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
- * OCC mirrors the Warm tier: the token is a monotonic counter (stringified), advanced on every mutation and
+ * OCC: the token is a monotonic counter (stringified), advanced on every mutation and
  * even across a `delete` (which **tombstones** rather than unlinks) so a deleted-then-recreated row never
  * re-issues an old token (ABA-safe). Every write is temp → fsync(file) → atomic rename → fsync(dir), and
  * read-modify-write is serialized per row in-process. Drivers do I/O; only `core/` is bound by determinism.
@@ -195,7 +195,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
     await fsyncDir(dirname(path));
   }
 
-  /** Serialize callbacks for a row path so read-modify-write is atomic in-process (mirrors the Warm tier). */
+  /** Serialize callbacks for a row path so read-modify-write is atomic in-process. */
   private withRowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chain.get(key) ?? Promise.resolve();
     const result = prev.then(fn, fn);

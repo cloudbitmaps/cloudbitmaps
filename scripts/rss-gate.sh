@@ -5,7 +5,7 @@
 #
 # The soak bench proves *no creep* (post-GC heap stays flat); it does NOT prove a hard *peak-RSS* ceiling —
 # and RSS includes the `roaring` addon's **off-heap native** memory, which a JS heap sample can't see. This
-# gate closes that: run a sustained write+read+compact workload under a hard cgroup `--memory` limit (swap
+# gate closes that: run a sustained read+combine+re-load workload under a hard cgroup `--memory` limit (swap
 # disabled, so the limit is a true RSS ceiling) and assert the process **completes without being OOM-killed**
 # (a cgroup OOM surfaces as container exit code 137). If a cache regressed to unbounded, the sustained fleet
 # would grow past the cap and the kernel would kill it — the gate has teeth.

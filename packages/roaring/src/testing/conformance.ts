@@ -1,7 +1,7 @@
 /**
  * Shared driver conformance suite (finding V8).
  *
- * A backend is only "supported" once it's green here. Every `IWarmDriver` / `ColdChunkSource`
+ * A backend is only "supported" once it's green here. Every `ColdChunkSource` / `IRegistryDriver`
  * implementation — first-party (in-memory, LocalFs) and community — runs the **same** contract tests via
  * these factories, so substitutability is proven, not assumed. The factories use Vitest globals
  * (`describe`/`it`/`expect`); a driver author wires them into their own test file with a factory that
@@ -14,25 +14,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SafeBitmap } from '../roaring-codec';
-import { NO_ROW } from '@cloudbitmaps/core';
 import type {
   ChunkRef,
   ColdChunkSource,
   IRegistryDriver,
-  IWarmDriver,
   RegistryRecord,
   SegmentRef,
 } from '@cloudbitmaps/core';
-import {
-  ValidationError,
-  WriteConflictError,
-  isTransientError,
-  isWriteConflictError,
-} from '@cloudbitmaps/core';
+import { ValidationError, WriteConflictError } from '@cloudbitmaps/core';
 
 const SEG: SegmentRef = { segment: 's' };
 const ref = (chunkKey: number): ChunkRef => ({ segment: 's', chunkKey });
-const bytes = (...b: number[]): Uint8Array => Uint8Array.of(...b);
 
 /** Names a conformant driver MUST reject at its boundary (grammar + traversal + control chars). */
 const BAD_NAMES: readonly string[] = [
@@ -52,142 +44,6 @@ const BAD_NAMES: readonly string[] = [
 
 async function expectValidationReject(p: Promise<unknown>): Promise<void> {
   await expect(p).rejects.toBeInstanceOf(ValidationError);
-}
-
-/**
- * Contract tests for an {@link IWarmDriver}. `makeDriver` MUST return a fresh, empty, isolated driver on
- * each call (e.g. a new temp dir for a filesystem driver).
- */
-export function warmConformance(label: string, makeDriver: () => IWarmDriver): void {
-  describe(`IWarmDriver conformance: ${label}`, () => {
-    it('create-if-absent, read back, then update with the token (D1)', async () => {
-      const d = makeDriver();
-      expect(await d.get(ref(1))).toBeNull();
-      const { token: t0 } = await d.putConditional(ref(1), bytes(1, 2), NO_ROW);
-      const row = await d.get(ref(1));
-      expect(row).not.toBeNull();
-      expect([...row!.bytes]).toEqual([1, 2]);
-      expect(row!.token).toBe(t0);
-      const { token: t1 } = await d.putConditional(ref(1), bytes(3), t0);
-      expect(t1).not.toBe(t0);
-      expect([...(await d.get(ref(1)))!.bytes]).toEqual([3]);
-    });
-
-    it('rejects create-if-absent when the row exists (D1)', async () => {
-      const d = makeDriver();
-      await d.putConditional(ref(1), bytes(1), NO_ROW);
-      await expect(d.putConditional(ref(1), bytes(2), NO_ROW)).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    it('rejects a stale-token update and leaves the row unchanged (D1)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.putConditional(ref(1), bytes(1), NO_ROW);
-      await d.putConditional(ref(1), bytes(2), t0);
-      await expect(d.putConditional(ref(1), bytes(9), t0)).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-      expect([...(await d.get(ref(1)))!.bytes]).toEqual([2]);
-    });
-
-    it('fenced delete only with the current token (D2)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.putConditional(ref(1), bytes(1), NO_ROW);
-      const { token: t1 } = await d.putConditional(ref(1), bytes(2), t0);
-      await expect(d.deleteConditional(ref(1), t0)).rejects.toBeInstanceOf(WriteConflictError);
-      await d.deleteConditional(ref(1), t1);
-      expect(await d.get(ref(1))).toBeNull();
-    });
-
-    it('never reuses a token across delete→recreate (ABA-safe, D3)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.putConditional(ref(1), bytes(1), NO_ROW);
-      await d.deleteConditional(ref(1), t0);
-      const { token: t0b } = await d.putConditional(ref(1), bytes(2), NO_ROW);
-      expect(t0b).not.toBe(t0);
-      await expect(d.putConditional(ref(1), bytes(9), t0)).rejects.toBeInstanceOf(
-        WriteConflictError,
-      );
-    });
-
-    it('serializes concurrent read-modify-write with no lost updates (D4)', async () => {
-      const d = makeDriver();
-      // This asserts the OCC contract — **no lost updates** under real concurrency — not that a raw driver never
-      // emits a transient fault. So the loop rides out BOTH outcomes a real caller sees:
-      //   • WriteConflictError → the OCC race we are actually testing; re-read and retry, unbounded.
-      //   • TransientError     → an infrastructure hiccup the production stack already absorbs, because
-      //     `CloudRoaring` wraps every warm driver in `RetryingWarmDriver` by default. Retrying it here makes the
-      //     contract test reflect real usage instead of failing on it. Concretely: a cold Cassandra node whose
-      //     Paxos layer isn't warm yet answers a burst of `INSERT … IF NOT EXISTS` with
-      //     "Server timeout … at consistency SERIAL (0 peer(s) acknowledged)" — a recurring CI flake that says
-      //     nothing about lost updates. BOUNDED (unlike the conflict path) so a driver that only ever throws
-      //     transients still fails loudly rather than spinning forever.
-      const MAX_TRANSIENT_RETRIES = 25;
-      const append = async (b: number): Promise<void> => {
-        let transients = 0;
-        for (;;) {
-          const cur = await d.get(ref(1));
-          try {
-            if (cur === null) await d.putConditional(ref(1), bytes(b), NO_ROW);
-            else await d.putConditional(ref(1), Uint8Array.of(...cur.bytes, b), cur.token);
-            return;
-          } catch (err) {
-            if (isWriteConflictError(err)) continue;
-            if (isTransientError(err) && ++transients <= MAX_TRANSIENT_RETRIES) {
-              // Brief linear backoff — a cold coordinator needs a moment, and this keeps the burst from
-              // hammering it while it settles.
-              await new Promise((r) => setTimeout(r, 50 * transients));
-              continue;
-            }
-            throw err;
-          }
-        }
-      };
-      const want = Array.from({ length: 15 }, (_v, i) => i + 1);
-      await Promise.all(want.map(append));
-      expect([...(await d.get(ref(1)))!.bytes].sort((a, b) => a - b)).toEqual(want);
-    });
-
-    it('lists live chunks ascending, scoped to the segment, tombstones excluded', async () => {
-      const d = makeDriver();
-      for (const k of [9, 2, 65_535, 0, 13])
-        await d.putConditional(ref(k), bytes(k & 0xff), NO_ROW);
-      const { token } = await d.putConditional(ref(4), bytes(4), NO_ROW);
-      await d.deleteConditional(ref(4), token);
-      await d.putConditional({ namespace: 'other', segment: 's', chunkKey: 7 }, bytes(1), NO_ROW);
-      const seen: number[] = [];
-      for await (const row of d.listChunks(SEG)) seen.push(row.chunkKey);
-      expect(seen).toEqual([0, 2, 9, 13, 65_535]);
-    });
-
-    it('rejects out-of-range chunk keys (D7)', async () => {
-      const d = makeDriver();
-      for (const bad of [70_000, -1, 1.5, NaN]) {
-        await expectValidationReject(d.get(ref(bad)));
-      }
-    });
-
-    it('rejects traversal / invalid names on every method (D7)', async () => {
-      const d = makeDriver();
-      for (const name of BAD_NAMES) {
-        await expectValidationReject(d.get({ segment: name, chunkKey: 0 }));
-        await expectValidationReject(d.get({ namespace: name, segment: 's', chunkKey: 0 }));
-        await expectValidationReject(
-          d.putConditional({ segment: name, chunkKey: 0 }, bytes(1), NO_ROW),
-        );
-        await expectValidationReject(d.deleteConditional({ segment: name, chunkKey: 0 }, '1'));
-        await expectValidationReject(drainKeys(d.listChunks({ segment: name })));
-      }
-    });
-  });
-}
-
-/** Drain an async iterable so a generator that validates lazily actually runs (and can reject). */
-async function drainKeys(it: AsyncIterable<{ chunkKey: number }>): Promise<number[]> {
-  const out: number[] = [];
-  for await (const row of it) out.push(row.chunkKey);
-  return out;
 }
 
 /**
@@ -252,8 +108,8 @@ async function drainRecords(it: AsyncIterable<RegistryRecord>): Promise<Registry
 
 /**
  * Contract tests for an {@link IRegistryDriver}. `makeDriver` MUST return a fresh, empty, isolated driver on
- * each call. Mirrors the Warm OCC contract (create / token-fenced CAS / ABA) plus the registry's record
- * semantics (forward currentGen, status, clearable keyId, discovery).
+ * each call. The OCC contract (create / token-fenced CAS / ABA) plus the registry's record semantics (forward
+ * currentGen, status, clearable keyId, discovery).
  */
 export function registryConformance(label: string, makeDriver: () => IRegistryDriver): void {
   describe(`IRegistryDriver conformance: ${label}`, () => {
@@ -274,7 +130,6 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(rec!.segment).toBe('s');
       expect(rec!.currentGen).toBe(3);
       expect(rec!.keyId).toBe('k1');
-      expect(rec!.dirtyChunkCount).toBe(0); // default
       expect(rec!.status).toBe('active'); // default
       expect(rec!.retention).toEqual({ days: 30 });
       expect(rec!.token).toBe(t0);
@@ -282,12 +137,12 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
 
       const { token: t1 } = await d.compareAndSwap(SEG, t0, {
         currentGen: 4,
-        status: 'compacting',
+        residency: { region: 'eu' },
       });
       expect(t1).not.toBe(t0);
       const rec2 = await d.get(SEG);
       expect(rec2!.currentGen).toBe(4);
-      expect(rec2!.status).toBe('compacting');
+      expect(rec2!.residency).toEqual({ region: 'eu' });
       expect(rec2!.createdAt).toBe(rec!.createdAt); // createdAt preserved across CAS
     });
 
@@ -314,36 +169,21 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       );
     });
 
-    it('round-trips non-default status / dirtyChunkCount / governance set at create', async () => {
+    it('round-trips a non-default status + both governance blobs set at create', async () => {
       const d = makeDriver();
       await d.create(SEG, {
         currentGen: 2,
-        dirtyChunkCount: 7,
-        status: 'compacting',
+        status: 'destroyed',
         retention: { days: 30 },
         residency: { region: 'eu' },
       });
       const rec = await d.get(SEG);
       expect(rec).toMatchObject({
         currentGen: 2,
-        dirtyChunkCount: 7,
-        status: 'compacting',
+        status: 'destroyed',
         retention: { days: 30 },
         residency: { region: 'eu' },
       });
-    });
-
-    it('round-trips the daemon-health fields — consecutiveFailures + lastCompactedAt (Phase D)', async () => {
-      const d = makeDriver();
-      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
-      const created = await d.get(SEG);
-      expect(created!.consecutiveFailures).toBe(0); // defaulted on create
-      expect(created!.lastCompactedAt).toBeUndefined(); // absent until first compaction
-      // A successful compaction stamps both via CAS.
-      await d.compareAndSwap(SEG, t0, { lastCompactedAt: 123_456, consecutiveFailures: 3 });
-      const rec = await d.get(SEG);
-      expect(rec!.lastCompactedAt).toBe(123_456);
-      expect(rec!.consecutiveFailures).toBe(3);
     });
 
     it('a patch can set and later CLEAR an optional field (keyId — crypto-shred path)', async () => {
@@ -352,10 +192,10 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { keyId: undefined });
       expect((await d.get(SEG))!.keyId).toBeUndefined();
       // unrelated patch leaves it cleared
-      await d.compareAndSwap(SEG, t1, { dirtyChunkCount: 5 });
+      await d.compareAndSwap(SEG, t1, { residency: { region: 'eu' } });
       const rec = await d.get(SEG);
       expect(rec!.keyId).toBeUndefined();
-      expect(rec!.dirtyChunkCount).toBe(5);
+      expect(rec!.residency).toEqual({ region: 'eu' });
     });
 
     it('round-trips the wrapped-DEK list through create → get → CAS-clear (crypto-shred path)', async () => {
@@ -389,7 +229,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await d.get(SEG))!.retention).toBeUndefined();
       expect((await d.get(SEG))!.residency).toEqual({ region: 'eu' });
       // An unrelated patch leaves retention cleared and residency intact.
-      await d.compareAndSwap(SEG, t1, { dirtyChunkCount: 1 });
+      await d.compareAndSwap(SEG, t1, { keyId: 'k2' });
       const rec = await d.get(SEG);
       expect(rec!.retention).toBeUndefined();
       expect(rec!.residency).toEqual({ region: 'eu' });
@@ -447,7 +287,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
     });
 
     // R8 — `currentGen: null` ("this segment exists and has no Cold generation yet") is a first-class stored
-    // value, not a missing field. It is what makes a warm-only accumulator enumerable, so every driver must
+    // value, not a missing field. It is what lets a retention policy be recorded ahead of the first load, so every driver must
     // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
     // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
     // would leave the pointer at the old generation and read stale Cold data no one asked for.
@@ -466,7 +306,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(listed.map((r) => r.currentGen)).toEqual([null]);
       expect(listed[0]!.retention).toEqual({ expiresAt: 42 });
 
-      // null → 0: the compaction bootstrap publishing a first generation onto an existing row.
+      // null → 0: the first load publishing a generation onto an existing row.
       const { token: t1 } = await d.compareAndSwap(SEG, t0, { currentGen: 0 });
       expect((await d.get(SEG))!.currentGen).toBe(0);
 
@@ -477,10 +317,10 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
 
       // A patch that does not mention `currentGen` must NOT disturb it — the other half of the same trap.
       const cleared = await d.get(SEG);
-      await d.compareAndSwap(SEG, cleared!.token, { dirtyChunkCount: 7 });
+      await d.compareAndSwap(SEG, cleared!.token, { keyId: 'k7' });
       const after = await d.get(SEG);
       expect(after!.currentGen).toBeNull();
-      expect(after!.dirtyChunkCount).toBe(7);
+      expect(after!.keyId).toBe('k7');
     });
 
     // R9 — a `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
@@ -499,7 +339,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const live = makeDriver();
       const { token: t0 } = await live.create(SEG, { currentGen: 3 });
       await expectValidationReject(
-        live.compareAndSwap(SEG, t0, { currentGen: undefined, dirtyChunkCount: 1 }),
+        live.compareAndSwap(SEG, t0, { currentGen: undefined, keyId: 'k1' }),
       );
       expect((await live.get(SEG))!.currentGen).toBe(3); // and the pointer is untouched
     });

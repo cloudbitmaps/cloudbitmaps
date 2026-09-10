@@ -6,7 +6,7 @@ import { CrbmColdChunkSource } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { bulkLoadCrbmGeneration } from '@/index';
 import { LocalFsColdDriver } from '@/drivers/localfs/cold';
-import { CloudRoaring, MemoryWarmDriver } from '@/index';
+import { CloudRoaring } from '@/index';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
 
@@ -23,10 +23,7 @@ afterEach(async () => {
 
 /** Read the whole effective set back through the engine over the bulk-loaded Cold generation. */
 async function readBack(segment = 's'): Promise<number[]> {
-  const store = new CloudRoaring({
-    warm: new MemoryWarmDriver(),
-    cold: new CrbmColdChunkSource(driver),
-  });
+  const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
   const out: number[] = [];
   for await (const id of store.segment(segment).iterate()) out.push(id);
   return out;
@@ -121,10 +118,7 @@ describe('bulkLoadCrbmGeneration (Phase 3b)', () => {
           const want = [...new Set(ids)].sort((a, b) => a - b);
           expect(res.cardinality).toBe(want.length);
 
-          const store = new CloudRoaring({
-            warm: new MemoryWarmDriver(),
-            cold: new CrbmColdChunkSource(d),
-          });
+          const store = new CloudRoaring({ cold: new CrbmColdChunkSource(d) });
           const got: number[] = [];
           for await (const id of store.segment('s').iterate()) got.push(id);
           expect(got).toEqual(want);
@@ -139,10 +133,7 @@ describe('bulkLoadCrbmGeneration (Phase 3b)', () => {
   it('the loaded generation participates in intersection (the seed → query path)', async () => {
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
-    const store = new CloudRoaring({
-      warm: new MemoryWarmDriver(),
-      cold: new CrbmColdChunkSource(driver),
-    });
+    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
     const got: number[] = [];
     for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
     expect(got).toEqual([2, 3, 200_000]);

@@ -15,7 +15,7 @@
  * GCS's `ifGenerationMatch: 0`, and LocalFs's atomic `link`. **Empirically verified against Azurite** that the
  * precondition is enforced on BOTH upload paths below. **Writes stream in constant memory** (Phase 4f model):
  * a small blob is a single conditional `upload`; a larger one is **staged as blocks** (each `stageBlock`
- * flushes and frees ~one block) finished with a conditional `commitBlockList`, so the daemon's write footprint
+ * flushes and frees ~one block) finished with a conditional `commitBlockList`, so a load's write footprint
  * stays ~one block regardless of segment size, up to the advertised `maxObjectBytes`. Drivers may use
  * `node:crypto`; only `core/` is bound by the determinism lint.
  */
@@ -128,8 +128,8 @@ export class AzureBlobColdDriver implements IColdDriver {
       // ever sees a committed block list). Azure has no "abort block list" API (unlike S3's AbortMultipartUpload
       // / GCS's stream.destroy), so on the staged path they linger as *billed* storage until Azure's uncommitted-
       // block GC reaps them (~7 days). Recommend a container lifecycle rule to auto-delete uncommitted blocks
-      // (operational notes); such races are rare (a compaction lease already
-      // serializes the normal path).
+      // (operational notes); such races are rare (two loads of one segment picking the same generation number
+      // at the same moment).
       if (isConditionalConflict(err)) {
         throw new WriteConflictError(
           `generation already exists (write-once): ${key.segment}.${key.generation}`,

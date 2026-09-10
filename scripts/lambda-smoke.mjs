@@ -13,16 +13,30 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 async function exercise(label, m) {
-  for (const name of ['CloudRoaring', 'MemoryWarmDriver', 'MemoryColdChunkSource']) {
+  for (const name of [
+    'CloudRoaring',
+    'estimateCost',
+    'MemoryColdDriver',
+    'MemoryRegistryDriver',
+    'MemoryColdChunkSource',
+    'bulkLoadCrbmGeneration',
+  ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  const seg = new m.CloudRoaring({
-    warm: new m.MemoryWarmDriver(),
-    cold: new m.MemoryColdChunkSource(),
-  }).segment('lambda-smoke');
-  await seg.add(42);
-  await seg.add(70_000); // a second 16-bit chunk → exercises routing + the native bitmap, not just a no-op
-  const ok = (await seg.has(42)) && !(await seg.has(1)) && (await seg.count()) === 2;
+  // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
+  // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
+  // chunk routing and the native bitmap both run rather than a single-container no-op.
+  const cold = new m.MemoryColdDriver();
+  const registry = new m.MemoryRegistryDriver({ now: () => 0 });
+  await m.bulkLoadCrbmGeneration(cold, { segment: 'lambda-smoke', generation: 0 }, [42, 70_000], {
+    registry,
+  });
+  const seg = new m.CloudRoaring({ cold, registry }).segment('lambda-smoke');
+  const ok =
+    (await seg.has(42)) &&
+    (await seg.has(70_000)) &&
+    !(await seg.has(1)) &&
+    (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: roaring round-trip returned a wrong result`);
   console.log(
     `  ${label}: roaring loads + round-trips on ${process.platform}/${process.arch} (node ${process.versions.node})`,

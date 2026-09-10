@@ -2,211 +2,148 @@ import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
   CrbmColdChunkSource,
-  MemoryColdDriver,
-  MemoryRegistryDriver,
-  MemoryWarmDriver,
   bulkLoadCrbmGeneration,
-  compactSegment,
-  findCompactable,
   gcOrphanGenerations,
+  nextGeneration,
   publishGeneration,
   runConsistencyCheck,
-  writeCrbmGeneration,
 } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { aadFor } from '@/core/crypto';
-import { KeyUnavailableError, WriteConflictError } from '@/core/errors';
-import type { CompactionDeps, IKeystore, SegmentRef } from '@/index';
-import type { IRegistryDriver, RegistryPatch, Token } from '@/core/ports';
+import { KeyUnavailableError } from '@/core/errors';
+import type { GovernanceMeta, IColdDriver, IKeystore, IRegistryDriver, SegmentRef } from '@/index';
+import { collect, loadedStore } from '../helpers/loaded';
 
 /**
  * `currentGen: null` — "this segment exists and has **no Cold generation yet**".
  *
- * A **warm-only accumulator** (created by writing to it, never bulk-loaded, never compacted) has no registry row
- * at all, and that is what makes it invisible to `registry.list()` and therefore to every fleet-wide operation
- * in the library: retention sweeps, `checkConsistency`, `eraseNamespace`, discovery. A row is the fix, but the
- * obvious row — `currentGen: 0` with no object behind it — is the forbidden `missing-cold-generation` state, and
- * it breaks *per operation* rather than cleanly (`has()` short-circuits on the Warm delta and keeps answering
- * while `count()` resolves the generation and throws). So the row's pointer must be able to say "none yet".
+ * A segment enters the library by having a generation **loaded** into it, and the publish that lands the first
+ * generation is what creates its registry row. So between "a segment is intended" and "a segment has data" there
+ * is nothing at all: no row, and therefore no entry in `registry.list()` — which is what every fleet-wide
+ * operation enumerates from (retention sweeps, `checkConsistency`, `eraseNamespace`, discovery).
  *
- * The bar these tests hold the change to: **a null-gen row must be indistinguishable from no row on every read
- * path**, and every writer that reasons about generations (`compactSegment`'s bootstrap, `publishGeneration`,
- * `gcOrphanGenerations`, `runConsistencyCheck`) must treat it as "no Cold data", never as generation 0.
+ * That gap matters for exactly one caller: `setRetention`, which records a policy on a segment whose first load
+ * has not happened yet (a daily bucket given a 30-day expiry the moment it is named). A policy on an
+ * unenumerable segment would never be swept, so the policy write mints the row — and the obvious row,
+ * `currentGen: 0` with no object behind it, is the forbidden `missing-cold-generation` state. Hence the third
+ * pointer value: **`null`, "enumerable, and claiming no Cold data"**. `retention.ts` is the only writer that
+ * mints one; that path is tested in `retention-policy.test.ts`.
+ *
+ * The bar this file holds the pointer to: **a null-gen row must be indistinguishable from no row on every read
+ * path**, and every writer that reasons about generations (`publishGeneration`, `nextGeneration`,
+ * `gcOrphanGenerations`, `runConsistencyCheck`) must read it as "no Cold data", never as generation 0.
  */
 
 const SEG: SegmentRef = { segment: 's' };
-const OWNER = 'worker-1';
 
-function world(keystore?: IKeystore) {
-  const cold = new MemoryColdDriver();
-  const warm = new MemoryWarmDriver();
-  const registry = new MemoryRegistryDriver();
-  const deps: CompactionDeps = { cold, warm, registry, clock: { now: () => 1_000 }, keystore };
-  // A fresh store per call: CrbmColdChunkSource pins the resolved generation per lifetime.
-  const store = (reg: IRegistryDriver = registry): CloudRoaring =>
-    new CloudRoaring({
-      warm,
-      cold: new CrbmColdChunkSource(cold, { registry: reg, keystore }),
-      retry: false,
-    });
-  return { cold, warm, registry, deps, store };
+async function world(keystore?: IKeystore) {
+  const w = await loadedStore({}, { keystore, retry: false });
+  /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
+  const reader = (): CloudRoaring =>
+    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+  return { ...w, reader };
 }
 
-async function members(store: CloudRoaring, seg = 's'): Promise<number[]> {
-  const out: number[] = [];
-  for await (const id of store.segment(seg).iterate()) out.push(id);
-  return out;
-}
-
-async function warmRowCount(warm: MemoryWarmDriver, ref: SegmentRef): Promise<number> {
-  let n = 0;
-  for await (const row of warm.listChunks(ref)) {
-    void row;
-    n += 1;
-  }
-  return n;
-}
-
-async function coldGenerations(cold: MemoryColdDriver, ref: SegmentRef): Promise<number[]> {
+async function coldGenerations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
   for await (const key of cold.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
 }
 
-/**
- * Wrap a registry driver, interposing on the mutating methods. Used to reproduce the contention that makes the
- * gen-0 publish unsafe: a null-gen row is an ORDINARY row, so `setRetention`, the dirty-count hint and erasure
- * can all CAS it — a conflict there does not mean "someone else published gen 0".
- */
-function wrapRegistry(
-  base: IRegistryDriver,
-  hooks: {
-    onCreate?: () => Promise<void> | void;
-    onCas?: (patch: RegistryPatch) => Promise<'pass' | 'conflict'> | 'pass' | 'conflict';
-  },
-): IRegistryDriver {
-  return {
-    capabilities: () => base.capabilities(),
-    get: (ref) => base.get(ref),
-    create: async (ref, rec) => {
-      await hooks.onCreate?.();
-      return base.create(ref, rec);
-    },
-    compareAndSwap: async (ref, expected: Token, patch) => {
-      const verdict = (await hooks.onCas?.(patch)) ?? 'pass';
-      if (verdict === 'conflict') throw new WriteConflictError('interposed registry conflict');
-      return base.compareAndSwap(ref, expected, patch);
-    },
-    list: (ns) => base.list(ns),
-    delete: (ref) => base.delete(ref),
-  };
-}
-
-/** The Part-1 row: a live segment that has never had a Cold generation. */
+/** The row a pre-load `setRetention` leaves behind: a live segment that has never had a Cold generation. */
 async function createNullGenRow(
   registry: IRegistryDriver,
   ref: SegmentRef = SEG,
-  retention?: Record<string, unknown>,
+  retention?: GovernanceMeta,
 ): Promise<void> {
   await registry.create(ref, { currentGen: null, retention });
 }
 
 describe('a registry row with no Cold generation (currentGen: null)', () => {
   describe('read path — indistinguishable from having no row at all', () => {
-    it('answers every read exactly like the same warm-only segment with no row', async () => {
-      // Two worlds, same writes. The only difference is that one has a Part-1 row.
-      const withRow = world();
-      const withoutRow = world();
-      await createNullGenRow(withRow.registry);
+    it('answers every read exactly like the same unloaded segment with no row', async () => {
+      // Two worlds, nothing loaded in either. The only difference is that one carries a policy row.
+      const withRow = await world();
+      const withoutRow = await world();
+      await createNullGenRow(withRow.registry, SEG, { expiresAt: 9_999_999_999_999 });
 
       for (const w of [withRow, withoutRow]) {
-        const s = w.store().segment('s');
-        await s.addMany([1, 2, 3, 100_000]);
-        await s.remove(2);
-      }
-
-      for (const w of [withRow, withoutRow]) {
-        const s = w.store().segment('s');
-        expect(await s.has(1)).toBe(true);
-        expect(await s.has(2)).toBe(false); // the tombstone still applies
-        expect(await s.has(999)).toBe(false);
-        expect(await s.count()).toBe(3);
-        expect(await members(w.store())).toEqual([1, 3, 100_000]);
+        const s = w.reader().segment('s');
+        expect(await s.has(1)).toBe(false);
+        expect(await s.count()).toBe(0);
+        expect(await collect(s.iterate())).toEqual([]);
       }
       // And the row is still Cold-less — a read must never publish a pointer as a side effect.
       expect((await withRow.registry.get(SEG))!.currentGen).toBeNull();
     });
 
     it('resolves no Cold generation, so `currentGeneration` reports null (not 0)', async () => {
-      const w = world();
+      const w = await world();
       await createNullGenRow(w.registry);
       const cold = new CrbmColdChunkSource(w.cold, { registry: w.registry });
       expect(await cold.currentGeneration(SEG)).toBeNull();
     });
 
-    it('intersects with a Cold-backed segment without resolving a phantom generation', async () => {
-      const w = world();
-      await createNullGenRow(w.registry, { segment: 'live' });
-      await bulkLoadCrbmGeneration(w.cold, { segment: 'cold', generation: 0 }, [1, 2, 3], {
-        registry: w.registry,
-      });
-      await w.store().segment('live').addMany([2, 3, 4]);
+    it('intersects with a loaded segment from either side, resolving no phantom generation', async () => {
+      const w = await world();
+      await createNullGenRow(w.registry, { segment: 'pending' });
+      await w.load('loaded', [1, 2, 3]);
 
-      const store = w.store();
-      const hit: number[] = [];
-      for await (const id of store.segment('live').intersect([store.segment('cold')])) hit.push(id);
-      expect(hit).toEqual([2, 3]);
+      const store = w.reader();
+      const pending = store.segment('pending');
+      const loaded = store.segment('loaded');
+      // Operand order decides which side resolves first and which is skipped chunk-by-chunk, so both are pinned.
+      expect(await collect(pending.intersect([loaded]))).toEqual([]);
+      expect(await collect(loaded.intersect([pending]))).toEqual([]);
+    });
+
+    it('unions and andNots as an empty operand, not a broken one', async () => {
+      const w = await world();
+      await createNullGenRow(w.registry, { segment: 'pending' });
+      await w.load('loaded', [1, 2, 100_000]);
+
+      const store = w.reader();
+      const pending = store.segment('pending');
+      const loaded = store.segment('loaded');
+      expect(await collect(pending.union([loaded]))).toEqual([1, 2, 100_000]);
+      expect(await collect(loaded.union([pending]))).toEqual([1, 2, 100_000]);
+      expect(await collect(loaded.andNot([pending]))).toEqual([1, 2, 100_000]);
+      expect(await collect(pending.andNot([loaded]))).toEqual([]);
     });
 
     it('a `currentGen: 0` row with no object is the state this replaces — and it still fails loudly', async () => {
-      // The control for the test above: if `null` were "the same as 0" the two would behave alike. They do not —
-      // this is the `missing-cold-generation` breakage that made a naive row worse than no row.
-      const w = world();
+      // The control for the tests above: if `null` were "the same as 0" the two would behave alike. They do not —
+      // this is the `missing-cold-generation` breakage that made a naive row worse than no row. Note that it now
+      // fails the SAME way on every read verb: with no per-op delta in front of the generation, there is no verb
+      // that can keep answering off a second source while its neighbour throws.
+      const w = await world();
       await w.registry.create(SEG, { currentGen: 0 });
-      await w.store().segment('s').addMany([1, 2, 3]);
-      await expect(w.store().segment('s').count()).rejects.toThrow();
+      const s = w.reader().segment('s');
+      await expect(s.count()).rejects.toThrow();
+      await expect(s.has(1)).rejects.toThrow();
+      await expect(collect(s.iterate())).rejects.toThrow();
     });
   });
 
   describe('discovery + fleet-wide operations', () => {
     it('is enumerable — the reason the row exists at all', async () => {
-      const w = world();
+      const w = await world();
       await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 2]);
 
       const listed: string[] = [];
       for await (const rec of w.registry.list()) listed.push(rec.segment);
       expect(listed).toEqual(['s']);
 
-      // The control: without a row the identical segment is invisible to every fleet-wide operation.
-      const blind = world();
-      await blind.store().segment('s').addMany([1, 2]);
+      // The control: with no row, an intended-but-unloaded segment is invisible to every fleet-wide operation,
+      // so a policy recorded on it would never be swept.
+      const blind = await world();
       const none: string[] = [];
       for await (const rec of blind.registry.list()) none.push(rec.segment);
       expect(none).toEqual([]);
     });
 
-    it('is a compaction candidate (findCompactable sees it via the registry)', async () => {
-      const w = world();
-      await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 100_000]); // 2 chunks → 2 dirty Warm rows
-
-      const candidates = await findCompactable(w.deps, { threshold: 1 });
-      expect(candidates).toEqual([
-        {
-          ref: { namespace: undefined, segment: 's' },
-          dirtyChunks: 2,
-          currentGen: null,
-          lastCompactedAt: undefined,
-        },
-      ]);
-    });
-
     it('is consistent, not torn: checkConsistency does not report missing-cold-generation', async () => {
-      const w = world();
+      const w = await world();
       await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 2]);
 
       const report = await runConsistencyCheck({ cold: w.cold, registry: w.registry });
       expect(report).toEqual({ checked: 1, inconsistent: [], errored: [] });
@@ -214,7 +151,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
 
     it('control: the same scan DOES report a row whose generation is genuinely missing', async () => {
       // Without this, the assertion above could pass for the wrong reason (a scan that reports nothing ever).
-      const w = world();
+      const w = await world();
       await w.registry.create(SEG, { currentGen: 4 });
       const report = await runConsistencyCheck({ cold: w.cold, registry: w.registry });
       expect(report.inconsistent).toEqual([
@@ -223,181 +160,9 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
     });
   });
 
-  describe('compaction bootstrap — publishing the first generation onto an existing row', () => {
-    it('takes the bootstrap path and CASes gen 0 onto the row, preserving its identity', async () => {
-      const w = world();
-      await createNullGenRow(w.registry, SEG, { expiresAt: 9_999 });
-      const before = (await w.registry.get(SEG))!;
-      await w.store().segment('s').addMany([1, 2, 3, 100_000]);
-
-      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-      // `fromGen: null` — there was no generation to merge onto, so this is a bootstrap, not `g + 1` from nothing.
-      expect(res).toMatchObject({ compacted: true, fromGen: null, toGen: 0, purged: 2 });
-
-      const after = (await w.registry.get(SEG))!;
-      expect(after.currentGen).toBe(0);
-      expect(after.status).toBe('active');
-      expect(after.createdAt).toBe(before.createdAt); // CAS'd in place — not deleted and recreated
-      expect(after.retention).toEqual({ expiresAt: 9_999 }); // the policy that needed the row survives it
-      expect(await warmRowCount(w.warm, SEG)).toBe(0); // committed, so the pinned rows were purged
-      expect(await members(w.store())).toEqual([1, 2, 3, 100_000]);
-    });
-
-    it('is a no-op on a null-gen row with nothing in Warm (no phantom generation 0)', async () => {
-      const w = world();
-      await createNullGenRow(w.registry);
-      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: false, reason: 'clean', fromGen: null });
-      expect((await w.registry.get(SEG))!.currentGen).toBeNull(); // still Cold-less
-      expect(await coldGenerations(w.cold, SEG)).toEqual([]);
-    });
-
-    it('does NOT purge Warm when the pointer never lands (the lost-write this change had to avoid)', async () => {
-      // `create` would throw a conflict against the existing row; swallowing that as "someone else published"
-      // and purging would delete the only copy of the data while the row still says "no Cold generation".
-      const w = world();
-      await createNullGenRow(w.registry);
-      const registry = wrapRegistry(w.registry, { onCas: () => 'conflict' }); // every publish attempt fails
-      await w.store().segment('s').addMany([1, 2, 3]);
-
-      const res = await compactSegment(SEG, { ...w.deps, registry }, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
-      expect((await w.registry.get(SEG))!.currentGen).toBeNull(); // nothing was published…
-      expect(await warmRowCount(w.warm, SEG)).toBe(1); // …so the Warm row is still the source of truth
-      expect(await members(w.store())).toEqual([1, 2, 3]); // and no data was lost
-    });
-
-    it('retries a transient conflict and commits (a competing CAS moved the token)', async () => {
-      const w = world();
-      await createNullGenRow(w.registry);
-      let first = true;
-      const registry = wrapRegistry(w.registry, {
-        onCas: async (patch) => {
-          if (!first || !('currentGen' in patch)) return 'pass';
-          first = false;
-          // Someone else's write (a retention update, a dirty-count hint) landed between our read and our CAS.
-          const rec = (await w.registry.get(SEG))!;
-          await w.registry.compareAndSwap(SEG, rec.token, { dirtyChunkCount: 3 });
-          return 'conflict';
-        },
-      });
-      await w.store().segment('s').addMany([1, 2, 3]);
-
-      const res = await compactSegment(SEG, { ...w.deps, registry }, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: true, fromGen: null, toGen: 0 });
-      expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-      expect(await members(w.store())).toEqual([1, 2, 3]);
-    });
-
-    it('refuses to resurrect a segment tombstoned while it was writing gen 0', async () => {
-      const w = world();
-      await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 2, 3]);
-      const registry = wrapRegistry(w.registry, {
-        onCas: async (patch) => {
-          if (!('currentGen' in patch)) return 'pass';
-          const rec = (await w.registry.get(SEG))!;
-          if (rec.status !== 'destroyed') {
-            // A `dropSegment` lands in the window between the object write and the publish.
-            await w.registry.compareAndSwap(SEG, rec.token, { status: 'destroyed' });
-            return 'conflict'; // its CAS bumped the token, exactly as a real drop would
-          }
-          return 'pass';
-        },
-      });
-
-      const res = await compactSegment(SEG, { ...w.deps, registry }, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
-      const rec = (await w.registry.get(SEG))!;
-      expect(rec.status).toBe('destroyed'); // the tombstone stands
-      expect(rec.currentGen).toBeNull(); // never pointed at the generation we wrote
-    });
-
-    it('reuses a DEK the row already carries instead of minting a second one', async () => {
-      const keystore = new InProcessKeystore({
-        keys: { k1: randomBytes(32) },
-        activeKeyId: 'k1',
-      });
-      const w = world(keystore);
-      const minted = await keystore.createDek();
-      await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
-      await w.store().segment('s').addMany([1, 2, 3]);
-
-      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: true, toGen: 0 });
-      // The row's wrappings are what a reader resolves the key from, so they must be the ones gen 0 was written
-      // under. A freshly minted DEK here would leave the generation undecryptable.
-      expect((await w.registry.get(SEG))!.wrappedDeks).toEqual(minted.wrapped);
-      expect(await members(w.store())).toEqual([1, 2, 3]);
-    });
-
-    it('a bootstrap that LOST the gen-0 write race never publishes its own DEK', async () => {
-      // The race, and it is the likely interleaving rather than an exotic one: the loser skips `verifyGeneration`
-      // (a full re-read of the object it did not write), so it reaches the registry FIRST. If it publishes the DEK
-      // it minted, the winner then sees `currentGen: 0`, concludes its own publish landed, and purges the Warm rows
-      // that held the only readable copy — leaving gen 0 encrypted under the winner's key while the row carries the
-      // loser's. Reads fail `AEAD authentication failed` under an ACTIVE pointer, and `checkConsistency` cannot see
-      // it because the object is present. Found by three independent adversarial reviews; pre-existing on `main`
-      // through the `create` path, and the nullable pointer added a second way in through the CAS.
-      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-      const w = world(keystore);
-      await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 2, 3]);
-
-      // Stand in for the winner: gen 0 already exists in Cold, encrypted under a DEK that is NOT this worker's.
-      const winner = await keystore.createDek();
-      const gen0 = { ...SEG, generation: 0 };
-      await writeCrbmGeneration(
-        w.cold,
-        gen0,
-        [{ chunkKey: 0, bitmap: SafeBitmap.fromValues([7, 8, 9]) }],
-        {
-          crypto: { aead: winner.aead, aadFor: (scope) => aadFor(gen0, 0, scope) },
-        },
-      );
-
-      // Our bootstrap therefore loses the write-once race, mints its own DEK, and must publish NOTHING.
-      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
-      const rec = (await w.registry.get(SEG))!;
-      expect(rec.currentGen).toBeNull(); // no pointer at an object we cannot decrypt…
-      expect(rec.wrappedDeks).toBeUndefined(); // …and no key material of ours on the row
-      expect(await warmRowCount(w.warm, SEG)).toBe(1); // the only copy of our data survives
-      expect(await members(w.store())).toEqual([1, 2, 3]);
-    });
-
-    it('a cleartext bootstrap MAY still adopt an orphan gen 0 — there is no key to get wrong', async () => {
-      // The other half of the same rule. Refusing to adopt unconditionally would strand a crashed bootstrap's
-      // object forever (nothing else collects a null-gen row's generations), so only the encrypted case bails.
-      const w = world();
-      await createNullGenRow(w.registry);
-      await w.store().segment('s').addMany([1, 2, 3]);
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [7, 8, 9]); // orphan, unpublished
-
-      const res = await compactSegment(SEG, w.deps, { owner: OWNER });
-      expect(res).toMatchObject({ compacted: false, reason: 'bootstrap-raced', purged: 0 });
-      expect((await w.registry.get(SEG))!.currentGen).toBe(0); // adopted, so the object is no longer orphaned
-      expect(await warmRowCount(w.warm, SEG)).toBe(1); // still not purged — those rows are not in gen 0
-    });
-
-    it('fails fast when the row is encrypted but compaction has no keystore', async () => {
-      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-      const w = world(); // …and this world has no keystore wired
-      const minted = await keystore.createDek();
-      await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
-      await w.store().segment('s').addMany([1, 2, 3]);
-
-      // Silently writing cleartext gen 0 under an encrypted row would be the worst outcome: readable bytes
-      // attached to a row that claims they are encrypted.
-      await expect(compactSegment(SEG, w.deps, { owner: OWNER })).rejects.toBeInstanceOf(
-        KeyUnavailableError,
-      );
-    });
-  });
-
-  describe('the other generation writers', () => {
+  describe('the generation writers', () => {
     it('publishGeneration advances a null pointer instead of comparing against it', async () => {
-      const w = world();
+      const w = await world();
       await createNullGenRow(w.registry, SEG, { expiresAt: 1 });
       await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3]); // no registry ⇒ unpublished
 
@@ -405,17 +170,32 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const rec = (await w.registry.get(SEG))!;
       expect(rec.currentGen).toBe(0);
       expect(rec.retention).toEqual({ expiresAt: 1 }); // publishing is not a rewrite
-      expect(await members(w.store())).toEqual([1, 2, 3]);
+      expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3]);
     });
 
     it('bulkLoadCrbmGeneration lands on a segment that already has a null-gen row', async () => {
-      const w = world();
+      const w = await world();
       await createNullGenRow(w.registry);
       await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [7, 8, 9], {
         registry: w.registry,
       });
       expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-      expect(await members(w.store())).toEqual([7, 8, 9]);
+      expect(await collect(w.reader().segment('s').iterate())).toEqual([7, 8, 9]);
+    });
+
+    it('numbering and GC both read the row as "no Cold data", not as generation 0', async () => {
+      // The two helpers that do arithmetic on the pointer. `nextGeneration` must offer 0 (a null pointer is not
+      // "generation 0 exists", so the first load is still 0), and GC must delete nothing — "below current"
+      // selects nothing, and an object present here is indistinguishable from a load about to publish it.
+      // `generation-gc.test.ts` owns the full matrix for both; this pins the null-pointer row of it.
+      const w = await world();
+      await createNullGenRow(w.registry);
+      expect(await nextGeneration(SEG, w)).toBe(0);
+
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1]); // written, not yet published
+      expect(await gcOrphanGenerations(SEG, w, { keep: 0 })).toEqual([]);
+      expect(await coldGenerations(w.cold, SEG)).toEqual([0]);
+      expect(await nextGeneration(SEG, w)).toBe(1); // …and the object counts, so a retry skips past it
     });
 
     it('an encrypted bulk-load onto a null-gen row stores the freshly minted DEK on the row', async () => {
@@ -423,7 +203,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       // like the create path does. If it only moved the pointer, the generation would be encrypted under a key
       // whose wrapping was never stored — written, paid for, and permanently unreadable.
       const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-      const w = world(keystore);
+      const w = await world(keystore);
       await createNullGenRow(w.registry);
 
       await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [4, 5, 6], {
@@ -433,16 +213,36 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const rec = (await w.registry.get(SEG))!;
       expect(rec.currentGen).toBe(0);
       expect(rec.wrappedDeks?.length).toBeGreaterThan(0);
-      expect(await members(w.store())).toEqual([4, 5, 6]);
+      expect(await collect(w.reader().segment('s').iterate())).toEqual([4, 5, 6]);
+    });
+
+    it('reuses a DEK the row already carries instead of minting a second one', async () => {
+      // The null-pointer variant of "one DEK per segment" (`encryption-lifecycle.test.ts` pins it across
+      // generations). Here there is no generation to infer the key from, only the row: the wrappings on it are
+      // what a reader resolves from, so they must be the ones generation 0 was written under. A freshly minted
+      // DEK here would leave the generation undecryptable.
+      const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
+      const w = await world(keystore);
+      const minted = await keystore.createDek();
+      await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
+
+      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+        registry: w.registry,
+        keystore,
+      });
+      expect((await w.registry.get(SEG))!.wrappedDeks).toEqual(minted.wrapped);
+      expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3]);
     });
 
     it('refuses to bulk-load a CLEARTEXT generation onto a row that claims encryption', async () => {
       // Writing cleartext bytes under a row that still advertises `wrappedDeks` is not merely untidy: it makes
       // `destroySegment` emit `segment.erase` — the audit event defined as "unreadable everywhere, backups
       // included" — for plaintext that stays readable from any copy. An audit trail that over-attests is the one
-      // failure it exists to prevent, so the state is refused rather than created. Same fail-fast compaction does.
+      // failure it exists to prevent, so the state is refused rather than created. The null pointer is what makes
+      // this its own case: a writer that only checked the row when the pointer was non-null would take the
+      // first-publish path here and skip the check entirely.
       const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-      const w = world(); // …and this world has no keystore wired
+      const w = await world(); // …and this world has no keystore wired
       const minted = await keystore.createDek();
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
 
@@ -462,7 +262,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       // the key entirely when there is nothing to store — the branch for a non-null pointer never touches it, and
       // the two must not disagree.
       const keystore = new InProcessKeystore({ keys: { k1: randomBytes(32) }, activeKeyId: 'k1' });
-      const w = world();
+      const w = await world();
       const minted = await keystore.createDek();
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
       await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3]); // object only, unpublished
@@ -471,25 +271,6 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const rec = (await w.registry.get(SEG))!;
       expect(rec.currentGen).toBe(0);
       expect(rec.wrappedDeks).toEqual(minted.wrapped);
-    });
-
-    it('gcOrphanGenerations deletes nothing while the pointer is null', async () => {
-      // A bootstrap may have just written gen 0 and be about to publish it; deleting here would race that into a
-      // dangling pointer. There is also no "below current" to compute.
-      const w = world();
-      await createNullGenRow(w.registry);
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1]);
-      expect(await gcOrphanGenerations(SEG, w.deps, { keep: 0 })).toEqual([]);
-      expect(await coldGenerations(w.cold, SEG)).toEqual([0]);
-    });
-
-    it('control: it still collects superseded generations once a pointer exists', async () => {
-      const w = world();
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1]);
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2]);
-      await w.registry.create(SEG, { currentGen: 1 });
-      expect(await gcOrphanGenerations(SEG, w.deps, { keep: 0 })).toEqual([0]);
-      expect(await coldGenerations(w.cold, SEG)).toEqual([1]);
     });
   });
 });

@@ -3,10 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
 import {
-  CloudRoaring,
   LocalFsColdDriver,
   LocalFsRegistryDriver,
-  LocalFsWarmDriver,
   SafeBitmap,
   bulkLoadCrbmGeneration,
 } from '@/index';
@@ -30,22 +28,26 @@ describe('export-segments CLI', () => {
         parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_FORMAT: 'csv' }),
       ).toThrow(/CR_EXPORT_FORMAT/);
     });
-    it('treats an empty CR_EXPORT_NAMESPACE as no filter; parses CR_EXPORT_SEGMENTS (seg / ns/seg)', () => {
+    it('treats an empty CR_EXPORT_NAMESPACE as no filter', () => {
       expect(
         parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_NAMESPACE: '' })
           .namespace,
       ).toBeUndefined();
-      const cfg = parseConfig({
-        CR_EXPORT_ROOT: '/x',
-        CR_EXPORT_OUT: '/o',
-        CR_EXPORT_SEGMENTS: 'a, ns/b ,',
-      });
-      expect(cfg.segments).toEqual([{ segment: 'a' }, { namespace: 'ns', segment: 'b' }]);
+      expect(
+        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_NAMESPACE: 'ns' })
+          .namespace,
+      ).toBe('ns');
     });
-    it('rejects a malformed CR_EXPORT_SEGMENTS entry (fails fast, not silently)', () => {
+    it('ignores an unknown variable rather than failing (CR_EXPORT_SEGMENTS is retired)', () => {
+      // The escape hatch existed for a segment that had no registry row because it was written by `add()`
+      // alone. Every loaded segment publishes a row, so the registry is complete by construction and there is
+      // nothing left for the variable to reach. An operator's stale script must still run.
       expect(() =>
-        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'ns/../x' }),
-      ).toThrow();
+        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a,ns/b' }),
+      ).not.toThrow();
+      expect(
+        parseConfig({ CR_EXPORT_ROOT: '/x', CR_EXPORT_OUT: '/o', CR_EXPORT_SEGMENTS: 'a' }),
+      ).toEqual({ root: '/x', out: '/o', format: 'roaring', namespace: undefined });
     });
   });
 
@@ -61,21 +63,23 @@ describe('export-segments CLI', () => {
       await rm(out, { recursive: true, force: true });
     });
 
-    it('exports every registered segment to portable roaring files + a complete manifest (merges warm)', async () => {
-      // Seed two segments through the SAME LocalFs dirs the CLI reads, plus a warm delta on `a`.
+    it('exports every registered segment to portable roaring files + a complete manifest', async () => {
+      // Seed two segments through the SAME LocalFs dirs the CLI reads, and give `a` a second generation so the
+      // export is pinned to the CURRENT one rather than to whatever was published first.
       const cold = new LocalFsColdDriver(join(root, 'cold'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      const warm = new LocalFsWarmDriver(join(root, 'warm'));
       await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
       await bulkLoadCrbmGeneration(cold, { namespace: 'ns', segment: 'b', generation: 0 }, [9], {
         registry,
       });
-      await new CloudRoaring({ warm, cold, registry, retry: false }).segment('a').add(4);
+      await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 1 }, [1, 2, 3, 4], {
+        registry,
+      });
 
       const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
       expect(manifest.totalSegments).toBe(2);
 
-      // Files decode to the effective sets (a merged its warm add).
+      // Files decode to the current generation of each segment.
       expect(roaringIds(await readFile(join(out, '_default', 'a.roaring')))).toEqual([1, 2, 3, 4]);
       expect(roaringIds(await readFile(join(out, 'ns', 'b.roaring')))).toEqual([9]);
 
@@ -165,20 +169,22 @@ describe('export-segments CLI', () => {
       expect(mani.failed.map((f) => f.segment)).toEqual(['bad']); // persisted so an operator sees the gap
     });
 
-    it('CR_EXPORT_SEGMENTS includes an all-warm (unregistered) segment', async () => {
+    it('needs no escape hatch: a segment written without a registry is invisible, and says so', async () => {
+      // What replaced CR_EXPORT_SEGMENTS. A load that passes a registry publishes a row, so the registry is a
+      // complete index of every loaded segment and enumeration cannot miss one. A load that passes NO registry
+      // writes an object nothing points at — the object is still readable by any roaring library (that is the
+      // format's promise), but this CLI enumerates the registry it was given, so such a segment is absent from
+      // the dump rather than silently half-exported. Pinned because it is the one gap the retired variable used
+      // to paper over.
       const cold = new LocalFsColdDriver(join(root, 'cold'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      const warm = new LocalFsWarmDriver(join(root, 'warm'));
       await bulkLoadCrbmGeneration(cold, { segment: 'reg', generation: 0 }, [1], { registry });
-      // 'warmonly' written via add() only — no registry row, so it's invisible without the escape hatch.
-      await new CloudRoaring({ warm, cold, registry, retry: false }).segment('warmonly').add(1000);
+      await bulkLoadCrbmGeneration(cold, { segment: 'orphan', generation: 0 }, [1000]); // no registry
 
-      const manifest = await main(
-        { CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out, CR_EXPORT_SEGMENTS: 'warmonly' },
-        () => 0,
-      );
-      expect(manifest.segments.map((s) => s.segment).sort()).toEqual(['reg', 'warmonly']);
-      expect(roaringIds(await readFile(join(out, '_default', 'warmonly.roaring')))).toEqual([1000]);
+      const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
+      expect(manifest.segments.map((s) => s.segment)).toEqual(['reg']);
+      expect(manifest.failed).toEqual([]); // not a failure — it was never enumerated
+      expect(await readdir(join(out, '_default'))).toEqual(['reg.roaring']);
     });
 
     it('fsSink.abort discards the .part (no file committed)', async () => {

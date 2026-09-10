@@ -27,7 +27,7 @@ export function chunkRefKey(ref: ChunkRef): string {
 /**
  * HOT-cache key for a chunk scoped to a specific Cold **generation** — {@link chunkRefKey} plus the generation
  * (space-delimited, injection-proof exactly as above). Keying the decoded-chunk cache by generation means a
- * compaction bump naturally misses the cache instead of serving a stale pre-compaction chunk (gap #4); the
+ * generation bump (a load's publish) naturally misses the cache instead of serving a stale superseded chunk; the
  * superseded-generation entries age out under the LRU ceiling (no active purge needed).
  */
 export function chunkGenKey(ref: ChunkRef, generation: number): string {
@@ -36,9 +36,8 @@ export function chunkGenKey(ref: ChunkRef, generation: number): string {
 
 /**
  * Deterministic FNV-1a shard assignment for a segment key — dependency-free, stable across workers and
- * restarts. One definition, because compaction discovery and the retention sweep must agree on it exactly: if
- * they disagreed, a worker would compact one slice and retire another, and the union across workers would be
- * neither disjoint nor complete.
+ * restarts. One definition, so every sharded fleet operation (today the retention sweep) agrees on it exactly:
+ * two definitions that disagreed would make the union across workers neither disjoint nor complete.
  */
 export function shardOf(key: string, totalShards: number): number {
   let h = 0x811c9dc5;
