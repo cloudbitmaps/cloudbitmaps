@@ -5,7 +5,7 @@
 //
 // `scripts/leak-scan.cjs` in its default mode enumerates **tracked** files, and its `--history` mode enumerates
 // git blobs. Neither can see `dist/` — it is gitignored — yet `dist/` is the overwhelming majority of the
-// published bytes, and tsup preserves JSDoc while the sourcemaps carry `sourcesContent`, i.e. every comment
+// published bytes, and the declaration build preserves JSDoc while the sourcemaps carry `sourcesContent`, i.e. every comment
 // from `src` verbatim. So the one artifact a consumer actually downloads is the one artifact the existing
 // modes structurally cannot inspect. The scan-the-tarball recipe was written down in leak-scan.cjs's header
 // from the start; this file is that recipe, executable and wired into the release gate, because a recipe a
@@ -26,7 +26,7 @@
 // The obvious worry, answered: the HARD class includes absolute local paths (`/Users/…`, `/home/…`), and a CI
 // runner builds under a `/home/<user>/work/…` path — so would this step go permanently red on CI? (Written with
 // a placeholder rather than the real runner path on purpose: the first draft of this comment spelled it out and
-// tripped the scanner's own rule, which is a fair demonstration that the rule works.) No. tsup writes
+// tripped the scanner's own rule, which is a fair demonstration that the rule works.) No. esbuild writes
 // sourcemap `sources` RELATIVE to the outfile and sets no `sourceRoot`, so no build-root path reaches the
 // tarball. Verified rather than assumed: the same scan is clean locally, where the build root is an absolute
 // `/Users/…` path that this very regex would have caught. If it ever does fire, the finding is real.

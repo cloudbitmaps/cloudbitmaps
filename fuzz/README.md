@@ -28,6 +28,7 @@ property tests' job). An escape is a finding; libFuzzer writes the reproducer un
 ## Run
 
 ```sh
+pnpm fuzz:install           # once per clone: installs jazzer into fuzz/ (kept out of the root dependency graph)
 pnpm fuzz:deser             # 60s default; FUZZ_SECONDS=600 pnpm fuzz:deser for longer
 pnpm fuzz:index
 pnpm fuzz:crbm

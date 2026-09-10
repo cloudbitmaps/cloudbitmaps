@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Pre-commit: format and lint exactly the files being committed, then re-stage them.
+# Installed by `pnpm install` (the `prepare` script sets `git config core.hooksPath .githooks`).
+# Replaces husky + lint-staged with something we can read; see CONTRIBUTING.md § Dependency policy.
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# A file that is staged AND has further unstaged edits would have its unstaged hunks swept into the
+# commit by `git add` below. lint-staged handled this with a stash dance; we refuse and say why.
+partial=$(comm -12 <(printf '%s\n' "$staged" | sort) <(git diff --name-only | sort) || true)
+if [ -n "$partial" ]; then
+  echo "pre-commit: these files are partially staged (staged + unstaged edits):" >&2
+  printf '  %s\n' $partial >&2
+  echo "Stage the whole file (git add <file>) or set the rest aside (git stash push --keep-index) and retry." >&2
+  exit 1
+fi
+
+ts=$(printf '%s\n' "$staged" | grep -E '\.ts$' || true)
+fmt=$(printf '%s\n' "$staged" | grep -E '\.(ts|json|yml|yaml)$' || true)
+
+if [ -n "$ts" ]; then pnpm exec eslint --fix -- $ts; fi
+if [ -n "$fmt" ]; then pnpm exec prettier --write --ignore-unknown -- $fmt; fi
+if [ -n "$fmt" ]; then git add -- $fmt; fi

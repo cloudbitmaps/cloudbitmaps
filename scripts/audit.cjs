@@ -28,7 +28,7 @@ if (threshold === undefined) {
 }
 const allow = new Set((pkg.pnpm && pkg.pnpm.auditConfig && pkg.pnpm.auditConfig.ignoreGhsas) || []);
 
-let raw = '';
+let raw;
 try {
   // pnpm exits non-zero when advisories exist; we still want the JSON, so capture stdout on throw too.
   raw = execSync('pnpm audit --prod --json', {

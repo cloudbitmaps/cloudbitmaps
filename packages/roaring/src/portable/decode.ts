@@ -160,7 +160,8 @@ export class PortableRoaringReader {
         else need(offset, 2, `container ${i} (run header)`);
         containers.push({ key: keys[i] as number, cardinality: cards[i] as number, kind, offset });
       }
-      pos += count * 4;
+      // `pos` is not advanced past the header here: nothing reads it afterwards (the reader is built from the
+      // per-container offsets), and eslint's no-useless-assignment would flag a dead advance.
     } else {
       // No offset header: containers are laid out contiguously from here, so each one's position is the
       // running total of its predecessors' sizes.

@@ -1,0 +1,15 @@
+{
+  "//": "Declaration emit for the package build (scripts/build.mjs). Extends the package tsconfig; the only job is to write the .d.ts tree under dist/ mirroring src/. JS is bundled by esbuild, not tsc.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

@@ -89,11 +89,11 @@
   },
   "scripts": {
     "prepack": "pnpm run build",
-    "build": "tsup"
+    "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
     "@cloudbitmaps/core": "workspace:*",
-    "roaring": "^2.7.0"
+    "roaring": "2.7.0"
   },
   "peerDependencies": {
     "@aws-sdk/client-dynamodb": "^3",
@@ -121,7 +121,6 @@
     "@azure/storage-blob": "^12",
     "@google-cloud/storage": "^7.0.0",
     "@types/node": "^22.0.0",
-    "tsup": "^8.0.0",
     "typescript": "^5.5.0"
   }
 }

@@ -19,7 +19,7 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (DynamoDB-Local, MinIO, fake-gcs-server,
   Azurite, Postgres, Redis, Mongo, Cassandra, MySQL) — no real cloud account needed
-- `pnpm lint:arch` is the dependency-cruiser gate enforcing the storage-agnostic-core rule — and, since
+- `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic, and every import-boundary rule in `eslint.config.js` (the storage-agnostic-core rule and its siblings) is proven to fire on a planted violation — and, since
   `core-no-node-builtins`, the **runtime**-agnostic one too.
 - `pnpm smoke` loads the **built** packages through their `exports` maps under both ESM and `require()`, on
   every driver subpath, and cross-checks the `Symbol.for`-branded error predicates across bundles — the class
@@ -50,6 +50,27 @@ the seam stays loadable where no node builtin exists (a V8 isolate — Workers, 
 I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver ports — which is what makes that
 enforceable rather than aspirational. **Anything needing a builtin belongs in a driver under `src/drivers`**,
 where all of them live today.
+
+## Dependency policy
+
+The published packages depend on **one** third-party runtime package, `roaring`. Everything else a user installs is
+their own storage SDK (an optional peer). Keep it that way:
+
+1. **Runtime: one.** Adding a runtime dependency is a design review, not a PR.
+2. **A development dependency earns its place on three tests:** (a) it does something we should not write — a
+   compiler, a test runner, a formatter, an official cloud SDK — *or* replaces more than ~300 lines we would
+   otherwise own; (b) it is widely used (≥ 1M weekly downloads, or the vendor's official SDK) and maintained (a
+   release inside 6 months); (c) it sits in the **root** graph only if it runs on every PR. A tool that runs
+   nightly or on demand lives in its own manifest (`fuzz/package.json` for the fuzzer; `pnpm dlx` for mutation
+   testing), so its transitive graph and its security alerts stay out of the root lockfile.
+3. **Failing (b) gets a written replacement plan or an exit date**, not a shrug.
+4. **Every direct dependency must be describable in one line** — purpose, and why it is not our own code. One
+   nobody can describe is removed.
+
+What we own rather than depend on, and why: the pre-commit hook (`.githooks/pre-commit`, installed by `pnpm install`
+through `core.hooksPath`; it formats and lints exactly the staged files and refuses partially staged ones), the
+package build (`scripts/build.mjs`: esbuild for the bundles, `tsc` for the declarations), and the architecture
+checks (`eslint.config.js` + `tests/arch`).
 
 ## Branching & merge conventions
 

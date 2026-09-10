@@ -169,6 +169,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile # resolves + builds/loads roaring for this OS + node ABI
+      - run: node scripts/verify-roaring-prebuilt.cjs # the addon's checksum, per platform (records when unknown, fails on mismatch)
       - run: pnpm build
       - run: node scripts/smoke.cjs # loads the addon + round-trips under ESM + CJS on this OS
 

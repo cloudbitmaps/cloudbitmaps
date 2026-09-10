@@ -138,6 +138,12 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **`roaring` is pinned to exactly `2.7.0`.** The one runtime dependency is a native addon fetched as a prebuilt
+  binary at install time, so its version is now a deliberate choice per release rather than a caret range; a
+  `scripts/verify-roaring-prebuilt.cjs` check records the binary's checksum per platform in CI.
+- **Type declarations ship as a tree under `dist/` mirroring `src/`** (one `.d.ts` per module) instead of one
+  bundled file per entry. The public types are unchanged; the `exports` map points at the same paths. The build is
+  now `scripts/build.mjs` (esbuild for the bundles, `tsc` for the declarations) rather than tsup.
 - Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — the due-index pointers. One
   predicate (`isReservedRow`) declares the families, rather than a comparison inlined at each call site: the
   first cut inlined it and shipped with three sites missed, and the due index then leaked into the retention
