@@ -54,10 +54,19 @@
     "leak-scan:tarballs": "node scripts/leak-scan-tarballs.cjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "git config core.hooksPath .githooks",
+    "prepare": "husky",
     "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit",
     "bench:encoding": "pnpm run build && node bench/encoding.cjs",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,yml,yaml}": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.1075.0",
@@ -71,6 +80,8 @@
     "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
     "fast-check": "^4.8.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.0",
     "prettier": "^3.3.0",
     "roaring": "2.7.0",
     "typescript": "^5.5.0",

@@ -67,10 +67,10 @@ their own storage SDK (an optional peer). Keep it that way:
 4. **Every direct dependency must be describable in one line** — purpose, and why it is not our own code. One
    nobody can describe is removed.
 
-What we own rather than depend on, and why: the pre-commit hook (`.githooks/pre-commit`, installed by `pnpm install`
-through `core.hooksPath`; it formats and lints exactly the staged files and refuses partially staged ones), the
-package build (`scripts/build.mjs`: esbuild for the bundles, `tsc` for the declarations), and the architecture
-checks (`eslint.config.js` + `tests/arch`).
+What we own rather than depend on, and why: the package build (`scripts/build.mjs`: esbuild for the bundles,
+`tsc` for the declarations) and the architecture checks (`eslint.config.js` + `tests/arch`). What we deliberately keep
+as tools: `husky` + `lint-staged` for the pre-commit hook — lint-staged's handling of *partially staged* files (it
+stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 packages, and rewriting it is not.
 
 ## Branching & merge conventions
 
