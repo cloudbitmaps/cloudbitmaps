@@ -89,7 +89,7 @@ async function retry(label, fn, okErrorNames) {
     } catch (err) {
       const name = (err && err.name) || '';
       if (okErrorNames.includes(name)) return;
-      if (i === 29) throw new Error(`${label} failed: ${String(err)}`);
+      if (i === 29) throw new Error(`${label} failed: ${String(err)}`, { cause: err });
       await sleep(500); // LocalStack warmup / transient
     }
   }

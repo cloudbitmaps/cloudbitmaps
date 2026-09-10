@@ -1,0 +1,8 @@
+{
+  "2.7.0/roaring-node-v127-darwin-arm64-unknown": "19e8e35f110df2b989f8012ee31fea26ff78b31a39cee204f0b20c8bee155c72",
+  "2.7.0/roaring-node-v127-linux-x64-glibc": "929f91c6069756ed59a1e68da3f824442dba001bdfa180188fffe1fbf3e32bb0",
+  "2.7.0/roaring-node-v127-win32-x64-unknown": "3fa14be8e65483b840cd27999c397c6d5c1f83f14dafef527d4ed8339432428e",
+  "2.7.0/roaring-node-v137-darwin-arm64-unknown": "0844d2db6264f40f3659ebc97c8272908e3793e790c987562134c06a2a4f7fb3",
+  "2.7.0/roaring-node-v137-linux-x64-glibc": "9f809dbe756a9290010e6cacc05918a4aa1a6c837c276bc7c40356cf80ff1f9f",
+  "2.7.0/roaring-node-v137-win32-x64-unknown": "57e7e04b9e84fe962e05281d50872eed9dac082683018e766412ba5d27a5560b"
+}

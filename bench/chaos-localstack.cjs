@@ -170,7 +170,7 @@ async function retry(label, fn, ok) {
       return await fn();
     } catch (err) {
       if (ok.includes((err && err.name) || '')) return;
-      if (i === 39) throw new Error(`${label} failed: ${String(err)}`);
+      if (i === 39) throw new Error(`${label} failed: ${String(err)}`, { cause: err });
       await sleep(500);
     }
   }

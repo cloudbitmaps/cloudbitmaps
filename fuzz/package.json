@@ -1,0 +1,9 @@
+{
+  "name": "cloudbitmaps-fuzz",
+  "private": true,
+  "type": "module",
+  "description": "The coverage-guided fuzzing toolchain, kept out of the root dependency graph: it runs only in the nightly fuzz workflow. Install with `pnpm fuzz:install` (= pnpm -C fuzz install --ignore-workspace).",
+  "devDependencies": {
+    "@jazzer.js/core": "^4.0.0"
+  }
+}

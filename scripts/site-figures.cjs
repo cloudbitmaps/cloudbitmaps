@@ -431,11 +431,12 @@ const specAnchors = [];
   // which makes it the source.
   const claudeMd = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
   const invariantSection = /## Hard correctness invariants\n([\s\S]*?)(?=\n## |$)/.exec(claudeMd);
-  let invariantCount = 0;
+  const invariantCount = invariantSection
+    ? (invariantSection[1].match(/^\d+\. \*\*/gm) || []).length
+    : 0;
   if (!invariantSection) {
     fail('CLAUDE.md no longer has a "## Hard correctness invariants" section to count');
   } else {
-    invariantCount = (invariantSection[1].match(/^\d+\. \*\*/gm) || []).length;
     if (invariantCount === 0) {
       fail(
         "CLAUDE.md's invariants section parsed to 0 numbered items — its list formatting changed, so this " +
