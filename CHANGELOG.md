@@ -14,22 +14,30 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
-- **The lease telemetry reaches the operator instead of being dropped on the floor.**
-  `LifecycleCycleResult` and `EngineStatus` gain `lease` — `workers` · `target` · `claimed` · `lost` · `stolen` ·
-  `sinceLastCycleMs` · `pollingTooSlowly`. The lease protocol *delegates* an alarm to its caller: it returns
-  `sinceLastCycleMs` documented as *"greater than `ttlMs` means you are polling too slowly and your own leases
-  are being judged dead — alarm on it"*, because it cannot see the caller's interval. The cycle kept `state` and
-  `held` and discarded the rest, so the one signal designed to surface a cadence misconfiguration **could not
-  reach anyone**. `pollingTooSlowly` also makes `healthy` false: nothing throws for it, but the worker is doing a
-  fraction of its work and abandoning the rest mid-flight.
+### Removed
 
-  It is **nested** under `lease` rather than flattened, because the lease layer's `sinceLastCycleMs` and the
-  status's top-level one measure different quantities — the gap between lease cycles versus how stale the reading
-  is — and two fields with one name meaning two things is how a dashboard ends up lying. Watch `lost` in steady
-  state: convergence churn after a deploy is normal and bounded; ongoing loss is thrash.
+- **The lifecycle engine and five warm drivers — never released, removed before they were.** The partition
+  leases (`runLeaseCycle` and its family), the lifecycle cycle (`runLifecycleCycle`), the engine loop
+  (`createEngineLoop`) and the `compact-segments` CLI, together with the PostgreSQL, Redis, MongoDB,
+  Cassandra/ScyllaDB and MySQL warm drivers and their `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql`
+  subpaths, are gone from this line. None of the engine ever shipped in a release; the five drivers shipped through
+  `0.9.x`, which stays on npm. The reason is a change of direction, not a defect: the library's front door is
+  becoming the *loaded* store — write-once generations on object storage, read and intersected from anywhere —
+  and every roaring-based engine that needs freshness meets it by micro-batching into immutable segments, never by
+  mutating a stored bitmap per call. A future live tier, if there is demand, will be built as immutable delta
+  generations on the same bucket. The removed code is archived intact at the git tag `archive/live-warm-tier`.
 
-- **Both fleet scans in a cycle now have a ceiling, and both are reachable from the engine.** Measured while
-  trying to break it: the retention sweep and compaction discovery run in the *same* cycle off the *same*
+  **What this means for you today:** the DynamoDB warm driver, `store.compact()`, `compactSegment`,
+  `runCompactionCycle`, `findCompactable` and `gcOrphanGenerations` are unchanged — compaction is something you
+  schedule (a cron, a Lambda on a timer, a `CronJob`) rather than a daemon we ship, which is what the docs now
+  say. `retireExpired` is unchanged and takes `shards` / `totalShards` for a multi-replica sweep. If a pre-release
+  engine ever wrote `cbm.leases` rows to your registry, they are harmless bookkeeping and can be deleted.
+  `isReservedRow` / `excludingReservedRows` remain — the due-index pointers are the one reserved family — and now
+  live beside `drainRegistry`.
+
+### Added
+
+- **Compaction discovery now has a ceiling.** The retention sweep and compaction discovery both drain the same
   `registry.list()`, and only one of them was bounded. Peak heap, in-memory driver:
 
   | fleet | compaction discovery | retention fleet scan |
@@ -38,94 +46,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   | 500k | **+209 MB** | `BudgetExceededError` |
   | 1M | **+362 MB** | `BudgetExceededError` |
 
-  So "what does the engine do at a million segments" had two answers, and one of them was to exhaust the heap —
-  on cycle 1, which is always the complete fleet repair, so every restart replayed it. `findCompactable` gains
-  `maxScanSegments` (charged on the row, *before* the shard filter: a sharded worker's scan is not smaller, and
-  the module has always said so). This makes the limit **loud**, not smaller — the scan is still O(fleet) per
-  worker because the shard filter needs a key only the enumeration yields.
+  `findCompactable` gains `maxScanSegments` (charged on the row, *before* the shard filter: a sharded worker's scan
+  is not smaller, and the module has always said so). This makes the limit **loud**, not smaller — the scan is
+  still O(fleet) per worker because the shard filter needs a key only the enumeration yields.
 
-  `maxScanSegments` is now settable on **both** `LifecycleRetentionOptions` and `LifecycleCompactionOptions`.
-  Past the old default, retention threw every cycle with a message saying *"raise `maxScanSegments`"* — which no
-  engine option allowed you to do.
+- **`DiscoveryOptions` takes `shards` (a set) alongside the single `shard`**, and discovery still costs one
+  registry scan however many shards are listed — so one worker can compact several slices of the fleet.
 
-- **A phase that has failed on every cycle since Tuesday can no longer read `healthy`.** `LifecycleState` carries
-  `phaseFailures` — consecutive failures per phase — surfaced on `EngineStatus`, and `healthy` goes false once
-  `consecutiveFailedCycles` reaches `unhealthyAfterFailedCycles` (default **3**: one failure is a throttle, three
-  is a deployment). Per-phase, because retention broken while compaction succeeds is a different page-out from
-  the reverse and one aggregate counter cannot tell them apart.
-
-  **This is a deliberate change to what `healthy` means.** It previously meant only "a cycle settled recently",
-  and sustained failure was documented as "a separate signal" — which in practice meant *no* signal, since
-  nothing forces an operator to read `lastErrors`. A phase that did not run (disabled, or skipped because the
-  worker holds no partitions) carries its count forward rather than resetting: "we did not look" is not evidence
-  either way. `unhealthyAfterFailedCycles: 0` opts out and restores the old behaviour.
-
-- **The cycle interval and the lease TTL are one decision — they were two identical numbers.** Found by trying to
-  break the engine, not by any gate. `DEFAULT_INTERVAL_MS` and `DEFAULT_LEASE_TTL_MS` were both 60 s, set in
-  separate modules in separate PRs, so there was **zero** renewal margin — and the loop's own jitter then spent
-  it, since a legal default sleep of 66 s exceeds a 60 s TTL. Reproduced: a healthy four-partition worker was
-  periodically judged dead and dropped to **zero** partitions, abandoning whatever it was mid-way through, then
-  reconverged, then repeated. `lease.ts` had exported the required relationship (`leaseRenewIntervalMs`) all
-  along; the loop never called it, and no test anywhere related the two constants.
-
-  `leaseTtlMs` now defaults to **`derivedLeaseTtlMs(intervalMs, jitter)`** — the longest legal cycle gap ×
-  `LEASE_RENEW_DIVISOR`, so three renewal attempts fit inside one TTL (198 s at the defaults). An explicit
-  `leaseTtlMs` allowing fewer than two is **refused at construction** rather than discovered as fleet churn. Both
-  helpers are exported for callers driving `runLifecycleCycle` from their own scheduler. **The trade, stated:** a
-  crashed worker's slice now idles up to ~200 s instead of ~60 s before a healthy replica takes it. For
-  background retention and compaction that is the right direction, but it is a trade.
-
-  Relatedly, **the first sleep is now spread over one period, `[0, interval)`, not two.** The old `[0, 2 ×
-  interval)` made a brand-new worker's first renew gap up to *twice* the TTL, so on every deploy a worker could
-  acquire its slice and immediately have it judged dead. One period de-phases a fleet exactly as well. It also
-  now respects the backoff, which the first version of this fix broke — caught by the existing backoff test.
-
-- **`repairEvery` is derived from your actual cadence, because a cycle count cannot be right without it.** The
-  default `24` carried the justification *"roughly daily at the engine's default cadence, matching the due
-  index's bucket granularity"* — **wrong by a factor of 60.** At the 60 s default it is 24 *minutes*, so the
-  complete fleet scan the due index exists to avoid was running 60 times a day, forever. `LifecycleOptions` gains
-  `cycleIntervalMs`, and `repairEvery` then defaults to `repairEveryFor(cycleIntervalMs)` — 1440 cycles at 60 s,
-  landing on one bucket width as the comment always claimed. `createEngineLoop` always supplies it;
-  `DEFAULT_REPAIR_EVERY` remains only as the fallback for a caller that has not said how often it runs.
-
-- **`createEngineLoop` — the lifecycle cycle, repeated, with the operational behaviour a background job needs
-  to be trusted.** `start()` · `runOnce()` · `stop({ timeoutMs })` · `status()`. It sleeps on the injected clock,
-  so every property below is asserted on a fake one rather than by waiting.
-
-  **`stop()` races the in-flight cycle against its timeout instead of awaiting it.** Nothing in this library
-  takes an `AbortSignal` — deliberately, since a homegrown timeout would abandon in-flight requests mid-write —
-  so an unconditional await would be a deadlock dressed as a graceful shutdown. It reports `drained: false` when
-  work was abandoned, deadlines the lease release separately (that talks to the same registry that may be
-  hanging), and is idempotent so a second SIGTERM does not start a second shutdown. The interval sleep is
-  **wakeable**, so a stop one second into a 30 s interval does not burn 29 s of a 30 s termination grace period.
-
-  The interval **backs off** while cycles return errors and resets on a clean one — without that a dead backend
-  is retried at full cadence forever, multiplied by the driver retry layer underneath. It is **jittered**, so
-  replicas rolled out together do not run cycle 1 in lockstep (and cycle 1 is always the complete fleet repair
-  scan). The cycle's own duration is subtracted, so a slow cycle does not compound the schedule.
-
-  **`status().healthy` means a cycle *settled* recently — not that work happened.** A worker holding zero
-  partitions is healthy; that is what every worker beyond the first does. It is false before the first cycle and
-  false once the last one is older than `staleAfterMs`, which is precisely the state a hung driver call creates
-  while the process stays alive. That is the failure mode a background job is worst at surfacing, so it is the
-  one the predicate is built around.
-
-  **`status().staleAfterMs` is the *effective* window, and it widens with the backoff.** Found by review, not by
-  a gate: a backed-off loop sleeps for up to `maxIntervalMs` (15× the interval by default) while the window
-  defaulted to 4× it, so `healthy` went false between cycles from the **second** consecutive failure onward — one
-  brief throttle. Wired to a liveness probe, that is a restart loop through an outage, discarding the accumulated
-  backoff each time. A *hung* cycle never settles, so nothing widens and it still surfaces on the configured
-  floor, which is the case the predicate exists for.
-
-  **A loop is single-use.** After `stop()`, `start()` and `runOnce()` throw — construction is free, so build
-  another. The alternative was worse than a restriction: with the stop memoised for idempotence, a restarted
-  loop's second `stop()` returned the *first* stop's result while the loop kept cycling, holding leases and
-  reporting itself stopped. `runOnce()` also refuses to overlap a cycle or a running `start()`, naming the actual
-  cause — two cycles on one loop share state, and a schedule firing faster than a cycle takes should hear about
-  it rather than get a quietly wrong counter.
-
-  **What the caller still owns:** a request timeout on the injected SDK client. Without one nothing here can
-  bound a cycle.
+- **`retireExpired` takes `shards` / `totalShards`.** It had no shard option, so N replicas each ran the full sweep
+  and contended over the same segments — the hazard the compaction path has documented since `0.8.0`. It uses
+  the **same stable hash as compaction discovery**, so a worker retires and compacts the same slice. `shardOf`
+  moved to one definition for that reason: if the two disagreed, the union across workers would be neither
+  disjoint nor complete.
 
 - **Docs — a runbook for the one retention failure that does not self-heal.**
   [disaster-recovery.md](docs/guide/disaster-recovery.md) gains *"an unstamped tombstone after a hard kill"*.
@@ -137,56 +69,6 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   discriminator), the two repairs, and the deployment settings that keep the window shut. It ships now, ahead of
   the automated reconcile, because a failure that needs a human cannot wait behind the code that automates it.
 
-### Fixed
-
-- **A worker compacted only ONE of the partitions it held.** `runLifecycleCycle` passed `shard:
-  partitionsHeld[0]`, so a worker holding four partitions compacted a quarter of its own slice and left the rest
-  to grow — warm tiers growing without bound, reads getting slower and more expensive, and **nothing erroring**.
-  Never released (it landed and was found the same day, by an operational-resilience audit), and masked entirely
-  by the default of one partition — it only bit anyone who raised `partitions`, which is exactly what the option
-  invites. `DiscoveryOptions` now takes `shards` (a set) alongside the single `shard`, and discovery still costs
-  one registry scan however many shards are listed.
-
-  **The test that existed asserted the two workers' slices were *disjoint*, which stayed true while three
-  quarters of the work silently did not happen.** Disjointness is not coverage. The suite now asserts coverage
-  directly, for compaction and retention separately — the first version of that test asserted only retention and
-  a mutation reverting compaction stayed green.
-
-- **Every replica swept the whole fleet.** `retireExpired` had no shard option, so an N-replica engine had all N
-  running the full sweep each cycle and contending over the same segments — the hazard the compaction CLI has
-  documented since `0.8.0`, reintroduced silently by the lifecycle cycle. It now takes `shards`/`totalShards`
-  and uses the **same stable hash as compaction discovery**, so a worker retires and compacts the same slice.
-  `shardOf` moved to one definition for that reason: if the two disagreed, the union across workers would be
-  neither disjoint nor complete.
-
-### Added
-
-- **Partition leases — `runLeaseCycle` / `releaseAll` / `emptyLeaseState`** (plus `leaseRef`,
-  `partitionOfLeaseRow`, `leaseRenewIntervalMs`, `LEASE_NAMESPACE`, `DEFAULT_LEASE_TTL_MS`,
-  `DEFAULT_PARTITIONS`, `MAX_PARTITIONS`, `MIN_LEASE_TTL_MS`, `LEASE_RENEW_DIVISOR`). **N processes can run the
-  same maintenance code with no coordinator and no per-process configuration**: each cycle renews what you hold,
-  claims what is free or dead, and takes at most one partition from an over-share owner, converging on
-  `ceil(partitions / workers)`. This is the first piece of the lifecycle engine: **it makes the
-  *"run the sweep from exactly ONE process"* rule enforceable**, rather than something a deployment could violate
-  silently. It does not yet retire that rule — nothing maps a segment to a partition until the sweep and the
-  engine land, and `DEFAULT_PARTITIONS` is `1`.
-
-  Three properties are deliberate and load-bearing:
-
-  - **Liveness is decided by the OCC token, never by the clock.** Asking `leaseExpiresAt <= myNow()` compares one
-    machine's wall clock against another's, so a host running fast steals live leases — clock skew becoming a
-    correctness bug that only shows up in production. Instead a worker asks *"has this row's token changed since
-    I last looked, one TTL ago?"*, which compares its own clock to itself. The token is contractually never
-    reused, so an unchanged token proves no write landed. `leaseExpiresAt` is still written, as diagnostics.
-  - **A lease only chooses who works; the conditional write at the resource decides who commits.** A holder can
-    be paused between checking its lease and writing, so the lease alone is not safety — compaction's swap is
-    already fenced on the token it acquired, which is what makes a woken-up straggler harmless.
-  - **One steal per cycle.** Convergence is slower and monotone rather than fast and oscillating.
-
-  Leases are ordinary registry records in a reserved namespace (`cbm.leases`) with `currentGen: null`, moved by
-  `compareAndSwap` — so this needs **no driver change and no new capability**, and works on all nine warm/registry
-  backends on day one. They are excluded from every *unscoped* fleet-wide drain, because a lease is not a segment.
-
 - **`expiresAt` on `SegmentOptions` — lazy expiry, declared where the segment is named.**
 
   ```ts
@@ -194,7 +76,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   ```
 
   Every read through that handle checks the deadline first: past it, `has` is `false`, `count` is `0`, and
-  `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on all nine backends**.
+  `iterate` yields nothing — **one integer compare against the injected clock, no I/O, on every backend**.
   This is Redis's lazy-expiry mechanism, and it is what makes an expiry *correct* rather than *eventually
   correct*: a deployment whose sweep is late, or which has no sweep at all (a Lambda-only reader), still stops
   serving the data on time.
@@ -211,10 +93,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - **The due index — the structure that makes a retention cycle cost what is *expiring* rather than what the
   fleet *holds*.** `dueBucket` / `dueNamespace` / `dueBucketsAt` / `dueIndexRef` / `encodeDueName` /
-  `decodeDueName` / `canIndex` / `isDueIndexRow`. Foundation only in this release — wiring it into the sweep
-  follows.
+  `decodeDueName` / `canIndex` / `isDueIndexRow`.
 
-  Today a sweep drains `registry.list()` and filters, so it reads the whole fleet every cycle even when nothing
+  A sweep that drains `registry.list()` and filters reads the whole fleet every cycle even when nothing
   expires. The index makes the day a segment expires into a **namespace**, so listing one due day yields exactly
   the segments due that day. That shape is forced by the driver contract: `list()` filters by namespace and
   nothing else — no cursor, no key range — so the only way to read a subset is to make the subset a namespace.
@@ -228,30 +109,6 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse; and the
   full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
   means slower, never never.
-
-- **`runLifecycleCycle` — one cycle of the background work an engine repeats**: claim a slice of the fleet via
-  the partition lease, retire what expired, compact what is dirty, collect superseded generations. The mechanism
-  half of the forthcoming `@cloudbitmaps/engine`; the package on top adds `start`/`stop`, defaults and an
-  entrypoint.
-
-  It lives in `core/` and is driven by the **injected clock**, not a timer — so it is pure under the
-  architecture rules, runs where no `node:` builtin exists, and (the part that matters for a background job
-  nobody watches) a whole multi-worker interleaving is **deterministically testable** by advancing a fake clock.
-
-  **A per-phase fault never stops the cycle.** A retention failure must not stop compaction, and neither must
-  stop the next cycle: a loop that dies on one bad segment stops doing *everything*. Faults are collected into
-  `errors` and reported — never swallowed, never rethrown. A bad *argument* still throws immediately, and a
-  missing registry throws at the first cycle rather than silently skipping a loop the operator believes is
-  running.
-
-  **Fast most cycles, complete sometimes.** Retention runs `scan: 'index'`, except every `repairEvery`-th cycle
-  (default **24**) which runs `scan: 'fleet'`. The first cycle always repairs: a process that has just started
-  knows nothing about what previous ones swept. The trade is real in both directions — too rare and an unpointed
-  policy lingers, too frequent and the fleet scan the index exists to avoid is back — so it is a stated default
-  and configurable, not a guess.
-
-  Holding no partitions is **not** a fault: it is what every worker beyond the first does when partitions are
-  scarce, and doing the work anyway would duplicate another worker's.
 
 - **`retireExpired({ scan: 'index' })` — a sweep that reads what is *expiring*, not what the fleet *holds*.**
   Reads only the due buckets (the current one plus `lookbackBuckets`, default 7, so a sweep that did not run
@@ -267,7 +124,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   A retirement also forgets its own pointer, so a bucket cannot accumulate rows that every later lookback
   re-reads — an index that grows monotonically would slowly undo its own purpose.
 
-- **The due index is now maintained.** `setRetention` writes the pointer for the expiry's day, moves it when the
+- **The due index is maintained.** `setRetention` writes the pointer for the expiry's day, moves it when the
   expiry moves, and `clearRetention` removes it. `SetRetentionResult` gains **`indexed`** — true when a fast
   sweep will find this segment by reading only its expiry day instead of scanning the fleet.
 
@@ -281,11 +138,11 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — partition leases and due-index
-  pointers. One predicate (`isReservedRow`) declares the families, rather than a comparison inlined at each
-  call site: the first cut inlined it and shipped with three sites missed, and the due index then leaked into
-  the retention sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a
-  reserved namespace still sees its rows.
+- Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — the due-index pointers. One
+  predicate (`isReservedRow`) declares the families, rather than a comparison inlined at each call site: the
+  first cut inlined it and shipped with three sites missed, and the due index then leaked into the retention
+  sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a reserved
+  namespace still sees its rows.
 
 ## [0.9.0] — 2026-08-05
 

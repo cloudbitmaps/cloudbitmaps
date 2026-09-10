@@ -4,7 +4,7 @@ export default defineConfig([
   {
     // `@cloudbitmaps/roaring` — the flavor users install. `.` is the roaring codec + the `CloudRoaring` facade
     // (which pre-wires that codec, so callers never pass one); the driver subpaths are thin re-exports of
-    // `@cloudbitmaps/core/<driver>` so `@cloudbitmaps/roaring/postgres` keeps working as one name to know.
+    // `@cloudbitmaps/core/<driver>` so `@cloudbitmaps/roaring/dynamodb` keeps working as one name to know.
     // `@cloudbitmaps/core` + `roaring` are real dependencies ⇒ tsup leaves them external (never bundled in).
     entry: [
       'src/index.ts',
@@ -12,11 +12,6 @@ export default defineConfig([
       'src/dynamodb/index.ts',
       'src/gcs/index.ts',
       'src/azure/index.ts',
-      'src/postgres/index.ts',
-      'src/redis/index.ts',
-      'src/mongodb/index.ts',
-      'src/cassandra/index.ts',
-      'src/mysql/index.ts',
     ],
     format: ['esm', 'cjs'],
     dts: true,
@@ -25,11 +20,10 @@ export default defineConfig([
     treeshake: true,
   },
   {
-    // The `compact-segments` + `export-segments` CLIs (Phase 4d / eject): ESM-only (they use `import.meta.url`)
-    // with their `#!` shebang preserved. They wire a concrete roaring store, which is why they ship with the
-    // flavor package rather than core. SDK-free — they import only the facade + LocalFs drivers.
+    // The `export-segments` CLI (eject): ESM-only (it uses `import.meta.url`) with its `#!` shebang preserved.
+    // It wires a concrete roaring store, which is why it ships with the flavor package rather than core.
+    // SDK-free — it imports only the facade + LocalFs drivers.
     entry: {
-      'bin/compact-segments': 'src/bin/compact-segments.ts',
       'bin/export-segments': 'src/bin/export-segments.ts',
     },
     format: ['esm'],

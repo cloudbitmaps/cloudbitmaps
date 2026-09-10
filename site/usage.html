@@ -19,7 +19,7 @@
     <title>CloudBitmaps usage — zero setup, then the same code in production</title>
     <meta
       name="description"
-      content="The in-memory drivers need no bucket, no table and no credentials. Swap them for S3 and DynamoDB later and every line above the constructor stays as it was. The full API, ten drivers, and how to estimate your own bill."
+      content="The in-memory drivers need no bucket, no table and no credentials. Swap them for S3 and DynamoDB later and every line above the constructor stays as it was. The full API, five drivers, and how to estimate your own bill."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -98,7 +98,7 @@
             <p class="actions">
               <a class="btn btn-primary" href="#quickstart">The six lines →</a>
               <a class="btn" href="#api">The whole API</a>
-              <a class="btn" href="#drivers">Ten drivers</a>
+              <a class="btn" href="#drivers">Five drivers</a>
               <a class="btn" href="#retention">Retention</a>
             </p>
             <p class="meta">
@@ -353,9 +353,9 @@ npm audit signatures</code></pre>
 
       <!-- ── DRIVERS ────────────────────────────────────────────────────────
            A matrix rather than a list of names. Which ROLES a backend can fill is the question a reader
-           actually has, and a flat list of ten logos does not answer it. -->
+           actually has, and a flat list of logos does not answer it. -->
       <section id="drivers">
-        <h2>Ten drivers, two independent choices</h2>
+        <h2>Five drivers, two independent choices</h2>
         <p class="lede">
           Warm and cold are picked separately. Anything with a cheap range read works as cold; anything with
           cheap small writes works as warm. Each backend's SDK is an <strong>optional peer</strong> — install
@@ -409,36 +409,6 @@ npm audit signatures</code></pre>
                   <td><span class="m">/azure</span></td>
                   <td class="from">cold</td>
                   <td class="num">@azure/storage-blob ^12</td>
-                </tr>
-                <tr>
-                  <td>Postgres</td>
-                  <td><span class="m">/postgres</span></td>
-                  <td class="from">warm</td>
-                  <td class="num">pg ^8</td>
-                </tr>
-                <tr>
-                  <td>MySQL</td>
-                  <td><span class="m">/mysql</span></td>
-                  <td class="from">warm</td>
-                  <td class="num">mysql2 ^3</td>
-                </tr>
-                <tr>
-                  <td>Redis</td>
-                  <td><span class="m">/redis</span></td>
-                  <td class="from">warm</td>
-                  <td class="num">ioredis ^5</td>
-                </tr>
-                <tr>
-                  <td>MongoDB</td>
-                  <td><span class="m">/mongodb</span></td>
-                  <td class="from">warm</td>
-                  <td class="num">mongodb ^6</td>
-                </tr>
-                <tr>
-                  <td>Cassandra</td>
-                  <td><span class="m">/cassandra</span></td>
-                  <td class="from">warm</td>
-                  <td class="num">cassandra-driver ^4</td>
                 </tr>
                 <tr>
                   <td>Filesystem</td>
@@ -582,7 +552,7 @@ npm audit signatures</code></pre>
               <a class="btn" href="architecture.html">How it works</a>
               <a class="btn" href="benchmarks.html">Benchmarks</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.9.0 · 1 runtime dependency · 10 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.9.0 · 1 runtime dependency · 5 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>One flavor</span></div>

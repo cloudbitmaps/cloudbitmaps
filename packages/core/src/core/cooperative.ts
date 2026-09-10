@@ -38,7 +38,7 @@
  * The only part of a `Clock` that yielding actually needs.
  *
  * Deliberately looser than `Clock` so the compaction path can opt in: `CompactionDeps.clock` is declared as
- * `Pick<Clock, 'now'>` plus optional yield members, because its callers (including the `compact-segments` CLI)
+ * `Pick<Clock, 'now'>` plus optional yield members, because its callers (including out-of-process runners)
  * have always supplied a bare `{ now }`. Requiring a full `Clock` there would have been a breaking change for
  * every one of them — which is exactly why the compaction yield shipped as dead code: the type could not carry
  * a clock capable of yielding.

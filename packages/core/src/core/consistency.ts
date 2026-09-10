@@ -26,7 +26,7 @@ import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
  * Default ceiling on how many registry records one consistency check may hold resident: 250,000.
  *
  * **Named `maxScanSegments`, not `maxSegments`, on purpose.** Compaction already has a `maxSegments`
- * (`CR_COMPACT_MAX_SEGMENTS`) that caps how much work one cycle does and then *continues normally*. This one
+ * (`maxSegments`) that caps how much work one cycle does and then *continues normally*. This one
  * caps how much a scan may hold and *refuses* past it. Same-sounding names with opposite behaviour at the
  * limit is a trap; pairing this with `maxWarmScanBytes` instead makes both read as what they are — ceilings on
  * a scan that fail closed.

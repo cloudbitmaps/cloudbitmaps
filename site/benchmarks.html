@@ -349,16 +349,15 @@
           </li>
           <li>
             <span class="rl-mark">04</span>
-            <span class="rl-what">The flat tier can be one of ours</span>
-            <span class="rl-fig">Redis · Postgres · MySQL</span>
+            <span class="rl-what">The flat tier can be one you already run</span>
+            <span class="rl-fig">provisioned DynamoDB · your own IWarmDriver</span>
             <span class="rl-note">
-              Redis is on this page twice, doing two different jobs, and the distinction matters: the
-              <strong>baseline</strong> is someone holding the whole dataset in a Redis node's RAM, while
-              <strong>the warm driver</strong> is Redis holding our chunk deltas. And it is a
-              <strong>warm</strong> driver only — the corpus stays in cold object storage, so the node has to
-              hold your recent writes rather than your whole history. That is a far smaller node than the one
-              the baseline prices. “Use a flat tier” can mean pointing this library at something you already
-              run. <a href="usage.html#drivers">Ten drivers</a>, warm and cold chosen separately.
+              The <strong>baseline</strong> is someone holding the whole dataset in a Redis node's RAM. A
+              <strong>warm</strong> tier holds only our chunk deltas — the corpus stays in cold object storage,
+              so a flat-priced warm store has to hold your recent writes rather than your whole history, a far
+              smaller footprint than the one the baseline prices. “Use a flat tier” can mean provisioned
+              DynamoDB capacity, or any store you wrap in the warm-driver contract.
+              <a href="usage.html#drivers">The drivers</a>, warm and cold chosen separately.
             </span>
           </li>
         </ul>

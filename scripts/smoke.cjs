@@ -19,18 +19,7 @@ const { pathToFileURL } = require('node:url');
 // users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
-const SUBPATHS = [
-  '',
-  '/s3',
-  '/dynamodb',
-  '/gcs',
-  '/azure',
-  '/postgres',
-  '/redis',
-  '/mongodb',
-  '/cassandra',
-  '/mysql',
-];
+const SUBPATHS = ['', '/s3', '/dynamodb', '/gcs', '/azure'];
 
 async function exerciseCore(label, m) {
   for (const name of [
@@ -81,9 +70,9 @@ async function main() {
     require(PKG + sub); // CJS `require` condition
     console.log(`  import + require OK: ${PKG}${sub || ''}`);
   }
-  // The bins are built by a separate tsup config (their own bundled `roaring` import) and aren't in `exports`,
-  // so load them by path. Safe: their run-guard only invokes main() when executed as the CLI, not on import.
-  for (const bin of ['compact-segments', 'export-segments']) {
+  // The bin is built by a separate tsup config (its own bundled `roaring` import) and isn't in `exports`,
+  // so load it by path. Safe: its run-guard only invokes main() when executed as the CLI, not on import.
+  for (const bin of ['export-segments']) {
     await import(
       pathToFileURL(path.join(__dirname, '..', 'packages', 'roaring', 'dist', 'bin', `${bin}.js`))
         .href

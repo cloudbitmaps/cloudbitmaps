@@ -112,7 +112,7 @@ export function dueIndexRef(bucket: number, ref: SegmentRef): SegmentRef {
 
 /**
  * Recover the original ref from an index row's name. `null` for anything we did not write — a foreign row in
- * the reserved namespace is ignored rather than acted upon, exactly as with partition leases.
+ * the reserved namespace is ignored rather than acted upon.
  */
 export function decodeDueName(name: string): SegmentRef | null {
   const dot = name.indexOf('.');

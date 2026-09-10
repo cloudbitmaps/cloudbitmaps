@@ -191,7 +191,8 @@ export async function main(
   return manifest;
 }
 
-// Run only when invoked directly (not when imported by tests). See compact-segments for the URL-compare rationale.
+// Run only when invoked directly (not when imported by tests). Compared as URLs: `process.argv[1]` is a path and
+// `import.meta.url` is a `file:` URL, so a string compare would never match.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main()
     .then((manifest) => {

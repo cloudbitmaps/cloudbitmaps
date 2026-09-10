@@ -61,7 +61,7 @@ export {
 export type { BulkLoadResult, CrbmColdChunkSourceOptions } from './core/crbm-cold-source';
 
 // Compaction (Phase 4d): the crash-safe 2-phase-commit daemon. Composes IColdDriver + IWarmDriver +
-// IRegistryDriver; the `bin/compact-segments` CLI is a thin wrapper over these.
+// IRegistryDriver; schedule `runCompactionCycle` from your own job runner — nothing here schedules itself.
 export {
   compactSegment,
   gcOrphanGenerations,
@@ -159,69 +159,12 @@ export {
 } from './core/retention-sweep';
 // The one bounded drain of `registry.list()`, shared by the consistency scan and the retention sweep — exported
 // because a caller writing their own fleet-wide admin pass needs the same ceiling rather than a third copy.
-export { drainRegistry, validateMaxScanSegments } from './core/registry-scan';
-
-// Partition leases — how N processes share fleet-wide lifecycle work with no coordinator (ADR 83). Exported
-// because anyone running their own maintenance loop needs the same coordination rather than a second protocol.
 export {
-  runLeaseCycle,
-  releaseAll,
-  emptyLeaseState,
-  leaseRef,
-  leaseRenewIntervalMs,
-  partitionOfLeaseRow,
+  drainRegistry,
+  validateMaxScanSegments,
   isReservedRow,
   excludingReservedRows,
-  LEASE_NAMESPACE,
-  DEFAULT_LEASE_TTL_MS,
-  DEFAULT_PARTITIONS,
-  MAX_PARTITIONS,
-  MIN_LEASE_TTL_MS,
-  LEASE_RENEW_DIVISOR,
-} from './core/lease';
-export type { LeaseState, LeaseOptions, LeaseDeps, LeaseCycleResult } from './core/lease';
-
-// One lifecycle cycle — lease a slice of the fleet, retire what expired, compact what is dirty, GC generations.
-// The mechanism half of `@cloudbitmaps/engine`: driven by the injected Clock rather than a timer, so it is pure,
-// runs where no node builtin exists, and a whole multi-worker interleaving is deterministically testable.
-export {
-  runLifecycleCycle,
-  emptyLifecycleState,
-  DEFAULT_REPAIR_EVERY,
-  REPAIR_TARGET_MS,
-  repairEveryFor,
-} from './core/lifecycle';
-export type {
-  LifecycleState,
-  LifecycleOptions,
-  LifecycleDeps,
-  LifecycleCycleResult,
-  LifecyclePhaseError,
-  LifecycleRetentionOptions,
-  LifecycleCompactionOptions,
-  LifecyclePhase,
-  LeaseTelemetry,
-  PhaseFailures,
-} from './core/lifecycle';
-
-// The engine loop — runLifecycleCycle repeated, with the operational behaviour a background job needs to be
-// trusted: a stop that cannot deadlock (nothing here is cancellable, so it RACES rather than awaits), interval
-// backoff, jitter so replicas do not move in lockstep, and a `healthy` predicate that means "a cycle settled
-// recently" rather than "work happened". Sleeps on the injected Clock, so all of it is testable on a fake one.
-export {
-  createEngineLoop,
-  DEFAULT_INTERVAL_MS,
-  DEFAULT_MAX_INTERVAL_MS,
-  DEFAULT_JITTER,
-  DEFAULT_STOP_TIMEOUT_MS,
-  DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES,
-  // The interval and the lease TTL are ONE decision, not two — both shipped defaults were 60 s, set in separate
-  // modules, and the loop's own jitter then spent the nonexistent margin. Exported so a caller driving cycles
-  // from its own scheduler can compute the same TTL the loop does.
-  maxCycleGapMs,
-  derivedLeaseTtlMs,
-} from './core/engine-loop';
-export type { EngineLoop, EngineLoopOptions, EngineStatus, StopResult } from './core/engine-loop';
+} from './core/registry-scan';
 
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,

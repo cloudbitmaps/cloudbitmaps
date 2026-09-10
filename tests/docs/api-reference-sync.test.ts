@@ -15,11 +15,6 @@ const BARRELS = [
   '../../packages/core/src/dynamodb/index.ts',
   '../../packages/core/src/gcs/index.ts',
   '../../packages/core/src/azure/index.ts',
-  '../../packages/core/src/postgres/index.ts',
-  '../../packages/core/src/redis/index.ts',
-  '../../packages/core/src/mongodb/index.ts',
-  '../../packages/core/src/cassandra/index.ts',
-  '../../packages/core/src/mysql/index.ts',
   // The flavor's own driver barrels are declared entry points too (`@cloudbitmaps/roaring/s3`, …). They are
   // one-line re-exports of core's equivalents today, but they ARE public surface — parse them so an own export
   // added to one can't become public undocumented.
@@ -27,11 +22,6 @@ const BARRELS = [
   '../../packages/roaring/src/dynamodb/index.ts',
   '../../packages/roaring/src/gcs/index.ts',
   '../../packages/roaring/src/azure/index.ts',
-  '../../packages/roaring/src/postgres/index.ts',
-  '../../packages/roaring/src/redis/index.ts',
-  '../../packages/roaring/src/mongodb/index.ts',
-  '../../packages/roaring/src/cassandra/index.ts',
-  '../../packages/roaring/src/mysql/index.ts',
 ] as const;
 const DOC_PATH = '../../docs/guide/api-reference.md';
 

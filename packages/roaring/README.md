@@ -19,9 +19,8 @@ import { S3ColdDriver } from '@cloudbitmaps/roaring/s3';
 import { DynamoDbWarmDriver } from '@cloudbitmaps/roaring/dynamodb';
 ```
 
-Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`, `/dynamodb`, `/postgres`,
-`/redis`, `/mongodb`, `/cassandra`, `/mysql`); each backend SDK is an optional peer dependency, so the main entry
-stays lean. Ships two CLIs: `compact-segments` and `export-segments`.
+Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`, `/dynamodb`); each backend SDK
+is an optional peer dependency, so the main entry stays lean. Ships one CLI: `export-segments`.
 
 ## Measured, not modeled
 
@@ -110,9 +109,6 @@ merges `(cold ∪ warm.adds) \ warm.removes` and an absent cold tier just makes 
 Compaction is a **cost** optimization, never a correctness requirement — it buys cheaper storage, smaller rewrites,
 and a free index-only `count()`. For a write-once dated bucket you retire (with `dropSegment`, or by recording an
 expiry as above), skip it entirely.
-
-Redis stays first-class as a **warm tier** underneath this (`@cloudbitmaps/roaring/redis`) — the point above is
-about replacing `SETBIT`-on-one-giant-key as your *data model*, not replacing Redis as infrastructure.
 
 Full README, guides, [benchmarks](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md) (with
 the method and what the numbers do *not* establish), and the design corpus live in the

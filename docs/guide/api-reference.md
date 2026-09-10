@@ -31,20 +31,14 @@ Everything below is reachable from the flavor:
 @cloudbitmaps/roaring/dynamodb   DynamoDbWarmDriver, DynamoDbRegistryDriver (peer: @aws-sdk/client-dynamodb)
 @cloudbitmaps/roaring/gcs        GcsColdDriver                           (peer: @google-cloud/storage)
 @cloudbitmaps/roaring/azure      AzureBlobColdDriver                     (peer: @azure/storage-blob)
-@cloudbitmaps/roaring/postgres   PostgresWarmDriver, postgresWarmTableDDL (peer: pg)
-@cloudbitmaps/roaring/redis      RedisWarmDriver                         (peer: ioredis)
-@cloudbitmaps/roaring/mongodb    MongoWarmDriver, ensureMongoWarmIndexes  (peer: mongodb)
-@cloudbitmaps/roaring/cassandra  CassandraWarmDriver, cassandraWarmTableDDL (peer: cassandra-driver)
-@cloudbitmaps/roaring/mysql      MysqlWarmDriver, mysqlWarmTableDDL       (peer: mysql2)
-CLIs (binaries):                 compact-segments, export-segments
+CLI (binary):                    export-segments
 ```
 
 **Where the code actually lives.** The flavor package is the roaring codec (`SafeBitmap` / `roaringCodec`), the
-`CloudRoaring` facade, and the CLIs; its main barrel re-exports `@cloudbitmaps/core` wholesale and each
+`CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports `@cloudbitmaps/core` wholesale and each
 `/<backend>` barrel is a one-line re-export of `@cloudbitmaps/core/<backend>` — the drivers are codec-agnostic,
 so one set in core serves every flavor. A flavor or driver author who depends on core directly imports the same
-surface from `@cloudbitmaps/core` and its `/s3`, `/dynamodb`, `/gcs`, `/azure`, `/postgres`, `/redis`, `/mongodb`,
-`/cassandra`, `/mysql` subpaths. Applications never need to name core.
+surface from `@cloudbitmaps/core` and its `/s3`, `/dynamodb`, `/gcs`, `/azure` subpaths. Applications never need to name core.
 
 ---
 
@@ -61,7 +55,7 @@ Pick one driver per tier (all interchangeable; mix backends freely):
 | Tier | in-memory | local disk | cloud |
 |---|---|---|---|
 | **cold** (durable base) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
-| **warm** (live deltas) | `MemoryWarmDriver` | `LocalFsWarmDriver` | `DynamoDbWarmDriver` · `PostgresWarmDriver` · `RedisWarmDriver` · `MongoWarmDriver` · `CassandraWarmDriver` · `MysqlWarmDriver` |
+| **warm** (live deltas) | `MemoryWarmDriver` | `LocalFsWarmDriver` | `DynamoDbWarmDriver` |
 | **registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `DynamoDbRegistryDriver` · `S3RegistryDriver` |
 | **keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same |
 
@@ -145,25 +139,10 @@ All three are charged against the same per-op budget, so a wide union is refused
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free-function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention` / `clearSegmentRetention` are its read/cancel siblings |
 | `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you already have (a `list()` sweep does this — no extra read per segment) |
 | `retireExpired({ registry, warm, cold }, { now, … })` → `RetireExpiredResult` | the free-function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
-| `runLifecycleCycle(state, deps, { owner, partitions?, retention?, compaction?, namespace? })` → `LifecycleCycleResult` | **one cycle of background work**: lease a slice of the fleet → retire what expired → compact what is dirty → GC generations. Driven by the injected clock, so a multi-worker interleaving is deterministically testable. **A per-phase fault never stops the cycle** — faults land in `errors` rather than throwing, because a loop that dies on one bad segment stops doing everything; a bad argument or a missing registry still throws at once. Retention uses the fast index scan except every `repairEvery`-th cycle and the first, which run the complete `'fleet'` scan. **`repairEvery` counts CYCLES, not time** — pass `cycleIntervalMs` and it defaults to `repairEveryFor(cycleIntervalMs)` (≈ one day, matching the index's bucket width); without it you get the cadence-blind `DEFAULT_REPAIR_EVERY`. **`leaseTtlMs` must be several times your cycle gap** — that gap *is* the gap between lease renewals — so use `derivedLeaseTtlMs(yourIntervalMs, 0)` if you drive cycles yourself; `createEngineLoop` does it for you. Holding no partitions is not a fault — it means another worker owns this slice |
-| `emptyLifecycleState()` · `DEFAULT_REPAIR_EVERY` · `REPAIR_TARGET_MS` · `repairEveryFor(cycleIntervalMs)` | the starting state, and the repair cadence. `DEFAULT_REPAIR_EVERY` (24) is the fallback when the caller has not said how often it runs — **it cannot be right without knowing that**, which is why `repairEveryFor` exists: it converts `REPAIR_TARGET_MS` (one day, the due index's bucket width) into a cycle count, 1440 at a 60 s interval |
-| `createEngineLoop(deps, { owner, intervalMs?, maxIntervalMs?, jitter?, staleAfterMs?, … })` → `EngineLoop` | **the loop**: `start()` · `runOnce()` · `stop({ timeoutMs })` · `status()`. Sleeps on the injected clock, so every property below is testable without waiting. **`stop()` RACES the in-flight cycle against its timeout rather than awaiting it** — nothing in this library takes an `AbortSignal`, so an unconditional await would be a deadlock; it reports `drained: false` when work was abandoned. The interval backs off while cycles return errors (capped by `maxIntervalMs`) and resets on a clean one; it is jittered so replicas do not stay in phase; and the cycle's own duration is subtracted so a slow cycle does not compound the schedule. `stop()` is idempotent, and the sleep is wakeable so a SIGTERM is not delayed by most of an interval. **A loop is single-use**: after `stop()`, `start()`/`runOnce()` throw (build another — construction is free), and `runOnce()` refuses to overlap a cycle or a running `start()`, because two cycles on one loop share state |
-| `EngineStatus` — `{ running, cyclesCompleted, consecutiveFailedCycles, lastCycleMs, partitionsHeld, lastScan, lastErrors, sinceLastCycleMs, phaseFailures, lease, healthy, staleAfterMs }` | **`healthy` means a cycle SETTLED recently, not that work happened.** A worker holding zero partitions is healthy — that is what every worker beyond the first does. It is false before the first cycle, and false once the last completed cycle is older than `staleAfterMs` — which is the condition a hung driver call creates while the process stays alive. **The reported `staleAfterMs` is the *effective* window, not the configured one**: it widens with the backoff, because a backed-off loop legitimately sleeps for up to `maxIntervalMs` and a fixed window would report a live worker unhealthy from its second consecutive failure — a liveness probe would then restart the pod through an outage, discarding the backoff each time. A *hung* cycle never settles, so nothing widens and it still surfaces on the configured floor. `lease` carries what the lease phase reported — `workers` · `target` · `claimed` · `lost` · `stolen` · `sinceLastCycleMs` · `pollingTooSlowly` — which the cycle used to discard, making the lease protocol's own *"you are polling too slowly, alarm on this"* signal unreachable. It is **nested**, because the lease layer's `sinceLastCycleMs` (the gap between lease cycles) and this status's top-level one (how stale the reading is) measure different quantities. Watch `lost` in steady state: convergence churn after a deploy is normal and bounded, ongoing loss is thrash. `pollingTooSlowly` also makes `healthy` false — nothing throws for it, but the worker's own live leases are being judged dead every cycle, so it is doing a fraction of its work and abandoning the rest mid-flight. `phaseFailures` counts consecutive failures **per phase** (`lease` · `retention` · `compaction`), so an alert can say *which* half of the cycle is broken — and `healthy` is false once `consecutiveFailedCycles` reaches `unhealthyAfterFailedCycles`, because a phase that has failed on every cycle since Tuesday must not read healthy. A phase that did not run carries its count forward rather than resetting: "we did not look" is not evidence either way |
-| `maxCycleGapMs(intervalMs, jitter)` · `derivedLeaseTtlMs(intervalMs, jitter)` | **the interval and the lease TTL are one decision, not two.** The gap between cycles *is* the gap between lease renewals, so `leaseTtlMs` defaults to `derivedLeaseTtlMs` — the longest legal cycle gap × `LEASE_RENEW_DIVISOR`, giving three renewal attempts per TTL (198 s at the defaults). An explicit `leaseTtlMs` allowing fewer than two is **refused at construction**: a worker renewing less than twice per TTL has its own live leases judged dead and stolen every cycle, which is permanent fleet churn rather than an error. Exported so a caller driving cycles from its own scheduler computes the same number |
-| `DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES` | **3.** Consecutive failed cycles after which `healthy` goes false. One failure is a throttle; three is a deployment. Without this the engine had a failure mode with no signal at all — a fleet past `maxScanSegments` threw from retention on *every* cycle forever, the cycle absorbed it into `errors` (correctly — one bad phase must not stop the others), and `healthy` stayed `true` because cycles kept settling. `unhealthyAfterFailedCycles: 0` opts out, which restores that hole unless something else alarms on `phaseFailures` |
-| `DEFAULT_INTERVAL_MS` · `DEFAULT_MAX_INTERVAL_MS` · `DEFAULT_JITTER` · `DEFAULT_STOP_TIMEOUT_MS` | 60 s · 15 min · 0.1 · 30 s. **`stop.timeoutMs` must be ≥ your p99 cycle, and your platform's termination grace ≥ that plus a margin**, or every deploy abandons work |
-| types: `EngineLoop` · `EngineLoopOptions` · `EngineStatus` · `StopResult` | the loop, its options, the status shape, and `{ drained, released }` |
-| types: `LifecycleState` · `LifecycleOptions` · `LifecycleDeps` · `LifecycleCycleResult` · `LifecyclePhase` · `LifecyclePhaseError` · `PhaseFailures` · `LeaseTelemetry` · `LifecycleRetentionOptions` · `LifecycleCompactionOptions` | the state carried between cycles (lease state + a cycle counter, so a restart does not force a repair), the per-phase options (each loop opts out with `enabled: false`), the ports a cycle needs, and the cycle's report — `partitionsHeld` · `scan` · `retention` · `compaction` · `errors` |
-| `runLeaseCycle(state, { registry, clock }, { owner, partitions?, ttlMs? })` → `LeaseCycleResult` | **partition leases** — one cycle of the coordination protocol that lets N processes run the *same* maintenance code with no coordinator and no per-process config. Renews what you hold, claims what is free or dead, and takes at most **one** partition from an over-share owner (toward `ceil(partitions/workers)`, and never leaving a worker below `floor(partitions/workers)` — stealing only from an owner over the *ceiling* starves a late joiner permanently, and stealing from anyone over the *floor* oscillates forever). Liveness is decided by whether the row's OCC **token** moved since you last looked — never by comparing `leaseExpiresAt` against your own clock, which would make clock skew a correctness bug. Carry the returned `state` into the next cycle; anything in `lost` you must stop working on **immediately**. `held` is what *this worker believes*, not a mutual-exclusion guarantee: a rebalance takes a live lease and its previous holder only finds out at its next renew, so the conditional write at the resource is what actually prevents two workers committing. `sinceLastCycleMs` greater than `ttlMs` means you are polling too slowly and your own leases are being judged dead |
-| `releaseAll(state, { registry })` → `{ released, state }` | release every held lease on a graceful stop, so the next worker picks the partition up on its next cycle instead of waiting out `ttlMs`. Best-effort: a failed release is not an error, because the TTL is the backstop. **Returns the emptied state** — use it, or a trailing in-flight cycle re-takes everything you just gave up |
-| `emptyLeaseState()` → `LeaseState` | the starting state for a fresh worker |
-| `leaseRef(partition)` / `partitionOfLeaseRow(segment)` | the registry ref for a partition's lease row, and its inverse (`null` for any row we did not write — a foreign row in the reserved namespace is ignored, never adopted) |
-| `leaseRenewIntervalMs(ttlMs?)` → `number` | how long to wait between cycles: a third of the TTL, so one lost round trip is survivable |
-| `isReservedRow(record)` / `excludingReservedRows(listing)` | the coordination-row filter, as a predicate and as a stream wrapper. **Every unscoped fleet-wide enumeration must apply one of them** — a lease is not a segment. Both are exported because a caller writing their own fleet pass needs the same filter, not a second definition (the first cut of this had three call sites missed, including `subjectReport`, where the rows consumed an Art. 15 request's budget) |
+| `isReservedRow(record)` / `excludingReservedRows(listing)` | the bookkeeping-row filter (the due-index pointers), as a predicate and as a stream wrapper. **Every unscoped fleet-wide enumeration skips these** |
 | `dueBucket(expiresAt)` · `dueNamespace(bucket)` · `dueBucketsAt(now, lookbackBuckets)` | **the due index** — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is *expiring* rather than what the fleet *holds*. A bucket is a **day index** (`Math.floor(expiresAt / 86_400_000)`) and becomes a namespace, because `list()` filters by namespace and nothing else — that single constraint is what shapes the design. `dueBucketsAt` includes past buckets so a sweep that did not run leaves nothing stranded, bounded by `lookbackBuckets` so a long outage costs a bounded number of list calls |
 | `dueIndexRef(bucket, ref)` · `encodeDueName(ref)` · `decodeDueName(name)` · `canIndex(ref)` · `isDueIndexRow(record)` | the pointer rows. A name is `${namespaceLength}.${namespace}${segment}` — **length-prefixed, not delimited**, because every character the grammar allows is legal *inside* a name, so no separator could be unambiguous. `canIndex` is false only for a ref whose encoding would exceed the 256-character cap; that is **not an error and not "never retired"** — the repair scan still sees the segment's own row, so it expires on the repair cadence instead of the fast one |
 | `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` | `cbm.due.` · one day · 256. **The index is a fast path, never the source of truth**: the sweep re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse, and the full `registry.list()` scan remains as a periodic **repair** pass, so a missing pointer is slower, never never |
-| types: `LeaseState` · `LeaseOptions` · `LeaseDeps` · `LeaseCycleResult` | the carried-between-cycles state, the per-worker options (`owner` must differ between live processes), the two ports the protocol needs (`registry` + `clock`), and the cycle's report (`held` · `claimed` · `lost` · `stolen` · `workers` · `target`) |
 
 ### Optional plug-ins you construct and pass in
 
@@ -177,7 +156,6 @@ All three are charged against the same per-op budget, so a wide union is refused
 
 | Binary | Does |
 |---|---|
-| `compact-segments` | run compaction once or in a loop (`CR_COMPACT_*`, plus `CR_RETIRE*` for the opt-in retention sweep) |
 | `export-segments` | eject all segments to a directory (`CR_EXPORT_*`) |
 
 ---
@@ -275,10 +253,6 @@ it uses the flavor's `CloudRoaring` facade, which wires all of this for you. The
 | `DEFAULT_WRITE_CONCURRENCY` | default number (4) of warm chunk writes in flight per `addMany`/`removeMany` — see `writeConcurrency` |
 | `DEFAULT_RETIRE_LIMIT` | default cap (100) on segments one `retireExpired` cycle **attempts** — `limited: true` when it bites |
 | `DEFAULT_TOMBSTONE_GRACE_MS` | default delay (24 h) before the sweep deletes a tombstone row it stamped itself |
-| `LEASE_NAMESPACE` | the reserved registry namespace (`cbm.leases`) holding one row per partition. Excluded from every **unscoped** fleet-wide drain — a lease is not a segment. Do not use it for your own segments |
-| `DEFAULT_LEASE_TTL_MS` | default partition-lease TTL (60 s). A holder renews at a third of it, so two renewals may be missed before it looks dead |
-| `DEFAULT_PARTITIONS` | default partition count (**1**). The registry scan is not partitioned, so N workers each still list the fleet — partitions buy work throughput, not scan cost. Raise it when per-segment work dominates |
-| `MAX_PARTITIONS` / `MIN_LEASE_TTL_MS` / `LEASE_RENEW_DIVISOR` | the bounds: 1,024 partitions (a cycle reads one row each), a 1 s TTL floor (below it, an ordinary GC pause reads as death), and 3 renewals per TTL |
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
@@ -308,7 +282,7 @@ answers the read. An `IRegistryDriver` must therefore:
 
 Conformance case **R8** gates all of the above; every first-party registry driver passes it.
 
-### Compaction internals (out-of-process)
+### Compaction internals (free functions)
 
 | Symbol | What it does |
 |---|---|
@@ -339,8 +313,7 @@ Conformance case **R8** gates all of the above; every first-party registry drive
 
 `MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `InProcessKeystoreOptions` ·
 `S3ColdDriverOptions` · `S3RegistryDriverOptions` · `DynamoDbWarmDriverOptions` · `DynamoDbRegistryDriverOptions` ·
-`GcsColdDriverOptions` · `AzureBlobColdDriverOptions` · `PostgresWarmDriverOptions` · `RedisWarmDriverOptions` ·
-`MongoWarmDriverOptions` · `CassandraWarmDriverOptions` · `MysqlWarmDriverOptions`
+`GcsColdDriverOptions` · `AzureBlobColdDriverOptions`
 
 ---
 
@@ -376,11 +349,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `readRetentionPolicy` ·
 `MIN_EXPIRES_AT_MS` · `retireExpired` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` ·
 `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_LOOKBACK_BUCKETS` ·
-`runLeaseCycle` · `releaseAll` · `emptyLeaseState` · `leaseRef` · `partitionOfLeaseRow` · `leaseRenewIntervalMs` ·
-`LEASE_NAMESPACE` · `DEFAULT_LEASE_TTL_MS` · `DEFAULT_PARTITIONS` · `MAX_PARTITIONS` · `MIN_LEASE_TTL_MS` ·
-`LEASE_RENEW_DIVISOR` · `isReservedRow` · `excludingReservedRows` · `runLifecycleCycle` · `emptyLifecycleState` · `DEFAULT_REPAIR_EVERY` · `REPAIR_TARGET_MS` · `repairEveryFor` · `createEngineLoop` ·
-`DEFAULT_INTERVAL_MS` · `DEFAULT_MAX_INTERVAL_MS` · `DEFAULT_JITTER` · `DEFAULT_STOP_TIMEOUT_MS` ·
-`maxCycleGapMs` · `derivedLeaseTtlMs` · `DEFAULT_UNHEALTHY_AFTER_FAILED_CYCLES` ·
+`isReservedRow` · `excludingReservedRows` ·
 `dueBucket` · `dueBucketsAt` · `dueNamespace` · `dueIndexRef` · `encodeDueName` · `decodeDueName` ·
 `canIndex` · `isDueIndexRow` · `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` ·
 `DEFAULT_RETRY_POLICY` · `DEFAULT_OCC_BACKOFF` · `RetryingColdDriver` · `RetryingWarmDriver` ·
@@ -427,40 +396,6 @@ Every export, by entry point. This section is the completeness anchor the sync t
 
 `AzureBlobColdDriver` · `AzureBlobColdDriverOptions` — the Azure Blob Storage cold driver (peer:
 `@azure/storage-blob`). Inject a container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`.
-
-### `@cloudbitmaps/roaring/postgres`
-
-`PostgresWarmDriver` · `PostgresWarmDriverOptions` · `postgresWarmTableDDL` — the PostgreSQL warm-tier driver
-(peer: `pg`). Inject a `pg.Pool`; OCC via `INSERT … ON CONFLICT` + token-fenced `UPDATE`/`DELETE`.
-`postgresWarmTableDDL(table?)` returns the idempotent `CREATE TABLE` to run once at deploy time.
-
-### `@cloudbitmaps/roaring/redis`
-
-`RedisWarmDriver` · `RedisWarmDriverOptions` — the Redis warm-tier driver (peer: `ioredis`). Inject an
-`ioredis` client; OCC via an atomic Lua compare-and-set, with a per-segment sorted-set index for `listChunks`.
-
-### `@cloudbitmaps/roaring/mongodb`
-
-`MongoWarmDriver` · `MongoWarmDriverOptions` · `ensureMongoWarmIndexes` — the MongoDB / DocumentDB warm-tier
-driver (peer: `mongodb`). Inject a `Db`; OCC per-document via a deterministic composite `_id` (create-if-absent)
-+ token-fenced `updateOne`/`deleteOne`. `ensureMongoWarmIndexes(db, collection?)` builds the `listChunks` index.
-
-### `@cloudbitmaps/roaring/cassandra`
-
-`CassandraWarmDriver` · `CassandraWarmDriverOptions` · `cassandraWarmTableDDL` — the Cassandra / ScyllaDB
-warm-tier driver (peer: `cassandra-driver`). Inject a connected `Client`; OCC via a lightweight transaction
-(`INSERT … IF NOT EXISTS` + token-fenced `UPDATE`/`DELETE … IF tok = ?`). `cassandraWarmTableDDL(keyspace, table?)`
-returns the deploy-time `CREATE TABLE`.
-
-### `@cloudbitmaps/roaring/mysql`
-
-`MysqlWarmDriver` · `MysqlWarmDriverOptions` · `mysqlWarmTableDDL` — the MySQL / MariaDB warm-tier driver
-(peer: `mysql2`). Inject a `mysql2` promise `Pool`; OCC via plain SQL (`INSERT` for create-if-absent →
-`ER_DUP_ENTRY` on conflict; token-fenced `UPDATE`/`DELETE … AND token = ?` with an `affectedRows` check).
-`mysqlWarmTableDDL(table?)` returns the deploy-time `CREATE TABLE` (pinned `utf8mb4_bin` so keys match
-case-sensitively — see the driver SDK contract in CONTRIBUTING).
-
----
 
 ## Keeping this in sync
 

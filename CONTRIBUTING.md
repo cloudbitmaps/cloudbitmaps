@@ -36,8 +36,8 @@ The `@cloudbitmaps` family split makes this repo a workspace
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `dynamodb` / `gcs` / `azure` / `postgres` / `redis` / `mongodb` / `cassandra` / `mysql` subpath barrels, SDKs as optional peers), the `.crbm` format, compaction, crypto, registry, consistency, budget, eject |
-| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, one-line re-export barrels for each driver subpath, the `compact-segments` / `export-segments` CLIs, and the test-only conformance SDK |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `dynamodb` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, compaction, crypto, registry, consistency, budget, eject |
+| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, one-line re-export barrels for each driver subpath, the `export-segments` CLI, and the test-only conformance SDK |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the two packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | benchmarks, fuzz targets, gate scripts, the static site, and the docs trees below |
 

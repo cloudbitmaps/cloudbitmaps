@@ -154,10 +154,10 @@ implement the registry, so your registry backup is unchanged no matter which war
 
 ## Operational caveat: no manual publish under active compaction
 
-Do **not** run a manual `publishGeneration` / `bulkLoadCrbmGeneration` against a segment while the compaction
-daemon is compacting that same segment. Publish is **not lease-aware yet**: a manual publish landing inside the daemon's compaction sweep window
+Do **not** run a manual `publishGeneration` / `bulkLoadCrbmGeneration` against a segment while a compaction
+pass is compacting that same segment. Publish is **not lease-aware yet**: a manual publish landing inside a compaction's window
 can strand or lose a generation — the same class of silent lost-update the consistency check below cannot detect.
-Quiesce the daemon for the target segment (or the fleet) before any manual publish/bulk-load, then re-run
+Pause compaction for the target segment (or the fleet) before any manual publish/bulk-load, then re-run
 `checkConsistency()` afterward. This applies during a restore (steps 6–7 may involve manual `currentGen` rolls)
 and in steady-state ops alike.
 
@@ -165,7 +165,7 @@ and in steady-state ops alike.
 
 The one failure in the retention path that does **not** self-heal, and the only one in this runbook that needs a
 human. It costs nothing in steady state and is cheap to check for, so check for it after any hard kill of a
-process that runs `retireExpired` (the engine, the `retire` CLI, or your own scheduler).
+process that runs `retireExpired` (whatever scheduler you run it from).
 
 **What happens.** Retiring an expired segment is two round trips, not one:
 
