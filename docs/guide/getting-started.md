@@ -161,7 +161,7 @@ const res = await bulkLoadCrbmGeneration(
   activeUsers(),
   { registry },
 );
-res; // { size, sha256, chunkCount, cardinality } — the object written and what it holds
+res; // { size, sha256, chunkCount, cardinality, becameCurrent } — the object written and what it holds
 ```
 
 Memory is bounded by the **distinct set being built** — one compressed bitmap per non-empty chunk — not by the
@@ -721,8 +721,9 @@ handful of **compliance-relevant state changes** an auditor cares about: when a 
 GDPR Art. 30 "record of processing" for the erasure path. Like metrics, it's an injected `IAuditSink`, it's
 **off by default** (a no-op), and a throwing sink can never break the operation it observes.
 
-Unlike metrics, audit isn't a store-constructor option — the events fire from the **lifecycle operations**
-(a load, an erasure, a drop, the retention sweep), which are separate entry points, so you pass `audit` to each:
+Unlike metrics, audit isn't a store-constructor option — the events fire from the **operations that write**
+(a load, an `*Into` materialisation, an erasure, a drop, the retention sweep), which are separate entry points,
+so you pass `audit` to each:
 
 ```ts
 import { RecordingAuditSink, bulkLoadCrbmGeneration, destroySegment } from '@cloudbitmaps/roaring';
@@ -792,7 +793,7 @@ ledger.erasedFrom; // [{ segment, namespace, erased: true, fromGeneration: 4, ge
 **An erasure is a rewrite.** There is no per-id delete on an immutable object and no mutable tier to hold a
 tombstone, so `eraseSubject` does what every other write in the library does: for each registered segment the id
 is a member of, it streams the current generation through — every chunk copied, the one chunk holding the id
-re-encoded with that bit cleared — verifies the new object, publishes it forward-only, and then **deletes the
+re-encoded with that bit cleared — verifies the new object, publishes it **fenced on the generation it streamed**, and then **deletes the
 generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit is physically gone from the
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
@@ -807,9 +808,12 @@ is also emitted per rewrite when you pass `audit`).
 **An `erased: false` entry means the id is still there**, and `note` says why:
 
 - `'superseded'` — a load published a newer generation of that segment while the rewrite was in flight; the
-  rewrite was written but not made current (forward-only). Re-run against the new generation.
-- `` `error: <message>` `` — an isolated per-segment fault (a transient cold fault, a missing keystore for an
-  encrypted segment). Fix it and re-run.
+  rewrite was written but not made current: the pointer moved off the generation it was derived from before
+  the publish landed, so the fence refused it. Re-run against the new generation.
+- `` `error: <message>` `` — an isolated per-segment fault. Three causes worth telling apart: a transient cold
+  fault (re-run), a missing keystore for an encrypted segment (wire it), and an `IntegrityError` naming a chunk
+  whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
+  new generation, and no erasure happened on it. The third needs investigating rather than re-running.
 
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. **One contract the
 library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite

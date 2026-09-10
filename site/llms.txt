@@ -30,8 +30,8 @@ composites, with `exclude` suppression folded into the same pass.
 
 ## Measured, not modelled
 
-Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with DynamoDB capacity taken from
-AWS's own ConsumedCapacity: $0.14 per million count()s and $5.88 per million segment publishes, against an
+Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with the request counts read off the
+AWS SDK layer: $0.14 per million count()s and $5.88 per million segment publishes, against an
 always-on Redis-HA line of $346/month standing, and $0.03/month for 1.2 GiB of segments at rest. One crossover
 is published: past 329.15 sustained reads a second, with every read missing the hot cache, metered GETs pass
 the standing node — a warmer cache moves that line up.

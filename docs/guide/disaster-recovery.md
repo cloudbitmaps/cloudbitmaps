@@ -403,7 +403,6 @@ Today the registry is authoritative and must be restored from its own backup (he
 Making cold objects self-describing enough to rebuild the registry (and to decrypt without the original keystore)
 requires a `.crbm` **format change** — carrying a KEK-wrapped DEK in the footer — which the current fully-packed
 104-byte footer has no room for, and which changes the crypto-shred model (shredding would then have to delete the
-cold objects too, not just the key). It's documented as a planned additive evolution in
-the `.crbm` format's reserved-for-future space, and tracked in
-a known deferral; until it lands, **back up the registry and keystore** — they are not
+cold objects too, not just the key). It's a planned additive evolution into the `.crbm` format's reserved-for-future space, and a known
+deferral rather than an oversight; until it lands, **back up the registry and keystore** — they are not
 reconstructable from cold alone.

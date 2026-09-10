@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `export-segments` — the standalone **eject / data-export** CLI (the exit path; see the README's "Your data
- * stays yours"). Dumps every registered segment's current *effective* set to a portable file, so your data is
+ * stays yours"). Dumps every registered segment's current generation to a portable file, so your data is
  * readable **without CloudRoaring**. A thin filesystem wrapper over `CloudRoaring.exportSegments`.
  *
  * Two formats:

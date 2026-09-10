@@ -319,7 +319,7 @@ for (const page of PAGES) {
 }
 
 // ── the spec strip on Home, derived from the source tree ───────────────────────────────────────────────────
-// `3 tiers · 10 drivers · 1 third-party dependency` sits under the keys figure on Home. Home is now the ONLY
+// `2 tiers · 5 drivers · 1 third-party dependency` sits under the keys figure on Home. Home is now the ONLY
 // page that states the driver count — it used to also sit in the final section's meta line, and consolidating
 // it there left the figure with nothing holding it true. That is the exact shape of the failure this script was
 // written for: a number on a page with no source behind it.

@@ -56,7 +56,7 @@ export type { BulkLoadResult, CrbmColdChunkSourceOptions } from './core/crbm-col
 // caller writing generations by hand collects on its own cadence.
 export { gcOrphanGenerations, nextGeneration } from './core/generation-gc';
 export type { GenerationDeps } from './core/generation-gc';
-// Subject erasure on a loaded segment: rewrite the current generation without one id, publish forward-only,
+// Subject erasure on a loaded segment: rewrite the current generation without one id, publish fenced on it,
 // collect the superseded generation. `store.eraseSubject` runs it over every registered segment.
 export { eraseIdFromSegment } from './core/erase-id';
 export type { EraseIdDeps, EraseIdResult } from './core/erase-id';

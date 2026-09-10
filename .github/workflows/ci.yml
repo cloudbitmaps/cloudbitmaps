@@ -98,7 +98,7 @@ jobs:
             sleep 2 # still serial: nine simultaneous pulls is what provokes the rate limit in the first place
           done
           exit "$rc"
-      # `--wait-timeout` so a stuck backend (e.g. a Cassandra node that never goes healthy) fails the step fast
+      # `--wait-timeout` so a stuck backend (e.g. an Azurite container that never goes healthy) fails the step fast
       # with a clear signal instead of hanging until the job timeout. Images are already local by now.
       - run: docker compose up -d --wait --wait-timeout 300
       - run: pnpm test:integration

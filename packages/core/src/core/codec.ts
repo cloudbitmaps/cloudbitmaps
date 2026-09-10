@@ -3,9 +3,11 @@
  *
  * `core/` is **codec-agnostic**: `SegmentEngine`, the erasure rewrite, and the `.crbm` read/write helpers only ever
  * construct and combine bitmaps through the {@link CodecInterface} factory + the {@link CodecBitmap} value type
- * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, today in
- * `core/bitmap.ts`; it moves to `@cloudbitmaps/roaring` when the package split lands); `@cloudbitmaps/bitset`
- * (plain bitset) and `@cloudbitmaps/soaring` plug in behind the same seam with zero engine or driver changes.
+ * defined here — never a concrete implementation. The flagship codec is roaring (`roaringCodec`, in
+ * `@cloudbitmaps/roaring`), and another codec would plug in behind the same seam with zero engine or driver
+ * changes. That is the seam's value even with one codec shipped: a plain-bitset flavor was measured and
+ * **decided against** (above ~6% density a Roaring chunk already *is* an uncompressed bitset), so the seam is
+ * what let that question be answered by measurement rather than by a rewrite.
  *
  * **Homogeneity contract:** a single store uses a single codec, so every {@link CodecBitmap} an operation sees
  * was produced by the same {@link CodecInterface}. The binary set ops ({@link CodecBitmap.orInPlace} etc.) may

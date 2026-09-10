@@ -154,8 +154,14 @@ export interface CloudRoaringOptions {
    */
   readonly keystore?: IKeystore;
   /**
-   * Refuse to read a **cleartext** segment — a guard against silently reading data that should be encrypted.
-   * Needs a `registry`; applied only when `cold` is a raw driver. Off by default (encryption is opt-in).
+   * Refuse to touch a **cleartext** segment — a guard against silently reading, or writing, data that should be
+   * encrypted. Needs a `registry`; applied only when `cold` is a raw driver. Off by default (encryption is opt-in).
+   *
+   * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both carry
+   * it into their write path, so on a cleartext segment a materialisation throws and an erasure records
+   * `note: 'error: requireEncryption: …'` in its ledger rather than erasing. And since a segment's encryption is
+   * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
+   * into a new encrypted segment and drop the old one.
    */
   readonly requireEncryption?: boolean;
   /** Injected for deterministic tests; defaults to a system clock. */
@@ -623,13 +629,14 @@ export class CloudRoaring {
    * from the bucket on return.**
    *
    * For each **registered** segment the id is a member of, `eraseIdFromSegment` rewrites the current generation
-   * without the id — every chunk streamed through, one bit cleared — publishes the rewrite forward-only, and
+   * without the id — every chunk streamed through, one bit cleared — publishes the rewrite **fenced on the
+   * generation it was derived from**, and
    * collects the generation that held the bit. The returned per-segment record is your **erasure ledger** —
    * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
    * emitted per rewrite when you pass `audit`).
    *
    * Uses the store's **own** drivers (raw cold + registry), so the membership check and the rewrite provably run
-   * over the same tiers. Requires the store built with a **raw cold driver + registry** (throws
+   * over the same generation. Requires the store built with a **raw cold driver + registry** (throws
    * {@link UnsupportedError} otherwise; a pre-built `ColdChunkSource` store has no `IColdDriver` to write
    * through — use the `eraseIdFromSegment` free function there).
    *
@@ -637,7 +644,10 @@ export class CloudRoaring {
    * while erasing from it.** A load that lands after the rewrite carries whatever its source held, and the
    * library cannot know that source was meant to exclude the id. Quiesce loads of the affected segments for the
    * duration, or fix the source first and load after. A load that lands *during* the rewrite is caught: the
-   * rewrite's publish is refused (forward-only) and the entry says `note: 'superseded'` — re-run.
+   * rewrite's publish is refused **by the fence** — `publishGeneration`'s `expectFrom`, which lands the CAS only
+   * while the pointer is still on the generation the rewrite streamed — and the entry says `note: 'superseded'`,
+   * so re-run. Forward-only alone would NOT refuse it: `nextGeneration` numbers above everything in the bucket,
+   * so the rewrite would out-rank the newer generation and then collect it.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means a
    * load published a newer generation mid-rewrite, so **the id is still there** and a re-run erases it.

@@ -2,7 +2,7 @@
  * `AzureBlobColdDriver` — an {@link IColdDriver} over Azure Blob Storage (Phase 7).
  *
  * Uses the official `@azure/storage-blob`, an **optional peer dependency** — only consumers of
- * `cloud-roaring/azure` install it. A `ContainerClient` is **injected** (dependency injection): the driver owns
+ * `@cloudbitmaps/roaring/azure` install it. A `ContainerClient` is **injected** (dependency injection): the driver owns
  * no credential/account/endpoint logic, so it's thin, reuses the caller's client, and is testable against the
  * Azurite emulator (point a `ContainerClient` at its connection string). The container must already exist —
  * the Azure analogue of the S3 bucket / GCS bucket. (Unlike the S3/GCS drivers, which inject a top-level

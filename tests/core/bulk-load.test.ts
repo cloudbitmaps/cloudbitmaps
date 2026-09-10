@@ -21,7 +21,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-/** Read the whole effective set back through the engine over the bulk-loaded Cold generation. */
+/** Read the whole set back through the engine over the bulk-loaded Cold generation. */
 async function readBack(segment = 's'): Promise<number[]> {
   const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
   const out: number[] = [];

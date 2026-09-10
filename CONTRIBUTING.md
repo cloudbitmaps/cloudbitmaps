@@ -18,7 +18,7 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm smoke`
 - `pnpm test:integration` — against the docker-compose backends (DynamoDB-Local, MinIO, fake-gcs-server,
-  Azurite, Postgres, Redis, Mongo, Cassandra, MySQL) — no real cloud account needed
+  Azurite) — no real cloud account needed
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic, and every import-boundary rule in `eslint.config.js` (the storage-agnostic-core rule and its siblings) is proven to fire on a planted violation — and, since
   `core-no-node-builtins`, the **runtime**-agnostic one too.
 - `pnpm smoke` loads the **built** packages through their `exports` maps under both ESM and `require()`, on
@@ -26,7 +26,8 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   of bug the source-graph tests structurally cannot see.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥20 — `.nvmrc` pins 22 — and pnpm 9; Docker only for `test:integration`).
+**no manual setup** (Node ≥22, which the manifests enforce — `.nvmrc` pins 22 — and pnpm 9; Docker only for
+`test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover both packages.
 
 ## Repo layout (a pnpm workspace of two packages)
