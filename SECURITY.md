@@ -51,7 +51,7 @@ ignored" is not the same as "fine", so they are **fixed rather than accepted**: 
 | `adm-zip >=0.6.0` | `cassandra-driver` | 0.6.0 (high) |
 | `qs >=6.15.2` | `@stryker-mutator/core` | 6.15.2 |
 | `uuid ^11.1.1` | `@google-cloud/storage` | 11.1.1 |
-| `esbuild >=0.28.1` | the tsup/vitest toolchain | 0.28.1 |
+| `esbuild >=0.28.1` | the vitest/esbuild toolchain | 0.28.1 |
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested: all
 four were verified against the full `pnpm test:integration` suite (152 tests, nine real backends in containers),

@@ -537,7 +537,7 @@
                  scan is divided. The enumeration is the part still unbounded, and it is the part the measured
                  12.9 s is mostly made of. -->
             <span class="rl-note">
-              Only the compaction daemon pays this — <span class="m">add</span>, <span class="m">has</span>,
+              Only compaction pays this — <span class="m">add</span>, <span class="m">has</span>,
               <span class="m">count</span> and <span class="m">intersect</span> never call it. Discovery can
               already be <strong>sharded across workers</strong>, which divides the per-segment warm scan; but
               the shard filter is applied <em>after</em> the registry enumeration, so each worker still walks

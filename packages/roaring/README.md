@@ -80,7 +80,7 @@ await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // once, wh
 
 `expiresAt` is an absolute instant **you** compute, not a duration derived from anything observed: compaction
 rewrites every basis such a duration could use, so "30 days since the last write" would keep a busy bucket alive
-precisely *because* the daemon was keeping it cheap.
+precisely *because* compaction was keeping it cheap.
 
 Then, from whatever schedule your deployment already has — an EventBridge rule, a Kubernetes `CronJob`, `cron`, a
 queue job — run the sweep. **This library starts no background timer**, deliberately: the same code has to behave

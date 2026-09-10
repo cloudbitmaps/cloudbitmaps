@@ -4,9 +4,9 @@
 > exposes, covered by the test suite. The API may still change before `1.0`. Today the **in-memory** and
 > **local-filesystem** tiers exist alongside **cold** object storage on **S3-compatible**, **GCS**, and
 > **Azure Blob** (with
-> chunk-skipping intersection), a **warm tier** on **DynamoDB**, **PostgreSQL**, **Redis**, **MongoDB**,
-> **Cassandra/ScyllaDB**, and **MySQL/MariaDB**, the **segment registry**, **automatic retry/backoff**, a **crash-safe streaming
-> compaction daemon**, and **encryption-at-rest + crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
+> chunk-skipping intersection), a **warm tier** on **DynamoDB**, the **segment registry**, **automatic
+> retry/backoff**, **crash-safe streaming compaction** (a pass you schedule), and **encryption-at-rest +
+> crypto-shred** — i.e. all of Phase 4 (Topology-B) plus the
 > Phase 7 driver set; the full v1 experience is sketched in
 > the usage walkthrough.
 
@@ -53,7 +53,7 @@
 > **Only four backends ship a registry** — `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
 > (`@cloudbitmaps/roaring/s3`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). The seven
 > The GCS and Azure Blob cold drivers are **tier-only — none
-> ships a registry.** That matters because the crash-safe **compaction daemon** ([§8](#8-compaction-keeping-the-warm-tier-small))
+> ships a registry.** That matters because crash-safe **compaction** ([§8](#8-compaction-keeping-the-warm-tier-small))
 > needs a registry for its atomic `LATEST`-pointer swap + per-segment lease. So a deployment that compacts (i.e.
 > runs Topology-B) **must pair its tier with an S3 or DynamoDB registry** — e.g. an all-Redis or all-GCS
 > deployment can't self-host compaction; it takes on a cross-cloud dependency (an S3/DynamoDB registry) that you
@@ -381,7 +381,7 @@ newly-compacted generation automatically**: it re-resolves the current generatio
 (`coldGenTtlMs`, default **2000 ms**), so reads are **bounded eventually-consistent** — after a background
 compaction commits a new generation, a reader may see the prior one for up to the TTL, then converges (tune it
 down for fresher reads, up to trade a little staleness for fewer registry reads). Without a registry the
-generation is pinned for the source's lifetime (single-process/local use — no separate daemon to cause drift).
+generation is pinned for the source's lifetime (single-process/local use — no separate process to cause drift).
 For production, use the **DynamoDB** registry (co-located with your warm rows in the same table):
 
 ```ts
@@ -425,7 +425,7 @@ const store = new CloudRoaring({ warm: new MemoryWarmDriver(), cold, registry })
 > matters more here than it would elsewhere, because a low idle bill is the point of the library.
 
 The record also reserves `status`, `dirtyChunkCount` (compaction discovery), and a wrapped-DEK `keyId` slot
-(encryption) — populated by the compaction daemon and crypto-shred in later phases. To publish a generation
+(encryption) — populated by compaction and crypto-shred in later phases. To publish a generation
 you wrote yourself, call `publishGeneration(registry, { segment, generation })` (forward-only — it never
 regresses the pointer).
 
@@ -714,10 +714,9 @@ published figure cannot flatter us, and two of which remove the crossover entire
 | `pricing.warm.wruPerMillion` | on-demand | Set it to `0` and you have modelled a **provisioned or flat** Warm tier. `writesPerSec` returns `Infinity` — there is no per-request meter left to cross. |
 | `topology` | `'B'` | `'A'` takes writes by bulk-load, so it carries **no per-op write charge at all**. `writesPerSec` returns `Infinity`. |
 
-A flat Warm tier can be one of our own drivers — Redis, Postgres, MySQL, or anything else with cheap small
-writes on an instance you already run. Note that Redis is a **Warm** driver: it holds recent chunk deltas while
-the corpus stays in Cold object storage, so the node is sized for your write rate rather than for your whole
-history. You keep tiering and chunk-skipping and stop paying per request; what you give up is the one property
+A flat Warm tier is provisioned DynamoDB capacity, or any store you wrap in the `IWarmDriver` contract on an
+instance you already run. A warm store holds only recent chunk deltas while the corpus stays in Cold object
+storage, so it is sized for your write rate rather than for your whole history. You keep tiering and chunk-skipping and stop paying per request; what you give up is the one property
 a flat tier cannot have, which is costing nothing while idle.
 
 Watch also for the `batchable-writes` advisory — it fires when the modelled write count far exceeds the number
@@ -843,11 +842,11 @@ built with a raw cold driver + a `registry` (it force-compacts); `subjectReport`
 enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a pre-built-`ColdChunkSource`
 store can't run `eraseSubject` (use the `compactSegment` free function out-of-process). `eraseSubject` writes a
 logical `remove` **and force-compacts** each affected segment on the spot, so the bit is physically gone from Cold
-on return — even for an idle/archival segment the daemon would never revisit. The returned `erasedFrom` list is
+on return — even for an idle/archival segment a scheduled compaction would never revisit. The returned `erasedFrom` list is
 your **erasure ledger** (proof of deletion) — a return value only, so persist it or route it to your audit sink.
 One caveat: don't concurrently re-add the id while erasing it. A `physicallyPurged: false` entry means the
-logical removal held but the physical purge didn't run this call — a live daemon lease (`note: 'leased-by-other'`,
-the daemon finishes it) or an isolated fault (`note: 'error: …'`, per-segment faults are caught so one segment
+logical removal held but the physical purge didn't run this call — a live compaction lease (`note: 'leased-by-other'`,
+that compaction finishes it) or an isolated fault (`note: 'error: …'`, per-segment faults are caught so one segment
 can't discard the whole ledger); **recover it with `store.compact(ref)`** (re-running `eraseSubject` won't — a
 written tombstone makes `has()` read false, so the segment is skipped). For whole-segment / whole-tenant erasure,
 use crypto-shred (`destroySegment` / `eraseNamespace`, §9) — the only erasure that survives immutable backups.
@@ -872,8 +871,8 @@ whole shape of this section:
 
 If you arrived here asking "does it support TTL?", the answer is: **for a segment, yes; for an id, no, by design.**
 
-> ⚠️ **Never enable your backend's native row expiry on the Warm table.** DynamoDB TTL, Redis `EXPIRE`,
-> a MongoDB TTL index, a Postgres cleanup job — any of them will **silently lose writes.**
+> ⚠️ **Never enable your backend's native row expiry on the Warm table.** DynamoDB TTL, or any external cleanup
+> job — either will **silently lose writes.**
 >
 > Warm rows are **un-compacted deltas**: the `adds` and `removes` that have not yet been folded into a Cold
 > generation. Compaction is what durably applies them, and it purges them itself, version-fenced. If the
@@ -969,7 +968,7 @@ encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted
 ### The accumulator pattern — a segment as a pure runtime set
 
 The shape a dedup or sent-list workload actually wants: create it by writing to it, accumulate during a wave,
-retire it when the window closes. **No seed, no warehouse export, no compaction, no daemon.**
+retire it when the window closes. **No seed, no warehouse export, no compaction, no scheduled job.**
 
 ```ts
 // Nothing to create. Writing to it IS creating it — no registry row exists yet and none is needed.
@@ -1037,7 +1036,7 @@ const ref = { namespace: 'active-daily', segment: oldDay };
 // Look before you leap — reports the generations it WOULD delete, changes nothing.
 const preview = await store.dropSegment(ref, { confirmSegment: ref.segment, dryRun: true });
 // `wouldDelete` is unbounded — it lists every generation still in Cold, and a segment compacted repeatedly
-// without the daemon's generation GC accumulates them. Log the count and a sample, not the whole array.
+// without a scheduled compaction's generation GC accumulates them. Log the count and a sample, not the whole array.
 const gens = preview.wouldDelete ?? [];
 console.log(`would delete ${gens.length} generation(s): ${gens.slice(0, 10).join(', ')}${gens.length > 10 ? ' …' : ''}`);
 
@@ -1058,7 +1057,7 @@ for await (const rec of registry.list('active-daily')) {
   const res = await store.dropSegment(ref, { confirmSegment: ref.segment });
   // Non-empty means bytes survived — a compaction already in flight staged one more object after the
   // tombstone. The segment reads as empty either way, so this is a billing leak, not a correctness one;
-  // re-run to collect it (a running compaction daemon also will).
+  // re-run to collect it (a scheduled compaction also will).
   if (res.generationsRemaining.length > 0) {
     console.warn(`${ref.segment}: ${res.generationsRemaining.length} generation(s) not reclaimed`);
   }
@@ -1082,7 +1081,7 @@ would take; a retention bug you can read in a log is worth more than one you fin
    collects the remainder. The sweep repeats because a compaction that was already in flight when the tombstone
    landed still finishes *staging* a generation, built from data it read beforehand: its commit fails on the
    voided lease, but the object survives and holds the full effective set. **Check `generationsRemaining`** —
-   non-empty means bytes are still there and the drop should be repeated. A running compaction daemon also
+   non-empty means bytes are still there and the drop should be repeated. A scheduled compaction also
    collects them, since `gcOrphanGenerations` takes every generation of a tombstoned segment.
 
 Two limits worth knowing before you automate it:
@@ -1127,7 +1126,7 @@ every write; it is idempotent, so re-running is harmless, but it is a write.
 **Why an absolute instant rather than `retentionDays`.** A duration has to be measured from *something*, and
 every anchor the library could use is wrong. `updatedAt` and `currentGen` are both rewritten by compaction, so
 "expire 30 days after the last write" would push a busy bucket's expiry forward on every cycle — the segment
-would stay alive precisely *because* the daemon was keeping it cheap. The writer computes the instant; the
+would stay alive precisely *because* compaction was keeping it cheap. The writer computes the instant; the
 library stores it verbatim and never moves it.
 
 **On an accumulator this also makes the segment visible.** A segment you created by writing to it has no
@@ -1241,7 +1240,7 @@ Every `skipped` reason is worth an alert, for a different reason:
 - **`tombstone-not-empty`** — see below.
 - **`failed: …`** — that one segment's retirement threw. Note that `dropSegment` clears Warm and writes the
   tombstone *before* the Cold sweep, deliberately, so a fault there leaks **bytes, not correctness**; re-running
-  collects them, and so does a running compaction daemon.
+  collects them, and so does a scheduled compaction.
 
 **Tombstones are purged, narrowly.** A retired segment that had a registry row leaves a `destroyed` row behind,
 and one dead row per retired daily bucket accumulates forever — the same registry litter `dropSegment` already
@@ -1321,7 +1320,7 @@ exported set; encrypted segments are **decrypted** transparently if the store ha
 **Warm-only segments.** Enumeration is the registry's known set — segments with a committed cold generation. A
 brand-new segment written only via real-time `add()`/`remove()` (never compacted) isn't in the registry yet, so
 it's **not** exported unless you name it in `candidates` (CLI: `CR_EXPORT_SEGMENTS`) or compact/bulk-load it once
-first. (This mirrors the compaction daemon's discovery contract.)
+first. (This mirrors compaction discovery's contract.)
 
 **Fault isolation.** A segment that can't be read — a corrupt cold object, or an encrypted segment when the store
 has no keystore (the CLI wires none, so it can't decrypt those) — is recorded in the manifest's `failed[]` and the
@@ -1688,7 +1687,7 @@ changes that.
   touch — a compacted segment with a billion members scans **zero** warm bytes.
 
 So if you ever do hit `maxWarmScanBytes`, read it as **"compaction is not keeping up"** rather than "this
-segment is too large". Check the daemon before raising the number.
+segment is too large". Check the compaction job before raising the number.
 
 Both refuse with `BudgetExceededError`, and both abandon the scan at the ceiling rather than completing it —
 so the error reports the limit rather than an exact total, because computing the total is the cost being
@@ -1720,7 +1719,7 @@ runs uninterrupted as it did before.
 **The rule is unchanged:** anything that touches a whole generation belongs out of the request path. Yielding
 makes a load a well-behaved neighbour, not a cheap one — it still burns a core for a quarter-second and holds
 the whole generation in memory. Use a job runner, a queue consumer, or a short-lived task, and run the
-compaction daemon as the separate process it is meant to be.
+compaction as the separate scheduled process it is meant to be.
 
 ## Where next
 

@@ -42,10 +42,10 @@ fuzzes. Instrumentation is scoped with `--includes cloud-roaring/fuzz/build`; **
 ## Fuzz-only internals build
 
 The targets need entry points that aren't public API (notably `parseIndex`). `src/testing/fuzz-support.ts`
-re-exports them and is built by a dedicated `tsup` entry to **`fuzz/build/`** (git-ignored, never under `dist/`,
+re-exports them and is built by `scripts/build.mjs` (esbuild) to **`fuzz/build/`** (git-ignored, never under `dist/`,
 never in the package `files`) — so the fuzzer reaches the hand-written parser directly while the published API
 stays minimal. Targets fuzz this build; the regression test (below) replays against `src` via vitest — fidelity
-rests on `dist ≈ src` (tsup, no minify, same native addon).
+rests on `dist ≈ src` (esbuild, no minify, same native addon).
 
 ## Corpus & crashes (not committed)
 

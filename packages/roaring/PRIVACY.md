@@ -41,11 +41,11 @@ from constructing a cross-region topology. The points where personal data moves 
 | **Cold** (object store) | immutable `.crbm` generations | the region of the bucket you wire |
 | **Warm** (NoSQL) | pending add/remove deltas | the region of the table you wire |
 | **HOT cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
-| **Compaction** (daemon) | reads Cold+Warm, writes new Cold | runs wherever you run the daemon |
+| **Compaction** (scheduled) | reads Cold+Warm, writes new Cold | runs wherever you schedule it |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
-*and* run the process/daemon in-region; keep a segment's Warm, Cold, and the querying compute in one
+*and* run the compaction process in-region; keep a segment's Warm, Cold, and the querying compute in one
 jurisdiction; treat the HOT cache and the intersection runtime as **processing locations** in your transfer
 assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). A fail-closed
 residency-enforcement policy in the library was considered and deferred as over-engineering for v1 — the honest
@@ -81,7 +81,7 @@ store has the keystore, so the **export is cleartext — protect it** (the CLI w
 the dump at rest, restrict access, and delete it when done).
 
 **Honest limits.** Logical `remove()` is *not* physical deletion on its own — you need compaction (which
-`eraseSubject` forces, or a scheduled daemon), or crypto-shred. **Per-subject crypto-shred is infeasible** (a
+`eraseSubject` forces, or a scheduled compaction), or crypto-shred. **Per-subject crypto-shred is infeasible** (a
 subject's bit is co-mingled with millions of others in one shared container), so single-subject erasure goes
 through remove + compaction (`eraseSubject`), while crypto-shred (`destroySegment`/`eraseNamespace`) cleanly
 handles segment/tenant-level erasure and is the only erasure that survives immutable backups / WORM.
@@ -114,14 +114,14 @@ locked Cold object *cannot* be deleted before its retention date by anyone (not 
 
 1. Enable **Object Lock** on the segment's Cold `.crbm` objects (and enable versioning) for the hold period.
 2. **Exclude the segment from your compaction and erasure runs** — don't call `eraseSubject`, `destroySegment`,
-   or the compaction daemon against held segments, so the current generation (and its members) is preserved.
+   or compaction against held segments, so the current generation (and its members) is preserved.
 3. Decide hold-vs-erasure precedence when both apply to the same subject — that is a **legal determination**;
    under a hold, erasure is suspended.
 
 CloudBitmaps deliberately does **not** ship a native `legalHold` flag: Object Lock is a stronger guarantee than
-an in-library flag (which our own daemon could respect but a direct caller could bypass), so a flag would be
+an in-library flag (which our own compaction could respect but a direct caller could bypass), so a flag would be
 advisory where Object Lock is enforced at rest. If a real deployment needs a library-managed hold that the
-daemon refuses to purge, it's a clean fast-follow — but the enforced posture is Object Lock + operational
+compaction refuses to purge, it's a clean fast-follow — but the enforced posture is Object Lock + operational
 exclusion, documented here (P10).
 
 ## Audit & accountability (GDPR Art. 30 / Art. 5(2))
