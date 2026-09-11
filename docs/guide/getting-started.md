@@ -472,6 +472,10 @@ the current generation or anything above it (a load that is mid-write), and it d
 `currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an orphan, and
 the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred tombstone)
 **every** generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
+That branch re-reads the registry row after listing and proceeds only if it is still the same row — a
+segment can be purged and re-created while a paginated listing is in flight, and it is the one branch that
+deletes at and above `currentGen`, so without the check a resurrected segment would lose the object its
+new pointer names.
 
 Who calls it today:
 

@@ -66,6 +66,25 @@ export async function gcOrphanGenerations(
   const current = record.currentGen;
   const gens: number[] = [];
   for await (const key of deps.cold.list(ref)) gens.push(key.generation);
+  // The tombstone was read BEFORE the listing and is acted on after it, and the listing is paginated — seconds
+  // wide on a real object store. Re-read the row and require the *same* row: a token is never reused
+  // (ABA-safe), so an unchanged one proves the segment was not purged and re-created underneath this pass.
+  //
+  // It matters only on this branch, because only this branch deletes at and above `currentGen`. The ordinary
+  // branch is already safe against a concurrent publish without a re-read: it deletes strictly below the
+  // pointer it read, and the pointer only moves forward, so a generation that was collectable then is still
+  // collectable now. Here there is no such bound — every object enumerated is deleted — so a segment
+  // recreated mid-pass would lose the generation its new pointer names, which is the forbidden
+  // `missing-cold-generation` state.
+  //
+  // Refusing costs nothing: these objects are not going anywhere, and the next pass reads a consistent row
+  // and collects them. A row that has become `null` is refused for the same reason — purged-and-idle is
+  // indistinguishable from purged-and-being-recreated, and the top of this function already declines to act
+  // without an authoritative pointer.
+  if (record.status === 'destroyed') {
+    const after = await deps.registry.get(ref);
+    if (after === null || after.token !== record.token) return [];
+  }
   const toDelete =
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can be pinned to a tombstoned segment
