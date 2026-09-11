@@ -11,6 +11,10 @@
 
 # Node
 node_modules/
+# Sibling working trees, kept inside the repo so one project is one folder. Each holds a different
+# commit and its own node_modules, so every tool that walks the tree must skip it — see the matching
+# entries in eslint.config.js, .prettierignore, tsconfig.json and tests/docs/internal-citations.test.ts.
+.worktrees/
 dist/
 build/
 coverage/

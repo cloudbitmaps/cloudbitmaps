@@ -3,6 +3,7 @@ packages/*/dist
 fuzz/build
 coverage
 node_modules
+.worktrees
 pnpm-lock.yaml
 
 # Markdown is hand-formatted (ASCII diagrams, alignment) — Prettier would mangle it.

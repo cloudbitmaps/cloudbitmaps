@@ -27,6 +27,11 @@ const SKIP_DIRS = new Set([
   '.pack-tmp',
   '.rss-stage',
   'golden',
+  // Sibling working trees live under `.worktrees/`. This is the only doc gate that walks from the repo ROOT,
+  // so without this it would scan a DIFFERENT commit's files and fail on content this commit already fixed —
+  // or pass because a stale tree happened to be clean. The other doc gates walk named directories and cannot
+  // reach in.
+  '.worktrees',
 ]);
 
 const EXTS = ['.ts', '.md', '.html', '.cjs', '.mjs', '.js', '.yml', '.yaml', '.json', '.txt'];
