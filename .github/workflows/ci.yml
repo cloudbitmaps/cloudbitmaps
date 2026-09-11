@@ -56,7 +56,7 @@ jobs:
   dependency-audit:
     name: dependency audit (prod, high)
     # Blocks on a new high/critical advisory in a RUNTIME dependency; triaged build-time advisories are
-    # allow-listed in package.json > pnpm.auditConfig.ignoreGhsas with rationale in SECURITY.md (test-strategy T6).
+    # allow-listed in package.json > pnpm.auditConfig.ignoreGhsas with rationale in SECURITY.md.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

@@ -1,5 +1,5 @@
 /**
- * `S3RegistryDriver` — an {@link IRegistryDriver} over S3-compatible object storage (Phase 7).
+ * `S3RegistryDriver` — an {@link IRegistryDriver} over S3-compatible object storage.
  *
  * Lets a **read-mostly deployment run on S3 alone** — cold `.crbm` generations + the registry in one bucket,
  * no DynamoDB. One tiny JSON object per segment at `<prefix>registry/<ns>/<segment>.reg` holding the

@@ -123,7 +123,7 @@
                  the quantity. It slipped past site-figures.cjs only because "cents" is not a dollar
                  amount the money regex can see. Every figure below is a gated anchor.
 
-                 D2: the headline counted FIVE calls and the lede named `add` and `remove` among them.
+                 Warm-tier removal: the headline counted FIVE calls and the lede named `add` and `remove` among them.
                  Neither exists — a segment changes only by publishing a whole new generation — so what
                  is unchanged is the READ surface, and it is those six verbs that are counted now. The
                  write model is the one thing that does not carry over from a Redis bitmap, which is why
@@ -228,7 +228,7 @@
              · Suppression lists mapped to `add · has`. Suppression is the andNot case: you load the
                list and then subtract it from an audience. `has` implies checking one id at a time,
                which is a different and worse pattern. Fixed — and it is the only place andNot appears
-               on this page, despite being a real export. (D2: `add` came off the same row for the
+               on this page, despite being a real export. (Warm-tier removal: `add` came off the same row for the
                same reason it came out of the library — the list grows by being reloaded whole.)
              · The section's whole premise is scale and it quoted no figure, so "large" was undefined.
                The panel foot now grounds it in the measured run. -->
@@ -415,7 +415,7 @@
            section of its own: the figure carries the movement, the cards below stay as its legend, and the
            page gains a moment without gaining a section.
 
-           D2: this was "Three tiers, one API", and the middle tier — per-chunk delta rows in a NoSQL
+           Warm-tier removal: this was "Three tiers, one API", and the middle tier — per-chunk delta rows in a NoSQL
            store — is gone rather than shrunk. The third row and the third card carry the REGISTRY
            instead, which is the piece that makes two immutable tiers behave like one mutable set, and it
            belongs in the legend for the same reason the tiers do: a reader cannot reason about a
@@ -598,7 +598,7 @@
                  design's `intersect(opened)` — the signature is `intersect(others: Segment[], options?)`,
                  checked against the export rather than copied.
 
-                 D2: `addMany` is gone, so the sample loads a generation instead — which is the whole
+                 Warm-tier removal: `addMany` is gone, so the sample loads a generation instead — which is the whole
                  write path, not a variant of it. Two ids rather than three, and the ref hoisted to its
                  own line, because the load call is what sets the panel's width: at 12.5px mono the
                  usable measure is ~72 characters and the three-id form ran to 82. -->
@@ -646,7 +646,7 @@
            each problem as a property of the domain, and the ✓/✕ glyphs are gone — red-and-green scoring in two
            columns reads as a vendor comparison chart regardless of what it actually says.
 
-           D2: three of those four rows argued the delta tier — per-chunk deltas as the cheap write, tombstones
+           Warm-tier removal: three of those four rows argued the delta tier — per-chunk deltas as the cheap write, tombstones
            as the real delete, and a compaction that cannot lose a concurrent write. None of those code paths
            exists, so they are replaced rather than reworded, and the heading with them: with one write path
            and immutable objects, the hard part is no longer keeping concurrent writers honest, it is the

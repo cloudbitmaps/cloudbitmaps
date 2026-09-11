@@ -1,5 +1,5 @@
 /**
- * Pure helpers for classifying DynamoDB SDK errors (Phase 4a conflict mapping; transient class 4b).
+ * Pure helpers for classifying DynamoDB SDK errors (conflict and transient classification).
  *
  * SDK-free + side-effect-free (read structural shapes only), so the transient-vs-fatal decision is
  * unit-testable without DynamoDB-Local or the SDK. Shared AWS shapes come from `_shared/aws-errors`.

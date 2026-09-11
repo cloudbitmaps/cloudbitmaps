@@ -4,7 +4,7 @@ import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 
 /**
- * Property round-trip (F1): `read(write(S)) == S` for arbitrary segments — not just the fixed sample.
+ * Property round-trip: `read(write(S)) == S` for arbitrary segments — not just the fixed sample.
  * Random key spacing exercises multi-byte key deltas; random payload sizes (some > 127 B) exercise
  * multi-byte length varints in the index path; random counts exercise large indexes. Seeded for
  * reproducibility (determinism bar V16).
@@ -27,7 +27,7 @@ const chunksArb = fc
     );
   });
 
-describe('CrbmWriter/CrbmReader property round-trip (F1)', () => {
+describe('CrbmWriter/CrbmReader property round-trip', () => {
   it('round-trips arbitrary ascending chunk sets byte-for-byte', async () => {
     await fc.assert(
       fc.asyncProperty(

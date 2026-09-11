@@ -16,7 +16,7 @@ async function tearRestore(registry: MemoryRegistryDriver, ref: SegmentRef): Pro
   await registry.compareAndSwap(ref, rec.token, { currentGen: rec.currentGen! + 1 });
 }
 
-describe('runConsistencyCheck (gap #11 — torn cross-tier restore)', () => {
+describe('runConsistencyCheck — a torn restore across the registry and the object store', () => {
   it('reports a coherent store as fully consistent', async () => {
     const cold = new MemoryColdDriver();
     const registry = new MemoryRegistryDriver();

@@ -7,7 +7,8 @@ import { SafeBitmap } from '@/roaring-codec';
 import { CloudRoaringError } from '@/core/errors';
 
 /**
- * Deterministic replay of coverage-guided-fuzz crash reproducers (test-strategy T3; *). The jazzer campaign (`pnpm fuzz:*`, nightly) is a time-budgeted search
+ * Deterministic replay of coverage-guided-fuzz crash reproducers. The jazzer campaign (`pnpm fuzz:*`,
+ * nightly) is a time-budgeted search
  * and is NOT a per-PR gate; when it finds an input that violates the untrusted-bytes contract, that input is
  * committed here and this test — which DOES run in the normal suite on every PR — locks the fix in.
  *

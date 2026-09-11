@@ -1,5 +1,5 @@
 /**
- * Per-op denial-of-wallet budget (Decision #3 / invariant T3). A read/admin op is refused
+ * Per-op denial-of-wallet budget — hard invariant 6 (bounded memory and cost). A read/admin op is refused
  * **before it fans out** if its projected fan-out would exceed `maxRequests` — so one runaway
  * `count`/`iterate`/`intersect`/`subjectReport`/`eraseSubject` can't drive unbounded RCU/GET cost on a shared
  * backend. The check is O(1) (a single comparison against the already-known fan-out size), so the hot path is

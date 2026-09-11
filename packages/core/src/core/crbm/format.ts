@@ -1,7 +1,7 @@
 /**
  * Frozen `.crbm` v1.0 layout constants.
  *
- * These byte widths/offsets are pinned by the Phase-2a golden corpus and must never change for v1 —
+ * These byte widths/offsets are pinned by the golden corpus and must never change for v1 —
  * a new layout is a new format version. All multi-byte integers are little-endian (v1 fixes LE).
  */
 

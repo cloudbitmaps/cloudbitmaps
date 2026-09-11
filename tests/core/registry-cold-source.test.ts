@@ -26,7 +26,7 @@ const freshCold = (): LocalFsColdDriver => new LocalFsColdDriver(join(root, `d${
 const count = (source: CrbmColdChunkSource): Promise<number> =>
   new CloudRoaring({ cold: source }).segment('s').count();
 
-describe('registry-aware CrbmColdChunkSource (Phase 4c)', () => {
+describe('registry-aware CrbmColdChunkSource', () => {
   it('resolves currentGen via the registry (no list-scan) and bulk-load publishes it', async () => {
     const cold = freshCold();
     const registry = new MemoryRegistryDriver();

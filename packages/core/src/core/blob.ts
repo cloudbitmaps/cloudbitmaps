@@ -3,7 +3,7 @@
  *
  * Deliberately tiny and driver-independent: a `BlobSink` is a streaming append target (the writer needs
  * no random access), a `BlobReader` supports the speculative tail read + bounded range reads. An
- * `IColdDriver` (Phase 2b) adapts a `GenKey` to these; the in-memory impls below let the format be
+ * `IColdDriver` adapts a `GenKey` to these; the in-memory impls below let the format be
  * golden-tested and let the in-memory cold tier hold a real `.crbm` with no filesystem.
  */
 import { ValidationError } from './errors';

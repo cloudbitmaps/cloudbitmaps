@@ -1,7 +1,6 @@
 # Coverage-guided fuzzing (`.crbm` untrusted-bytes boundary)
 
-Test-strategy **T3** (``). Every byte a
-cold read sees is attacker-controlled (invariant 5 / finding S1). We already property-fuzz this boundary with
+Every byte a cold read sees is attacker-controlled (hard invariant 5). We already property-fuzz this boundary with
 random bytes ([`tests/core/crbm/fuzz.test.ts`](../tests/core/crbm/fuzz.test.ts)) and forge hostile indexes
 deterministically ([`tests/core/crbm/crafted.test.ts`](../tests/core/crbm/crafted.test.ts)); this adds a
 **coverage-guided** campaign ([jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js) → libFuzzer)

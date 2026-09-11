@@ -1,5 +1,5 @@
 /*
- * Offline benchmark + crossover-chart generator (Phase 5c).
+ * Offline benchmark + crossover-chart generator.
  *
  * Draws the CloudRoaring pay-per-use read-cost curve against a flat Redis-HA node and marks where they cross,
  * straight from the SHIPPED estimator (`estimateCost`) + the default pricing — so the published chart can

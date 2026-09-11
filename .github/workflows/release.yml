@@ -1,7 +1,7 @@
-# Release — publish to npm with build provenance (Phase 8 supply-chain hardening; threat model S9).
+# Release — publish to npm with build provenance (supply-chain hardening).
 #
-# The MECHANICS land now (Phase 8); the first real publish is the Phase 9 public launch. Until then this runs
-# safely in **dry-run** by default, so the pipeline is proven without pushing a version.
+# A tag push publishes for real; a manual run defaults to **dry-run** (pack + `publish --dry-run`, no
+# upload), so the pipeline can be exercised without pushing a version.
 #
 # Supply-chain guarantees this pipeline enforces:
 #   - **Tokenless auth (npm Trusted Publishing)**: there is **NO long-lived `NPM_TOKEN`**. npm authenticates
@@ -35,7 +35,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*.*.*'] # a real publish is triggered by pushing a version tag (Phase 9)
+    tags: ['v*.*.*'] # a real publish is triggered by pushing a version tag
   workflow_dispatch:
     inputs:
       dryRun:

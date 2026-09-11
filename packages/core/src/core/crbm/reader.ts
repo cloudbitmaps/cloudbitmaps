@@ -4,9 +4,9 @@
  * `open()` fetches the object's tail in **one GET** (footer + usually the whole index), verifies the
  * footer/index CRCs, and parses the delta+varint index into a map. `getChunk()` then range-GETs a single
  * payload and verifies its CRC32C **before** any native deserialize — every byte from storage is
- * untrusted (F3/F4).
+ * untrusted.
  *
- * **Encryption (Phase 4e).** When the footer's `FLAG_ENCRYPTED` is set, a {@link CrbmCrypto} must be supplied:
+ * **Encryption.** When the footer's `FLAG_ENCRYPTED` is set, a {@link CrbmCrypto} must be supplied:
  * the index is AES-256-GCM-decrypted (nonce/tag from the footer) and each chunk payload is decrypted after its
  * on-disk CRC passes. The footer's `chunkCount`/`totalCardinality` are zero on an encrypted object (metadata is
  * hidden), so both are derived from the decrypted index; AEAD authentication (incl. the per-location AAD)
@@ -103,21 +103,21 @@ export class CrbmReader {
     private readonly crypto: CrbmCrypto | undefined,
   ) {}
 
-  /** Total object bytes (from the one-GET tail read) — for grounded storage cost (Phase 5b). */
+  /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
   get sizeBytes(): number {
     return this.objectSize;
   }
 
   /**
    * Estimated retained JS heap of this reader's parsed index — the weight the cold reader cache bounds on
-   * (gap #1: a wide segment's index dominates the reader's footprint). `entries.size` scales with the number
+   * (a wide segment's parsed index, not its payloads, dominates the reader's footprint). `entries.size` scales with the number
    * of resident chunks (≤ 65536), so this is `entries.size × {@link RETAINED_BYTES_PER_INDEX_ENTRY}`.
    */
   get retainedIndexBytes(): number {
     return this.entries.size * RETAINED_BYTES_PER_INDEX_ENTRY;
   }
 
-  /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads (Phase 5c cheap count). */
+  /** Per-chunk cardinality (`chunkKey → count`) from the parsed index — no payload reads. */
   cardinalities(): Map<number, number> {
     const out = new Map<number, number>();
     for (const [chunkKey, entry] of this.entries) out.set(chunkKey, entry.cardinality);
@@ -259,7 +259,7 @@ export class CrbmReader {
         );
       }
     } else {
-      // F2 (cleartext): the footer total + count must match the index — don't trust the footer blindly.
+      // Cleartext: the footer total + count must match the index — don't trust the footer blindly.
       if (entries.size !== chunkCount) {
         throw new IntegrityError(
           `.crbm chunk_count ${chunkCount} != ${entries.size} index entries`,
@@ -332,7 +332,7 @@ export class CrbmReader {
   }
 }
 
-// Exported for the coverage-guided fuzz harness (test-strategy T3), which fuzzes the hand-written index parser
+// Exported for the coverage-guided fuzz harness, which fuzzes the hand-written index parser
 // directly on raw bytes — bypassing the CRC wall that mutational fuzzing can't cross. NOT part of the public
 // API surface (`src/index.ts`); reached only via `src/testing/fuzz-support.ts` → the gitignored `fuzz/build/`.
 export function parseIndex(

@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Dependency-audit gate (test-strategy T6).
+ * Dependency-audit gate.
  *
  * Wraps `pnpm audit --prod --json` and fails ONLY on a non-triaged advisory at or above the threshold
  * (default: high). Advisories the project has explicitly triaged live in `package.json` →

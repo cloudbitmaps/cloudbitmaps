@@ -118,7 +118,7 @@ describe('costReport (grounded)', () => {
     expect(r.assumptions.notes.some((n) => n.includes('sizeOf'))).toBe(true);
   });
 
-  it('L7: grounded size flows through CrbmColdChunkSource from the .crbm index', async () => {
+  it('grounded size flows through CrbmColdChunkSource from the .crbm index', async () => {
     const driver = new MemoryColdDriver();
     const { size } = await writeCrbmGeneration(driver, { segment: 'g', generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3, 400_000]) },
@@ -173,7 +173,7 @@ describe('cost model — additional coverage (5b review)', () => {
     );
   });
 
-  it('L9: the intersection path bills cold fetches (chunks × GET)', () => {
+  it('the intersection path bills cold fetches (chunks × GET)', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { intersectsPerSec: 10, chunksPerIntersect: 4 },

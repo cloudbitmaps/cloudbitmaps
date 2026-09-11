@@ -42,7 +42,7 @@ let n = 0;
 const freshDriver = (): AzureBlobColdDriver =>
   new AzureBlobColdDriver({ containerClient: container, prefix: `conf/${n++}` });
 
-// The Azure driver must pass the SAME cold-source contract as in-memory + LocalFs + S3 + GCS (finding V8).
+// The Azure driver must pass the SAME cold-source contract as in-memory + LocalFs + S3 + GCS.
 coldChunkSourceConformance('AzureBlobColdDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);

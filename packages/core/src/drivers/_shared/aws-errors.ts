@@ -1,5 +1,5 @@
 /**
- * Shared, SDK-free helpers for classifying AWS-style errors (used by the S3 + DynamoDB drivers, Phase 4b).
+ * Shared, SDK-free helpers for classifying AWS-style errors (used by the S3 + DynamoDB drivers).
  *
  * These only read structural shapes an AWS SDK v3 error carries — `name`, `$metadata.httpStatusCode`, a
  * lower-level `code`/`errno`, and the SDK's own `$retryable` marker — so the (subtle, easy-to-get-wrong)

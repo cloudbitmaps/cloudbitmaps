@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-js/master/packages/api/schema/stryker-core.json",
-  "_comment": "Mutation testing (test-strategy T2). Quantifies how well the suite actually catches bugs by injecting mutants into the highest-risk core logic (the erasure rewrite, generation numbering and GC, bounded concurrency, bit routing, the due index) and checking the suite kills them. Offline + slow (a mutant runs the covering tests) — NOT a CI gate — run via `pnpm mutation`, which fetches Stryker with `pnpm dlx` so its ~80 packages stay out of the root lockfile; `break` is null so it never fails a build, it just reports a score.",
+  "_comment": "Mutation testing. Quantifies how well the suite actually catches bugs by injecting mutants into the highest-risk core logic (the erasure rewrite, generation numbering and GC, bounded concurrency, bit routing, the due index) and checking the suite kills them. Offline + slow (a mutant runs the covering tests) — NOT a CI gate — run via `pnpm mutation`, which fetches Stryker with `pnpm dlx` so its ~80 packages stay out of the root lockfile; `break` is null so it never fails a build, it just reports a score.",
   "testRunner": "vitest",
   "plugins": ["@stryker-mutator/vitest-runner"],
   "coverageAnalysis": "perTest",

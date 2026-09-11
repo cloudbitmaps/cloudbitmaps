@@ -1,5 +1,5 @@
 /**
- * Internal surface for the coverage-guided fuzz harness (test-strategy T3), CORE half.
+ * Internal surface for the coverage-guided fuzz harness, CORE half.
  *
  * Exposes the untrusted-bytes entry points the fuzz targets drive — including `parseIndex`, which is
  * deliberately **NOT public API**. Built by a dedicated `tsup` entry to the git-ignored repo-root `fuzz/build/`,

@@ -1,5 +1,5 @@
 /**
- * Logical-ref → Azure blob-name mapping for {@link AzureBlobColdDriver} (Phase 7).
+ * Logical-ref → Azure blob-name mapping for {@link AzureBlobColdDriver}.
  *
  * Pure string logic, no SDK dependency — unit-testable without Azure or an emulator. Uses the **same
  * backend-agnostic `.crbm` object-name scheme** as the S3 + GCS + LocalFs cold drivers
@@ -9,9 +9,9 @@
  *
  * NOTE (DRY): this mirrors the pure cold-key builders in `drivers/s3/keys.ts` + `drivers/gcs/keys.ts`. They
  * are deliberately **not** shared across driver folders today — a driver must stay self-contained so it lifts
- * cleanly into its own package at the [Phase 9 split]. At that
- * split the shared cold-key scheme is promoted into `@cloudbitmaps/core`'s driver-kit (imported by every driver
- * package), which is the right home for it; until then a self-contained copy beats a cross-driver import.
+ * cleanly into its own package if a driver ever ships separately. At that point the shared cold-key scheme
+ * would be promoted into a driver-kit imported by every driver package, which is the right home for it;
+ * until then a self-contained copy beats a cross-driver import.
  */
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';

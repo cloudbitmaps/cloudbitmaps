@@ -13,7 +13,7 @@ import {
 import type { SegmentRef } from '@/index';
 
 /**
- * Executable DR drill (test-strategy T5) — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
+ * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
  * turned into a gated, on-disk `backup → corrupt → restore → verify` exercise.
  *
  * Unlike `tests/core/consistency.test.ts` (in-memory drivers, a *structural* tear via `compareAndSwap`), this
@@ -57,7 +57,7 @@ async function members(store: CloudRoaring, seg: string): Promise<number[]> {
   return out.sort((a, b) => a - b);
 }
 
-describe('DR drill — backup → corrupt → restore → verify (test-strategy T5)', () => {
+describe('DR drill — backup → corrupt → restore → verify', () => {
   let root: string;
   let backup: string;
 

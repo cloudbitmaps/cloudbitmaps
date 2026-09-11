@@ -29,7 +29,7 @@ async function readBack(segment = 's'): Promise<number[]> {
   return out;
 }
 
-describe('bulkLoadCrbmGeneration (Phase 3b)', () => {
+describe('bulkLoadCrbmGeneration', () => {
   it('builds a generation from a flat id list, read back through the engine', async () => {
     const ids = [1, 2, 3, 100, joinId(5, 7), joinId(65_535, 9)];
     const res = await bulkLoadCrbmGeneration(driver, { segment: 's', generation: 1 }, ids);

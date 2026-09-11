@@ -32,7 +32,7 @@ async function writeEncrypted(crypto: CrbmCrypto): Promise<Uint8Array> {
   return sink.bytes();
 }
 
-describe('CrbmWriter/CrbmReader — encryption (Phase 4e)', () => {
+describe('CrbmWriter/CrbmReader — encryption', () => {
   it('round-trips an encrypted generation (chunks + index) with the right key', async () => {
     const dek = randomBytes(32);
     const bytes = await writeEncrypted(cryptoFor(dek));
@@ -96,7 +96,7 @@ describe('CrbmWriter/CrbmReader — encryption (Phase 4e)', () => {
     await expect(reader.getChunk(0)).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it('rejects an unsupported format field on an ENCRYPTED object too — even with the right key (gap #6)', async () => {
+  it('rejects an unsupported format field on an ENCRYPTED object too — even with the right key', async () => {
     const dek = randomBytes(32);
     const bytes = await writeEncrypted(cryptoFor(dek));
     // element_width lives in the CLEARTEXT footer (readable without the key). Forge a 64-bit generation and

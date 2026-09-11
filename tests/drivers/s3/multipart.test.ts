@@ -67,7 +67,7 @@ const writeBytes =
     for (const b of buffers) await sink.write(b);
   };
 
-describe('S3ColdDriver — streaming/multipart putImmutable (Phase 4f)', () => {
+describe('S3ColdDriver — streaming/multipart putImmutable', () => {
   it('small object → single conditional PutObject (no multipart), correct size + sha256', async () => {
     const s3 = fakeS3();
     const driver = new S3ColdDriver({ client: s3.client, bucket: 'b' });

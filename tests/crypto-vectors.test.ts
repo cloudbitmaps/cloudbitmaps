@@ -2,7 +2,7 @@ import { NodeAead } from '@/index';
 import { IntegrityError } from '@/core/errors';
 
 /**
- * Known-answer tests (KATs) for the AES-256-GCM AEAD (test-strategy T6).
+ * Known-answer tests (KATs) for the AES-256-GCM AEAD.
  *
  * `tests/drivers/crypto.test.ts` proves the AEAD's *behaviour* (round-trip, tamper-rejection, AAD binding) but
  * only against itself — a self-consistent bug (wrong tag length, mis-ordered nonce, an AAD that isn't actually

@@ -1,5 +1,5 @@
 /**
- * The retention **sweep** (Phase 6) — the thing that acts on the policies `setSegmentRetention` records.
+ * The retention **sweep** — the thing that acts on the policies `setSegmentRetention` records.
  *
  * `retireExpired` enumerates the registry, selects the segments whose `expiresAt` has passed, and retires each
  * one through {@link dropSegment}. It deliberately **delegates rather than reimplements**: the registry → Cold

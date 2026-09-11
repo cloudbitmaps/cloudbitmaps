@@ -1,5 +1,5 @@
 /**
- * Bounded LRU cache with optional TTL — the HOT tier's memory ceiling (finding C6).
+ * Bounded LRU cache with optional TTL — the HOT tier's memory ceiling.
  *
  * Time comes from an injected `Clock` (never `Date.now()`) so the cache is deterministic
  * under simulation.
@@ -7,7 +7,7 @@
  * The cache can be bounded by entry **count** (`maxEntries`, always) and, optionally, by an aggregate
  * **byte weight** (`maxBytes`). The byte bound exists for values whose footprint is large and uneven — the
  * cold reader cache, where one entry pins a fully-parsed `.crbm` index that can be ~6 MB for a wide segment
- * yet a few hundred bytes for a small one (gap #1: a count-only bound lets 1024 wide indices blow a Lambda's
+ * yet a few hundred bytes for a small one (a count-only bound lets 1024 wide indices blow a Lambda's
  * memory even though the count is "in bounds"). Weights arrive **after** insertion (a cached reader is a
  * pending promise; its size is known only once it resolves), so weight is reported via {@link setWeight} and
  * eviction re-runs then.

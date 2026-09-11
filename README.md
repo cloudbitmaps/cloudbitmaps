@@ -458,7 +458,7 @@ with the write path they exercised — the stress, load/tail-latency and chaos h
 against an emulator, so they are **withdrawn rather than counted**, and the loaded-store equivalents are on the
 owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
-scale/tenancy deferrals are tracked openly). **Phase 7 — additional storage drivers**: **GCS + Azure
+scale/tenancy deferrals are tracked openly). **Additional storage drivers**: **GCS + Azure
 Blob cold drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that
 shipped alongside them in `0.9.x` was removed ahead of `1.0` as the library re-centres on write-once
 generations (see the `CHANGELOG`). Security and supply-chain hardening is in place: npm build

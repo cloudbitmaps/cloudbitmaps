@@ -1,5 +1,5 @@
 /**
- * `S3ColdDriver` — an {@link IColdDriver} over S3-compatible object storage (Phase 3c).
+ * `S3ColdDriver` — an {@link IColdDriver} over S3-compatible object storage.
  *
  * Works with AWS S3 and any compatible backend (MinIO, etc.) via the official `@aws-sdk/client-s3`, which
  * is an **optional peer dependency** — only consumers of `@cloudbitmaps/roaring/s3` install it. The client is
@@ -10,7 +10,7 @@
  * publish atomic — a second write to the same key fails with `WriteConflictError`, never a silent overwrite
  * (C13), the cloud analogue of the LocalFs atomic `link`. **This requires a backend that honors
  * `If-None-Match: *`** (AWS S3 — GA Aug 2024; recent MinIO): a backend that silently ignored the
- * precondition would break write-once immutability. **Writes stream (Phase 4f):** the object is uploaded in
+ * precondition would break write-once immutability. **Writes stream:** the object is uploaded in
  * constant memory — a small object is a single conditional `PutObject`; a large one is a **multipart upload**
  * (parts flushed as the codec writes, freed as they go) finished with a conditional `CompleteMultipartUpload`,
  * so a load's footprint stays ~one part regardless of segment size, up to the advertised `maxObjectBytes`
@@ -276,7 +276,7 @@ function concatBytes(parts: readonly Uint8Array[], total: number): Uint8Array {
 }
 
 /**
- * Streaming {@link BlobSink} that uploads one S3 object in **constant memory** (Phase 4f). It buffers at most
+ * Streaming {@link BlobSink} that uploads one S3 object in **constant memory**. It buffers at most
  * one part: as the codec writes, full parts are flushed via `UploadPart` and freed. A small object that never
  * reaches one part is committed as a single conditional `PutObject`; a larger one is finished with a
  * conditional `CompleteMultipartUpload` — **both enforce write-once** via `If-None-Match: *`. SHA-256 is hashed

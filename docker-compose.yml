@@ -27,7 +27,7 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
 
-  # Google Cloud Storage emulator for the GcsColdDriver integration lane (Phase 7). The client reaches it by
+  # Google Cloud Storage emulator for the GcsColdDriver integration lane. The client reaches it by
   # passing `apiEndpoint: http://127.0.0.1:4443` (see tests/integration/gcs.test.ts) — no real GCP, no auth.
   # `-external-url` must match that host so resumable-upload session URLs point back at the emulator.
   # PINNED (not `:latest`): 1.52.2 is verified to enforce `ifGenerationMatch: 0` on the simple (non-resumable)
@@ -49,7 +49,7 @@ services:
       - '-backend'
       - 'memory'
 
-  # Azure Blob Storage emulator (Azurite) for the AzureBlobColdDriver integration lane (Phase 7). The client
+  # Azure Blob Storage emulator (Azurite) for the AzureBlobColdDriver integration lane. The client
   # reaches it via the well-known dev connection string (see tests/integration/azure.test.ts) — no real Azure,
   # no auth. PINNED (not `:latest`): 3.35.0 is a known-good build; `--skipApiVersionCheck` lets a newer SDK
   # `x-ms-version` through (the SDK ships a more recent API version than a pinned Azurite recognizes).

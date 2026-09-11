@@ -14,7 +14,7 @@ import { joinId } from '@/core/bit-route';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
 
 /**
- * Benchmark-as-test anchors (Phase 5c). These are the **defensible-floor** cost/perf claims turned into CI
+ * Benchmark-as-test anchors. These are the **defensible-floor** cost/perf claims turned into CI
  * assertions, so marketing can never drift ahead of measured reality (the benchmark
  * acceptance criteria). They are deterministic + rate-independent — no wall-clock timing (that lives in the
  * offline `pnpm bench`, too noisy for shared CI runners). A failing anchor is a build failure.
@@ -27,7 +27,7 @@ import { collect, loadedStore, seededStore } from '../helpers/loaded';
 const SECONDS_PER_MONTH = 730 * 3600; // matches the estimator's convention
 const GIB = 1024 ** 3;
 
-describe('bench-as-test anchors (Phase 5c)', () => {
+describe('bench-as-test anchors', () => {
   it('count() performs 0 payload reads on a loaded segment (the cheap-count claim)', async () => {
     // A loaded segment across several .crbm chunks — the steady state of every segment in this model.
     const driver = new MemoryColdDriver();

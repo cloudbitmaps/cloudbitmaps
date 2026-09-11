@@ -5,8 +5,8 @@ import { CrbmReader } from '@/core/crbm/reader';
 import { BufferSink, BufferReader } from '@/core/blob';
 
 /**
- * Golden-file corpus (finding V6). `tests/golden/v1.0-basic.crbm` pins the exact v1.0 byte layout
- * forever — it's the artifact future language ports decode against (F8). If this test fails after a
+ * Golden-file corpus. `tests/golden/v1.0-basic.crbm` pins the exact v1.0 byte layout
+ * forever — it's the artifact future language ports decode against. If this test fails after a
  * code change, the on-disk format changed: that is a breaking change requiring a new format version,
  * not a golden-file update.
  */
@@ -20,7 +20,7 @@ const CHUNKS = [
   { chunkKey: 4096, payload: Uint8Array.of(0xff), cardinality: 2 },
 ];
 
-describe('golden .crbm corpus (V6, F8)', () => {
+describe('golden .crbm corpus', () => {
   it('the writer reproduces the golden bytes exactly', async () => {
     const sink = new BufferSink();
     const writer = new CrbmWriter(sink, { generation: GENERATION });

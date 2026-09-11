@@ -35,7 +35,7 @@ loaded as immutable generations, then read and chunk-skipping-intersected from a
 registry row per segment, no background process. The **live tier** — per-call `add`/`remove` over a warm NoSQL
 store, the compaction that folded those deltas into cold, and the partition leases that scheduled it — has left
 this line in two steps. The first removed the lifecycle engine and the five non-AWS warm drivers; the second
-(D2) removed the warm tier as a whole: the DynamoDB warm driver, compaction, the write verbs, and the write side
+removed the warm tier as a whole: the DynamoDB warm driver, compaction, the write verbs, and the write side
 of the cost model. All of it is archived intact at the git tag `archive/live-warm-tier`, and `0.9.x` stays on
 npm as the last line with a warm tier. Every roaring-based engine that needs freshness micro-batches into
 immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds. A
@@ -48,7 +48,7 @@ Where each piece sits today:
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The measured numbers on the [benchmarks page](benchmarks.md) are the S3-side figures of the July 2026 calibration run |
-| The R11 empty guard and `load()` with `allowEmpty` / `guard` / rollback — covering the `*Into` verbs too | **next** |
+| The empty-load guard and `load()` with `allowEmpty` / `guard` / rollback — covering the `*Into` verbs too | **next** |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
 
@@ -206,7 +206,7 @@ between here and there:
    multipart), `intersect` / `*Into` latency by operand count and chunk overlap, and an RSS soak over a long
    read/load mix. Until they exist, the measured numbers on the benchmarks page are the S3-side figures of the
    July 2026 calibration run, and this page says so wherever it quotes one.
-3. **The R11 empty guard and `load()` — next.** A first-class `load()` on the store with `allowEmpty` (an empty
+3. **The empty-load guard and `load()` — next.** A first-class `load()` on the store with `allowEmpty` (an empty
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
    refused load. It covers the `*Into` verbs too, which today publish an empty generation when a combine comes
    out empty.

@@ -38,7 +38,7 @@ describe('BoundedLru', () => {
     expect(lru.has('x')).toBe(false);
   });
 
-  describe('byte bound (gap #1 — reader-cache index footprint)', () => {
+  describe('byte bound — reader-cache index footprint', () => {
     it('rejects an invalid maxBytes', () => {
       const clock = fakeClock();
       expect(() => new BoundedLru({ maxEntries: 2, maxBytes: 0, clock })).toThrow(ValidationError);

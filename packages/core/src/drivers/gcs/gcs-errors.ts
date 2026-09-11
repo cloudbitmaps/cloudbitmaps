@@ -1,5 +1,5 @@
 /**
- * Pure helpers for classifying Google Cloud Storage SDK errors (Phase 7; transient class mirrors S3's).
+ * Pure helpers for classifying Google Cloud Storage SDK errors (the transient class mirrors S3's).
  *
  * SDK-free + side-effect-free — they only read structural shapes off the thrown value (`err.code`,
  * `err.response.status`, `err.name`), so the GCS-specific translation is unit-testable without a live GCS or
