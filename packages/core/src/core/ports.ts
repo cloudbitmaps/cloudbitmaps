@@ -29,6 +29,23 @@ export interface GenKey extends SegmentRef {
 }
 
 /**
+ * One entry from {@link IColdDriver.list} — a {@link GenKey} plus what the store knows about the object
+ * itself. `GenKey` stays a pure address (what to get, put or delete); this is what an enumeration *found*.
+ *
+ * `createdAt` is epoch-ms for when the object was written, when the backend reports it in the listing —
+ * S3's `LastModified`, GCS's `timeCreated`, Azure's `createdOn`, a file's mtime. It is **optional** because a
+ * third-party driver need not supply it, and a reader must treat absent as "unknown", never as "old".
+ *
+ * It exists for one caller: generation GC needs to know when a generation stopped being current, and **a
+ * generation stops being current at the moment its successor is written**. So the useful timestamp of
+ * generation *G* is the one on generation *G+1*, not the one on *G* — a generation written a week ago but
+ * superseded a second ago is precisely the one a reader is still on, and its own age says nothing about that.
+ */
+export interface ListedGeneration extends GenKey {
+  readonly createdAt?: number;
+}
+
+/**
  * A segment's grounded on-disk footprint — the current generation's Cold object bytes, read cheaply from the
  * `.crbm` footer/index (no payload reads). Powers the grounded `costReport()`.
  */
@@ -95,8 +112,12 @@ export interface IColdDriver {
   /** Speculative tail read: the last `min(maxBytes, size)` bytes + the total object size. */
   getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }>;
   delete(key: GenKey): Promise<void>;
-  /** Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). */
-  list(ref: SegmentRef): AsyncIterable<GenKey>;
+  /**
+   * Enumerate the generations present for a segment (orphan sweep / latest-gen resolution). Entries carry the
+   * object's `createdAt` where the backend reports it in the listing response — see {@link ListedGeneration}.
+   * Supplying it costs nothing on S3, GCS and Azure, whose list calls already return it.
+   */
+  list(ref: SegmentRef): AsyncIterable<ListedGeneration>;
 }
 
 /**
@@ -147,6 +168,20 @@ export interface RegistryRecord extends SegmentRef {
    * keystore. Clearable on crypto-shred.
    */
   readonly keyId?: string;
+  /**
+   * Epoch-ms at which {@link currentGen} last **changed** — so, when the generation before it stopped being
+   * current. Stamped by the driver's injected clock only on a pointer move; an unrelated patch (a retention
+   * policy, a key rotation) leaves it alone, which is what makes it a supersession clock rather than a second
+   * {@link updatedAt}.
+   *
+   * It is exact, and it describes exactly one generation: `currentGen - 1`. Older generations were superseded
+   * earlier by an unknown amount, which is why generation GC reads their ages from the objects instead (see
+   * {@link ListedGeneration.createdAt}).
+   *
+   * Absent on a row that has never had a Cold generation, and on rows written before this field existed — a
+   * reader must treat absent as "unknown", never as "infinitely old".
+   */
+  readonly currentGenSince?: number;
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`

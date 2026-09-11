@@ -18,6 +18,7 @@ import type {
   GenKey,
   IColdDriver,
   IRegistryDriver,
+  ListedGeneration,
   NewRegistryRecord,
   RegCaps,
   RegistryPatch,
@@ -155,6 +156,13 @@ export class MemoryRegistryDriver implements IRegistryDriver {
  */
 export class MemoryColdDriver implements IColdDriver {
   private readonly objects = new Map<string, Uint8Array>();
+  /** Write instants, so this driver can answer `createdAt` like a real store. */
+  private readonly writtenAt = new Map<string, number>();
+  private readonly now: () => number;
+
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? (() => Date.now());
+  }
 
   capabilities(): ColdCaps {
     return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: true };
@@ -174,6 +182,7 @@ export class MemoryColdDriver implements IColdDriver {
       );
     }
     this.objects.set(k, body);
+    this.writtenAt.set(k, this.now());
     return { size: body.length, sha256: createHash('sha256').update(body).digest('hex') };
   }
 
@@ -197,18 +206,24 @@ export class MemoryColdDriver implements IColdDriver {
   }
 
   async delete(key: GenKey): Promise<void> {
-    this.objects.delete(genObjectKey(key)); // idempotent
+    const k = genObjectKey(key);
+    this.objects.delete(k); // idempotent
+    this.writtenAt.delete(k); // the two maps are one fact; a stale instant would outlive its object
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
+  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
     validateSegmentRef(ref);
     const prefix = `${segmentKey(ref)} `;
-    for (const k of this.objects.keys()) {
+    // Snapshot the keys. A real paginated listing returns a page captured at the server, so iterating a live
+    // map would let this driver observe writes a real one could not — and a test built on that difference
+    // would pass for a reason production does not have.
+    for (const k of [...this.objects.keys()]) {
       if (k.startsWith(prefix)) {
         yield {
           namespace: ref.namespace,
           segment: ref.segment,
           generation: Number(k.slice(prefix.length)),
+          createdAt: this.writtenAt.get(k),
         };
       }
     }

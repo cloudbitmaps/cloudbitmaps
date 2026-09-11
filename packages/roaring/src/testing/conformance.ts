@@ -323,6 +323,51 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(after!.keyId).toBe('k7');
     });
 
+    // `currentGenSince` is a SUPERSESSION clock: the instant `currentGen` last changed. Generation GC uses it
+    // to date the newest superseded generation exactly, and deletes on the strength of it, so a driver that
+    // gets it wrong either collects a generation a reader is still on or never collects at all.
+    //
+    // Two ways it breaks that only a driver-agnostic case can catch. A driver that serializes an explicit
+    // field list silently drops it on that backend alone, leaving every other driver green. And a driver that
+    // stamps it on every patch has rebuilt `updatedAt` under a new name, so a segment whose retention policy
+    // is touched on a schedule never looks old enough to collect.
+    it('stamps currentGenSince only when the pointer moves, and persists it', async () => {
+      const d = makeDriver();
+      const { token: t0 } = await d.create(SEG, { currentGen: 0 });
+      const first = await d.get(SEG);
+      expect(typeof first!.currentGenSince).toBe('number');
+      const stamped = first!.currentGenSince!;
+      // It must lie inside the row's own audit window — that bound is what makes a corrupt value rejectable.
+      expect(stamped).toBeGreaterThanOrEqual(first!.createdAt);
+      expect(stamped).toBeLessThanOrEqual(first!.updatedAt);
+
+      // An unrelated patch leaves it alone.
+      const { token: t1 } = await d.compareAndSwap(SEG, t0, { retention: { expiresAt: 42 } });
+      expect((await d.get(SEG))!.currentGenSince).toBe(stamped);
+      // Re-setting the SAME generation is not a move either.
+      const { token: t2 } = await d.compareAndSwap(SEG, t1, { currentGen: 0 });
+      const quiet = await d.get(SEG);
+      expect(quiet!.currentGenSince).toBe(stamped);
+
+      // An actual advance re-stamps it. Compared against `updatedAt` captured just before the advance, not
+      // against `stamped` — two quiet patches have already moved `updatedAt` past it, so a driver that never
+      // re-stamps fails here even on a clock with whole-millisecond resolution. Comparing against `stamped`
+      // would pass for such a driver, which is the trap.
+      const before = quiet!.updatedAt;
+      const { token: t3 } = await d.compareAndSwap(SEG, t2, { currentGen: 1 });
+      expect((await d.get(SEG))!.currentGenSince).toBeGreaterThanOrEqual(before);
+
+      // Enumeration carries it, for the same reason it must carry `retention`: a fleet-wide GC pass reads the
+      // row from `list()` rather than paying a `get()` per segment.
+      const listed = await drainRecords(d.list());
+      expect(listed[0]!.currentGenSince).toBe((await d.get(SEG))!.currentGenSince);
+
+      // Clearing the pointer clears the instant, so a row with no generation cannot keep a stale value that
+      // would later read as "superseded long ago".
+      await d.compareAndSwap(SEG, t3, { currentGen: null });
+      expect((await d.get(SEG))!.currentGenSince).toBeUndefined();
+    });
+
     // A `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
     // tombstones itself, and the retention sweep can only clean up a dead row it can *see* — a driver that filters
     // by status turns that cleanup into a permanent silent no-op while rows accumulate forever.

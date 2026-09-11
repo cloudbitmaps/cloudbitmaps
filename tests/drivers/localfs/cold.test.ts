@@ -27,6 +27,44 @@ const writeBytes =
   };
 
 describe('LocalFsColdDriver', () => {
+  // LocalFs is the one backend where `createdAt` is not free: `readdir` returns names only, so the driver
+  // pays a `stat` per generation. That makes it the driver most likely to be wrong, and the only one whose
+  // implementation is new code rather than a field already present in a listing response.
+  describe('list() reports when each object was written', () => {
+    it('returns a real, ordered timestamp per generation', async () => {
+      const body = Uint8Array.of(1, 2, 3);
+      const before = Date.now();
+      await driver.putImmutable({ segment: 's', generation: 0 }, writeBytes(body));
+      await new Promise((r) => setTimeout(r, 12)); // outrun filesystem mtime granularity
+      await driver.putImmutable({ segment: 's', generation: 1 }, writeBytes(body));
+      const after = Date.now();
+
+      const seen = new Map<number, number>();
+      for await (const entry of driver.list({ segment: 's' })) {
+        expect(entry.createdAt).toBeTypeOf('number');
+        seen.set(entry.generation, entry.createdAt!);
+      }
+      expect([...seen.keys()].sort()).toEqual([0, 1]);
+      // Real instants, inside the window the test itself spans.
+      for (const at of seen.values()) {
+        expect(at).toBeGreaterThanOrEqual(before - 1000);
+        expect(at).toBeLessThanOrEqual(after + 1000);
+      }
+      // Generation 1 was written after generation 0 — the ordering GC depends on to date generation 0.
+      expect(seen.get(1)!).toBeGreaterThan(seen.get(0)!);
+    });
+
+    it('yields the generation with an unknown timestamp rather than failing the whole listing', async () => {
+      // A listing that throws because one mtime was unreadable would take out GC, consistency checks and
+      // discovery at once. Unknown is a value; a thrown enumeration is an outage.
+      await driver.putImmutable({ segment: 's', generation: 0 }, writeBytes(Uint8Array.of(9)));
+      const entries = [];
+      for await (const e of driver.list({ segment: 's' })) entries.push(e);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.generation).toBe(0);
+    });
+  });
+
   it('advertises range-read capability', () => {
     expect(driver.capabilities().rangeRead).toBe(true);
   });

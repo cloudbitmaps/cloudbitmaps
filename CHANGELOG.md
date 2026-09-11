@@ -70,6 +70,29 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   and now live beside `drainRegistry`.
 
 ### Added
+- **`gcOrphanGenerations` takes `minAgeMs`** — the time half of the grace window, and the half that protects
+  a reader. `keep` counts generations, and counting cannot describe what endangers one: a reader resolves
+  `currentGen` once and then fetches from it, so the risk is publishes landing underneath. With `keep: 1`,
+  publishing twice in quick succession makes the generation a reader resolved seconds ago collectable.
+  `minAgeMs` refuses until a generation has been superseded that long, so no publish rate outruns it; the two
+  compose, and a generation goes only when it is both outside `keep` and past the floor. `now` (epoch-ms) is
+  required rather than defaulted, because core reads no clock and a default of `0` would silently switch the
+  guard off.
+- **A generation is aged by when its SUCCESSOR was written.** Its own age is the intuitive measure and says
+  nothing about whether a reader is on it — one written a week ago but superseded a second ago is precisely
+  the one still being read. Each generation is therefore dated separately, from the object that replaced it,
+  which is what lets a segment on a publish cadence keep collecting instead of stalling entirely. An age that
+  cannot be established is **unknown, not old**, and the generation is kept.
+- **`ListedGeneration`** — `IColdDriver.list()` now yields an optional `createdAt` alongside the generation
+  key. S3, GCS and Azure already return it in the listing response, so surfacing it costs no extra call;
+  LocalFs pays one `stat` per generation on an admin path. Optional, so a third-party driver that omits it
+  keeps working and simply reports unknown ages.
+- **`RegistryRecord.currentGenSince`** — the instant `currentGen` last **changed**, stamped only on a pointer
+  move. It dates the newest superseded generation exactly. Deliberately not `updatedAt`, which any patch
+  moves: if a retention write reset it, a segment whose policy is touched on a schedule would never become
+  collectable. Validated on read against the row's own audit window (`createdAt <= currentGenSince <=
+  updatedAt`) because it drives deletions — a one-sided check accepts `0`, which reads as roughly 55 years
+  and defeats any floor a caller could set.
 - **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
   eight citation forms. This surface had drifted **twice**: a `0.9.x` release removed internal citations from
   shipped code comments, and they came back. Nothing could see them in between — `leak-scan` checks

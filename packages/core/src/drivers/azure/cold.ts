@@ -31,7 +31,7 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { ColdCaps, GenKey, IColdDriver, ListedGeneration, SegmentRef } from '@/core/ports';
 import {
   coldObjectName,
   normalizeAzurePrefix,
@@ -191,14 +191,23 @@ export class AzureBlobColdDriver implements IColdDriver {
     }
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
+  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
     const prefix = segmentObjectPrefix(this.prefix, ref); // validates ref
     try {
       // The async paging iterator drains every page; a segment has few generations, so the set is small.
       for await (const item of this.container.listBlobsFlat({ prefix })) {
         const generation = parseGenerationFromName(prefix, item.name);
         if (generation !== null) {
-          yield { namespace: ref.namespace, segment: ref.segment, generation };
+          // Already in the listing response. `createdOn` is preferred over `lastModified` because a blob's
+          // last-modified can move on a metadata-only change, which would make a generation look younger
+          // than it is — the unsafe direction for a grace window.
+          const at = item.properties.createdOn ?? item.properties.lastModified;
+          yield {
+            namespace: ref.namespace,
+            segment: ref.segment,
+            generation,
+            createdAt: at?.getTime(),
+          };
         }
       }
     } catch (err) {

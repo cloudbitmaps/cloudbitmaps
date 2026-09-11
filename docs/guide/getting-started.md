@@ -482,6 +482,60 @@ Who calls it today:
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
+### `minAgeMs` — the half of the window that counting cannot give you
+
+`keep` counts generations, and a count cannot describe what actually endangers a reader. A reader resolves
+`currentGen` once and then fetches from it, so the risk is **publishes landing underneath** — not how many
+objects exist. Publish twice in quick succession and the generation a reader resolved seconds ago is already
+the third-newest: outside `keep: 1`, and collected while it is still being read.
+
+```ts
+// Keep three generations, and never collect anything superseded less than 24 hours ago.
+await gcOrphanGenerations(ref, { cold, registry }, {
+  keep: 3,
+  minAgeMs: 24 * 60 * 60 * 1000,
+  now: Date.now(), // core reads no clock of its own
+});
+```
+
+The two compose: a generation goes only when it is **both** outside `keep` **and** older than `minAgeMs`. No
+publish rate can outrun the floor, which is what makes it a durability knob rather than a hint.
+
+**A generation's age is when its successor was written, not when it was.** This is the part that is easy to get
+backwards. A generation's own age says nothing about whether a reader is on it — one written a week ago but
+superseded a second ago is *precisely* the one still being read. What matters is when it stopped being current,
+and it stopped the moment the next generation appeared. So the age of generation *N* comes from the object for
+generation *N+1*, except for the newest superseded generation, whose supersession the registry timed exactly.
+
+That is why a segment on a publish cadence still collects. With one timestamp per segment the answer would be
+all-or-nothing — a segment republished more often than the floor would never collect anything at all — and
+per-generation dating is what avoids it:
+
+| | superseded | with a 24 h floor |
+|---|---|---|
+| generation 0 | 70 h ago | collected |
+| generation 45 | 25 h ago | collected |
+| generation 46 | 23 h ago | kept |
+| generation 71 | — (current) | never touched |
+
+Two consequences worth knowing:
+
+- **`now` is required, not defaulted.** Core owns no clock, and a default of `0` would silently switch the
+  guard off — the one failure mode a durability knob must not have, because it is indistinguishable from a
+  working one until a reader breaks.
+- **Unknown age is not old age.** A generation whose age cannot be established — a driver that does not report
+  object times, a row written before this existed, a timestamp outside the row's own audit window — is
+  **kept**. The unsafe reading would delete a just-superseded generation on the first run after an upgrade.
+  Omit `minAgeMs` and behaviour is exactly as it was.
+
+The approximation errs in one direction, and it is stated rather than hidden: an object's recorded time is
+when it was *written*, slightly before it was *published*, so a generation can read as older than it is by the
+duration of one load — minutes at most, against a floor measured in hours.
+
+A `destroyed` segment ignores the floor along with `keep`: it resolves no generation, so no reader is or can
+become pinned to one. The erasure rewrite likewise passes no floor — its contract is that the bit is gone when
+the call returns, so it cannot wait one out.
+
 > **Picking `keep`.** `1` is the safe default: a reader that resolved the previous generation just before your
 > publish can still finish its call. If the swept generation *is* pulled out from under a reader (`keep: 0`, or a
 > long-running call), the cold source catches the `NotFoundError`, re-resolves to the current generation and

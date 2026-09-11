@@ -40,7 +40,7 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { ColdCaps, GenKey, IColdDriver, ListedGeneration, SegmentRef } from '@/core/ports';
 import {
   coldObjectKey,
   normalizeS3Prefix,
@@ -207,7 +207,7 @@ export class S3ColdDriver implements IColdDriver {
     }
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
+  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
     const prefix = segmentObjectPrefix(this.prefix, ref); // validates ref
     let token: string | undefined;
     do {
@@ -227,7 +227,14 @@ export class S3ColdDriver implements IColdDriver {
         if (obj.Key === undefined) continue;
         const generation = parseGenerationFromKey(prefix, obj.Key);
         if (generation !== null) {
-          yield { namespace: ref.namespace, segment: ref.segment, generation };
+          // `LastModified` rides along in the same response, so surfacing it costs no extra call. An
+          // immutable object is never modified after it is written, so last-modified IS created.
+          yield {
+            namespace: ref.namespace,
+            segment: ref.segment,
+            generation,
+            createdAt: obj.LastModified?.getTime(),
+          };
         }
       }
       token = res.IsTruncated === true ? res.NextContinuationToken : undefined;

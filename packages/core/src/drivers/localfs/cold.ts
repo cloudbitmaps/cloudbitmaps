@@ -9,11 +9,11 @@
  */
 import { constants as FS } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { link, mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { ColdCaps, GenKey, IColdDriver, ListedGeneration, SegmentRef } from '@/core/ports';
 import { coldObjectPath, parseGeneration, segmentsDir } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
@@ -113,7 +113,7 @@ export class LocalFsColdDriver implements IColdDriver {
     });
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
+  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
     const dir = segmentsDir(this.root, ref);
     let names: string[];
     try {
@@ -125,7 +125,17 @@ export class LocalFsColdDriver implements IColdDriver {
     for (const name of names) {
       const generation = parseGeneration(ref.segment, name);
       if (generation !== null) {
-        yield { namespace: ref.namespace, segment: ref.segment, generation };
+        // The one backend where the timestamp is not free: `readdir` returns names only, so this is a `stat`
+        // per generation. A segment holds a handful of them, and this is an admin path, never a read. A
+        // failed stat yields `undefined` ("unknown") rather than failing the enumeration — a listing that
+        // throws because one mtime was unreadable would take out GC, consistency checks and discovery.
+        let createdAt: number | undefined;
+        try {
+          createdAt = (await stat(join(dir, name))).mtimeMs;
+        } catch {
+          createdAt = undefined;
+        }
+        yield { namespace: ref.namespace, segment: ref.segment, generation, createdAt };
       }
     }
   }
