@@ -11,6 +11,7 @@ export default tseslint.config(
       'fuzz/build',
       'coverage',
       'node_modules',
+      '.worktrees',
       '.stryker-tmp',
       'reports',
     ],
