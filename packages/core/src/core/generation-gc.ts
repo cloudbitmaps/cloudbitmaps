@@ -9,6 +9,7 @@
  * in the bucket, still billed, so something has to collect it: {@link gcOrphanGenerations}. Pure orchestration
  * over the driver ports — no I/O, time or randomness of its own.
  */
+import { ValidationError } from './errors';
 import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
@@ -52,20 +53,70 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
  * residual, and this is what eventually collects it from the retention sweep.
  *
+ * **`minAgeMs` is the time half of the window, and it is the half that actually protects a reader.** `keep`
+ * counts generations, so a burst of publishes walks a generation out of the window while a reader is still on
+ * it: with `keep: 1`, publishing twice in quick succession makes the generation a reader resolved two seconds
+ * ago the third-newest, and therefore collectable. `minAgeMs` refuses to collect anything until the pointer has
+ * been still for that long — `now - currentGenSince` — so no publish rate can outrun it. The two compose: a
+ * generation is collected only when it is **both** outside `keep` and older than `minAgeMs`.
+ *
+ * The clock is the registry's {@link RegistryRecord.currentGenSince}, not the stored object's age. Object age
+ * is the intuitive choice (it is what Iceberg's `expire_snapshots older_than` and Delta's `VACUUM` use) and it
+ * is wrong here: a generation written a week ago but superseded one second ago is precisely the one still being
+ * read, and object age reports it as a week old. Those systems can use file age because their readers hold a
+ * snapshot reference that expiry consults; a reader here resolves a pointer and lets go.
+ *
+ * A row with **no** `currentGenSince` — written before the field existed, or by a third-party driver that does
+ * not carry it — has an unknown age, not an infinite one. With `minAgeMs` set, such a segment is skipped and
+ * nothing is collected: the first publish after the upgrade stamps the field and the next run proceeds. Without
+ * `minAgeMs`, behaviour is exactly as before.
+ *
  * `keep: 0` is how a subject-erasure rewrite makes a bit **physically** gone on return: the generation that held
- * it is collected the moment the rewrite is current. A reader pinned to it re-resolves on its next read.
+ * it is collected the moment the rewrite is current. A reader pinned to it re-resolves on its next read. That
+ * path passes no `minAgeMs` — an erasure's whole contract is that the bit is gone when the call returns, so it
+ * cannot wait out a grace window.
  */
 export async function gcOrphanGenerations(
   ref: SegmentRef,
   deps: GenerationDeps,
-  options: { keep?: number } = {},
+  options: { keep?: number; minAgeMs?: number; now?: number } = {},
 ): Promise<number[]> {
   const keep = Math.max(0, options.keep ?? 1);
+  const { minAgeMs } = options;
+  if (minAgeMs !== undefined) {
+    if (!Number.isFinite(minAgeMs) || minAgeMs < 0) {
+      throw new ValidationError(
+        `gcOrphanGenerations: \`minAgeMs\` must be a non-negative, finite number of milliseconds; got ${String(minAgeMs)}`,
+      );
+    }
+    // Required rather than defaulted, because `core/` owns no clock (invariant 7) and a default of 0 would
+    // silently turn the guard off — the one failure mode a durability knob must not have.
+    if (options.now === undefined) {
+      throw new ValidationError(
+        'gcOrphanGenerations: `minAgeMs` needs `now` (epoch-ms) — core reads no clock of its own.',
+      );
+    }
+    if (!Number.isFinite(options.now)) {
+      throw new ValidationError(
+        `gcOrphanGenerations: \`now\` must be a finite epoch-ms; got ${String(options.now)}`,
+      );
+    }
+  }
   const record = await deps.registry.get(ref);
   if (record === null) return []; // no authoritative pointer → don't delete anything
   const current = record.currentGen;
   const gens: number[] = [];
   for await (const key of deps.cold.list(ref)) gens.push(key.generation);
+  // The time window, applied to the whole segment: `currentGenSince` says when the pointer last moved, and every
+  // superseded generation stopped being current at or before that instant, so one comparison settles all of
+  // them. A `destroyed` segment is exempt — it resolves no generation, so no reader is or can become pinned to
+  // one, and the window would only keep paying for objects nobody can read.
+  if (minAgeMs !== undefined && record.status !== 'destroyed') {
+    // Unknown age, not infinite age. Wrong-units `now` (seconds against ms) lands here too and keeps everything,
+    // which is the safe direction for a guard whose other outcome is deletion.
+    if (record.currentGenSince === undefined) return [];
+    if ((options.now as number) - record.currentGenSince < minAgeMs) return [];
+  }
   const toDelete =
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can be pinned to a tombstoned segment

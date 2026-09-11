@@ -191,6 +191,35 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
       expect(written.currentGen).toBeNull();
     });
 
+    // Same reason as the null-pointer case above, and a sharper one: this driver is the ONLY registry that
+    // serializes an explicit field list rather than the whole record, so a field added to `RegistryRecord`
+    // reaches every other backend for free and silently vanishes here. The shared conformance case that would
+    // catch it runs only under LocalStack. Verified by removing the field from `serializeBody`: the entire unit
+    // suite stayed green, and this is the test that goes red.
+    it('carries currentGenSince into the serialized body', async () => {
+      const sent: Array<Record<string, unknown>> = [];
+      const d = driverWith((command) => {
+        const input = (command as { input: Record<string, unknown> }).input;
+        sent.push(input);
+        return Promise.resolve(
+          'UpdateExpression' in input
+            ? { Attributes: { v: { N: '3' } } }
+            : liveItem(body({ currentGen: 1, currentGenSince: 111 }), '2'),
+        );
+      });
+      // READ: a stored instant parses back rather than being dropped at the boundary.
+      expect(await d.get(seg)).toMatchObject({ currentGen: 1, currentGenSince: 111 });
+      // WRITE: an advance re-stamps it, and the stamp must survive into the body this driver actually sends.
+      await d.compareAndSwap(seg, '2', { currentGen: 2 });
+      const update = sent.find((i) => 'UpdateExpression' in i)!;
+      const written = JSON.parse(
+        (update.ExpressionAttributeValues as { ':r': { S: string } })[':r'].S,
+      ) as Record<string, unknown>;
+      expect(written).toHaveProperty('currentGenSince');
+      expect(typeof written.currentGenSince).toBe('number');
+      expect(written.currentGenSince).not.toBe(111); // the pointer moved, so the instant did too
+    });
+
     it('a cleared keyId is omitted from the serialized body', async () => {
       const sent: Array<Record<string, unknown>> = [];
       const d = driverWith((command) => {

@@ -243,6 +243,10 @@ export function recordFromNew(
     namespace: ref.namespace,
     segment: ref.segment,
     currentGen: rec.currentGen,
+    // A row minted WITH a pointer has held it since now; one minted without (the `setRetention`-before-first-load
+    // case) has no pointer to have held, so the field stays absent rather than claiming a supersession that has
+    // not happened.
+    currentGenSince: rec.currentGen === null ? undefined : now,
     wrappedDeks: rec.wrappedDeks,
     keyId: rec.keyId,
     status: rec.status ?? 'active',
@@ -285,6 +289,18 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
+  // Optional, because rows written before the field existed are legitimate — but if it is present it drives a
+  // deletion decision, so a non-finite or negative value is rejected here rather than turned into an age.
+  if (
+    r.currentGenSince !== undefined &&
+    (typeof r.currentGenSince !== 'number' ||
+      !Number.isFinite(r.currentGenSince) ||
+      r.currentGenSince < 0)
+  ) {
+    throw new IntegrityError(
+      `registry record has an invalid currentGenSince (${String(r.currentGenSince)}): ${ctx}`,
+    );
+  }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
   // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
   // one of them carries semantics: `retention.expiresAt` is read with an `in` test, which throws an untyped
@@ -312,6 +328,7 @@ export function applyRegistryPatch(
   now: number,
   token: Token,
 ): RegistryRecord {
+  const nextGen = 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen;
   return {
     namespace: prev.namespace,
     segment: prev.segment,
@@ -319,7 +336,14 @@ export function applyRegistryPatch(
     // here (no Cold generation yet), and `??` treats it as absent — so the nullish form would silently ignore a
     // patch that clears the pointer and leave the old generation in place. The same reason `wrappedDeks` and
     // `keyId` below use presence: any field whose null is a *value* cannot be merged with `??`.
-    currentGen: 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen,
+    currentGen: nextGen,
+    // Stamped only when the pointer actually MOVES, which is what makes it a supersession clock rather than a
+    // second `updatedAt`: a retention policy or a key rotation must not look like a publish, or a segment whose
+    // policy is touched on a schedule would never become collectable. A patch that re-sets the same generation
+    // is not a move either. Cleared with the pointer, so a row that loses its generation does not keep a stale
+    // instant that would read as "superseded long ago".
+    currentGenSince:
+      nextGen === prev.currentGen ? prev.currentGenSince : nextGen === null ? undefined : now,
     wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     status: patch.status ?? prev.status,

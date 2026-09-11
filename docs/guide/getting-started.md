@@ -488,6 +488,49 @@ Who calls it today:
 > retries the read once — the query serves the newer, committed generation rather than failing. That is a
 > monotonic move forward, never a torn object; but it is a re-read you can avoid by leaving the grace window on.
 
+### `minAgeMs` — the half of the window that counting cannot give you
+
+`keep` counts generations, and a count cannot describe what actually endangers a reader. A reader resolves
+`currentGen` once and then fetches from it, so the risk comes from **publishes landing underneath**, not from
+how many objects exist. Publish twice in quick succession and the generation a reader resolved seconds ago is
+already the third-newest — outside `keep: 1`, and collected while it is still being read.
+
+`minAgeMs` closes that: nothing is collected until the segment's pointer has been still for that long.
+
+```ts
+// Keep three generations, and never collect anything superseded less than 24 hours ago.
+await gcOrphanGenerations(ref, { cold, registry }, {
+  keep: 3,
+  minAgeMs: 24 * 60 * 60 * 1000,
+  now: Date.now(), // core reads no clock of its own
+});
+```
+
+The two compose: a generation goes only when it is **both** outside `keep` **and** older than `minAgeMs`. No
+publish rate can outrun the floor, which is what makes it a durability knob rather than a hint.
+
+**The clock is when the pointer moved, not how old the file is.** The registry records `currentGenSince` — the
+instant `currentGen` last changed — and that is what the floor measures. Object age is the intuitive choice
+(it is what Iceberg's `expire_snapshots older_than` and Delta's `VACUUM` use) and it is wrong here: a
+generation written a week ago but superseded one second ago is precisely the one still being read, and object
+age reports it as a week old. Those systems can use file age because their readers hold a snapshot reference
+that expiry consults; a reader here resolves a pointer and lets go.
+
+Two consequences worth knowing:
+
+- **`now` is required, not defaulted.** Core owns no clock, and a default of `0` would silently switch the
+  guard off — the one failure mode a durability knob must not have, because it is indistinguishable from a
+  working one until a reader breaks.
+- **A row with no `currentGenSince` collects nothing** while `minAgeMs` is set. That is a row written before
+  the field existed, or by a third-party registry driver that does not carry it; its age is *unknown*, not
+  infinite. Your next publish stamps the field and the following run proceeds — no migration, no admin step.
+  Omitting `minAgeMs` keeps the previous count-only behaviour exactly.
+
+A `destroyed` segment ignores the floor along with `keep`: it resolves no generation, so no reader is or can
+become pinned to one, and waiting would only keep paying for objects nobody can read. The erasure rewrite
+likewise passes no floor — its contract is that the bit is gone when the call returns, so it cannot wait one
+out.
+
 **Read staleness, restated for the whole picture.** With a registry, a store notices a new generation within
 `coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a stale decoded chunk
 for a new generation. Within one read op the generation is resolved once. A `count()` is a single index read, so

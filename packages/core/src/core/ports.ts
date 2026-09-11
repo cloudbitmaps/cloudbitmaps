@@ -147,6 +147,20 @@ export interface RegistryRecord extends SegmentRef {
    * keystore. Clearable on crypto-shred.
    */
   readonly keyId?: string;
+  /**
+   * Epoch-ms at which {@link currentGen} last **changed** — i.e. when the generation it names became current,
+   * and therefore when the generation before it stopped being current. Stamped by the driver's injected clock
+   * only on a pointer move; an unrelated patch (a retention policy, a key rotation) leaves it alone.
+   *
+   * This is the clock a time-based grace window has to measure, and it is **not** the age of the stored object.
+   * A generation written a week ago but superseded one second ago is exactly the one an in-flight reader is
+   * still on; object age reports it as a week old and collects it, which is the failure the window exists to
+   * prevent. See `gcOrphanGenerations`' `minAgeMs`.
+   *
+   * Absent on a row that has never had a Cold generation, and on rows written before this field existed — a
+   * reader must treat absent as "unknown", never as "infinitely old".
+   */
+  readonly currentGenSince?: number;
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
