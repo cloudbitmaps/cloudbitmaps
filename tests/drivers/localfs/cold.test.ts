@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -27,64 +27,6 @@ const writeBytes =
   };
 
 describe('LocalFsColdDriver', () => {
-  // LocalFs is the one backend where `createdAt` is not free: `readdir` returns names only, so the driver
-  // pays a `stat` per generation. That makes it the driver most likely to be wrong, and the only one whose
-  // implementation is new code rather than a field already present in a listing response.
-  describe('list() reports when each object was written', () => {
-    it('returns a real, ordered timestamp per generation', async () => {
-      const body = Uint8Array.of(1, 2, 3);
-      const before = Date.now();
-      await driver.putImmutable({ segment: 's', generation: 0 }, writeBytes(body));
-      await new Promise((r) => setTimeout(r, 12)); // outrun filesystem mtime granularity
-      await driver.putImmutable({ segment: 's', generation: 1 }, writeBytes(body));
-      const after = Date.now();
-
-      const seen = new Map<number, number>();
-      for await (const entry of driver.list({ segment: 's' })) {
-        expect(entry.createdAt).toBeTypeOf('number');
-        seen.set(entry.generation, entry.createdAt!);
-      }
-      expect([...seen.keys()].sort()).toEqual([0, 1]);
-      // Real instants, inside the window the test itself spans.
-      for (const at of seen.values()) {
-        expect(at).toBeGreaterThanOrEqual(before - 1000);
-        expect(at).toBeLessThanOrEqual(after + 1000);
-      }
-      // Generation 1 was written after generation 0 — the ordering GC depends on to date generation 0.
-      expect(seen.get(1)!).toBeGreaterThan(seen.get(0)!);
-
-      // …and the number is the FILE's recorded time, not a wall clock read at listing time. Without this,
-      // replacing the `stat` with `Date.now()` passes: any increasing clock satisfies a window plus an
-      // ordering check, because `readdir` happens to return the generations in order.
-      const onDisk = await stat(coldObjectPath(root, { segment: 's', generation: 0 }));
-      expect(seen.get(0)!).toBe(onDisk.mtimeMs);
-    });
-
-    it('yields the generation with an unknown timestamp rather than failing the whole listing', async () => {
-      // A listing that throws because one mtime was unreadable would take out GC, consistency checks and
-      // discovery at once. Unknown is a value; a thrown enumeration is an outage. The failure is forced
-      // rather than assumed — an earlier version of this test asserted a plain successful listing and never
-      // entered the path its own title describes.
-      await driver.putImmutable({ segment: 's', generation: 0 }, writeBytes(Uint8Array.of(9)));
-      await driver.putImmutable({ segment: 's', generation: 1 }, writeBytes(Uint8Array.of(9)));
-      // Remove one object between `readdir` and its `stat`: the name is listed, the file is gone.
-      const names = await readdir(segmentsDir(root, { segment: 's' }));
-      expect(names.length).toBeGreaterThanOrEqual(2);
-      const listing = driver.list({ segment: 's' });
-      const entries = [];
-      let removed = false;
-      for await (const e of listing) {
-        entries.push(e);
-        if (!removed) {
-          removed = true;
-          await rm(coldObjectPath(root, { segment: 's', generation: 1 }), { force: true });
-        }
-      }
-      expect(entries.length).toBeGreaterThanOrEqual(1);
-      expect(entries.every((e) => typeof e.generation === 'number')).toBe(true);
-    });
-  });
-
   it('advertises range-read capability', () => {
     expect(driver.capabilities().rangeRead).toBe(true);
   });

@@ -70,7 +70,6 @@ export type {
   ChunkRef,
   SegmentRef,
   GenKey,
-  ListedGeneration,
   IRegistryDriver,
   RegistryRecord,
   NewRegistryRecord,

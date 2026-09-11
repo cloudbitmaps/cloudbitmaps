@@ -194,8 +194,8 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
     // This driver is the ONLY registry that serializes an explicit field list rather than the whole record, so
     // a field added to `RegistryRecord` reaches every other backend for free and silently vanishes here. The
     // shared conformance case that would catch it runs only under LocalStack. Verified by deleting the field
-    // from `serializeBody`: the entire unit suite stayed green, and this is the test that goes red.
-    it('carries currentGenSince into the serialized body', async () => {
+    // from `serializeBody`: the rest of the unit suite stays green, and this is the test that goes red.
+    it('carries supersededGens into the serialized body', async () => {
       const sent: Array<Record<string, unknown>> = [];
       const d = driverWith((command) => {
         const input = (command as { input: Record<string, unknown> }).input;
@@ -203,21 +203,20 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
         return Promise.resolve(
           'UpdateExpression' in input
             ? { Attributes: { v: { N: '3' } } }
-            : liveItem(
-                body({ currentGen: 1, createdAt: 100, updatedAt: 200, currentGenSince: 150 }),
-                '2',
-              ),
+            : liveItem(body({ currentGen: 1, supersededGens: [{ gen: 0, at: 150 }] }), '2'),
         );
       });
-      expect(await d.get(seg)).toMatchObject({ currentGen: 1, currentGenSince: 150 });
+      expect(await d.get(seg)).toMatchObject({
+        currentGen: 1,
+        supersededGens: [{ gen: 0, at: 150 }],
+      });
       await d.compareAndSwap(seg, '2', { currentGen: 2 });
       const update = sent.find((i) => 'UpdateExpression' in i)!;
       const written = JSON.parse(
         (update.ExpressionAttributeValues as { ':r': { S: string } })[':r'].S,
-      ) as Record<string, unknown>;
-      expect(written).toHaveProperty('currentGenSince');
-      expect(typeof written.currentGenSince).toBe('number');
-      expect(written.currentGenSince).not.toBe(150); // the pointer moved, so the instant did too
+      ) as { supersededGens?: Array<{ gen: number }> };
+      // The advance retires generation 1 and keeps the earlier entry: a history, not a single slot.
+      expect(written.supersededGens?.map((e) => e.gen)).toEqual([1, 0]);
     });
 
     it('a cleared keyId is omitted from the serialized body', async () => {

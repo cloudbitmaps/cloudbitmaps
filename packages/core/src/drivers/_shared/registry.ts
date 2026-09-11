@@ -11,6 +11,7 @@ import type {
   RegistryPatch,
   RegistryRecord,
   SegmentRef,
+  SupersededGeneration,
   Token,
 } from '@/core/ports';
 
@@ -232,6 +233,14 @@ export function parseRegistryEnvelope(text: string, ctx: string): RegistryEnvelo
   return { deleted: env.deleted, record: env.record as RegistryRecord };
 }
 
+/**
+ * How many superseded generations a row tracks. The list is self-bounding in normal use — an entry goes when
+ * its generation is collected — so this only binds a store that publishes without ever running GC, which is
+ * already accumulating objects it never reclaims. Past it the oldest entries are dropped and those
+ * generations become undatable, which keeps them: the safe direction, and self-correcting once GC runs.
+ */
+export const MAX_SUPERSEDED_TRACKED = 64;
+
 /** Build a full record from a {@link NewRegistryRecord} plus identity, audit timestamps, and an OCC token. */
 export function recordFromNew(
   ref: SegmentRef,
@@ -246,8 +255,7 @@ export function recordFromNew(
     // A row minted WITH a pointer has held it since now; one minted without (the `setSegmentRetention`
     // -before-first-load case) has no pointer to have held, so the field stays absent rather than claiming a
     // supersession that has not happened.
-    currentGenSince: rec.currentGen === null ? undefined : now,
-    previousGen: undefined, // a freshly minted row replaced nothing
+    supersededGens: undefined, // a freshly minted row has superseded nothing
     wrappedDeks: rec.wrappedDeks,
     keyId: rec.keyId,
     status: rec.status ?? 'active',
@@ -290,29 +298,12 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
-  // `currentGenSince` drives DELETIONS, so its type is checked here — but a bad value must NOT reject the
-  // record. `updatedAt` is re-stamped by whichever host writes next, and nothing makes that host's clock
-  // ordered against the one that moved the pointer, so a millisecond of NTP skew between two writers is
-  // enough to produce `currentGenSince > updatedAt` on a perfectly ordinary row. Throwing there would brick
-  // the row for every later operation — `get`, `create`, `compareAndSwap`, `delete` all read it first — and
-  // take out whole-namespace `list()` with it, killing retention sweeps and consistency checks over one
-  // segment. A validator may only enforce what the writer guarantees.
-  //
-  // So the range lives where the value is USED, not where it is parsed: generation GC treats an instant
-  // outside the row's own window as **unknown**, which keeps the generation. Same outcome for the dangerous
-  // value (a stored `0` reads as ~55 years and must never age a generation up), with no unrecoverable state.
-  if (r.currentGenSince !== undefined && typeof r.currentGenSince !== 'number') {
-    throw new IntegrityError(
-      `registry record has a non-numeric currentGenSince (${String(r.currentGenSince)}): ${ctx}`,
-    );
-  }
-  if (
-    r.previousGen !== undefined &&
-    (typeof r.previousGen !== 'number' || !Number.isInteger(r.previousGen) || r.previousGen < 0)
-  ) {
-    throw new IntegrityError(
-      `registry record has an invalid previousGen (${String(r.previousGen)}): ${ctx}`,
-    );
+  // Shape only. A malformed entry must not reject the record — a validator may only enforce what the writer
+  // guarantees, and bricking a row takes `get`, `create`, `compareAndSwap`, `delete` and whole-namespace
+  // `list()` down with it. Values that make no sense are ignored where they are USED: generation GC dates
+  // nothing it cannot make sense of, and an undated generation is kept.
+  if (r.supersededGens !== undefined && !Array.isArray(r.supersededGens)) {
+    throw new IntegrityError(`registry record has a non-array supersededGens: ${ctx}`);
   }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
   // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
@@ -327,6 +318,23 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
       throw new IntegrityError(`registry record has a non-object ${field}: ${ctx}`);
     }
   }
+}
+
+/**
+ * The retirement list after a patch. Newest first, so the cap drops the oldest — the entries whose
+ * generations have been superseded longest and are least likely to still have a reader.
+ */
+function supersededAfter(
+  prev: RegistryRecord,
+  nextGen: number | null,
+  now: number,
+): readonly SupersededGeneration[] | undefined {
+  const list = prev.supersededGens ?? [];
+  // Not a move: the pointer is unchanged, or there was no generation to retire.
+  if (nextGen === prev.currentGen || prev.currentGen === null) {
+    return list.length === 0 ? undefined : list;
+  }
+  return [{ gen: prev.currentGen, at: now }, ...list].slice(0, MAX_SUPERSEDED_TRACKED);
 }
 
 /**
@@ -355,16 +363,10 @@ export function applyRegistryPatch(
     // the whole difference between this field and `updatedAt`. Re-setting the same generation is not a move.
     // Cleared with the pointer, so a row that loses its generation cannot keep an instant that would later
     // read as "superseded long ago".
-    currentGenSince:
-      nextGen === prev.currentGen ? prev.currentGenSince : nextGen === null ? undefined : now,
-    // Stamped with it, and only with it: the pair is one fact — when the pointer moved, and what it moved
-    // from. `null` for the previous value means there was no generation to supersede.
-    previousGen:
-      nextGen === prev.currentGen
-        ? prev.previousGen
-        : nextGen === null
-          ? undefined
-          : (prev.currentGen ?? undefined),
+    // A pointer move retires exactly one generation, and this is the only place that fact exists. An
+    // unrelated patch (a retention policy, a key rotation) must not touch the list, or a segment whose
+    // policy is written on a schedule would have its history rewritten and stop being collectable.
+    supersededGens: supersededAfter(prev, nextGen, now),
     wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     status: patch.status ?? prev.status,

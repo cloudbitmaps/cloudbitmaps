@@ -78,29 +78,19 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   compose, and a generation goes only when it is both outside `keep` and past the floor. `now` (epoch-ms) is
   required rather than defaulted, because core reads no clock and a default of `0` would silently switch the
   guard off.
-- **A generation is aged by when its SUCCESSOR was written.** Its own age is the intuitive measure and says
-  nothing about whether a reader is on it — one written a week ago but superseded a second ago is precisely
-  the one still being read. Each generation is therefore dated separately, from the object that replaced it,
-  which is what lets a segment on a publish cadence keep collecting instead of stalling entirely. An age that
-  cannot be established is **unknown, not old**, and the generation is kept.
-- **`ListedGeneration`** — `IColdDriver.list()` now yields an optional `createdAt` alongside the generation
-  key. S3, GCS and Azure already return it in the listing response, so surfacing it costs no extra call;
-  LocalFs pays one `stat` per generation on an admin path. Optional, so a third-party driver that omits it
-  keeps working and simply reports unknown ages.
-- **`RegistryRecord.currentGenSince` and `RegistryRecord.previousGen`** — when the pointer last moved, and
-  what it moved from. One fact, stamped together on a pointer move and only on a pointer move. Deliberately
-  not `updatedAt`, which any patch moves: if a retention write reset it, a segment whose policy is touched on
-  a schedule would never become collectable.
-  `previousGen` is what keeps the exact instant attached to the generation it describes. The nearest
-  surviving object below the pointer is **not** reliably the one that was just superseded — a load that
-  writes its object and crashes leaves an orphan the next publish numbers past — and dating by that orphan
-  would report a generation superseded seconds ago as days old. A generation the pointer skipped was never
-  current, so no reader can ever have resolved it, and it is collected without waiting out the floor.
-  The stored instant is range-checked **where it is used**, not where it is parsed: an instant outside the
-  row's own window is treated as unknown and keeps the generation. Rejecting the record instead would be
-  unrecoverable — `updatedAt` is re-stamped by whichever host writes next, so a millisecond of clock skew
-  between two writers is enough to produce a row that every later `get`, `create`, `compareAndSwap` and
-  `delete` would refuse, taking whole-namespace `list()` down with it.
+- **`RegistryRecord.supersededGens`** — each generation that was current, and when it stopped being. This is
+  the only evidence a deletion rests on. The bucket cannot supply it: a load that writes its object and
+  crashes leaves an orphan that the next publish numbers past, and in a listing that orphan is
+  indistinguishable from a real successor, so dating a generation by "the object above it" reports one
+  superseded seconds ago as days old. A generation below the pointer that the row never recorded as current
+  was skipped by it, so no reader can ever have resolved it, and it is collected without waiting out the
+  floor. The list is appended only on a pointer move — an unrelated patch must not rewrite history, or a
+  segment whose retention policy is written on a schedule would stop being collectable — and it is
+  self-bounding, since an entry is dropped when its generation is collected. Capped regardless; past the cap
+  the oldest entries are dropped, which makes those generations undatable, which keeps them. A malformed
+  entry is ignored individually rather than rejecting the record: a validator may only enforce what the
+  writer guarantees, and refusing a row would take `get`, `create`, `compareAndSwap`, `delete` and
+  whole-namespace `list()` down with it.
 - **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
   eight citation forms. This surface had drifted **twice**: a `0.9.x` release removed internal citations from
   shipped code comments, and they came back. Nothing could see them in between — `leak-scan` checks

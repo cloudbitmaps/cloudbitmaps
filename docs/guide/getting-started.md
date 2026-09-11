@@ -501,17 +501,19 @@ await gcOrphanGenerations(ref, { cold, registry }, {
 The two compose: a generation goes only when it is **both** outside `keep` **and** older than `minAgeMs`. No
 publish rate can outrun the floor, which is what makes it a durability knob rather than a hint.
 
-**A generation's age is when its successor was written, not when it was.** This is the part that is easy to get
-backwards. A generation's own age says nothing about whether a reader is on it — one written a week ago but
-superseded a second ago is *precisely* the one still being read. What matters is when it stopped being current,
-and it stopped the moment the next generation appeared. So the age of generation *N* comes from the object for
-generation *N+1*, except for the newest superseded generation, whose supersession the registry timed exactly.
+**A generation's age comes from the registry, not from the objects.** The row records each generation that
+was current and the instant it stopped being, so a generation is dated exactly or not at all.
 
-That is why a segment on a publish cadence still collects. With one timestamp per segment the answer would be
-all-or-nothing — a segment republished more often than the floor would never collect anything at all — and
-per-generation dating is what avoids it:
+The obvious alternative — date a generation by the object that replaced it — cannot work, and it is worth
+knowing why, because it looks right. A load that writes its object and then crashes before publishing leaves
+an orphan, and the next publish simply numbers past it. From a listing that orphan is indistinguishable from a
+real successor, so a generation superseded *seconds* ago gets dated by the crashed writer's object and reads
+as days old. Nothing outside the registry can tell those two apart.
 
-| | superseded | with a 24 h floor |
+That is also why a segment on a publish cadence keeps collecting instead of stalling, since every generation
+carries its own instant:
+
+| | stopped being current | with a 24 h floor |
 |---|---|---|
 | generation 0 | 70 h ago | collected |
 | generation 45 | 25 h ago | collected |
@@ -519,24 +521,22 @@ per-generation dating is what avoids it:
 | generation 47 | 23 h ago | kept |
 | generation 71 | — (current) | never touched |
 
-A generation the pointer **skipped** — an object from a load that crashed before publishing, which the next
-publish numbered past — was never current, so no reader can ever have resolved it. Those are collected without
-waiting out the floor. The registry records which generation the pointer moved off, so a skipped one is never
-mistaken for the generation it sits above.
+A generation the pointer **skipped** was never current, so no reader can ever have resolved it and there is no
+window to serve: those are collected without waiting out the floor.
 
-Two consequences worth knowing:
+Two consequences worth knowing:Two consequences worth knowing:
 
 - **`now` is required, not defaulted.** Core owns no clock, and a default of `0` would silently switch the
   guard off — the one failure mode a durability knob must not have, because it is indistinguishable from a
   working one until a reader breaks.
-- **Unknown age is not old age.** A generation whose age cannot be established — a driver that does not report
-  object times, a row written before this existed, a timestamp outside the row's own audit window — is
-  **kept**. The unsafe reading would delete a just-superseded generation on the first run after an upgrade.
-  Omit `minAgeMs` and behaviour is exactly as it was.
+- **Undatable is kept.** A generation the row cannot date — one from a segment written before this existed,
+  or one whose entry has aged out of the tracked list — is **kept**. The unsafe reading would delete a
+  just-superseded generation on the first run after an upgrade. Omit `minAgeMs` and behaviour is exactly as
+  it was.
 
-The approximation errs in one direction, and it is stated rather than hidden: an object's recorded time is
-when it was *written*, slightly before it was *published*, so a generation can read as older than it is by the
-duration of one load — minutes at most, against a floor measured in hours.
+The tracked list is self-bounding: an entry is dropped when its generation is collected, so its length is
+just the generations still in the bucket — a handful for any store that runs GC. It is capped regardless, and
+past the cap the oldest entries are dropped, which makes those generations undatable and therefore kept.
 
 A `destroyed` segment ignores the floor along with `keep`: it resolves no generation, so no reader can
 become pinned to one. The erasure rewrite likewise passes no floor — its contract is that the bit is gone when

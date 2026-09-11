@@ -28,7 +28,6 @@ import type {
   GenKey,
   IColdDriver,
   IRegistryDriver,
-  ListedGeneration,
   NewRegistryRecord,
   RegCaps,
   RegistryPatch,
@@ -149,10 +148,10 @@ export class RetryingColdDriver implements IColdDriver {
     return withRetry(() => this.inner.delete(key), this.policy, this.deps);
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
+  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     const keys = await withRetry(
       async () => {
-        const out: ListedGeneration[] = [];
+        const out: GenKey[] = [];
         for await (const k of this.inner.list(ref)) out.push(k);
         return out;
       },

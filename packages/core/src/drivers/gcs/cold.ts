@@ -28,7 +28,7 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, ListedGeneration, SegmentRef } from '@/core/ports';
+import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
 import {
   coldObjectName,
   normalizeGcsPrefix,
@@ -159,7 +159,7 @@ export class GcsColdDriver implements IColdDriver {
     }
   }
 
-  async *list(ref: SegmentRef): AsyncIterable<ListedGeneration> {
+  async *list(ref: SegmentRef): AsyncIterable<GenKey> {
     const prefix = segmentObjectPrefix(this.prefix, ref); // validates ref
     let files;
     try {
@@ -171,16 +171,7 @@ export class GcsColdDriver implements IColdDriver {
     for (const f of files) {
       const generation = parseGenerationFromName(prefix, f.name);
       if (generation !== null) {
-        // Already in the listing response. `timeCreated` is the right field for a write-once object; a
-        // malformed or absent value becomes `undefined` ("unknown"), never a number a GC pass could act on.
-        const raw = f.metadata?.timeCreated;
-        const createdAt = typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
-        yield {
-          namespace: ref.namespace,
-          segment: ref.segment,
-          generation,
-          createdAt: Number.isFinite(createdAt) ? createdAt : undefined,
-        };
+        yield { namespace: ref.namespace, segment: ref.segment, generation };
       }
     }
   }
