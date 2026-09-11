@@ -4,7 +4,8 @@
  *
  * Cold generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
  * (`currentGen`). Every write path in the library — a bulk load, an `*Into` materialisation, a subject-erasure
- * rewrite — writes a **new** object and then advances the pointer forward-only. That leaves the superseded object
+ * rewrite — writes a **new** object and then advances the pointer, forward-only for a load and fenced on its
+ * source generation for the rewrite (see invariant 1). That leaves the superseded object
  * in the bucket, still billed, so something has to collect it: {@link gcOrphanGenerations}. Pure orchestration
  * over the driver ports — no I/O, time or randomness of its own.
  */
@@ -40,7 +41,7 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
 /**
  * Garbage-collect superseded Cold generations for a segment: everything strictly below `currentGen`, keeping
  * the most recent `keep` of them as a grace window for in-flight readers pinned to a just-superseded
- * generation (**I5**). Generations ≥ `currentGen` are never touched. Returns the generations deleted.
+ * generation (**invariant 4**). Generations ≥ `currentGen` are never touched. Returns the generations deleted.
  *
  * **Except on a `destroyed` segment, where EVERY generation is garbage** and the grace window is meaningless.
  * A tombstoned segment resolves no generation at all, so no reader is or can become pinned to one; and nothing

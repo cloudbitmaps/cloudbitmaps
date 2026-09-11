@@ -116,7 +116,8 @@
               <a class="btn" href="../demo.html">See the intersection</a>
             </p>
             <p class="meta">
-              npm i @cloudbitmaps/roaring · 1 runtime dependency · wraps CRoaring via roaring-node
+              npm i @cloudbitmaps/roaring · 1 third-party dependency · wraps CRoaring via
+              roaring-node
             </p>
           </div>
 
@@ -552,9 +553,12 @@
             <p class="label">Uniformly dense ids</p>
             <p>
               If nearly every chunk is dense, every chunk picks bitset and you have paid for a
-              decision engine that always returns the same answer. That is what
-              <a href="../flavors.html">@cloudbitmaps/bitset</a> is for — same engine, no native
-              dependency.
+              decision engine that always returns the same answer. A plain-bitset flavor was the
+              obvious answer, and we measured it before building it: past roughly
+              <strong>6%</strong> density a Roaring chunk already <em>is</em> an uncompressed
+              bitset, so on the workload built to favour it a flat bitset came out
+              <strong>2%</strong> ahead — while Roaring won the other shapes by 543×, 63× and 1.88×.
+              It is <a href="../flavors.html">decided against</a>, not queued.
             </p>
           </div>
           <div class="limit">
@@ -603,7 +607,7 @@
               <a class="btn" href="../demo.html">Step through an intersection</a>
               <a class="btn" href="../flavors.html">Compare flavors</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.9.0 · 1 runtime dependency · 5 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 5 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>

@@ -53,8 +53,8 @@ than streaming it to you, using the same write-once-then-publish protocol.
 
 Benchmarked against **real** S3 + DynamoDB in `us-east-1`, not an emulator: **$0.14 per million** `count()`s and
 **$5.88 per million** segment publishes — against an always-on Redis-HA line of **$346/month, standing**, and
-**$0.03/month** for 1.2 GiB of segments at rest. DynamoDB capacity is taken from AWS's own `ConsumedCapacity`
-rather than estimated. `count()` on a published segment does **0 payload reads**, and intersecting two
+**$0.03/month** for 1.2 GiB of segments at rest. Request counts are read off the AWS SDK layer rather than
+estimated from sizes. `count()` on a published segment does **0 payload reads**, and intersecting two
 2,000,000-id segments fetches only the shared chunks.
 
 The trade is stated plainly rather than buried: a membership check that misses the hot cache costs a ranged GET

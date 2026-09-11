@@ -4,9 +4,9 @@
  * and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics sink).
  * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, rewrites, and erasures.
  *
- * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the lifecycle operations that emit — bulk-load, the
- * erasure rewrite, crypto-shred, disposal) and wrapped exception-safe, so a buggy sink can never break the
- * operation it observes.
+ * Like `Clock`/`Rng`/`IMetricsSink`, it's injected (into the operations that emit — bulk-load, the `*Into`
+ * verbs, the erasure rewrite, crypto-shred, disposal and the retention sweep) and wrapped exception-safe, so a
+ * buggy sink can never break the operation it observes.
  * Events are vendor-neutral and carry no timestamp/actor — the sink runs synchronously at the event, so it
  * stamps its own time / attaches the caller identity (keeps `core/` free of ambient time). As with metrics,
  * `segment`/`namespace` are caller-controlled strings that may be PII — treat them accordingly when routing.

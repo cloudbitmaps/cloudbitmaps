@@ -5,7 +5,7 @@
  * There is no per-id delete on an immutable object, and there is no mutable tier to hold a tombstone, so erasure
  * is what every other write in this library is: a new generation. The current generation is streamed chunk by
  * chunk through the ascending writer — every chunk copied through, the one chunk holding the id re-encoded with
- * that bit cleared — then published forward-only, and the superseded generation is collected immediately
+ * that bit cleared — then published fenced on the generation it streamed, and that generation is collected immediately
  * (`keep: 0`), so the bit is **physically gone from the bucket when this returns**. Constant memory: one chunk in
  * flight, never the whole segment.
  *
@@ -197,7 +197,8 @@ export async function eraseIdFromSegment(
   // evidenced its removal. A false Art. 17 receipt is the worst output this module can produce.
   //
   // `expectFrom` makes the publish land only while the pointer is still exactly `from`. The predecessor
-  // (`compactSegment`) had the same fence as an explicit re-read; it was lost in the move to `nextGeneration`.
+  // (the removed `compactSegment`) had the same fence as an explicit re-read; it was lost in the move to
+  // `nextGeneration`.
   //
   // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
   const published = await publishGeneration(deps.registry, key, { expectFrom: from });

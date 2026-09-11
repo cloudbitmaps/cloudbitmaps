@@ -57,7 +57,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
-| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published forward-only, and **the generation that held the bit is deleted before the call returns**. Reads exclude the id from the moment the rewrite is current. Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
+| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. Reads exclude the id from the moment the rewrite is current. Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
 | **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Cold generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
@@ -77,7 +77,7 @@ an id is in).
 Two rules. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
 its source held, and the library cannot know that source was meant to exclude the id — fix the source first, or
 quiesce loads of the affected segments for the duration. A load that lands *during* the rewrite is caught: the
-rewrite's publish is refused (forward-only) and the entry says `erased: false, note: 'superseded'`. **Read the
+rewrite's publish is refused **by that fence** and the entry says `erased: false, note: 'superseded'`. **Read the
 ledger**: any `erased: false` entry means the id is still in that segment. For `'superseded'` re-run
 `eraseSubject` — it is idempotent, and a segment the id is no longer in is simply not listed. An
 `error: …` note is an isolated per-segment fault; if it occurred *after* the rewrite was published (a Cold

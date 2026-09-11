@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/core",
   "version": "0.9.0",
-  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: tiered storage (RAM → warm KV → cold object store), chunk-skipping intersection, the .crbm format, crash-safe compaction, encryption-at-rest, and every storage driver.",
+  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: a hot RAM cache over write-once .crbm generations in object storage, chunk-skipping intersection, the load-and-publish write path, generation GC, erasure by rewrite, encryption-at-rest, and every storage driver.",
   "keywords": [
     "roaring",
     "bitmap",
@@ -19,9 +19,8 @@
     "dynamodb",
     "gcs",
     "azure",
-    "mariadb",
     "serverless",
-    "tiered-storage",
+    "object-storage",
     "scale-to-zero",
     "segmentation",
     "audience",

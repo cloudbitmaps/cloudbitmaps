@@ -11,7 +11,7 @@ import type { ExportSink, ExportWriter, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError } from '@/core/errors';
 
-// `store.exportSegments` — dump every registered segment's effective set to a portable file via an injected sink. These
+// `store.exportSegments` — dump every registered segment's current generation to a portable file via an injected sink. These
 // tests use an in-memory sink so they assert the actual bytes (roaring decodes back; ndjson parses back).
 const k = (): Uint8Array => randomBytes(32);
 

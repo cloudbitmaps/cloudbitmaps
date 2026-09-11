@@ -3,9 +3,10 @@
  *
  * `core/` is a pure function of its inputs + injected dependencies — it never reaches for
  * ambient time or randomness. Production wiring supplies real implementations; the deterministic
- * simulator supplies controlled, seeded ones, so any run can be replayed exactly from a seed.
+ * tests supply controlled, seeded ones, so any run can be replayed exactly from a seed.
  *
- * These are interfaces only (Phase 0 scaffold) — no feature code yet.
+ * These are interfaces only: the seam the whole library depends on for reproducibility. Every module that
+ * needs time, randomness or a yield takes one of these rather than reaching for a global.
  */
 
 /** Injected time source. `core/` must never call `Date.now()` directly. */
@@ -15,7 +16,7 @@ export interface Clock {
   /**
    * Resolve after at least `ms` have elapsed. The retry/backoff path's only way to wait — `core/` must
    * never reach for `setTimeout` directly (it's timer-free, lint-enforced). Production wiring supplies a
-   * `setTimeout`-backed implementation; the simulator supplies a virtual-time one so a backoff schedule is
+   * `setTimeout`-backed implementation; a test supplies a virtual-time one so a backoff schedule is
    * replayable. `ms <= 0` resolves on a microtask without scheduling a timer.
    */
   sleep(ms: number): Promise<void>;
@@ -30,7 +31,7 @@ export interface Clock {
    * **Optional**, so every `Clock` written before this member still satisfies the interface. Callers must
    * therefore degrade rather than assume: `clock.yieldNow?.() ?? clock.sleep(1)` — correct on any clock, cheap
    * on one that implements this. `core/` cannot supply it itself (it is timer-free, lint-enforced); production
-   * wiring backs it with `setImmediate`, and a simulator can make it a no-op so virtual time is not perturbed
+   * wiring backs it with `setImmediate`, and a test can make it a no-op so virtual time is not perturbed
    * by what is purely a scheduling courtesy.
    */
   yieldNow?(): Promise<void>;

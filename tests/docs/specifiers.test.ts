@@ -9,8 +9,15 @@ import { fileURLToPath } from 'node:url';
 // that says `npm i cloud-roaring` or `from 'cloud-roaring'` hands the reader an empty package and a
 // `Cannot find module`, and it is the *most* copy-pasted content we publish.
 //
-// This exists because the package split swept the source and the docs but missed all four `site/` pages —
-// every install line and every import there stayed on the old name, invisible to the source-graph tests.
+// This exists because the package split swept the docs but missed all four `site/` pages — every install line
+// and every import there stayed on the old name, invisible to the source-graph tests.
+//
+// It also, for a while, did not sweep the **source**, and the comment above used to claim it had. The warm-tier
+// removal proved otherwise: `packages/core/src/{s3,gcs,azure}/index.ts` each carried a runnable
+// ```import … from 'cloud-roaring/s3'``` in its header, and the three cold drivers named the old subpath in
+// theirs — nine specifiers this gate walked straight past, because it read only `.md` and `.html`. A doc-comment
+// is copy-pasted exactly like a README (an editor shows it on hover, and it ships in the `.d.ts`), so each
+// package's `src` tree is in scope now.
 // The name is still legitimate as the GitHub repo name, a README keyword, and a prose mention of history, so
 // this checks the *specifier* forms only.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -25,7 +32,10 @@ const SKIP_DIRS = new Set([
   '.rss-stage',
 ]);
 
-/** User-facing files: the root docs, both package READMEs, everything under `docs/`, and every site page. */
+/**
+ * User-facing files: the root docs, both package READMEs, everything under `docs/`, every site page — and every
+ * `.ts` under each package's `src`, whose doc-comments reach users through hover and the published `.d.ts`.
+ */
 function publicFacingFiles(): string[] {
   // Not filtered by `existsSync`: a renamed entry must fail loudly rather than vanish from the guard.
   const out: string[] = [
@@ -56,6 +66,10 @@ function publicFacingFiles(): string[] {
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));
+  // The published source. Its doc-comments are user-facing twice over — on hover in an editor, and inside the
+  // `.d.ts` files and sourcemaps that ship in the tarball.
+  walk('packages/core/src', (n) => n.endsWith('.ts'));
+  walk('packages/roaring/src', (n) => n.endsWith('.ts'));
   return out;
 }
 

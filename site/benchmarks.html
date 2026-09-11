@@ -474,7 +474,7 @@
             <span class="rl-fig">owed</span>
             <span class="rl-note">
               Sustained <span class="m">bulkLoadCrbmGeneration</span> rate and cost against a real object store,
-              at the segment sizes a real refresh produces. The at-scale table's ~42&ndash;55 durable
+              at the segment sizes a real refresh produces. The at-scale table's ~38&ndash;51 durable
               segments/s is local disk and fsync-bound, and is <em>not</em> that number.
             </span>
           </li>
@@ -485,7 +485,7 @@
             <span class="rl-note">
               In-region wall-clock for a chunk-skipping <span class="m">A ∩ B</span>, and for
               <span class="m">andNot</span> with a large <span class="m">exclude</span>, against a real object
-              store rather than local disk. The 24.6 ms below is one operation on a laptop's filesystem.
+              store rather than local disk. The 24.6 ms below is one operation against the in-memory drivers.
             </span>
           </li>
           <li>

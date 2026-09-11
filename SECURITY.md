@@ -42,20 +42,27 @@ gate ignores.
 
 ### Forced transitive versions (`pnpm.overrides`)
 
-Four advisories sat in **development-only** transitive dependencies, so the blocking gate above — scoped to
-production dependencies — correctly ignored them and CI was green. They still generated alerts, and "correctly
-ignored" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
-`pnpm.overrides` forces each to a patched version.
+Every advisory we have had sat in **development-only** transitive dependencies, so the blocking gate above —
+scoped to production dependencies — correctly ignored them and CI was green. They still generated alerts, and
+"correctly ignored" is not the same as "fine", so they are **fixed rather than accepted**: `package.json` →
+`pnpm.overrides` forces each to a patched version, pinned inside its current major so an override never
+smuggles in a breaking change.
 
-| forced | reached us via | advisory fixed in |
+| forced | reached us via | note |
 | --- | --- | --- |
-| `adm-zip >=0.6.0` | `cassandra-driver` | 0.6.0 (high) |
-| `qs >=6.15.2` | `@stryker-mutator/core` | 6.15.2 |
-| `uuid ^11.1.1` | `@google-cloud/storage` | 11.1.1 |
-| `esbuild >=0.28.1` | the vitest/esbuild toolchain | 0.28.1 |
+| `fast-uri >=3.1.6 <4` | `ajv`, whose range the updater could not resolve the fix through | the alert that had the Dependabot workflow red |
+| `js-yaml >=4.3.1 <5` | the eslint / stryker toolchains | |
+| `undici >=6.28.0 <7` | the AWS SDK's fetch handler | |
+| `brace-expansion >=1.1.18 <2` and `>=5.0.9 <6` | two majors reached us at once, so both are pinned | |
+| `nanoid >=3.3.18 <4` | the vitest toolchain | |
+| `qs >=6.16.0` | `@stryker-mutator/core` | |
+| `uuid ^11.1.1` | `@google-cloud/storage` | |
+| `esbuild >=0.28.1` | the vitest / esbuild toolchain | |
+| `adm-zip >=0.6.0` | *nothing, now* | it reached us through `cassandra-driver`, a warm-tier dependency that left with the tier. The entry is inert and goes at the next dependency pass |
 
-An override is a **claim that the forced version still works**, which is only worth making if it is tested: all
-four were verified against the full `pnpm test:integration` suite (152 tests, nine real backends in containers),
+An override is a **claim that the forced version still works**, which is only worth making if it is tested: each
+was verified against the full `pnpm test:integration` suite (30 cases against four real backends in containers —
+DynamoDB-Local, MinIO, fake-gcs-server and Azurite),
 because the two that matter most — `adm-zip` under `cassandra-driver` and `uuid` under `@google-cloud/storage` —
 are on paths the unit suite never exercises.
 

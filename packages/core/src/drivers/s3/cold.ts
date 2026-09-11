@@ -2,7 +2,7 @@
  * `S3ColdDriver` — an {@link IColdDriver} over S3-compatible object storage (Phase 3c).
  *
  * Works with AWS S3 and any compatible backend (MinIO, etc.) via the official `@aws-sdk/client-s3`, which
- * is an **optional peer dependency** — only consumers of `cloud-roaring/s3` install it. The client is
+ * is an **optional peer dependency** — only consumers of `@cloudbitmaps/roaring/s3` install it. The client is
  * **injected** (dependency injection): the driver owns no credential/region/endpoint logic, so it's thin,
  * testable against MinIO (point a client at its endpoint), and reuses the caller's existing client.
  *

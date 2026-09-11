@@ -1,8 +1,9 @@
 # Force the structured forms above (no blank issues), and route the two things that don't belong in a
-# public issue tracker. GitHub requires absolute URLs here, so these carry the repo's current home —
-# rewrite both when the public repo is cut, and enable Discussions there (the launch runbook in
-# carries both steps; Discussions is off on this pre-launch private repo,
-# so the second link only resolves once it's turned on).
+# public issue tracker. GitHub requires absolute URLs here, so both carry the repo's home.
+#
+# NOTE: the Discussions link below currently 404s — the repo is public, but Discussions has not been enabled
+# in its settings. It is a one-click repo setting; until it is on, that entry sends anyone with a question to
+# a missing page, which is worse than not offering it. Either enable Discussions or drop the second entry.
 blank_issues_enabled: false
 contact_links:
   - name: Security report (private)

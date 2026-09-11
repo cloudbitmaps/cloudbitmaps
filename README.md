@@ -185,8 +185,9 @@ and the two figures a loaded store actually pays are:
 | Segment publish (one S3 PUT + the pointer write) | **$5.88 / million** | | whether you send traffic or not |
 | 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | | |
 
-DynamoDB capacity comes from AWS's own `ConsumedCapacity`, read off every response — not a size→ceiling
-estimate. The same run also measured the things a cost model can only assume: **zero retry billing** (HTTP
+Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
+from the library's own metrics, which cannot see a PUT. The same run also measured the things a cost model can
+only assume: **zero retry billing** (HTTP
 attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
 list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded hot
 cache did its job.
@@ -451,8 +452,11 @@ Built in phases, each shipped behind tests and an adversarial review:
   [dashboards guide](docs/guide/dashboards.md).
 - **M5**: a hardened, benchmarked, trademarked **v1.0** public launch.
 
-Beyond the milestones, the pre-1.0 **hardening backlog + an 8-discipline testing frontier** (soak · mutation ·
-fuzz · stress · DR · security · load/tail-latency · chaos) are complete, and the production-readiness re-assessment
+Beyond the milestones, the pre-1.0 **hardening backlog** is complete and the testing frontier now runs five
+disciplines (soak · mutation · fuzz · DR · security) plus a hard RSS ceiling under a cgroup limit. Three went
+with the write path they exercised — the stress, load/tail-latency and chaos harnesses all drove per-id writes
+against an emulator, so they are **withdrawn rather than counted**, and the loaded-store equivalents are on the
+owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
 scale/tenancy deferrals are tracked openly). **Phase 7 — additional storage drivers**: **GCS + Azure
 Blob cold drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that

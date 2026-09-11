@@ -501,6 +501,12 @@ export async function writeCrbmGenerationStream(
  * retrying a few times under contention. Separated from the Cold write so callers can publish atomically
  * after the immutable object is durable (write-then-publish).
  *
+ * **Throws** rather than returning, in two cases, because each would otherwise create a state no reader can
+ * recover from: a `destroyed` (crypto-shredded) row, where advancing the pointer would name an object encrypted
+ * under a shredded key; and an advance carrying **new** `wrappedDeks`, which would either strand that key or make
+ * the row advertise encryption over cleartext generations. Contention that never clears throws
+ * {@link WriteConflictError} after the retries.
+ *
  * **`expectFrom` turns forward-only into read-modify-write.** Forward-only is the right rule for a writer whose
  * content does not depend on what was current — a load computes its ids upstream, so publishing over a newer
  * generation loses nothing the loader knew about. It is the WRONG rule for a writer that *derived* its content

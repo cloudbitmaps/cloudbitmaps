@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/roaring",
   "version": "0.9.0",
-  "description": "Distributed, cloud-native Roaring Bitmaps — query and intersect billion-scale integer sets over tiered cloud storage (RAM → NoSQL → object store), at a fraction of an always-on cache.",
+  "description": "Distributed, cloud-native Roaring Bitmaps — query and intersect billion-scale integer sets straight out of object storage, from a bounded RAM cache over immutable objects in your own bucket, at a fraction of an always-on cache.",
   "keywords": [
     "roaring",
     "bitmap",
@@ -19,9 +19,8 @@
     "dynamodb",
     "gcs",
     "azure",
-    "mariadb",
     "serverless",
-    "tiered-storage",
+    "object-storage",
     "scale-to-zero",
     "segmentation",
     "audience",

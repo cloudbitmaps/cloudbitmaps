@@ -5,7 +5,7 @@
  * while the operation keeps failing with a **retryable** error (by default {@link TransientError}), waiting
  * a bounded, jittered, exponentially-growing delay between attempts. Time and randomness are **injected**
  * (the determinism seam) — production wires a `setTimeout`-backed clock + a real RNG; the
- * simulator wires virtual ones — so a backoff schedule is replayable from a seed and unit tests run with no
+ * tests wire virtual ones — so a backoff schedule is replayable from a seed and unit tests run with no
  * real sleeping.
  *
  * It deliberately does **not** retry deterministic failures ({@link WriteConflictError},

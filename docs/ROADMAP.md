@@ -23,7 +23,7 @@ It's a living document, not a promise — see [the note at the bottom](#a-note-o
 
 ## Where it stands
 
-**`0.1.0` is the first release line, and it is pre-1.0 on purpose.** `1.0` is earned by real-cloud cost
+**The line is pre-1.0 on purpose.** `1.0` is earned by real-cloud cost
 calibration, real adoption, and freezing the `.crbm` on-disk format (see
 [On the way to 1.0](#on-the-way-to-10)) — until then the public API and the on-disk format stay evolvable.
 Everything described under [Shipped today](#shipped-today) is implemented and covered by tests — unit,
@@ -193,10 +193,15 @@ figure we haven't measured, and laptop/emulator numbers are labeled as such.
 `1.0` is a commitment to the on-disk format, so it waits for evidence rather than a date. What stands
 between here and there:
 
-1. **Real-cloud calibration — the read side is done.**
-   [$0.001911 measured](benchmarks.md#real-cloud-calibration--aws) for the calibration run's requests on real
-   S3 + DynamoDB, and an in-region `has()` inside the single-digit-to-~25 ms target. What remains: a **Lambda**
-   run, for the serverless figure with cold-start and init included — and the loaded-store benchmarks below.
+1. **Real-cloud calibration — the cost side is half done.**
+   The [object-store half](benchmarks.md#real-cloud-calibration--aws) of the 2026-07-25 run is published: two S3
+   line items, and the unit economics that fall out of them (**$0.14 per million** `count()`s, **$5.88 per
+   million** publishes, each including the registry round trip). Its **total is deliberately not published** —
+   the other half metered the removed delta tier, and a total over two of four terms is a figure no run
+   produced. **No latency figure is published either**, from that run or any other: it was driven from a laptop
+   outside the region, so it calibrates cost only. What remains: an **in-region** run for read latency, a
+   **Lambda** run for the serverless figure with cold-start and init included, and the loaded-store benchmarks
+   below.
 2. **Loaded-store benchmarks — owed.** Load throughput (ids/s and bytes/s into the bucket, single-part and
    multipart), `intersect` / `*Into` latency by operand count and chunk overlap, and an RSS soak over a long
    read/load mix. Until they exist, the measured numbers on the benchmarks page are the S3-side figures of the
