@@ -58,9 +58,14 @@ The essentials, in order:
 3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build`; every one
    must pass before review. **`pnpm typecheck` is required exactly like `test`/`lint`** — zero `tsc` errors *and*
    zero editor red squiggles; never deferred or `@ts-ignore`-d.
-4. **Review adversarially, end to end** — distinct lenses (correctness · bug-hunt · security · scale & perf ·
-   code quality · testing quality · docs fidelity), not just the diff. Fix the real findings in the same change
-   or record them with a severity and a deferral.
+4. **Run the adversarial review gate — MANDATORY, after every phase AND sub-phase.** **Spawn multiple
+   parallel adversarial subagents**, one per lens (correctness · bug-hunt · security · scale & perf · code
+   quality · testing quality · docs fidelity), against the whole component **end to end**, not just the diff.
+   Self-review does not satisfy this and neither does your own mutation testing: both target the code you
+   were already reasoning about, which is precisely the blind spot. Fix the real findings in the same change,
+   or record each with a severity and a deferral; after substantive fixes, re-review. *Skipping this once let
+   a change through the full green gate and 13 CI jobs with five blockers in it, two of them breaking
+   compliance guarantees this repo makes in writing.*
 5. **Keep docs current in the same change** — the [guide](docs/guide/getting-started.md),
    [API reference](docs/guide/api-reference.md), [README](README.md), `CHANGELOG.md` (`[Unreleased]`,
    newest-first), and [`docs/ROADMAP.md`](docs/ROADMAP.md). Docs must never lag reality.
