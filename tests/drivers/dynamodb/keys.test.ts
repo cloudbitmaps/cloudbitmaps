@@ -64,7 +64,7 @@ describe('DynamoDB single-table key grammar', () => {
     });
 
     it('a chunk row left by an older build cannot collide with the registry row', () => {
-      // `list` filters on the `reg#` sort key, so pre-D2 `chunk#…` items in the same partition are inert.
+      // `list` filters on the `reg#` sort key, so legacy `chunk#…` items in the same partition are inert.
       // This is the property that makes them safe to leave behind rather than requiring a migration.
       expect(registrySortKey().startsWith('chunk#')).toBe(false);
       expect('chunk#00042'.startsWith(registrySortKey())).toBe(false);

@@ -4,7 +4,7 @@ import { SafeBitmap } from '../build/fuzz-codec.js';
 /*
  * Coverage-guided fuzz target: the NATIVE CRoaring "portable" deserializer — the C/C++ attack surface behind
  * every cold read. CloudRoaring's safety story at the untrusted-bytes boundary is "safe-deserialize + a hard
- * size cap" (invariant 5 / finding S1). This target feeds adversarial bytes straight to `safeDeserialize` (no
+ * size cap" (hard invariant 5). This target feeds adversarial bytes straight to `safeDeserialize` (no
  * CRC gate) and asserts the contract: a usable bitmap OR a typed CloudRoaring error (matched by the cross-bundle brand predicate) — never a native crash,
  * an uncaught `RangeError`/`TypeError`, unbounded allocation, or a hang.
  *

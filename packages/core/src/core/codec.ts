@@ -92,7 +92,7 @@ export interface CodecBitmap {
 /**
  * A pluggable bitmap codec — the factory the codec-agnostic engine constructs {@link CodecBitmap}s through.
  * Implementations **must** size-cap before handing untrusted bytes to any native decoder and use a safe
- * (never a trusting/frozen) deserializer (threat model S1).
+ * (never a trusting/frozen) deserializer — hard invariant 5.
  */
 export interface CodecInterface {
   /** An empty set. */

@@ -40,7 +40,7 @@ let n = 0;
 const freshDriver = (): GcsColdDriver =>
   new GcsColdDriver({ storage, bucket: BUCKET, prefix: `conf/${n++}` });
 
-// The GCS driver must pass the SAME cold-source contract as in-memory + LocalFs + S3 (finding V8).
+// The GCS driver must pass the SAME cold-source contract as in-memory + LocalFs + S3.
 coldChunkSourceConformance('GcsColdDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);
@@ -66,8 +66,8 @@ describe('GcsColdDriver specifics (fake-gcs-server)', () => {
   // The write-once test above stays under the 8 MiB threshold, so it exercises only the SIMPLE upload path.
   // Force the RESUMABLE (large-object, constant-memory) path with a tiny threshold and prove it round-trips
   // end-to-end against a real emulator — catching a broken resumable stream / backpressure / finalize / read
-  // path the simple path can't. This is the compaction write path (readiness audit cold-F2), previously
-  // exercised only against an in-process mock.
+  // path the simple path can't. This is the large-generation load path, previously exercised only
+  // against an in-process mock.
   //
   // NOTE ON WRITE-ONCE ENFORCEMENT: this test does NOT assert the second write conflicts, because
   // fake-gcs-server does not honor `ifGenerationMatch: 0` on the resumable-upload *finalize* (empirically it

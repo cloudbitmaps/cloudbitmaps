@@ -1,5 +1,5 @@
 /**
- * Pure helpers for classifying S3 SDK errors + parsing response headers (Phase 3c; transient class 4b).
+ * Pure helpers for classifying S3 SDK errors + parsing response headers (conflict and transient classification).
  *
  * Kept SDK-free and side-effect-free (they only read structural shapes — `err.name`,
  * `$metadata.httpStatusCode`, a `Content-Range` string) so the subtle S3-specific translation logic is

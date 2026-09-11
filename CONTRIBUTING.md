@@ -170,6 +170,19 @@ root-level project files. What each one is, and when it must be updated:
 Benchmark and cost claims carry their methodology, and are labelled **measured** or **modeled** — never
 presented as one when they are the other. See [`docs/benchmarks.md`](docs/benchmarks.md).
 
+**Nothing here may cite a document a reader cannot open.** This repository is public and its design
+discussion is not, so an id like `Phase 4e`, `gap #1`, `finding S2` or `test-strategy T3` points nowhere —
+and it is worse than saying less, because it implies checkable evidence and then withholds it. State the
+**substance** inline instead: not *"bounded by parsed-index bytes (gap #1)"* but *"bounded by parsed-index
+bytes, because a wide segment's index — not its payloads — dominates the reader's footprint"*. The reader
+gets the reasoning rather than a dead reference to it.
+
+This applies to code comments as much as prose: a doc-comment reaches users on hover in their editor and
+inside the published `.d.ts` and sourcemaps. **CI-enforced** by
+[`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every tracked
+text file. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
+[`CLAUDE.md`](CLAUDE.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
+
 ## Code style
 
 - TypeScript strict; discriminated unions over class hierarchies; `readonly` state; **typed errors**

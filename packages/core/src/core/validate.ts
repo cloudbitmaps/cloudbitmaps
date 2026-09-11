@@ -1,5 +1,5 @@
 /**
- * Boundary validation for segment / namespace names (finding S2).
+ * Boundary validation for segment / namespace names.
  * Names become object keys, partition keys, and file paths — so they're validated before they
  * ever reach storage: strict charset, bounded length, no path traversal.
  */

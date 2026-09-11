@@ -51,7 +51,7 @@ describe('budget helper (core/budget)', () => {
   });
 });
 
-describe('per-op budget enforced by the store (gap #8)', () => {
+describe('per-op budget enforced by the store', () => {
   /** A store whose ceiling (2 requests) sits below a three-chunk fan-out. */
   const tinyBudgetStore = (segments: Record<string, number[]>) =>
     seededStore(segments, { budget: { maxRequests: 2 }, retry: false });

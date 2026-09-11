@@ -11,10 +11,11 @@ import type { RegistryRecord } from '@/core/ports';
 import { IntegrityError, UnsupportedError } from '@/core/errors';
 
 /**
- * **A row written by an older build must still read.** D2 removed five fields the compaction daemon used —
+ * **A row written by an older build must still read.** The warm-tier removal dropped five fields the
+ * compaction daemon used —
  * `dirtyChunkCount`, `lastCompactedAt`, `consecutiveFailures`, `leaseOwner`, `leaseExpiresAt` — from the record
  * and patch types, and with them the validation that used to police their values. What must NOT change is that
- * a stored row still *carrying* them parses: an upgrade that made every pre-D2 registry row unreadable would
+ * a stored row still *carrying* them parses: an upgrade that made every older registry row unreadable would
  * take the segment with it, since the row is the only pointer to the generation.
  *
  * The direction of the guarantee is the point, and it runs both ways: the fields are **tolerated on read** and
@@ -22,7 +23,7 @@ import { IntegrityError, UnsupportedError } from '@/core/errors';
  * they age out of the fleet rather than being carried forever. The conformance round-trip cannot catch a
  * regression here because a freshly created row never has them; this pins it on the shared guard directly.
  */
-describe('assertStoredRecordShape — a pre-D2 row with the removed daemon fields still reads', () => {
+describe('assertStoredRecordShape — an older row with the removed daemon fields still reads', () => {
   const base = {
     segment: 's',
     currentGen: 0,
@@ -36,7 +37,7 @@ describe('assertStoredRecordShape — a pre-D2 row with the removed daemon field
     expect(() => assertStoredRecordShape({ ...base }, 'current')).not.toThrow();
   });
 
-  it('accepts a pre-D2 row carrying every removed field', () => {
+  it('accepts an older row carrying every removed field', () => {
     expect(() =>
       assertStoredRecordShape(
         {
@@ -72,7 +73,7 @@ describe('assertStoredRecordShape — a pre-D2 row with the removed daemon field
   it('drops the removed fields on the next write, so they age out of the fleet', () => {
     // The other half of the guarantee, and the reason "tolerated" does not mean "carried forever":
     // `applyRegistryPatch` rebuilds the record from the fields this build knows, so one ordinary CAS on a
-    // pre-D2 row leaves it clean. Asserted rather than described, because the merge is spelled field by field
+    // older row leaves it clean. Asserted rather than described, because the merge is spelled field by field
     // and a stray `...prev` would silently reintroduce them.
     const legacy = {
       ...base,
@@ -98,12 +99,12 @@ describe('assertStoredRecordShape — a pre-D2 row with the removed daemon field
 });
 
 /**
- * Registry-row schema-version stamps (Phase G1 format-freeze prerequisite). The persisted envelope carries a
+ * Registry-row schema-version stamps (a format-freeze prerequisite). The persisted envelope carries a
  * `schemaVersion` so a reader can fail-closed on a future, incompatible layout. Policy: absent → legacy v1
  * (tolerated — pre-freeze rows stay readable across the upgrade); higher → UnsupportedError; malformed →
  * IntegrityError. This pins the LocalFs/S3 envelope path; the DynamoDB body path is tested in its own suite.
  */
-describe('registry envelope schema version (Phase G1, format freeze)', () => {
+describe('registry envelope schema version (format freeze)', () => {
   const record: RegistryRecord = {
     segment: 's',
     currentGen: 0,

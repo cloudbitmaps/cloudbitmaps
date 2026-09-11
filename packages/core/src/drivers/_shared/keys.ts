@@ -1,5 +1,5 @@
 /**
- * Shared key-grammar fragments used by every driver's logical-ref → physical-key mapping (Phase 4c).
+ * Shared key-grammar fragments used by every driver's logical-ref → physical-key mapping.
  *
  * Extracted once the registry drivers became the 4th/5th consumer of the same `_default` namespace sentinel
  * (it lived copy-pasted in `s3/keys`, `dynamodb/keys`, `localfs/paths`). Pure string logic, no SDK, no I/O —

@@ -1,5 +1,5 @@
 /**
- * Pure helpers for classifying Azure Blob Storage SDK errors (Phase 7; transient class mirrors S3/GCS).
+ * Pure helpers for classifying Azure Blob Storage SDK errors (the transient class mirrors S3/GCS).
  *
  * SDK-free + side-effect-free — they only read structural shapes off the thrown value (`err.statusCode`,
  * `err.code`, `err.details.errorCode`), so the Azure-specific translation is unit-testable without a live

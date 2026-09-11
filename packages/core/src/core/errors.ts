@@ -38,7 +38,8 @@ export class IntegrityError extends CloudRoaringError {}
 
 /**
  * A requested object/row does not exist. Part of the driver error vocabulary; thrown by
- * persistent drivers from Phase 2 — the Phase-1 engine + in-memory drivers return `null` instead.
+ * the persistent drivers (S3, GCS, Azure Blob, DynamoDB, local filesystem) — the in-memory drivers return
+ * `null` instead.
  */
 export class NotFoundError extends CloudRoaringError {}
 
@@ -61,7 +62,7 @@ export class CapabilityError extends CloudRoaringError {}
 /**
  * An operation would exceed its per-op **denial-of-wallet budget** — too many backend requests for a single
  * `count`/`iterate`/`intersect`/`subjectReport`/`eraseSubject` call — so it is refused **before** fanning out
- * (Decision #3 / invariant T3). Default-on but generous (normal ops never hit it); tune it
+ * (hard invariant 6). Default-on but generous (normal ops never hit it); tune it
  * per store (`budget`) or per op, or disable with `budget: false`. Deterministic (never retried): the op is too
  * big by policy, not by luck. Each request's bytes are separately capped (the safe-deserialize ceiling), so
  * bounding the request count transitively bounds bytes. Carries the projected count + the limit, never data.
@@ -86,7 +87,7 @@ export class KeyUnavailableError extends CloudRoaringError {}
  * {@link NotFoundError}, or {@link WriteConflictError} (retrying those is pointless or wrong). The original
  * error is preserved in `cause` so callers can still inspect it.
  *
- * Note for logging hygiene (threat-model S12): `cause` is the **raw SDK error**, which may carry operational
+ * Note for logging hygiene: `cause` is the **raw SDK error**, which may carry operational
  * metadata (endpoint host, request IDs, `$metadata`). The library's own `message` is identifier-only and safe
  * to log; if you serialize the whole error *chain*, be aware you're including that metadata.
  */

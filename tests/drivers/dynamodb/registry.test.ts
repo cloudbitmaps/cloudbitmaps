@@ -163,10 +163,10 @@ describe('DynamoDbRegistryDriver (unit, fake client)', () => {
       expect(written.schemaVersion).toBe(REGISTRY_SCHEMA_VERSION); // stamped on write (format freeze)
     });
 
-    // The shared `registryConformance` R8 case covers this driver too, but only under LocalStack
+    // The shared `registryConformance` null-generation case covers this driver too, but only under LocalStack
     // (`test:integration`). Serialization is exactly where a null pointer gets silently dropped or coerced, so
     // the JSON body it writes and reads is pinned here, in the suite that runs on every commit.
-    it('round-trips a null currentGen through the serialized body (R8)', async () => {
+    it('round-trips a null currentGen through the serialized body', async () => {
       const sent: Array<Record<string, unknown>> = [];
       const d = driverWith((command) => {
         const input = (command as { input: Record<string, unknown> }).input;

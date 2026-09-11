@@ -1,5 +1,5 @@
 /**
- * `DynamoDbRegistryDriver` — an {@link IRegistryDriver} over DynamoDB (Phase 4c).
+ * `DynamoDbRegistryDriver` — an {@link IRegistryDriver} over DynamoDB.
  *
  * One item per segment in a single table: `PK = ns#…|seg#…`, `SK = reg#`. OCC is a conditional `UpdateItem`
  * with `ADD v :one`, which

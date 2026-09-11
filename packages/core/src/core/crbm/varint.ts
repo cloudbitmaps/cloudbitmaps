@@ -2,7 +2,7 @@
  * LEB128 unsigned varint codec for the `.crbm` chunk index.
  *
  * The index is delta+varint encoded so a full 16-bit span stays ~400–650 KB instead of ~900 KB of
- * fixed triplets (finding B6). All index varint values are small (chunk-key deltas ≤ 65535,
+ * fixed triplets. All index varint values are small (chunk-key deltas ≤ 65535,
  * cardinalities ≤ 65536, payload lengths bounded by a size cap) — well within 32 bits — so this codec
  * accepts unsigned integers in `[0, 0xffffffff]` and rejects anything wider as a programming error.
  */

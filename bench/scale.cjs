@@ -1,22 +1,22 @@
 /*
- * At-scale load benchmark (Phase G4) — turns the production-readiness audit's code-read conclusions
+ * At-scale load benchmark — turns the production-readiness audit's code-read conclusions
  * into MEASURED evidence at 1K → 10K → 100K segments.
  *
- * The audit's "NOT READY" verdict rested on three concerns, all since fixed (docs honesty → Phase A,
- * unbounded reader cache → Phase C, fleet-scale admin passes → Phase D). This harness measures that those fixes
+ * The audit's "NOT READY" verdict rested on three concerns, all since fixed: docs honesty, the unbounded
+ * reader cache, and fleet-scale admin passes. This harness measures that those fixes
  * actually deliver at scale:
  *   M1  Bounded memory (headline)   reading the WHOLE fleet under a fixed reader-cache cap holds the post-GC
  *                                   LIVE HEAP ~flat as the fleet grows — memory is a function of the cap, not the
- *                                   fleet (gap #1; the "OOMs a long-running server" claim). (Process RSS also
+ *                                   fleet (the "OOMs a long-running server" claim). (Process RSS also
  *                                   grows with the in-process seed phase and isn't the bound — see render().)
  *                                   NB: M1's read loop parses `.crbm` INDICES (JS-heap objects) — it does not
  *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
  *                                   OFF-HEAP native memory (the read/intersect path with decoded bitmaps) is
- *                                   proved bounded over time by the soak (T1, `getRoaringUsedMemory()`).
+ *                                   proved bounded over time by the soak (`getRoaringUsedMemory()`).
  *   M2  Fleet-scan cost             time the one bounded drain of `registry.list()` (`drainRegistry`, what every
  *                                   fleet-wide admin pass — `checkConsistency`, `retireExpired`, `eraseSubject` —
  *                                   pays before it does any work) across fleet sizes: the honest O(total)
- *                                   registry-enumeration floor the deferred cursor (gap #3) would bound. No read
+ *                                   registry-enumeration floor a deferred cursor would bound. No read
  *                                   verb calls it: `has`, `count`, `iterate` and `intersect` address one segment
  *                                   each and never enumerate.
  *   M3  Intersection chunk-skipping two large multi-chunk segments, ~5% overlap: fetchedChunks ≪ total + latency
@@ -152,7 +152,7 @@ async function measureFleet(n) {
 
     // M2 — fleet-scan cost. Time `drainRegistry`, the one bounded drain of `registry.list()` that every
     // fleet-wide admin pass runs first (`checkConsistency`, `retireExpired`, `eraseSubject`). This isolates the
-    // O(total) registry-enumeration floor — the irreducible per-cycle cost gap #3's deferred cursor would bound;
+    // O(total) registry-enumeration floor — the irreducible per-cycle cost a deferred cursor would bound;
     // a quiescent fleet still pays it, which is exactly the concern. No read verb enumerates, so nothing on the
     // hot path pays this.
     const disc = await ms(() =>

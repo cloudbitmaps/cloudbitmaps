@@ -6,7 +6,7 @@ import { MemoryColdChunkSource, MemoryColdDriver } from '@/drivers/memory';
 import { LocalFsColdDriver } from '@/drivers/localfs/cold';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 
-// Every ColdChunkSource must pass the same contract (finding V8).
+// Every ColdChunkSource must pass the same contract.
 coldChunkSourceConformance('MemoryColdChunkSource', (chunks) => {
   const source = new MemoryColdChunkSource();
   for (const { chunkKey, bitmap } of chunks)
@@ -14,7 +14,7 @@ coldChunkSourceConformance('MemoryColdChunkSource', (chunks) => {
   return Promise.resolve(source);
 });
 
-// The in-memory IColdDriver (Phase 4d) must serve the same contract through the real `.crbm` codec.
+// The in-memory IColdDriver must serve the same contract through the real `.crbm` codec.
 coldChunkSourceConformance('CrbmColdChunkSource (MemoryColdDriver)', async (chunks) => {
   const cold = new MemoryColdDriver();
   await writeCrbmGeneration(cold, { segment: 's', generation: 1 }, chunks);

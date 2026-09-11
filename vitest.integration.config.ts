@@ -5,7 +5,8 @@ const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
 
 // Integration suite — runs against DynamoDB-Local + MinIO via `docker compose` (see docker-compose.yml).
-// Phase 3c adds the first real integration test: the S3 cold driver vs MinIO.
+// The first real integration test was the S3 cold driver against MinIO; the lane now also covers
+// DynamoDB-Local, fake-gcs-server and Azurite.
 export default defineConfig({
   test: {
     globals: true,

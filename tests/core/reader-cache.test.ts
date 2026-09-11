@@ -7,7 +7,7 @@ import {
 import type { IColdDriver } from '@/index';
 
 /**
- * Bounded cold-reader cache (gap #1). `CrbmColdChunkSource` used to hold an
+ * Bounded cold-reader cache. `CrbmColdChunkSource` used to hold an
  * unbounded `Map` of opened readers (each carrying a fully-parsed `.crbm` index), so a long-running server's
  * footprint grew with every distinct segment ever read → OOM at 100K+ segments. The cache is now a `BoundedLru`
  * capped by `maxOpenSegments`: past the ceiling the least-recently-used segment's reader is evicted, and the
@@ -43,7 +43,7 @@ async function seed(
 
 const SEGS = ['s0', 's1', 's2'];
 
-describe('CrbmColdChunkSource — bounded reader cache (gap #1)', () => {
+describe('CrbmColdChunkSource — bounded reader cache', () => {
   it('evicts the LRU segment past maxOpenSegments and re-opens it on the next read', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });
     const { cold, opens } = countingCold(new MemoryColdDriver());
@@ -64,11 +64,11 @@ describe('CrbmColdChunkSource — bounded reader cache (gap #1)', () => {
     expect(opens()).toBe(4);
   });
 
-  it('bounds the resident reader set across a large fleet — memory cannot accumulate with fleet size (gap #1 at scale)', async () => {
-    // The memory gate for the bounded-memory pillar (gap #1 → gap #12), enforced STRUCTURALLY (deterministic,
+  it('bounds the resident reader set across a large fleet — memory cannot accumulate with fleet size', async () => {
+    // The memory gate for the bounded-memory pillar, enforced STRUCTURALLY (deterministic,
     // no flaky RSS sampling): read a fleet FAR larger than the cache cap TWICE. Pass 1 opens each once (N opens).
     // With the cap ≪ N, every segment is evicted before we loop back, so pass 2 re-opens all N (2N total). An
-    // unbounded cache (the pre-Phase-C regression) would keep all N readers resident → pass 2 is 0 re-opens
+    // unbounded cache (the regression this cap fixed) would keep all N readers resident → pass 2 is 0 re-opens
     // (total N) → this assertion fails. That's the catch: reader memory is bounded by the cap, not the fleet.
     const N = 200;
     const CAP = 20;
@@ -101,7 +101,7 @@ describe('CrbmColdChunkSource — bounded reader cache (gap #1)', () => {
   });
 });
 
-describe('CrbmColdChunkSource — byte-bounded reader cache (gap #1, second half)', () => {
+describe('CrbmColdChunkSource — byte-bounded reader cache (second half of the bound)', () => {
   // Each seeded segment carries [1,2] → one chunk → one parsed index entry (160 B retained, the reader's
   // RETAINED_BYTES_PER_INDEX_ENTRY). The COUNT bound (`maxOpenSegments`) is set generously so the BYTE bound
   // (`maxOpenIndexBytes`) is the one doing the work: this is what a count-only cache missed (1024 wide indices

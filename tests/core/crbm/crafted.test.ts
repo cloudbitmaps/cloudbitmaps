@@ -161,7 +161,7 @@ describe('crafted (hostile) index — reader-side guards', () => {
     await expect(open(bytes)).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it('rejects a footer total_cardinality that disagrees with the index (F2)', async () => {
+  it('rejects a footer total_cardinality that disagrees with the index', async () => {
     const payload = Uint8Array.of(1, 2, 3, 4);
     const bytes = assembleCrbm({
       payloadRegion: payload,
@@ -171,7 +171,7 @@ describe('crafted (hostile) index — reader-side guards', () => {
     await expect(open(bytes)).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  // ── Format-field validation (gap #6): the reader must refuse a generation whose payloads it can't
+  // ── Format-field validation: the reader must refuse a generation whose payloads it can't
   // safely decode, rather than feed them to the 32-bit portable deserializer and mis-count. These fields
   // are inside FOOTER_CRC_COVERAGE, so a genuine (CRC-valid) future generation still trips the check. ──
   const wellFormed = (over: Partial<Parameters<typeof assembleCrbm>[0]>): Uint8Array => {

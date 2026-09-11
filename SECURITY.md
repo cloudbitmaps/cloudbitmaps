@@ -90,8 +90,7 @@ must be removed and the advisory addressed, not ignored.
 ## Supply chain (build, publish & provenance)
 
 CloudBitmaps is published through a hardened pipeline so that a consumer can verify **exactly what source
-produced the package they installed** (threat model S9, implemented in
-Phase 8). The controls:
+produced the package they installed**. The controls:
 
 - **Build provenance (SLSA).** The [release workflow](.github/workflows/release.yml) publishes with
   `--provenance` and `NPM_CONFIG_PROVENANCE=true`, set at the call site rather than in the manifests. (It was

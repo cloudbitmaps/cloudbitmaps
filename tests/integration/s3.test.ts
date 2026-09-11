@@ -35,7 +35,7 @@ let n = 0;
 const freshDriver = (): S3ColdDriver =>
   new S3ColdDriver({ client, bucket: BUCKET, prefix: `conf/${n++}` });
 
-// The S3 driver must pass the SAME cold-source contract as in-memory + LocalFs (finding V8).
+// The S3 driver must pass the SAME cold-source contract as in-memory + LocalFs.
 coldChunkSourceConformance('S3ColdDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);

@@ -4,7 +4,7 @@
  * Chunks are appended in **ascending chunkKey order**; the writer holds only the small index in memory
  * (offsets aren't known until payloads are written — which is exactly why the index is a footer).
  *
- * **Encryption (Phase 4e, opt-in via `crypto`).** When a {@link CrbmCrypto} is supplied, each chunk payload is
+ * **Encryption (opt-in via `crypto`).** When a {@link CrbmCrypto} is supplied, each chunk payload is
  * AES-256-GCM-sealed (`nonce ‖ ciphertext ‖ tag`, AAD = its chunkKey) and the whole index is sealed too (its
  * nonce/tag go in the footer). The footer then sets `FLAG_ENCRYPTED` and **zeroes `chunkCount` +
  * `totalCardinality`** so a leaked object reveals neither how many chunks nor how many ids it holds — the

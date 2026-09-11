@@ -103,7 +103,7 @@ for await (const file of dts(dist)) {
   await writeFile(file, out);
 }
 
-// Fuzz-only bundles (test-strategy T3) — into the repo-root fuzz/build, never into dist/.
+// Fuzz-only bundles — into the repo-root fuzz/build, never into dist/.
 const fuzzEntry =
   short === 'core'
     ? 'src/testing/fuzz-core.ts'

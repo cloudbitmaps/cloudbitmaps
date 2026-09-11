@@ -11,7 +11,7 @@ const ticking = (): (() => number) => {
   return () => (t += 1);
 };
 
-// Every IRegistryDriver must pass the same contract (finding V8).
+// Every IRegistryDriver must pass the same contract.
 registryConformance('MemoryRegistryDriver', () => new MemoryRegistryDriver({ now: ticking() }));
 
 let root: string;

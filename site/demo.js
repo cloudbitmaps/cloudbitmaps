@@ -124,9 +124,9 @@
    *
    * So the comparison is shown twice, at two scales, each timed to its own:
    *
-   *   Phase A — the INSET, 40 keys at roughly 90ms each. Slow enough to watch cells light one at a time,
+   *   Step A — the INSET, 40 keys at roughly 90ms each. Slow enough to watch cells light one at a time,
    *             cross the boundary at key 100, and stop being cyan. This is where a reader learns WHY.
-   *   Phase B — the AXIS, all 4,000 keys. The "compared" counter climbs to 4,000 while "aligned" holds at
+   *   Step B — the AXIS, all 4,000 keys. The "compared" counter climbs to 4,000 while "aligned" holds at
    *             100, which now reads as a conclusion rather than a number that appeared.
    *
    * Both are linear. Easing a playhead across a measured axis would imply the comparison itself sped up and

@@ -56,7 +56,7 @@ describe('GcsColdDriver construction', () => {
   });
 });
 
-// ── write-once, proven WITHOUT the emulator (reviewer FIX-FIRST #3) ─────────────────────────────────────
+// ── write-once, proven WITHOUT the emulator ─────────────────────────────────────
 // A fake `Storage` records the upload options the driver sends and lets us inject the outcome, so we prove
 // the driver (a) sends `ifGenerationMatch: 0` and (b) maps 412 → WriteConflictError / 5xx → TransientError on
 // BOTH the simple (`save`, small objects) and resumable (`createWriteStream`, large objects) paths — the

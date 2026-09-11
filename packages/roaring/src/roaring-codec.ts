@@ -1,6 +1,6 @@
 /**
  * SafeBitmap — the thin wrapper around the `roaring` (CRoaring) engine that owns the
- * untrusted-bytes boundary (finding S1).
+ * untrusted-bytes boundary.
  *
  * All (de)serialization uses the **portable** format — the stable, validated one. The
  * `unsafe_frozen_*` formats are never used (they are explicitly documented as crash/attack

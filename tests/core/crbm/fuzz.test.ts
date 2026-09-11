@@ -5,7 +5,7 @@ import { BufferSink, BufferReader } from '@/core/blob';
 import { CloudRoaringError } from '@/core/errors';
 
 /**
- * Fuzz the untrusted-bytes boundary (finding V7). Every byte a reader sees is attacker-controlled, so
+ * Fuzz the untrusted-bytes boundary. Every byte a reader sees is attacker-controlled, so
  * the contract is: parsing/reading arbitrary or corrupted bytes either succeeds with self-consistent
  * data, or fails with a **typed** `CloudRoaringError` — never an uncaught `RangeError`, infinite loop,
  * or native crash.

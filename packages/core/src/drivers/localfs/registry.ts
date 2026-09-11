@@ -1,5 +1,5 @@
 /**
- * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver} (Phase 4c).
+ * `LocalFsRegistryDriver` — a zero-cloud, persistent {@link IRegistryDriver}.
  *
  * One JSON file per segment at `<root>/<namespace>/registry/<segment>.reg`, holding `{ deleted, record }`.
  * OCC: the token is a monotonic counter (stringified), advanced on every mutation and

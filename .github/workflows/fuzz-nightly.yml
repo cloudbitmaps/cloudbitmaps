@@ -1,10 +1,10 @@
 name: Fuzz (nightly + weekly deep)
 
-# Coverage-guided fuzzing of the untrusted-bytes boundary (test-strategy T3).
+# Coverage-guided fuzzing of the untrusted-bytes boundary.
 # Runs NIGHTLY (10 min/target) AND a WEEKLY DEEP soak (60 min/target) — plus on demand — NOT on every PR:
 # fuzzing is a time-budgeted campaign, not a pass/fail gate. The corpus is cached + accretive across runs, so the
-# untrusted-input surface is exercised far beyond any single nightly budget (Phase 8: "toward continuous"; the
-# fully-continuous OSS-Fuzz / ClusterFuzzLite lane is documented as the post-go-public step —).
+# untrusted-input surface is exercised far beyond any single nightly budget. A fully-continuous
+# OSS-Fuzz / ClusterFuzzLite lane remains the step after this one.
 # The deterministic replay of found crashes lives in the normal test suite (tests/core/crbm/fuzz-corpus.test.ts),
 # which DOES gate every PR, so a fixed bug stays fixed without paying fuzz time per push.
 

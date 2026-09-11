@@ -1,5 +1,5 @@
 /**
- * Audit sink (Phase 5d) — an injected, no-op-by-default seam for **security/compliance** events, distinct
+ * Audit sink — an injected, no-op-by-default seam for **security/compliance** events, distinct
  * from the metrics sink (5a). Different audience (an audit log / SIEM, not a dashboard), different retention,
  * and only the compliance-relevant *state changes* — never routine reads/writes (that's the metrics sink).
  * It doubles as the GDPR Art. 30 "record of processing" surface: publishes, rewrites, and erasures.

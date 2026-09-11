@@ -42,7 +42,7 @@ async function members(
   return out;
 }
 
-describe('CrbmColdChunkSource — encryption end-to-end (Phase 4e)', () => {
+describe('CrbmColdChunkSource — encryption end-to-end', () => {
   it('bulk-loads encrypted, stores the wrapped DEK, and reads back with the keystore', async () => {
     const { cold, registry } = world();
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });

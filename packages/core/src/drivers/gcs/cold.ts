@@ -1,5 +1,5 @@
 /**
- * `GcsColdDriver` — an {@link IColdDriver} over Google Cloud Storage (Phase 7).
+ * `GcsColdDriver` — an {@link IColdDriver} over Google Cloud Storage.
  *
  * Uses the official `@google-cloud/storage`, an **optional peer dependency** — only consumers of
  * `@cloudbitmaps/roaring/gcs` install it. The `Storage` client is **injected** (dependency injection): the driver owns

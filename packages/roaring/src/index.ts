@@ -493,7 +493,7 @@ export class CloudRoaring {
     };
   }
 
-  /** Get a handle to a segment. Validates the name/namespace grammar (finding S2). */
+  /** Get a handle to a segment. Validates the name/namespace grammar. */
   segment(name: string, options?: SegmentOptions): Segment {
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);

@@ -1,5 +1,5 @@
 /**
- * Internal surface for the coverage-guided fuzz harness (test-strategy T3), CODEC half.
+ * Internal surface for the coverage-guided fuzz harness, CODEC half.
  *
  * Only the concrete bitmap codec lives here — the core half (`CrbmReader`, the non-public `parseIndex`,
  * `BufferReader`, `CloudRoaringError`, `DEFAULT_MAX_PAYLOAD_BYTES`) is built from `@cloudbitmaps/core`'s own

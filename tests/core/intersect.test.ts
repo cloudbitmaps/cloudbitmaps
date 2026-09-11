@@ -40,7 +40,7 @@ function fakeClock(): Clock & { advance: (ms: number) => void } {
   return { now: () => t, sleep: () => Promise.resolve(), advance: (ms) => (t += ms) };
 }
 
-describe('chunk-skipping intersection (Phase 3a)', () => {
+describe('chunk-skipping intersection', () => {
   it('returns the set-intersection, ascending', async () => {
     const { store, seed } = harness();
     seed('a', [1, 2, 3, 100, 200_000]);

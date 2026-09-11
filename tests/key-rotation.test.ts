@@ -11,7 +11,7 @@ import { KeyUnavailableError } from '@/core/errors';
 import type { IKeystore, SegmentRef } from '@/index';
 
 /**
- * End-to-end KEK rotation (test-strategy T6).
+ * End-to-end KEK rotation.
  *
  * `tests/drivers/crypto.test.ts` proves KEK rotation at the keystore primitive (a DEK wrapped under the old
  * KEK still unwraps after `activeKeyId` moves). This proves the SAME rotation survives the whole stack —

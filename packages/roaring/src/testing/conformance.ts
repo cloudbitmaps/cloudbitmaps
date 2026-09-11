@@ -1,5 +1,5 @@
 /**
- * Shared driver conformance suite (finding V8).
+ * Shared driver conformance suite.
  *
  * A backend is only "supported" once it's green here. Every `ColdChunkSource` / `IRegistryDriver`
  * implementation — first-party (in-memory, LocalFs) and community — runs the **same** contract tests via
@@ -8,8 +8,8 @@
  * produces a fresh, isolated driver per call.
  *
  * An **in-repo** SDK helper for now: consumed by this repo's tests via the `@/` path alias. Publishing it
- * as a `./testing` package subpath (with `vitest` as a peerDependency) is deferred to Phase 7, when the
- * first external/community driver lands (YAGNI). It is never imported by the library entry point, so it
+ * as a `./testing` package subpath (with `vitest` as a peerDependency) is deferred until the first
+ * external or community driver lands (YAGNI). It is never imported by the library entry point, so it
  * stays out of the published runtime bundle either way.
  */
 import { describe, expect, it } from 'vitest';
@@ -80,7 +80,7 @@ export function coldChunkSourceConformance(
       expect(await source.listChunkKeys({ segment: 'ghost' })).toEqual([]);
     });
 
-    it('rejects traversal / invalid names (D7)', async () => {
+    it('rejects traversal / invalid names', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of BAD_NAMES) {
         await expectValidationReject(source.getChunk({ segment: name, chunkKey: 0 }));
@@ -117,7 +117,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(makeDriver().capabilities().strongRead).toBe(true);
     });
 
-    it('create, read back the full record, then CAS with the token (R1)', async () => {
+    it('create, read back the full record, then CAS with the token', async () => {
       const d = makeDriver();
       expect(await d.get(SEG)).toBeNull();
       const { token: t0 } = await d.create(SEG, {
@@ -146,13 +146,13 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(rec2!.createdAt).toBe(rec!.createdAt); // createdAt preserved across CAS
     });
 
-    it('rejects create when the row exists (R1)', async () => {
+    it('rejects create when the row exists', async () => {
       const d = makeDriver();
       await d.create(SEG, { currentGen: 0 });
       await expect(d.create(SEG, { currentGen: 1 })).rejects.toBeInstanceOf(WriteConflictError);
     });
 
-    it('rejects a stale-token CAS and leaves the record unchanged (R2)', async () => {
+    it('rejects a stale-token CAS and leaves the record unchanged', async () => {
       const d = makeDriver();
       const { token: t0 } = await d.create(SEG, { currentGen: 0 });
       await d.compareAndSwap(SEG, t0, { currentGen: 1 });
@@ -235,7 +235,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(rec!.residency).toEqual({ region: 'eu' });
     });
 
-    it('rejects an unknown status and a non-serializable governance blob (R7)', async () => {
+    it('rejects an unknown status and a non-serializable governance blob', async () => {
       const d = makeDriver();
       await expectValidationReject(d.create(SEG, { currentGen: 0, status: 'bogus' as 'active' }));
       await expectValidationReject(
@@ -246,7 +246,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       );
     });
 
-    it('never reuses a token across delete→recreate (ABA-safe, R3)', async () => {
+    it('never reuses a token across delete→recreate (ABA-safe)', async () => {
       const d = makeDriver();
       const { token: t0 } = await d.create(SEG, { currentGen: 0 });
       await d.delete(SEG);
@@ -277,7 +277,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await drainSegments(d.list(undefined))).sort()).toEqual(['a', 'c']);
     });
 
-    it('rejects a negative / non-integer currentGen (R7)', async () => {
+    it('rejects a negative / non-integer currentGen', async () => {
       const d = makeDriver();
       for (const bad of [-1, 1.5, NaN]) {
         await expectValidationReject(d.create(SEG, { currentGen: bad }));
@@ -286,12 +286,12 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: -5 }));
     });
 
-    // R8 — `currentGen: null` ("this segment exists and has no Cold generation yet") is a first-class stored
+    // `currentGen: null` ("this segment exists and has no Cold generation yet") is a first-class stored
     // value, not a missing field. It is what lets a retention policy be recorded ahead of the first load, so every driver must
     // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
     // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
     // would leave the pointer at the old generation and read stale Cold data no one asked for.
-    it('round-trips a null currentGen through create, list, and CAS in both directions (R8)', async () => {
+    it('round-trips a null currentGen through create, list, and CAS in both directions', async () => {
       const d = makeDriver();
       const { token: t0 } = await d.create(SEG, { currentGen: null, retention: { expiresAt: 42 } });
       const rec = await d.get(SEG);
@@ -323,10 +323,10 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(after!.keyId).toBe('k7');
     });
 
-    // R9 — a `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
+    // A `destroyed` tombstone is still a record. `list()` must yield it: `runConsistencyCheck` skips
     // tombstones itself, and the retention sweep can only clean up a dead row it can *see* — a driver that filters
     // by status turns that cleanup into a permanent silent no-op while rows accumulate forever.
-    it('yields destroyed tombstones from list(), and refuses an undefined currentGen patch (R9)', async () => {
+    it('yields destroyed tombstones from list(), and refuses an undefined currentGen patch', async () => {
       const d = makeDriver();
       const { token } = await d.create(SEG, { currentGen: 0 });
       await d.compareAndSwap(SEG, token, { status: 'destroyed' });
@@ -344,7 +344,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect((await live.get(SEG))!.currentGen).toBe(3); // and the pointer is untouched
     });
 
-    it('rejects traversal / invalid names on every method (R7)', async () => {
+    it('rejects traversal / invalid names on every method', async () => {
       const d = makeDriver();
       for (const name of BAD_NAMES) {
         await expectValidationReject(d.get({ segment: name }));

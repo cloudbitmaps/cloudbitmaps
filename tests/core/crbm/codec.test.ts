@@ -46,14 +46,14 @@ function patchFooter(
   return copy;
 }
 
-describe('CrbmWriter/CrbmReader round-trip (F1, F2)', () => {
+describe('CrbmWriter/CrbmReader round-trip', () => {
   it('reads back every chunk identically and reports the right metadata', async () => {
     const bytes = await build(SAMPLE, 42);
     const reader = await CrbmReader.open(new BufferReader(bytes));
 
     expect(reader.generation).toBe(42);
     expect(reader.chunkKeys()).toEqual([0, 5, 65_535]);
-    expect(reader.count()).toBe(2 + 1 + 65_536); // F2: Σ cardinality == total
+    expect(reader.count()).toBe(2 + 1 + 65_536); // Σ cardinality == total
     expect(reader.has(5)).toBe(true);
     expect(reader.has(1)).toBe(false);
     expect(await reader.getChunk(999)).toBeNull();
@@ -92,7 +92,7 @@ describe('writer input validation', () => {
   });
 });
 
-describe('untrusted bytes (F3, F4)', () => {
+describe('untrusted bytes', () => {
   it('catches a flipped payload byte by CRC before returning it', async () => {
     const bytes = await build(SAMPLE);
     bytes[PAYLOAD_START] = bytes[PAYLOAD_START]! ^ 0xff; // corrupt the first payload byte
@@ -134,7 +134,7 @@ describe('untrusted bytes (F3, F4)', () => {
   });
 });
 
-describe('speculative tail read (F5)', () => {
+describe('speculative tail read', () => {
   it('returns identical results whether the index is in the tail or fetched separately', async () => {
     const bytes = await build(SAMPLE);
     const big = await CrbmReader.open(new BufferReader(bytes), { tailBytes: 1 << 20 });
@@ -149,7 +149,7 @@ describe('speculative tail read (F5)', () => {
   });
 });
 
-describe('version & feature gating (F7)', () => {
+describe('version & feature gating', () => {
   it('rejects an unknown major version', async () => {
     const bytes = patchFooter(await build(SAMPLE), (_view, footer) => {
       footer[FOOTER.versionMajor] = 2;
@@ -207,7 +207,7 @@ describe('reader hardening', () => {
     await expect(CrbmReader.open(new BufferReader(bytes))).rejects.toBeInstanceOf(IntegrityError);
   });
 
-  it('does the second GET when the index straddles the tail boundary (F5)', async () => {
+  it('does the second GET when the index straddles the tail boundary', async () => {
     const many: Chunk[] = Array.from({ length: 12 }, (_v, i) => ({
       chunkKey: i * 100,
       payload: Uint8Array.from({ length: 20 }, (_x, j) => (i + j) & 0xff),

@@ -46,29 +46,29 @@ export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
   /**
    * Optional {@link IRegistryDriver}. When provided, the current generation is resolved via the registry's
    * authoritative `currentGen` (one cheap strong read) instead of a `list` scan of every generation — the
-   * Phase-4c retirement of that scan. When absent, the source falls back to the `list`-scan (so the
+   * retirement of that scan. When absent, the source falls back to the `list`-scan (so the
    * in-memory / simple setups keep working with no registry). The resolved generation is cached and
    * **re-resolved on a short TTL** ({@link currentGenTtlMs}, needs a {@link clock}) so a long-lived source
    * observes a load's new generation within the TTL instead of pinning one generation forever.
    */
   readonly registry?: IRegistryDriver;
   /**
-   * Optional {@link IKeystore} for reading **encrypted** segments (Phase 4e). When a segment's registry record
+   * Optional {@link IKeystore} for reading **encrypted** segments. When a segment's registry record
    * carries wrapped DEK(s), the source unwraps the DEK via this keystore and decrypts each chunk/index. Reading
    * an encrypted segment without a keystore throws {@link KeyUnavailableError}; cleartext segments ignore it.
    * Requires a `registry` (that's where the wrapped DEKs live).
    */
   readonly keystore?: IKeystore;
   /**
-   * Enforce that every segment read is encrypted (Phase 4e). When true, resolving a **cleartext** segment (no
+   * Enforce that every segment read is encrypted. When true, resolving a **cleartext** segment (no
    * wrapped DEKs) throws {@link KeyUnavailableError} — a guard against silently reading a segment that should
    * have been encrypted. Off by default (encryption is opt-in).
    */
   readonly requireEncryption?: boolean;
   /**
-   * Time source for the current-generation TTL refresh (gap #4) — the determinism seam; `core/` never reads
+   * Time source for the current-generation TTL refresh — the determinism seam; `core/` never reads
    * ambient time. Refresh needs **both** a clock and a `registry`; without either the source **pins** the
-   * first-resolved generation for its lifetime (the pre-Phase-B behaviour). The `CloudRoaring` facade passes its
+   * first-resolved generation for its lifetime (the behaviour before the registry was wired in). The `CloudRoaring` facade passes its
    * clock automatically, so wiring a `registry` is enough to get live cross-generation invalidation.
    */
   readonly clock?: Pick<Clock, 'now'>;
@@ -81,14 +81,14 @@ export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
   readonly currentGenTtlMs?: number;
   /**
    * Hard ceiling on how many segments' readers (each holding a fully-parsed `.crbm` index) are cached at once
-   * (default 1024) — a memory bound for a long-running server (gap #1). Past it, the least-recently-used
+   * (default 1024) — a memory bound for a long-running server. Past it, the least-recently-used
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
    * generations are immutable). Raise it for a big hot working set of small segments.
    */
   readonly maxOpenSegments?: number;
   /**
    * Aggregate byte ceiling on the parsed `.crbm` indices resident in the reader cache (default 64 MiB) — the
-   * **second half of the gap #1 fix**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
+   * **second half of that memory bound**. `maxOpenSegments` alone bounds by *count*, but a wide/dense segment's
    * parsed index can be several MB, so 1024 wide indices could pin ~GBs and blow a small heap (e.g. a 128 MB
    * Lambda) while the count is nominally "in bounds". This caps the summed {@link CrbmReader.retainedIndexBytes}
    * across cached readers; the least-recently-used reader is evicted once the total would exceed it — whichever
@@ -113,7 +113,7 @@ function coldBlobReader(driver: IColdDriver, key: GenKey): BlobReader {
 /** The generation target `resolveTarget` produces: which generation is current + its DEK wrappings (if encrypted). */
 type Target = { generation: number; wrappedDeks?: readonly WrappedDek[] };
 
-/** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh (gap #4). */
+/** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh. */
 interface Snapshot {
   readonly reader: Promise<CrbmReader | null>;
   readonly installedAtMs: number;
@@ -147,12 +147,12 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * needs a clock). Within the TTL a segment's Cold bytes are treated as an immutable snapshot; when the TTL
    * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
    * opens the new generation — so a long-lived source observes new generations within the TTL rather than
-   * pinning one forever (gap #4). The engine pairs this with a **generation-keyed** HOT cache so a bump never
+   * pinning one forever. The engine pairs this with a **generation-keyed** HOT cache so a bump never
    * serves a stale decoded chunk. Without a clock or a registry the source pins the first generation for its
-   * lifetime (pre-Phase-B behaviour). A segment with no generation yet is not memoized, so it's re-checked until
+   * lifetime (the behaviour before the registry was wired in). A segment with no generation yet is not memoized, so it's re-checked until
    * one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmColdChunkSourceOptions.maxOpenSegments}, default
    * 1024): past the ceiling the least-recently-used segment's reader (and its parsed index) is evicted — the
-   * steady-state memory bound (gap #1); re-opening an evicted segment is one cheap tail GET.
+   * steady-state memory bound; re-opening an evicted segment is one cheap tail GET.
    */
   private readonly snapshots: BoundedLru<string, Snapshot>;
   private readonly registry: IRegistryDriver | undefined;
@@ -195,7 +195,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     this.readerOptions = readerOptions;
     this.clock = clock;
     this.currentGenTtlMs = currentGenTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS;
-    // Bound the reader cache by BOTH count and aggregate parsed-index bytes (gap #1). No TTL on the LRU itself —
+    // Bound the reader cache by BOTH count and aggregate parsed-index bytes. No TTL on the LRU itself —
     // the currentGen TTL is handled separately via each snapshot's `installedAtMs`; these ceilings only bound how
     // many segment readers/indices stay resident. Each reader's byte weight is reported once it resolves (below).
     // The cache never compares against wall-clock, so a zero clock is fine when none is injected.
@@ -206,7 +206,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     });
   }
 
-  /** The current resolved reader for a segment, refreshing on the TTL (gap #4). Cheap within the TTL window. */
+  /** The current resolved reader for a segment, refreshing on the TTL. Cheap within the TTL window. */
   private resolvedReader(ref: SegmentRef): Promise<CrbmReader | null> {
     const key = segmentKey(ref);
     const existing = this.snapshots.get(key);
@@ -254,7 +254,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
         forgetIfStale();
         return;
       }
-      // Report the parsed index's footprint so the cache can bound aggregate resident bytes (gap #1). Identity-
+      // Report the parsed index's footprint so the cache can bound aggregate resident bytes. Identity-
       // guarded via `peek` (no recency change) so a since-replaced snapshot doesn't mis-weight the fresh entry.
       if (this.snapshots.peek(key) === snap) this.snapshots.setWeight(key, r.retainedIndexBytes);
     }, forgetIfStale);

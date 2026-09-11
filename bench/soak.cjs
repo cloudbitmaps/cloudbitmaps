@@ -1,5 +1,5 @@
 /*
- * Soak / endurance harness (test-strategy T1) — the LOADED store under sustained mixed load.
+ * Soak / endurance harness — the LOADED store under sustained mixed load.
  *
  * bench/scale.cjs proves the memory bound as a *snapshot* (read a whole fleet once → flat retained heap). Soak
  * proves it over *time*: a store under **sustained mixed load** — point reads across the population (`has`,

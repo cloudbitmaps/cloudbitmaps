@@ -1,5 +1,5 @@
 /**
- * Segment retention policy (Phase 6) — **when** a segment becomes eligible for retirement.
+ * Segment retention policy — **when** a segment becomes eligible for retirement.
  *
  * This module only *records and reads the intent*. Nothing here deletes anything, and nothing here runs on a
  * timer: setting a policy is one registry write, and the sweep that acts on it (`retireExpired`) is a separate
