@@ -115,6 +115,7 @@ resolve. Branch on it if two writers can target one segment; the orphan is colle
 | `seg.andNot([sup, …], { concurrency?, budget? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, but each exclude **only where it overlaps** |
 | `seg.intersectInto(dest, [other, …], opts?)` · `seg.unionInto(dest, [other, …], opts?)` · `seg.andNotInto(dest, [sup, …], opts?)` → `Promise<MaterializeResult>` | materialize the result as a **new generation of `dest`** — `dest`'s previous contents are superseded, not added to. Streaming, bounded memory, published forward-only, so readers of `dest` see the old generation or the new one, never a partial. An empty result publishes an empty generation, **except** that a call involving an expired handle is refused (`ValidationError`) rather than wiping `dest`. Throws `WriteConflictError` if a concurrent writer publishes a higher generation of `dest` first, rather than returning a generation that never became current. `opts.audit` emits `segment.publish` for the generation it lands. Needs a raw cold driver + registry |
 | `seg.costReport({ pricing?, workload? })` → `Promise<CostReport>` | grounded $ report from the segment's **real** `.crbm` size (no payload reads) |
+| `seg.pin()` → `Promise<PinnedSegment>` | **take a snapshot**: resolve the current generation once and return a handle that reads from exactly that generation, whatever is published afterwards. For a job that must describe one instant — a send, an export, a reconciliation — where an ordinary handle re-resolves on `coldGenTtlMs` and its second half can disagree with its first. `snap.generation` is the instant it names (`null` if the segment had none, in which case it reads empty for the handle's lifetime). Re-pin the **unpinned** handle to move forward; pinning a pinned one returns itself. **Not a lock** — nothing stops GC collecting the pinned generation, and a read then fails rather than silently serving a different one, so size the grace window (`keep`, `minAgeMs`) to outlast the job |
 | `seg.expiresAt` | the handle's deadline, if one was declared |
 
 That's the whole daily surface: **1 constructor + a cold driver + a registry + one load function + these verbs.**
@@ -210,7 +211,7 @@ The option / result types the public methods above reference — you import thes
 
 ### Construction & result types
 
-`CloudRoaringOptions` · `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
+`CloudRoaringOptions` · `SegmentOptions` · `PinnedSegment` (a `Segment` locked to one generation — what `seg.pin()` returns; adds `generation: number | null`) · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
 `EraseSubjectResult` · `MaterializeResult` (`{ generation, cardinality, chunkCount, size }` — what an `*Into` verb
 wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurrent? }` — `becameCurrent` is absent with no `registry`, and `false` means the object is durable but a concurrent writer published a higher generation first, so the load did not take effect)
 
@@ -222,7 +223,7 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 
 ### Generation bookkeeping & erasure
 
-`GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `EraseIdDeps` ·
+`GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `PinnedColdSource` (`{ generation, source }` — what a cold source's optional `pinGeneration` returns) · `EraseIdDeps` ·
 `EraseIdResult` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult`
 
 ### Retention

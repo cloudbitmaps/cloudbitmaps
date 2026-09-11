@@ -48,6 +48,7 @@ Where each piece sits today:
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The measured numbers on the [benchmarks page](benchmarks.md) are the S3-side figures of the July 2026 calibration run |
+| `minAgeMs` on generation GC (a time floor a publish burst cannot outrun) and `segment.pin()` (a snapshot at one generation) | **shipped** |
 | The empty-load guard and `load()` with `allowEmpty` / `guard` / rollback — covering the `*Into` verbs too | **next** |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |

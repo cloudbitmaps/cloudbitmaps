@@ -531,6 +531,36 @@ become pinned to one, and waiting would only keep paying for objects nobody can 
 likewise passes no floor — its contract is that the bit is gone when the call returns, so it cannot wait one
 out.
 
+### `pin()` — the other side of the same coin
+
+The grace window exists for readers that resolved a generation and are still using it. `pin()` is how you
+become such a reader **deliberately**:
+
+```ts
+const snap = await store.segment('audience').pin();
+snap.generation;                                   // the instant this handle describes
+for await (const id of snap.iterate()) { /* … */ } // a publish here changes nothing `snap` sees
+```
+
+An ordinary handle re-resolves the pointer every `coldGenTtlMs` (2 s by default). That is right for a point
+query and wrong for a job that has to describe one instant — a send, an export, a reconciliation — because a
+load landing part-way through means the second half of the job saw a different set than the first, and nothing
+in the result says so. A pinned handle resolves once and never again.
+
+- **Re-pin the unpinned handle to move forward.** A pinned handle never advances on its own, and pinning one
+  again returns the same snapshot.
+- **A segment with no generation pins to `null`** and reads empty for that handle's lifetime, even if a load
+  lands a second later. A snapshot of "nothing yet" is an answer; adopting the first generation to appear
+  would make one handle describe two instants.
+- **It shares the store's hot cache.** The cache is keyed by generation and a pinned handle reports its pinned
+  number, so pinned and unpinned reads of the same generation reuse the same decoded chunks.
+
+**A pin is not a lock.** Nothing about it stops `gcOrphanGenerations` from collecting the generation it names.
+If that happens mid-job the read **fails** rather than healing forward onto the current generation — an
+unpinned read does heal, and a pinned one must not, because silently serving a different generation is exactly
+what the caller pinned to prevent. So the two halves of this section are one decision: pin for a stable read,
+and size the window (`keep`, and `minAgeMs` for a floor a publish burst cannot outrun) to outlast the job.
+
 **Read staleness, restated for the whole picture.** With a registry, a store notices a new generation within
 `coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a stale decoded chunk
 for a new generation. Within one read op the generation is resolved once. A `count()` is a single index read, so

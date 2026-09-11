@@ -33,6 +33,7 @@ import type {
   GenKey,
   IColdDriver,
   IRegistryDriver,
+  PinnedColdSource,
   SegmentRef,
   SegmentSize,
 } from './ports';
@@ -381,6 +382,32 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
+   * A **snapshot** of one segment: resolve its current generation once, now, and return a source that serves
+   * every read from exactly that generation for as long as it is used.
+   *
+   * The difference from an ordinary read is what happens underneath. This source re-resolves `currentGen` on a
+   * short TTL, so a publish part-way through a long job means its second half reads a different set than its
+   * first — fine for a point query, wrong for a send, an export or a batch that must describe one instant.
+   *
+   * A segment with no committed generation pins to `null` and reads empty **forever**, even if a load lands a
+   * moment later. That is the guarantee, not a gap: a snapshot of "nothing yet" is a real answer, and silently
+   * adopting the first generation to appear would make the handle describe two different instants.
+   *
+   * The snapshot is only as durable as the objects behind it. It holds no lock — nothing here can stop
+   * `gcOrphanGenerations` from collecting the generation it names, and when that happens a read fails loudly
+   * rather than healing forward onto the current generation (see {@link withFreshSnapshot}, which does heal,
+   * and must not here: silently serving a different generation is precisely what a pin exists to prevent).
+   * Size the grace window to outlast the job — `keep`, and `minAgeMs` for a floor a publish burst cannot
+   * outrun.
+   */
+  async pinGeneration(ref: SegmentRef): Promise<PinnedColdSource> {
+    validateSegmentRef(ref);
+    const target = await this.resolveTarget(ref);
+    const source = new PinnedCrbmColdSource(ref, target, (t) => this.openForTarget(ref, t));
+    return { generation: target?.generation ?? null, source };
+  }
+
+  /**
    * Run `read` against the pinned snapshot, healing the one torn-read window generation GC can open: if the
    * generation we pinned was superseded *and* swept (the grace window elapsed) mid-read, the Cold driver throws
    * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
@@ -412,6 +439,80 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       }
     }
     return ifGone;
+  }
+}
+
+/**
+ * One segment, locked to one generation — what {@link CrbmColdChunkSource.pinGeneration} hands back.
+ *
+ * Everything it does is a consequence of resolving once: the reader is opened at most once and memoized, no
+ * TTL is consulted, and `currentGeneration` answers the pinned number rather than the segment's. That last one
+ * matters beyond bookkeeping — the engine keys its HOT chunk cache by it, so a pinned read shares cache
+ * entries with any unpinned read of the same generation, and can never collide with a different one.
+ *
+ * It deliberately does **not** inherit the heal-forward retry: if the generation is swept mid-job the read
+ * throws, because a snapshot that quietly becomes a different snapshot is worse than one that ends.
+ */
+class PinnedCrbmColdSource implements ColdChunkSource {
+  private reader: Promise<CrbmReader | null> | undefined;
+
+  constructor(
+    private readonly pinnedRef: SegmentRef,
+    private readonly target: Target | null,
+    private readonly open: (target: Target) => Promise<CrbmReader | null>,
+  ) {}
+
+  /**
+   * A pinned source speaks for exactly one segment. The engine only ever passes the ref it was built for, so
+   * this fires on a wiring mistake — handing the source to another segment's read, where the alternative is
+   * silently serving one segment's bytes under another's name.
+   */
+  private check(ref: SegmentRef): void {
+    if (ref.segment !== this.pinnedRef.segment || ref.namespace !== this.pinnedRef.namespace) {
+      throw new ValidationError(
+        `pinned source is for segment "${this.pinnedRef.segment}" and was asked for "${ref.segment}"`,
+      );
+    }
+  }
+
+  private async at(ref: SegmentRef): Promise<CrbmReader | null> {
+    this.check(ref);
+    if (this.target === null) return null;
+    this.reader ??= this.open(this.target);
+    return this.reader;
+  }
+
+  async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
+    validateChunkRef(ref);
+    return (await this.at(ref))?.getChunk(ref.chunkKey) ?? null;
+  }
+
+  async listChunkKeys(ref: SegmentRef): Promise<number[]> {
+    validateSegmentRef(ref);
+    return (await this.at(ref))?.chunkKeys() ?? [];
+  }
+
+  async sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
+    validateSegmentRef(ref);
+    const reader = await this.at(ref);
+    return reader === null ? null : { sizeBytes: reader.sizeBytes };
+  }
+
+  async cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
+    validateSegmentRef(ref);
+    return (await this.at(ref))?.cardinalities() ?? null;
+  }
+
+  /** The pinned number, never a fresh resolution — this is what keys the engine's HOT cache. */
+  async currentGeneration(ref: SegmentRef): Promise<number | null> {
+    this.check(ref);
+    return this.target?.generation ?? null;
+  }
+
+  /** Pinning a pin is the same pin: it already names one generation and cannot move. */
+  async pinGeneration(ref: SegmentRef): Promise<PinnedColdSource> {
+    this.check(ref);
+    return { generation: this.target?.generation ?? null, source: this };
   }
 }
 

@@ -63,6 +63,26 @@ export interface ColdChunkSource {
    * refreshes may omit this — the engine then keys the cache without a generation.
    */
   currentGeneration?(ref: SegmentRef): Promise<number | null>;
+  /**
+   * Optional: a **snapshot** of one segment — a source that resolves the segment's current generation once,
+   * now, and then serves every read from exactly that generation for as long as it is used. `generation` is
+   * the number it settled on, or `null` if the segment had no committed generation at that instant (in which
+   * case the snapshot reads empty forever, even if a load lands a moment later — that is the guarantee).
+   *
+   * A long read over a changing set needs this: without it, every call re-resolves and a publish part-way
+   * through a send, an export or a batch means the second half of the work saw a different set than the first.
+   *
+   * A source with no notion of generations (an in-memory one) may omit it — nothing can change underneath such
+   * a source, so it is already its own snapshot.
+   */
+  pinGeneration?(ref: SegmentRef): Promise<PinnedColdSource>;
+}
+
+/** What {@link ColdChunkSource.pinGeneration} returns: the generation settled on, and a source locked to it. */
+export interface PinnedColdSource {
+  /** The generation every read of this source will use, or `null` if the segment had none when pinned. */
+  readonly generation: number | null;
+  readonly source: ColdChunkSource;
 }
 
 /** Capabilities a Cold driver advertises; validated at wiring time, fail-fast. */

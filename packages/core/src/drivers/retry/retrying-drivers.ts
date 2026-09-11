@@ -18,6 +18,7 @@
  * would re-apply against a stale token), and every deterministic error
  * (`ValidationError`/`IntegrityError`/`NotFoundError`/…). Default classifier: {@link isTransient}.
  */
+import type { PinnedColdSource } from '../../core/ports';
 import type { Clock, Rng } from '../../core/determinism';
 import { withRetry, isTransient, DEFAULT_RETRY_POLICY } from '../../core/retry';
 import type { RetryPolicy } from '../../core/retry';
@@ -79,6 +80,7 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   readonly sizeOf?: (ref: SegmentRef) => Promise<SegmentSize | null>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
+  readonly pinGeneration?: (ref: SegmentRef) => Promise<PinnedColdSource>;
 
   constructor(inner: ColdChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -98,6 +100,19 @@ export class RetryingColdChunkSource implements ColdChunkSource {
     if (innerCurrentGeneration) {
       this.currentGeneration = (ref) =>
         withRetry(() => innerCurrentGeneration.call(inner, ref), this.policy, this.deps);
+    }
+    const innerPin = inner.pinGeneration;
+    if (innerPin) {
+      // The snapshot the inner source returns is re-wrapped, so a pinned read retries transient faults exactly
+      // like an unpinned one. Without this a long job — the very thing a pin is for — would be the one read
+      // path with no resilience, which is backwards.
+      this.pinGeneration = async (ref) => {
+        const pinned = await withRetry(() => innerPin.call(inner, ref), this.policy, this.deps);
+        return {
+          generation: pinned.generation,
+          source: new RetryingColdChunkSource(pinned.source, opts),
+        };
+      };
     }
   }
 

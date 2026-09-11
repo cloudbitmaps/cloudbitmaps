@@ -399,6 +399,8 @@ interface LifecycleDeps {
 
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
+  /** Kept so a pinned handle can reuse the same cache, codec, clock, metrics and budget over a pinned source. */
+  private readonly engineDeps: EngineDeps;
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
@@ -457,6 +459,7 @@ export class CloudRoaring {
       budget: this.budget,
     };
     this.engine = new SegmentEngine(deps);
+    this.engineDeps = deps;
     this.clock = clock;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
@@ -520,6 +523,45 @@ export class CloudRoaring {
       this.metrics,
       (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
       expiresAt,
+      () => this.pinSegment(ref, expiresAt),
+    );
+  }
+
+  /**
+   * Build the pinned twin of a segment handle: the same wiring, over a cold source locked to whatever
+   * generation is current right now.
+   *
+   * The pinned engine **shares this store's HOT cache**, deliberately. The cache is keyed by generation, and a
+   * pinned source reports its pinned number, so a pinned read and an ordinary read of the same generation hit
+   * the same entries while a read of a different generation cannot collide. Giving the snapshot its own cache
+   * would double the memory ceiling the store was configured with and re-fetch chunks already decoded.
+   */
+  private async pinSegment(ref: SegmentRef, expiresAt: number | undefined): Promise<PinnedSegment> {
+    const { cold } = this.engineDeps;
+    if (cold.pinGeneration === undefined) {
+      // A source with no generations cannot move underneath a reader, so it is already its own snapshot: hand
+      // back a handle over the same engine rather than refusing. `generation` is null because there is no
+      // generation to name, not because the pin failed.
+      return new PinnedSegment(
+        this.engine,
+        ref,
+        this.clock,
+        this.metrics,
+        (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+        expiresAt,
+        null,
+      );
+    }
+    const pinned = await cold.pinGeneration(ref);
+    const engine = new SegmentEngine({ ...this.engineDeps, cold: pinned.source });
+    return new PinnedSegment(
+      engine,
+      ref,
+      this.clock,
+      this.metrics,
+      (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+      expiresAt,
+      pinned.generation,
     );
   }
 
@@ -998,8 +1040,41 @@ export class Segment {
     private readonly materialize: Materialize,
     /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
     readonly expiresAt?: number,
+    /** Injected by the store, which owns engine construction; absent on a handle that is already pinned. */
+    private readonly pinFactory?: () => Promise<PinnedSegment>,
   ) {
     this.metricsOn = metrics !== NOOP_METRICS;
+  }
+
+  /**
+   * Take a **snapshot**: resolve this segment's current generation once, and return a handle that reads from
+   * exactly that generation no matter what is published afterwards.
+   *
+   * An ordinary handle re-resolves the pointer on a short TTL, which is right for a point query and wrong for
+   * a job that has to describe one instant — a send, an export, a reconciliation, anything whose second half
+   * must agree with its first. Without a pin, a load landing mid-job means it does not.
+   *
+   * ```ts
+   * const snap = await store.segment('audience').pin();
+   * for await (const id of snap.iterate()) { ... }   // a publish here changes nothing `snap` sees
+   * snap.generation;                                  // the instant this handle describes
+   * ```
+   *
+   * Re-pinning is how you move: call `pin()` again on the unpinned handle to observe a newer generation. A
+   * pinned handle never advances on its own, and pinning one again returns the same snapshot.
+   *
+   * **A pin is not a lock.** Nothing here stops `gcOrphanGenerations` from collecting the generation it names;
+   * if that happens mid-job the read fails rather than quietly serving a different generation, which is the
+   * whole point. For a job that outlives the default grace window, widen it — `keep`, and `minAgeMs` for a
+   * floor no publish rate can outrun.
+   *
+   * A segment with no committed generation pins to `generation: null` and reads empty for this handle's
+   * lifetime, even if a load lands a moment later: a snapshot of "nothing yet" is an answer, and adopting the
+   * first generation to appear would make one handle describe two different instants.
+   */
+  async pin(): Promise<PinnedSegment> {
+    if (this.pinFactory === undefined) return this as unknown as PinnedSegment;
+    return this.pinFactory();
   }
 
   /**
@@ -1250,3 +1325,40 @@ export { SafeBitmap, roaringCodec } from './roaring-codec';
 
 /** Package version marker. Kept in sync with package.json at release. */
 export const VERSION = '0.9.0';
+
+/**
+ * A {@link Segment} locked to one generation — what {@link Segment.pin} returns.
+ *
+ * It is the same class of handle with the same verbs, over an engine whose cold source resolves once. The only
+ * additions are {@link generation}, the instant it describes, and the fact that {@link Segment.pin} on it
+ * returns itself: a snapshot of a snapshot is the same snapshot.
+ */
+export class PinnedSegment extends Segment {
+  constructor(
+    engine: SegmentEngine,
+    ref: SegmentRef,
+    clock: Clock,
+    metrics: IMetricsSink,
+    materialize: Materialize,
+    expiresAt: number | undefined,
+    /**
+     * The generation every read of this handle uses, or `null` if the segment had no committed generation when
+     * it was pinned (in which case it reads empty for as long as it is held).
+     */
+    readonly generation: number | null,
+  ) {
+    super(engine, ref, clock, metrics, materialize, expiresAt);
+  }
+
+  /**
+   * Already a snapshot: pinning it again is the same instant, so this is the identity.
+   *
+   * The base class reaches the same answer — a pinned handle is built without a pin factory, so `Segment.pin`
+   * also returns `this` — but that is a consequence of how it is constructed, not a stated rule, and a future
+   * change to the base could quietly turn a re-pin into a second, different snapshot. Saying it here makes it
+   * a property of the type.
+   */
+  override async pin(): Promise<PinnedSegment> {
+    return this;
+  }
+}

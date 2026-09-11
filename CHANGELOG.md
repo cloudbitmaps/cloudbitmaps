@@ -70,6 +70,36 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   and now live beside `drainRegistry`.
 
 ### Added
+- **`segment.pin()` — a snapshot of one segment at one generation.** An ordinary handle re-resolves the
+  pointer every `coldGenTtlMs`, which is right for a point query and wrong for a job that must describe a
+  single instant: a send, an export, a reconciliation, anything whose second half has to agree with its
+  first. Today that stability is a side effect of cache timing; `pin()` makes it a guarantee. The handle
+  reports the `generation` it names, re-pinning the unpinned handle moves forward, and pinning a pinned one
+  returns itself. A segment with no generation pins to `null` and reads empty for that handle's lifetime — a
+  snapshot of "nothing yet" is an answer, and adopting the first generation to appear would make one handle
+  describe two instants. It shares the store's hot cache, which is keyed by generation, so pinned and
+  unpinned reads of the same generation reuse the same decoded chunks. **A pin is not a lock:** nothing stops
+  GC collecting the generation it names, and a read then fails rather than healing forward onto a different
+  one — silently serving another generation is what the caller pinned to prevent. Size the grace window to
+  outlast the job.
+- **`gcOrphanGenerations` takes `minAgeMs`** — the time half of the grace window, and the half that actually
+  protects a reader. `keep` counts generations, and a burst of publishes walks a generation out of a
+  count-based window while it is still being read: with `keep: 1`, publishing twice in quick succession makes
+  the generation a reader resolved seconds ago collectable. `minAgeMs` refuses to collect anything until the
+  pointer has been still that long, so no publish rate can outrun it; the two compose, and a generation goes
+  only when it is both outside `keep` and older than the floor. Requires `now` (epoch-ms) rather than
+  defaulting it, because core reads no clock and a default of `0` would silently switch the guard off.
+- **`RegistryRecord.currentGenSince`** — the instant `currentGen` last **changed**, stamped only on a pointer
+  move, which is the clock `minAgeMs` measures. Deliberately not the stored object's age: a generation
+  written a week ago but superseded one second ago is precisely the one a reader is still on, and object age
+  (what Iceberg's `expire_snapshots older_than` and Delta's `VACUUM` use) reports it as safe to delete.
+  Equally not `updatedAt`, which any patch moves — if setting a retention policy reset the clock, a segment
+  whose policy is touched on a schedule would never become collectable. Optional, so rows written by older
+  builds and third-party registry drivers keep working; absent means **unknown** age, not infinite, so such a
+  segment collects nothing until its next publish stamps the field.
+- **`ColdChunkSource.pinGeneration`** (optional) and the `PinnedColdSource` / `PinnedSegment` types — the seam
+  `pin()` is built on. A source with no notion of generations may omit it: nothing can change underneath such
+  a source, so it is already its own snapshot.
 - **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
   eight citation forms. This surface had drifted **twice**: a `0.9.x` release removed internal citations from
   shipped code comments, and they came back. Nothing could see them in between — `leak-scan` checks
