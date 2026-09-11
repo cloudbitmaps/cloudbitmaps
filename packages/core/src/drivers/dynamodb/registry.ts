@@ -275,6 +275,7 @@ function serializeBody(record: RegistryRecord): string {
     segment: record.segment,
     currentGen: record.currentGen,
     currentGenSince: record.currentGenSince,
+    previousGen: record.previousGen,
     wrappedDeks: record.wrappedDeks,
     keyId: record.keyId,
     status: record.status,

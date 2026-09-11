@@ -515,8 +515,14 @@ per-generation dating is what avoids it:
 |---|---|---|
 | generation 0 | 70 h ago | collected |
 | generation 45 | 25 h ago | collected |
-| generation 46 | 23 h ago | kept |
+| generation 46 | 24 h ago exactly | collected — the floor is inclusive |
+| generation 47 | 23 h ago | kept |
 | generation 71 | — (current) | never touched |
+
+A generation the pointer **skipped** — an object from a load that crashed before publishing, which the next
+publish numbered past — was never current, so no reader can ever have resolved it. Those are collected without
+waiting out the floor. The registry records which generation the pointer moved off, so a skipped one is never
+mistaken for the generation it sits above.
 
 Two consequences worth knowing:
 
@@ -532,7 +538,7 @@ The approximation errs in one direction, and it is stated rather than hidden: an
 when it was *written*, slightly before it was *published*, so a generation can read as older than it is by the
 duration of one load — minutes at most, against a floor measured in hours.
 
-A `destroyed` segment ignores the floor along with `keep`: it resolves no generation, so no reader is or can
+A `destroyed` segment ignores the floor along with `keep`: it resolves no generation, so no reader can
 become pinned to one. The erasure rewrite likewise passes no floor — its contract is that the bit is gone when
 the call returns, so it cannot wait one out.
 

@@ -87,12 +87,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   key. S3, GCS and Azure already return it in the listing response, so surfacing it costs no extra call;
   LocalFs pays one `stat` per generation on an admin path. Optional, so a third-party driver that omits it
   keeps working and simply reports unknown ages.
-- **`RegistryRecord.currentGenSince`** — the instant `currentGen` last **changed**, stamped only on a pointer
-  move. It dates the newest superseded generation exactly. Deliberately not `updatedAt`, which any patch
-  moves: if a retention write reset it, a segment whose policy is touched on a schedule would never become
-  collectable. Validated on read against the row's own audit window (`createdAt <= currentGenSince <=
-  updatedAt`) because it drives deletions — a one-sided check accepts `0`, which reads as roughly 55 years
-  and defeats any floor a caller could set.
+- **`RegistryRecord.currentGenSince` and `RegistryRecord.previousGen`** — when the pointer last moved, and
+  what it moved from. One fact, stamped together on a pointer move and only on a pointer move. Deliberately
+  not `updatedAt`, which any patch moves: if a retention write reset it, a segment whose policy is touched on
+  a schedule would never become collectable.
+  `previousGen` is what keeps the exact instant attached to the generation it describes. The nearest
+  surviving object below the pointer is **not** reliably the one that was just superseded — a load that
+  writes its object and crashes leaves an orphan the next publish numbers past — and dating by that orphan
+  would report a generation superseded seconds ago as days old. A generation the pointer skipped was never
+  current, so no reader can ever have resolved it, and it is collected without waiting out the floor.
+  The stored instant is range-checked **where it is used**, not where it is parsed: an instant outside the
+  row's own window is treated as unknown and keeps the generation. Rejecting the record instead would be
+  unrecoverable — `updatedAt` is re-stamped by whichever host writes next, so a millisecond of clock skew
+  between two writers is enough to produce a row that every later `get`, `create`, `compareAndSwap` and
+  `delete` would refuse, taking whole-namespace `list()` down with it.
 - **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
   eight citation forms. This surface had drifted **twice**: a `0.9.x` release removed internal citations from
   shipped code comments, and they came back. Nothing could see them in between — `leak-scan` checks

@@ -222,7 +222,7 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 
 ### Generation bookkeeping & erasure
 
-`GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `EraseIdDeps` ·
+`GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `ListedGeneration` (one entry from `IColdDriver.list()` — a `GenKey` plus an optional `createdAt`, the object's write time where the backend reports it in the listing; a driver may omit it, and an absent value means *unknown*, never *old*) · `EraseIdDeps` ·
 `EraseIdResult` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult`
 
 ### Retention

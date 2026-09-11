@@ -64,10 +64,13 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * **A generation's age is when its SUCCESSOR was written**, not when it was. Its own age is the intuitive
  * measure and the wrong one — a generation written a week ago but superseded one second ago is precisely the
  * one a reader is still on. So the age of generation *G* comes from `createdAt` on generation *G+1*
- * ({@link ListedGeneration}), except for the newest superseded generation, whose supersession the registry
- * records exactly as {@link RegistryRecord.currentGenSince}. Ages are then made monotonic — an older
- * generation cannot have stopped being current *later* than a newer one — which keeps a clock skew or an
- * out-of-order listing from inventing a young generation out of an old one.
+ * ({@link ListedGeneration}), except for the generation the pointer actually moved off, which the registry
+ * names and times exactly ({@link RegistryRecord.previousGen} / {@link RegistryRecord.currentGenSince}).
+ *
+ * Object timestamps are the untrusted half of that, so they are used only as corroborating evidence: an
+ * instant outside the row's own window, or a successor claiming to predate the generation it replaced, is
+ * contradictory rather than merely late, and contradictory evidence is discarded. A generation the pointer
+ * skipped entirely was never current, so no reader can have resolved it and no window applies.
  *
  * The approximation errs in one direction and is documented rather than hidden: `createdAt` is when the
  * successor object was *written*, slightly before it was *published*, so a generation can read as older than
@@ -89,6 +92,13 @@ export async function gcOrphanGenerations(
   options: { keep?: number; minAgeMs?: number; now?: number } = {},
 ): Promise<number[]> {
   const keep = Math.max(0, options.keep ?? 1);
+  if (!Number.isInteger(keep)) {
+    // `Math.max(0, NaN)` is `NaN` and `slice(NaN)` is `slice(0)`, so a non-integer silently means `keep: 0` —
+    // the grace window off, looking exactly like a working one.
+    throw new ValidationError(
+      `gcOrphanGenerations: \`keep\` must be a non-negative integer; got ${String(options.keep)}`,
+    );
+  }
   const { minAgeMs } = options;
   if (minAgeMs !== undefined) {
     if (!Number.isFinite(minAgeMs) || minAgeMs < 0) {
@@ -110,10 +120,11 @@ export async function gcOrphanGenerations(
   const current = record.currentGen;
   const gens: number[] = [];
   const createdAt = new Map<number, number>();
+  const dating = minAgeMs !== undefined; // the erasure and retention paths pass no floor and pay nothing
   for await (const key of deps.cold.list(ref)) {
     gens.push(key.generation);
     // Only a finite instant is a fact. Anything else is "unknown", which keeps the generation.
-    if (key.createdAt !== undefined && Number.isFinite(key.createdAt)) {
+    if (dating && key.createdAt !== undefined && Number.isFinite(key.createdAt)) {
       createdAt.set(key.generation, key.createdAt);
     }
   }
@@ -135,20 +146,56 @@ export async function gcOrphanGenerations(
   // way here, by simply believing each one: a contradiction can then only make a generation look younger,
   // and younger means kept.
   const supersededAt = new Map<number, number>();
-  if (minAgeMs !== undefined && current !== null && record.currentGenSince !== undefined) {
-    const floor = record.createdAt;
-    const ceiling = record.currentGenSince;
-    const descending = gens.filter((g) => g < current).sort((a, b) => b - a);
+  const neverCurrent = new Set<number>();
+  const ceiling = record.currentGenSince;
+  if (
+    dating &&
+    current !== null &&
+    ceiling !== undefined &&
+    Number.isFinite(ceiling) &&
+    Number.isFinite(record.createdAt) &&
+    ceiling >= record.createdAt
+  ) {
+    // The row's own window. An instant outside it is not a late timestamp, it is a broken one — a lagging
+    // writer, a restored object, a driver reporting a different field — and the direction it fails in is the
+    // one that deletes, so it is discarded rather than used. Checked HERE rather than at the read boundary: a
+    // registry driver that hands back nonsense must not be able to brick the row, only to stop GC dating it.
+    const inWindow = (at: number | undefined): at is number =>
+      at !== undefined && Number.isFinite(at) && at >= record.createdAt && at <= ceiling;
+
+    // Deduplicated: a paginated or eventually-consistent listing can repeat a generation, and a repeat would
+    // otherwise re-date an entry that had already been dated exactly, overwriting registry evidence with the
+    // generation's own birth time — precisely the measure this design exists to avoid.
+    const descending = [...new Set(gens)].filter((g) => g < current).sort((a, b) => b - a);
+    const previous = record.previousGen;
+
     for (const [i, g] of descending.entries()) {
-      // The newest superseded generation was replaced by `current`, and the registry timed that exactly.
-      // Every older one is dated by the object above it in this listing. A generation collected earlier only
-      // makes that successor's timestamp later than the truth, which reads as younger — the safe direction.
-      const at = i === 0 ? ceiling : createdAt.get(descending[i - 1]!);
-      if (at === undefined || at < floor || at > ceiling) continue; // unknown ⇒ `oldEnough` keeps it
-      supersededAt.set(g, at);
+      // A generation the pointer SKIPPED was never current, so no reader can ever have resolved it and no
+      // grace window applies. This is the ordinary orphan: a load that wrote its object and crashed before
+      // publishing, which the next publish then numbered past.
+      if (previous !== undefined && g > previous) {
+        neverCurrent.add(g);
+        continue;
+      }
+      // The generation the pointer actually moved off is timed exactly by the registry. Falling back to
+      // index 0 when the row predates `previousGen` keeps older rows working, at the cost of that guess.
+      if (previous === undefined ? i === 0 : g === previous) {
+        supersededAt.set(g, ceiling);
+        continue;
+      }
+      // Everything older is dated by the object that replaced it. Two guards, because object timestamps are
+      // the untrusted half: the successor must be in the row's window, and it must not claim to predate the
+      // generation it replaced. An out-of-order pair is contradictory evidence, and contradictory evidence
+      // is discarded — believing either half can age a generation UP, which deletes it.
+      const succ = createdAt.get(descending[i - 1]!);
+      const own = createdAt.get(g);
+      if (!inWindow(succ)) continue; // unknown ⇒ `oldEnough` keeps it
+      if (own !== undefined && Number.isFinite(own) && succ < own) continue;
+      supersededAt.set(g, succ);
     }
   }
   const oldEnough = (g: number): boolean => {
+    if (neverCurrent.has(g)) return true; // never current ⇒ no reader was ever on it ⇒ no window to serve
     const at = supersededAt.get(g);
     if (at === undefined) return false; // unknown age is not old age
     return (options.now as number) - at >= (minAgeMs as number);

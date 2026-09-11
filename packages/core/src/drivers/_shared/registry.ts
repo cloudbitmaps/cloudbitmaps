@@ -247,6 +247,7 @@ export function recordFromNew(
     // -before-first-load case) has no pointer to have held, so the field stays absent rather than claiming a
     // supersession that has not happened.
     currentGenSince: rec.currentGen === null ? undefined : now,
+    previousGen: undefined, // a freshly minted row replaced nothing
     wrappedDeks: rec.wrappedDeks,
     keyId: rec.keyId,
     status: rec.status ?? 'active',
@@ -289,26 +290,29 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (r.keyId !== undefined && typeof r.keyId !== 'string') {
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
-  // `currentGenSince` drives DELETIONS, so it is range-checked on BOTH sides against the row's own audit
-  // timestamps. A one-sided `>= 0` check is not a range check: `0` passes it and reads as ~55 years old,
-  // which defeats any floor a caller could set and collects a generation a reader is still on. The row
-  // already carries the two instants that bound it — a pointer cannot have moved before the row existed, nor
-  // after the row was last written — so the bound is free and closes the whole class rather than one value.
-  if (r.currentGenSince !== undefined) {
-    const since = r.currentGenSince;
-    const createdAt = r.createdAt as number;
-    const updatedAt = r.updatedAt as number;
-    if (
-      typeof since !== 'number' ||
-      !Number.isFinite(since) ||
-      since < createdAt ||
-      since > updatedAt
-    ) {
-      throw new IntegrityError(
-        `registry record has an out-of-range currentGenSince (${String(since)}; row spans ` +
-          `${String(createdAt)}..${String(updatedAt)}): ${ctx}`,
-      );
-    }
+  // `currentGenSince` drives DELETIONS, so its type is checked here — but a bad value must NOT reject the
+  // record. `updatedAt` is re-stamped by whichever host writes next, and nothing makes that host's clock
+  // ordered against the one that moved the pointer, so a millisecond of NTP skew between two writers is
+  // enough to produce `currentGenSince > updatedAt` on a perfectly ordinary row. Throwing there would brick
+  // the row for every later operation — `get`, `create`, `compareAndSwap`, `delete` all read it first — and
+  // take out whole-namespace `list()` with it, killing retention sweeps and consistency checks over one
+  // segment. A validator may only enforce what the writer guarantees.
+  //
+  // So the range lives where the value is USED, not where it is parsed: generation GC treats an instant
+  // outside the row's own window as **unknown**, which keeps the generation. Same outcome for the dangerous
+  // value (a stored `0` reads as ~55 years and must never age a generation up), with no unrecoverable state.
+  if (r.currentGenSince !== undefined && typeof r.currentGenSince !== 'number') {
+    throw new IntegrityError(
+      `registry record has a non-numeric currentGenSince (${String(r.currentGenSince)}): ${ctx}`,
+    );
+  }
+  if (
+    r.previousGen !== undefined &&
+    (typeof r.previousGen !== 'number' || !Number.isInteger(r.previousGen) || r.previousGen < 0)
+  ) {
+    throw new IntegrityError(
+      `registry record has an invalid previousGen (${String(r.previousGen)}): ${ctx}`,
+    );
   }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
   // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
@@ -353,6 +357,14 @@ export function applyRegistryPatch(
     // read as "superseded long ago".
     currentGenSince:
       nextGen === prev.currentGen ? prev.currentGenSince : nextGen === null ? undefined : now,
+    // Stamped with it, and only with it: the pair is one fact — when the pointer moved, and what it moved
+    // from. `null` for the previous value means there was no generation to supersede.
+    previousGen:
+      nextGen === prev.currentGen
+        ? prev.previousGen
+        : nextGen === null
+          ? undefined
+          : (prev.currentGen ?? undefined),
     wrappedDeks: 'wrappedDeks' in patch ? patch.wrappedDeks : prev.wrappedDeks,
     keyId: 'keyId' in patch ? patch.keyId : prev.keyId,
     status: patch.status ?? prev.status,

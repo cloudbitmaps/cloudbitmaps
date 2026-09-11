@@ -182,6 +182,20 @@ export interface RegistryRecord extends SegmentRef {
    * reader must treat absent as "unknown", never as "infinitely old".
    */
   readonly currentGenSince?: number;
+  /**
+   * The generation {@link currentGen} replaced — so, the generation that stopped being current at
+   * {@link currentGenSince}. Stamped with it, on the same pointer move.
+   *
+   * Without it, "the generation before the current one" has to be guessed from the bucket, and the nearest
+   * surviving object below the pointer is **not** reliably it: a load that writes its object and crashes
+   * before publishing leaves an orphan that was never current, and the next publish numbers past it. Naming
+   * the generation directly is what keeps the exact instant attached to the generation it actually describes.
+   *
+   * A generation strictly between this and `currentGen` was skipped by the pointer, so it was never current
+   * and no reader can ever have resolved it. Absent on a first publish, on a row with no generation, and on
+   * rows written before this field existed.
+   */
+  readonly previousGen?: number;
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`

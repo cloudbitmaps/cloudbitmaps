@@ -173,6 +173,90 @@ describe('a generation is aged by its successor, not by itself', () => {
   });
 });
 
+describe('an orphan the pointer skipped cannot back-date the generation beneath it', () => {
+  it('keeps a generation superseded seconds ago even with a week-old orphan above it', async () => {
+    // The defect that made the floor a no-op. A load writes its object and crashes before publishing; the
+    // next publish numbers past it. That orphan then sits BELOW the pointer looking exactly like a successor,
+    // and dating generation 2 by it says "a week old" when generation 2 stopped being current this instant.
+    //
+    //   gen 0,1,2 published        gen 2 current, readers on it
+    //   object 3 written, crashed  ← never current
+    //   a week later: publish 4    ← gen 2 superseded HERE
+    const w = world();
+    await w.load([1]); // 0
+    await w.load([2]); // 1
+    await w.load([3]); // 2 — current
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 3 }, [4]); // orphan: no registry publish
+    w.at(T0 + 7 * 24 * HOUR);
+    await w.load([5]); // 4 — current; gen 2 superseded now
+
+    const deleted = await gcOrphanGenerations(SEG, w.deps, {
+      keep: 1,
+      minAgeMs: HOUR,
+      now: T0 + 7 * 24 * HOUR + 1000,
+    });
+    expect(deleted).not.toContain(2); // the generation a reader is on
+    expect(await generations(w.cold)).toContain(2);
+  });
+
+  it('collects the orphan itself immediately — it was never current, so no reader was ever on it', async () => {
+    // The other half: a skipped generation needs no grace window at all, and holding one would just bill for
+    // an object nobody can ever have resolved.
+    const w = world();
+    await w.load([1]); // 0
+    await w.load([2]); // 1 — current
+    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 2 }, [3]); // orphan
+    w.at(T0 + HOUR);
+    await w.load([4]); // 3 — current
+
+    const deleted = await gcOrphanGenerations(SEG, w.deps, {
+      keep: 0,
+      minAgeMs: 999 * HOUR,
+      now: T0 + HOUR,
+    });
+    expect(deleted).toContain(2); // the orphan goes despite a floor nothing else clears
+    expect(deleted).not.toContain(1); // the generation actually superseded an hour ago stays
+  });
+});
+
+describe('contradictory object timestamps are discarded, not believed', () => {
+  it('keeps a generation whose successor claims to predate it', async () => {
+    // Out-of-order evidence: the listing says generation 2's object was written BEFORE generation 1's, which
+    // cannot be true for generations published in sequence. Believing it dates generation 1 far too early and
+    // deletes it. One of the two instants must be wrong and there is no way to tell which, so neither is used.
+    const w = world();
+    await w.load([1]); // 0 @ T0
+    w.at(T0 + HOUR);
+    await w.load([2]); // 1 @ T0+1h
+    w.at(T0 + 2 * HOUR);
+    await w.load([3]); // 2 @ T0+2h
+    w.at(T0 + 3 * HOUR);
+    await w.load([4]); // 3 @ T0+3h — current
+
+    const scrambled = new Proxy(w.cold, {
+      get(target, prop, rx) {
+        if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
+        return async function* (ref: SegmentRef) {
+          for await (const key of w.cold.list(ref)) {
+            if (key.generation === 2) yield { ...key, createdAt: T0 + HOUR / 2 };
+            else if (key.generation === 1) yield { ...key, createdAt: T0 + 2.5 * HOUR };
+            else yield key;
+          }
+        };
+      },
+    }) as typeof w.cold;
+
+    // Generation 1 was really superseded at T0+2h, one hour before `now`. With a 2.5h floor it must stay.
+    expect(
+      await gcOrphanGenerations(
+        SEG,
+        { cold: scrambled, registry: w.registry },
+        { keep: 0, minAgeMs: 2.5 * HOUR, now: T0 + 3 * HOUR },
+      ),
+    ).not.toContain(1);
+  });
+});
+
 describe('unknown age is not old age', () => {
   it('keeps a generation whose successor reports no createdAt, but still dates the newest from the row', async () => {
     // Three generations, so the two sources are both exercised: generation 1 is the newest superseded and is
@@ -228,8 +312,9 @@ describe('unknown age is not old age', () => {
   });
 
   it('a writer clock running behind the GC host cannot make a generation look older', async () => {
-    // Clock skew with no attacker. The monotonic fold means a skewed instant can only lower the bound, and a
-    // lower bound reads as younger, which keeps the generation.
+    // Clock skew with no attacker: the object store's clock runs behind the registry's. The instant the
+    // skewed object reports lands before the row itself existed, which is not a late timestamp but a
+    // broken one, so it is discarded as unknown and the generation is kept.
     const w = world();
     await w.load([1]);
     w.at(T0 + HOUR);
@@ -245,9 +330,11 @@ describe('unknown age is not old age', () => {
         };
       },
     }) as IColdDriver;
-    // Registry says the pointer moved at T0+1h; the object claims T0-24h. The fold takes the minimum, so the
-    // generation reads as OLDER — this asserts the direction the fold actually produces, which is why the
-    // floor is set above it: nothing is collected that the exact registry instant would have protected.
+    // The instant the skewed object claims falls before the row itself existed, so it is not a late
+    // timestamp — it is a broken one, and it is discarded as unknown rather than used. Without that check it
+    // would age generation 0 past the floor and delete it. The positive control below runs the identical
+    // shape with an in-window offset and shows the same generation IS collected, so this test's expected
+    // value depends on the skew rather than being `[]` whatever happens.
     // Three generations, so generation 0 is dated by the skewed OBJECT rather than by the registry.
     w.at(T0 + 2 * HOUR);
     await w.load([3]);
@@ -258,50 +345,85 @@ describe('unknown age is not old age', () => {
         { keep: 0, minAgeMs: 24 * HOUR, now: T0 + 2 * HOUR + 1000 },
       ),
     ).toEqual([]);
+
+    // The positive control: identical shape, but the offset keeps the instant inside the row's window, so it
+    // is believed and generation 0 IS collected. Without this the assertion above would be satisfied by any
+    // implementation that never collects anything.
+    const believable = new Proxy(w.cold, {
+      get(target, prop, rx) {
+        if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
+        return async function* (ref: SegmentRef) {
+          for await (const key of w.cold.list(ref)) yield key; // honest timestamps
+        };
+      },
+    }) as typeof w.cold;
+    expect(
+      await gcOrphanGenerations(
+        SEG,
+        { cold: believable, registry: w.registry },
+        { keep: 0, minAgeMs: HOUR / 2, now: T0 + 3 * HOUR },
+      ),
+    ).toContain(0);
   });
 });
 
-describe('a corrupt currentGenSince is rejected at the read boundary', () => {
+describe('a corrupt currentGenSince disables dating without bricking the row', () => {
+  // The dangerous value is one that reads as OLD: a stored `0` is ~55 years ago and would age every
+  // generation past any floor a caller could set. It must not delete anything — and it must not make the row
+  // unreadable either. `updatedAt` is re-stamped by whichever host writes next, and nothing orders that
+  // host's clock against the one that moved the pointer, so an out-of-range instant is reachable from plain
+  // NTP skew between two writers. Rejecting the record at the read boundary would brick it for `get`,
+  // `create`, `compareAndSwap` and `delete` alike — and take whole-namespace `list()` down with it.
   it.each([
-    ['zero — reads as ~55 years and defeats any floor', 0],
+    ['zero — ~55 years ago, the value that defeats a floor', 0],
     ['before the row existed', T0 - 1],
     ['after the row was last written', T0 + 999 * HOUR],
-  ])('refuses a stored instant %s', async (_label, since) => {
-    // A one-sided `>= 0` check is not a range check: `0` passes it and makes every generation look ancient,
-    // which is how a hand-edited row, a partial restore or a skewed writer deletes a live generation. The row
-    // carries its own bounds — a pointer cannot have moved before the row existed nor after it was last
-    // written — so this is checked where untrusted bytes enter (invariant 5).
-    const { assertStoredRecordShape } = await import('@/drivers/_shared/registry');
-    expect(() =>
-      assertStoredRecordShape(
-        {
-          segment: 's',
-          currentGen: 1,
-          currentGenSince: since,
-          status: 'active',
-          createdAt: T0,
-          updatedAt: T0 + HOUR,
-        },
-        'test',
+  ])('treats an instant %s as unknown and keeps the generation', async (_label, since) => {
+    const w = world();
+    await w.load([1]);
+    w.at(T0 + HOUR);
+    await w.load([2]);
+
+    const row = (await w.registry.get(SEG))!;
+    const corrupt = { ...row, currentGenSince: since };
+    const registry = {
+      ...w.registry,
+      get: async () => corrupt,
+      list: w.registry.list.bind(w.registry),
+      capabilities: w.registry.capabilities.bind(w.registry),
+    } as unknown as typeof w.registry;
+
+    expect(
+      await gcOrphanGenerations(
+        SEG,
+        { cold: w.cold, registry },
+        { keep: 0, minAgeMs: HOUR, now: T0 + 999 * HOUR },
       ),
-    ).toThrow(/currentGenSince/);
+    ).toEqual([]);
+    expect(await generations(w.cold)).toEqual([0, 1]);
   });
 
-  it('accepts an instant inside the row window', async () => {
-    const { assertStoredRecordShape } = await import('@/drivers/_shared/registry');
-    expect(() =>
-      assertStoredRecordShape(
-        {
-          segment: 's',
-          currentGen: 1,
-          currentGenSince: T0 + HOUR / 2,
-          status: 'active',
-          createdAt: T0,
-          updatedAt: T0 + HOUR,
-        },
-        'test',
-      ),
-    ).not.toThrow();
+  it('a row whose clock skewed backwards is still fully usable', async () => {
+    // The regression this replaced a stricter check to avoid. One writer moves the pointer; a second writer
+    // with a slightly lagging clock patches something unrelated, leaving `currentGenSince > updatedAt`. Every
+    // later operation must still work — there is no repair path through the library if it does not, because
+    // every write path reads the row first.
+    const cold = new MemoryColdDriver({ now: () => T0 });
+    let clock = T0 + HOUR;
+    const registry = new MemoryRegistryDriver({ now: () => clock });
+    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1], { registry });
+    clock = T0; // the second writer's clock is an hour behind
+    const row = (await registry.get(SEG))!;
+    await registry.compareAndSwap(SEG, row.token, { retention: { expiresAt: T0 + 99 * HOUR } });
+
+    const after = await registry.get(SEG);
+    expect(after!.currentGenSince!).toBeGreaterThan(after!.updatedAt); // the skewed row, as written
+    // …and it still reads, lists, and can be written again.
+    const listed = [];
+    for await (const r of registry.list()) listed.push(r);
+    expect(listed).toHaveLength(1);
+    await registry.compareAndSwap(SEG, after!.token, { status: 'active' });
+    expect((await registry.get(SEG))?.segment).toBe('s');
   });
 });
 
@@ -375,12 +497,12 @@ describe('LIVENESS — a segment on a publish cadence still collects', () => {
         })
       ).length;
     }
-    // The design this replaced collected 0 here, forever, and no assertion in its 24-test suite noticed.
-    expect(collected).toBeGreaterThan(40);
-    // Steady state: what remains is bounded, not growing with the number of publishes.
+    // Exact, not a bound. Every clock here is injected, so these numbers are deterministic — and a bound is
+    // too weak to be worth writing: at `> 40` a floor wrong by two hours still passes, which is exactly the
+    // kind of near-miss a liveness test exists to catch.
+    expect(collected).toBe(47);
     const left = await generations(w.cold);
-    expect(left.length).toBeLessThanOrEqual(27); // current + keep + the 24h the floor legitimately holds
-    expect(left).toContain(71); // the current generation is never touched
+    expect(left).toEqual(Array.from({ length: 25 }, (_v, i) => 47 + i)); // 47…71, and nothing else
   });
 
   it('a 12h re-seed cadence against a 24h floor still collects', async () => {
@@ -398,7 +520,7 @@ describe('LIVENESS — a segment on a publish cadence still collects', () => {
         })
       ).length;
     }
-    expect(collected).toBeGreaterThan(10);
-    expect((await generations(w.cold)).length).toBeLessThanOrEqual(6);
+    expect(collected).toBe(16);
+    expect(await generations(w.cold)).toEqual([16, 17, 18, 19]);
   });
 });
