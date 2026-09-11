@@ -68,7 +68,13 @@ import {
 import type { CrbmReader } from './crbm/reader';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
-import { IntegrityError, KeyUnavailableError, ValidationError, isNotFoundError } from './errors';
+import {
+  IntegrityError,
+  KeyUnavailableError,
+  ValidationError,
+  WriteConflictError,
+  isNotFoundError,
+} from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { GenKey, IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateSegmentRef } from './validate';
@@ -129,10 +135,27 @@ export interface EraseIdResult {
   readonly generation?: number;
   /**
    * Generations deleted after the publish — normally `[fromGeneration]`, plus any older orphans. Empty when nothing
-   * was rewritten. A rewrite that published but could not collect (a Cold `delete` fault) throws instead of
-   * reporting `erased: true` over bytes that are still there: the pointer has moved, so a re-run reads
-   * `'not-member'` and the residual is left to `gcOrphanGenerations`/the retention sweep — which is why the throw
-   * matters: it is the one signal that the physical half did not complete.
+   * was rewritten. **It is what THIS call deleted, not the proof that the id is gone** — those differ: a
+   * concurrent collector can take the generation holding the id first, and then `erased: true` is returned with
+   * `collected` empty, because the claim is about the bucket rather than about who emptied it. Treat a
+   * non-empty `collected` as evidence and an empty one as "someone else got there", never as a failure.
+   *
+   * A call that cannot establish the claim **throws** rather than report `erased: true` over bytes that are
+   * still there. Three ways that happens: a Cold `delete` fault, a collection pass that could not prove the
+   * segment was still the same one (`WriteConflictError`, which an ordinary retirement landing mid-call is
+   * enough to cause), and the same refusal on the collect-only path below, where nothing was published at all.
+   *
+   * **Re-run it**, and read what the re-run says rather than assuming it finished the job. The pointer has
+   * moved, so the re-run looks for the id in the *superseded* generations as well as the current one, and there
+   * are three outcomes:
+   *
+   *  - `erased: true` naming the superseded generation it found the id in and collected — the ordinary case,
+   *    and the one that gives you the receipt the failed call could not;
+   *  - `'not-member'` — a racing collector took that generation first. The bit is gone, but **no run reports a
+   *    receipt for it**, so keep the failed call's error alongside your ledger if you need the audit trail;
+   *  - `'absent'` — the segment's registry row is gone, so it is no longer a segment at all and
+   *    `store.eraseSubject` will not even scan it. Anything left in the bucket is an **orphan**: find it with
+   *    `checkConsistency()` and collect it with `gcOrphanGenerations`.
    */
   readonly collected: readonly number[];
 }
@@ -143,6 +166,36 @@ export interface EraseIdResult {
  * Emits one `segment.rewrite` audit event at the publish (before the superseded generation is collected), so the
  * compliance record exists the moment the generation without the id is authoritative.
  */
+/**
+ * The receipt check. `erased: true` is a claim that the generation holding the id is **gone from the bucket**,
+ * so verify exactly that, rather than trusting the collector's return value.
+ *
+ * A collection pass can decline for reasons that are not faults: the row was re-created underneath it (it
+ * throws), or the row was already gone when it started (it returns an empty list, the same value it returns
+ * when there was genuinely nothing to collect). Both are reachable in the window between this rewrite's publish
+ * and its collect — a retirement only has to land in between — and neither may become a clean Art. 17 receipt.
+ *
+ * But the converse is just as important: a holder missing from `collected` does **not** mean it survived. A
+ * concurrent collector — `gcOrphanGenerations(ref, deps, { keep: 0 })` is the call this library tells operators
+ * to run — may simply have taken it first. That is not a failure of this call, it is the outcome this call
+ * wanted, and the same reasoning is applied a few lines up when a superseded generation disappears mid-scan.
+ * So on a miss, look: if the object is gone, the claim is true no matter who made it true.
+ */
+async function assertCollected(
+  ref: SegmentRef,
+  holder: number,
+  collected: readonly number[],
+  cold: IColdDriver,
+): Promise<void> {
+  if (collected.includes(holder)) return;
+  for await (const key of cold.list(ref)) {
+    if (key.generation !== holder) continue;
+    throw new WriteConflictError(
+      `erasure of segment ${ref.segment} could not remove generation ${holder} — the one holding the id — which is still in the bucket; re-run`,
+    );
+  }
+}
+
 export async function eraseIdFromSegment(
   ref: SegmentRef,
   id: number,
@@ -306,6 +359,7 @@ export async function eraseIdFromSegment(
       if (!held) continue;
       // Found. Take every generation below the pointer; the current one keeps the id out by not having it.
       const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+      await assertCollected(ref, generation, collected, deps.cold);
       return { ...base, erased: true, fromGeneration: generation, collected };
     }
     return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
@@ -399,10 +453,13 @@ export async function eraseIdFromSegment(
   // `keep: 0`: the whole point is that the generation holding the bit does not survive this call. Every
   // generation below the new pointer is safe to take, and provably so now that the publish is fenced on `from`:
   // the CAS succeeded while the pointer was still at `from`, so nothing in `(from, generation)` had been
-  // published before us, and the pointer only moves forward — so none of them can ever become current either.
-  // They are permanently unreachable, which is exactly what makes deleting them the strongest form of the
-  // "physically gone on return" claim rather than a risk to a load that is still in flight.
+  // published before us, and the pointer only moves forward WITHIN THIS INCARNATION — so none of them can ever
+  // become current either. They are permanently unreachable, which is exactly what makes deleting them the
+  // strongest form of the "physically gone on return" claim rather than a risk to a load that is still in
+  // flight. Across incarnations the pointer CAN regress (invariant 1), which is why the collector re-proves the
+  // row rather than trusting the one this call read, and why the receipt is checked below rather than assumed.
   const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+  await assertCollected(ref, from, collected, deps.cold);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
 }
 

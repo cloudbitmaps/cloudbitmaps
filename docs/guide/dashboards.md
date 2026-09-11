@@ -170,10 +170,14 @@ which may be 0).
 **Which event is the receipt.** An auditor asks "prove subject X's data was destroyed on date Y":
 
 - For a whole segment or tenant, a `segment.erase` for that segment is the receipt.
-- For one subject, it is the `segment.rewrite` for each segment the id was in, paired with the erasure ledger
-  `eraseSubject` returned — `{ erased: true, fromGeneration, generation }` per segment. The event attests that
-  the generation without the id became authoritative; the ledger attests that the generation which held it was
-  deleted before the call returned. Keep both.
+- For one subject, it is the `segment.rewrite` for each segment that had to be **rewritten**, paired with the
+  erasure ledger `eraseSubject` returned — `{ erased: true, fromGeneration, generation }` per segment. The event
+  attests that the generation without the id became authoritative; the ledger attests that the generation which
+  held it was deleted before the call returned. Keep both.
+  > **One erasure emits no event**, so do not reconcile on "an event per ledger entry". When the id is not in
+  > the current generation but survives in a **retained superseded** one — an ex-member dropped by a re-seed —
+  > nothing is rewritten and nothing is published: the generation holding it is simply collected. The ledger
+  > entry is then `{ erased: true, fromGeneration }` with **no `generation`**, and it is the whole receipt.
 - A `segment.publish` is not a receipt for anything: it says a set was loaded, not what was removed from it.
 
 **`segment.erase`, `segment.rewrite` and `segment.dispose` are deliberately different receipts, and conflating

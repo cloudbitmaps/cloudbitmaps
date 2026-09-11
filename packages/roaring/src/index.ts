@@ -289,7 +289,14 @@ export interface SubjectErasureEntry {
    * erase the id; re-run against the new generation, which erases it if it is still there and reports nothing
    * for the segment if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment
    * fault (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing
-   * the fault. Segments the id is not in are not listed at all.
+   * the fault. A fault that landed once part of the work was already done — a Cold `delete` fault, or a collect
+   * that could not prove the segment was still the same one, whether or not a rewrite was published first —
+   * also re-runs, but **read what the re-run says**: it usually reports `erased: true` against the superseded generation it found the id in, it reports
+   * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
+   * receipt for it), and if the segment's row has since been purged it is no longer scanned at all — anything
+   * left in its bucket is an orphan for `checkConsistency` / `gcOrphanGenerations`. **Segments the id is not in
+   * are not listed, and neither are segments that no longer have a registry row** — an empty ledger is not by
+   * itself proof the id is gone.
    */
   readonly note?: string;
 }
@@ -720,11 +727,6 @@ export class CloudRoaring {
           // engine's cached view, which may lag a load by up to `coldGenTtlMs`. An Art. 17 erasure must never
           // skip a segment because a read cache hasn't caught up yet.
           const result = await eraseIdFromSegment(ref, id, deps, { audit: options.audit });
-          // Whatever the outcome, this process's own view of the segment is now suspect: a landed rewrite
-          // deleted the generation our caches were built on, and a refused one means somebody else's did.
-          // Without this the erasing store keeps answering `true` for the id it just reported erased — out of
-          // RAM, with no storage read for any control to intercept.
-          this.engine.invalidate(ref);
           if (result.reason === 'not-member' || result.reason === 'absent') return null;
           if (result.reason === 'no-generation') return null; // a row with no data yet holds no id
           if (result.reason === 'destroyed') return null;
@@ -743,6 +745,23 @@ export class CloudRoaring {
             erased: false,
             note: `error: ${err instanceof Error ? err.message : String(err)}`,
           };
+        } finally {
+          // Whatever the outcome, this process's own view of the segment is now suspect: a landed rewrite
+          // deleted the generation our caches were built on, and a refused one means somebody else's did.
+          // Without this the erasing store keeps answering `true` for the id it just reported erased — out of
+          // RAM, with no storage read for any control to intercept. `finally`, not the happy path: a rewrite
+          // that published and then THREW on its collect is precisely the case where this view is stale, and
+          // it is reachable from an ordinary retirement landing mid-call.
+          //
+          // Swallowed, because a `finally` that throws replaces the outcome above it: it would escape the
+          // per-segment catch, abort the whole ledger, and discard the error it was masking — breaking the
+          // isolation this fan-out promises. Dropping cache entries cannot fail today; this keeps that from
+          // becoming a whole-run failure if it ever can.
+          try {
+            this.engine.invalidate(ref);
+          } catch {
+            /* best-effort: never let cache bookkeeping discard a segment's result */
+          }
         }
       },
     );

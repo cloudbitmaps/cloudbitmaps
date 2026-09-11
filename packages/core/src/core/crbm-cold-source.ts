@@ -579,7 +579,9 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * generation we resolved was superseded *and* swept (the grace window elapsed), the Cold driver throws
    * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
-   * a monotonic move forward.
+   * a monotonic move forward — within one incarnation of the row. A name that was retired and re-created is a
+   * different segment and can resolve to a LOWER generation, which is why the snapshot carries the row's token
+   * as its lineage rather than trusting the generation number (invariant 1).
    *
    * **Resolution and open are inside the retry, not before it.** Resolving `currentGen` and opening that
    * generation's object are two backend round trips with a gap between them, so the object can be swept after

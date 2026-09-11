@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
+import { gcOrphanGenerations } from '@/core/generation-gc';
 import { openGenerationReader } from '@/core/crbm-cold-source';
-import { KeyUnavailableError, ValidationError } from '@/core/errors';
+import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
 import type { GenKey, IColdDriver, IKeystore, SegmentRef } from '@/index';
@@ -273,5 +274,217 @@ describe('eraseIdFromSegment — validation', () => {
     await expect(eraseIdFromSegment({ segment: '../bad' }, 1, w.deps)).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+});
+
+describe('eraseIdFromSegment — a collect that could not run is never a clean receipt', () => {
+  it('throws rather than reporting erased: true over generations still holding the id', async () => {
+    // `erased: true` means the bit is physically gone on return, and `collected` is the evidence for the
+    // physical half of an Art. 17 erasure. So the one thing this call must never do is report a clean receipt
+    // over bytes that are still there.
+    //
+    // The window is narrow but entirely in-repo: a retirement tombstones the row between the rewrite's publish
+    // and its collect — so the collect takes the destroyed branch — and the sweep's own retirement stamp writes
+    // that still-destroyed row again while the collect is listing. The collect then cannot prove the segment is
+    // the same incarnation it read, and must refuse. Refusing is only safe if it is DISTINGUISHABLE from
+    // "there was nothing to collect", which an empty array is not — hence a throw.
+    const w = await world();
+    await w.load(SEG, [1, 42]);
+    await w.load(SEG, [1, 42]);
+
+    const registry = w.registry;
+    const tombstoneOnPublish = new Proxy(registry, {
+      get(target, prop, rx) {
+        if (prop !== 'compareAndSwap') return Reflect.get(target, prop, rx) as unknown;
+        return async (ref: SegmentRef, token: unknown, patch: Record<string, unknown>) => {
+          const out = await (
+            target.compareAndSwap as never as (...a: unknown[]) => Promise<unknown>
+          )(ref, token, patch);
+          if (patch.currentGen === 2) {
+            const row = (await target.get(ref))!;
+            await target.compareAndSwap(ref, row.token, { status: 'destroyed' });
+          }
+          return out;
+        };
+      },
+    });
+
+    const bumpDuringList = new Proxy(w.cold, {
+      get(target, prop, rx) {
+        if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
+        return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
+          let fired = false;
+          for await (const key of w.cold.list(ref)) {
+            yield key;
+            if (!fired) {
+              fired = true;
+              const row = await registry.get(ref);
+              if (row?.status === 'destroyed') {
+                await registry.compareAndSwap(ref, row.token, { status: 'destroyed' });
+              }
+            }
+          }
+        };
+      },
+    });
+
+    await expect(
+      eraseIdFromSegment(SEG, 42, {
+        ...w.deps,
+        cold: bumpDuringList as typeof w.cold,
+        registry: tombstoneOnPublish as typeof registry,
+      }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+
+    // The proof the throw was warranted: the generations that hold the id are all still in the bucket.
+    expect(await generations(w.cold, SEG)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('eraseIdFromSegment — the receipt check asserts the outcome, not who caused it', () => {
+  it('does NOT throw when a concurrent collector took the holder generation first', async () => {
+    // The receipt claim is "the generation holding the id is gone from the bucket". A holder missing from
+    // `collected` does not contradict that — someone else may simply have got there first, and the most
+    // ordinary someone is `gcOrphanGenerations(ref, deps, { keep: 0 })`, the call this library tells operators
+    // to run. Checking `collected.includes(holder)` alone turns a SUCCESSFUL erasure into a WriteConflictError,
+    // and the re-run then reports `not-member`, so no run ever produces the receipt.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let fired = false;
+    const raced = new Proxy(w.cold, {
+      get(t, p, rx) {
+        if (p !== 'list') return Reflect.get(t, p, rx) as unknown;
+        return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
+          if (!fired && (await w.registry.get(SEG))?.currentGen === 1) {
+            fired = true;
+            await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 0 });
+          }
+          yield* w.cold.list(ref);
+        };
+      },
+    }) as typeof w.cold;
+
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold: raced });
+    expect(res.erased).toBe(true);
+    expect(fired).toBe(true); // the race really happened
+    expect(await generations(w.cold, SEG)).toEqual([1]); // and the holder really is gone
+  });
+
+  it('DOES throw when the holder generation is still in the bucket', async () => {
+    // The other direction: a collect that declined leaves the holder in place, and that must never be
+    // reported as `erased: true`. Without this the empty-list decline is indistinguishable from success.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let armed = false;
+    const flaky = new Proxy(w.registry, {
+      get(t, p, rx) {
+        if (p !== 'get') return Reflect.get(t, p, rx) as unknown;
+        return async (r: SegmentRef) => {
+          const row = await t.get(r);
+          if (armed && row !== null && row.currentGen === 1) {
+            armed = false;
+            return null; // the collect finds no authoritative row and declines with an empty list
+          }
+          return row;
+        };
+      },
+    });
+    armed = true;
+    await expect(
+      eraseIdFromSegment(SEG, 2, { ...w.deps, registry: flaky as typeof w.registry }),
+    ).rejects.toBeInstanceOf(WriteConflictError);
+    expect(await generations(w.cold, SEG)).toContain(0); // the holder survived — hence the throw
+  });
+});
+
+describe('eraseIdFromSegment — what a re-run after a failed collect actually reports', () => {
+  // This matrix is documented in four places an operator is pointed at: this module's `collected` doc, the
+  // ledger entry note, the API reference and both privacy documents. It has been written down wrongly twice —
+  // once describing behaviour from before the superseded-generation search existed, once generalising the
+  // Cold-`delete`-fault outcome to a cause that does not share it. Prose cannot be trusted here, so the matrix
+  // is asserted: if one of these outcomes changes, the sentence that describes it has to change with it.
+
+  it('a Cold delete fault: the re-run erases and gives the receipt the failed call could not', async () => {
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    let broken = true;
+    const flaky = new Proxy(w.cold, {
+      get(t, p, rx) {
+        if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey) => {
+          if (broken) throw new Error('cold delete fault');
+          return w.cold.delete(key);
+        };
+      },
+    }) as typeof w.cold;
+
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold: flaky })).rejects.toThrow();
+    broken = false;
+    const rerun = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(rerun.erased).toBe(true);
+    expect(rerun.fromGeneration).toBe(0); // found in the SUPERSEDED generation, not the current one
+    expect(rerun.collected).toContain(0);
+  });
+
+  it('a racing collector got there first: not-member, and NO run holds a receipt', async () => {
+    // Driven, not hand-built: the first call really fails its collect, a real concurrent collector really takes
+    // the holder, and only then do we look at what a re-run says. Constructing the end state directly would
+    // pass even if `eraseIdFromSegment` stopped searching superseded generations altogether.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+
+    let broken = true;
+    const flaky = new Proxy(w.cold, {
+      get(t, p, rx) {
+        if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
+        return async (key: GenKey) => {
+          if (broken) throw new Error('cold delete fault');
+          return w.cold.delete(key);
+        };
+      },
+    }) as typeof w.cold;
+
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold: flaky })).rejects.toThrow();
+    broken = false;
+    // The racing collector is the very call the guide tells operators to run.
+    await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 0 });
+
+    const rerun = await eraseIdFromSegment(SEG, 2, w.deps);
+    expect(rerun.erased).toBe(false);
+    expect(rerun.reason).toBe('not-member'); // the bit is gone, and no run says so
+    expect(await generations(w.cold, SEG)).toEqual([1]);
+  });
+
+  it('the registry row is gone: the fleet scan does not even reach the segment', async () => {
+    // The sharp edge behind "an empty ledger is not by itself proof the id is gone". Driven through the facade,
+    // because the point is what the FLEET-WIDE scan does: with no row there is no segment to enumerate, so the
+    // objects outlive it as orphans and only `checkConsistency` finds them.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]);
+    await w.registry.delete(SEG);
+
+    const ledger = await w.reader().eraseSubject(2, { namespace: SEG.namespace });
+    expect(ledger.erasedFrom).toEqual([]);
+    expect(ledger.scannedSegments).toBe(0); // not scanned at all — not "scanned and found clean"
+    expect(await generations(w.cold, SEG)).toEqual([0]); // and the id is STILL in the bucket
+  });
+
+  it('an ex-member erasure emits NO audit event and carries no generation', async () => {
+    // The receipt for this path is the ledger entry alone. Nothing is rewritten and nothing is published — the
+    // generation holding the id is simply collected — so a control reconciling "one `segment.rewrite` per
+    // ledger entry" would flag a correct erasure. Four documents say so; this is what holds them to it.
+    const w = await world();
+    await w.load(SEG, [1, 2, 3]); // gen 0 holds the id
+    await w.load(SEG, [1, 3]); // gen 1 — a re-seed that dropped it; `keep: 1` retains gen 0
+    await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 1 });
+
+    const audit = new RecordingAuditSink();
+    const res = await eraseIdFromSegment(SEG, 2, w.deps, { audit });
+    expect(res.erased).toBe(true);
+    expect(res.fromGeneration).toBe(0); // the superseded generation it was found in
+    expect(res.generation).toBeUndefined(); // nothing was written
+    expect(audit.snapshot()).toHaveLength(0);
   });
 });

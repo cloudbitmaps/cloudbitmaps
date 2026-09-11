@@ -482,6 +482,23 @@ the current generation or anything above it (a load that is mid-write), and it d
 `currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an orphan, and
 the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred tombstone)
 **every** generation is garbage and all are collected, because no reader can resolve a tombstoned segment.
+A segment can be purged and re-created while a paginated listing is in flight, so **both** branches
+re-read the registry row afterwards and reconcile with it. On a tombstone the row must still be the same
+row, compared by its **token**: a generation number is not an identity, and a re-created name can wear the
+very `currentGen` the tombstone held. On the ordinary branch the cutoff becomes the **lower** of the two
+pointers — `nextGeneration` restarts at 0 once a row is purged and the bucket emptied, so a re-created name
+wears a *lower* pointer than the one read before the listing, and deleting "everything below it" would take
+the new incarnation's live object. A publish landing mid-listing moves the pointer *forward* and so changes
+nothing, which is what keeps routine collection working on a busy segment.
+
+The row is re-proved before **every** delete, not once after the listing, because the deletes are one round trip
+each. If the segment changed underneath the pass the call **throws `WriteConflictError`** — re-run it, and note
+that a refusal part-way through may already have deleted objects it will now never report. An empty array still
+means what it always did — no row at all, or no pointer yet — so an empty array is **not** a receipt:
+`eraseIdFromSegment` reads the list as the physical half of its erasure receipt, and checks the **claim** — that
+the generation it needed is gone from the bucket — rather than its own membership in the list, because a
+concurrent collector may have taken it first. One more consequence of the reconcile: `keep` counts distinct generations, not
+listing entries, so a listing that enumerates the same generation twice cannot eat the grace window.
 
 Who calls it today:
 
@@ -510,7 +527,7 @@ many publishes can land underneath before that object is gone. Three facts size 
 **A miss is a re-read, not a failure.** If the generation a read is on is swept, the Cold driver throws
 `NotFoundError`; the cold source drops the stale snapshot, re-resolves `currentGen` and retries **once** —
 covering both the fetch and the reopen, which are separate round trips and separately exposed. The call then
-serves the newer, committed generation: a monotonic move forward, never a torn object. A second miss is
+serves the newer, committed generation: a monotonic move forward within that segment's lifetime, never a torn object. A second miss is
 pathological (GC outrunning resolution) and propagates rather than fabricating an absent answer; the one case
 that answers empty instead of throwing is a segment with no generation left to serve at all — dropped or
 crypto-shredded, where reading empty is the documented outcome.
@@ -866,12 +883,18 @@ is also emitted per rewrite when you pass `audit`).
   already removed it. The reason is read off the registry row, so a row tombstoned mid-rewrite reports
   `'destroyed'` and one purged by the retention sweep reports `'absent'` — the same answers a fresh call gives,
   so you never have to care at which point it was discovered.
-- `` `error: <message>` `` — an isolated per-segment fault. Three causes worth telling apart: a transient cold
-  fault (re-run), a missing keystore for an encrypted segment (wire it), and an `IntegrityError` naming a chunk
+- `` `error: <message>` `` — an isolated per-segment fault. Causes worth telling apart: a transient cold
+  fault (re-run), a missing keystore for an encrypted segment (wire it), an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
-  new generation, and no erasure happened on it. The third needs investigating rather than re-running.
+  new generation, and no erasure happened on it, so it needs investigating rather than re-running — and a
+  `WriteConflictError`, which means the erasure could not remove the generation holding the id and refused to
+  claim it had. Usually that follows a rewrite that already **published**, so part of the work landed — but it
+  also fires on the collect-only path, where an ex-member's bit is taken out of a *superseded* generation and
+  nothing is published at all. Either way, see what a re-run reports rather than assuming it finished the job.
 
-Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. **One contract the
+Re-running is safe and idempotent: a segment the id is no longer in is simply not listed — but "not listed" is
+not by itself proof the id is gone, because a segment whose **registry row** has been purged is not scanned
+either, and its objects outlive it as orphans. `store.checkConsistency()` is what finds those. **One contract the
 library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite
 carries whatever its source held, and the library cannot know that source was meant to exclude the id — quiesce
 loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
@@ -1225,7 +1248,9 @@ because deleting the row is what makes the name writable again:
    tombstone landed — the sweep **collects it first** (`gcOrphanGenerations` takes every generation of a destroyed
    row, and nothing else would ever call it for a tombstoned segment), then purges. Only if the storage still
    cannot be proven gone does the row stay, with `tombstone-not-empty`: without the row `gcOrphanGenerations` can
-   no longer see the segment at all, and the objects would be billed forever.
+   no longer see the segment at all, and the objects would be billed forever. That reason also covers the case
+   where the collection **declined** because the row changed under it — not a storage fault, and the next cycle
+   simply retries.
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
