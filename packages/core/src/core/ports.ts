@@ -90,6 +90,23 @@ export interface ColdChunkSource {
    * Consulted **only** when an operand resolved to no chunks at all, so a normal combine never calls it.
    */
   exists?(ref: SegmentRef): Promise<boolean>;
+  /**
+   * Optional: an opaque token identifying **which bytes** a read of this segment will see right now —
+   * the generation *and* the incarnation of the name it belongs to.
+   *
+   * {@link ColdChunkSource.currentGeneration} is not enough to key a decoded-chunk cache, and the gap is not
+   * theoretical: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once
+   * a registry row is purged and the bucket emptied. A retired, re-created name therefore serves different
+   * data at the same `currentGen`, and a cache keyed on `(segment, chunk, generation)` hands back the previous
+   * incarnation's ids — an erased id reappearing, with no read to intercept.
+   *
+   * Note that putting the incarnation in the *object key* would not fix this: the new incarnation still starts
+   * at generation 0, so the cache key collides either way. The identity has to reach the cache.
+   *
+   * Returns `null` when the segment resolves to no generation. A source that pins one immutable generation for
+   * its lifetime may omit this, and the engine falls back to the generation alone.
+   */
+  currentVersion?(ref: SegmentRef): Promise<string | null>;
 }
 
 /** Capabilities a Cold driver advertises; validated at wiring time, fail-fast. */

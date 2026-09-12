@@ -70,7 +70,8 @@ export interface CombineOptions {
 interface Operand {
   readonly seg: SegmentRef;
   readonly keys: Set<number>;
-  readonly gen: number | null | undefined;
+  /** The cache-key component — a `currentVersion` string, a generation number, or absent. */
+  readonly gen: string | number | null | undefined;
 }
 
 export class SegmentEngine {
@@ -101,7 +102,7 @@ export class SegmentEngine {
   /** Membership: one chunk lookup — the HOT cache, else one Cold fetch of that chunk. */
   async has(seg: SegmentRef, id: number): Promise<boolean> {
     const { chunkKey, remainder } = splitId(id);
-    const cold = await this.coldChunk({ ...seg, chunkKey }, await this.currentGen(seg));
+    const cold = await this.coldChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
     return cold ? cold.has(remainder) : false;
   }
 
@@ -122,7 +123,7 @@ export class SegmentEngine {
     }
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'count'); // one cold fetch per chunk (before fan-out)
-    const gen = await this.currentGen(seg); // after the shape read — see `combine`
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
     let total = 0;
     for (const chunkKey of chunkKeys) {
       total += (await this.coldChunk({ ...seg, chunkKey }, gen))?.size ?? 0;
@@ -144,7 +145,7 @@ export class SegmentEngine {
   async *iterate(seg: SegmentRef): AsyncGenerator<number> {
     const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one cold fetch per chunk (before fan-out)
-    const gen = await this.currentGen(seg); // after the shape read — see `combine`
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
     for (const chunkKey of chunkKeys) {
       const chunk = await this.coldChunk({ ...seg, chunkKey }, gen);
       if (chunk === null) continue;
@@ -262,7 +263,7 @@ export class SegmentEngine {
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
       const keys = await this.chunkKeys(seg);
-      const gen = await this.currentGen(seg);
+      const gen = await this.cacheVersion(seg);
       return { seg, keys: new Set(keys), gen };
     };
     const [operands, excludes] = await Promise.all([
@@ -516,6 +517,21 @@ export class SegmentEngine {
   }
 
   /**
+   * The cache-key component identifying **which bytes** this op will read: the source's `currentVersion` when
+   * it has one, else the generation alone.
+   *
+   * The generation alone is not an identity. `nextGeneration` restarts at 0 once a row is purged and the
+   * bucket emptied, so a retired-and-re-created name serves different data at the same `currentGen` — and a
+   * decoded chunk cached under `(segment, chunk, 0)` is handed straight back to the new incarnation. That is an
+   * erased id reappearing with no read to intercept it, which is why this is keyed on the version rather than
+   * the number.
+   */
+  private async cacheVersion(seg: SegmentRef): Promise<string | number | null | undefined> {
+    if (this.cold.currentVersion) return this.cold.currentVersion(seg);
+    return this.currentGen(seg);
+  }
+
+  /**
    * Decode a Cold chunk. `gen` is the segment's current generation, resolved **once per op** by the caller (not
    * per chunk — that would put a registry re-resolve on every chunk of a count/intersect). The HOT cache is
    * keyed by it, so a load that advances the generation misses the cache and re-reads the new bytes instead of
@@ -528,7 +544,7 @@ export class SegmentEngine {
    */
   private async coldChunk(
     ref: ChunkRef,
-    gen: number | null | undefined,
+    gen: string | number | null | undefined,
   ): Promise<CodecBitmap | null> {
     if (gen === null) return null;
     const cacheKey = gen === undefined ? chunkRefKey(ref) : chunkGenKey(ref, gen);
