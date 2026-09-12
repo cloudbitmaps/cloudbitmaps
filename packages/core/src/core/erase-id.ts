@@ -15,8 +15,11 @@
  *
  * Concurrency. This is a **read-modify-write**, not a plain forward-only publish, and that distinction is where
  * its correctness lives: the new generation is `from` minus one bit, so it is a valid successor to `from` and to
- * nothing else. The publish is therefore fenced on `from` (`publishGeneration`'s `expectFrom`) and lands only
- * while the pointer is still exactly there. Anything else — a load that published in the meantime, or another
+ * nothing else. The publish is therefore fenced on `from` **and on the row it was read from**
+ * (`publishGeneration`'s `expectFrom` + `expectToken`) and lands only while the pointer is still exactly there,
+ * on that same row. Both halves are needed: a generation number identifies a generation only within one
+ * incarnation of a name, and a name that is retired and re-created restarts at `0`, so the number alone matched
+ * a different segment entirely. Anything else — a load that published in the meantime, or another
  * erasure that got there first — is reported as `reason: 'superseded'`, `erased: false`, and the caller re-runs
  * against the new generation. A writer that claims the same generation *number* first surfaces as a
  * `WriteConflictError` (write-once).
@@ -159,6 +162,13 @@ export async function eraseIdFromSegment(
   if (record.currentGen === null)
     return { ...base, erased: false, reason: 'no-generation', collected: [] };
   const from = record.currentGen;
+  /**
+   * The row this rewrite derives its content from, not just the number it points at. `nextGeneration` restarts
+   * at `0` once a row is purged and the bucket emptied, so a retired-and-re-created name presents a *different*
+   * segment at the *same* `currentGen` — which `expectFrom` alone matched, republishing one incarnation's
+   * content over another's and reporting `erased: true`. The token is never reused across incarnations.
+   */
+  const fromToken = record.token;
 
   // The segment's DEK, reused across generations. Resolved before any object I/O so a slow keystore/KMS call
   // sits outside the read-write window; an encrypted row with no keystore is a lost key, not a cleartext segment.
@@ -208,7 +218,8 @@ export async function eraseIdFromSegment(
     if (row === null) return 'absent';
     if (row.status === 'destroyed') return 'destroyed';
     if (row.currentGen === null) return 'no-generation';
-    return row.currentGen === from ? null : 'superseded';
+    // A different row is a different lineage even at the same pointer value — see `fromToken`.
+    return row.currentGen === from && row.token === fromToken ? null : 'superseded';
   };
 
   /**
@@ -320,7 +331,10 @@ export async function eraseIdFromSegment(
   // `nextGeneration`.
   //
   // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
-  const published = await publishGeneration(deps.registry, key, { expectFrom: from });
+  const published = await publishGeneration(deps.registry, key, {
+    expectFrom: from,
+    expectToken: fromToken,
+  });
   if (!published) {
     return {
       ...base,
