@@ -40,8 +40,11 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
 
 /**
  * Garbage-collect superseded Cold generations for a segment: everything strictly below `currentGen`, keeping
- * the most recent `keep` of them as a grace window for in-flight readers pinned to a just-superseded
- * generation (**invariant 4**). Generations ≥ `currentGen` are never touched. Returns the generations deleted.
+ * the most recent `keep` of them as a grace window, so a read still fetching from a just-superseded
+ * generation need not re-resolve mid-call (**invariant 4**). It is a window, not a lock: a read whose
+ * generation is swept anyway re-resolves and retries once rather than failing (see `withFreshSnapshot`), so
+ * `keep` trades storage for round trips. Generations ≥ `currentGen` are never touched. Returns the generations
+ * deleted.
  *
  * **Except on a `destroyed` segment, where EVERY generation is garbage** and the grace window is meaningless.
  * A tombstoned segment resolves no generation at all, so no reader is or can become pinned to one; and nothing

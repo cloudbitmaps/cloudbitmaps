@@ -563,12 +563,14 @@ bill.redisCrossover.readsPerSec;</code></pre>
             </li>
             <li>
               <span class="rl-mark">03</span>
-              <span class="rl-what">Keep one old generation for snapshots</span>
+              <span class="rl-what">Collect superseded generations, keeping one</span>
               <span class="rl-fig">$0.03/mo · 1.2 GiB</span>
               <span class="rl-note">
-                Generations are immutable and never overwritten, so a superseded one is already a
-                point-in-time snapshot — <span class="m">gcOrphanGenerations</span> keeps the newest of them
-                by default. Storage is the only cost of keeping it.
+                Every load leaves its predecessor in the bucket, still billed, and nothing deletes it for you.
+                <span class="m">gcOrphanGenerations</span> does — keeping the newest superseded one by default
+                as a grace window, so a read still fetching from it saves a round trip. Storage is the only cost
+                of that window. It is not a snapshot facility: no setting here holds a long job on one
+                generation.
               </span>
             </li>
           </ul>

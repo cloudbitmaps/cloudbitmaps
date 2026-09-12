@@ -15,6 +15,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+- **A generation swept between resolving the pointer and opening its object no longer fails the read.**
+  Resolving `currentGen` and opening that generation's `.crbm` are two backend round trips, and the heal that
+  covers a vanished generation was wrapped around only the second one. So the window GC actually races — a
+  publish plus a sweep landing in the gap — surfaced a bare `NotFoundError` out of `has`, `count`, `iterate`
+  and `intersect` on the *first* attempt, not as the documented "retried once, then propagate". Reproduced
+  against a real driver; the reader open and the pointer resolve now sit inside the retry, and
+  `currentGeneration` — which the engine calls once per operation, before any chunk fetch, so an unhealed miss
+  there failed the whole operation — heals the same way. Most exposed with `keep: 0`, which every id erasure
+  passes and which sweeps microseconds after the publish. The retry is now **gated at exactly two
+  resolve-and-open round trips** by counting calls, because it re-reads the *registry* — the shared,
+  throttle-prone resource — and an N-way `intersect` pays it per operand; nothing had pinned that bound before,
+  and a mutation raising it to 1,000 left the whole suite green.
+
+### Changed
+- **`keep` is documented as the cost/latency trade it is, and a time floor on collection is refused.** The
+  guide gains [*Sizing `keep`*](docs/guide/getting-started.md#sizing-keep): a missed window is a re-read rather
+  than a failure; the exposure window is `coldGenTtlMs`, not the length of your call, so at the 2 s default one
+  retained generation covers any realistic publish cadence; and each retained generation is a whole billed copy
+  of the segment, so `keep: 3` over 40 GB holds 160 GB. It also states what `keep` cannot do: a long call can
+  re-resolve forward across a publish and describe two instants, and because that hop comes from
+  re-resolution rather than from collection, **retaining more generations does not affect it**. A snapshot
+  handle is the answer and is now an explicit [roadmap](docs/ROADMAP.md#on-the-way-to-10) item; a
+  `minAgeMs`-style time floor is [deliberately not planned](docs/ROADMAP.md#deliberately-not-planned), because
+  it would read as a durability guarantee and would not be one. Hard invariant 3 is corrected in the same pass:
+  every chunk is a whole, verified, immutable generation and a read is never torn, but a long call is not
+  promised a single instant — which the engine's own doc-comments already said.
+
 ### Removed
 - **Every internal-tracker citation is gone, and a gate now keeps them gone.** 271 references — phase
   numbers, audit-gap and review-finding ids, test-strategy and threat-model labels, decision-log entries —

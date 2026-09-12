@@ -49,6 +49,7 @@ Where each piece sits today:
 | The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The measured numbers on the [benchmarks page](benchmarks.md) are the S3-side figures of the July 2026 calibration run |
 | The empty-load guard and `load()` with `allowEmpty` / `guard` / rollback — covering the `*Into` verbs too | **next** |
+| A snapshot handle, so a long job reads one instant | **next** — a long call can re-resolve forward across a publish; no GC setting prevents that |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
 
@@ -210,14 +211,20 @@ between here and there:
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
    refused load. It covers the `*Into` verbs too, which today publish an empty generation when a combine comes
    out empty.
-4. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
+4. **A snapshot handle — one instant for a long job.** A handle that resolves the current generation once and
+   reads from it for as long as the job runs, so an export, a reconciliation or a send describes a single
+   instant rather than whichever generations happened to be current as it went. Generation GC already keeps a
+   grace window (`keep`) and an ordinary read heals forward if that window is missed, but neither holds a read
+   on one generation: the hop comes from *re-resolution* on the TTL, so retaining more generations does not
+   affect it. This is the piece that makes the guarantee explicit instead of unavailable.
+5. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
    were written for a tiered engine and still explain the loaded store as what is left after a warm tier was
    removed. They should lead with what it is: one bucket, immutable generations, cheap chunk-skipping reads from
    anywhere.
-5. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
+6. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe.
-6. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
-7. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
+7. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.
+8. **Closing the named deferrals:** self-healing disaster recovery, an exclusion predicate on the retention
    sweep (legal hold), and an automated reconcile of unstamped tombstones. (Multi-tenant isolation is tracked
    separately, post-`1.0`.)
 
@@ -288,6 +295,14 @@ Saying no is part of the design:
   edge isolate and a long-lived server — the first piece of API that works in some runtimes and not others — and it
   would *hide* the operational burden rather than remove it: a sweep failing silently inside an app server with no
   alarm is worse than a CronJob that shows up red in a dashboard. Nothing here is a daemon: the sweep is a call you schedule.
+- **A time floor on generation GC.** "Collect nothing superseded less than 24 hours ago" would read as a
+  durability guarantee and would not be one. An ordinary read already heals forward: if the generation it is
+  reading is swept, the fetch re-resolves the pointer and retries once, serving the newer committed generation —
+  so a floor buys an avoided round trip, not a saved query. A job that genuinely must not change generations
+  needs a snapshot handle (above), and a window merely wide enough to hope with is a different, weaker promise
+  wearing the same words. The cost side — generations piling up because nothing collects them — is what `keep`
+  is for; sizing it is in the
+  [guide](guide/getting-started.md#sizing-keep).
 - **Per-id TTL.** A bitmap stores ids, not `(id, timestamp)` pairs; a timestamp per id costs 4–8 bytes each and
   takes the compression the whole design exists for. Not deferred — incompatible with the data model.
 - **A hosted/managed CloudBitmaps service.** Never — this is a library. Your data stays in your account, in
