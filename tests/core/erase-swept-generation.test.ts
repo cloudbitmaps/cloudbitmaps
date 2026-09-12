@@ -16,6 +16,14 @@ import { loadedStore } from '../helpers/loaded';
 const SEG: SegmentRef = { segment: 's' };
 const THREE_CHUNKS = [1, 70_000, 140_000];
 
+async function generationsIn(cold: {
+  list: (ref: SegmentRef) => AsyncIterable<{ generation: number }>;
+}): Promise<number[]> {
+  const gens: number[] = [];
+  for await (const k of cold.list(SEG)) gens.push(k.generation);
+  return gens.sort((a, b) => a - b);
+}
+
 async function world() {
   const w = await loadedStore({}, { retry: false });
   return { ...w, deps: { cold: w.cold, registry: w.registry, codec: roaringCodec } };
@@ -71,6 +79,9 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
+    // Nothing was written, so there is no generation to name. Reporting one here named an object that does not
+    // exist — and once the row had gone too, `nextGeneration` restarted at 0 and named `fromGeneration` itself.
+    expect(res.generation).toBeUndefined();
   });
 
   it('the generation vanishes part-way through the whole-segment rewrite', async () => {
@@ -83,6 +94,8 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
+    expect(res.generation).toBeUndefined(); // the stream threw; `putImmutable` commits atomically
+    expect(await generationsIn(w.cold)).toEqual([1]); // only the winner's object exists
   });
 
   it('the object this call wrote is swept before its own verify', async () => {
@@ -113,6 +126,9 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
 
     const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
+    // Written, then swept by the winner — so naming it is correct. `generation` means "written", not
+    // "still in the bucket".
+    expect(res.generation).toBe(1);
   });
 
   it('still THROWS when the pointer names an object that is simply absent', async () => {
@@ -156,7 +172,9 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     );
   });
 
-  it('the single-chunk fixture that used to be the only coverage still reports superseded', async () => {
+  // BASELINE, not coverage of the catch: a one-chunk rewrite never re-reads `from`, so this returns via the
+  // pre-existing pre-verify pointer check. It is here to prove the previously-passing case still passes.
+  it('BASELINE — the single-chunk fixture still reports superseded (via the pre-verify check)', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
     const cold = afterFirstChunkRead(w.cold, async () => {
@@ -167,10 +185,64 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
   });
 
-  it('a segment with no row at all is still `absent`, not superseded', async () => {
+  // BASELINE: the up-front row reads are unchanged by this fix.
+  it('BASELINE — a segment with no row at all is still `absent`, not superseded', async () => {
     const w = await world();
     const res = await eraseIdFromSegment(SEG, 1, w.deps);
     expect(res).toMatchObject({ erased: false, reason: 'absent' });
+  });
+
+  it('a row tombstoned mid-rewrite reports `destroyed`, not an error', async () => {
+    // `dropSegment` tombstones the row and leaves `currentGen` where it was, so a discriminator testing only
+    // the pointer falls through to the rethrow and reports an error for a segment the operator deliberately
+    // dropped — where a fresh call returns `destroyed`.
+    const w = await world();
+    await w.load(SEG, THREE_CHUNKS);
+    const cold = afterFirstChunkRead(w.cold, async () => {
+      const row = (await w.registry.get(SEG))!;
+      await w.registry.compareAndSwap(SEG, row.token, { ...row, status: 'destroyed' });
+      await w.cold.delete({ ...SEG, generation: 0 });
+    });
+
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    expect(res).toMatchObject({ erased: false, reason: 'destroyed', fromGeneration: 0 });
+  });
+
+  it('a row purged mid-rewrite reports `absent`, not superseded', async () => {
+    const w = await world();
+    await w.load(SEG, THREE_CHUNKS);
+    const cold = afterFirstChunkRead(w.cold, async () => {
+      await w.registry.delete(SEG); // what the retention sweep does to a reclaimed tombstone
+      await w.cold.delete({ ...SEG, generation: 0 });
+    });
+
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    expect(res).toMatchObject({ erased: false, reason: 'absent', fromGeneration: 0 });
+    expect(res.generation).toBeUndefined(); // NOT 0 — `nextGeneration` restarts there on a purged row
+  });
+
+  it('a faulting pointer re-read surfaces the NotFoundError, not the registry fault', async () => {
+    // That `NotFoundError` is the only signal of the integrity state below; a transient-looking registry
+    // error in its place tells an operator to retry something no retry fixes.
+    const w = await world();
+    await w.load(SEG, THREE_CHUNKS);
+    await w.cold.delete({ ...SEG, generation: 0 });
+
+    let gets = 0;
+    const registry = new Proxy(w.registry, {
+      get(target, prop, receiver) {
+        if (prop !== 'get') return Reflect.get(target, prop, receiver) as unknown;
+        return async (ref: SegmentRef) => {
+          gets++;
+          if (gets > 1) throw new Error('registry throttled');
+          return w.registry.get(ref);
+        };
+      },
+    }) as unknown as typeof w.registry;
+
+    await expect(eraseIdFromSegment(SEG, 70_000, { ...w.deps, registry })).rejects.toThrow(
+      /no such generation/,
+    );
   });
 
   it('the reported answer is actionable: a re-run against the new generation erases the id', async () => {

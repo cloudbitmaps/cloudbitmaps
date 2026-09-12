@@ -22,14 +22,24 @@
  * `WriteConflictError` (write-once).
  *
  * The same answer covers the read half, and for the same reason. An erasure collects with `keep: 0`, which takes
- * every generation below its new pointer — so a racing erasure deletes the generation this call is streaming, and
- * the object this call just wrote, while it is still working. All three exposed round trips (the reader open, any
- * chunk of the whole-segment rewrite, the verify) therefore report `'superseded'` rather than a bare
+ * every generation below its new pointer — so a racing erasure can delete the generation this call is streaming,
+ * and (once it is below the winner's pointer) the object this call just wrote. All three exposed round trips (the
+ * reader open, any chunk of the whole-segment rewrite, the verify) therefore report a *reason* rather than a bare
  * `NotFoundError`, which was the same event wearing an unactionable face: through `eraseSubject` it became a note
  * the facade documents as ambiguous about which side of the publish it landed on, telling an operator to triage
- * where the truth was to re-run. Translated **only** once the pointer is confirmed to have moved; if it still
- * names the missing object, that is the forbidden `missing-cold-generation` state and it throws, because no
- * re-run fixes it.
+ * where the truth was to re-run.
+ *
+ * Which reason comes from **re-reading the row**, not from assuming a supersession: a moved pointer is
+ * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row with no pointer
+ * `'no-generation'`. A pointer still on `from` means the object it names is genuinely gone — the forbidden
+ * `missing-cold-generation` state — and that throws, because no re-run fixes it. That `NotFoundError` is the only
+ * signal of that state, so a faulting re-read rethrows it rather than replacing it with a transient-looking
+ * registry error.
+ *
+ * **No orphan is left behind by a refused rewrite**, and it is worth saying why, because nothing else collects
+ * above the pointer: `putImmutable` commits atomically, so a rewrite whose stream throws leaves no object at all;
+ * and if the write did complete, the winner's generation is necessarily higher, which puts ours below its pointer
+ * where its `keep: 0` takes it. The two orderings are mutually exclusive.
  *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
@@ -57,7 +67,7 @@ import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
 import { IntegrityError, KeyUnavailableError, ValidationError, isNotFoundError } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
-import type { GenKey, IColdDriver, IRegistryDriver, SegmentRef } from './ports';
+import type { GenKey, IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateSegmentRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
@@ -96,8 +106,18 @@ export interface EraseIdResult {
   /**
    * Why nothing was rewritten, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
    * tombstone — already unreadable), `'no-generation'` (a row with no Cold data yet), `'not-member'` (the id is not
-   * in the current generation — the common case across a fleet scan), or `'superseded'` (a load published a newer
-   * generation while this rewrite was in flight; the rewrite was written but not made current — re-run).
+   * in the current generation — the common case across a fleet scan), or `'superseded'`.
+   *
+   * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
+   * load, or another erasure — moved the pointer off the generation this rewrite was derived from, so the
+   * rewrite is not a valid successor to what is now current. Re-run against the new generation: if the id is
+   * still present it is erased then; if the racing writer was another erasure of the *same* id, the re-run
+   * reports `'not-member'` because it is already gone. Either way the re-run settles it, which is why it is the
+   * documented action for this reason and for no other.
+   *
+   * The first four reasons are also returned when the row changes *underneath* a rewrite already in flight,
+   * not only when it is read up front — a concurrent `dropSegment` gives `'destroyed'`, a retention sweep that
+   * purges the row gives `'absent'`. A caller branching on `reason` never has to care which it was.
    */
   readonly reason?: 'absent' | 'destroyed' | 'no-generation' | 'not-member' | 'superseded';
   /** The generation the id was found in (present whenever it was read). */
@@ -159,14 +179,37 @@ export async function eraseIdFromSegment(
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
 
   const fromKey: GenKey = { ...base, generation: from };
-  const superseded = (generation?: number): EraseIdResult => ({
+  const refused = (
+    reason: 'superseded' | 'absent' | 'no-generation' | 'destroyed',
+    generation?: number,
+  ): EraseIdResult => ({
     ...base,
     erased: false,
-    reason: 'superseded',
+    reason,
     fromGeneration: from,
     generation,
     collected: [],
   });
+
+  /**
+   * What the row says about the premise this call was working from — `null` when the premise still holds
+   * (the pointer is exactly `from`, so nothing raced us), otherwise the reason to report.
+   *
+   * Each state gets the answer this function already gives when it reads that state *up front*, so a caller
+   * branching on `reason` never has to care at which point in the call it was discovered: a tombstoned row is
+   * `'destroyed'` (a concurrent `dropSegment` leaves `currentGen` where it was, so testing the pointer alone
+   * would miss it and report an error for a segment the operator deliberately dropped), a vanished row is
+   * `'absent'` (the retention sweep purged a tombstone while we worked), a row with no pointer is
+   * `'no-generation'`, and a pointer that moved is `'superseded'`.
+   */
+  const rowVerdict = (
+    row: RegistryRecord | null,
+  ): 'superseded' | 'absent' | 'no-generation' | 'destroyed' | null => {
+    if (row === null) return 'absent';
+    if (row.status === 'destroyed') return 'destroyed';
+    if (row.currentGen === null) return 'no-generation';
+    return row.currentGen === from ? null : 'superseded';
+  };
 
   /**
    * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
@@ -179,20 +222,29 @@ export async function eraseIdFromSegment(
    * the reader open, every chunk of the rewrite (a whole-segment read — by far the longest window), and the
    * verify.
    *
-   * The documented answer to that race is `reason: 'superseded'` — *the id is still there, re-run against the
-   * new generation* — and it is what the publish already reports when its `expectFrom` fence fails. A bare
+   * The documented answer to that race is `reason: 'superseded'` — *this call did not erase it; re-run against
+   * the new generation* — and it is what the publish already reports when its `expectFrom` fence fails. A bare
    * `NotFoundError` instead is the same event wearing a different, unactionable face; through `eraseSubject` it
    * becomes a note the facade documents as ambiguous about which side of the publish it landed on, so an
    * Art. 17 operator is told *triage this* where the truth is *re-run*.
    *
-   * A `NotFoundError` is only translated once the pointer is confirmed to have moved. If it is still exactly
-   * `from`, then the object the pointer names is genuinely absent — the forbidden `missing-cold-generation`
-   * state a failed publish leaves behind — and that must **throw**, because it is an integrity problem rather
-   * than a race, and reporting it as `superseded` would send the caller into a retry loop against a segment
-   * nothing can fix by re-running.
+   * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
+   * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
+   * `missing-cold-generation` state a failed publish leaves behind — and that **throws**, because it is an
+   * integrity problem rather than a race and no re-run fixes it. A pointer that moved is `'superseded'`. The
+   * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
+   * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
+   * `'no-generation'` — the same answers this function gives when it reads either state up front, so a caller
+   * branching on `reason` never has to special-case where in the call it was discovered.
+   *
+   * `generation` is set only once the object is **durable**. Reporting it from `nextGeneration` was wrong in a
+   * way worth naming: if the row is gone by then, `nextGeneration` finds no row and no objects and restarts at
+   * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
+   * the one written *without* it, for an object that was never written.
    */
   const stage = async (): Promise<EraseIdResult | { generation: number; key: GenKey }> => {
-    let generation: number | undefined;
+    /** Set only once the object exists in the bucket — see the note above. */
+    let written: number | undefined;
     try {
       const reader = await openGenerationReader(deps.cold, fromKey, cryptoAt(from));
       const bytes = await reader.getChunk(chunkKey);
@@ -216,7 +268,7 @@ export async function eraseIdFromSegment(
         };
       target.remove(remainder);
 
-      generation = await nextGeneration(ref, deps);
+      const generation = await nextGeneration(ref, deps);
       const key: GenKey = { ...base, generation };
       const tally = await writeCrbmGenerationStream(
         deps.cold,
@@ -224,17 +276,28 @@ export async function eraseIdFromSegment(
         rewrite(reader, chunkKey, target, codec, maxBytes),
         { crypto: cryptoAt(generation), clock: deps.clock },
       );
+      written = generation; // `putImmutable` commits atomically, so the object exists exactly now
       // Re-check the pointer before spending the verification read. The fence below is what makes the publish
       // correct; this only saves a round trip on the common race, which the catch reports either way.
       const beforeVerify = await deps.registry.get(ref);
-      if (beforeVerify === null || beforeVerify.currentGen !== from) return superseded(generation);
+      const early = rowVerdict(beforeVerify);
+      if (early !== null) return refused(early, written);
       await verifyGeneration(deps.cold, key, tally, cryptoAt(generation));
       return { generation, key };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
-      const now = await deps.registry.get(ref);
-      if (now !== null && now.currentGen === from) throw err; // the pointer still names it: genuinely absent
-      return superseded(generation);
+      // The row decides which answer this is — but only if it can be read. A re-read that faults must not
+      // replace the `NotFoundError`: that error is the ONLY signal of the integrity state below, and swapping
+      // it for a transient-looking registry fault loses the one thing an operator needs to see.
+      let now: RegistryRecord | null;
+      try {
+        now = await deps.registry.get(ref);
+      } catch {
+        throw err;
+      }
+      const verdict = rowVerdict(now);
+      if (verdict !== null) return refused(verdict, written);
+      throw err; // the pointer still names the missing object: genuinely absent, not a race
     }
   };
 

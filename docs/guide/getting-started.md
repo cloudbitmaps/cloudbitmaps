@@ -846,11 +846,17 @@ keystore? })` free function out-of-process instead. The returned `erasedFrom` li
 (proof of deletion) — a return value only, so persist it or route it to your audit sink (a `segment.rewrite` event
 is also emitted per rewrite when you pass `audit`).
 
-**An `erased: false` entry means the id is still there**, and `note` says why:
+**An `erased: false` entry means this run did not erase the id from that segment** — which is not the same as
+"the id is still there" — and `note` says why:
 
-- `'superseded'` — a load published a newer generation of that segment while the rewrite was in flight; the
-  rewrite was written but not made current: the pointer moved off the generation it was derived from before
-  the publish landed, so the fence refused it. Re-run against the new generation.
+- `'superseded'` — another writer moved the pointer off the generation the rewrite was derived from, so the
+  rewrite is not a valid successor to what is now current. That writer is usually a load; it can also be
+  **another erasure**, which collects with `keep: 0` and so can delete the generation this rewrite was still
+  streaming, or the object it had just written. Re-run against the new generation: it erases the id if the id
+  is still present, and lists nothing for the segment if the racing writer was an erasure of the same id that
+  already removed it. The reason is read off the registry row, so a row tombstoned mid-rewrite reports
+  `'destroyed'` and one purged by the retention sweep reports `'absent'` — the same answers a fresh call gives,
+  so you never have to care at which point it was discovered.
 - `` `error: <message>` `` — an isolated per-segment fault. Three causes worth telling apart: a transient cold
   fault (re-run), a missing keystore for an encrypted segment (wire it), and an `IntegrityError` naming a chunk
   whose values are out of range — that segment is **corrupt**, the rewrite refused to copy the corruption into a
@@ -859,8 +865,9 @@ is also emitted per rewrite when you pass `audit`).
 Re-running is safe and idempotent: a segment the id is no longer in is simply not listed. **One contract the
 library cannot check: do not load the segment while erasing from it.** A load that lands *after* the rewrite
 carries whatever its source held, and the library cannot know that source was meant to exclude the id — quiesce
-loads of the affected segments for the duration, or fix the source first and load after. A load that lands
-*during* the rewrite is caught (`'superseded'`).
+loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
+*during* the rewrite is caught and reported as a reason rather than an error (`'superseded'` for a load or a
+racing erasure).
 
 **What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
 their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred

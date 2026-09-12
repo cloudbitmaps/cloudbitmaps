@@ -282,10 +282,11 @@ export interface SubjectErasureEntry {
   readonly generation?: number;
   /**
    * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — a newer generation
-   * was published while the rewrite was in flight, by a load or by another erasure; re-run.
-   * `` `error: <message>` `` — an isolated per-segment fault (per-segment faults are recorded so one segment
-   * can't discard the whole ledger); re-run after fixing the fault. Segments the id is not in are not listed
-   * at all.
+   * was published while the rewrite was in flight, by a load or by another erasure, so **this call** did not
+   * erase the id; re-run against the new generation, which erases it if it is still there and reports nothing
+   * for the segment if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment
+   * fault (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing
+   * the fault. Segments the id is not in are not listed at all.
    */
   readonly note?: string;
 }
@@ -652,11 +653,15 @@ export class CloudRoaring {
    *
    * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
    * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
-   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as `'superseded'`
-   * rather than as an error: the pointer moved, the id is still there, and a re-run is the fix.
+   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as a reason rather than
+   * an error, read off the row: a moved pointer is `'superseded'`, a concurrent `dropSegment` `'destroyed'`,
+   * a retention sweep that purged the row `'absent'`. Re-running is the fix in every case.
    *
-   * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means a
-   * load published a newer generation mid-rewrite, so **the id is still there** and a re-run erases it.
+   * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means
+   * another writer (a load, or another erasure) moved the pointer mid-rewrite, so **this call** did not erase
+   * the id. Re-run: it erases the id if it is still there, and lists nothing for the segment if a racing
+   * erasure of the same id already removed it. Do not read `'superseded'` as "the id is still present" —
+   * read it as "not done by this call, and the re-run settles it".
    * `` `error: …` `` is a per-segment fault (caught so one segment can't discard the whole ledger) and it can land
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
