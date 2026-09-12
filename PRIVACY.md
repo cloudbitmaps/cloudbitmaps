@@ -57,9 +57,9 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
-| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. Reads exclude the id from the moment the rewrite is current. Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
+| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. A retained *superseded* generation still holding the id (an ex-member dropped by a re-seed) is found and collected too. The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
 | **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Cold generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
-| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
+| **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total at rest* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
 `store.eraseSubject(id, { namespace })` — or `{ allNamespaces: true }` to sweep every tenant deliberately. For
@@ -90,6 +90,28 @@ rewrite was published (a Cold `delete` fault), the pointer has already moved, so
 segment — collect the residual with `gcOrphanGenerations(ref, { cold, registry }, { keep: 0 })`. That note is the
 signal that a *published* rewrite's physical half did not complete, which is why it is reported rather than
 swallowed.
+
+### One process, and the rest of your fleet
+
+Erasure and crypto-shred are **immediate in storage and immediate in the process that performed them**. They are
+not immediate in *other* processes, and this library ships nothing that could make them so — there is no daemon,
+no bus, and no connection between two stores that happen to point at the same bucket.
+
+| | when the id stops being readable |
+|---|---|
+| storage | on return — the generation holding it is deleted, the DEK is destroyed |
+| the store that performed the call | on return — it invalidates what it cached |
+| another store, with a clock and a registry | within `coldGenTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store with **no clock**, or `coldGenTtlMs: 0` | **never**, until something tells it |
+
+That last row is the one to design around. `coldGenTtlMs: 0` means "pin forever" and is a legitimate setting for
+a read-only replica of immutable data — but a segment pinned that way does not observe a shred at all. If a
+compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
+process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is
+yours.
+
+A read served from a stale cache is bounded by the same window and answers from memory, so nothing on the
+storage side — a bucket policy, a lifecycle rule, the object's own deletion — can shorten it.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps every registered segment's current generation to a portable

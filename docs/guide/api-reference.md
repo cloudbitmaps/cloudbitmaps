@@ -377,10 +377,29 @@ writer in this build) · `GovernanceMeta` · `SegmentSize`
 
 ## Errors (typed — you `catch` these)
 
-`CloudRoaringError` (base) · `ValidationError` · `WriteConflictError` (a write-once generation number was reused,
-or a registry CAS lost every retry) · `IntegrityError` · `NotFoundError` · `UnsupportedError` (the store lacks the
-raw cold driver or the registry an operation needs) · `CapabilityError` · `TransientError` · `TimeoutError` ·
-`KeyUnavailableError` · `BudgetExceededError` (a per-op denial-of-wallet budget was exceeded)
+Every error this library throws extends `CloudRoaringError`, and each one tells you which of three things to do:
+**fix your call**, **retry**, or **investigate the data**. Nothing throws a bare `Error`.
+
+| Error | Fires when | What to do | Retry? |
+|---|---|---|---|
+| `ValidationError` | your input is malformed — a bad id, an illegal segment name, an out-of-range option. Raised **before any storage call** | fix the call | no — deterministic |
+| `WriteConflictError` | a write-once generation number was claimed twice, or a registry compare-and-swap lost every retry | re-read the pointer and re-derive: take a fresh `nextGeneration`, or re-run the operation | no — but the *operation* is safe to re-run |
+| `IntegrityError` | bytes from storage are corrupt, oversized, fail a checksum, or fail AEAD authentication | **investigate** — this says "this segment is corrupt", not "try again". Names the chunk. Re-loading the segment from source is the repair | no |
+| `NotFoundError` | an object or row the caller named does not exist. Thrown by the persistent drivers; the in-memory drivers return `null` instead | usually the library handles it internally (a swept generation heals forward). Reaching you means the pointer names an object that is *permanently* absent — a torn restore. See [disaster recovery](disaster-recovery.md) | no |
+| `UnsupportedError` | (a) the bytes are well-formed but this build cannot read them — an unknown `.crbm` major version; or (b) this store's wiring cannot perform the operation, e.g. a lifecycle helper on a store built without a raw cold driver + registry | wire the store with what the operation needs, or upgrade the library | no |
+| `CapabilityError` | a driver cannot meet a capability the topology requires — e.g. a Cold driver without range reads. Raised **fail-fast at wiring time**, never mid-operation | use a driver that supports it | no |
+| `BudgetExceededError` | the operation would exceed its per-op denial-of-wallet budget — too many backend requests for one call. Refused **before** fanning out (hard invariant 6). Carries the projected count and the limit, never data | narrow the operation, raise `budget`, or set `budget: false`. If it fires on a normal call, something is wider than you think | no — refused by policy, not by luck |
+| `KeyUnavailableError` | an encrypted segment's DEK cannot be unwrapped: the keystore holds none of the KEKs its wrappings reference — never configured, rotated away without keeping the old key, or lost | restore the KEK. **Without it the data is unreadable**, which is what crypto-shred relies on | no |
+| `TransientError` | a driver-classified transient fault — throttling, a 5xx, a connection reset. The raw SDK error is preserved in `cause` | the retry layer already retried it; reaching you means it kept failing | **yes** — the only class the retry layer retries |
+| `TimeoutError` | a single attempt exceeded its time budget. Subclass of `TransientError` | as above. Setting a request timeout on your injected client is the recommended way to bound a hang | yes |
+
+Two things worth knowing:
+
+- **The retry layer retries `TransientError` and nothing else.** Retrying a `ValidationError`, `IntegrityError`,
+  `NotFoundError` or `WriteConflictError` is pointless or wrong, so it never happens.
+- **`TransientError.cause` is the raw SDK error** and may carry operational metadata (endpoint host, request
+  ids, `$metadata`). The library's own `message` is identifier-only and safe to log; serializing the whole error
+  *chain* includes that metadata.
 
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
 `isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
