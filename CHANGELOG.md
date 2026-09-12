@@ -23,8 +23,11 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   and `intersect` on the *first* attempt, not as the documented "retried once, then propagate". Reproduced
   against a real driver; the reader open and the pointer resolve now sit inside the retry, and
   `currentGeneration` — which the engine calls once per operation, before any chunk fetch, so an unhealed miss
-  there failed the whole operation — goes through the same path. Most exposed with `keep: 0`, which every id
-  erasure passes and which sweeps microseconds after the publish.
+  there failed the whole operation — heals the same way. Most exposed with `keep: 0`, which every id erasure
+  passes and which sweeps microseconds after the publish. The retry is now **gated at exactly two
+  resolve-and-open round trips** by counting calls, because it re-reads the *registry* — the shared,
+  throttle-prone resource — and an N-way `intersect` pays it per operand; nothing had pinned that bound before,
+  and a mutation raising it to 1,000 left the whole suite green.
 
 ### Changed
 - **`keep` is documented as the cost/latency trade it is, and a time floor on collection is refused.** The

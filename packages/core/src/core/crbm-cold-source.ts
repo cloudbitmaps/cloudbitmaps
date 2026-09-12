@@ -282,11 +282,33 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
    *
-   * Goes through {@link withFreshSnapshot} like every other read verb: the engine calls this **once per op**,
-   * before any chunk fetch, so an unhealed miss here fails the whole operation rather than one chunk.
+   * Heals a swept generation exactly like {@link withFreshSnapshot} — the engine calls this **once per op**,
+   * before any chunk fetch, so an unhealed miss here fails the whole operation rather than one chunk. It is
+   * spelled out rather than delegated because this is the hottest call in the library: once per operand of
+   * every `has`/`count`/`iterate`/`intersect`, and almost always served from the cached snapshot with no
+   * backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
+   * frame, a per-call closure, and an `await` on a plain number) for a race that fires only during a
+   * concurrent sweep. One retry, then propagate — same contract, same eviction rule.
    */
   async currentGeneration(ref: SegmentRef): Promise<number | null> {
-    return this.withFreshSnapshot<number | null>(ref, (reader) => reader.generation, null);
+    const pending = this.resolvedReader(ref);
+    try {
+      return (await pending)?.generation ?? null;
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      this.dropStale(segmentKey(ref), pending);
+      return (await this.resolvedReader(ref))?.generation ?? null; // a second miss propagates
+    }
+  }
+
+  /**
+   * Evict a snapshot we just failed to read from — matched by its reader *promise*, so a concurrent call's
+   * fresher snapshot is never clobbered. The identity guard is the whole point: `install` replaces the entry
+   * wholesale, so comparing anything else would drop a good snapshot on the floor.
+   */
+  private dropStale(key: string, pending: Promise<CrbmReader | null>): void {
+    const cur = this.snapshots.get(key);
+    if (cur !== undefined && cur.reader === pending) this.snapshots.delete(key);
   }
 
   private async resolveLatest(ref: SegmentRef): Promise<CrbmReader | null> {
@@ -398,14 +420,18 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
    * generation to serve: cold is empty, or the row was dropped or crypto-shredded, in which case reading empty
-   * is the documented outcome rather than a failure. The single retry is bounded.
+   * is the documented outcome rather than a failure.
+   *
+   * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
+   * now re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
+   * tight loop on a segment whose pointer names an object that is permanently absent — and an N-way
+   * `intersect` would do it N times. Gated in `tests/core/cold-source-heal-open.test.ts` by counting calls.
    */
   private async withFreshSnapshot<T>(
     ref: SegmentRef,
     read: (reader: CrbmReader) => T | Promise<T>,
     ifGone: T,
   ): Promise<T> {
-    const key = segmentKey(ref);
     for (let attempt = 0; attempt < 2; attempt++) {
       const pending = this.resolvedReader(ref);
       try {
@@ -416,10 +442,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
         // Only a vanished pinned generation is recoverable here, and only on the first try; anything else
         // (corruption, a real second miss) propagates / falls through.
         if (!isNotFoundError(err) || attempt === 1) throw err;
-        // Force re-resolution to the current generation — but only evict the exact stale snapshot we just read
-        // from (matched by its reader promise), so we don't clobber a fresher one a concurrent call installed.
-        const cur = this.snapshots.get(key);
-        if (cur !== undefined && cur.reader === pending) this.snapshots.delete(key);
+        this.dropStale(segmentKey(ref), pending); // lazily: the happy path never needs the key
       }
     }
     return ifGone;
