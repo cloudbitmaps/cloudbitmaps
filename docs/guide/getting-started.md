@@ -435,6 +435,15 @@ const res = await shoppers.intersectInto(store.segment('campaign-targets'), [act
 res; // { generation, cardinality, chunkCount, size } — what was written
 ```
 
+> **An operand that names a segment which does not exist is refused.** `store.segment('global-opt-out')` and
+> `store.segment('global-opt-out', { namespace: 'suppression' })` are **different segments**, and before this was
+> checked the first one resolved to nothing and suppressed nobody — returning the full audience, with no error.
+> The dangerous direction is the quiet one: a mistyped *include* collapses an intersect to nothing and you
+> notice; a mistyped *exclude* removes a safeguard and you do not. Both are now a `ValidationError` naming the
+> segment. A segment that **exists and is empty** — a row minted by `setRetention` before its first load — is
+> still fine, because somebody created it deliberately; it is only a name nobody ever created that is refused.
+> Pass `allowAbsentOperands: true` if you mean to combine against a name that may not exist yet.
+
 Three properties, all consequences of "a write is a load":
 
 - **The destination is superseded, not added to.** `campaign-targets` now holds exactly this result; whatever it
@@ -868,6 +877,24 @@ carries whatever its source held, and the library cannot know that source was me
 loads of the affected segments for the duration, or fix the source first and load after. A writer that lands
 *during* the rewrite is caught and reported as a reason rather than an error (`'superseded'` for a load or a
 racing erasure).
+
+**Who stops seeing the id, and when.** The erasure is immediate in storage and immediate in the store that
+performed it — that store drops what it had cached about the segment before returning, so it cannot keep
+answering from memory. Other processes are a different question, and this library ships nothing that could
+answer it for you: there is no daemon and no bus, only stores that happen to point at the same bucket.
+
+| | when the id stops being readable |
+|---|---|
+| storage | on return — the generation holding it is deleted |
+| the store that performed the erasure | on return |
+| another store, with a clock and a registry | within `coldGenTtlMs` (default 2 s) |
+| another store with **no clock**, or `coldGenTtlMs: 0` | **never**, until something tells it |
+
+`coldGenTtlMs: 0` means "pin forever" and is a reasonable setting for a read-only replica of immutable data —
+but a segment pinned that way never observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
+fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
+`destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them holds the
+**unwrapped** key and keeps reading until it is told.
 
 **What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
 their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred
