@@ -160,6 +160,25 @@ export class BoundedLru<K, V> {
     return true;
   }
 
+  /**
+   * Delete every entry whose key matches `pred`, returning how many went. Used to drop one segment's decoded
+   * chunks when something destroys the generation they came from — a deletion the generation-keyed cache
+   * cannot express on its own, because a *destroyed* segment has no newer generation whose key would miss.
+   * Linear in the cache size; called on admin paths (erasure, drop, shred, retirement), never on a read.
+   */
+  deleteWhere(pred: (key: K) => boolean): number {
+    let dropped = 0;
+    // Snapshot the keys first: `drop` mutates the map, and deleting during its own iteration is fragile.
+    for (const key of [...this.map.keys()]) {
+      if (!pred(key)) continue;
+      const entry = this.map.get(key);
+      if (entry === undefined) continue;
+      this.drop(key, entry);
+      dropped += 1;
+    }
+    return dropped;
+  }
+
   clear(): void {
     this.map.clear();
     this.totalBytes = 0;

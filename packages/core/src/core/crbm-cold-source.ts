@@ -303,6 +303,20 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
+   * Forget everything derived from `ref`: the resolved snapshot and the open reader behind it (and with the
+   * reader, the DEK it unwrapped at open time). The next read resolves `currentGen` from the registry again.
+   *
+   * Needed because the TTL refresh only ever answers "has the pointer moved?", and every *destructive* verb —
+   * an erasure that deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement —
+   * leaves the pointer's answer unchanged from this source's point of view while making the snapshot wrong.
+   * Until this is called the source keeps serving that snapshot with no backend read at all, so nothing on the
+   * storage side can close the window; with `coldGenTtlMs: 0` or no clock it never closes.
+   */
+  invalidate(ref: SegmentRef): void {
+    this.snapshots.delete(segmentKey(ref));
+  }
+
+  /**
    * Evict a snapshot we just failed to read from — matched by its reader *promise*, so a concurrent call's
    * fresher snapshot is never clobbered. The identity guard is the whole point: `install` replaces the entry
    * wholesale, so comparing anything else would drop a good snapshot on the floor.
