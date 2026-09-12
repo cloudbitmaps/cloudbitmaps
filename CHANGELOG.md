@@ -15,6 +15,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+- **An erasure now reaches an ex-member's bit in a retained generation.** `eraseIdFromSegment` tested membership
+  against `currentGen` only, so a subject who had simply been *dropped* from a re-seeded audience was reported
+  `'not-member'` — and `eraseSubject` filters that out, so the segment never appeared in the ledger at all. A
+  completely clean Art. 17 receipt over bytes still in the bucket. No race is involved: it is the documented
+  lifecycle, because `gcOrphanGenerations`' default `keep: 1` **retains** exactly the generation the subject was
+  dropped from, as the reader grace window. The guarantee held for current members and quietly did not for the
+  population most likely to be asking. Erasure now looks in the superseded generations and, if one holds the id,
+  collects with `keep: 0` — the only available remedy, since a non-current generation cannot be rewritten
+  without regressing the pointer, and everything below `currentGen` is permanently unreachable anyway. The
+  result is `erased: true` with `fromGeneration` naming the generation it was found in and no `generation`
+  (nothing was rewritten). **The cost is paid only where it is owed:** one `list` first, and a segment with no
+  superseded generations reads nothing extra — which is what keeps a fleet-wide `eraseSubject` from doubling its
+  reads on the segments that never held the id.
+
 ### Added
 - **`store.invalidate(ref)` — tell a store to forget what it cached about a segment.** Needed when something
   destroys or retires a segment through a path the store cannot see: `destroySegment` / `eraseNamespace` are
