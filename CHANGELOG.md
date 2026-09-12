@@ -15,7 +15,31 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`store.invalidate(ref)` — tell a store to forget what it cached about a segment.** Needed when something
+  destroys or retires a segment through a path the store cannot see: `destroySegment` / `eraseNamespace` are
+  free functions over raw drivers, and another process's erasure is invisible to this one. `ColdChunkSource`
+  gains an optional `invalidate(ref)` to match, so a third-party source can participate.
+
 ### Fixed
+- **Destructive verbs no longer leave this store answering from memory.** A store keeps a resolved snapshot per
+  segment (an open reader, plus the DEK it unwrapped) and decoded chunks keyed by generation. Both exist to
+  notice *a publish that advances `currentGen`* — the TTL re-resolves, the new generation misses the cache.
+  Neither notices an event that **destroys** what they were derived from, and every destructive verb went
+  straight to the raw drivers without telling them. Reproduced: the store that performed `eraseSubject` kept
+  answering `has(id) === true` for the id it had just reported erased, **with no backend read at all** — so no
+  bucket policy, lifecycle rule or object deletion could close the window — and `iterate()` returned a set
+  mixing a deleted generation with the live one. `subjectReport` (Art. 15) and `exportSegments` (Art. 20) read
+  through the same cache, so two compliance APIs on one object disagreed about the same subject. With
+  `coldGenTtlMs: 0` ("pin forever", a documented setting) none of it ever converged. `eraseSubject`,
+  `dropSegment` and `retireExpired` now invalidate what they touch, and `store.invalidate` covers the rest.
+- **A crypto-shred performed beside a store no longer leaves it able to decrypt.** `destroySegment` deletes the
+  wrapped DEK from the registry, but a store that had already opened the segment holds the **unwrapped** key
+  inside its reader — so it kept serving plaintext, including chunks it had never fetched before the shred
+  (verified: an id in a cold chunk, read and decrypted after `cryptoShredded: true` was returned). Calling
+  `store.invalidate(ref)` after an out-of-store shred drops the reader and the key with it. **Fleet note:** a
+  shred on one box still invalidates nothing on the others — each store bounds its own staleness by
+  `coldGenTtlMs`, and one built with no clock or `coldGenTtlMs: 0` never converges without an explicit signal.
 - **Expired data is no longer stranded when its deletes fail.** `retireExpired` purged the registry row whenever
   `dropSegment` reported `generationsDeleted: []`, reading that as "the segment was empty". It is equally what a
   segment whose every `cold.delete` threw produces — a 403, a bucket policy, a throttle — because the sweep loop

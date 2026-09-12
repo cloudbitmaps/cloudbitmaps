@@ -63,6 +63,21 @@ export interface ColdChunkSource {
    * refreshes may omit this — the engine then keys the cache without a generation.
    */
   currentGeneration?(ref: SegmentRef): Promise<number | null>;
+  /**
+   * Optional: forget everything this source has derived from `ref` — its resolved snapshot, its open reader,
+   * and any key material that reader captured — so the next read resolves from the registry again.
+   *
+   * The TTL refresh and the generation-keyed chunk cache are both built for **a publish that advances
+   * `currentGen`**. Neither covers an event that *destroys* what the cache was derived from: an erasure that
+   * deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement. After one of those
+   * a source that had already resolved the segment keeps answering from memory — with no backend read at all,
+   * so no storage-side control can close the window — until its TTL lapses, and **never** if it has no clock
+   * or `coldGenTtlMs: 0` ("pin forever").
+   *
+   * Callers that destroy or retire a segment must call this. It is synchronous and best-effort: dropping
+   * memoized state cannot fail, and a source that memoizes nothing may omit the method entirely.
+   */
+  invalidate?(ref: SegmentRef): void;
 }
 
 /** Capabilities a Cold driver advertises; validated at wiring time, fail-fast. */

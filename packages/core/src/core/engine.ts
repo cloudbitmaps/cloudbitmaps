@@ -14,7 +14,7 @@ import { checkBudget, DEFAULT_BUDGET, resolvePerOpBudget } from './budget';
 import type { Budget, BudgetOption } from './budget';
 import type { Clock } from './determinism';
 import { IntegrityError, ValidationError } from './errors';
-import { chunkGenKey, chunkRefKey } from './keys';
+import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
@@ -439,6 +439,23 @@ export class SegmentEngine {
           `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
       );
     }
+  }
+
+  /**
+   * Drop every piece of state this engine derived from `ref`, and tell the Cold source to do the same.
+   *
+   * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
+   * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
+   * whose key would miss, so its decoded chunks stay resident and keep answering. That is why the erasing
+   * process itself could report `erased: true` and then still answer `true` for the same id, out of RAM, with
+   * no storage read to intercept.
+   *
+   * Called by the destructive verbs on the facade. Synchronous and best-effort — forgetting cannot fail.
+   */
+  invalidate(ref: SegmentRef): void {
+    const prefix = segmentPrefix(ref);
+    this.cache?.deleteWhere((key) => key.startsWith(prefix));
+    this.cold.invalidate?.(ref);
   }
 
   /** The segment's current generation, resolved once per op (`undefined` ⇒ source can't report it). */

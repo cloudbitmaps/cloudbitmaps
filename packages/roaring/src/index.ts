@@ -709,6 +709,11 @@ export class CloudRoaring {
           // engine's cached view, which may lag a load by up to `coldGenTtlMs`. An Art. 17 erasure must never
           // skip a segment because a read cache hasn't caught up yet.
           const result = await eraseIdFromSegment(ref, id, deps, { audit: options.audit });
+          // Whatever the outcome, this process's own view of the segment is now suspect: a landed rewrite
+          // deleted the generation our caches were built on, and a refused one means somebody else's did.
+          // Without this the erasing store keeps answering `true` for the id it just reported erased — out of
+          // RAM, with no storage read for any control to intercept.
+          this.engine.invalidate(ref);
           if (result.reason === 'not-member' || result.reason === 'absent') return null;
           if (result.reason === 'no-generation') return null; // a row with no data yet holds no id
           if (result.reason === 'destroyed') return null;
@@ -777,7 +782,11 @@ export class CloudRoaring {
   ): Promise<DropResult> {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('dropSegment');
-    return dropSegment(ref, { registry: deps.registry, cold: deps.cold }, options);
+    try {
+      return await dropSegment(ref, { registry: deps.registry, cold: deps.cold }, options);
+    } finally {
+      if (options.dryRun !== true) this.engine.invalidate(ref);
+    }
   }
 
   /**
@@ -882,10 +891,51 @@ export class CloudRoaring {
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
   ): Promise<RetireExpiredResult> {
     const deps = this.lifecycleDeps('retireExpired');
-    return retireExpired(
+    const result = await retireExpired(
       { registry: deps.registry, cold: deps.cold },
       { ...options, now: options.now ?? this.clock.now() },
     );
+    // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
+    // nothing, so it invalidates nothing.
+    if (options.dryRun !== true) {
+      for (const entry of result.entries) {
+        this.engine.invalidate({ segment: entry.segment, namespace: entry.namespace });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * **Forget everything this store has cached about a segment.** Use it after destroying or retiring a segment
+   * through a path this store did not perform itself.
+   *
+   * A store keeps two layers of derived state — a resolved snapshot per segment (an open `.crbm` reader, plus
+   * the DEK it unwrapped) and decoded chunks keyed by generation. Both are built for one event: **a publish
+   * that advances `currentGen`**, which the snapshot TTL notices and the generation-keyed cache misses on.
+   * Neither notices an event that *destroys* what they were derived from.
+   *
+   * The verbs on this class handle themselves — `eraseSubject`, `dropSegment` and `retireExpired` invalidate
+   * what they touch. This method is for the cases they cannot see:
+   *
+   * - **`destroySegment` / `eraseNamespace`**, which are free functions over raw drivers rather than methods
+   *   here, so a crypto-shred performed beside this store leaves it holding an open reader and an unwrapped
+   *   DEK. Until it is told, it keeps decrypting — including chunks it had never fetched before the shred.
+   * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
+   *   staleness by `coldGenTtlMs`, and a store built with no clock or `coldGenTtlMs: 0` ("pin forever") never
+   *   converges at all. If a compliance deadline depends on every reader converging, you need to signal them —
+   *   this is the call to make when your own fan-out delivers.
+   *
+   * Synchronous, best-effort, and safe to call for a segment this store has never read.
+   *
+   * ```ts
+   * await destroySegment(ref, { cold, registry, keystore }, { confirmSegment: ref.segment });
+   * store.invalidate(ref);                       // this process
+   * await bus.publish('cloudbitmaps.invalidate', ref); // and every other one
+   * ```
+   */
+  invalidate(ref: SegmentRef): void {
+    validateSegmentRef(ref);
+    this.engine.invalidate(ref);
   }
 
   /** The store's registry, or a typed error naming the operation that needs one. */
