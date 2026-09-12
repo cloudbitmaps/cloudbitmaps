@@ -281,10 +281,12 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * The segment's current generation number — the engine keys its HOT chunk cache by this so a generation bump
    * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
+   *
+   * Goes through {@link withFreshSnapshot} like every other read verb: the engine calls this **once per op**,
+   * before any chunk fetch, so an unhealed miss here fails the whole operation rather than one chunk.
    */
   async currentGeneration(ref: SegmentRef): Promise<number | null> {
-    const reader = await this.resolvedReader(ref);
-    return reader?.generation ?? null;
+    return this.withFreshSnapshot<number | null>(ref, (reader) => reader.generation, null);
   }
 
   private async resolveLatest(ref: SegmentRef): Promise<CrbmReader | null> {
@@ -381,13 +383,22 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
-   * Run `read` against the pinned snapshot, healing the one torn-read window generation GC can open: if the
-   * generation we pinned was superseded *and* swept (the grace window elapsed) mid-read, the Cold driver throws
+   * Run `read` against the pinned snapshot, healing the torn-read window generation GC can open: if the
+   * generation we resolved was superseded *and* swept (the grace window elapsed), the Cold driver throws
    * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
-   * a monotonic move forward. A *second* NotFound is pathological (GC outrunning resolution) and propagates
-   * rather than fabricate an absent answer — never return a wrong result. `ifGone` is returned only when the
-   * segment legitimately has no committed generation at all (cold is empty). The single retry is bounded.
+   * a monotonic move forward.
+   *
+   * **Resolution and open are inside the retry, not before it.** Resolving `currentGen` and opening that
+   * generation's object are two backend round trips with a gap between them, so the object can be swept after
+   * the registry named it and before its tail is read — and that miss surfaces from awaiting the snapshot, not
+   * from `read`. Awaiting outside the retry left the *first* attempt unhealed on the one path GC actually
+   * races: `keep: 0`, which every id erasure passes, sweeps microseconds after the publish.
+   *
+   * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
+   * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
+   * generation to serve: cold is empty, or the row was dropped or crypto-shredded, in which case reading empty
+   * is the documented outcome rather than a failure. The single retry is bounded.
    */
   private async withFreshSnapshot<T>(
     ref: SegmentRef,
@@ -397,9 +408,9 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     const key = segmentKey(ref);
     for (let attempt = 0; attempt < 2; attempt++) {
       const pending = this.resolvedReader(ref);
-      const reader = await pending;
-      if (reader === null) return ifGone;
       try {
+        const reader = await pending;
+        if (reader === null) return ifGone;
         return await read(reader);
       } catch (err) {
         // Only a vanished pinned generation is recoverable here, and only on the first try; anything else

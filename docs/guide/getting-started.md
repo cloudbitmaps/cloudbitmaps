@@ -467,7 +467,8 @@ const deleted = await gcOrphanGenerations(ref, { cold, registry }, { keep: 1 });
 ```
 
 What it does, precisely: deletes generations **strictly below `currentGen`**, keeping the most recent `keep` of
-them (default `1`) so a reader pinned to the just-superseded generation is not cut off mid-call. It never touches
+them (default `1`) so a read still fetching from the just-superseded generation need not re-resolve mid-call —
+a window, not a lock, and [sized below](#sizing-keep). It never touches
 the current generation or anything above it (a load that is mid-write), and it deletes nothing while
 `currentGen` is `null` — an object under a pointer-less row is either a load about to publish or an orphan, and
 the two cannot be told apart safely. The one exception: on a `destroyed` segment (a drop or crypto-shred tombstone)
@@ -482,24 +483,35 @@ Who calls it today:
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
-**Read staleness, restated for the whole picture.** With a registry, a store notices a new generation within
-`coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a stale decoded chunk
-for a new generation. Within one read op the generation is resolved once. A `count()` is a single index read, so
-it is always internally consistent; a long `intersect` that straddles a TTL boundary *and* a publish may read its
-remaining chunks from the newer generation — whole and verified, never torn.
+**Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
+generation within `coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a
+stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
+consistent. A **long** call is the one shape where the generation can move underneath you — a resolved snapshot
+is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
+resolve even sooner — so a long `intersect` across a publish may read its later chunks from the newer
+generation: every chunk whole, immutable and checksum-verified, never torn, but the answer describing two
+instants rather than one, with nothing in the result saying so. That is what a snapshot handle is for, and it
+is [on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
 
 ### Sizing `keep`
 
-`keep` is a **grace window**, not a safety belt. A reader resolves `currentGen` once and then fetches chunks
-from that generation, so what endangers it is publishes landing underneath — and `keep` decides how many can
-land before its object is gone. Two facts make that easier to size than it looks.
+`keep` is a **grace window**: a read fetches from the generation its snapshot names, and `keep` decides how
+many publishes can land underneath before that object is gone. Three facts size it.
 
-**A miss is a re-read, not a failure.** If the generation a read is on is swept mid-call, the Cold driver
-throws `NotFoundError`; the cold source drops the stale snapshot, re-resolves `currentGen`, and retries the
-fetch **once**. The call then serves the newer, committed generation — a monotonic move forward, never a torn
-object. A second miss is pathological (GC outrunning resolution) and propagates rather than fabricate an
-absent answer. So a `keep` that turns out too small costs an extra round trip on a rare race; it does not
-fail the query.
+**A miss is a re-read, not a failure.** If the generation a read is on is swept, the Cold driver throws
+`NotFoundError`; the cold source drops the stale snapshot, re-resolves `currentGen` and retries **once** —
+covering both the fetch and the reopen, which are separate round trips and separately exposed. The call then
+serves the newer, committed generation: a monotonic move forward, never a torn object. A second miss is
+pathological (GC outrunning resolution) and propagates rather than fabricating an absent answer; the one case
+that answers empty instead of throwing is a segment with no generation left to serve at all — dropped or
+crypto-shredded, where reading empty is the documented outcome.
+
+**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every
+`coldGenTtlMs`, so at most `ceil(coldGenTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
+read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
+`intersect` does not need a sixty-second window. The exception is a source that never re-resolves — no clock
+injected, no registry, or `coldGenTtlMs: 0` ("pin forever") — which holds one generation for its whole
+lifetime; there no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
 160 GB of object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
@@ -508,22 +520,19 @@ Which gives:
 
 | your situation | `keep` |
 |---|---|
-| scheduled loads, reads measured in seconds — the common case | **`1`**, the default |
-| a bursty loader that can publish several times while one read is in flight | cover the burst: `ceil(longest read ÷ shortest gap between publishes)` |
+| anything on a normal TTL — the common case | **`1`**, the default |
+| publishes landing faster than `coldGenTtlMs` (a tight loader, or a raised TTL) | cover them: `ceil(coldGenTtlMs ÷ gap between publishes)` |
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
 | a long job that must see **one** instant, not merely succeed | none of the above — see below |
 
-**What `keep` cannot give you is a single instant.** Because each chunk fetch heals forward on its own, a long
-`intersect` that straddles both a publish and the `coldGenTtlMs` window may read its later chunks from the
-newer generation: every chunk whole and verified, but the answer describing two instants rather than one, with
-nothing in the result saying so. Widening `keep` makes that less likely without ruling it out — no value of
-`keep` pins a reader to a generation. A job that needs one instant (an export, a reconciliation, a send that
-must match the count you reported) needs a snapshot handle, which is
-[on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
+**What no value of `keep` gives you is a single instant.** The generation hop above is caused by
+*re-resolution*, not by collection: a read whose TTL elapses moves to the newer generation whether or not the
+old one still exists. Retaining more copies changes nothing about it. A job that needs one instant (an export,
+a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
-as a durability guarantee and would not be one: an unpinned read is already protected by the retry above, and
-a pinned read needs a pin, not a window wide enough to hope with. See
+as a durability guarantee and would not be one: an ordinary read is already covered by the retry above, and a
+job that must not change generations needs the snapshot handle, not a window wide enough to hope with. See
 [Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
 ## 9. Encryption at rest + crypto-shred
