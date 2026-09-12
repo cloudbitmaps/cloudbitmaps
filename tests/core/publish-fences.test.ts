@@ -52,11 +52,16 @@ async function generations(cold: IColdDriver, ref: SegmentRef): Promise<number[]
  * content it derived from in hand, and has NOT yet chosen its own generation number.
  *
  * That is the window the fence is about: a writer publishing here is one `nextGeneration` skips past, so the
- * rewrite ends up numbered *above* it and its forward-only publish would win. Both neighbouring instants are
- * already-safe cases and would test something else: before the chunk read, the interloper's `keep: 0` collection
- * can delete the generation this call is still reading (a `NotFoundError`, and the documented cost of physical
- * deletion on return); after the numbering, the interloper collides on the same number and takes a loud
- * write-once conflict.
+ * rewrite ends up numbered *above* it and its forward-only publish would win. After the numbering, the
+ * interloper collides on the same number and takes a loud write-once conflict.
+ *
+ * The instant *before* the chunk read used to be dismissed here as an already-safe case — the interloper's
+ * `keep: 0` collection deletes the generation this call is still reading, and this comment called the resulting
+ * `NotFoundError` "the documented cost of physical deletion on return". No shipped doc said that; the guide and
+ * the facade both promised `'superseded'`. It is now reported as `'superseded'`, covered in
+ * `erase-swept-generation.test.ts` at all three exposed round trips. Note also that the case below passes with
+ * a **single-chunk** fixture, which is why it never reached the rewrite's own re-reads: that suite spans three
+ * chunks deliberately.
  */
 function afterFirstChunkRead(base: IColdDriver, hook: () => Promise<void>): IColdDriver {
   let fired = false;

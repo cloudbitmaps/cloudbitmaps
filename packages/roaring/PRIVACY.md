@@ -80,14 +80,20 @@ an id is in).
 
 Two rules. **Do not load a segment while erasing from it**: a load that lands after the rewrite carries whatever
 its source held, and the library cannot know that source was meant to exclude the id — fix the source first, or
-quiesce loads of the affected segments for the duration. A load that lands *during* the rewrite is caught: the
-rewrite's publish is refused **by that fence** and the entry says `erased: false, note: 'superseded'`. **Read the
-ledger**: any `erased: false` entry means the id is still in that segment. For `'superseded'` re-run
-`eraseSubject` — it is idempotent, and a segment the id is no longer in is simply not listed. An
-`error: …` note is an isolated per-segment fault; if it occurred *after* the rewrite was published (a Cold
-`delete` fault), the pointer has already moved, so a re-run will not list the segment — collect the residual
-with `gcOrphanGenerations(ref, { cold, registry }, { keep: 0 })`. That note is the one signal the physical half
-did not complete, which is why it is reported rather than swallowed.
+quiesce loads of the affected segments for the duration. A writer that lands *during* the rewrite is caught and
+the entry says `erased: false, note: 'superseded'` — either because the publish was refused **by that fence**, or
+because a racing **erasure** (which collects with `keep: 0`) deleted the generation the rewrite was still
+streaming. **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
+which is not the same as the id still being present — if the racing writer was another erasure of the same id, it
+is already gone. For `'superseded'` re-run `eraseSubject`: it is idempotent, it erases the id if the id is still
+there, and a segment the id is no longer in is simply not listed. Because a settled segment drops out of the
+ledger entirely, **the attestation for a subject is the ledger of the run that reported `erased: true`** — if you
+must hold one artifact per request, re-run until no entry carries a `'superseded'` note, and keep that run's
+ledger alongside any earlier one. An `error: …` note is an isolated per-segment fault; if it occurred *after* the
+rewrite was published (a Cold `delete` fault), the pointer has already moved, so a re-run will not list the
+segment — collect the residual with `gcOrphanGenerations(ref, { cold, registry }, { keep: 0 })`. That note is the
+signal that a *published* rewrite's physical half did not complete, which is why it is reported rather than
+swallowed.
 
 **Your exit path** (and a building block for a **data-portability / Art. 20** response): `store.exportSegments(sink,
 { format })` (and the `export-segments` CLI) dumps every registered segment's current generation to a portable
@@ -195,7 +201,7 @@ CloudBitmaps deliberately does **not** ship a native `legalHold` flag: Object Lo
 an in-library flag (which our own erasure and sweep could respect but a direct caller could bypass), so a flag
 would be advisory where Object Lock is enforced at rest. If a real deployment needs a library-managed hold that
 `eraseSubject` and `retireExpired` refuse to touch, it's a clean fast-follow — but the enforced posture is
-Object Lock + operational exclusion, documented here (P10).
+Object Lock + operational exclusion, documented in this section.
 
 ## Audit & accountability (GDPR Art. 30 / Art. 5(2))
 

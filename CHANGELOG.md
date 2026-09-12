@@ -16,6 +16,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Fixed
+- **A writer that changes the row mid-rewrite is reported as a reason, not a bare `NotFoundError`.**
+  `eraseIdFromSegment` resolves the current generation and then reads it across three round trips — the reader
+  open, *every chunk* of the whole-segment rewrite, and the verify. A racing erasure collects with `keep: 0`,
+  taking every generation below its new pointer: the generation the loser is streaming, and (once it is below
+  that pointer) the object the loser had just written. The publish already reported that race as
+  `'superseded'`, but the read half threw instead, which through `eraseSubject` became `note: "error: …"` —
+  documented as ambiguous about which side of the publish it landed on, so an Art. 17 operator was told to
+  triage where the truth was to re-run. All three round trips now report a reason, and **which** reason is read
+  off the registry row rather than assumed: a moved pointer is `'superseded'`, a row tombstoned by a concurrent
+  `dropSegment` is `'destroyed'`, one purged by the retention sweep is `'absent'`, a row with no pointer is
+  `'no-generation'` — the same answers a fresh call gives, so a caller branching on `reason` never has to care
+  where in the call it was discovered. A pointer still naming the missing object is the forbidden
+  `missing-cold-generation` state and still **throws**, because no re-run fixes it; a faulting pointer re-read
+  rethrows that `NotFoundError` rather than replacing it with a transient-looking registry error, since it is
+  the only signal of that state. `generation` is now reported only once the object is durable — reporting it
+  from `nextGeneration` meant a purged row (where `nextGeneration` restarts at `0`) produced the
+  self-contradictory ledger entry `fromGeneration: 0 → generation: 0`. The pre-existing test for this
+  interleaving passed because its fixture was a **single chunk**, so the rewrite never re-read the swept
+  generation; the new coverage spans three.
+
+### Changed
+- **`'superseded'` is documented as "this call did not erase the id", not "the id is still there".** Two
+  concurrent erasures of the *same* id — the ordinary shape of a duplicated Art. 17 request — leave the loser
+  reporting `'superseded'` when the id is already physically gone. The re-run is still the correct action and
+  still settles it (it reports `'not-member'` and drops the segment from the ledger), but the stronger claim was
+  false, and it appeared in `PRIVACY.md`, the guide, the api-reference and the published type docs. `PRIVACY.md`
+  also now says plainly which ledger is the attestation for a subject, since a settled segment drops out of
+  later ones.
 - **A generation swept between resolving the pointer and opening its object no longer fails the read.**
   Resolving `currentGen` and opening that generation's `.crbm` are two backend round trips, and the heal that
   covers a vanished generation was wrapped around only the second one. So the window GC actually races — a
