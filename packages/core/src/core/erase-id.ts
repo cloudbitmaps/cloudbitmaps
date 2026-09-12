@@ -253,30 +253,74 @@ export async function eraseIdFromSegment(
    * `0`, so the ledger read `fromGeneration: 0 → generation: 0` — the generation that *held* the bit named as
    * the one written *without* it, for an object that was never written.
    */
+  /**
+   * The id is not in the current generation — which is **not** the same as not being in the bucket.
+   *
+   * A re-seed that simply stops including someone leaves their bit in the generation it dropped them from, and
+   * the documented post-load call (`gcOrphanGenerations` with its default `keep: 1`) *retains* exactly that
+   * generation as the reader grace window. So the ordinary lifecycle of a rotating audience leaves an
+   * ex-member's bit sitting in a retained object — and the rewrite never looked there, returned `'not-member'`,
+   * and `eraseSubject` filtered the segment out of the ledger entirely. A clean Art. 17 receipt over bytes
+   * still in the bucket, for the one population most likely to be asking: people who already left.
+   *
+   * So look. If a superseded generation holds the bit, the only remedy is to delete those generations —
+   * they cannot be rewritten, because a rewrite of a non-current generation would regress the pointer — and
+   * that is exactly what `keep: 0` does. Deleting them is safe for the same reason it is safe on the rewrite
+   * path: everything below `currentGen` is permanently unreachable, so no reader can be denied an answer it
+   * could otherwise have had. It costs the segment its grace window, which is proportionate: only a segment
+   * that genuinely held the subject pays it.
+   *
+   * **The cost is paid only where it is owed.** The cheap filter comes first: one `list`, and if the segment
+   * has no superseded generations at all — true of any store that collects with `keep: 0`, and of a segment
+   * loaded once — nothing else is read. Then per superseded generation, the index is opened and the chunk is
+   * fetched only if the index says that chunk exists. `eraseSubject` fans this out across every registered
+   * segment, so the filter is what keeps a fleet-wide subject scan from doubling its reads on segments that
+   * never held the id.
+   */
+  const notInCurrent = async (): Promise<EraseIdResult> => {
+    const superseded: number[] = [];
+    for await (const key of deps.cold.list(ref)) {
+      if (key.generation < from) superseded.push(key.generation);
+    }
+    if (superseded.length === 0) {
+      return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
+    }
+    superseded.sort((a, b) => b - a); // newest first: the likeliest holder of a just-dropped id
+    for (const generation of superseded) {
+      let held = false;
+      try {
+        const reader = await openGenerationReader(
+          deps.cold,
+          { ...base, generation },
+          cryptoAt(generation),
+        );
+        const bytes = await reader.getChunk(chunkKey);
+        if (bytes !== null) held = codec.safeDeserialize(bytes, maxBytes).has(remainder);
+      } catch (err) {
+        // A superseded generation swept by a concurrent collector is not a failure of this call — it is the
+        // outcome this call wanted. Anything else is a real fault and must not be swallowed into a clean
+        // receipt.
+        if (!isNotFoundError(err)) throw err;
+        continue;
+      }
+      if (!held) continue;
+      // Found. Take every generation below the pointer; the current one keeps the id out by not having it.
+      const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
+      return { ...base, erased: true, fromGeneration: generation, collected };
+    }
+    return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
+  };
+
   const stage = async (): Promise<EraseIdResult | { generation: number; key: GenKey }> => {
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
     try {
       const reader = await openGenerationReader(deps.cold, fromKey, cryptoAt(from));
       const bytes = await reader.getChunk(chunkKey);
-      if (bytes === null)
-        return {
-          ...base,
-          erased: false,
-          reason: 'not-member',
-          fromGeneration: from,
-          collected: [],
-        };
+      if (bytes === null) return notInCurrent();
       const target = codec.safeDeserialize(bytes, maxBytes);
       assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
-      if (!target.has(remainder))
-        return {
-          ...base,
-          erased: false,
-          reason: 'not-member',
-          fromGeneration: from,
-          collected: [],
-        };
+      if (!target.has(remainder)) return notInCurrent();
       target.remove(remainder);
 
       const generation = await nextGeneration(ref, deps);
