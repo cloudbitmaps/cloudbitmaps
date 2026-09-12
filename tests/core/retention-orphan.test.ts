@@ -7,7 +7,7 @@ import {
 import { openGenerationReader } from '@/core/crbm-cold-source';
 import { setSegmentRetention } from '@/core/retention';
 import { retireExpired } from '@/core/retention-sweep';
-import type { IColdDriver, SegmentRef } from '@/index';
+import type { DropResult, IColdDriver, RetireEntry, SegmentRef } from '@/index';
 
 /**
  * `dropSegment` reports two different facts: what its sweep deleted, and what is still there. The sweep loop
@@ -21,6 +21,14 @@ import type { IColdDriver, SegmentRef } from '@/index';
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 const PAST = Date.parse('2020-01-01T00:00:00Z');
+
+/** Narrow the `RetireEntry` union to the arm that carries a `DropResult`. */
+function retiredResult(entry: RetireEntry): DropResult {
+  if (!('result' in entry) || entry.result === undefined) {
+    throw new Error(`expected a retired entry carrying a result, got ${JSON.stringify(entry)}`);
+  }
+  return entry.result;
+}
 
 async function generations(cold: MemoryColdDriver): Promise<number[]> {
   const out: number[] = [];
@@ -51,7 +59,7 @@ describe('retireExpired distinguishes "deleted nothing" from "there was nothing"
     expect(res.retired).toBe(1);
     expect(res.entries[0]).toMatchObject({ action: 'retired' });
     // The residual is reported rather than hidden.
-    expect(res.entries[0]!.result!.generationsRemaining).toEqual([0]);
+    expect(retiredResult(res.entries[0]!).generationsRemaining).toEqual([0]);
 
     // The row SURVIVES — it is the tombstone, and it is what keeps the data reachable.
     const row = await registry.get(REF);
@@ -74,8 +82,8 @@ describe('retireExpired distinguishes "deleted nothing" from "there was nothing"
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
     const res = await retireExpired({ cold, registry }, { now: PAST + 1 });
-    expect(res.entries[0]!.result!.generationsDeleted).toEqual([]);
-    expect(res.entries[0]!.result!.generationsRemaining).toEqual([]);
+    expect(retiredResult(res.entries[0]!).generationsDeleted).toEqual([]);
+    expect(retiredResult(res.entries[0]!).generationsRemaining).toEqual([]);
     expect(await registry.get(REF)).toBeNull(); // the name is free again
   });
 
@@ -87,7 +95,7 @@ describe('retireExpired distinguishes "deleted nothing" from "there was nothing"
 
     const res = await retireExpired({ cold, registry }, { now: PAST + 1 });
     expect(res.retired).toBe(1);
-    expect(res.entries[0]!.result!.generationsDeleted).toEqual([0]);
+    expect(retiredResult(res.entries[0]!).generationsDeleted).toEqual([0]);
     expect(await generations(cold)).toEqual([]);
     expect((await registry.get(REF))!.status).toBe('destroyed'); // stamped, purged by a later pass
   });
