@@ -16,6 +16,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Fixed
+- **Expired data is no longer stranded when its deletes fail.** `retireExpired` purged the registry row whenever
+  `dropSegment` reported `generationsDeleted: []`, reading that as "the segment was empty". It is equally what a
+  segment whose every `cold.delete` threw produces — a 403, a bucket policy, a throttle — because the sweep loop
+  stops once a pass deletes nothing. With the row gone the expired objects stayed **readable and billed**, and
+  every path that could have reclaimed them was closed: `gcOrphanGenerations` returns `[]` with no row to
+  compare against, the next sweep cannot enumerate a name that has no row, and `dropSegment` takes its
+  `'absent'` path. The predicate now also requires `generationsRemaining` to be empty — the honest question,
+  which `dropSegment` already computes one field over. When something does remain the row keeps its tombstone,
+  so reads stay refused and the existing tombstone-purge pass re-sweeps and purges it once genuinely empty; the
+  residual is visible in the entry's `result.generationsRemaining` meanwhile. The original branch still does its
+  job: a name that really held nothing (`setRetention` mints a row for any name, including a typo'd one) has its
+  row removed rather than being fenced against every writer forever.
 - **An erasure can no longer republish a retired segment's content over a live one that reuses its name.**
   `publishGeneration`'s `expectFrom` fence compares a generation *number*, and a generation number identifies a
   generation only **within one incarnation of a name**: `nextGeneration` returns

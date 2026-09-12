@@ -474,11 +474,25 @@ export async function retireExpired(
       // purpose. Best-effort and unconditional on `scan`: a fleet sweep retires index-pointed segments too, and
       // leaving their pointers behind would make a later index scan re-read segments that no longer exist.
       await forgetDuePointer(deps.registry, ref, livePolicy.expiresAt);
-      if (result.generationsDeleted.length === 0) {
-        // The segment was already empty, so `dropSegment` has just written a tombstone for a name that held
-        // nothing. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
-        // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing existed,
-        // so there is nothing a delete could resurrect: remove the row instead of bricking the name.
+      if (result.generationsDeleted.length === 0 && result.generationsRemaining.length === 0) {
+        // The segment really held nothing, so `dropSegment` has just written a tombstone for a name that was
+        // empty. Left in place that row FENCES the name against every writer — and `setRetention` will mint a
+        // row for any name, including a typo'd one, so this is reachable from a single mistake. Nothing
+        // existed, so there is nothing a delete could resurrect: remove the row instead of bricking the name.
+        //
+        // **Both halves of the predicate are load-bearing.** `generationsDeleted: []` alone does NOT mean the
+        // segment was empty — it is equally what a segment whose every `cold.delete` threw produces, because
+        // `dropSegment`'s sweep loop stops once a pass deletes nothing. Purging the row on that reading left
+        // the expired objects readable and billed, and then unreachable by everything that could have
+        // collected them: `gcOrphanGenerations` returns `[]` with no row to compare against, the next sweep
+        // never sees the name again (no row to enumerate), and `dropSegment` takes its `'absent'` path. The
+        // data that was contractually supposed to expire stayed, silently, forever. `generationsRemaining` is
+        // the honest question and `dropSegment` computes it one field over for exactly this reason.
+        //
+        // When something DOES remain, falling through is the right move rather than a special case: the row
+        // keeps its tombstone, so reads stay refused, and the tombstone-purge pass above re-sweeps it with
+        // `gcOrphanGenerations` (which takes every generation of a destroyed row) and purges the row once it is
+        // genuinely empty. The residual is visible in this entry's `result.generationsRemaining` meanwhile.
         await deps.registry.delete(ref).catch(() => undefined);
         continue;
       }
