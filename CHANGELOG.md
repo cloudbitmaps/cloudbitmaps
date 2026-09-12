@@ -404,6 +404,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   runtime-agnostic core). See `CLAUDE.md`.
 
 ### Fixed
+- **`gcOrphanGenerations` could delete the current generation of a segment re-created while it was listing.**
+  The `destroyed` branch takes a segment's status from a row read *before* the object listing and acts on it
+  *after* — a window seconds wide on a paginated store — and it is the only branch that deletes at and above
+  `currentGen`. Every step of the sequence is an ordinary path: the retention sweep purges tombstone rows, and
+  nothing stops a loader re-creating a segment by that name afterwards. The result was an `active` row pointing
+  at a generation whose object had just been deleted — the forbidden `missing-cold-generation` state, immune to
+  both `keep` and `minAgeMs` because that branch is exempt from both. It now re-reads the row and proceeds only
+  if the token is unchanged; tokens are never reused, so an unchanged one proves the segment was not purged and
+  re-created underneath the pass. A changed or missing row refuses, and the next pass collects. The ordinary
+  branch is deliberately left without a re-read: it deletes strictly below the pointer it read and the pointer
+  only moves forward, so adding one would make routine GC refuse whenever a load lands mid-listing.
 - **Seven sentences left broken by the earlier removal pass**, found because this one read every site rather
   than pattern-matching. Stripping a citation out of running prose leaves the punctuation that held it: an
   empty inline code span where the reference had been, a sentence ending in a dash and a close-paren, a
