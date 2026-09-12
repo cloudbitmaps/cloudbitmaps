@@ -35,6 +35,7 @@ import type {
   IRegistryDriver,
   SegmentRef,
   SegmentSize,
+  Token,
 } from './ports';
 import { CrbmReader } from './crbm/reader';
 import type { CrbmReaderOptions } from './crbm/reader';
@@ -549,11 +550,24 @@ export async function writeCrbmGenerationStream(
  * publish land only while the pointer is still exactly there, and return `false` otherwise, so the caller can
  * report `superseded` and re-derive. The compare-and-swap itself carries the token read in the same iteration,
  * so the check and the write see the same row.
+ *
+ * **`expectToken` fences the LINEAGE, and a derived writer needs both.** A generation number identifies a
+ * generation only within one incarnation of a name: `nextGeneration` restarts at `0` once the row is purged and
+ * the bucket empty, so a name that is retired and re-created has a *different* segment wearing the *same*
+ * `currentGen`. `expectFrom` alone matched it — and an erasure rewrite then published one incarnation's content
+ * over another's, deleted the live objects with its `keep: 0` collection, and returned `erased: true`. The row's
+ * OCC token is the identity that survives this: {@link IRegistryDriver.delete} tombstones rather than unlinks,
+ * so "a later `create` still gets a fresh, greater token" and no token is ever reused across incarnations.
+ *
+ * Pass the token read alongside `expectFrom` and the publish lands only on the same row it was derived from.
+ * The check is deliberately **conservative**: the token also changes on writes that are not supersessions at
+ * all (a `setRetention`, a due-index reindex), so such a write makes a derived publish report `superseded` and
+ * the caller re-derive. That costs a re-run on a rare, unrelated write; the alternative costs a segment.
  */
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: { wrappedDeks?: readonly WrappedDek[]; expectFrom?: number } = {},
+  options: { wrappedDeks?: readonly WrappedDek[]; expectFrom?: number; expectToken?: Token } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const record = await registry.get(key);
@@ -561,6 +575,12 @@ export async function publishGeneration(
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
         // has vanished or has no generation at all. Not an error: the caller re-reads and re-derives.
+        return false;
+      }
+      if (options.expectToken !== undefined && record?.token !== options.expectToken) {
+        // Same pointer VALUE, different row. Either the row was written since (harmless, and we re-derive
+        // anyway) or the name was retired and re-created, in which case `currentGen` matching means nothing:
+        // it is a different segment that restarted its generation counter at the same number.
         return false;
       }
       if (record === null) {
