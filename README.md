@@ -476,9 +476,10 @@ that is the shape we build. Hot-path **reads** are ours; hot-path **writes** bel
 well. If a live tier returns, it will be immutable delta generations on the same bucket.
 
 Next on the loaded store: a single-call `load()` that wraps write-plus-publish with an **empty-result guard**
-(refusing to publish an empty generation over a non-empty one unless you say so) and a `rollback()`, an age
-floor on generation GC, `pin()` for a stable snapshot, and fresh loaded-store benchmarks. The public roadmap
-tracks it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+(refusing to publish an empty generation over a non-empty one unless you say so) and a `rollback()`, a
+**snapshot handle** so a long export or reconciliation reads one instant rather than whichever generations were
+current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs. The repo is a
 pnpm workspace of `@cloudbitmaps/core` (the codec-agnostic engine + every driver, zero runtime

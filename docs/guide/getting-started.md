@@ -482,17 +482,49 @@ Who calls it today:
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
-> **Picking `keep`.** `1` is the safe default: a reader that resolved the previous generation just before your
-> publish can still finish its call. If the swept generation *is* pulled out from under a reader (`keep: 0`, or a
-> long-running call), the cold source catches the `NotFoundError`, re-resolves to the current generation and
-> retries the read once — the query serves the newer, committed generation rather than failing. That is a
-> monotonic move forward, never a torn object; but it is a re-read you can avoid by leaving the grace window on.
-
 **Read staleness, restated for the whole picture.** With a registry, a store notices a new generation within
 `coldGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a stale decoded chunk
 for a new generation. Within one read op the generation is resolved once. A `count()` is a single index read, so
 it is always internally consistent; a long `intersect` that straddles a TTL boundary *and* a publish may read its
 remaining chunks from the newer generation — whole and verified, never torn.
+
+### Sizing `keep`
+
+`keep` is a **grace window**, not a safety belt. A reader resolves `currentGen` once and then fetches chunks
+from that generation, so what endangers it is publishes landing underneath — and `keep` decides how many can
+land before its object is gone. Two facts make that easier to size than it looks.
+
+**A miss is a re-read, not a failure.** If the generation a read is on is swept mid-call, the Cold driver
+throws `NotFoundError`; the cold source drops the stale snapshot, re-resolves `currentGen`, and retries the
+fetch **once**. The call then serves the newer, committed generation — a monotonic move forward, never a torn
+object. A second miss is pathological (GC outrunning resolution) and propagates rather than fabricate an
+absent answer. So a `keep` that turns out too small costs an extra round trip on a rare race; it does not
+fail the query.
+
+**Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
+160 GB of object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
+
+Which gives:
+
+| your situation | `keep` |
+|---|---|
+| scheduled loads, reads measured in seconds — the common case | **`1`**, the default |
+| a bursty loader that can publish several times while one read is in flight | cover the burst: `ceil(longest read ÷ shortest gap between publishes)` |
+| a large segment where a rare re-read is cheaper than a second copy | `0` |
+| a long job that must see **one** instant, not merely succeed | none of the above — see below |
+
+**What `keep` cannot give you is a single instant.** Because each chunk fetch heals forward on its own, a long
+`intersect` that straddles both a publish and the `coldGenTtlMs` window may read its later chunks from the
+newer generation: every chunk whole and verified, but the answer describing two instants rather than one, with
+nothing in the result saying so. Widening `keep` makes that less likely without ruling it out — no value of
+`keep` pins a reader to a generation. A job that needs one instant (an export, a reconciliation, a send that
+must match the count you reported) needs a snapshot handle, which is
+[on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
+
+There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
+as a durability guarantee and would not be one: an unpinned read is already protected by the retry above, and
+a pinned read needs a pin, not a window wide enough to hope with. See
+[Deliberately not planned](../ROADMAP.md#deliberately-not-planned).
 
 ## 9. Encryption at rest + crypto-shred
 
