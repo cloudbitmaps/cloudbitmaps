@@ -16,6 +16,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Fixed
+- **An erasure can no longer republish a retired segment's content over a live one that reuses its name.**
+  `publishGeneration`'s `expectFrom` fence compares a generation *number*, and a generation number identifies a
+  generation only **within one incarnation of a name**: `nextGeneration` returns
+  `max(currentGen, highest object) + 1`, so it restarts at `0` once the registry row is purged and the bucket is
+  empty. A name that is retired and re-created therefore presents a *different* segment at the *same*
+  `currentGen` — and the fence matched it. Reproduced: an erasure rewrite derived from the retired incarnation
+  published its content over the live one, deleted the live objects with its `keep: 0` collection, and returned
+  `erased: true` with a `segment.rewrite` audit event. A successful Art. 17 receipt for an operation that
+  destroyed the live segment. The publish now also fences on the row's **OCC token** (`expectToken`), which the
+  port contract already guarantees is never reused across incarnations — *"a later `create` still gets a fresh,
+  greater token"* — so a derived publish lands only on the row it was derived from. The check is deliberately
+  conservative: a token also changes on writes that are not supersessions (a `setRetention`, a due-index
+  reindex), so one of those makes a derived publish report `'superseded'` and the caller re-derive. That costs a
+  re-run on a rare unrelated write; the alternative costs a segment.
 - **A writer that changes the row mid-rewrite is reported as a reason, not a bare `NotFoundError`.**
   `eraseIdFromSegment` resolves the current generation and then reads it across three round trips — the reader
   open, *every chunk* of the whole-segment rewrite, and the verify. A racing erasure collects with `keep: 0`,
