@@ -58,6 +58,12 @@ export interface CombineOptions {
   readonly budget?: BudgetOption;
   /** Segments whose ids are subtracted from the result. */
   readonly exclude?: readonly SegmentRef[];
+  /**
+   * Allow an operand that names a segment which does not exist. Default `false` — a combine refuses one,
+   * because a misspelled or mis-namespaced operand is indistinguishable from a correct one in the result.
+   * Set `true` when you genuinely intend to combine against a name that may not have been created yet.
+   */
+  readonly allowAbsentOperands?: boolean;
 }
 
 /** One resolved operand of a chunk-aligned combine: its chunk-key set + pinned generation. */
@@ -263,6 +269,7 @@ export class SegmentEngine {
       Promise.all(segs.map(extract)),
       Promise.all(excludeSegs.map(extract)),
     ]);
+    await this.refuseAbsentOperands([...operands, ...excludes], options?.allowAbsentOperands, op);
 
     // ② Key alignment. Candidate keys come from the INCLUDE operands only — an exclude can subtract ids from a
     // chunk but can never introduce one, so a key no include holds cannot appear in the result however large
@@ -439,6 +446,49 @@ export class SegmentEngine {
           `[0, ${MAX_REMAINDER}] — the stored object is corrupt or was not written by this codec`,
       );
     }
+  }
+
+  /**
+   * Refuse a combine whose operand names a segment that was never created.
+   *
+   * A segment that resolves to nothing is ambiguous in a way that matters only here. Read it directly and
+   * "empty" is the right answer either way. Pass it as an **operand** and the two states diverge: a
+   * suppression list with nobody on it correctly suppresses nothing, while one whose namespace you omitted
+   * *silently* suppresses nothing — and the result is not empty and obviously wrong, it is the full audience
+   * and plausibly right. That direction is the dangerous one: the failure mode is mailing the people who
+   * opted out.
+   *
+   * The asymmetry is why this is checked rather than left to the caller. A mistyped **include** collapses an
+   * intersect to nothing, which you notice; a mistyped **exclude** removes a safeguard, which you do not. Both
+   * are refused, because both are wiring errors and one rule is easier to trust than two.
+   *
+   * **Costs nothing on a normal combine.** `exists` is consulted only for an operand that resolved to zero
+   * chunks — a segment with data is self-evidently registered — so the check is a registry read exactly when
+   * a combine was about to do something suspicious, and no reads at all otherwise. A source that cannot answer
+   * `exists` (it has no notion of registration) skips the check rather than guessing.
+   */
+  private async refuseAbsentOperands(
+    resolved: readonly Operand[],
+    allow: boolean | undefined,
+    op: string,
+  ): Promise<void> {
+    if (allow === true || this.cold.exists === undefined) return;
+    const empty = resolved.filter((o) => o.keys.size === 0);
+    if (empty.length === 0) return;
+    const checked = await Promise.all(
+      empty.map(async (o) => ({ seg: o.seg, exists: await this.cold.exists!(o.seg) })),
+    );
+    const absent = checked.filter((c) => !c.exists).map((c) => c.seg);
+    if (absent.length === 0) return;
+    const named = absent
+      .map((s) => (s.namespace === undefined ? `"${s.segment}"` : `"${s.namespace}/${s.segment}"`))
+      .join(', ');
+    throw new ValidationError(
+      `${op}: operand ${named} names a segment that does not exist, so it would contribute nothing — ` +
+        `an exclude would suppress no ids and an include would contribute none. Check the name and the ` +
+        `namespace (a segment addressed without its \`namespace\` is a DIFFERENT segment). ` +
+        `Pass \`allowAbsentOperands: true\` if you meant it.`,
+    );
   }
 
   /**

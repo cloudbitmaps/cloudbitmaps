@@ -78,6 +78,18 @@ export interface ColdChunkSource {
    * memoized state cannot fail, and a source that memoizes nothing may omit the method entirely.
    */
   invalidate?(ref: SegmentRef): void;
+  /**
+   * Optional: does this segment **exist as a registered name**, as distinct from resolving to no generation?
+   *
+   * `currentGeneration` collapses two very different states into `null`: a name nobody ever created, and a
+   * segment that exists and is legitimately empty. For a *read* that distinction does not matter — both answer
+   * empty. For an **operand of a combine** it is the difference between a suppression list with nobody on it
+   * yet and a suppression list you misspelled, and those must not look alike: the first correctly suppresses
+   * nothing, the second silently suppresses nothing while you believe it is working.
+   *
+   * Consulted **only** when an operand resolved to no chunks at all, so a normal combine never calls it.
+   */
+  exists?(ref: SegmentRef): Promise<boolean>;
 }
 
 /** Capabilities a Cold driver advertises; validated at wiring time, fail-fast. */

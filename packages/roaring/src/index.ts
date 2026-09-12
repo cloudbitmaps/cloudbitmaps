@@ -1009,6 +1009,25 @@ export interface BaseCombineOptions {
    * leave no trace in the compliance trail.
    */
   readonly audit?: IAuditSink;
+  /**
+   * Allow an operand naming a segment that does not exist. Default `false`: a combine **refuses** one, because
+   * a misspelled or mis-namespaced operand is indistinguishable from a correct one in the result.
+   *
+   * Reading a segment that does not exist answers empty, and that is right — but passing one as an operand is
+   * different. A suppression list with nobody on it correctly suppresses nothing; one whose `namespace` you
+   * omitted *silently* suppresses nothing, and the result is not obviously-empty, it is the full audience and
+   * plausibly right. The failure mode is mailing the people who opted out.
+   *
+   * ```ts
+   * // `global-opt-out` lives in the `suppression` namespace. This addresses a DIFFERENT segment:
+   * audience.andNot([store.segment('global-opt-out')]);          // throws ValidationError
+   * audience.andNot([store.segment('global-opt-out', { namespace: 'suppression' })]); // correct
+   * ```
+   *
+   * Set `true` when you genuinely intend to combine against a name that may not exist yet. Checked only for an
+   * operand that resolved to no chunks at all, so a normal combine pays nothing for it.
+   */
+  readonly allowAbsentOperands?: boolean;
 }
 
 /**
