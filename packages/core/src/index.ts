@@ -51,6 +51,9 @@ export {
   publishGeneration,
 } from './core/crbm-cold-source';
 export type { BulkLoadResult, CrbmColdChunkSourceOptions } from './core/crbm-cold-source';
+// A pinned view of one segment at one generation — everything else passes through to the live source.
+export { PinnedColdChunkSource } from './core/pinned-cold-source';
+export type { PinnedAt } from './core/pinned-cold-source';
 // Generation bookkeeping: the next generation number for a segment, and collection of superseded generations.
 // Nothing here schedules itself — the retention sweep and the erasure rewrite call `gcOrphanGenerations`; a
 // caller writing generations by hand collects on its own cadence.

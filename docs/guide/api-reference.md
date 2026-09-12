@@ -110,6 +110,7 @@ resolve. Branch on it if two writers can target one segment; the orphan is colle
 | `seg.has(id)` → `Promise<boolean>` | membership: the hot cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | exact cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment |
 | `seg.iterate()` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time |
+| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle — so a long export, reconciliation or send describes **one instant** instead of whichever generations happened to be current as it ran. An ordinary handle re-resolves on `coldGenTtlMs`; a pinned one does not. Only *this* segment is pinned: `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query — and a pinned handle used as an operand is still read at its pin, never live. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath you, and a pinned read deliberately does *not* heal forward (silently serving a different generation is what a pin exists to prevent), so it fails instead — size `keep` past your longest pinned job. The pinned reader lives in the same bounded LRU as every other, so a pin costs a generation number, not a retained index. A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops reading when the shred lands: the row's `status` is re-checked every time the pinned reader opens. Needs the `.crbm` cold source (`UnsupportedError` otherwise) |
 | `seg.intersect([other, …], { concurrency?, budget?, exclude? })` → `AsyncIterable<number>` | **the crown jewel** — chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass** |
 | `seg.union([other, …], { concurrency?, budget?, exclude? })` → `AsyncIterable<number>` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read |
 | `seg.andNot([sup, …], { concurrency?, budget? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, but each exclude **only where it overlaps** |
@@ -222,7 +223,7 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 
 ### Generation bookkeeping & erasure
 
-`GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `EraseIdDeps` ·
+`PinnedAt` (`{ generation, version }` — what a pin holds for one segment; `generation: null` means the segment had none to pin and the handle reads empty, **not** that pinning is unsupported) · `PinnedColdChunkSource` (a `ColdChunkSource` view holding one segment at one generation and passing every other segment through to the live source — what `seg.pin()` is built on) · `GenerationDeps` (`{ cold, registry }` — what `nextGeneration` / `gcOrphanGenerations` take) · `EraseIdDeps` ·
 `EraseIdResult` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult`
 
 ### Retention
