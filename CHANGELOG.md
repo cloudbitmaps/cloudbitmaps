@@ -15,6 +15,22 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`segment.pin()` — hold a segment at the generation current right now.** An ordinary handle re-resolves on
+  `coldGenTtlMs`, so a publish part-way through an export, a reconciliation or a send means its second half
+  describes a different instant than its first — every chunk whole and verified, but the answer covering two
+  moments with nothing in the result saying so. A pinned handle does not move. **Only that segment is pinned**:
+  `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query
+  — and a pinned handle passed as an *operand* is read at its pin too, never live, whichever handle the call
+  was made on. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath
+  you, and a pinned read deliberately does *not* heal forward, because silently serving a different generation
+  is what a pin exists to prevent — so it fails instead. Size `keep` past your longest pinned job. A pin is a
+  generation *number*, so the reader behind it lives in the same bounded LRU as every other and can be evicted
+  freely; re-opening at the same number reproduces the same bytes, and a transient fault cannot poison the pin.
+  A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops
+  reading when the shred lands — the row's `status` is re-checked every time the pinned reader opens, so a pin
+  cannot outlive the key it was using. Needs the `.crbm` cold source; `UnsupportedError` otherwise.
+
 ### Fixed
 - **A retired, re-created segment name is no longer served as the same segment.** A generation number is not an
   identity: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once a

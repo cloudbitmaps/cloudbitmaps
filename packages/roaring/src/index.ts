@@ -23,6 +23,8 @@
 
 import {
   BoundedLru,
+  PinnedColdChunkSource,
+  segmentKey,
   CrbmColdChunkSource,
   DEFAULT_BUDGET,
   NOOP_METRICS,
@@ -81,6 +83,7 @@ import type {
   RetryingOptions,
   Rng,
   SetRetentionResult,
+  PinnedAt,
   SegmentRef,
   Workload,
 } from '@cloudbitmaps/core';
@@ -401,6 +404,8 @@ interface LifecycleDeps {
 
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
+  private readonly cache: BoundedLru<string, CodecBitmap>;
+  private readonly crbmSource: CrbmColdChunkSource | undefined;
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
@@ -459,6 +464,10 @@ export class CloudRoaring {
       budget: this.budget,
     };
     this.engine = new SegmentEngine(deps);
+    this.cache = cache;
+    // The UNWRAPPED `.crbm` source, kept for `pin()` — the only reader that resolves a specific generation.
+    // `undefined` when the caller supplied a pre-built source, which has nothing to pin.
+    this.crbmSource = resolved.source instanceof CrbmColdChunkSource ? resolved.source : undefined;
     this.clock = clock;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
@@ -521,6 +530,8 @@ export class CloudRoaring {
       this.clock,
       this.metrics,
       (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+      (r, e) => this.pinSegment(r, e),
+      (handles) => this.engineForCombine(handles),
       expiresAt,
     );
   }
@@ -938,6 +949,82 @@ export class CloudRoaring {
     this.engine.invalidate(ref);
   }
 
+  /**
+   * Build a handle held at the generation `ref` resolves to right now. See {@link Segment.pin}.
+   *
+   * The pinned handle gets its own engine but **shares the store's chunk cache**, which is safe precisely
+   * because the cache is keyed by the source's version rather than the generation number: the pinned view
+   * reports the version captured at pin time, so its decoded chunks cannot collide with the live generation's.
+   * Sharing it on a generation-only key was how a pinned read could resurrect an id already reported
+   * physically gone.
+   */
+  private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
+    const crbm = this.crbmSource;
+    if (crbm === undefined) {
+      throw new UnsupportedError(
+        'pin() needs the `.crbm` cold source — pass a raw cold driver as `cold` (a pre-built ColdChunkSource ' +
+          'that cannot resolve a generation has nothing to pin)',
+      );
+    }
+    const at = await crbm.pinGeneration(ref);
+    const pinnedAt: PinnedAt = { generation: at?.generation ?? null, version: at?.version ?? null };
+    const pins = new Map([[segmentKey(ref), pinnedAt]]);
+    return new Segment(
+      this.engineWithPins(pins),
+      ref,
+      this.clock,
+      this.metrics,
+      (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+      (r, e) => this.pinSegment(r, e),
+      (handles) => this.engineForCombine(handles),
+      expiresAt,
+      pinnedAt,
+    );
+  }
+
+  /**
+   * An engine reading every segment in `pins` at its pinned generation and everything else live.
+   *
+   * It **shares the store's chunk cache**, which is safe only because that cache is keyed by the source's
+   * version rather than the generation number: a pinned view reports the version captured at pin time, so its
+   * decoded chunks cannot collide with the live generation's.
+   */
+  private engineWithPins(pins: ReadonlyMap<string, PinnedAt>): SegmentEngine {
+    const crbm = this.crbmSource;
+    if (crbm === undefined) {
+      throw new UnsupportedError(
+        'pin() needs the `.crbm` cold source — pass a raw cold driver as `cold` (a pre-built ColdChunkSource ' +
+          'that cannot resolve a generation has nothing to pin)',
+      );
+    }
+    return new SegmentEngine({
+      cold: new PinnedColdChunkSource(crbm, pins),
+      cache: this.cache,
+      codec: roaringCodec,
+      clock: this.clock,
+      metrics: this.metrics,
+      budget: this.budget,
+    });
+  }
+
+  /**
+   * The engine a combine should run on, given the handles involved.
+   *
+   * A pinned handle passed as an **operand** must still be read at its pin. Routing by "which handle the call
+   * was made on" reads it live instead — `snap.intersect([other])` honours the pin while
+   * `other.intersect([snap])` silently does not, and the two are the same question. So the combine collects
+   * every pin in play and runs on an engine that honours all of them. With no pins anywhere this is the
+   * store's own engine and costs nothing.
+   */
+  private engineForCombine(handles: readonly Segment[]): SegmentEngine | undefined {
+    const pins = new Map<string, PinnedAt>();
+    for (const h of handles) {
+      const at = h.pinnedAt;
+      if (at !== undefined) pins.set(h.key(), at);
+    }
+    return pins.size === 0 ? undefined : this.engineWithPins(pins);
+  }
+
   /** The store's registry, or a typed error naming the operation that needs one. */
   private requireRegistry(op: string): IRegistryDriver {
     if (this.registry === undefined) {
@@ -1050,6 +1137,15 @@ const EMPTY_IDS: AsyncIterable<number> = {
 };
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
+/** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
+type Pin = (ref: SegmentRef, expiresAt?: number) => Promise<Segment>;
+
+/**
+ * The engine a combine should run on, given every handle involved — `undefined` when none is pinned and the
+ * store's own engine will do. Injected so `Segment` stays free of store wiring.
+ */
+type CombineEngine = (handles: readonly Segment[]) => SegmentEngine | undefined;
+
 type Materialize = (
   dest: SegmentRef,
   ids: AsyncIterable<number>,
@@ -1076,10 +1172,58 @@ export class Segment {
     private readonly clock: Clock,
     private readonly metrics: IMetricsSink,
     private readonly materialize: Materialize,
+    /** Build a pinned twin of this handle — injected so `Segment` stays free of store wiring. */
+    private readonly pinned: Pin,
+    private readonly combineEngine: CombineEngine,
     /** Absolute epoch-ms deadline from {@link SegmentOptions.expiresAt}; `undefined` ⇒ this handle never expires. */
     readonly expiresAt?: number,
+    /**
+     * The generation this handle is held at, when it came from {@link Segment.pin}. Read by the store so a
+     * pinned handle passed as an **operand** is still read at its pin rather than live.
+     */
+    readonly pinnedAt?: PinnedAt,
   ) {
     this.metricsOn = metrics !== NOOP_METRICS;
+  }
+
+  /**
+   * **Hold this segment at the generation that is current right now**, for as long as you keep the handle.
+   *
+   * An ordinary handle re-resolves on `coldGenTtlMs`, so a publish part-way through a long job means its second
+   * half describes a different instant than its first — every chunk whole and verified, but the answer covering
+   * two moments, with nothing in the result saying so. That is fine for a dashboard and wrong for an export, a
+   * reconciliation, or a send that has to match the count you reported. A pin is how you get one instant.
+   *
+   * ```ts
+   * const snap = await store.segment('active-30d').pin();
+   * const total = await snap.count();            // the number you report
+   * for await (const id of snap.iterate()) { … } // …and the ids it counted, however long this takes
+   * ```
+   *
+   * **Only this segment is pinned.** `snap.intersect([other])` reads `snap` at its pinned generation and
+   * `other` at whatever is current — pin each segment if you want the whole query held. And a pinned handle
+   * used as an *operand* is still read at its pin, never live.
+   *
+   * **It is a hold, not a lease.** Nothing here stops `gcOrphanGenerations` deleting the generation underneath
+   * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
+   * is the one thing a pin exists to prevent, so it fails instead. Size `keep` to cover your longest pinned
+   * job — see [Sizing `keep`](../../docs/guide/getting-started.md#sizing-keep) — or take the pin on a segment
+   * you are not collecting.
+   *
+   * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pin
+   * taken before a crypto-shred stops reading when the shred lands: the destroyed row is re-checked every time
+   * the pinned reader opens, so a pin cannot outlive the key it was using.
+   *
+   * Needs a store built on the `.crbm` cold source (the default when you pass a raw cold driver). Throws
+   * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
+   */
+  async pin(): Promise<Segment> {
+    return this.pinned(this.ref, this.expiresAt);
+  }
+
+  /** This handle's segment, as the cache/pin key — `ref` stays private; the encapsulation is worth the method. */
+  key(): string {
+    return segmentKey(this.ref);
   }
 
   /**
@@ -1183,7 +1327,9 @@ export class Segment {
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
     if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
-    return this.engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
+    const engine =
+      this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    return engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
   /**
@@ -1234,7 +1380,9 @@ export class Segment {
       return exclude.length > 0 ? this.andNot([...exclude], options) : this.iterate();
     }
     if (live.length !== others.length) return this.union(live, options);
-    return this.engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
+    const engine =
+      this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    return engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
   /** Materialize `this ∪ others…` (minus `exclude`) as a **new generation of `dest`** — see {@link intersectInto}. */
@@ -1268,7 +1416,8 @@ export class Segment {
     // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
     if (liveExcludes.length === 0 && excludes.length > 0) return this.iterate();
     if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
-    return this.engine.andNot(
+    const engine = this.combineEngine([this, ...excludes]) ?? this.engine;
+    return engine.andNot(
       this.ref,
       excludes.map((o) => o.ref),
       options,

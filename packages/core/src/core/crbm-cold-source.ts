@@ -331,7 +331,13 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * storage side can close the window; with `coldGenTtlMs: 0` or no clock it never closes.
    */
   invalidate(ref: SegmentRef): void {
-    this.snapshots.delete(segmentKey(ref));
+    const key = segmentKey(ref);
+    this.snapshots.delete(key);
+    // …and every PINNED reader of the same segment, which is memoized under `<key>@<generation>`. Dropping
+    // only the live entry left a pinned handle reading a crypto-shredded segment: the pin is exactly the
+    // reader that does not re-resolve on its own, so it is the one that most needs to be told.
+    const pinnedPrefix = `${key}@`;
+    this.snapshots.deleteWhere((k) => k.startsWith(pinnedPrefix));
   }
 
   /**
@@ -355,6 +361,97 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     return reader.lineage === undefined
       ? String(reader.generation)
       : `${reader.generation}:${String(reader.lineage)}`;
+  }
+
+  /**
+   * Resolve the segment **once** and report what a pin should hold: the generation, and the version that
+   * identifies those exact bytes. `null` when the segment resolves to no generation — there is nothing to pin,
+   * and a caller must treat that as "this handle reads empty", not "pinning is unsupported here".
+   */
+  async pinGeneration(ref: SegmentRef): Promise<{ generation: number; version: string } | null> {
+    // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
+    // of a pin, and the memo is allowed to be up to `coldGenTtlMs` behind — or, on a store with no clock,
+    // arbitrarily far behind, since it never refreshes at all. Pinning through it made every pin on such a
+    // store return the first generation that store had ever read.
+    const target = await this.resolveTarget(ref);
+    if (target === null) return null;
+    const version =
+      target.lineage === undefined
+        ? String(target.generation)
+        : `${target.generation}:${String(target.lineage)}`;
+    return { generation: target.generation, version };
+  }
+
+  /**
+   * A reader for one **specific** generation, memoized in the same bounded LRU as the live snapshots under a
+   * generation-qualified key.
+   *
+   * Sharing the LRU is the point, not an implementation detail. A pinned reader held in a private field is
+   * outside the memory ceiling the library advertises — measured at 10.34 MiB per live pin, 32 pins holding
+   * 111.7 MiB against an 8 MiB configured bound. A pinned *generation number* has no such problem: the
+   * generation is immutable, so eviction is harmless and re-opening at the same number reproduces the same
+   * bytes. It also removes a memoized-rejection bug by construction — `install` forgets a promise that rejects,
+   * where a hand-rolled `this.reader ??= open()` cached the rejection for the life of the handle and made a pin
+   * the one read path with no resilience.
+   *
+   * **`status` is re-checked here**, on every open rather than once at pin time. A pin taken before a
+   * crypto-shred must not keep unwrapping a DEK the shred destroyed; a destroyed segment resolves no generation
+   * for anyone, pinned or not.
+   */
+  private async readerAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
+    const key = `${segmentKey(ref)}@${generation}`;
+    const existing = this.snapshots.get(key);
+    if (existing !== undefined) return existing.reader;
+    return this.install(key, this.openAt(ref, generation)).reader;
+  }
+
+  private async openAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
+    let lineage: Token | undefined;
+    if (this.registry !== undefined) {
+      const record = await this.registry.get(ref);
+      // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
+      // takes its key material with it, so there is nothing left to read under any generation.
+      if (record === null || record.status === 'destroyed') return null;
+      lineage = record.token;
+    }
+    return this.openForTarget(ref, { generation, lineage, wrappedDeks: await this.deksFor(ref) });
+  }
+
+  /** The row's current key wrappings, for opening a pinned generation. */
+  private async deksFor(ref: SegmentRef): Promise<readonly WrappedDek[] | undefined> {
+    if (this.registry === undefined) return undefined;
+    return (await this.registry.get(ref))?.wrappedDeks;
+  }
+
+  /** Read one chunk of a specific generation — the pinned read path. */
+  async getChunkAt(ref: ChunkRef, generation: number): Promise<Uint8Array | null> {
+    validateSegmentRef(ref);
+    const reader = await this.readerAt(ref, generation);
+    return reader === null ? null : reader.getChunk(ref.chunkKey);
+  }
+
+  /** Chunk keys of a specific generation — the pinned shape read. */
+  async listChunkKeysAt(ref: SegmentRef, generation: number): Promise<number[]> {
+    validateSegmentRef(ref);
+    const reader = await this.readerAt(ref, generation);
+    return reader === null ? [] : reader.chunkKeys();
+  }
+
+  /** Per-chunk cardinalities of a specific generation — powers a pinned `count()` with no payload reads. */
+  async cardinalitiesAt(
+    ref: SegmentRef,
+    generation: number,
+  ): Promise<ReadonlyMap<number, number> | null> {
+    validateSegmentRef(ref);
+    const reader = await this.readerAt(ref, generation);
+    return reader === null ? null : reader.cardinalities();
+  }
+
+  /** Grounded size of a specific generation. */
+  async sizeOfAt(ref: SegmentRef, generation: number): Promise<SegmentSize | null> {
+    validateSegmentRef(ref);
+    const reader = await this.readerAt(ref, generation);
+    return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
 
   async exists(ref: SegmentRef): Promise<boolean> {
