@@ -80,6 +80,7 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
   readonly invalidate?: (ref: SegmentRef) => void;
+  readonly exists?: (ref: SegmentRef) => Promise<boolean>;
 
   constructor(inner: ColdChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -108,6 +109,11 @@ export class RetryingColdChunkSource implements ColdChunkSource {
       this.invalidate = (ref) => {
         innerInvalidate.call(inner, ref);
       };
+    }
+    // Retried, unlike `invalidate`: this one reads the registry, so it has a transient mode to back off from.
+    const innerExists = inner.exists;
+    if (innerExists) {
+      this.exists = (ref) => withRetry(() => innerExists.call(inner, ref), this.policy, this.deps);
     }
   }
 

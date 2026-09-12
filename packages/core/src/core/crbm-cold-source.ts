@@ -317,6 +317,24 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   }
 
   /**
+   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
+   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
+   * both of which are names somebody deliberately created. Without a registry there is no registration to
+   * consult, so the honest answer is whether the bucket holds any generation of it.
+   *
+   * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
+   * tell apart.
+   */
+  async exists(ref: SegmentRef): Promise<boolean> {
+    if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
+    for await (const key of this.driver.list(ref)) {
+      void key;
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Evict a snapshot we just failed to read from — matched by its reader *promise*, so a concurrent call's
    * fresher snapshot is never clobbered. The identity guard is the whole point: `install` replaces the entry
    * wholesale, so comparing anything else would drop a good snapshot on the floor.

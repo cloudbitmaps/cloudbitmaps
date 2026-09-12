@@ -15,6 +15,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (pre-1.0): a combine refuses an operand naming a segment that does not exist.** A mis-namespaced or
+  misspelled operand used to resolve to empty and contribute nothing, silently — and for an `exclude` that means
+  **suppressing nobody**: `andNot` returned the full audience and `intersectInto` reported the unsuppressed
+  cardinality, with no error and nothing in the metrics to distinguish it. The failure mode is mailing the people
+  who opted out. Reading an absent segment directly is **unchanged** — it still answers empty, which is right;
+  the ambiguity only matters for an operand, where "a suppression list nobody is on yet" and "a suppression list
+  you misspelled" must not look alike. A segment that **exists and is empty** (a row minted by `setRetention`
+  before the first load) is still accepted, because somebody created it deliberately. Pass
+  `allowAbsentOperands: true` to combine against a name that may not exist yet. Costs nothing on a normal
+  combine: existence is consulted only for an operand that resolved to zero chunks, so a segment with data is
+  never checked. `ColdChunkSource` gains an optional `exists(ref)`; a source that cannot answer it skips the
+  check rather than guessing.
+
 ### Fixed
 - **An erasure now reaches an ex-member's bit in a retained generation.** `eraseIdFromSegment` tested membership
   against `currentGen` only, so a subject who had simply been *dropped* from a re-seeded audience was reported
