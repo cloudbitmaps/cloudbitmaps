@@ -112,7 +112,15 @@ function coldBlobReader(driver: IColdDriver, key: GenKey): BlobReader {
 }
 
 /** The generation target `resolveTarget` produces: which generation is current + its DEK wrappings (if encrypted). */
-type Target = { generation: number; wrappedDeks?: readonly WrappedDek[] };
+/**
+ * A resolved read target. `lineage` is the registry row's OCC token — the identity that survives a delete,
+ * because `IRegistryDriver.delete` tombstones rather than unlinks ("a later `create` still gets a fresh,
+ * greater token"). It is what separates two *incarnations* of one name, which a generation number cannot:
+ * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
+ * segment presents different data at the same `currentGen`. Undefined for a registry-less source, which has no
+ * row and therefore no incarnation to confuse.
+ */
+type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly WrappedDek[] };
 
 /** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh. */
 interface Snapshot {
@@ -235,7 +243,17 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     // reopen rather than re-arm a dead snapshot (else the segment reads empty for a whole TTL window).
     if (target === undefined) return current ?? this.resolveLatest(ref);
     if (target === null) return null; // segment gone / destroyed
-    if (current !== null && target.generation === current.generation) return current; // unchanged — reuse
+    // Reuse only when BOTH the generation and the row match. Comparing the number alone treated a
+    // retired-and-re-created name as unchanged — `nextGeneration` restarts at 0, so incarnation 2's generation 0
+    // is indistinguishable from the reader already open — and the snapshot was never refreshed, so the store
+    // kept serving a deleted segment's ids. A token that moved for an unrelated row write costs one reopen.
+    if (
+      current !== null &&
+      target.generation === current.generation &&
+      target.lineage === current.lineage
+    ) {
+      return current; // unchanged — reuse
+    }
     return this.openForTarget(ref, target); // advanced / appeared / prior open was dead — reopen fresh
   }
 
@@ -325,6 +343,20 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
    * tell apart.
    */
+  /**
+   * `<generation>` for a registry-less source (no row, so no incarnation to confuse), or
+   * `<generation>:<row token>` with one. The token moves on every row write, so an unrelated write (a
+   * `setRetention`) costs the segment's decoded chunks once — bounded, and on an admin path. Exactness in the
+   * direction that matters: two incarnations can never share a version string.
+   */
+  async currentVersion(ref: SegmentRef): Promise<string | null> {
+    const reader = await this.resolvedReader(ref);
+    if (reader === null) return null;
+    return reader.lineage === undefined
+      ? String(reader.generation)
+      : `${reader.generation}:${String(reader.lineage)}`;
+  }
+
   async exists(ref: SegmentRef): Promise<boolean> {
     if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
     for await (const key of this.driver.list(ref)) {
@@ -358,7 +390,11 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       generation: target.generation,
     };
     const crypto = await this.cryptoForRead(ref, target.generation, target.wrappedDeks);
-    return CrbmReader.open(coldBlobReader(this.driver, genKey), { ...this.readerOptions, crypto });
+    return CrbmReader.open(coldBlobReader(this.driver, genKey), {
+      ...this.readerOptions,
+      crypto,
+      lineage: target.lineage,
+    });
   }
 
   /**
@@ -377,7 +413,11 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       // `null` here rather than a generation is the whole reason such a row is safe to create — the alternative,
       // pointing at a generation that does not exist, is the `missing-cold-generation` state.
       if (record.currentGen === null) return null;
-      return { generation: record.currentGen, wrappedDeks: record.wrappedDeks };
+      return {
+        generation: record.currentGen,
+        lineage: record.token,
+        wrappedDeks: record.wrappedDeks,
+      };
     }
     let maxGen = -1;
     for await (const key of this.driver.list(ref)) {

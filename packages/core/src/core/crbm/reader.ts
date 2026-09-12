@@ -69,6 +69,13 @@ export interface CrbmReaderOptions {
   readonly maxIndexBytes?: number;
   /** Decryption context for an encrypted object (its DEK's AEAD + AAD builder). Required iff `FLAG_ENCRYPTED`. */
   readonly crypto?: CrbmCrypto;
+  /**
+   * Opaque marker for the *incarnation of the name* this object belongs to — the caller's own identity for the
+   * registry row it resolved. The reader never interprets it; it carries it so a caller holding an open reader
+   * can tell "the same generation of the same segment" from "the same generation NUMBER of a segment that was
+   * deleted and re-created", which the number alone cannot express.
+   */
+  readonly lineage?: unknown;
 }
 
 function magicMatches(bytes: Uint8Array, offset: number): boolean {
@@ -94,6 +101,8 @@ export class CrbmReader {
     private readonly blob: BlobReader,
     private readonly objectSize: number,
     readonly generation: number,
+    /** See {@link CrbmReaderOptions.lineage} — carried, never interpreted. */
+    readonly lineage: unknown,
     readonly totalCardinality: number,
     private readonly entries: Map<number, CrbmIndexEntry>,
     private readonly orderedKeys: number[],
@@ -276,6 +285,7 @@ export class CrbmReader {
       blob,
       size,
       generation,
+      options.lineage,
       cardinalitySum,
       entries,
       orderedKeys,

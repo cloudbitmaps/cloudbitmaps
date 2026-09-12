@@ -81,6 +81,7 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
   readonly invalidate?: (ref: SegmentRef) => void;
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
+  readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
 
   constructor(inner: ColdChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -114,6 +115,11 @@ export class RetryingColdChunkSource implements ColdChunkSource {
     const innerExists = inner.exists;
     if (innerExists) {
       this.exists = (ref) => withRetry(() => innerExists.call(inner, ref), this.policy, this.deps);
+    }
+    const innerCurrentVersion = inner.currentVersion;
+    if (innerCurrentVersion) {
+      this.currentVersion = (ref) =>
+        withRetry(() => innerCurrentVersion.call(inner, ref), this.policy, this.deps);
     }
   }
 

@@ -15,6 +15,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+- **A retired, re-created segment name is no longer served as the same segment.** A generation number is not an
+  identity: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once a
+  registry row is purged and the bucket emptied. A long-lived store then could not tell a re-created name from
+  the one it already had open, at either layer it caches — the resolved snapshot compared generation *numbers*,
+  and the decoded-chunk cache keyed on `(segment, chunk, generation)`. Reproduced: after a retire-and-reload,
+  a warm store answered `has(1) === true` for an id belonging to the **deleted** incarnation and
+  `has(9) === false` for one the live segment really held, with `count()` reporting the old cardinality —
+  silently, with no error. For a name that had been dropped or crypto-shredded that is an erased id reappearing.
+  Both layers now key on the row's OCC token alongside the generation, which the port contract already
+  guarantees is never reused across incarnations. `ColdChunkSource` gains an optional `currentVersion(ref)`;
+  a source that omits it falls back to the generation alone, exactly as before. Note that putting the
+  incarnation in the *object key* would not have fixed this — a new incarnation still starts at generation 0, so
+  the cache key collides either way; the identity has to reach the cache.
+
 ### Changed
 - **BREAKING (pre-1.0): a combine refuses an operand naming a segment that does not exist.** A mis-namespaced or
   misspelled operand used to resolve to empty and contribute nothing, silently — and for an `exclude` that means
