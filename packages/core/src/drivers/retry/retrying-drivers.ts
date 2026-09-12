@@ -79,6 +79,7 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   readonly sizeOf?: (ref: SegmentRef) => Promise<SegmentSize | null>;
   readonly cardinalities?: (ref: SegmentRef) => Promise<ReadonlyMap<number, number> | null>;
   readonly currentGeneration?: (ref: SegmentRef) => Promise<number | null>;
+  readonly invalidate?: (ref: SegmentRef) => void;
 
   constructor(inner: ColdChunkSource, opts: RetryingOptions) {
     this.inner = inner;
@@ -98,6 +99,15 @@ export class RetryingColdChunkSource implements ColdChunkSource {
     if (innerCurrentGeneration) {
       this.currentGeneration = (ref) =>
         withRetry(() => innerCurrentGeneration.call(inner, ref), this.policy, this.deps);
+    }
+    // Forwarded, NOT retried: it is synchronous and cannot fail, and dropping memoized state has no transient
+    // mode to back off from. Forgetting to forward it would be silent — the wrapper would satisfy the port
+    // while the invalidation stopped one layer short of the source that holds the snapshot and the DEK.
+    const innerInvalidate = inner.invalidate;
+    if (innerInvalidate) {
+      this.invalidate = (ref) => {
+        innerInvalidate.call(inner, ref);
+      };
     }
   }
 
