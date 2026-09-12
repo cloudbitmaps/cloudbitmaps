@@ -21,6 +21,16 @@
  * against the new generation. A writer that claims the same generation *number* first surfaces as a
  * `WriteConflictError` (write-once).
  *
+ * The same answer covers the read half, and for the same reason. An erasure collects with `keep: 0`, which takes
+ * every generation below its new pointer — so a racing erasure deletes the generation this call is streaming, and
+ * the object this call just wrote, while it is still working. All three exposed round trips (the reader open, any
+ * chunk of the whole-segment rewrite, the verify) therefore report `'superseded'` rather than a bare
+ * `NotFoundError`, which was the same event wearing an unactionable face: through `eraseSubject` it became a note
+ * the facade documents as ambiguous about which side of the publish it landed on, telling an operator to triage
+ * where the truth was to re-run. Translated **only** once the pointer is confirmed to have moved; if it still
+ * names the missing object, that is the forbidden `missing-cold-generation` state and it throws, because no
+ * re-run fixes it.
+ *
  * Without that fence the failure was silent and severe, and both halves were reproduced: `nextGeneration` picks a
  * number above everything in the bucket, so a forward-only publish here always won — discarding a concurrent
  * load's whole set, and letting two concurrent erasures each return `erased: true` while the second one's
@@ -45,7 +55,7 @@ import {
 import type { CrbmReader } from './crbm/reader';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
-import { IntegrityError, KeyUnavailableError, ValidationError } from './errors';
+import { IntegrityError, KeyUnavailableError, ValidationError, isNotFoundError } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { GenKey, IColdDriver, IRegistryDriver, SegmentRef } from './ports';
 import { validateSegmentRef } from './validate';
@@ -149,42 +159,88 @@ export async function eraseIdFromSegment(
     aead === undefined ? undefined : { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
 
   const fromKey: GenKey = { ...base, generation: from };
-  const reader = await openGenerationReader(deps.cold, fromKey, cryptoAt(from));
-  const bytes = await reader.getChunk(chunkKey);
-  if (bytes === null)
-    return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
-  const target = codec.safeDeserialize(bytes, maxBytes);
-  assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
-  if (!target.has(remainder))
-    return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
-  target.remove(remainder);
+  const superseded = (generation?: number): EraseIdResult => ({
+    ...base,
+    erased: false,
+    reason: 'superseded',
+    fromGeneration: from,
+    generation,
+    collected: [],
+  });
 
-  const generation = await nextGeneration(ref, deps);
-  const key: GenKey = { ...base, generation };
-  const tally = await writeCrbmGenerationStream(
-    deps.cold,
-    key,
-    rewrite(reader, chunkKey, target, codec, maxBytes),
-    { crypto: cryptoAt(generation), clock: deps.clock },
-  );
-  // Re-check the pointer before spending the verification read. The fence below is what makes the publish
-  // correct; this only makes the common race REPORTABLE. Without it, a concurrent erasure that published and ran
-  // its own `keep: 0` collection will already have deleted this object (it is below the new pointer, so it can
-  // never become current — see the collection note below), and the verify then fails with a bare
-  // `NotFoundError` about an object this call wrote itself. `'superseded'` is the honest answer, and it is the
-  // one the caller knows how to act on.
-  const beforeVerify = await deps.registry.get(ref);
-  if (beforeVerify === null || beforeVerify.currentGen !== from) {
-    return {
-      ...base,
-      erased: false,
-      reason: 'superseded',
-      fromGeneration: from,
-      generation,
-      collected: [],
-    };
-  }
-  await verifyGeneration(deps.cold, key, tally, cryptoAt(generation));
+  /**
+   * Read `from`, write its successor, and verify it — the read-modify-write whose premise is that the pointer is
+   * still at `from`. Returns a staged generation, or the result to report if the premise stopped holding.
+   *
+   * **Every object this phase touches can be deleted underneath it, by a concurrent call of this very
+   * function.** An erasure collects with `keep: 0`, which takes every generation below its new pointer — so a
+   * racing erasure deletes `from` while we are still streaming it, and deletes *the object we just wrote* too,
+   * since ours is below its pointer and can never become current. There are three separate round trips exposed:
+   * the reader open, every chunk of the rewrite (a whole-segment read — by far the longest window), and the
+   * verify.
+   *
+   * The documented answer to that race is `reason: 'superseded'` — *the id is still there, re-run against the
+   * new generation* — and it is what the publish already reports when its `expectFrom` fence fails. A bare
+   * `NotFoundError` instead is the same event wearing a different, unactionable face; through `eraseSubject` it
+   * becomes a note the facade documents as ambiguous about which side of the publish it landed on, so an
+   * Art. 17 operator is told *triage this* where the truth is *re-run*.
+   *
+   * A `NotFoundError` is only translated once the pointer is confirmed to have moved. If it is still exactly
+   * `from`, then the object the pointer names is genuinely absent — the forbidden `missing-cold-generation`
+   * state a failed publish leaves behind — and that must **throw**, because it is an integrity problem rather
+   * than a race, and reporting it as `superseded` would send the caller into a retry loop against a segment
+   * nothing can fix by re-running.
+   */
+  const stage = async (): Promise<EraseIdResult | { generation: number; key: GenKey }> => {
+    let generation: number | undefined;
+    try {
+      const reader = await openGenerationReader(deps.cold, fromKey, cryptoAt(from));
+      const bytes = await reader.getChunk(chunkKey);
+      if (bytes === null)
+        return {
+          ...base,
+          erased: false,
+          reason: 'not-member',
+          fromGeneration: from,
+          collected: [],
+        };
+      const target = codec.safeDeserialize(bytes, maxBytes);
+      assertRemaindersInRange(target, chunkKey); // invariant 5, on the chunk we are about to re-encode
+      if (!target.has(remainder))
+        return {
+          ...base,
+          erased: false,
+          reason: 'not-member',
+          fromGeneration: from,
+          collected: [],
+        };
+      target.remove(remainder);
+
+      generation = await nextGeneration(ref, deps);
+      const key: GenKey = { ...base, generation };
+      const tally = await writeCrbmGenerationStream(
+        deps.cold,
+        key,
+        rewrite(reader, chunkKey, target, codec, maxBytes),
+        { crypto: cryptoAt(generation), clock: deps.clock },
+      );
+      // Re-check the pointer before spending the verification read. The fence below is what makes the publish
+      // correct; this only saves a round trip on the common race, which the catch reports either way.
+      const beforeVerify = await deps.registry.get(ref);
+      if (beforeVerify === null || beforeVerify.currentGen !== from) return superseded(generation);
+      await verifyGeneration(deps.cold, key, tally, cryptoAt(generation));
+      return { generation, key };
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      const now = await deps.registry.get(ref);
+      if (now !== null && now.currentGen === from) throw err; // the pointer still names it: genuinely absent
+      return superseded(generation);
+    }
+  };
+
+  const staged = await stage();
+  if ('erased' in staged) return staged;
+  const { generation, key } = staged;
 
   // Read-modify-write, not merely forward-only, and the distinction is the whole correctness of this function.
   //

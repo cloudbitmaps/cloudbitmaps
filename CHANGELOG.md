@@ -16,6 +16,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Fixed
+- **A concurrent erasure no longer surfaces a bare `NotFoundError` where the contract promises
+  `reason: 'superseded'`.** `eraseIdFromSegment` resolves the current generation and then reads it across three
+  round trips — the reader open, *every chunk* of the whole-segment rewrite, and the verify. A racing erasure
+  collects with `keep: 0`, which takes every generation below its new pointer, so it deletes the generation the
+  loser is streaming and the object the loser just wrote. The publish already reported that race as
+  `'superseded'` — *the id is still there, re-run against the new generation* — but the read half threw instead,
+  which through `eraseSubject` became `note: "error: …"`, documented as ambiguous about which side of the publish
+  it landed on: an Art. 17 operator was told to triage where the truth was to re-run. All three round trips now
+  report `'superseded'`, and **only** once the pointer is confirmed to have moved — if it still names the missing
+  object, that is the forbidden `missing-cold-generation` state and it still throws, because no re-run fixes it.
+  The pre-existing test for this interleaving passed because its fixture was a **single chunk**, so the rewrite
+  never re-read the swept generation; the new coverage spans three.
 - **A generation swept between resolving the pointer and opening its object no longer fails the read.**
   Resolving `currentGen` and opening that generation's `.crbm` are two backend round trips, and the heal that
   covers a vanished generation was wrapped around only the second one. So the window GC actually races — a

@@ -281,10 +281,11 @@ export interface SubjectErasureEntry {
   /** The generation written without the id (present whenever one was written). */
   readonly generation?: number;
   /**
-   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — a load published a
-   * newer generation while the rewrite was in flight; re-run. `` `error: <message>` `` — an isolated per-segment
-   * fault (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing
-   * the fault. Segments the id is not in are not listed at all.
+   * Why the id was NOT erased from this segment, when `erased` is false. `'superseded'` — a newer generation
+   * was published while the rewrite was in flight, by a load or by another erasure; re-run.
+   * `` `error: <message>` `` — an isolated per-segment fault (per-segment faults are recorded so one segment
+   * can't discard the whole ledger); re-run after fixing the fault. Segments the id is not in are not listed
+   * at all.
    */
   readonly note?: string;
 }
@@ -643,11 +644,16 @@ export class CloudRoaring {
    * **One contract remains** (an integrator obligation the library cannot check): **do not load the segment
    * while erasing from it.** A load that lands after the rewrite carries whatever its source held, and the
    * library cannot know that source was meant to exclude the id. Quiesce loads of the affected segments for the
-   * duration, or fix the source first and load after. A load that lands *during* the rewrite is caught: the
+   * duration, or fix the source first and load after. A writer that lands *during* the rewrite is caught: the
    * rewrite's publish is refused **by the fence** — `publishGeneration`'s `expectFrom`, which lands the CAS only
    * while the pointer is still on the generation the rewrite streamed — and the entry says `note: 'superseded'`,
    * so re-run. Forward-only alone would NOT refuse it: `nextGeneration` numbers above everything in the bucket,
    * so the rewrite would out-rank the newer generation and then collect it.
+   *
+   * A racing **erasure** is caught before that, and reported the same way. It collects with `keep: 0`, taking
+   * every generation below its new pointer — the one this rewrite is streaming, and the object this rewrite
+   * just wrote — so the loser can find its own inputs deleted mid-flight. That surfaces as `'superseded'`
+   * rather than as an error: the pointer moved, the id is still there, and a re-run is the fix.
    *
    * **Read `note` on any `erased: false` entry — the two reasons mean different things.** `'superseded'` means a
    * load published a newer generation mid-rewrite, so **the id is still there** and a re-run erases it.
