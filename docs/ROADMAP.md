@@ -49,7 +49,7 @@ Where each piece sits today:
 | The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The measured numbers on the [benchmarks page](benchmarks.md) are the S3-side figures of the July 2026 calibration run |
 | The empty-load guard and `load()` with `allowEmpty` / `guard` / rollback — covering the `*Into` verbs too | **next** |
-| A snapshot handle, so a long job reads one instant | **next** — a long call can re-resolve forward across a publish; no GC setting prevents that |
+| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `coldGenTtlMs` |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
 
@@ -211,12 +211,12 @@ between here and there:
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
    refused load. It covers the `*Into` verbs too, which today publish an empty generation when a combine comes
    out empty.
-4. **A snapshot handle — one instant for a long job.** A handle that resolves the current generation once and
-   reads from it for as long as the job runs, so an export, a reconciliation or a send describes a single
-   instant rather than whichever generations happened to be current as it went. Generation GC already keeps a
-   grace window (`keep`) and an ordinary read heals forward if that window is missed, but neither holds a read
-   on one generation: the hop comes from *re-resolution* on the TTL, so retaining more generations does not
-   affect it. This is the piece that makes the guarantee explicit instead of unavailable.
+4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
+   generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
+   describes a single instant rather than whichever generations happened to be current as it went. Generation
+   GC's grace window (`keep`) never provided this: the hop came from *re-resolution* on the TTL, so retaining
+   more generations did not affect it. Size `keep` past your longest pinned job — a pinned read does not heal
+   forward, it fails, which is the honest failure for a caller that asked for one instant.
 5. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
    were written for a tiered engine and still explain the loaded store as what is left after a warm tier was
    removed. They should lead with what it is: one bucket, immutable generations, cheap chunk-skipping reads from

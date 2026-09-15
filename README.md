@@ -5,14 +5,11 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/node/v/@cloudbitmaps/roaring)](https://nodejs.org)
 
-<!-- The npm + Node badges read the registry, so they stay "not found" until the launch publish (Stage 5 of) — expected, not broken. The CI badge needs the repo public to render for
-     anonymous readers; both it and the npm link carry the repo/package home, so they are on the launch
-     runbook's URL-rewrite list. -->
-
 > Take the [Roaring Bitmap](https://roaringbitmap.org/) — the compressed-bitmap data structure behind
-> Lucene, ClickHouse, Druid, and Spark — and make it **distributed, durable, and cloud-scale**, without
-> giving up the fast, familiar in-memory API. Bitmaps too big for one machine's RAM live across tiered
-> cloud storage; you still just call `add`, `has`, `remove`, and `intersect`.
+> Lucene, ClickHouse, Druid, and Spark — and make it **distributed, durable, and cloud-scale**. Sets too big
+> for one machine's RAM live as immutable generations in one object-storage bucket, and you read them —
+> `has`, `count`, `iterate`, `intersect` — from anywhere, including a stateless function with no cache to
+> warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
 > **Status: `0.9.0` — published, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
@@ -55,9 +52,10 @@ shared across services and survive restarts, you reach for something like an alw
 which is fast, but **expensive to keep running** and **forgets everything on restart** unless you bolt on
 persistence. You're paying for RAM, 24/7, to hold sets that are mostly read.
 
-**CloudBitmaps** keeps the bitmap engine and the developer experience, but puts the *storage* on a tiered,
-pluggable, cloud-native architecture: cheap and durable at rest (cents/month in object storage), fast where
-it needs to be, and able to answer set queries over enormous bitmaps from small, stateless functions.
+**CloudBitmaps** keeps the bitmap engine and the developer experience, but puts the *storage* in one
+pluggable, cloud-native place: immutable generations, cheap and durable at rest (cents/month in object
+storage), with a RAM cache in front of them — able to answer set queries over enormous bitmaps from small,
+stateless functions, and costing nothing while nobody is asking.
 
 ## Your data stays yours
 
