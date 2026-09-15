@@ -17,6 +17,26 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **`@google-cloud/storage` 8 is now supported.** The optional peer range widens from `^7` to `^7 || ^8`, and the
+  dev dependency moves to 8.x so the version we claim is the version the suite and the fake-gcs-server
+  integration lane actually exercise. v8's headline change is dropping Node 18; this package has required Node 22
+  since 0.2.0, and the driver uses only `bucket`/`file`/`save`/`download`/`getFiles`/`delete`/`getMetadata`/
+  `createWriteStream`, none of which changed shape.
+- **The Discussions entry is gone from the issue-template config.** Discussions is not enabled on the repository,
+  so the link 404'd — a door that opens onto nothing is worse than no door. If it is ever enabled, the entry goes
+  back in the same change.
+
+### Documentation
+
+- **The registry-prefix lifecycle trap is now in `PRIVACY.md`, where operators will see it.** It was only ever in
+  a driver doc-comment. Deleting a registry row writes a **tombstone** whose counter only advances, and that is
+  what makes the row's token unique forever; expiring those tombstones lets a re-created name re-issue a token
+  that was already used. Since the token is the segment's *identity* — what a cached reader, a fenced publish and
+  a collection pass all compare — re-issuing one can serve a deleted incarnation's data or collect a live one's
+  objects. A few bytes per retired segment; treat it as permanent.
+
+### Changed
+
 - **Dependency refresh.** `pnpm/action-setup` to v6.1.0 across every workflow, and the minor/patch line of each
   dev dependency: the AWS SDK clients, `fast-check`, `prettier`, `typescript-eslint`, `lint-staged` and `yaml`.
   The `prettier` bump reformats one union type in `retention-sweep.ts`; no behaviour changes. `esbuild` is

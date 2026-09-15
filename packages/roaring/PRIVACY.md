@@ -204,6 +204,15 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 > longer than your retention and never let it touch a current generation. Earlier revisions of this document
 > recommended it as the primary mechanism, which was wrong.
 
+> ⚠️ **Never apply a lifecycle-expiration rule to the registry prefix either** — a separate trap, and a worse
+> one. Deleting a registry row does not remove it: it writes a **tombstone** carrying a counter that only ever
+> advances, which is what makes the row's token unique for all time. Expire those tombstones and a segment
+> re-created under the same name starts the counter again and re-issues a token that was already used. That
+> token is the segment's **identity**: it is what a cached reader, a fenced publish and a generation-collection
+> pass each compare to decide whether two observations describe the same segment. Re-issue one and they can all
+> answer "yes" about a segment that no longer exists — serving a deleted incarnation's data, or collecting a
+> live one's objects. Storage for a tombstone is a few bytes per retired segment; treat it as permanent.
+
 Full detail, including the dated-bucket pattern and the pitfalls, is in the retention section of the
 [guide](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md).
 

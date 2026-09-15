@@ -1,14 +1,11 @@
-# Force the structured forms above (no blank issues), and route the two things that don't belong in a
-# public issue tracker. GitHub requires absolute URLs here, so both carry the repo's home.
+# Force the structured forms above (no blank issues), and route the one thing that does not belong in a public
+# issue tracker. GitHub requires an absolute URL here, so it carries the repo's home.
 #
-# NOTE: the Discussions link below currently 404s — the repo is public, but Discussions has not been enabled
-# in its settings. It is a one-click repo setting; until it is on, that entry sends anyone with a question to
-# a missing page, which is worse than not offering it. Either enable Discussions or drop the second entry.
+# There is deliberately no Discussions entry: Discussions is not enabled on this repo, and an entry pointing at
+# a disabled tab sends anyone with a question to a 404 — worse than not offering it, because it looks like a
+# door. If Discussions is ever turned on in the repo settings, add the entry back in the same change.
 blank_issues_enabled: false
 contact_links:
   - name: Security report (private)
     url: https://github.com/cloudbitmaps/cloudbitmaps/security/policy
     about: Report a vulnerability privately — never open a public issue for it.
-  - name: Questions & ideas
-    url: https://github.com/cloudbitmaps/cloudbitmaps/discussions
-    about: Ask a question or float an idea in Discussions.
