@@ -5,11 +5,15 @@
  * `node:` builtin — and because `validate.ts` needs it to measure a name against the key budget. Core may
  * not import a driver (invariant 7), and a driver may import core, so this is the only layer both can see.
  *
- * The old grammar was an allowlist — `[A-Za-z0-9._:-]` — and the colon was missing from it by accident rather
- * than by decision, which made `dedup:2026-08-01` throw for every user who spells keys the way Redis users do.
- * The lesson generalises: an allowlist rejects names for the storage layer's convenience, and the storage
- * layer's convenience is the library's job, not the caller's. So a name is **any non-empty string**, and each
- * physical boundary escapes what *it* cannot take literally.
+ * The old grammar was an allowlist — `[A-Za-z0-9._:-]`. Widening it one character at a time is what exposed the
+ * real problem: the colon had been missing from it by accident rather than by decision, and nothing in the
+ * process would have caught the next omission either. An allowlist rejects names for the storage layer's
+ * convenience, and the storage layer's convenience is the library's job, not the caller's. So a name is **any
+ * non-empty string**, and each physical boundary escapes what *it* cannot take literally.
+ *
+ * It also fixes a hazard the allowlist *permitted*: `con`, `nul` and `com1` are Windows device names that
+ * validated cleanly and failed only on a user's machine. A grammar can be both too narrow and too permissive
+ * at once, which is the argument against having one.
  *
  * Percent-encoding, because it is the one escape everybody already reads. `%` escapes itself as `%25` and is
  * encoded **first**, which is what makes the transform injective: every `%` in an encoded string starts an
@@ -33,10 +37,18 @@ const KEY_SAFE = /[A-Za-z0-9._:-]/;
 /** Characters safe in a path component. As {@link KEY_SAFE} minus `:`. */
 const PATH_SAFE = /[A-Za-z0-9._-]/;
 
-/** Percent-encode one character's UTF-8 bytes: `é` → `%C3%A9`. */
+const UTF8 = new TextEncoder();
+
+/**
+ * Percent-encode one character's UTF-8 bytes: `é` → `%C3%A9`.
+ *
+ * Only ever called with a WELL-FORMED code point. `TextEncoder` maps an unpaired surrogate to U+FFFD, which
+ * would make every surrogate — and U+FFFD itself — encode identically and silently break injectivity, so
+ * `validate.ts` refuses a name that is not well-formed UTF-16 before any of this runs.
+ */
 function escapeChar(ch: string): string {
   let out = '';
-  for (const byte of new TextEncoder().encode(ch)) {
+  for (const byte of UTF8.encode(ch)) {
     out += `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
   }
   return out;
@@ -84,7 +96,28 @@ function decodePercent(encoded: string): string {
  * partition-key delimiters), and control characters (not legal in S3's XML responses).
  */
 export function encodeNameForKey(name: string): string {
-  return encodeWith(name, KEY_SAFE);
+  return defuseDotComponent(encodeWith(name, KEY_SAFE));
+}
+
+/**
+ * Escape a component that is exactly `.` or `..`.
+ *
+ * Applied to **both** alphabets. It is obviously needed for a filesystem path, and it is needed for an object
+ * key too: the library's own S3/GCS/Azure calls treat the key space as flat, but the moment those keys touch
+ * something hierarchical the component resolves. `aws s3 sync`, `gsutil -m cp -r` and `azcopy` all write
+ * `dest/tenant/../segments/…`, which lands *outside* `tenant/`; s3fs and gcsfuse mounts do the same; and on
+ * ADLS Gen2, where the namespace really is hierarchical, `prefix/../x` and `x` are the same object. Those are
+ * the DR-restore and eject paths this library documents.
+ *
+ * Note the asymmetry it removes: `normalizeS3Prefix` already refuses `.`/`..` segments in a **prefix**, which
+ * is trusted config, while the name — the attacker-influenced input — was left unguarded.
+ *
+ * Every dot is escaped rather than just the first, so the result cannot end in one either. Zero migration: `.`
+ * failed the old leading-alphanumeric rule and `..` was rejected outright, so no previously legal name is
+ * touched.
+ */
+function defuseDotComponent(encoded: string): string {
+  return encoded === '.' || encoded === '..' ? encoded.replaceAll('.', '%2E') : encoded;
 }
 
 /** Inverse of {@link encodeNameForKey}. */
@@ -113,22 +146,20 @@ export function decodeNameFromKey(encoded: string): string {
 export function encodeNameForPath(name: string): string {
   let encoded = encodeWith(name, PATH_SAFE);
 
-  // The three fixes COMPOSE rather than short-circuit. An earlier draft returned straight out of the traversal
-  // case, and `..` became `%2E.` — which ends in a dot, i.e. hazard 3, reintroduced by the fix for hazard 1.
-  if (encoded === '.' || encoded === '..') {
-    // Escape every dot, so the result cannot end in one either.
-    encoded = encoded.replaceAll('.', '%2E');
-  } else {
-    // A Windows device name is reserved with OR without an extension, so the test is on the stem.
-    const stem = encoded.split('.')[0] ?? '';
-    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(stem)) {
-      encoded = escapeChar(encoded[0] as string) + encoded.slice(1);
-    }
+  // The fixes COMPOSE rather than short-circuit. An earlier draft returned straight out of the traversal case,
+  // and `..` became `%2E.` — which ends in a dot, i.e. hazard 3, reintroduced by the fix for hazard 1.
+  const dotted = defuseDotComponent(encoded);
+  if (dotted !== encoded) return dotted;
+
+  // A Windows device name is reserved with OR without an extension, so the test is on the stem.
+  const stem = encoded.split('.')[0] ?? '';
+  if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(stem)) {
+    encoded = escapeChar(encoded[0] as string) + encoded.slice(1);
   }
 
-  // Windows strips a trailing dot or space, which would alias two distinct names onto one path.
-  const last = encoded.at(-1);
-  if (last === '.' || last === ' ') encoded = encoded.slice(0, -1) + escapeChar(last);
+  // Windows strips a trailing dot, which would alias two distinct names onto one path. A trailing SPACE is the
+  // same hazard but needs no arm here: space is not in `PATH_SAFE`, so the charset already escaped it to `%20`.
+  if (encoded.endsWith('.')) encoded = `${encoded.slice(0, -1)}%2E`;
 
   return encoded;
 }

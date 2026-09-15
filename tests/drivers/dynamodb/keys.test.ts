@@ -27,6 +27,19 @@ describe('DynamoDB single-table key grammar', () => {
       }
     });
 
+    it('encodes the NAMESPACE too — the PK is the tenancy boundary here', () => {
+      // Encoding the segment and forgetting the namespace leaves `{segment:'s', namespace:'_default'}` and
+      // `{segment:'s'}` on one partition key: the exact cross-tenant aliasing this change exists to prevent,
+      // on the one backend where the PK *is* the isolation.
+      expect(partitionKey({ segment: 's', namespace: '_default' })).toBe('ns#%5Fdefault|seg#s');
+      expect(partitionKey({ segment: 's' })).toBe('ns#_default|seg#s');
+      expect(partitionKey({ segment: 's', namespace: '_default' })).not.toBe(
+        partitionKey({ segment: 's' }),
+      );
+      // A namespace spelling the delimiters cannot straddle them either.
+      expect(partitionKey({ segment: 's', namespace: 'a|seg#b' })).toBe('ns#a%7Cseg%23b|seg#s');
+    });
+
     it('escapes a name that spells the PK delimiters instead of rejecting it', () => {
       // `#` and `|` separate the fields of this key, so a name containing them used to be refused. It is now
       // encoded, which is strictly safer: refusing relied on the grammar staying narrow, while escaping holds

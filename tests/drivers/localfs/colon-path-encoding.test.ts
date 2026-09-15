@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { LocalFsColdDriver } from '@/drivers/localfs/cold';
@@ -115,6 +115,20 @@ describe('localfs: colons never reach the filesystem', () => {
     const seen = [];
     for await (const r of registry.list()) seen.push(r.segment);
     expect(seen).toEqual(['sent:daily:2026-08-01']);
+  });
+
+  it('a planted literal-colon DIRECTORY is skipped, so one namespace is never reported twice', async () => {
+    // The sibling of the `.reg` round-trip check, on `parseNamespaceDir`. Its doc says getting this wrong does
+    // not fail one segment — it aborts the whole enumeration, taking the consistency check, the retention
+    // sweep and subject erasure with it. Nothing tested it.
+    const registry = new LocalFsRegistryDriver(root);
+    await registry.create({ segment: 's', namespace: 'tenant:acme' }, { currentGen: 0 });
+    await mkdir(join(root, 'tenant:acme', 'registry'), { recursive: true });
+    await writeFile(join(root, 'tenant:acme', 'registry', 's.reg'), '{}');
+
+    const seen = [];
+    for await (const r of registry.list()) seen.push(r.namespace);
+    expect(seen).toEqual(['tenant:acme']); // once, from `tenant%3Aacme` — not twice
   });
 
   it('property: the encoding round-trips, and near-identical names never share a path', () => {

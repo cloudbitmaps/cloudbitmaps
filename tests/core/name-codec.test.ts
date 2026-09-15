@@ -59,6 +59,11 @@ describe('names that used to be impossible', () => {
     ['日本語', '%E6%97%A5%E6%9C%AC%E8%AA%9E'],
     ['🎉', '%F0%9F%8E%89'],
     ['_leading', '%5Fleading'], // a LEADING underscore is escaped — see the sentinel test below
+    // Control characters: a literal newline breaks the XML an S3 LIST returns, and a NUL truncates a
+    // POSIX path. These were in the old BAD_NAMES and have to land somewhere now that nothing is banned.
+    ['a\tb', 'a%09b'],
+    ['a\nb', 'a%0Ab'],
+    ['a\u0000b', 'a%00b'],
   ];
 
   it.each(cases)('encodes %s for an object key', (raw, encoded) => {
@@ -101,8 +106,10 @@ describe('the filesystem hazards, which are about the whole component', () => {
     // Reserved with an extension too: the object file is `<name>.<gen>.crbm`, so the stem is what matters.
     expect(encodeNameForPath('con.backup')).not.toMatch(/^con\./i);
     // ...but a name that merely STARTS with those letters is ordinary.
-    for (const n of ['console', 'connection', 'nulls', 'com10', 'lpt'])
+    for (const n of ['console', 'connection', 'nulls', 'com10', 'lpt', 'com0', 'lpt0'])
       expect(encodeNameForPath(n)).toBe(n);
+    // `com0`/`lpt0` matter in the other direction: they are NOT device names, they WERE legal under the
+    // old grammar, and widening the table to `COM\\d` would move them on disk for no safety gain.
   });
 
   it('escapes a trailing dot or space, which Windows silently strips', () => {
@@ -123,7 +130,61 @@ describe('the filesystem hazards, which are about the whole component', () => {
 });
 
 describe('the three properties, over arbitrary strings', () => {
-  const ANY_NAME = fc.string({ minLength: 1, maxLength: 40 });
+  // `fc.string()` defaults to printable ASCII. Measured over 20,000 draws it produced 95 distinct code points,
+  // all U+0020–U+007E: zero non-ASCII, zero control characters, zero surrogate pairs, and a device-name stem
+  // roughly once in 20,000. So the properties below were proving round-trip and injectivity over precisely the
+  // alphabet this change did NOT need to widen — `日本語` and `🎉`, the headline examples, were never drawn.
+  //
+  // The unit is therefore explicit, and mixes the characters with special handling, whole device-name tokens
+  // (a character-level bias never assembles `com1`), and binary strings for the astral/control cases.
+  const HOSTILE_UNIT = fc.constantFrom(
+    '%',
+    '.',
+    '_',
+    ':',
+    '/',
+    '\\',
+    ' ',
+    '#',
+    '|',
+    '\u0000',
+    '\u0009',
+    '\u202E',
+    'a',
+    'A',
+    'c',
+    'o',
+    'n',
+    '1',
+    '2',
+    '5',
+    'E',
+    'F',
+    '\u00e9',
+    '\u0301',
+    '\u65e5',
+    '\ud83c\udf89',
+  );
+  const ANY_NAME = fc.oneof(
+    { arbitrary: fc.string({ minLength: 1, maxLength: 40, unit: HOSTILE_UNIT }), weight: 3 },
+    { arbitrary: fc.string({ minLength: 1, maxLength: 40, unit: 'binary' }), weight: 2 },
+    {
+      arbitrary: fc.constantFrom(
+        'con',
+        'CON',
+        'nul',
+        'com1',
+        'com0',
+        'lpt9',
+        'con.backup',
+        '.',
+        '..',
+        'a.',
+        '_x',
+      ),
+      weight: 1,
+    },
+  );
 
   it('property: round-trips on both alphabets', () => {
     fc.assert(
@@ -135,15 +196,29 @@ describe('the three properties, over arbitrary strings', () => {
     );
   });
 
-  it('property: injective, so two different names never share one encoding', () => {
-    fc.assert(
-      fc.property(ANY_NAME, ANY_NAME, (a, b) => {
-        fc.pre(a !== b);
-        expect(encodeNameForKey(a)).not.toBe(encodeNameForKey(b));
-        expect(encodeNameForPath(a)).not.toBe(encodeNameForPath(b));
-      }),
-      { numRuns: 1000 },
-    );
+  it('property: injective — swept with a seen-map, not by drawing two random strings', () => {
+    // Drawing two independent strings and asserting they differ proves almost nothing: over a 95-character
+    // alphabet the chance of drawing a colliding PAIR is ~0 even if collisions were common. It is also a
+    // corollary of round-trip above (a left inverse implies injectivity), so it added no power at all.
+    //
+    // A seen-map over one stream is what actually finds a collision CLASS — this is the shape that surfaced
+    // the lone-surrogate bug, where every unpaired surrogate encoded to the same replacement bytes.
+    for (const encode of [encodeNameForKey, encodeNameForPath]) {
+      const seen = new Map<string, string>();
+      fc.assert(
+        fc.property(ANY_NAME, (n) => {
+          const enc = encode(n);
+          const prior = seen.get(enc);
+          if (prior !== undefined && prior !== n) {
+            throw new Error(
+              `collision: ${JSON.stringify(prior)} and ${JSON.stringify(n)} both → ${enc}`,
+            );
+          }
+          seen.set(enc, n);
+        }),
+        { numRuns: 5000 },
+      );
+    }
   });
 
   it('property: a path encoding is always a safe path component', () => {
