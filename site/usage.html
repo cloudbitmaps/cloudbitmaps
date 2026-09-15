@@ -136,42 +136,36 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">quickstart.ts</span><span class="label">No setup</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> {
-  CloudRoaring, MemoryColdDriver, MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre class="code-plain"><code><span class="k">import</span> { connect } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> cold = <span class="k">new</span> MemoryColdDriver();
-<span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
+<span class="k">const</span> store = <span class="k">await</span> connect(<span class="s">'memory://'</span>);
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(cold,
-  { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
-  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
+<span class="k">await</span> store.load(
+  { segment: <span class="s">'high-value-shoppers'</span> },
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ cold, registry });
 <span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
 <span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span>
 <span class="k">await</span> vips.count();            <span class="c">// exact, 0 payloads</span></code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">production.ts</span><span class="label">Only the drivers</span>
+              <span class="label">production.ts</span><span class="label">One URL</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-<span class="k">import</span> { S3ColdDriver } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/s3'</span>;
-<span class="k">import</span> { DynamoDbRegistryDriver }
-  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/dynamodb'</span>;
+            <pre class="code-plain"><code><span class="k">import</span> { connect } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> cold = <span class="k">new</span> S3ColdDriver({ client, bucket: <span class="s">'segments'</span> });
-<span class="k">const</span> registry = <span class="k">new</span> DynamoDbRegistryDriver({
-  client: ddb, tableName: <span class="s">'segments'</span>,
-});
+<span class="c">// one string; the scheme names the protocol</span>
+<span class="k">const</span> store = <span class="k">await</span> connect(
+  <span class="s">'s3://segments/cloudroaring?region=us-east-1'</span>);
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
-  cold, registry,
-  cacheMaxChunks: <span class="n">512</span>,   <span class="c">// optional bounded LRU</span>
-});
+<span class="c">// MinIO / Ceph / R2 — same scheme, an endpoint</span>
+<span class="k">await</span> connect(<span class="s">'s3://segments/pfx?endpoint=…&amp;pathStyle=true'</span>);
+
+<span class="c">// tuning rides along; drivers you build by hand</span>
+<span class="c">// go to new CloudRoaring({ cold, registry, … })</span>
+<span class="k">await</span> connect(<span class="s">'s3://segments/pfx'</span>,
+  { cacheMaxChunks: <span class="n">512</span> });  <span class="c">// bounded LRU</span>
 
 <span class="c">// …every line below here is unchanged</span></code></pre>
           </div>

@@ -15,6 +15,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`connect(url)` — a working store from one string.** Reaching S3 meant four imports and three constructors,
+  with `bucket` and `prefix` repeated across two drivers; repeating them is not just tedious, it is the
+  classic first-run bug, because a mismatched prefix points the registry somewhere the cold driver never
+  writes and the store looks empty rather than misconfigured.
+
+  ```ts
+  const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
+  ```
+
+  `s3://` · `gs://` · `az://` · `file://` · `memory://`. The scheme names the storage **protocol**, not a
+  vendor, so it is the URL you already type for `aws s3 cp`, DuckDB, Polars or s3fs — and an S3-compatible
+  store (MinIO, Ceph, R2) is the same scheme with `?endpoint=` and `?pathStyle=true`. Required things sit in
+  the path; everything optional is a query parameter, because the SDK already resolves a region from
+  `AWS_REGION`, the shared profile or instance metadata, and a value that is usually inferred should not look
+  mandatory. `?table=` swaps in a DynamoDB registry.
+
+  **GCS and Azure have no object-store registry of their own**, so they need `?table=` or a hand-wired
+  registry; `connect` says so with the reason rather than failing at the first read. **Credentials are
+  deliberately not expressible** — they come from the SDK's own resolution chain, and a URL is the kind of
+  string that ends up in a log, a crash report, or a CI variable that outlives the secret.
+
+  It is a shortcut, never a second way to configure a store: `connect` returns exactly the `CloudRoaring` the
+  constructor returns, and the constructors stay documented for any client it cannot express — a shared
+  credential provider, a proxy agent, a custom retry strategy, or different backends for cold and registry.
+  `async` is forced rather than chosen: the driver SDKs are optional peers behind subpath exports and the main
+  entry stays SDK-free, so a synchronous `connect` would pull every cloud SDK into every consumer's bundle.
+
 ### Breaking
 - **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
   be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or

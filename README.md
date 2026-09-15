@@ -234,23 +234,19 @@ you pull one in only for the tier you use.
 
 ## Quick taste (works today)
 
-The in-memory drivers need zero setup — ideal for a first look or a test:
+One URL wires a store. `memory://` needs zero setup — ideal for a first look or a test; swap the string for
+`s3://bucket/prefix` and the same code runs against your bucket:
 
 ```ts
-import {
-  CloudRoaring,
-  MemoryColdDriver,
-  MemoryRegistryDriver,
-  bulkLoadCrbmGeneration,
-} from '@cloudbitmaps/roaring';
+import { connect } from '@cloudbitmaps/roaring';
 
-const cold = new MemoryColdDriver();
-const registry = new MemoryRegistryDriver();
+const store = await connect('memory://');
+// …or: await connect('s3://my-bitmaps/cloudroaring?region=us-east-1')
+// …or: await connect('file:///var/lib/cloudbitmaps')
 
 // A load is how data gets in: one immutable object, then the pointer moves to it.
-await bulkLoadCrbmGeneration(cold, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry });
+await store.load({ segment: 'high-value-shoppers' }, [5, 99_999, 1_234_567_890, 2_000_000_000]);
 
-const store = new CloudRoaring({ cold, registry });
 const seg = store.segment('high-value-shoppers');
 
 await seg.has(1_234_567_890); // → true  (one chunk, from the hot cache after the first read)

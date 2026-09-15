@@ -99,6 +99,7 @@ import type { SegmentInfo } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
+import { resolveWiring } from './connect';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -1683,6 +1684,23 @@ export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } fr
 // bulk-load path); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
 // can construct a `SegmentEngine` by hand.
 export { SafeBitmap, roaringCodec } from './roaring-codec';
+/** Options for {@link connect} — everything `CloudRoaring` takes, minus the wiring the URL supplies. */
+export type ConnectOptions = Omit<CloudRoaringOptions, 'cold' | 'registry'>;
+
+/**
+ * Build a store from one storage URL — see {@link resolveWiring} for the schemes and query parameters.
+ *
+ * ```ts
+ * const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
+ * ```
+ *
+ * Returns exactly the {@link CloudRoaring} the constructor returns, so it is a shortcut rather than a second
+ * way to configure a store: when you need a client this cannot express, build the drivers yourself and pass
+ * them to `new CloudRoaring({ cold, registry })`.
+ */
+export async function connect(url: string, options: ConnectOptions = {}): Promise<CloudRoaring> {
+  return new CloudRoaring({ ...options, ...(await resolveWiring(url)) });
+}
 
 /** Package version marker. Kept in sync with package.json at release. */
 export const VERSION = '0.9.0';

@@ -51,7 +51,40 @@ surface from `@cloudbitmaps/core` and its `/s3`, `/dynamodb`, `/gcs`, `/azure` s
 
 ## The everyday surface (what you'll call)
 
-### Build a store — `new CloudRoaring(options)`
+### Build a store — `await connect(url)`
+
+One string wires both drivers. The scheme names the storage **protocol**, so it is the URL you already type
+elsewhere (`aws s3 cp`, DuckDB, Polars, s3fs), and an S3-compatible store is the same scheme with an endpoint.
+
+```ts
+import { connect } from '@cloudbitmaps/roaring';
+
+const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
+```
+
+| scheme | example | needs |
+| --- | --- | --- |
+| `s3://` | `s3://bucket/prefix?region=us-east-1` | `@aws-sdk/client-s3` |
+| `s3://` (MinIO / Ceph / R2) | `s3://bucket/pfx?endpoint=http://localhost:9000&pathStyle=true` | `@aws-sdk/client-s3` |
+| `gs://` | `gs://bucket/prefix?table=cbm-registry` | `@google-cloud/storage` + a registry |
+| `az://` | `az://container/prefix?table=cbm-registry` | `@azure/storage-blob`, `AZURE_STORAGE_CONNECTION_STRING`, + a registry |
+| `file://` | `file:///var/lib/cloudbitmaps` | nothing |
+| `memory://` | `memory://` | nothing — for tests |
+
+Query parameters, all optional: `region`, `endpoint` and `pathStyle` for S3-compatible stores, and `table` to
+use a DynamoDB registry instead of the object-store one. **GCS and Azure have no object-store registry of
+their own**, so they need `?table=` or a hand-wired registry — `connect` says so rather than failing at the
+first read. Credentials are deliberately not expressible in the URL: they come from the SDK's own resolution
+chain, and a URL is the kind of string that ends up in a log.
+
+`connect` returns exactly the `CloudRoaring` the constructor returns — `async` only because the driver SDKs
+are optional peers behind subpath exports and the right one has to be imported.
+
+### Build a store by hand — `new CloudRoaring(options)`
+
+Use this when you need a client `connect` cannot express: a shared credential provider, a proxy agent, a
+custom retry strategy, two different backends for cold and registry. Same object, same capabilities.
+
 
 `cold` is the **only required option**; add `registry` for one-read generation resolution, encrypted segments,
 the `*Into` verbs and every lifecycle helper (recommended for anything beyond a first look). Everything else is
@@ -333,6 +366,7 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
+| `ConnectOptions` | everything `CloudRoaring` takes minus `cold`/`registry`, which the URL supplies |
 | `encodeNameForPath` / `decodeNameFromPath` | percent-encode a name for use as a **filesystem path component**, and back. Escapes everything `encodeNameForKey` does plus `:` (an NTFS alternate-data-stream separator on Windows), plus three hazards that are properties of the whole component: `.`/`..` traversal, Windows reserved device names (`CON`, `NUL`, `COM1`…, reserved with *or without* an extension), and a trailing dot or space, which Windows silently strips so two names would collide on one path. Use these if you write your own filesystem `ExportSink`, so your dump matches the drivers' layout. **When reading a name back, require the encoding to round-trip** (`encodeNameForPath(decoded) === raw`) rather than merely decoding it — the decoder accepts spellings the encoder never emits (a lowercase escape, say), and without that check a planted entry can alias a real one |
 | `namespaceKeyPart` / `namespacePathPart` | the physical namespace component of a key or path: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use these rather than encoding `ns ?? '_default'` yourself |
 | `encodeNameForKey` / `decodeNameFromKey` | the same for an **object key** (S3, GCS, Azure) or a DynamoDB partition key. Escapes `/` (which would invent hierarchy and break a key parser that splits on it), `#` and `|` (DynamoDB's delimiters), and control characters. `%` escapes itself as `%25` and is encoded first, which is what makes both transforms injective — so two distinct names can never claim one key. Every name legal before the encoding existed encodes to **itself**, so no stored key moved. **Require the encoding to round-trip when reading a name back**, for the same reason as above |
