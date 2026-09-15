@@ -69,7 +69,9 @@ compression saves.
 ## No background process, and nothing to seed
 
 There is no daemon, no compaction pass and no lifecycle worker. A segment exists once a generation has been
-loaded into it, and the only scheduled work is the retention sweep above (plus gcOrphanGenerations, which never
+loaded into it -- there is no create verb, segment(name) is just a validated address that does no I/O, and
+exists(ref) / segments({namespace}) ask the registry what is there rather than you keeping your own list of
+names beside the store. The only scheduled work is the retention sweep above (plus gcOrphanGenerations, which never
 touches the current generation, if you want superseded ones collected sooner). Compliance is built in:
 subjectReport (Art. 15), eraseSubject (Art. 17 -- a generation rewrite that deletes the generation holding the
 bit, so it is physically gone from the bucket when the call returns), destroySegment/eraseNamespace

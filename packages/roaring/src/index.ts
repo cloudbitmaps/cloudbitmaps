@@ -94,12 +94,15 @@ import type {
 import { bulkLoadCrbmGeneration, eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
+import { listSegments, segmentExists } from '@cloudbitmaps/core';
+import type { SegmentInfo } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
+  /** A float in `[0, 1)`. Jitter only — never key material, never anything a caller can observe. */
   next(): number {
     return Math.random();
   }
@@ -787,6 +790,72 @@ export class CloudRoaring {
   async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
     validateSegmentRef(ref);
     return listGenerations(ref, this.lifecycleDeps('generations'));
+  }
+
+  /**
+   * Whether a read of this segment would find anything — the "do I already have this?" question, as one
+   * registry point read.
+   *
+   * There is no `create` in this library: {@link CloudRoaring.segment} is a validated address and does no I/O,
+   * so naming a segment can never collide with an existing one. A segment starts existing when something is
+   * first loaded into it, and this is how you ask whether that has happened.
+   *
+   * **Not the same as `count() > 0`.** A segment loaded with no ids exists and counts zero. Distinguishing
+   * "never loaded" from "loaded, and genuinely empty" is the thing `count()` cannot do and the reason this
+   * exists. It is `false` for a segment whose row was minted ahead of its first load (by `setRetention`) and
+   * for a `destroyed` tombstone, because a read answers empty in both cases.
+   *
+   * Two states answer `true` where a read still gives you nothing: a torn restore (a live pointer whose object
+   * was deleted) makes reads *throw* rather than answer empty — `checkConsistency` is the call for that — and
+   * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
+   *
+   * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
+   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a `registry`.
+   *
+   * ```ts
+   * if (!(await store.exists({ segment: 'users' }))) {
+   *   await store.load({ segment: 'users' }, idsFromUpstream);
+   * }
+   * ```
+   */
+  async exists(ref: SegmentRef): Promise<boolean> {
+    validateSegmentRef(ref);
+    return segmentExists(ref, this.requireRegistry('exists'));
+  }
+
+  /**
+   * Every segment the registry knows about, streamed — optionally scoped to one namespace.
+   *
+   * The registry is already the list of your segments, which is why you should not keep a second one beside it:
+   * a hand-maintained list is a source of truth that drifts from this one the first time a load fails halfway.
+   *
+   * **An admin/discovery call, not a request-path one.** This is the registry's own enumeration — a `Scan` on
+   * DynamoDB, a paged LIST on an object-store registry — so its cost grows with the size of the fleet rather
+   * than with what you are looking for.
+   *
+   * Scoping to a namespace does not cost the same everywhere: on an object-store registry it narrows the LIST
+   * prefix and really is the difference between one tenant and all of them, while on DynamoDB it is a `Scan`
+   * with a `begins_with` filter applied *after* reading — fewer bytes back, the same table read.
+   *
+   * It streams, and stopping the iteration stops the scan — except behind a driver that buffers its
+   * enumeration to retry it as a unit, which `RetryingRegistryDriver` does: wrapped in that, the whole scan is
+   * paid for and resident before the first row arrives.
+   *
+   * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
+   * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask
+   * {@link CloudRoaring.exists} the narrower question. Needs a `registry`.
+   *
+   * ```ts
+   * for await (const s of store.segments({ namespace: 'active-daily' })) {
+   *   console.log(s.segment, s.currentGen, s.status);
+   * }
+   * ```
+   */
+  segments(options: { namespace?: string } = {}): AsyncIterable<SegmentInfo> {
+    if (options.namespace !== undefined) {
+      validateSegmentRef({ segment: 'x', namespace: options.namespace });
+    }
+    return listSegments(this.requireRegistry('segments'), options);
   }
 
   /**
