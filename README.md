@@ -473,8 +473,7 @@ freshness meets it by micro-batching into immutable segments, never by mutating 
 that is the shape we build. Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that
 well. If a live tier returns, it will be immutable delta generations on the same bucket.
 
-Next on the loaded store: a single-call `load()` that wraps write-plus-publish with an **empty-result guard**
-(refusing to publish an empty generation over a non-empty one unless you say so) and a `rollback()`, a
+Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too little, and a `rollback()`, a
 **snapshot handle** so a long export or reconciliation reads one instant rather than whichever generations were
 current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
 [`docs/ROADMAP.md`](docs/ROADMAP.md).

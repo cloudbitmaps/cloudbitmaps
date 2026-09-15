@@ -69,7 +69,7 @@ export interface ConsistencyReport {
 }
 
 /** Collect the set of generations the object store currently lists for a segment. */
-async function listGenerations(cold: IColdDriver, ref: SegmentRef): Promise<Set<number>> {
+async function generationsPresent(cold: IColdDriver, ref: SegmentRef): Promise<Set<number>> {
   const present = new Set<number>();
   for await (const key of cold.list(ref)) present.add(key.generation);
   return present;
@@ -117,7 +117,7 @@ export async function runConsistencyCheck(
       // would make `missing-cold-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
-      const present = await listGenerations(deps.cold, ref);
+      const present = await generationsPresent(deps.cold, ref);
       if (present.has(live.currentGen)) return { kind: 'ok' };
       return {
         kind: 'issue',

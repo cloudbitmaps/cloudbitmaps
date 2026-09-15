@@ -88,7 +88,7 @@ export async function rollbackSegment(
   ref: SegmentRef,
   toGeneration: number,
   deps: GenerationListDeps,
-  options: { audit?: IAuditSink } = {},
+  options: { audit?: IAuditSink; allowForward?: boolean } = {},
 ): Promise<RollbackResult> {
   validateSegmentRef(ref);
   if (!Number.isInteger(toGeneration) || toGeneration < 0) {
@@ -110,8 +110,8 @@ export async function rollbackSegment(
     return { fromGeneration: record.currentGen, generation: toGeneration };
   }
 
-  // The object has to be there. Checked against the listing rather than a point read so the error can say what
-  // IS available — an operator who picked a collected generation needs the choices, not a bare miss.
+  // A first look, for the affordance rather than the safety: an operator who named a collected generation needs
+  // to be told what IS available, and that is much nicer to produce before anything has moved.
   const present = new Set<number>();
   for await (const key of deps.cold.list(ref)) present.add(key.generation);
   if (!present.has(toGeneration)) {
@@ -123,11 +123,62 @@ export async function rollbackSegment(
           : ` — present: ${available.join(', ')}`),
     );
   }
+  if (
+    record.currentGen !== null &&
+    toGeneration > record.currentGen &&
+    options.allowForward !== true
+  ) {
+    // Above the pointer is not "a later version of this segment". It is where objects live that were never
+    // authoritative: a load that wrote its object and died before publishing, and a guard-refused load whose
+    // cleanup was skipped because the row had changed. Rolling onto one of those makes current the very
+    // generation a guard refused — an empty one, typically. The legitimate above-pointer case is undoing a
+    // rollback, which is what the opt-in is for.
+    throw new ValidationError(
+      `rollback: generation ${toGeneration} of "${ref.segment}" is above the current pointer ` +
+        `(${record.currentGen}) — it may never have been published. Pass { allowForward: true } if you are ` +
+        `undoing an earlier rollback.`,
+    );
+  }
 
   // Fenced on the row this decision was made against. A rollback is the most derived write there is — an
   // operator looked at a particular state and chose — so publishing it into a row that has moved since would
   // undo whatever moved it, which is the opposite of what they asked for.
-  await deps.registry.compareAndSwap(ref, record.token, { currentGen: toGeneration });
+  const { token } = await deps.registry.compareAndSwap(ref, record.token, {
+    currentGen: toGeneration,
+  });
+
+  // THE check, and it has to be here rather than above. The target is by construction at or below the old
+  // pointer, which is precisely generation collection's range — and a collector never writes the row, so the
+  // token fence above cannot see it coming. A listing taken before the swap therefore proves nothing: the object
+  // can be collected between that listing and this swap, leaving the pointer naming a missing object.
+  //
+  // Once the swap lands, the target is safe — collection only ever takes what is strictly below `currentGen`,
+  // and the target now IS `currentGen`. So the ordering is: move first, then verify, and put the pointer back if
+  // the object went. Re-pointing can itself be raced, which is why it is fenced on the token the swap returned
+  // and why failing to undo is reported rather than swallowed.
+  let stillThere = false;
+  for await (const key of deps.cold.list(ref)) {
+    if (key.generation === toGeneration) {
+      stillThere = true;
+      break;
+    }
+  }
+  if (!stillThere) {
+    let undone = false;
+    try {
+      await deps.registry.compareAndSwap(ref, token, { currentGen: record.currentGen });
+      undone = true;
+    } catch {
+      /* the row moved again; the throw below says the pointer was left where it is */
+    }
+    throw new NotFoundError(
+      `rollback: generation ${toGeneration} of "${ref.segment}" was collected while the pointer was moving` +
+        (undone
+          ? ' — the pointer was put back'
+          : `, and the pointer could NOT be put back: it still names ${toGeneration}. Re-run a rollback to a ` +
+            'generation that exists, or restore the object.'),
+    );
+  }
 
   safeAudit(options.audit ?? NOOP_AUDIT).onEvent({
     kind: 'segment.rollback',

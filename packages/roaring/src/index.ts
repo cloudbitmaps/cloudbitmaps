@@ -801,7 +801,7 @@ export class CloudRoaring {
    * one cannot.
    *
    * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
-   * {@link NotFoundError} naming what *is* available, and a crypto-shredded segment throws
+   * `NotFoundError` naming what *is* available, and a crypto-shredded segment throws
    * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
    * current is a no-op that reports itself.
    *

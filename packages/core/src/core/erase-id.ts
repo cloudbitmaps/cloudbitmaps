@@ -331,9 +331,17 @@ export async function eraseIdFromSegment(
    * never held the id.
    */
   const notInCurrent = async (): Promise<EraseIdResult> => {
+    // EVERY other generation in the bucket, not just the ones below the pointer.
+    //
+    // The bound used to be `< from`, on the reasoning that an object above the pointer is permanently
+    // unreachable: forward-only publishing refuses to regress, so nothing up there could ever become current
+    // again. `rollbackSegment` ended that — an operator can move the pointer back onto any generation still in
+    // the bucket, which makes above-pointer objects reachable data. Reproduced with no race at all: roll back,
+    // then erase, and the erasure reported `'not-member'` — filtered out of the subject ledger entirely, a clean
+    // Art. 17 receipt — while the subject's bit sat in a generation one rollback away from being served again.
     const superseded: number[] = [];
     for await (const key of deps.cold.list(ref)) {
-      if (key.generation < from) superseded.push(key.generation);
+      if (key.generation !== from) superseded.push(key.generation);
     }
     if (superseded.length === 0) {
       return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
@@ -359,8 +367,17 @@ export async function eraseIdFromSegment(
       if (!held) continue;
       // Found. Take every generation below the pointer; the current one keeps the id out by not having it.
       const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
-      await assertCollected(ref, generation, collected, deps.cold);
-      return { ...base, erased: true, fromGeneration: generation, collected };
+      // A holder ABOVE the pointer is not in that range, so it has to go explicitly. This is the one place the
+      // library deletes an above-pointer object, and it costs `rollbackSegment` a target — deliberately. A
+      // rollback point that still contains data we were required to erase is not a rollback point; keeping it
+      // would mean the erasure is undoable by an ordinary operator action, which is not erasure.
+      const alsoCollected = [...collected];
+      if (from !== null && generation > from) {
+        await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+        alsoCollected.push(generation);
+      }
+      await assertCollected(ref, generation, alsoCollected, deps.cold);
+      return { ...base, erased: true, fromGeneration: generation, collected: alsoCollected };
     }
     return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
   };
