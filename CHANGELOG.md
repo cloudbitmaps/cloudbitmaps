@@ -24,11 +24,15 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   fallback people reach for is worse still: a hand-maintained list of segment names kept beside the store, a
   second source of truth that drifts from the first the moment a load fails halfway.
 
-  `exists(ref)` is one registry point read, and answers exactly *would a read find anything* — so it is `false`
-  for a row minted ahead of its first load (`setRetention` does that) and for a crypto-shredded tombstone,
-  because a read answers empty in both. `segments({ namespace })` streams the registry's own enumeration. It is
+  `exists(ref)` is one registry point read, and answers *does the pointer resolve a generation* — so it is
+  `false` for a row minted ahead of its first load (`setRetention` does that) and for a `destroyed` tombstone,
+  because a read answers empty in both. It does not claim more than that: a torn restore has a live pointer and
+  no object, and reads there throw rather than answer empty — `checkConsistency` is the call for that question. `segments({ namespace })` streams the registry's own enumeration. It is
   an **admin/discovery call, not a request-path one**: a `Scan` on DynamoDB, a paged LIST on an object-store
-  registry, so its cost tracks the fleet rather than the answer — scope it to a namespace whenever you can.
+  registry, so its cost tracks the fleet rather than the answer. Scope it to a namespace whenever you can,
+  though the saving differs by backend — an object-store registry narrows its LIST prefix, while DynamoDB
+  filters a `Scan` after reading. Stopping the iteration stops the scan, except behind `RetryingRegistryDriver`,
+  which buffers the enumeration to retry it as a unit.
   It yields `destroyed` tombstones and rows with `currentGen: null` rather than filtering them, because an
   enumeration that looks complete and is not is how a sweep ends up permanently skipping rows nobody can see;
   internal bookkeeping rows are the one exclusion, and only on an unscoped scan. `segmentExists` and

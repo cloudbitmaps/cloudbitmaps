@@ -1,4 +1,5 @@
 import { CloudRoaring, MemoryColdDriver, MemoryRegistryDriver } from '@/index';
+import type { IRegistryDriver } from '@/core/ports';
 import { UnsupportedError, ValidationError } from '@/core/errors';
 
 // "How do I know whether a segment already exists?" — the question this answers, and the reason a user should
@@ -64,9 +65,51 @@ describe('exists()', () => {
     expect(await s.exists({ segment: 'temp' })).toBe(false);
   });
 
-  it('validates the ref rather than answering false for a bad name', async () => {
-    const s = store();
+  it('validates at the boundary — before any registry I/O, not by letting the driver reject it', async () => {
+    // The earlier version of this test only asserted that a ValidationError came back, which every registry
+    // driver already produces from its own key builder — so removing `validateSegmentRef` from both `exists()`
+    // and `segmentExists` left the whole suite green. The guarantee that is actually unique here is that a
+    // malformed ref costs nothing.
+    const registry = new MemoryRegistryDriver();
+    let gets = 0;
+    const counting: IRegistryDriver = {
+      ...registry,
+      capabilities: () => registry.capabilities(),
+      async get(r) {
+        gets++;
+        return registry.get(r);
+      },
+      create: (r, rec) => registry.create(r, rec),
+      compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
+      delete: (r) => registry.delete(r),
+      list: (ns?: string) => registry.list(ns),
+    };
+    const s = new CloudRoaring({ cold: new MemoryColdDriver(), registry: counting });
+
     await expect(s.exists({ segment: ':leading' })).rejects.toBeInstanceOf(ValidationError);
+    expect(gets).toBe(0);
+  });
+
+  it('is true after a rollback — the pointer always lands on a real generation', async () => {
+    const s = store();
+    await s.load({ segment: 'r' }, [1]);
+    await s.load({ segment: 'r' }, [1, 2], { keep: 5 });
+    await s.rollback({ segment: 'r' }, 0);
+    expect(await s.exists({ segment: 'r' })).toBe(true);
+  });
+
+  it('a torn restore still answers true — the pointer resolves, the object is gone', async () => {
+    // The documented exception. `exists()` reports on the POINTER; a live pointer whose object was deleted is
+    // the forbidden `missing-cold-generation` state, where reads THROW rather than answer empty.
+    // `checkConsistency` is the call that looks for it, and the JSDoc says so rather than over-claiming.
+    const cold = new MemoryColdDriver();
+    const registry = new MemoryRegistryDriver();
+    const s = new CloudRoaring({ cold, registry });
+    await s.load({ segment: 'torn' }, [1, 2]);
+    await cold.delete({ segment: 'torn', generation: 0 });
+
+    expect(await s.exists({ segment: 'torn' })).toBe(true);
+    await expect(s.segment('torn').count()).rejects.toThrow(/no such generation/);
   });
 
   it('needs a registry', async () => {
@@ -83,11 +126,12 @@ describe('segments()', () => {
 
     const all = await drain(s.segments());
     expect(all.map((x) => x.segment).sort()).toEqual(['a', 'b']);
-    expect(all.find((x) => x.segment === 'a')).toEqual({
-      segment: 'a',
-      currentGen: 0,
-      status: 'active',
-    });
+    const a = all.find((x) => x.segment === 'a');
+    // `toStrictEqual`, not `toEqual`: the latter ignores keys whose value is `undefined`, so a projection that
+    // always wrote `namespace: record.namespace` would pass. `SegmentInfo extends SegmentRef` and callers spread
+    // it back into `exists()`/`JSON`/`Object.keys`, where a present-but-undefined key is not the same thing.
+    expect(a).toStrictEqual({ segment: 'a', currentGen: 0, status: 'active' });
+    expect('namespace' in (a as object)).toBe(false);
     expect(all.find((x) => x.segment === 'b')?.namespace).toBe('tenant:acme');
   });
 
@@ -99,21 +143,51 @@ describe('segments()', () => {
 
     expect((await drain(s.segments({ namespace: 'acme' }))).map((v) => v.segment)).toEqual(['x']);
     expect((await drain(s.segments())).length).toBe(3);
+
+    // A colon namespace, SCOPED. Colons became legal one commit ago, and the scoped path is the interesting
+    // one: the facade validates through `validateSegmentRef`, and a filesystem driver percent-encodes the
+    // colon on the way to a directory name and has to decode it to answer this.
+    await s.load({ segment: 'q', namespace: 'tenant:acme' }, [4]);
+    expect((await drain(s.segments({ namespace: 'tenant:acme' }))).map((v) => v.segment)).toEqual([
+      'q',
+    ]);
   });
 
-  it('streams — abandoning the iteration does not require draining the fleet', async () => {
-    const s = store();
-    for (const n of ['a', 'b', 'c', 'd']) await s.load({ segment: n }, [1]);
+  it('streams — breaking out really stops the scan, it does not just stop reading', async () => {
+    // The previous version of this test asserted `seen.length === 2` after breaking at 2, which restates the
+    // break condition and cannot fail. It could not tell a streaming implementation from one that drained the
+    // whole fleet into an array first — which is the only thing the claim is about. Count what the DRIVER
+    // produced instead.
+    const registry = new MemoryRegistryDriver();
+    let pulled = 0;
+    const counting: IRegistryDriver = {
+      ...registry,
+      capabilities: () => registry.capabilities(),
+      get: (r) => registry.get(r),
+      create: (r, rec) => registry.create(r, rec),
+      compareAndSwap: (r, t, patch) => registry.compareAndSwap(r, t, patch),
+      delete: (r) => registry.delete(r),
+      async *list(namespace?: string) {
+        for await (const row of registry.list(namespace)) {
+          pulled++;
+          yield row;
+        }
+      },
+    };
+    const s = new CloudRoaring({ cold: new MemoryColdDriver(), registry: counting });
+    for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) await s.load({ segment: n }, [1]);
 
+    pulled = 0;
     const seen: string[] = [];
     for await (const info of s.segments()) {
       seen.push(info.segment);
       if (seen.length === 2) break;
     }
     expect(seen).toHaveLength(2);
+    expect(pulled).toBe(2); // not 6 — abandoning the iteration propagates back to the driver
   });
 
-  it('keeps reporting a crypto-shredded tombstone rather than hiding it', async () => {
+  it('keeps reporting a destroyed tombstone rather than hiding it', async () => {
     const s = store();
     await s.load({ segment: 'gone' }, [1, 2]);
     await s.dropSegment({ segment: 'gone' }, { confirmSegment: 'gone' });
@@ -121,6 +195,9 @@ describe('segments()', () => {
     // `dropSegment` leaves a `destroyed` TOMBSTONE — the row stays, with its last `currentGen` intact, so a
     // retention sweep can still find and clean it. Hiding it here would be the filtered-enumeration mistake:
     // the sweep would have nothing to act on and would look like it had nothing to do.
+    //
+    // NOTE this segment is CLEARTEXT, so nothing was crypto-shredded (`cryptoShredded: false`). `destroyed` is
+    // the tombstone status either way; the DEK wrappings only exist to drop on an encrypted segment.
     const listed = await drain(s.segments());
     expect(listed).toEqual([{ segment: 'gone', currentGen: 0, status: 'destroyed' }]);
 

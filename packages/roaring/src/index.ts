@@ -102,6 +102,7 @@ import { SystemClock } from './system-clock';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
+  /** A float in `[0, 1)`. Jitter only — never key material, never anything a caller can observe. */
   next(): number {
     return Math.random();
   }
@@ -786,6 +787,11 @@ export class CloudRoaring {
    *
    * Needs a raw cold driver + registry.
    */
+  async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
+    validateSegmentRef(ref);
+    return listGenerations(ref, this.lifecycleDeps('generations'));
+  }
+
   /**
    * Whether a read of this segment would find anything — the "do I already have this?" question, as one
    * registry point read.
@@ -797,10 +803,14 @@ export class CloudRoaring {
    * **Not the same as `count() > 0`.** A segment loaded with no ids exists and counts zero. Distinguishing
    * "never loaded" from "loaded, and genuinely empty" is the thing `count()` cannot do and the reason this
    * exists. It is `false` for a segment whose row was minted ahead of its first load (by `setRetention`) and
-   * for a crypto-shredded tombstone, because a read answers empty in both cases.
+   * for a `destroyed` tombstone, because a read answers empty in both cases.
+   *
+   * Two states answer `true` where a read still gives you nothing: a torn restore (a live pointer whose object
+   * was deleted) makes reads *throw* rather than answer empty — `checkConsistency` is the call for that — and
+   * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
-   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish.
+   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a `registry`.
    *
    * ```ts
    * if (!(await store.exists({ segment: 'users' }))) {
@@ -810,10 +820,7 @@ export class CloudRoaring {
    */
   async exists(ref: SegmentRef): Promise<boolean> {
     validateSegmentRef(ref);
-    if (this.registry === undefined) {
-      throw new UnsupportedError('exists needs a `registry` in the store config');
-    }
-    return segmentExists(ref, this.registry);
+    return segmentExists(ref, this.requireRegistry('exists'));
   }
 
   /**
@@ -824,13 +831,19 @@ export class CloudRoaring {
    *
    * **An admin/discovery call, not a request-path one.** This is the registry's own enumeration — a `Scan` on
    * DynamoDB, a paged LIST on an object-store registry — so its cost grows with the size of the fleet rather
-   * than with what you are looking for. Pass a `namespace` whenever you can: that is the difference between
-   * reading one tenant and reading every tenant. It streams, so a large fleet need not fit in memory, and
-   * stopping the iteration stops the scan.
+   * than with what you are looking for.
    *
-   * Yields crypto-shredded (`destroyed`) tombstones and rows with `currentGen: null`, because a filtered
-   * enumeration that looks complete is worse than an honest one — filter on `status`/`currentGen` yourself, or
-   * ask {@link CloudRoaring.exists} the narrower question.
+   * Scoping to a namespace does not cost the same everywhere: on an object-store registry it narrows the LIST
+   * prefix and really is the difference between one tenant and all of them, while on DynamoDB it is a `Scan`
+   * with a `begins_with` filter applied *after* reading — fewer bytes back, the same table read.
+   *
+   * It streams, and stopping the iteration stops the scan — except behind a driver that buffers its
+   * enumeration to retry it as a unit, which `RetryingRegistryDriver` does: wrapped in that, the whole scan is
+   * paid for and resident before the first row arrives.
+   *
+   * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
+   * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask
+   * {@link CloudRoaring.exists} the narrower question. Needs a `registry`.
    *
    * ```ts
    * for await (const s of store.segments({ namespace: 'active-daily' })) {
@@ -839,18 +852,10 @@ export class CloudRoaring {
    * ```
    */
   segments(options: { namespace?: string } = {}): AsyncIterable<SegmentInfo> {
-    if (this.registry === undefined) {
-      throw new UnsupportedError('segments needs a `registry` in the store config');
-    }
     if (options.namespace !== undefined) {
       validateSegmentRef({ segment: 'x', namespace: options.namespace });
     }
-    return listSegments(this.registry, options);
-  }
-
-  async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
-    validateSegmentRef(ref);
-    return listGenerations(ref, this.lifecycleDeps('generations'));
+    return listSegments(this.requireRegistry('segments'), options);
   }
 
   /**

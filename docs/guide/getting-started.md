@@ -229,10 +229,15 @@ and does no I/O at all. A segment starts existing when something is first **load
 already?", not "will this fail?".
 
 ```ts
-if (!(await store.exists({ segment: 'users' }))) {
-  await store.load({ segment: 'users' }, idsFromUpstream);
+// Reporting, and skipping work you do not need to do:
+if (await store.exists({ segment: 'users' })) {
+  console.log('already loaded:', await store.segment('users').count());
 }
 ```
+
+Used as a *guard* before a load, it is a check-then-act and races like one — a concurrent load can land between
+the two lines. That is usually fine for a batch job that owns its segment, and when it is not, the fence to
+reach for is `load`'s own `guard` rather than this call.
 
 `exists()` is one registry point read. It is deliberately **not** the same as `count() > 0`: a segment loaded
 with no ids exists and counts zero, and telling *never loaded* from *loaded, and genuinely empty* is exactly
@@ -247,11 +252,18 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
 }
 ```
 
-Scope it to a `namespace` whenever you can. `segments()` is the registry's own enumeration — a `Scan` on
-DynamoDB, a paged LIST on an object-store registry — so its cost tracks the size of your fleet, not the size of
-the answer. It is an admin and dashboard call, not one for a request path. It streams, so stopping the loop
-stops the scan, and it yields crypto-shredded tombstones and rows with no data as-is rather than quietly
-filtering them.
+`segments()` is the registry's own enumeration — a `Scan` on DynamoDB, a paged LIST on an object-store
+registry — so its cost tracks the size of your fleet, not the size of the answer. It is an admin and dashboard
+call, not one for a request path.
+
+Scope it to a `namespace` whenever you can, but budget honestly: on an object-store registry that narrows the
+LIST prefix and really is the difference between one tenant and all of them, while on DynamoDB it is a `Scan`
+with a `begins_with` filter applied *after* the read — fewer bytes come back, the same table is read.
+
+It streams, so stopping the loop stops the scan — unless you have wrapped the registry in
+`RetryingRegistryDriver`, which buffers the enumeration in order to retry it as a unit, and then the whole scan
+is paid for before the first row reaches you. It yields `destroyed` tombstones and rows with no data as-is
+rather than quietly filtering them.
 
 Neither call is a lock: a segment can appear or vanish between the check and whatever you do next. When the
 answer has to *hold*, use the fence built for that — `load`'s `guard` (`minCardinality` / `minRetained`,
