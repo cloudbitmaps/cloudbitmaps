@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { connect } from '@/index';
 import { ValidationError, UnsupportedError } from '@/core/errors';
 import { resolveWiring } from '@/connect';
+import { S3ColdDriver, S3RegistryDriver } from '@/s3';
+import type { IColdDriver, IRegistryDriver } from '@/core/ports';
 
 // `connect` is a shortcut, so the tests are about the two things a shortcut can get wrong: producing the
 // wrong wiring, and failing unhelpfully. It is NOT a second configuration surface — the object it returns is
@@ -203,5 +205,143 @@ describe('connect: refusing what it cannot honour', () => {
   it('calls an unsupported scheme unsupported, not invalid', async () => {
     // The distinction a caller acts on: a typo is theirs to fix, an unsupported backend is ours.
     await expect(connect('redis://localhost')).rejects.toBeInstanceOf(UnsupportedError);
+  });
+});
+
+// ─── The claim the whole feature rests on ───────────────────────────────────────────────────────────────
+// `connect('s3://b/p')` must be the SAME store as the hand-wired equivalent the guide prints beside it. If
+// the two diverge, data written one way is invisible the other, and neither side looks broken. Proving that
+// means comparing the keys both actually touch, which needs the client the connected drivers built for
+// themselves — reached white-box below, because for `?region`/`?endpoint`/`?pathStyle` it is the only
+// observer short of a live endpoint, and all three are promises the docs make.
+
+const clientOf = (driver: unknown): { send: unknown; config: Record<string, unknown> } =>
+  (driver as { client: { send: unknown; config: Record<string, unknown> } }).client;
+
+interface S3Config {
+  region: () => Promise<string>;
+  endpoint?: () => Promise<{ hostname: string; port?: number; protocol: string }>;
+  forcePathStyle: boolean | Promise<boolean>;
+}
+const configOf = (driver: unknown): S3Config => clientOf(driver).config as unknown as S3Config;
+
+/** Record every `{Bucket, Key|Prefix}` the drivers would touch. `connect` shares ONE client between cold and
+ *  registry, so a single recorder on that client sees both sides of the wiring. */
+function recorder(client: { send: unknown }): string[] {
+  const seen: string[] = [];
+  client.send = (cmd: {
+    input: Record<string, unknown>;
+    constructor: { name: string };
+  }): Promise<never> => {
+    const { Bucket, Key, Prefix } = cmd.input as Record<string, string | undefined>;
+    seen.push(`${cmd.constructor.name} ${Bucket}|${Key ?? Prefix ?? ''}`);
+    return Promise.reject(Object.assign(new Error('stub'), { name: 'NoSuchKey' }));
+  };
+  return seen;
+}
+
+/** Walk every read path once, swallowing the stub's refusal — what is under test is the keys, not the reads. */
+async function probe(
+  cold: IColdDriver,
+  registry: IRegistryDriver,
+  seen: string[],
+): Promise<string[]> {
+  const ref = { segment: 'users', namespace: 'ns' };
+  const ignore = (): void => {};
+  await cold.getRange({ ...ref, generation: 3 }, 0, 8).catch(ignore);
+  await cold.getTail({ ...ref, generation: 3 }, 64).catch(ignore);
+  await cold.list(ref)[Symbol.asyncIterator]().next().catch(ignore);
+  await registry.get(ref).catch(ignore);
+  await registry.list('ns')[Symbol.asyncIterator]().next().catch(ignore);
+  return seen;
+}
+
+describe('connect: the same store the constructor builds', () => {
+  it('touches exactly the keys a hand-wired store does', async () => {
+    const { cold, registry } = await resolveWiring('s3://my-bitmaps/cloudroaring?region=us-east-1');
+    const client = clientOf(cold);
+    const connected = [...(await probe(cold, registry, recorder(client)))];
+
+    const hand = await probe(
+      new S3ColdDriver({ client: client as never, bucket: 'my-bitmaps', prefix: 'cloudroaring' }),
+      new S3RegistryDriver({
+        client: client as never,
+        bucket: 'my-bitmaps',
+        prefix: 'cloudroaring',
+      }),
+      recorder(client),
+    );
+
+    expect(connected).toEqual(hand);
+    expect(connected.length).toBeGreaterThan(3);
+    expect(connected.join('\n')).toContain('my-bitmaps|cloudroaring/');
+  });
+
+  it('gives a bucket-only URL no prefix, rather than an empty one', async () => {
+    // An empty prefix is not the same as none: it would put a leading `/` on every key.
+    const { cold, registry } = await resolveWiring('s3://my-bitmaps?region=us-east-1');
+    const client = clientOf(cold);
+    const connected = [...(await probe(cold, registry, recorder(client)))];
+    const hand = await probe(
+      new S3ColdDriver({ client: client as never, bucket: 'my-bitmaps' }),
+      new S3RegistryDriver({ client: client as never, bucket: 'my-bitmaps' }),
+      recorder(client),
+    );
+    expect(connected).toEqual(hand);
+    expect(connected.some((k) => k.includes('|/'))).toBe(false);
+  });
+
+  it('carries ?region, ?endpoint and ?pathStyle through to the S3 client', async () => {
+    // "MinIO, Ceph and R2 are the same scheme with an endpoint" is a promise, and this is where it is kept.
+    const { cold } = await resolveWiring(
+      's3://b/p?region=eu-west-1&endpoint=http://127.0.0.1:9000&pathStyle=true',
+    );
+    const cfg = configOf(cold);
+    expect(await cfg.region()).toBe('eu-west-1');
+    const endpoint = await cfg.endpoint?.();
+    expect(endpoint?.hostname).toBe('127.0.0.1');
+    expect(endpoint?.port).toBe(9000);
+    expect(endpoint?.protocol).toBe('http:');
+    expect(await cfg.forcePathStyle).toBe(true);
+  });
+
+  it('leaves an absent parameter absent, so the SDK chain still resolves it', async () => {
+    // "A value that is usually inferred should not look mandatory" only holds if omitting it really leaves
+    // the SDK's own resolution in charge rather than pinning a default here.
+    const { cold } = await resolveWiring('s3://b/p?region=us-east-1');
+    expect(configOf(cold).endpoint).toBeUndefined();
+    expect(await configOf(cold).forcePathStyle).toBe(false);
+  });
+
+  it('configures the DynamoDB registry from the same ?region — one parameter, two clients', async () => {
+    const { registry } = await resolveWiring('s3://b/p?region=eu-west-1&table=cbm');
+    expect(await (configOf(registry) as unknown as S3Config).region()).toBe('eu-west-1');
+  });
+
+  it('passes options to the store, and lets the URL win over any wiring in them', async () => {
+    // Two failures in one: options accepted and dropped, and options quietly overriding the wiring the URL
+    // named — after which `connect('s3://…')` reads and writes somewhere the URL never mentioned.
+    const events: string[] = [];
+    const touched: string[] = [];
+    const trap = new Proxy(
+      {},
+      {
+        get(_target, prop: string) {
+          return (): never => {
+            touched.push(prop);
+            throw new Error(`the options bag's driver was used: ${prop}`);
+          };
+        },
+      },
+    );
+    const store = await connect('memory://', {
+      metrics: { onEvent: (e: { kind: string }): void => void events.push(e.kind) },
+      cold: trap,
+      registry: trap,
+    } as never);
+    await store.load({ segment: 's' }, [1, 2]);
+    expect(await store.segment('s').count()).toBe(2);
+    expect(touched).toEqual([]);
+    expect(events.length).toBeGreaterThan(0);
   });
 });

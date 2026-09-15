@@ -105,11 +105,13 @@ function decodePath(raw: string, u: URL): string {
  */
 function hostOf(u: URL, label: string, example: string): string {
   if (u.port !== '') {
-    fail(
-      u,
-      `a ${label} name has no port. An S3-compatible store's address goes in \`?endpoint=\` — ` +
-        `e.g. s3://${u.hostname}/prefix?endpoint=http://${u.hostname}:${u.port}&pathStyle=true`,
-    );
+    // Only `s3://` has somewhere else to put an address, so only it gets told where.
+    const hint =
+      u.protocol === 's3:'
+        ? ` An S3-compatible store's address goes in \`?endpoint=\` — e.g. ` +
+          `s3://${u.hostname}/prefix?endpoint=http://${u.hostname}:${u.port}&pathStyle=true`
+        : '';
+    fail(u, `a ${label} name has no port.${hint}`);
   }
   if (u.hostname === '') fail(u, `needs a ${label}: ${example}`);
   return u.hostname;
@@ -193,7 +195,14 @@ export async function resolveWiring(url: string): Promise<Wiring> {
 
 async function wire(u: URL): Promise<Wiring> {
   // Everything checkable from the string alone is checked BEFORE any driver is imported, so a typo reports a
-  // typo rather than an instruction to install a large SDK the caller may not even need.
+  // typo rather than an instruction to install a large SDK the caller may not even need. The scheme comes
+  // first among those: every check below is scheme-specific, and reporting one of them for a scheme we do not
+  // support at all would answer a question the caller did not ask.
+  if (!(u.protocol in PARAMS)) {
+    throw new UnsupportedError(
+      `connect: unsupported scheme ${u.protocol}. Expected one of ${SCHEMES.join(' ')}\n  url: ${safeUrl(u)}`,
+    );
+  }
   if (u.username !== '' || u.password !== '') {
     fail(
       u,
@@ -328,6 +337,8 @@ async function wire(u: URL): Promise<Wiring> {
       return { cold, registry: requireNamedRegistry(await dynamoRegistry(u, prefix), 'az://', u) };
     }
 
+    /* c8 ignore next 6 -- unreachable: the scheme was checked against PARAMS above. It stays as the
+       exhaustiveness guard for the day a scheme is added to PARAMS and not to the switch. */
     default:
       throw new UnsupportedError(
         `connect: unsupported scheme ${u.protocol}. Expected one of ${SCHEMES.join(' ')}\n  url: ${safeUrl(u)}`,
