@@ -16,12 +16,14 @@
 import {
   bulkLoadCrbmGeneration as coreBulkLoad,
   eraseIdFromSegment as coreEraseIdFromSegment,
+  loadSegment as coreLoadSegment,
   runExport as coreRunExport,
 } from '@cloudbitmaps/core';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
 type BulkLoad = typeof coreBulkLoad;
+type LoadSegment = typeof coreLoadSegment;
 type EraseIdFromSegment = typeof coreEraseIdFromSegment;
 type RunExport = typeof coreRunExport;
 
@@ -54,3 +56,12 @@ export const eraseIdFromSegment: EraseIdFromSegment = (ref, id, deps, options) =
 /** {@link coreRunExport} with the roaring codec pre-bound (only the `'roaring'` format needs it). */
 export const runExport: RunExport = (reader, registry, sink, options = {}) =>
   coreRunExport(reader, registry, sink, { ...options, codec: options.codec ?? roaringCodec });
+
+/** {@link coreLoadSegment} with the roaring codec and a real clock pre-bound, for the same reasons as above. */
+export const loadSegment: LoadSegment = (ref, ids, deps, options = {}) =>
+  coreLoadSegment(
+    ref,
+    ids,
+    { ...deps, codec: deps.codec ?? roaringCodec, clock: deps.clock ?? new SystemClock() },
+    options,
+  );

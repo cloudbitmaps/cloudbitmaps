@@ -27,6 +27,23 @@ export type AuditEvent =
     }
   | {
       /**
+       * A load was **refused** — the generation was written, failed a guard, and was deleted again rather than
+       * published. The security-relevant fact is that a replacement the caller asked for did NOT happen, which a
+       * downstream system reconciling "the segment should now contain X" needs as much as it needs the publish.
+       *
+       * `reason` is `'empty'` (an empty result over a non-empty segment, with no `allowEmpty`),
+       * `'min-cardinality'`, `'max-shrink'`, or `'superseded'` (another writer published a higher generation
+       * first). `cardinality` is what the refused generation would have contained.
+       */
+      readonly kind: 'segment.load-refused';
+      readonly namespace?: string;
+      readonly segment: string;
+      readonly generation: number;
+      readonly reason: 'empty' | 'min-cardinality' | 'max-shrink' | 'superseded';
+      readonly cardinality: number;
+    }
+  | {
+      /**
        * A generation was **rewritten**: a new generation derived from `fromGeneration` became current in its
        * place. Today the one emitter is `eraseIdFromSegment` (a subject erasure clearing one id), and the event is
        * emitted at the publish — before the superseded generation is collected — so the record exists the moment

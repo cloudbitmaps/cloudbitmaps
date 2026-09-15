@@ -61,6 +61,11 @@ export { gcOrphanGenerations, nextGeneration } from './core/generation-gc';
 export type { GenerationDeps } from './core/generation-gc';
 // Subject erasure on a loaded segment: rewrite the current generation without one id, publish fenced on it,
 // collect the superseded generation. `store.eraseSubject` runs it over every registered segment.
+// The loaded store's primary write path: replace a segment's contents with one immutable generation, guarded.
+// Composes next-generation → write → guard → publish → collect, which is the sequence every load performs and
+// the one whose last step gets left out when it is composed by hand.
+export { loadSegment } from './core/load';
+export type { LoadDeps, LoadOptions, LoadGuard, LoadResult, LoadRefusal } from './core/load';
 export { eraseIdFromSegment } from './core/erase-id';
 export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
 // The bitmap-codec seam — the engine is codec-agnostic behind these; roaring is the flagship.

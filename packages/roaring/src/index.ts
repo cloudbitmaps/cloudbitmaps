@@ -57,6 +57,8 @@ import type {
   Budget,
   BudgetOption,
   BulkLoadResult,
+  LoadOptions,
+  LoadResult,
   Clock,
   CodecBitmap,
   CodecInterface,
@@ -89,6 +91,7 @@ import type {
 } from '@cloudbitmaps/core';
 import { bulkLoadCrbmGeneration, eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
+import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
@@ -806,6 +809,52 @@ export class CloudRoaring {
    * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
    * because it has to enumerate and delete generations — a pre-built `ColdChunkSource` only reads.
    */
+  /**
+   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   *
+   * The whole write path in one call: take the next generation number, write the object, check the result is
+   * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
+   * the one that gets left out is the last, so segments quietly accumulate superseded generations nobody pays
+   * attention to and everybody pays for.
+   *
+   * ```ts
+   * const r = await store.load('audience:active', idsFromWarehouse, {
+   *   guard: { maxShrink: 0.5 },   // refuse a load that drops more than half the segment
+   * });
+   * if (!r.published) console.warn(`load refused: ${r.reason}`);
+   * ```
+   *
+   * **A load REPLACES.** Whatever the stream contains is what the segment contains afterwards, so an upstream
+   * query that returns fewer rows than usual is a shrink nobody asked for and an empty one is a wipe — both
+   * reported as a successful write, because at the storage layer they are one. That is what `guard` and the
+   * default empty refusal are for, and why they run **between** the write and the publish: the only moment where
+   * the new content is known and the old one is still authoritative.
+   *
+   * A refusal is a normal outcome, not an exception: `published: false` with a `reason`, in the same shape as a
+   * success. The object written for a refused load is deleted again before returning — it sits above
+   * `currentGen`, where generation collection deliberately never looks, so nothing else would reclaim it.
+   *
+   * Needs a raw cold driver + registry.
+   */
+  async load(
+    name: string | SegmentRef,
+    ids: Iterable<number> | AsyncIterable<number>,
+    options: LoadOptions & { namespace?: string } = {},
+  ): Promise<LoadResult> {
+    const ref: SegmentRef =
+      typeof name === 'string' ? { segment: name, namespace: options.namespace } : name;
+    validateSegmentRef(ref);
+    const deps = this.lifecycleDeps('load');
+    try {
+      return await loadSegment(ref, ids, deps, options);
+    } finally {
+      // This store's view of the segment is now behind whatever just happened — a published load superseded the
+      // generation the caches were built on, and a throw can still have published before failing its collect.
+      // `finally`, so the one path where the view is most likely stale is not the one path that skips the drop.
+      this.engine.invalidate(ref);
+    }
+  }
+
   async dropSegment(
     ref: SegmentRef,
     options: { confirmSegment: string; dryRun?: boolean; audit?: IAuditSink },
@@ -1489,7 +1538,7 @@ export * from '@cloudbitmaps/core';
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
 // `export *` above, so every signature stays exactly as it was before the family split — e.g.
 // `bulkLoadCrbmGeneration(driver, key, ids)` still works with no options at all.
-export { bulkLoadCrbmGeneration, eraseIdFromSegment, runExport } from './codec-bound';
+export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
 
 // The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /
 // bulk-load path); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller
