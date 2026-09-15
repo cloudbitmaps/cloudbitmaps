@@ -22,8 +22,6 @@ import {
 } from '@/index';
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/index';
-// Imported, not restated: a second copy of this regex is how the grammar drifted from the docs last time.
-import { NAME as NAME_GRAMMAR } from '@/core/validate';
 
 describe('due index — encoding round-trips', () => {
   const refs = [
@@ -31,7 +29,11 @@ describe('due index — encoding round-trips', () => {
     { namespace: 'prod', segment: 'vips' },
     // Every character the grammar allows appears in both parts — no separator could be unambiguous on its own,
     // which is exactly why the encoding is length-prefixed rather than delimited.
-    { namespace: 'a.b-c_d', segment: 'e.f-g_h' },
+    { namespace: 'a.b-c_d:x', segment: 'e.f-g_h:y' },
+    // The colon is the newest grammar character and the most separator-looking one, so it gets the
+    // ambiguity pair too: these two differ only in which side of the split the colon falls on.
+    { namespace: 'a:b', segment: 'c' },
+    { namespace: 'a', segment: 'b:c' },
     { namespace: 'd-2026-08-05', segment: 'd-2026-08-05' },
     { namespace: '0', segment: '0' },
     { namespace: '9.9.9', segment: '1.2.3' },
@@ -44,7 +46,9 @@ describe('due index — encoding round-trips', () => {
   for (const ref of refs) {
     it(`round-trips ${JSON.stringify(ref)}`, () => {
       const name = encodeDueName(ref);
-      expect(NAME_GRAMMAR.test(name)).toBe(true); // the encoded name must itself be a legal segment name
+      // Asserted through the real boundary rather than a restated regex: that is what the encoded name has
+      // to survive, and it covers the `..` rule in the same call.
+      expect(() => validateSegmentRef({ segment: name })).not.toThrow();
       expect(name).not.toContain('..');
       expect(decodeDueName(name)).toEqual(ref);
     });
@@ -101,7 +105,7 @@ describe('due index — buckets', () => {
   it('the bucket namespace obeys the locked grammar', () => {
     for (const at of [0, 1_754_000_000_000, 4_102_444_800_000]) {
       const ns = dueNamespace(dueBucket(at));
-      expect(NAME_GRAMMAR.test(ns)).toBe(true);
+      expect(() => validateSegmentRef({ segment: 'x', namespace: ns })).not.toThrow();
       expect(ns).not.toContain('..');
       expect(ns.startsWith(DUE_NAMESPACE_PREFIX)).toBe(true);
     }

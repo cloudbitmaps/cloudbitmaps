@@ -18,7 +18,7 @@ const CHUNK_KEY_MAX = 0xffff;
 //
 // Still barred from position 1: a leading `:` reads as an empty family, and a leading `_` is reserved for the
 // `_default` namespace sentinel.
-export const NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 function validatePart(value: string, field: string): void {
   if (typeof value !== 'string' || !NAME.test(value) || value.includes('..')) {

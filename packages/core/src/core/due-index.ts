@@ -77,7 +77,7 @@ export function isDueIndexRow(record: Pick<RegistryRecord, 'namespace'>): boolea
  * Encode a ref into one index-row name, unambiguously.
  *
  * `${namespaceLength}.${namespace}${segment}` — a decimal length, a dot, then the two parts concatenated. The
- * length prefix is what makes it reversible: every character the grammar allows (`.`, `-`, `_`, alphanumerics)
+ * length prefix is what makes it reversible: every character the grammar allows (`.`, `-`, `_`, `:`, alphanumerics)
  * is legal *inside* a name, so no separator character could ever be unambiguous on its own. Reading the digits
  * up to the first dot tells the parser exactly where the namespace ends.
  */

@@ -9,7 +9,9 @@
  *     roaring library (Java/Go/Python/Rust/C++/…).
  *   - `ndjson` — newline-delimited ids per segment (`<segment>.ndjson`), zero dependencies to read, streamed.
  *
- * Output layout: `<out>/<namespace|_default>/<segment>.<ext>` + a self-describing `<out>/manifest.json`. Files
+ * Output layout: `<out>/<namespace|_default>/<segment>.<ext>` + a self-describing `<out>/manifest.json`. A
+ * `:` in a name is percent-encoded as `%3A` in the path (a colon cannot go into a Windows filename), so the
+ * manifest's names are authoritative and the directory is portable. Files
  * are written to a unique `.part` temp and atomically renamed on completion; the manifest is written last (also
  * atomically), so a directory with a `manifest.json` means the run **finished** (a crash leaves no manifest →
  * re-run). A segment that couldn't be read is isolated into the manifest's `failed[]` and the CLI exits non-zero
@@ -31,7 +33,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CloudRoaring, LocalFsColdDriver, LocalFsRegistryDriver } from '../index';
+import {
+  CloudRoaring,
+  LocalFsColdDriver,
+  LocalFsRegistryDriver,
+  encodeNameForPath,
+} from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -70,9 +77,14 @@ export function parseConfig(env: Record<string, string | undefined>): ExportConf
 export function fsSink(out: string): ExportSink {
   return {
     async open(ref: SegmentRef, ext: string) {
-      const dir = join(out, ref.namespace ?? '_default');
+      // Names may contain `:`; a path may not. On Windows `dedup:2026-08-01.roaring` names an NTFS alternate
+      // data stream on a file called `dedup` — the rename SUCCEEDS, the segment is recorded in the manifest
+      // rather than `failed[]`, and `readdir` never lists it. A dump whose whole value is being a faithful
+      // copy would then assert success over data an ordinary file copy will not carry. Same encoding the
+      // LocalFs drivers use, so an export is diffable against the store it came from.
+      const dir = join(out, encodeNameForPath(ref.namespace ?? '_default'));
       await mkdir(dir, { recursive: true, mode: 0o700 });
-      const finalPath = join(dir, `${ref.segment}${ext}`);
+      const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;
       const handle = await open(tmpPath, 'wx', 0o600); // wx = create-exclusive; unique name ⇒ no collision
       return {

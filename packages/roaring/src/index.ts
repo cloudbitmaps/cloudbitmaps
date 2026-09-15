@@ -898,7 +898,8 @@ export class CloudRoaring {
    *
    * ```ts
    * for (const day of expiredDays) {
-   *   // A colon is NOT legal in a name — the family goes in the namespace, the date in the segment.
+   *   // The family in the namespace, the date in the segment — `registry.list(namespace)` then enumerates
+   *   // exactly this family's buckets, which a flat `active:2026-08-01` name cannot do without string-matching.
    *   const ref = { namespace: 'active-daily', segment: day };
    *   await store.dropSegment(ref, { confirmSegment: ref.segment });
    * }

@@ -25,12 +25,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   reserved for the `_default` namespace sentinel), and nothing else was widened — `%`, `/`, `\` and `..` are
   refused as before.
 
-  **This is purely a widening: every name legal before is legal now**, and no stored key changes. The one
-  place a colon cannot go literally is a *filesystem path* — on Windows `dedup:2026-08-01.0.crbm` names an
-  NTFS alternate data stream on a file called `dedup`, a write that can succeed while `readdir` never lists
-  the result — so `LocalFsColdDriver`/`LocalFsRegistryDriver` percent-encode it as `%3A` on the way to disk
-  and decode on the way back. That encoding is reversible precisely because `%` is not in the grammar. The
-  S3, GCS, Azure and DynamoDB drivers take a colon verbatim and are unchanged.
+  **This is purely a widening: every name legal before is legal now**, and nothing on disk moves — the
+  encoding below is the identity on every previously legal name, so existing paths stay byte-identical and
+  no migration is needed. The S3, GCS, Azure and DynamoDB drivers take a colon verbatim; the shared
+  conformance suite every driver must pass now carries a colon in its fixtures, so that is checked rather
+  than asserted.
+
+  Where a colon cannot go literally is a **filesystem path**: on Windows `dedup:2026-08-01.0.crbm` names an
+  NTFS alternate data stream on a file called `dedup` — a write that can *succeed* while `readdir` never
+  lists the result, which is worse than an error because nothing reports it. So every place that turns a
+  name into a path percent-encodes it as `%3A` and decodes on the way back: the LocalFs cold and registry
+  drivers, and the `export-segments` eject sink. The encoding is reversible precisely because `%` is not in
+  the grammar, and it is applied unconditionally — POSIX accepts the literal colon, so encoding only where
+  the OS forces it would pass every test on a Linux runner and lose data on Windows. `encodeNameForPath` and
+  `decodeNameFromPath` are exported so anyone writing their own filesystem `ExportSink` lands on the same
+  spelling and their dump stays diffable against the store.
 
 ### Added
 - **`store.generations(ref)` and `store.rollback(ref, toGeneration)` — see what a segment has been, and put it

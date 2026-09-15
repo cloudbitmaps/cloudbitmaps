@@ -95,6 +95,13 @@ describe('localfs: colons never reach the filesystem', () => {
     // name twice would hand list() a segment whose row path resolves to only one of the two files.
     expect(parseRegistryRow('a%3Ab.reg')).toBe('a:b');
     expect(parseRegistryRow('a:b.reg')).toBeNull();
+    // MULTI-colon, deliberately: with a single colon a decoder that replaced only the FIRST occurrence
+    // would look correct. With two it returns a name that no longer round-trips, so the row is silently
+    // SKIPPED by list() — a segment that exists, holds data, and is invisible to every sweep.
+    expect(parseRegistryRow('user%3A123%3Aseen.reg')).toBe('user:123:seen');
+    expect(parseRegistryRow('sent%3Adaily%3A2026-08-01.reg')).toBe('sent:daily:2026-08-01');
+    // The escape is case-sensitive; `%3a` is not one the driver ever writes.
+    expect(parseRegistryRow('a%3ab.reg')).toBeNull();
     // A stem that is not a legal name after decoding is skipped, as before.
     expect(parseRegistryRow('a%41b.reg')).toBeNull();
     expect(parseRegistryRow('_default.reg')).toBeNull();
@@ -102,26 +109,40 @@ describe('localfs: colons never reach the filesystem', () => {
 
   it('a planted literal-colon row is skipped by a real list(), not surfaced', async () => {
     const registry = new LocalFsRegistryDriver(root);
-    await registry.create({ segment: 'a:b' }, { currentGen: 1 });
-    await writeFile(join(root, '_default', 'registry', 'a:b.reg'), '{}');
+    await registry.create({ segment: 'sent:daily:2026-08-01' }, { currentGen: 1 });
+    await writeFile(join(root, '_default', 'registry', 'sent:daily:2026-08-01.reg'), '{}');
 
     const seen = [];
     for await (const r of registry.list()) seen.push(r.segment);
-    expect(seen).toEqual(['a:b']);
+    expect(seen).toEqual(['sent:daily:2026-08-01']);
   });
 
-  it('property: distinct names never collide on one path, and every name decodes back', () => {
-    const NAME = fc
-      .stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,24}$/)
-      .filter((n) => !n.includes('..'));
+  it('property: the encoding round-trips, and near-identical names never share a path', () => {
+    // Derive the pair from ONE base by inserting colons, so a COLLIDING pair is the common draw rather than
+    // a once-in-a-blue-moon one. Two independently generated names essentially never collide, which is how a
+    // mutation that simply STRIPPED colons (making `a:b` and `ab` the same path) slipped past an earlier
+    // version of this property.
+    const BASE = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9.-]{0,16}$/);
+    const POSITIONS = fc.array(fc.nat({ max: 16 }), { maxLength: 3 });
+    const withColons = (base: string, at: number[]): string =>
+      at
+        .map((i) => Math.min(i, base.length - 1))
+        .sort((x, y) => y - x)
+        .reduce((acc, i) => (i <= 0 ? acc : acc.slice(0, i) + ':' + acc.slice(i)), base);
+
     fc.assert(
-      fc.property(NAME, NAME, (a, b) => {
+      fc.property(BASE, POSITIONS, POSITIONS, (base, pa, pb) => {
+        const a = withColons(base, pa);
+        const b = withColons(base, pb);
+        fc.pre(!a.includes('..') && !b.includes('..'));
+
         const fa = coldObjectFilename(a, 0);
-        const fb = coldObjectFilename(b, 0);
         expect(fa.includes(':')).toBe(false);
         expect(parseGeneration(a, fa)).toBe(0);
-        // Injectivity: the encoding is only safe if two names can never claim the same object.
-        if (a !== b) expect(fa).not.toBe(fb);
+        // A real decode, through the parser that reads a name back off disk — the earlier version of this
+        // property only ever re-ENCODED, so a broken decoder satisfied it.
+        expect(parseRegistryRow(basename(registryRowPath(root, { segment: a })))).toBe(a);
+        if (a !== b) expect(fa).not.toBe(coldObjectFilename(b, 0));
       }),
       { numRuns: 500 },
     );
