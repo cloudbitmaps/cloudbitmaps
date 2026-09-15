@@ -74,8 +74,20 @@ const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
 Query parameters, all optional: `region`, `endpoint` and `pathStyle` for S3-compatible stores, and `table` to
 use a DynamoDB registry instead of the object-store one. **GCS and Azure have no object-store registry of
 their own**, so they need `?table=` or a hand-wired registry — `connect` says so rather than failing at the
-first read. Credentials are deliberately not expressible in the URL: they come from the SDK's own resolution
-chain, and a URL is the kind of string that ends up in a log.
+first read. With `?table=`, the URL's **path scopes the registry** exactly as it scopes the objects, so
+`s3://bucket/tenantA?table=cbm` and `s3://bucket/tenantB?table=cbm` are two independent stores sharing one
+table (`s3://bucket/team` and `s3://bucket/team/` are the same store).
+
+Credentials never go in the URL: they come from the SDK's own resolution chain, and a URL is the kind of
+string that ends up in a log. A URL carrying them is **refused, not ignored** — silently dropping a key would
+leave you believing it was in use while the SDK authenticated as somebody else — and an error echoes the
+scheme, host, path and the *names* of the query parameters, never a value.
+
+`connect` refuses rather than guesses whenever the string describes something it cannot wire as written: a
+parameter the scheme does not take (`?pathstyle=true`, or `?table=` on `file://`), a port on the bucket
+(`s3://bucket:9000` — an S3-compatible address is `?endpoint=`), a `#` (which truncates the prefix instead of
+joining it), and `endpoint` together with `table` (the DynamoDB registry cannot live at an S3-compatible
+store's address, so it would quietly resolve against AWS instead — data in one cloud, pointers in another).
 
 `connect` returns exactly the `CloudRoaring` the constructor returns — `async` only because the driver SDKs
 are optional peers behind subpath exports and the right one has to be imported.

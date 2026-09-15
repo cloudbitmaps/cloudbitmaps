@@ -22,8 +22,11 @@
  * a custom retry strategy), construct the drivers yourself and pass them to `new CloudRoaring(...)`. That is a
  * documented step down, not a cliff, and the guide shows both.
  *
- * **Credentials are deliberately not expressible.** They belong to the SDK's own resolution chain, and a URL
- * is the kind of string that ends up in a log, a crash report or a CI variable that outlives the secret.
+ * **Credentials are refused, not ignored.** They belong to the SDK's own resolution chain, and a URL is the
+ * kind of string that ends up in a log, a crash report or a CI variable that outlives the secret. A URL
+ * carrying them is rejected outright: silently dropping them would leave someone believing a key was in use
+ * while the SDK quietly authenticated as somebody else. For the same reason nothing here echoes a URL back
+ * verbatim — an error prints the scheme, host, path and the *names* of the query parameters, never a value.
  *
  * `async` is forced rather than chosen: the drivers are optional peer dependencies behind subpath exports, and
  * the main entry stays SDK-free, so the right subpath has to be `await import`ed. A synchronous `connect`
@@ -32,8 +35,21 @@
 import { ValidationError, UnsupportedError } from '@cloudbitmaps/core';
 import type { IColdDriver, IRegistryDriver } from '@cloudbitmaps/core';
 
-/** The schemes {@link connect} understands. */
+/** The schemes {@link resolveWiring} understands. */
 const SCHEMES = ['s3:', 'gs:', 'az:', 'file:', 'memory:'] as const;
+
+/**
+ * The query parameters each scheme understands. A parameter that does not apply is a typo or a
+ * misunderstanding, and either way ignoring it silently produces a store wired differently from the one the
+ * caller described — `?pathstyle=true` against MinIO reaches for a virtual-host bucket that does not exist.
+ */
+const PARAMS: Readonly<Record<string, readonly string[]>> = {
+  's3:': ['region', 'endpoint', 'pathStyle', 'table'],
+  'gs:': ['region', 'table'],
+  'az:': ['region', 'table'],
+  'file:': [],
+  'memory:': [],
+};
 
 /** The driver pair a URL resolves to. */
 export interface Wiring {
@@ -41,17 +57,102 @@ export interface Wiring {
   readonly registry: IRegistryDriver;
 }
 
-function fail(url: string, why: string): never {
-  throw new ValidationError(`connect: ${why}\n  url: ${url}`);
+/**
+ * The URL as it is safe to put in an error: userinfo dropped, and query parameters reduced to their names.
+ *
+ * An error message is the single most likely place for a URL to be copied into a bug report, and a value in
+ * it may be a secret someone pasted despite the rule above. Whatever a caller actually needs to see — the
+ * bad flag, the unknown parameter — the sentence names explicitly, so nothing is lost by withholding the rest.
+ */
+function safeUrl(url: URL | string): string {
+  if (typeof url === 'string') {
+    // The unparseable case: there is no structure to rebuild from, so redact the two shapes positionally.
+    return url.replace(/\/\/[^/@]*@/, '//\u2026@').replace(/([?&])([^=&]*)=[^&]*/g, '$1$2=\u2026');
+  }
+  const names = [...new Set(url.searchParams.keys())];
+  const query = names.length === 0 ? '' : `?${names.map((n) => `${n}=\u2026`).join('&')}`;
+  return `${url.protocol}//${url.host}${url.pathname}${query}`;
+}
+
+function fail(url: URL | string, why: string): never {
+  throw new ValidationError(`connect: ${why}\n  url: ${safeUrl(url)}`);
 }
 
 /** Read a boolean query parameter, refusing anything that is not clearly one. */
-function flag(params: URLSearchParams, name: string, url: string): boolean | undefined {
-  const raw = params.get(name);
+function flag(u: URL, name: string): boolean | undefined {
+  const raw = u.searchParams.get(name);
   if (raw === null) return undefined;
   if (raw === 'true' || raw === '1') return true;
   if (raw === 'false' || raw === '0') return false;
-  return fail(url, `\`${name}\` must be true or false; got ${JSON.stringify(raw)}`);
+  return fail(u, `\`${name}\` must be true or false; got ${JSON.stringify(raw)}`);
+}
+
+/** Percent-decoding that reports a bad escape as a URL problem rather than a bare `URIError`. */
+function decodePath(raw: string, u: URL): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return fail(u, 'the path is not valid percent-encoding — a literal `%` is written `%25`');
+  }
+}
+
+/**
+ * The bucket/container, which is the URL's host.
+ *
+ * A port is refused rather than folded in: `s3://bucket:9000/p` is what someone reaching for MinIO writes,
+ * and `host` would hand the SDK a bucket literally named `bucket:9000`. The address of an S3-compatible
+ * store is `?endpoint=`, which is a different thing in a different place.
+ */
+function hostOf(u: URL, label: string, example: string): string {
+  if (u.port !== '') {
+    fail(
+      u,
+      `a ${label} name has no port. An S3-compatible store's address goes in \`?endpoint=\` — ` +
+        `e.g. s3://${u.hostname}/prefix?endpoint=http://${u.hostname}:${u.port}&pathStyle=true`,
+    );
+  }
+  if (u.hostname === '') fail(u, `needs a ${label}: ${example}`);
+  return u.hostname;
+}
+
+/**
+ * The object-store prefix: the path, decoded, with the slashes that carry no meaning trimmed off.
+ *
+ * Decoding matters because the drivers take a literal key prefix, not a URL component: `s3://b/my prefix`
+ * must reach the same objects as a hand-wired `prefix: 'my prefix'`, and `my%20prefix/` is a different place
+ * in the bucket. Trimming matters because `s3://b/team` and `s3://b/team/` are the same store to anyone
+ * reading them, and the key builders already normalize the object side — the registry key prefix has to
+ * agree, or one spelling silently gets its own set of pointers.
+ */
+function prefixOf(u: URL): string | undefined {
+  const decoded = decodePath(u.pathname, u).replace(/^\/+|\/+$/g, '');
+  if (decoded === '') return undefined;
+  for (const segment of decoded.split('/')) {
+    // URL parsing resolves an unencoded `..` away before we ever see it; this catches the encoded spelling,
+    // which arrives intact and would otherwise reach the drivers as a traversal attempt.
+    if (segment === '.' || segment === '..') {
+      fail(
+        u,
+        'a path segment cannot be "." or ".." — the prefix names a place, it does not navigate to one',
+      );
+    }
+  }
+  return decoded;
+}
+
+/** Refuse a query parameter the scheme has no use for, rather than wiring something other than what was asked. */
+function checkParams(u: URL): void {
+  const allowed = PARAMS[u.protocol] ?? [];
+  for (const name of u.searchParams.keys()) {
+    if (allowed.includes(name)) continue;
+    fail(
+      u,
+      allowed.length === 0
+        ? `${u.protocol}// takes no query parameters; got \`${name}\``
+        : `\`${name}\` is not a ${u.protocol}// parameter. It takes ${allowed.join(', ')} ` +
+            `(spelled exactly — they are case-sensitive)`,
+    );
+  }
 }
 
 /**
@@ -64,13 +165,14 @@ function flag(params: URLSearchParams, name: string, url: string): boolean | und
  * | scheme | example | needs |
  * | --- | --- | --- |
  * | `s3://` | `s3://bucket/prefix?region=us-east-1` | `@aws-sdk/client-s3` |
- * | `gs://` | `gs://bucket/prefix` | `@google-cloud/storage` + a registry (see below) |
- * | `az://` | `az://container/prefix` | `@azure/storage-blob`, `AZURE_STORAGE_CONNECTION_STRING`, + a registry |
+ * | `gs://` | `gs://bucket/prefix?table=cbm` | `@google-cloud/storage` + a registry (see below) |
+ * | `az://` | `az://container/prefix?table=cbm` | `@azure/storage-blob`, `AZURE_STORAGE_CONNECTION_STRING`, + a registry |
  * | `file://` | `file:///var/lib/cloudbitmaps` | nothing |
  * | `memory://` | `memory://` | nothing — for tests |
  *
  * Query parameters, all optional: `region`, `endpoint` and `pathStyle` (S3-compatible stores such as MinIO,
- * Ceph and R2), and `table` (a DynamoDB registry instead of the object-store one).
+ * Ceph and R2), and `table` (a DynamoDB registry instead of the object-store one). Each scheme takes only
+ * the ones that apply to it, and an unknown one is an error rather than a shrug.
  *
  * **GCS and Azure have no object-store registry of their own**, so they need one named explicitly — today
  * that means `?table=<dynamodb-table>`, or wiring a registry by hand. The error says so rather than failing
@@ -81,18 +183,42 @@ export async function resolveWiring(url: string): Promise<Wiring> {
   try {
     parsed = new URL(url);
   } catch {
-    return fail(url, `not a URL. Expected one of ${SCHEMES.join(' ')}`);
+    return fail(
+      url,
+      `not a URL — it needs a scheme and \`://\`, as in s3://bucket/prefix. Expected one of ${SCHEMES.join(' ')}`,
+    );
   }
-  return wire(parsed, url);
+  return wire(parsed);
 }
 
-async function wire(u: URL, url: string): Promise<Wiring> {
-  const q = u.searchParams;
-  // `pathname` keeps a leading slash and may be empty; the prefix is what follows the bucket.
-  const prefix = u.pathname.replace(/^\/+/, '') || undefined;
+async function wire(u: URL): Promise<Wiring> {
+  // Everything checkable from the string alone is checked BEFORE any driver is imported, so a typo reports a
+  // typo rather than an instruction to install a large SDK the caller may not even need.
+  if (u.username !== '' || u.password !== '') {
+    fail(
+      u,
+      'credentials do not belong in a storage URL. The SDK resolves them itself (environment, shared ' +
+        'profile, instance metadata, workload identity); if you need a specific credential, build the ' +
+        'client yourself and pass the drivers to `new CloudRoaring({ cold, registry })`.',
+    );
+  }
+  if (u.hash !== '') {
+    fail(
+      u,
+      'a `#` starts a URL fragment, so everything after it is dropped rather than becoming part of the ' +
+        'prefix. Write it `%23` if the prefix really contains one.',
+    );
+  }
+  checkParams(u);
 
   switch (u.protocol) {
     case 'memory:': {
+      if (u.host !== '' || (u.pathname !== '' && u.pathname !== '/')) {
+        fail(
+          u,
+          'memory:// addresses nothing — it is an in-process store, so it takes no host or path',
+        );
+      }
       const { MemoryColdDriver, MemoryRegistryDriver } = await import('@cloudbitmaps/core');
       return { cold: new MemoryColdDriver(), registry: new MemoryRegistryDriver() };
     }
@@ -101,27 +227,51 @@ async function wire(u: URL, url: string): Promise<Wiring> {
       // `file:///var/lib/x` puts the path in `pathname` and leaves `host` empty. A non-empty host means a
       // two-slash URL (`file://var/lib/x`), where `var` would be silently dropped — refuse rather than guess.
       if (u.host !== '') {
-        return fail(url, 'a file URL needs three slashes: file:///absolute/path');
+        return fail(u, 'a file URL needs three slashes: file:///absolute/path');
       }
-      const root = decodeURIComponent(u.pathname);
-      if (root === '' || root === '/') return fail(url, 'file URL needs a path');
+      if (u.pathname === '' || u.pathname === '/') return fail(u, 'file URL needs a path');
+      // `fileURLToPath` rather than the pathname: on Windows `file:///C:/data` has pathname `/C:/data`, and
+      // the leading slash makes it a different (invalid) path. It percent-decodes too, so this is also where
+      // a bad escape surfaces.
+      const { fileURLToPath } = await import('node:url');
+      let root: string;
+      try {
+        root = fileURLToPath(u);
+      } catch {
+        return fail(
+          u,
+          'not a usable file path — check the percent-encoding (a literal `%` is written `%25`)',
+        );
+      }
       const { LocalFsColdDriver, LocalFsRegistryDriver } = await import('@cloudbitmaps/core');
       return { cold: new LocalFsColdDriver(root), registry: new LocalFsRegistryDriver(root) };
     }
 
     case 's3:': {
-      const bucket = u.host;
-      if (bucket === '') return fail(url, 'an s3 URL needs a bucket: s3://bucket/prefix');
+      const bucket = hostOf(u, 'bucket', 's3://bucket/prefix');
+      const prefix = prefixOf(u);
+      const endpoint = u.searchParams.get('endpoint') ?? undefined;
+      const region = u.searchParams.get('region') ?? undefined;
+      const pathStyle = flag(u, 'pathStyle');
+      if (endpoint !== undefined && u.searchParams.get('table') !== null) {
+        // `endpoint` is the address of an S3-compatible store; a DynamoDB registry pointed at the same
+        // address is not talking to a DynamoDB. Left to itself the SDK would resolve the table against real
+        // AWS instead — a store whose data and pointers live in different clouds, which reads as data loss.
+        fail(
+          u,
+          "`endpoint` and `table` together are ambiguous: `endpoint` is the S3-compatible store's address, " +
+            'and the DynamoDB registry would either be sent there or quietly resolve against AWS. Build the ' +
+            'two clients yourself and pass the drivers to `new CloudRoaring({ cold, registry })`.',
+        );
+      }
       const { S3Client } = await loadOptional<typeof import('@aws-sdk/client-s3')>(
         '@aws-sdk/client-s3',
         's3://',
       );
-      const endpoint = q.get('endpoint') ?? undefined;
-      const region = q.get('region') ?? undefined;
       const client = new S3Client({
         ...(region === undefined ? {} : { region }),
         ...(endpoint === undefined ? {} : { endpoint }),
-        ...(flag(q, 'pathStyle', url) === true ? { forcePathStyle: true } : {}),
+        ...(pathStyle === true ? { forcePathStyle: true } : {}),
       });
       const { S3ColdDriver, S3RegistryDriver } = await import('@cloudbitmaps/core/s3');
       const cold = new S3ColdDriver({
@@ -130,14 +280,14 @@ async function wire(u: URL, url: string): Promise<Wiring> {
         ...(prefix === undefined ? {} : { prefix }),
       });
       const registry =
-        (await dynamoRegistry(q, url)) ??
+        (await dynamoRegistry(u, prefix)) ??
         new S3RegistryDriver({ client, bucket, ...(prefix === undefined ? {} : { prefix }) });
       return { cold, registry };
     }
 
     case 'gs:': {
-      const bucket = u.host;
-      if (bucket === '') return fail(url, 'a gs URL needs a bucket: gs://bucket/prefix');
+      const bucket = hostOf(u, 'bucket', 'gs://bucket/prefix');
+      const prefix = prefixOf(u);
       const { Storage } = await loadOptional<typeof import('@google-cloud/storage')>(
         '@google-cloud/storage',
         'gs://',
@@ -148,19 +298,19 @@ async function wire(u: URL, url: string): Promise<Wiring> {
         bucket,
         ...(prefix === undefined ? {} : { prefix }),
       });
-      return { cold, registry: requireNamedRegistry(await dynamoRegistry(q, url), 'gs://', url) };
+      return { cold, registry: requireNamedRegistry(await dynamoRegistry(u, prefix), 'gs://', u) };
     }
 
     case 'az:': {
-      const container = u.host;
-      if (container === '') return fail(url, 'an az URL needs a container: az://container/prefix');
+      const container = hostOf(u, 'container', 'az://container/prefix');
+      const prefix = prefixOf(u);
       // The connection string comes from the environment, never the URL — same reason credentials never do.
       // `AZURE_STORAGE_CONNECTION_STRING` is the variable the Azure SDK and CLI already use, so this is the
       // value that is almost certainly already set rather than a name invented here.
       const conn = process.env['AZURE_STORAGE_CONNECTION_STRING'];
       if (conn === undefined || conn === '') {
         return fail(
-          url,
+          u,
           'az:// reads its credentials from AZURE_STORAGE_CONNECTION_STRING, which is unset. Set it, or build ' +
             'a ContainerClient yourself (any credential the Azure SDK supports) and pass the drivers to ' +
             '`new CloudRoaring({ cold, registry })`.',
@@ -175,53 +325,82 @@ async function wire(u: URL, url: string): Promise<Wiring> {
         containerClient: BlobServiceClient.fromConnectionString(conn).getContainerClient(container),
         ...(prefix === undefined ? {} : { prefix }),
       });
-      return { cold, registry: requireNamedRegistry(await dynamoRegistry(q, url), 'az://', url) };
+      return { cold, registry: requireNamedRegistry(await dynamoRegistry(u, prefix), 'az://', u) };
     }
 
     default:
-      return fail(url, `unsupported scheme ${u.protocol}. Expected one of ${SCHEMES.join(' ')}`);
+      throw new UnsupportedError(
+        `connect: unsupported scheme ${u.protocol}. Expected one of ${SCHEMES.join(' ')}\n  url: ${safeUrl(u)}`,
+      );
   }
 }
 
-/** `?table=` wires a DynamoDB registry; absent, the caller's scheme decides whether that is fatal. */
+/**
+ * `?table=` wires a DynamoDB registry; absent, the caller's scheme decides whether that is fatal.
+ *
+ * The URL's path scopes the registry exactly as it scopes the objects. Without that, `s3://bucket/tenantA`
+ * and `s3://bucket/tenantB` sharing one table compute the *same* partition key for the same segment name:
+ * two stores that look independent, silently overwriting each other's pointers.
+ */
 async function dynamoRegistry(
-  q: URLSearchParams,
-  url: string,
+  u: URL,
+  prefix: string | undefined,
 ): Promise<IRegistryDriver | undefined> {
-  const table = q.get('table');
+  const table = u.searchParams.get('table');
   if (table === null) return undefined;
-  if (table === '') return fail(url, '`table` must not be empty');
+  if (table === '') return fail(u, '`table` must not be empty');
+  // The prefix becomes the registry key prefix, where `|` and `#` are the key's own delimiters. The driver
+  // refuses those itself; catching them here is what turns the refusal into a sentence about the URL.
+  for (const ch of prefix ?? '') {
+    if (ch === '|' || ch === '#' || ch.charCodeAt(0) < 0x20) {
+      return fail(
+        u,
+        'the path becomes the registry key prefix, so it cannot contain `|`, `#` or control characters',
+      );
+    }
+  }
   const { DynamoDBClient } = await loadOptional<typeof import('@aws-sdk/client-dynamodb')>(
     '@aws-sdk/client-dynamodb',
     '?table=',
   );
-  const region = q.get('region') ?? undefined;
+  const region = u.searchParams.get('region') ?? undefined;
   const { DynamoDbRegistryDriver } = await import('@cloudbitmaps/core/dynamodb');
   return new DynamoDbRegistryDriver({
     client: new DynamoDBClient(region === undefined ? {} : { region }),
     tableName: table,
+    ...(prefix === undefined ? {} : { keyPrefix: prefix }),
   });
 }
 
 function requireNamedRegistry(
   registry: IRegistryDriver | undefined,
   scheme: string,
-  url: string,
+  u: URL,
 ): IRegistryDriver {
   if (registry !== undefined) return registry;
   return fail(
-    url,
+    u,
     `${scheme} has no registry of its own — a registry resolves which generation is current, and only S3 and ` +
       `the local filesystem can host one in the same place as the data. Add \`?table=<dynamodb-table>\`, or ` +
       `construct the drivers yourself and pass them to \`new CloudRoaring({ cold, registry })\`.`,
   );
 }
 
-/** Import an optional peer, turning a missing package into an instruction rather than a module-not-found. */
+/**
+ * Import an optional peer, turning a missing package into an instruction rather than a module-not-found.
+ *
+ * Only the package's OWN absence earns that instruction. A module-not-found raised from inside an installed
+ * package — a broken install, a missing transitive dependency — is a different fault, and telling someone to
+ * install what they already have sends them away from it. Anything unrecognized propagates unchanged.
+ */
 async function loadOptional<T>(pkg: string, forWhat: string): Promise<T> {
   try {
     return (await import(/* @vite-ignore */ pkg)) as T;
-  } catch {
+  } catch (err) {
+    const missing = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(
+      err instanceof Error ? err.message : '',
+    );
+    if (missing?.[1] !== pkg) throw err;
     throw new UnsupportedError(
       `connect: ${forWhat} needs the optional peer \`${pkg}\`, which is not installed. Run ` +
         `\`npm i ${pkg}\` — the SDKs are optional peers so you only install the backends you actually use.`,

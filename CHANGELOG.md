@@ -33,9 +33,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   mandatory. `?table=` swaps in a DynamoDB registry.
 
   **GCS and Azure have no object-store registry of their own**, so they need `?table=` or a hand-wired
-  registry; `connect` says so with the reason rather than failing at the first read. **Credentials are
-  deliberately not expressible** — they come from the SDK's own resolution chain, and a URL is the kind of
-  string that ends up in a log, a crash report, or a CI variable that outlives the secret.
+  registry; `connect` says so with the reason rather than failing at the first read. With `?table=`, the
+  URL's **path scopes the registry** exactly as it scopes the objects, so two prefixes in one bucket are two
+  independent stores even when they share a table.
+
+  **Credentials are refused, not ignored** — they come from the SDK's own resolution chain, and a URL is the
+  kind of string that ends up in a log, a crash report, or a CI variable that outlives the secret; dropping
+  them silently would leave a caller believing a key was in use while the SDK authenticated as somebody else.
+  Errors echo the scheme, host, path and the *names* of the query parameters, never a value. `connect` is
+  strict about the rest of the string for the same reason — a parameter the scheme does not take, a port on
+  the bucket, a `#` that would truncate the prefix, or `endpoint` together with `table` (which would put the
+  data in one cloud and the pointers in another) are all refused rather than guessed at.
 
   It is a shortcut, never a second way to configure a store: `connect` returns exactly the `CloudRoaring` the
   constructor returns, and the constructors stay documented for any client it cannot express — a shared

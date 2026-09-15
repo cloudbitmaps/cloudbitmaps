@@ -121,7 +121,8 @@ const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
 
 `s3://` · `gs://` · `az://` · `file://` · `memory://`. The scheme names the storage protocol, so it is the URL
 you already type for `aws s3 cp` or DuckDB, and an S3-compatible store (MinIO, Ceph, R2) is the same scheme
-with `?endpoint=`. Credentials come from the SDK's own chain, never the URL. `connect` returns exactly the
+with `?endpoint=`. Credentials come from the SDK's own chain, never the URL — one carrying them is refused
+rather than ignored, and errors never echo a parameter's value. `connect` returns exactly the
 `CloudRoaring` the constructor returns — build the drivers by hand whenever you need a client it cannot
 express.
 

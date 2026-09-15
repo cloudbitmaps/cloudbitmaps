@@ -6,6 +6,7 @@
     "types": ["node", "vitest/globals"],
     "paths": {
       "@/index": ["./packages/roaring/src/index.ts"],
+      "@/connect": ["./packages/roaring/src/connect.ts"],
       "@/roaring-codec": ["./packages/roaring/src/roaring-codec.ts"],
       "@/system-clock": ["./packages/roaring/src/system-clock.ts"],
       "@/testing/*": ["./packages/roaring/src/testing/*"],
