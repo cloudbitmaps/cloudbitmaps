@@ -27,7 +27,14 @@ import { ValidationError, WriteConflictError } from '@cloudbitmaps/core';
 // each driver maps it onto its physical key correctly — a filesystem driver has to encode it, an object
 // store takes it verbatim. Putting it in the SHARED fixture means every driver is held to that, including
 // ones written after this line, rather than each being trusted to remember.
-const SEG: SegmentRef = { segment: 's:v1' };
+/**
+ * The segment every conformance seeder must write. Exported so a driver's own test file derives the name
+ * instead of restating it — a second copy that drifts makes the suite query a segment nobody seeded, which
+ * fails as an empty result rather than as the mismatch it actually is.
+ */
+export const CONFORMANCE_SEGMENT = 's:v1';
+
+const SEG: SegmentRef = { segment: CONFORMANCE_SEGMENT };
 const ref = (chunkKey: number): ChunkRef => ({ segment: 's:v1', chunkKey });
 
 /** Names a conformant driver MUST reject at its boundary (grammar + traversal + control chars). */

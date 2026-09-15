@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { coldChunkSourceConformance } from '@/testing/conformance';
+import { coldChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
 import { MemoryColdChunkSource, MemoryColdDriver } from '@/drivers/memory';
 import { LocalFsColdDriver } from '@/drivers/localfs/cold';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
@@ -10,14 +10,14 @@ import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-sourc
 coldChunkSourceConformance('MemoryColdChunkSource', (chunks) => {
   const source = new MemoryColdChunkSource();
   for (const { chunkKey, bitmap } of chunks)
-    source.seed({ segment: 's:v1', chunkKey }, bitmap.serialize());
+    source.seed({ segment: CONFORMANCE_SEGMENT, chunkKey }, bitmap.serialize());
   return Promise.resolve(source);
 });
 
 // The in-memory IColdDriver must serve the same contract through the real `.crbm` codec.
 coldChunkSourceConformance('CrbmColdChunkSource (MemoryColdDriver)', async (chunks) => {
   const cold = new MemoryColdDriver();
-  await writeCrbmGeneration(cold, { segment: 's:v1', generation: 1 }, chunks);
+  await writeCrbmGeneration(cold, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmColdChunkSource(cold);
 });
 
@@ -32,6 +32,6 @@ afterAll(async () => {
 
 coldChunkSourceConformance('CrbmColdChunkSource (LocalFs)', async (chunks) => {
   const cold = new LocalFsColdDriver(join(root, `d${n++}`));
-  await writeCrbmGeneration(cold, { segment: 's:v1', generation: 1 }, chunks);
+  await writeCrbmGeneration(cold, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmColdChunkSource(cold);
 });
