@@ -16,7 +16,7 @@
  * everything optional is a query parameter, because the SDK already resolves a region from `AWS_REGION`, the
  * shared profile, or instance metadata, and a parameter that is usually inferred should not look mandatory.
  *
- * **It is a shortcut, never the only door.** `connect` returns exactly the {@link CloudRoaring} the
+ * **It is a shortcut, never the only door.** `connect` returns exactly the `CloudRoaring` the
  * constructors return — not a subset and not a wrapper — so anything a hand-wired store can do, a connected
  * one can too. The moment you need a client this cannot express (a shared credential provider, a proxy agent,
  * a custom retry strategy), construct the drivers yourself and pass them to `new CloudRoaring(...)`. That is a
@@ -162,19 +162,9 @@ function checkParams(u: URL): void {
  *
  * The public entry point is `connect` in the package barrel; this is the half that knows about URLs, kept
  * separate so it never has to import `CloudRoaring` — which would be an import cycle, and is exactly what the
- * architecture gate refused when the two lived together.
- *
- * | scheme | example | needs |
- * | --- | --- | --- |
- * | `s3://` | `s3://bucket/prefix?region=us-east-1` | `@aws-sdk/client-s3` |
- * | `gs://` | `gs://bucket/prefix?table=cbm` | `@google-cloud/storage` + a registry (see below) |
- * | `az://` | `az://container/prefix?table=cbm` | `@azure/storage-blob`, `AZURE_STORAGE_CONNECTION_STRING`, + a registry |
- * | `file://` | `file:///var/lib/cloudbitmaps` | nothing |
- * | `memory://` | `memory://` | nothing — for tests |
- *
- * Query parameters, all optional: `region`, `endpoint` and `pathStyle` (S3-compatible stores such as MinIO,
- * Ceph and R2), and `table` (a DynamoDB registry instead of the object-store one). Each scheme takes only
- * the ones that apply to it, and an unknown one is an error rather than a shrug.
+ * architecture gate refused when the two lived together. **The schemes, the per-scheme query parameters and
+ * the optional peer each needs are documented on `connect` itself**, because that is the symbol a consumer
+ * can reach and the one whose doc comment ships in `index.d.ts`; `PARAMS` above is what the code obeys.
  *
  * **GCS and Azure have no object-store registry of their own**, so they need one named explicitly — today
  * that means `?table=<dynamodb-table>`, or wiring a registry by hand. The error says so rather than failing
@@ -398,20 +388,54 @@ function requireNamedRegistry(
 }
 
 /**
+ * Was this failure the package's own absence, rather than a fault inside it?
+ *
+ * Exported for its tests, not for consumers — the package barrel does not re-export it. It needs testing
+ * because it is a judgement about another runtime's error objects, and getting it wrong is silent in both
+ * directions: too loose and a broken install is reported as "not installed", sending someone to reinstall
+ * what they already have; too strict and the friendly instruction never appears.
+ *
+ * It walks the `cause` chain because a dynamic import's rejection rarely arrives bare — a loader hook, a
+ * bundler runtime or a test runner wraps it, leaving its own text in `message` and Node's error in `cause`.
+ * Reading only the top-level message misses every one of those.
+ *
+ * @internal
+ */
+export function isPackageMissing(err: unknown, pkg: string): boolean {
+  const MODULE_NOT_FOUND = new Set(['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND']);
+  // Bounded: a `cause` chain can be cyclic, and this runs on an error path where a hang is worse than a miss.
+  for (let e: unknown = err, depth = 0; e !== null && e !== undefined && depth < 8; depth++) {
+    const { code, message } = e as { code?: unknown; message?: unknown };
+    if (MODULE_NOT_FOUND.has(String(code))) {
+      const named = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(String(message ?? ''));
+      // A named specifier that is NOT ours means the package is installed and something inside it is not:
+      // a different fault, and "run npm i <pkg>" points away from it. Unnamed (a reworded message from
+      // another Node version) still counts — the code already says module-not-found, and the specifier we
+      // asked for is the likeliest subject.
+      return named === null || named[1] === pkg;
+    }
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Import an optional peer, turning a missing package into an instruction rather than a module-not-found.
  *
- * Only the package's OWN absence earns that instruction. A module-not-found raised from inside an installed
- * package — a broken install, a missing transitive dependency — is a different fault, and telling someone to
- * install what they already have sends them away from it. Anything unrecognized propagates unchanged.
+ * `load` is a seam, not a parameter anyone passes: every one of these SDKs is installed in this workspace, so
+ * the catch below is unreachable from a test that imports for real, and the instruction it produces — the
+ * thing a user actually sees when a peer is missing — would ship unverified. @internal
  */
-async function loadOptional<T>(pkg: string, forWhat: string): Promise<T> {
+export async function loadOptional<T>(
+  pkg: string,
+  forWhat: string,
+  load: (specifier: string) => Promise<unknown> = (specifier) =>
+    import(/* @vite-ignore */ specifier),
+): Promise<T> {
   try {
-    return (await import(/* @vite-ignore */ pkg)) as T;
+    return (await load(pkg)) as T;
   } catch (err) {
-    const missing = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(
-      err instanceof Error ? err.message : '',
-    );
-    if (missing?.[1] !== pkg) throw err;
+    if (!isPackageMissing(err, pkg)) throw err;
     throw new UnsupportedError(
       `connect: ${forWhat} needs the optional peer \`${pkg}\`, which is not installed. Run ` +
         `\`npm i ${pkg}\` — the SDKs are optional peers so you only install the backends you actually use.`,

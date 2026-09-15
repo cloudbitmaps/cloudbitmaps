@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from '@/index';
 import { ValidationError, UnsupportedError } from '@/core/errors';
-import { resolveWiring } from '@/connect';
+import { resolveWiring, isPackageMissing, loadOptional } from '@/connect';
 import { S3ColdDriver, S3RegistryDriver } from '@/s3';
 import type { IColdDriver, IRegistryDriver } from '@/core/ports';
 
@@ -343,5 +343,95 @@ describe('connect: the same store the constructor builds', () => {
     expect(await store.segment('s').count()).toBe(2);
     expect(touched).toEqual([]);
     expect(events.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── The optional-peer instruction ──────────────────────────────────────────────────────────────────────
+// `connect` answers a missing SDK with "run npm i <pkg>" instead of a module-not-found. That judgement is
+// made about ANOTHER runtime's error objects, and it is silent when wrong in either direction — too loose and
+// a broken install tells you to reinstall what you have; too strict and the instruction never appears. Both
+// directions are asserted here because the guard's own review found it reading only the top-level message,
+// which every wrapper defeats.
+
+const moduleNotFound = (specifier: string): Error =>
+  Object.assign(new Error(`Cannot find package '${specifier}' imported from /app/x.js`), {
+    code: 'ERR_MODULE_NOT_FOUND',
+  });
+
+describe('connect: is the optional peer actually missing?', () => {
+  it('recognises the package being absent', () => {
+    expect(isPackageMissing(moduleNotFound('@aws-sdk/client-s3'), '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('sees through a wrapper that buries the real error in `cause`', () => {
+    // A loader hook, a bundler runtime or a test runner wraps a dynamic import's rejection and puts its own
+    // text in `message`. Reading only the top level misses every one of them — which is what it did.
+    const wrapped = new Error('Failed to load url @aws-sdk/client-s3', {
+      cause: moduleNotFound('@aws-sdk/client-s3'),
+    });
+    expect(isPackageMissing(wrapped, '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('does NOT claim absence when the fault is inside an installed package', () => {
+    // "Run npm i @aws-sdk/client-s3" points away from a missing transitive dependency, not at it.
+    expect(isPackageMissing(moduleNotFound('@smithy/some-internal'), '@aws-sdk/client-s3')).toBe(
+      false,
+    );
+  });
+
+  it('does NOT swallow an unrelated failure', () => {
+    // A throwing module, a syntax error, a native addon that will not load: all must surface as themselves.
+    expect(isPackageMissing(new SyntaxError('Unexpected token'), '@aws-sdk/client-s3')).toBe(false);
+    expect(isPackageMissing(undefined, '@aws-sdk/client-s3')).toBe(false);
+  });
+
+  it('still recognises absence if the message is worded differently', () => {
+    // Another Node version may reword it. The `code` already says module-not-found, and the specifier we
+    // asked for is the likeliest subject — better the instruction than a bare ERR_MODULE_NOT_FOUND.
+    const reworded = Object.assign(new Error('module not resolved'), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    expect(isPackageMissing(reworded, '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('terminates on a cyclic cause chain', () => {
+    const a: Error & { cause?: unknown } = new Error('a');
+    const b: Error & { cause?: unknown } = new Error('b');
+    a.cause = b;
+    b.cause = a;
+    expect(isPackageMissing(a, '@aws-sdk/client-s3')).toBe(false);
+  });
+});
+
+describe('connect: the missing-peer instruction itself', () => {
+  // What a user sees when a peer is absent. Unreachable from a real import here — all four SDKs are installed
+  // in this workspace — so the message shipped unverified until `loadOptional` grew an importer seam.
+  const absent = (specifier: string) => (): Promise<never> =>
+    Promise.reject(
+      Object.assign(new Error(`Cannot find package '${specifier}' imported from /app/x.js`), {
+        code: 'ERR_MODULE_NOT_FOUND',
+      }),
+    );
+
+  it('names the package, the command, and why it is not already installed', async () => {
+    const err = await loadOptional(
+      '@aws-sdk/client-s3',
+      's3://',
+      absent('@aws-sdk/client-s3'),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnsupportedError);
+    expect(String(err)).toContain('s3://');
+    expect(String(err)).toContain('npm i @aws-sdk/client-s3');
+    expect(String(err)).toContain('optional peers');
+  });
+
+  it('lets an unrelated failure through unchanged', async () => {
+    // A package that throws on import is not a package that is missing, and hiding it behind "not installed"
+    // sends the reader to reinstall something that is already there.
+    const boom = new SyntaxError('Unexpected token in the SDK');
+    const err = await loadOptional('@aws-sdk/client-s3', 's3://', () => Promise.reject(boom)).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBe(boom);
   });
 });
