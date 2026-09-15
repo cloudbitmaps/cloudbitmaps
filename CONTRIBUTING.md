@@ -82,6 +82,10 @@ stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 p
   words, readable off `git branch` months later by someone who wasn't there:
   `feature/roll-segment-pointer-back-to-older-generation`, not `feature/rollback`. A one-word slug names a
   *topic*, and `packages/` already holds those. Leave issue and PR numbers out — the PR carries them.
+- **Every PR body follows [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)** —
+  **What & why** (the problem, not the diff), **How it was tested** (the tests that would fail if this were
+  reverted), and the **checklist**. GitHub pre-fills it in the web UI; `gh pr create --body` does not, so
+  apply it yourself there.
 - **Squash-merge** every PR into `main` (one commit per PR → linear, readable history).
 - **After merge, delete the branch — remote *and* local** (`git push origin --delete <branch>` +
   `git branch -d <branch>`). Don't let merged branches linger.

@@ -69,7 +69,11 @@ The essentials, in order:
 5. **Keep docs current in the same change** — the [guide](docs/guide/getting-started.md),
    [API reference](docs/guide/api-reference.md), [README](README.md), `CHANGELOG.md` (`[Unreleased]`,
    newest-first), and [`docs/ROADMAP.md`](docs/ROADMAP.md). Docs must never lag reality.
-6. **Commit + push**; open the PR. **Squash-merge**, then delete the branch.
+6. **Commit + push**; open the PR **in the shape of
+   [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)** — `What & why` · `How it was
+   tested` · the checklist. The template auto-fills in the web UI but **not** for `gh pr create`, which is
+   how most of these are opened, so it has to be applied deliberately there. **Squash-merge**, then delete
+   the branch.
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 8. **Agent history** is working history, not documentation — durable conclusions land in tracked docs. Keeping the transcripts themselves is machine setup, not project setup: set your agent's transcript retention explicitly and back the agent config directory up to a private remote.
 
