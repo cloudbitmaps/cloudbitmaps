@@ -351,6 +351,27 @@ object-store snapshot that contains it, or (b) roll the registry's `currentGen` 
 generation that does exist — accepting the loss of the loads after that point, but restoring correctness. Then
 re-run `checkConsistency()`.
 
+Remedy (b) is a supported call rather than a manual registry edit:
+
+```ts
+await store.generations(ref);              // what is actually in the bucket, current one marked
+await store.rollback(ref, 4);              // put the pointer on one that exists
+await store.checkConsistency();            // confirm
+```
+
+`rollback` refuses rather than guessing: a generation not in the bucket throws and **names what is available**,
+a crypto-shredded segment throws (every generation of it is unreadable), and a target *above* the pointer needs
+an explicit `{ allowForward: true }` — above the pointer is where objects live that were never published, such
+as a load that wrote its object and died before the publish. It deletes nothing, so the rollback is itself
+reversible, and it is audited as `segment.rollback` because no other record of a backwards pointer move exists.
+
+> **One thing to know before you roll back a segment a subject was erased from.** An erasure removes the id from
+> the current generation and deletes the generation that held it, so it cannot be rolled back onto — an erasure
+> performed *after* a rollback also reaches above the pointer and deletes the holder there. But a rollback is
+> still the one operator action that changes which generations are reachable, so if a subject erasure ran
+> against this segment between the target generation and now, **re-run `eraseSubject` afterwards** and keep both
+> ledgers.
+
 ## This runbook is exercised, not just written
 
 `pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` cold

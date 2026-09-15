@@ -110,7 +110,8 @@ export async function gcOrphanGenerations(
   // collects — refusing on any token change would make GC useless on a busy segment. But the pointer is only
   // monotonic *within* an incarnation: `nextGeneration` restarts at 0 once a row is purged and the bucket
   // emptied, so a name that was retired and re-created wears a LOWER `currentGen` than the one read before the
-  // listing, and `g < current` would then select the new incarnation's live object. `Math.min` is what makes a
+  // listing — and `rollbackSegment` lets an operator lower it deliberately — so `g < current` would then select
+  // a live object. `Math.min` is what makes a
   // regressed pointer narrow the cutoff instead of widening it.
   const cutoff =
     current === null || after.currentGen === null ? null : Math.min(current, after.currentGen);
@@ -156,11 +157,19 @@ export async function gcOrphanGenerations(
             .slice(keep);
   // The re-read above proves the segment was intact at ONE instant; the deletes below are one round trip each,
   // so the exposure is the whole loop, not that instant. The ordinary branch deletes newest-first, which puts a
-  // restarted incarnation's generation 0 LAST — the worst ordering — so re-prove it before every delete after
-  // the first (the first is covered by the re-read). Cost is one registry read per object actually deleted, on
-  // a path that is already one round trip per object and is never on the read path.
-  for (const [i, generation] of toDelete.entries()) {
-    if (i > 0) await stillCollectable();
+  // restarted incarnation's generation 0 LAST — the worst ordering.
+  //
+  // Re-proved before EVERY delete, the first included. An earlier version skipped the first on the grounds that
+  // the re-read above had just covered it, which held only while the pointer could not fall: the window between
+  // the re-read and the first delete was one where the pointer could only rise, and a rising pointer only makes
+  // more things collectable. `rollbackSegment` removed that premise — an operator can now move the pointer
+  // *down*, onto a generation this pass has already queued — and reproduced exactly that: a rollback landing in
+  // that window left the pass deleting the live generation before its second iteration noticed anything.
+  //
+  // Cost is one registry read per object actually deleted, on a path that is already one round trip per object
+  // and is never on the read path.
+  for (const generation of toDelete) {
+    await stillCollectable();
     await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }
   return toDelete;
