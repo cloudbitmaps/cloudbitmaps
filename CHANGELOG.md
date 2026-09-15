@@ -16,6 +16,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Added
+- **`store.generations(ref)` and `store.rollback(ref, toGeneration)` — see what a segment has been, and put it
+  back.** Immutable generations mean the previous version of a segment is usually still in the bucket: the load
+  that replaced it wrote a new object and moved a pointer rather than overwriting anything. So recovering from a
+  bad load is moving the pointer back — and until now there was no way to, because every write path is
+  deliberately forward-only. That refusal is right for a *writer* (a load whose ids came from upstream loses
+  nothing by being out-raced, and regressing would let a slow loader silently undo a fast one) and wrong for an
+  *operator* who has looked at the segment and knows which generation they want. So `rollback` is the one call
+  that goes backwards, reachable only by name — no sweep, retry or reconciliation performs it — and audited as
+  the new `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and
+  this one cannot. It refuses rather than guesses: a generation not in the bucket throws `NotFoundError` naming
+  what *is* available, a crypto-shredded segment throws `ValidationError`, and rolling to the generation already
+  current is a reported no-op. It deletes nothing, so the rollback is itself reversible.
 
 - **`store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` — the write path as one call.** A load has always
   been four steps: take the next generation number, write one immutable object, move the pointer, collect what

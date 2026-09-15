@@ -57,8 +57,10 @@ import type {
   Budget,
   BudgetOption,
   BulkLoadResult,
+  GenerationEntry,
   LoadOptions,
   LoadResult,
+  RollbackResult,
   Clock,
   CodecBitmap,
   CodecInterface,
@@ -91,6 +93,7 @@ import type {
 } from '@cloudbitmaps/core';
 import { bulkLoadCrbmGeneration, eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
+import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
@@ -770,6 +773,59 @@ export class CloudRoaring {
     );
     const erasedFrom = entries.filter((e): e is SubjectErasureEntry => e !== null);
     return { id, erasedFrom, scannedSegments: recs.length };
+  }
+
+  /**
+   * Every generation still in the bucket for this segment, ascending, with the current one marked.
+   *
+   * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
+   * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
+   * choose from, which is the reason to look at it. One `list` call; it does not open the objects.
+   *
+   * Needs a raw cold driver + registry.
+   */
+  async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
+    validateSegmentRef(ref);
+    return listGenerations(ref, this.lifecycleDeps('generations'));
+  }
+
+  /**
+   * Move this segment's pointer **back** to a generation still in the bucket — the one write in the library that
+   * is not forward-only.
+   *
+   * Forward-only is right for a writer: a load whose ids came from upstream loses nothing by being out-raced, and
+   * letting it regress would let a slow loader silently undo a fast one. It is wrong for an operator who has
+   * looked at the segment, decided the current generation is wrong, and knows which one they want. So this is
+   * reachable only by asking for it by name — no sweep, retry or reconciliation calls it — and it is audited
+   * (`segment.rollback`), because every other pointer move can be reconstructed from "a load happened" and this
+   * one cannot.
+   *
+   * It refuses rather than guesses: a generation not in the bucket (collected, or never written) throws
+   * {@link NotFoundError} naming what *is* available, and a crypto-shredded segment throws
+   * {@link ValidationError} because every generation of it is unreadable. Rolling to the generation already
+   * current is a no-op that reports itself.
+   *
+   * It deletes nothing. The generations above the new pointer stay put — which is what makes this reversible —
+   * and are then *above* `currentGen`, where collection never looks, so they remain until a later load raises the
+   * pointer past them. An operator who has just undone a bad load should not have the evidence collected out from
+   * under them.
+   *
+   * Needs a raw cold driver + registry.
+   */
+  async rollback(
+    ref: SegmentRef,
+    toGeneration: number,
+    options: { audit?: IAuditSink } = {},
+  ): Promise<RollbackResult> {
+    validateSegmentRef(ref);
+    const deps = this.lifecycleDeps('rollback');
+    try {
+      return await rollbackSegment(ref, toGeneration, deps, options);
+    } finally {
+      // The pointer moved under this store's cached view — and unlike a load, it moved to content the caches may
+      // still be holding from before. Drop it either way.
+      this.engine.invalidate(ref);
+    }
   }
 
   /**
