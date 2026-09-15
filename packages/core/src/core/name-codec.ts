@@ -28,8 +28,15 @@
  *   *succeed* while `readdir` never lists the result), plus three hazards that are about the component as a
  *   whole rather than its characters — see {@link encodeNameForPath}.
  *
- * **Every name that was legal before encodes to itself**, on both alphabets, so no stored key moves and there
- * is nothing to migrate. That is the property to preserve if this file is ever edited.
+ * **Every name that was legal before encodes to itself on the OBJECT-KEY alphabet** — so S3, GCS, Azure and
+ * DynamoDB keys are byte-identical and there is nothing to migrate there. That is the property to preserve if
+ * this file is ever edited, and a property test asserts it over the whole old grammar.
+ *
+ * The **path** alphabet is not identical, and the difference is a breaking change for an existing LocalFs
+ * store. Two classes move: a Windows device-name stem (`con`, `nul`, `com1`, `con.backup`) and a trailing dot
+ * (`a.`). Both were legal before and are escaped now — deliberately, since both silently alias or fail on
+ * Windows — but a 0.9 store holding one will not find it after the upgrade, because the readers' round-trip
+ * guard skips a spelling the driver would never have written. See the upgrade note in `CHANGELOG.md`.
  */
 
 /** Characters safe in an object key, left literal so existing keys are byte-identical. */

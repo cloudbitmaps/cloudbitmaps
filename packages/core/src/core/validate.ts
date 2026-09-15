@@ -37,7 +37,7 @@ const CHUNK_KEY_MAX = 0xffff;
  * a namespace and a segment at the ceiling, and matches the limit the previous grammar advertised, so no name
  * that was legal before becomes illegal now.
  */
-const MAX_ENCODED = 256;
+export const MAX_NAME_LENGTH = 256;
 
 /**
  * A high surrogate not followed by a low one, or a low surrogate not preceded by a high one.
@@ -47,6 +47,16 @@ const MAX_ENCODED = 256;
  * this package does not set. Matching on code units is what sees a half of a pair.
  */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * How long a name is once storage has it — the longer of the two encodings.
+ *
+ * Exported because anything that composes a name out of other names (the due index does) has to measure it the
+ * same way, and a second copy of that rule is how the two drifted apart before.
+ */
+export function encodedNameLength(value: string): number {
+  return Math.max(encodeNameForKey(value).length, encodeNameForPath(value).length);
+}
 
 function validatePart(value: string, field: string): void {
   if (typeof value !== 'string') {
@@ -58,9 +68,9 @@ function validatePart(value: string, field: string): void {
   // Cheap bound BEFORE encoding. Encoding never shrinks a string, so a name already over the cap in raw units
   // is over it encoded — and rejecting first means an attacker-supplied name cannot make us build a 60 MB
   // string to find out. (Measured: a 10-million-unit name cost 4.2 s of blocking CPU without this.)
-  if (value.length > MAX_ENCODED) {
+  if (value.length > MAX_NAME_LENGTH) {
     throw new ValidationError(
-      `${field} is too long: ${value.length} characters (limit ${MAX_ENCODED} once encoded for a storage key)`,
+      `${field} is too long: ${value.length} characters (limit ${MAX_NAME_LENGTH} once encoded for a storage key)`,
     );
   }
   // A name has to survive the round trip to UTF-8 and back. An unpaired surrogate does not: `TextEncoder`
@@ -77,12 +87,10 @@ function validatePart(value: string, field: string): void {
   // encodings. A path escapes `:` three-for-one where a key leaves it literal, so measuring the key form alone
   // let `'a' + ':'.repeat(255)` pass the boundary and then fail inside the driver with a raw ENAMETOOLONG
   // rather than a typed error at the edge.
-  const keyLen = encodeNameForKey(value).length;
-  const pathLen = encodeNameForPath(value).length;
-  const encoded = Math.max(keyLen, pathLen);
-  if (encoded > MAX_ENCODED) {
+  const encoded = encodedNameLength(value);
+  if (encoded > MAX_NAME_LENGTH) {
     throw new ValidationError(
-      `${field} is too long: ${encoded} characters once encoded for storage (limit ${MAX_ENCODED}). The name ` +
+      `${field} is too long: ${encoded} characters once encoded for storage (limit ${MAX_NAME_LENGTH}). The name ` +
         `itself is ${value.length} characters — encoding expands anything outside [A-Za-z0-9._-], so a name of ` +
         `mostly non-ASCII text, or one full of colons, reaches the limit sooner than its length suggests.`,
     );

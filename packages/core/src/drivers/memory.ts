@@ -223,7 +223,7 @@ export class MemoryColdDriver implements IColdDriver {
   }
 }
 
-/** Collision-proof object key for a generation: `<segmentKey> <generation>` (space is forbidden in names). */
+/** Collision-proof object key for a generation: `<segmentKey> <generation>` (the name parts are encoded, so a space cannot appear inside one). */
 function genObjectKey(key: GenKey): string {
   validateSegmentRef(key);
   if (!Number.isInteger(key.generation) || key.generation < 0) {

@@ -6,7 +6,7 @@
  * same partition; the prefix scheme is kept so a table that still holds them is not misread.) Pure string logic,
  * no SDK dependency, so it's unit-testable without DynamoDB-Local. Names are re-validated at the boundary
  * (defense in depth — S2); the absent namespace maps to `_default`, which can't collide with a real namespace
- * (the grammar forbids a leading underscore).
+ * (a caller's `_default` encodes to `%5Fdefault`; the sentinel is emitted literally).
  */
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';

@@ -29,13 +29,48 @@ describe('backward compatibility: the old alphabet is untouched', () => {
       expect(encodeNameForKey(n)).toBe(n);
   });
 
-  it('every previously-legal name is its own path component, except the colon', () => {
-    // `:` was already escaped on a path before this change; the rest stay literal.
-    expect(encodeNameForPath('a.b-c_d')).toBe('a.b-c_d');
-    expect(encodeNameForPath('dedup:2026-08-01')).toBe('dedup%3A2026-08-01');
+  it('property: an old-grammar name keeps its PATH too, except the two documented classes', () => {
+    // The claim "no stored key moves" was only ever property-tested on the KEY alphabet; the path side had two
+    // hand-picked cases that happened to avoid the classes that DO move. This asserts the whole old grammar
+    // against what `main` actually wrote, and names the exceptions explicitly rather than letting them hide.
+    const DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+    const moves = (n: string): boolean => DEVICE.test(n.split('.')[0] ?? '') || n.endsWith('.');
+    fc.assert(
+      fc.property(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,32}$/), (n) => {
+        fc.pre(OLD_GRAMMAR.test(n) && !n.includes('..'));
+        if (moves(n)) return; // covered by the explicit list below
+        expect(encodeNameForPath(n)).toBe(LEGACY_PATH(n));
+      }),
+      { numRuns: 1000 },
+    );
   });
 
-  it('property: an old-grammar name is byte-identical as an object key', () => {
+  it('names the exact set whose PATH changes — the breaking half of the upgrade', () => {
+    // These were legal before and are written differently now. On a localfs store they become unreadable
+    // until migrated, which is why they are enumerated here and in the CHANGELOG rather than discovered.
+    for (const n of [
+      'con',
+      'CON',
+      'nul',
+      'aux',
+      'prn',
+      'com1',
+      'lpt9',
+      'con.backup',
+      'a.',
+      'backup.',
+    ])
+      expect(encodeNameForPath(n), n).not.toBe(LEGACY_PATH(n));
+    // Everything else in the old grammar is untouched on a path.
+    for (const n of ['users', 'a.b-c_d', 'com0', 'console', 'dedup:2026-08-01'])
+      expect(encodeNameForPath(n), n).toBe(LEGACY_PATH(n));
+  });
+
+  // What `main` wrote for a path: the colon escape, and nothing else. Inlined rather than imported, because
+  // the point is to compare against a FROZEN historical behaviour, not against whatever the codec does now.
+  const LEGACY_PATH = (n: string): string => n.replaceAll(':', '%3A');
+
+  it('property: an old-grammar name is byte-identical as an OBJECT KEY', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,32}$/), (n) => {
         fc.pre(OLD_GRAMMAR.test(n));

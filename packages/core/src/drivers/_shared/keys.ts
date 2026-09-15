@@ -7,22 +7,12 @@
  */
 
 /**
- * The physical stand-in for an **absent** namespace. The name grammar forbids a leading underscore
- * so `_default` can never collide with a real
- * namespace — `segment("s")` and `segment("s", { namespace: "_default" })` would be a grammar error, not an
- * aliasing hazard.
+ * The physical stand-in for an **absent** namespace. A caller MAY name a namespace `_default`; it simply does not collide, because
+ * `namespaceKeyPart`/`namespacePathPart` encode the caller's namespace (to `%5Fdefault`) and emit this
+ * sentinel literally. The separation is a property of the encoding, not of a grammar — an earlier version of
+ * this comment claimed the latter, and that claim is exactly what made the collision easy to reintroduce.
  */
 export const DEFAULT_NAMESPACE = '_default';
-
-/**
- * Map an optional namespace to its physical part: the namespace itself, or {@link DEFAULT_NAMESPACE}.
- *
- * **Prefer {@link namespaceKeyPart} / {@link namespacePathPart}** — they encode the caller's namespace and
- * leave the sentinel alone, which is the distinction that keeps the two apart.
- */
-export function namespacePart(namespace: string | undefined): string {
-  return namespace ?? DEFAULT_NAMESPACE;
-}
 
 /**
  * The physical namespace component of an **object key**: the caller's namespace encoded, or the sentinel.

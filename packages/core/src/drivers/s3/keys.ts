@@ -4,8 +4,8 @@
  * Pure string logic with no SDK dependency, so it's unit-testable without S3/MinIO. Mirrors the LocalFs
  * layout (`<namespace>/segments/<segment>.<gen>.crbm`) under an optional caller prefix, and re-validates
  * names at the boundary (defense in depth, even though the engine already validates — S2). The default
- * (absent) namespace maps to `_default`, which can't collide with a real namespace (the grammar forbids a
- * leading underscore).
+ * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a caller's
+ * `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  */
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
@@ -90,7 +90,7 @@ export function registryListPrefix(prefix: string | undefined, namespace?: strin
 
 /**
  * Parse a `<prefix>registry/<ns>/<segment>.reg` key back to its {@link SegmentRef}, or `null` if it doesn't
- * match (a stray/foreign object under the prefix, or one whose parsed ref fails the name grammar). `_default`
+ * match (a stray/foreign object under the prefix, or one whose parsed ref fails the round-trip check or the size cap). `_default`
  * maps back to the absent namespace. A name is percent-encoded on the way in, so no encoded name can
  * contain `/` and the split stays unambiguous whatever the caller named their segment.
  */
