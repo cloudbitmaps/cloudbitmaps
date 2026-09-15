@@ -27,6 +27,23 @@ export type AuditEvent =
     }
   | {
       /**
+       * A segment's pointer was moved **backwards**, to a generation still in the bucket.
+       *
+       * The only non-forward-only pointer move in the library, and the only one no automatic path can perform —
+       * a human decided the current generation was wrong and named the one they wanted. Every other pointer move
+       * can be reconstructed from "a load happened"; this one is someone overriding the ordering rule the rest of
+       * the system relies on, which is precisely what an incident review or an Art. 30 record wants to find.
+       *
+       * `fromGeneration` is `null` when the segment had a row but no current generation.
+       */
+      readonly kind: 'segment.rollback';
+      readonly namespace?: string;
+      readonly segment: string;
+      readonly fromGeneration: number | null;
+      readonly generation: number;
+    }
+  | {
+      /**
        * A load was **refused** — the generation was written, failed a guard, and was deleted again rather than
        * published. The security-relevant fact is that a replacement the caller asked for did NOT happen, which a
        * downstream system reconciling "the segment should now contain X" needs as much as it needs the publish.

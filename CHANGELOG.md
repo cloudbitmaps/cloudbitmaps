@@ -16,6 +16,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ## [Unreleased]
 
 ### Added
+- **`store.generations(ref)` and `store.rollback(ref, toGeneration)` — see what a segment has been, and put it
+  back.** Immutable generations mean the previous version of a segment is usually still in the bucket: the load
+  that replaced it wrote a new object and moved a pointer rather than overwriting anything. So recovering from a
+  bad load is moving the pointer back — and until now there was no way to, because every write path is
+  deliberately forward-only. That refusal is right for a *writer* (a load whose ids came from upstream loses
+  nothing by being out-raced, and regressing would let a slow loader silently undo a fast one) and wrong for an
+  *operator* who has looked at the segment and knows which generation they want. So `rollback` is the one call
+  that goes backwards, reachable only by name — no sweep, retry or reconciliation performs it — and audited as
+  the new `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and
+  this one cannot. It refuses rather than guesses: a generation not in the bucket throws `NotFoundError` naming
+  what *is* available, a crypto-shredded segment throws `ValidationError`, a target **above** the pointer needs
+  an explicit `{ allowForward: true }` (above the pointer is where objects live that were never published — a
+  load that wrote its object and died before the publish), and rolling to the generation already current is a
+  reported no-op. It deletes nothing, so the rollback is itself reversible. The target is verified **after** the
+  pointer moves, not before: until the pointer names it the target sits inside generation collection's range,
+  and a collector never writes the registry row, so no fence on the row can see it coming — if it vanishes in
+  that window the pointer is put back and the call throws.
+- **Generation collection re-proves the row before every delete, not every delete after the first.** Skipping the
+  first was sound only while the pointer could not fall: the window between the re-read and the first delete was
+  one where it could only rise, and a rising pointer only makes more things collectable. `rollback` ends that,
+  and reproduced it — a rollback landing in that window left the pass deleting the live generation.
+- **A subject erasure now reaches a holder ABOVE the pointer.** The superseded scan was bounded below the
+  current generation because, under forward-only, nothing above it could ever become current again. `rollback`
+  makes above-pointer objects reachable data, and the unbounded case was reproduced with no race at all: roll
+  back, then erase, and the erasure answered `'not-member'` — which filters the segment out of the subject
+  ledger entirely, a clean Art. 17 receipt — while the subject's bit sat one rollback away from being served.
+  The erasure now deletes such a holder outright, which costs a rollback target deliberately: a rollback point
+  containing data we were required to erase is not a rollback point.
 
 - **`store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` — the write path as one call.** A load has always
   been four steps: take the next generation number, write one immutable object, move the pointer, collect what
