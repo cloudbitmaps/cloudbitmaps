@@ -84,7 +84,9 @@ store is throttling).
 `{ cold, cache, retries: { transient }, intersect, ops }` — which is enough for a test or a quick script.
 
 > **Label caveat.** `segment` / `namespace` are *your* strings — unbounded-cardinality and possibly PII. Never
-> map them straight to metric labels; the `op` **name** is a safe fixed enum, segment names are not.
+> map them straight to metric labels; the `op` **name** is a safe fixed enum, segment names are not. A name
+> may be any non-empty string, so it can also contain characters your metrics backend treats specially —
+> another reason to hash rather than pass through.
 
 ---
 

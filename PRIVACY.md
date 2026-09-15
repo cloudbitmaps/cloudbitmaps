@@ -256,7 +256,9 @@ in; it performs no deletion and issues no ledger.
 **Log hygiene:** `segment` / `namespace` are *your* strings and may encode sensitive purpose; IDs are personal
 data. The library never logs bitmap contents or raw IDs, but **you** should treat segment names and IDs as PII
 in your own logs, error reporting, and metric/trace tags — hash or redact them, and prefer opaque/coded
-segment names for sensitive segments (keeping the human label in your own classified registry).
+segment names for sensitive segments (keeping the human label in your own classified registry). The name rules are deliberately permissive — any non-empty string — so a name can carry an email
+address, free text, or anything else an upstream system hands you. That makes this advice stronger rather than
+weaker: the library will store what you name, and will not sanitise it for you.
 
 ## Shared-responsibility matrix
 
