@@ -57,7 +57,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
-| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. A retained *superseded* generation still holding the id (an ex-member dropped by a re-seed) is found and collected too. The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
+| **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. A retained *superseded* generation still holding the id (an ex-member dropped by a re-seed) is found and collected too. A per-segment fault is reported as an `error: …` ledger entry rather than thrown, so "on return" is a claim about every segment whose entry is **not** `error: …`. The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
 | **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Cold generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total at rest* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
@@ -70,7 +70,9 @@ scheduled step to wait for: an erasure *is* a new generation, the same shape as 
 It reuses the store's own drivers (so build the store with a raw cold driver + a registry). It returns an
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
-one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit`. Segments the id is
+one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id erased out
+of a retained *superseded* generation is collected rather than rewritten, so it emits no event and its ledger
+entry carries no `generation`. Segments the id is
 not in are not listed. `store.subjectReport(id, { namespace })` answers the read side (Art. 15 — which segments
 an id is in).
 
@@ -82,14 +84,24 @@ because a racing **erasure** (which collects with `keep: 0`) deleted the generat
 streaming. **Read the ledger**: an `erased: false` entry means *this run* did not erase the id from that segment,
 which is not the same as the id still being present — if the racing writer was another erasure of the same id, it
 is already gone. For `'superseded'` re-run `eraseSubject`: it is idempotent, it erases the id if the id is still
-there, and a segment the id is no longer in is simply not listed. Because a settled segment drops out of the
+there, and a segment the id is no longer in is simply not listed — though "not listed" alone does not prove the
+id is gone, since a segment whose **registry row** has been purged is not scanned either and its objects outlive
+it as orphans (`store.checkConsistency()` finds those). Because a settled segment drops out of the
 ledger entirely, **the attestation for a subject is the ledger of the run that reported `erased: true`** — if you
 must hold one artifact per request, re-run until no entry carries a `'superseded'` note, and keep that run's
 ledger alongside any earlier one. An `error: …` note is an isolated per-segment fault; if it occurred *after* the
-rewrite was published (a Cold `delete` fault), the pointer has already moved, so a re-run will not list the
-segment — collect the residual with `gcOrphanGenerations(ref, { cold, registry }, { keep: 0 })`. That note is the
-signal that a *published* rewrite's physical half did not complete, which is why it is reported rather than
-swallowed.
+rewrite was published — a Cold `delete` fault, or a collection pass that could not prove the segment was still
+the same one — then the pointer has already moved, and the re-run searches the *superseded* generations as well
+as the current one. (The same refusal can come from the collect-only path, where the bit was found in a
+superseded generation and nothing was published; there the pointer has not moved, and a re-run simply repeats
+the attempt.) **Read what it says.** Usually it reports `erased: true` against the generation it found the
+id in, which is the receipt the failed call could not give you. If a racing collector took that generation
+first it reports nothing for the segment: the bit is gone, but no run holds a receipt for it, so keep the failed
+call's error alongside your ledger. And if the segment's registry row has since been purged, it is not a segment
+any more and `eraseSubject` does not scan it at all — anything left in its bucket is an **orphan**, found by
+`store.checkConsistency()` and collected by `gcOrphanGenerations`. An empty ledger is not by itself proof the id
+is gone. That note is the signal that a *published* rewrite's physical half did not complete **on that call**,
+which is why it is reported rather than swallowed.
 
 ### One process, and the rest of your fleet
 

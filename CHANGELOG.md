@@ -32,6 +32,56 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   cannot outlive the key it was using. Needs the `.crbm` cold source; `UnsupportedError` otherwise.
 
 ### Fixed
+- **`gcOrphanGenerations` could delete the live object of a segment re-created while it was listing — on
+  either branch.** The row is read *before* the object listing and acted on *after*, a window seconds wide on a
+  paginated store, and every step of the sequence is an ordinary path: the retention sweep purges tombstone
+  rows, and nothing stops a loader re-creating a segment by that name afterwards. The result was an `active`
+  row pointing at a generation whose object had just been deleted — the forbidden `missing-cold-generation`
+  state, which the grace window cannot prevent because it is not a question of age.
+  - On a **tombstone**, the branch deletes every object it enumerated, `currentGen` included. It now re-reads
+    the row and proceeds only if the token is unchanged; tokens are never reused, so an unchanged one proves
+    the segment was not purged and re-created underneath the pass.
+  - On the **ordinary** branch, the old reasoning was that deleting strictly below the pointer it read is safe
+    because the pointer only moves forward. That holds within one incarnation, but `nextGeneration` restarts at
+    0 once a row is purged and the bucket emptied, so a retired-and-re-created name wears a *lower*
+    `currentGen` — the pointer goes backwards, and `g < current` then selects the new incarnation's live
+    object. The cutoff is now the **lower** of the pointers read before and after the listing, so a forward
+    publish landing mid-listing still collects exactly as before (refusing on any token change would make
+    routine GC useless on a busy segment) while a regressed pointer narrows the cutoff instead of widening it.
+  - The row is re-proved before **every** delete, not once after the listing. The deletes are one round trip
+    each, so the exposure is the whole loop rather than an instant — and the ordinary branch deletes
+    newest-first, which puts a restarted incarnation's generation 0 *last*, the worst ordering. Cost is one
+    registry read per object actually deleted, on a path that already spends one round trip per object and is
+    never on the read path.
+  - Generations are de-duplicated before the grace window is applied. `keep` counts generations, not listing
+    entries, and a listing spanning a purge-and-recreate can enumerate the same number twice — a duplicate
+    would consume the keep slot and evict a generation still inside the window, which a pinned read cannot
+    heal from.
+  - **Behaviour change for direct callers:** `gcOrphanGenerations` can now throw on a segment where it would
+    previously have returned an empty array and deleted nothing, so a bare
+    `for (const s of segs) await gcOrphanGenerations(s, deps)` aborts on the first segment that lost the race
+    instead of skipping it. Catch per segment if you sweep a fleet in a loop; the built-in retention sweep
+    already does.
+  - A refusal now **throws `WriteConflictError`** rather than returning an empty array, and
+    `eraseIdFromSegment` **verifies its own receipt** — the claim, not its own part in it: `erased: true` is
+    returned only once the generation that held the id is gone from the bucket, whether this call removed it or
+    a concurrent collector did. So `erased: true` with an empty `collected` is a correct outcome, not a
+    contradiction, and `collected` is evidence when it is non-empty rather than a complete proof of deletion. An empty array already meant "there was nothing to collect", and a
+    refused collect was reported as a clean Art. 17 receipt — reproduced: `erased: true` with `collected: []`
+    while every generation still holding the erased id sat in the bucket. The retention sweep already tolerated
+    a throw here and re-checks the storage itself, so it degrades to `tombstone-not-empty` and retries.
+  - `eraseSubject` invalidates this store's view of a segment **however the call ends**, not only when it
+    succeeds. A rewrite that published and then failed its collect is exactly the case where the cached view is
+    stale, and it was the one case that skipped the invalidation — the erasing store kept answering `true` for
+    the id it had just removed, out of RAM, with no storage read for any control to intercept.
+  - Corrected in the docs: what a re-run does for a segment whose erasure faulted *after* its rewrite
+    published. The prose flatly said a re-run "will not list the segment" and told operators to collect the
+    residual by hand; that describes behaviour from before the superseded-generation search landed. It has
+    three outcomes, not one, and they are now written down: usually `erased: true` against the superseded
+    generation it found the id in; nothing at all if a racing collector took that generation first (the bit is
+    gone, but no run holds a receipt for it); and — if the segment's registry row has since been purged — the
+    segment is not scanned at all, leaving orphaned objects for `checkConsistency`/`gcOrphanGenerations`. **An
+    empty ledger is not by itself proof the id is gone**, which is now said wherever the ledger is described.
 - **A retired, re-created segment name is no longer served as the same segment.** A generation number is not an
   identity: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once a
   registry row is purged and the bucket emptied. A long-lived store then could not tell a re-created name from

@@ -194,6 +194,46 @@ describe('destructive verbs invalidate what this store derived from the segment'
     expect(fetches).toBeGreaterThan(warmed);
   });
 
+  it('an erasure that published but FAILED its collect still invalidates', async () => {
+    // The invalidation is the whole reason a caller can trust `eraseSubject` in-process, and the fault path is
+    // precisely where it matters most: the rewrite HAS published, so this store's cached view is built on a
+    // generation that is no longer current, and the call is about to report the segment as an `error: …` entry
+    // rather than throw. Run the invalidation on the way out, not on the happy path.
+    const ref: SegmentRef = { namespace: 'ns', segment: 'seg' };
+    const cold = new MemoryColdDriver();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(cold, { ...ref, generation: 0 }, [1, 4242], { registry });
+
+    // Make the collect's own row read come back empty exactly once, after the publish — an ordinary
+    // retirement purging the row mid-call does the same thing.
+    let armed = false;
+    const flaky = new Proxy(registry, {
+      get(target, prop, rx) {
+        if (prop !== 'get') return Reflect.get(target, prop, rx) as unknown;
+        return async (r: SegmentRef) => {
+          const row = await target.get(r);
+          if (armed && row !== null && row.currentGen === 1) {
+            armed = false;
+            return null;
+          }
+          return row;
+        };
+      },
+    });
+
+    const store = new CloudRoaring({ cold, registry: flaky as typeof registry, retry: false });
+    expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warm the caches
+    armed = true;
+    const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
+
+    const entry = ledger.erasedFrom.find((e) => e.segment === 'seg');
+    expect(entry?.erased).toBe(false);
+    expect(entry?.note).toMatch(/^error: /); // reported, not thrown
+    // The published generation does not contain the id, so a store whose caches were dropped answers false.
+    // Without the invalidation this is `true`, served out of RAM with no storage read to intercept.
+    expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(false);
+  });
+
   it('invalidating a segment this store never read is a no-op, not an error', async () => {
     const cold = new MemoryColdDriver();
     const registry = new MemoryRegistryDriver();

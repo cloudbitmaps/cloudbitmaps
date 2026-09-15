@@ -167,7 +167,10 @@ export type RetireEntry =
        * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
        * `'tombstone-not-empty'` — a tombstone whose Cold generations are not gone even after a GC
        * attempt, so its row is kept: the row is what keeps the segment reachable by `gcOrphanGenerations` and
-       * refused by every writer.
+       * refused by every writer. Several causes, all self-healing: the storage really could not be reclaimed,
+       * the collection *declined* because the row changed underneath it (`WriteConflictError`, which this
+       * sweep swallows deliberately), or this was a `dryRun`, which reports the reason without attempting the
+       * collection at all. Except under `dryRun` the next cycle retries.
        * `'policy-changed'` — the live row no longer says "expired" (a `clearRetention`, a new `expiresAt`, or
        * someone else's drop landed between the enumeration and this segment's turn). Not an error: the sweep
        * re-reads before every deletion precisely so cancelling an expiry works on a sweep already in flight.
