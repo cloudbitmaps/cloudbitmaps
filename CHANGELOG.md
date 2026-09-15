@@ -15,6 +15,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependency refresh.** `pnpm/action-setup` to v6.1.0 across every workflow, and the minor/patch line of each
+  dev dependency: the AWS SDK clients, `fast-check`, `prettier`, `typescript-eslint`, `lint-staged` and `yaml`.
+  The `prettier` bump reformats one union type in `retention-sweep.ts`; no behaviour changes. `esbuild` is
+  deliberately left alone — it carries a security `override`, and the override, not the dependency range, is
+  what decides its version.
+  Three majors are deliberately **not** taken. `typescript` stays on 5.x because it is the primary compiler that
+  drives lint and the `.d.ts` build — TypeScript 7 is already exercised on every run through the
+  `typescript-next` alias, which tracks `^7` and currently resolves to 7.0.2, so the forward gate is not behind.
+  `@types/node` stays on 22.x to match the `engines.node >= 22` floor this package promises; typing against 26
+  would let code compile here that does not run on the oldest Node we support. `@google-cloud/storage` 8 is a
+  peer dependency declared `^7`, so taking it is a packaging decision rather than a refresh.
+
 ### Added
 - **`segment.pin()` — hold a segment at the generation current right now.** An ordinary handle re-resolves on
   `coldGenTtlMs`, so a publish part-way through an export, a reconciliation or a send means its second half

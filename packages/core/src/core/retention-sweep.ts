@@ -178,11 +178,7 @@ export type RetireEntry =
        * landed is reported as `retired` with a `fault` instead, because that segment IS retired.
        */
       readonly reason:
-        | 'invalid-policy'
-        | 'limit'
-        | 'tombstone-not-empty'
-        | 'policy-changed'
-        | `failed: ${string}`;
+        'invalid-policy' | 'limit' | 'tombstone-not-empty' | 'policy-changed' | `failed: ${string}`;
     };
 
 export interface RetireExpiredResult {
