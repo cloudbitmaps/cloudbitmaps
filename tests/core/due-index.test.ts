@@ -22,8 +22,8 @@ import {
 } from '@/index';
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/index';
-
-const NAME_GRAMMAR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
+// Imported, not restated: a second copy of this regex is how the grammar drifted from the docs last time.
+import { NAME as NAME_GRAMMAR } from '@/core/validate';
 
 describe('due index — encoding round-trips', () => {
   const refs = [

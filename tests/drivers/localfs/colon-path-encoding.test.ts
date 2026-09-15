@@ -1,0 +1,129 @@
+import fc from 'fast-check';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
+import {
+  coldObjectFilename,
+  coldObjectPath,
+  parseGeneration,
+  parseRegistryRow,
+  registryRowPath,
+} from '@/drivers/localfs/paths';
+import type { BlobSink } from '@/core/blob';
+import type { GenKey } from '@/core/ports';
+
+// A name may hold `:`; a path may not. On Windows `dedup:2026-08-01.0.crbm` names an NTFS ALTERNATE DATA
+// STREAM on a file called `dedup` — the write can succeed while `readdir` never lists the result, which is
+// worse than an error because nothing reports it. So the driver percent-encodes on the way to a path.
+//
+// These run on POSIX in CI too, where the literal colon would have been *accepted*. That is exactly why the
+// encoding is unconditional and why these assert the encoding itself, not merely that a round-trip works:
+// on a POSIX runner a driver that skipped encoding would pass every round-trip test and still lose data on
+// a user's Windows box.
+
+let root: string;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'crbm-colon-'));
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+const bytes =
+  (b: Uint8Array) =>
+  async (sink: BlobSink): Promise<void> => {
+    await sink.write(b);
+  };
+
+describe('localfs: colons never reach the filesystem', () => {
+  it('no path component contains a literal colon', () => {
+    const key: GenKey = {
+      segment: 'sent:daily:2026-08-01',
+      namespace: 'tenant:acme',
+      generation: 3,
+    };
+    const cold = coldObjectPath(root, key);
+    const reg = registryRowPath(root, key);
+    // `root` is a tmpdir path we do not control; assert only on what the driver appended.
+    for (const p of [cold, reg]) expect(p.slice(root.length)).not.toContain(':');
+    expect(basename(cold)).toBe('sent%3Adaily%3A2026-08-01.3.crbm');
+    expect(basename(reg)).toBe('sent%3Adaily%3A2026-08-01.reg');
+    expect(cold).toContain('tenant%3Aacme');
+  });
+
+  it('a colon segment round-trips through a real write, list and read', async () => {
+    const driver = new LocalFsColdDriver(root);
+    const key: GenKey = { segment: 'dedup:2026-08-01', namespace: 'tenant:acme', generation: 0 };
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    await driver.putImmutable(key, bytes(payload));
+
+    const listed = [];
+    for await (const k of driver.list({ segment: key.segment, namespace: key.namespace }))
+      listed.push(k);
+    expect(listed).toEqual([
+      { segment: 'dedup:2026-08-01', namespace: 'tenant:acme', generation: 0 },
+    ]);
+
+    expect(await driver.getRange(key, 0, payload.length)).toEqual(payload);
+  });
+
+  it('the registry row for a colon segment round-trips', async () => {
+    const registry = new LocalFsRegistryDriver(root);
+    const ref = { segment: 'user:123:seen', namespace: 'tenant:acme' };
+    await registry.create(ref, { currentGen: 7 });
+    const row = await registry.get(ref);
+    expect(row).toMatchObject({
+      currentGen: 7,
+      segment: 'user:123:seen',
+      namespace: 'tenant:acme',
+    });
+
+    const names = await readdir(join(root, 'tenant%3Aacme', 'registry'));
+    expect(names).toEqual(['user%3A123%3Aseen.reg']);
+  });
+
+  it('parseGeneration only matches the ENCODED filename, never the literal one', () => {
+    expect(parseGeneration('a:b', 'a%3Ab.4.crbm')).toBe(4);
+    expect(parseGeneration('a:b', 'a:b.4.crbm')).toBeNull();
+    expect(coldObjectFilename('a:b', 4)).toBe('a%3Ab.4.crbm');
+  });
+
+  it('parseRegistryRow refuses a planted literal-colon file rather than aliasing it', async () => {
+    // POSIX will hold `a:b.reg` next to the driver's own `a%3Ab.reg`. Both "decode" to `a:b`; reporting the
+    // name twice would hand list() a segment whose row path resolves to only one of the two files.
+    expect(parseRegistryRow('a%3Ab.reg')).toBe('a:b');
+    expect(parseRegistryRow('a:b.reg')).toBeNull();
+    // A stem that is not a legal name after decoding is skipped, as before.
+    expect(parseRegistryRow('a%41b.reg')).toBeNull();
+    expect(parseRegistryRow('_default.reg')).toBeNull();
+  });
+
+  it('a planted literal-colon row is skipped by a real list(), not surfaced', async () => {
+    const registry = new LocalFsRegistryDriver(root);
+    await registry.create({ segment: 'a:b' }, { currentGen: 1 });
+    await writeFile(join(root, '_default', 'registry', 'a:b.reg'), '{}');
+
+    const seen = [];
+    for await (const r of registry.list()) seen.push(r.segment);
+    expect(seen).toEqual(['a:b']);
+  });
+
+  it('property: distinct names never collide on one path, and every name decodes back', () => {
+    const NAME = fc
+      .stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,24}$/)
+      .filter((n) => !n.includes('..'));
+    fc.assert(
+      fc.property(NAME, NAME, (a, b) => {
+        const fa = coldObjectFilename(a, 0);
+        const fb = coldObjectFilename(b, 0);
+        expect(fa.includes(':')).toBe(false);
+        expect(parseGeneration(a, fa)).toBe(0);
+        // Injectivity: the encoding is only safe if two names can never claim the same object.
+        if (a !== b) expect(fa).not.toBe(fb);
+      }),
+      { numRuns: 500 },
+    );
+  });
+});
