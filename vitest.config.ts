@@ -20,6 +20,7 @@ export default defineConfig({
     //   @/*              → @cloudbitmaps/core internals
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
+      { find: /^@\/connect$/, replacement: ROARING + '/connect.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
       { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },

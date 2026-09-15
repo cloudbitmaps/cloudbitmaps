@@ -1,0 +1,437 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { connect } from '@/index';
+import { ValidationError, UnsupportedError } from '@/core/errors';
+import { resolveWiring, isPackageMissing, loadOptional } from '@/connect';
+import { S3ColdDriver, S3RegistryDriver } from '@/s3';
+import type { IColdDriver, IRegistryDriver } from '@/core/ports';
+
+// `connect` is a shortcut, so the tests are about the two things a shortcut can get wrong: producing the
+// wrong wiring, and failing unhelpfully. It is NOT a second configuration surface — the object it returns is
+// the same `CloudRoaring` the constructors return, which the first test pins by using it.
+
+describe('connect', () => {
+  it('memory:// gives a working store — the whole journey through one string', async () => {
+    const store = await connect('memory://');
+    await store.load({ segment: 'users' }, [1, 2, 3]);
+    expect(await store.segment('users').count()).toBe(3);
+    expect(await store.exists({ segment: 'users' })).toBe(true);
+  });
+
+  it('file:// wires both drivers at one root, so the registry and the objects agree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crbm-connect-'));
+    try {
+      const store = await connect(`file://${root}`);
+      await store.load({ segment: 'a', namespace: 'ns' }, [7, 8]);
+      // Read it back through a SEPARATE store at the same URL: proves the wiring is durable, not in-process.
+      const reopened = await connect(`file://${root}`);
+      expect(await reopened.segment('a', { namespace: 'ns' }).count()).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes store options through, and they are the same options the constructor takes', async () => {
+    const store = await connect('memory://', { coldGenTtlMs: 1234 });
+    expect(store).toBeDefined();
+    await store.load({ segment: 's' }, [1]);
+    expect(await store.segment('s').count()).toBe(1);
+  });
+
+  it('refuses a URL it cannot wire, and says what it expected', async () => {
+    await expect(connect('not a url')).rejects.toBeInstanceOf(ValidationError);
+    await expect(connect('redis://localhost')).rejects.toThrow(/unsupported scheme/);
+    await expect(connect('s3://')).rejects.toThrow(/needs a bucket/);
+    await expect(connect('gs://')).rejects.toThrow(/needs a bucket/);
+    await expect(connect('az://')).rejects.toThrow(/needs a container/);
+    await expect(connect('file://')).rejects.toThrow(/needs a path/);
+  });
+
+  it('refuses the two-slash file URL rather than silently dropping a path segment', async () => {
+    // `file://var/lib/x` parses with host=`var`, so `var` would vanish. A store pointed at `/lib/x` instead
+    // of `/var/lib/x` is the kind of mistake that looks like an empty bucket.
+    await expect(connect('file://var/lib/x')).rejects.toThrow(/three slashes/);
+  });
+
+  it('tells a gs:// or az:// user WHY a registry is needed, not just that one is missing', async () => {
+    // Neither has an object-store registry of its own, and discovering that at the first read would be worse
+    // than discovering it here.
+    await expect(connect('gs://bucket/pfx')).rejects.toThrow(/no registry of its own/);
+    await expect(connect('gs://bucket/pfx')).rejects.toThrow(/table=/);
+  });
+
+  it('rejects a non-boolean flag instead of quietly treating it as false', async () => {
+    await expect(connect('s3://b/p?pathStyle=yes')).rejects.toThrow(/must be true or false/);
+    await expect(connect('s3://b/p?table=')).rejects.toThrow(/must not be empty/);
+  });
+});
+
+// ─── What the URL actually wires ────────────────────────────────────────────────────────────────────────
+// The tests above are about errors. These are about the opposite failure, the one a green suite hides: a URL
+// that resolves happily to the WRONG place. Both were real — an adversarial review found them — and neither
+// is observable from `connect`'s return value, so they are checked where they are decided, at the seam that
+// turns a URL into drivers. Each stubs the SDK client's `send` and reads the key the driver would have used.
+
+/** Swap in a `send` that records the command and answers "not there", so one read reveals one key. */
+function captureSend(driver: unknown, notFound?: () => never): unknown[] {
+  const captured: unknown[] = [];
+  const client = (driver as { client: { send: (c: unknown) => Promise<unknown> } }).client;
+  client.send = async (command: unknown): Promise<unknown> => {
+    captured.push(command);
+    if (notFound !== undefined) notFound();
+    return {};
+  };
+  return captured;
+}
+
+const keyOf = (command: unknown): unknown => (command as { input: Record<string, unknown> }).input;
+
+const noSuchKey = (): never => {
+  throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+};
+
+describe('connect: the wiring a URL resolves to', () => {
+  it('scopes a shared DynamoDB registry by the path, so two tenants are two stores', async () => {
+    // `?table=` used to ignore the path entirely: s3://bucket/tenantA and s3://bucket/tenantB computed the
+    // SAME partition key for the same segment name, one silently overwriting the other's pointer. Nothing in
+    // either store would look wrong — which is what makes it worth a test rather than a comment.
+    const pkFor = async (url: string): Promise<string> => {
+      const { registry } = await resolveWiring(url);
+      const captured = captureSend(registry);
+      await registry.get({ segment: 'users' });
+      const key = (keyOf(captured[0]) as { Key: { PK: { S: string } } }).Key;
+      return key.PK.S;
+    };
+    const a = await pkFor('s3://bucket/tenantA?table=cbm&region=us-east-1');
+    const b = await pkFor('s3://bucket/tenantB?table=cbm&region=us-east-1');
+    expect(a).not.toBe(b);
+    expect(a).toContain('tenantA');
+    expect(b).toContain('tenantB');
+  });
+
+  it('treats a trailing slash as the same store, on both sides of the wiring', async () => {
+    // The object side normalizes `team` and `team/` to one prefix. If the registry key prefix did not agree,
+    // the two spellings would share their data and split their pointers.
+    const pkFor = async (url: string): Promise<string> => {
+      const { registry } = await resolveWiring(url);
+      const captured = captureSend(registry);
+      await registry.get({ segment: 'users' });
+      return (keyOf(captured[0]) as { Key: { PK: { S: string } } }).Key.PK.S;
+    };
+    expect(await pkFor('s3://bucket/team?table=cbm')).toBe(
+      await pkFor('s3://bucket/team/?table=cbm'),
+    );
+  });
+
+  it('gives the drivers the decoded prefix — the key, not the URL component', async () => {
+    // A prefix reaches the driver as a literal object key. Handing it `my%20prefix` would put the data
+    // somewhere a hand-wired `prefix: 'my prefix'` never looks — the same bucket, a different place in it.
+    const { registry } = await resolveWiring('s3://bucket/my prefix');
+    const captured = captureSend(registry, noSuchKey);
+    expect(await registry.get({ segment: 'users' })).toBeNull();
+    const key = (keyOf(captured[0]) as { Key: string }).Key;
+    expect(key).toBe('my prefix/registry/_default/users.reg');
+  });
+});
+
+describe('connect: refusing what it cannot honour', () => {
+  it('rejects credentials in the URL rather than silently ignoring them', async () => {
+    // Silently dropping them is the dangerous half: the caller believes that key is in use while the SDK
+    // authenticates as somebody else entirely.
+    await expect(connect('s3://AKIAEXAMPLE:secret@bucket/x')).rejects.toThrow(
+      /credentials do not belong/,
+    );
+  });
+
+  it('keeps secrets and values out of the error it throws', async () => {
+    // An error message is the most likely place for a URL to be copied into a bug report.
+    const err = await connect('s3://AKIAEXAMPLE:supersecret@bucket/x').catch((e: unknown) => e);
+    expect(String(err)).not.toContain('supersecret');
+    expect(String(err)).not.toContain('AKIAEXAMPLE');
+    const flagErr = await connect('s3://bucket/x?pathStyle=yes&region=us-east-1').catch(
+      (e: unknown) => e,
+    );
+    // The offending value is named by the sentence; the echoed URL carries parameter NAMES only.
+    expect(String(flagErr)).toContain('"yes"');
+    expect(String(flagErr)).not.toContain('region=us-east-1');
+  });
+
+  it('refuses an unknown or inapplicable query parameter instead of ignoring it', async () => {
+    await expect(connect('s3://bucket/x?pathstyle=true')).rejects.toThrow(
+      /is not a s3:\/\/ parameter/,
+    );
+    await expect(connect('file:///tmp/x?table=cbm')).rejects.toThrow(/takes no query parameters/);
+    await expect(connect('memory://?region=us-east-1')).rejects.toThrow(
+      /takes no query parameters/,
+    );
+  });
+
+  it('refuses a host:port instead of reading it as a bucket name', async () => {
+    // What someone reaching for MinIO writes. `host` would hand the SDK a bucket named `bucket:9000`.
+    await expect(connect('s3://bucket:9000/p')).rejects.toThrow(/has no port/);
+    await expect(connect('s3://bucket:9000/p')).rejects.toThrow(/endpoint=/);
+  });
+
+  it('refuses `endpoint` together with `table`, which would split a store across two clouds', async () => {
+    // `endpoint` is the S3-compatible store's address; the DynamoDB registry cannot live there, so it would
+    // quietly resolve against real AWS instead — data in MinIO, pointers in us-east-1.
+    await expect(connect('s3://bucket/p?endpoint=http://localhost:9000&table=cbm')).rejects.toThrow(
+      /ambiguous/,
+    );
+  });
+
+  it('refuses a fragment rather than silently truncating the prefix', async () => {
+    await expect(connect('s3://bucket/a#b')).rejects.toThrow(/fragment/);
+  });
+
+  it('refuses a traversal that only appears once the path is decoded', async () => {
+    // URL parsing resolves away every spelling of a dot segment it recognizes — `..`, `%2E%2E`, `.%2E` all
+    // collapse before we see them. `%2F` is the one it leaves alone, so `..%2F..` arrives intact and becomes
+    // `../..` at the moment we decode it. The check has to run after the decode, which is where it runs.
+    expect(new URL('s3://bucket/a/..%2F../c').pathname).toBe('/a/..%2F../c');
+    await expect(connect('s3://bucket/a/..%2F../c')).rejects.toThrow(/cannot be "\." or "\.\."/);
+  });
+
+  it('reports bad percent-encoding as a URL problem, not a raw URIError', async () => {
+    await expect(connect('file:///tmp/100%discount')).rejects.toBeInstanceOf(ValidationError);
+    await expect(connect('s3://bucket/100%discount')).rejects.toThrow(/percent-encoding/);
+  });
+
+  it('refuses a memory:// URL that addresses something, since it addresses nothing', async () => {
+    await expect(connect('memory://host/path')).rejects.toThrow(/takes no host or path/);
+  });
+
+  it('calls an unsupported scheme unsupported, not invalid', async () => {
+    // The distinction a caller acts on: a typo is theirs to fix, an unsupported backend is ours.
+    await expect(connect('redis://localhost')).rejects.toBeInstanceOf(UnsupportedError);
+  });
+});
+
+// ─── The claim the whole feature rests on ───────────────────────────────────────────────────────────────
+// `connect('s3://b/p')` must be the SAME store as the hand-wired equivalent the guide prints beside it. If
+// the two diverge, data written one way is invisible the other, and neither side looks broken. Proving that
+// means comparing the keys both actually touch, which needs the client the connected drivers built for
+// themselves — reached white-box below, because for `?region`/`?endpoint`/`?pathStyle` it is the only
+// observer short of a live endpoint, and all three are promises the docs make.
+
+const clientOf = (driver: unknown): { send: unknown; config: Record<string, unknown> } =>
+  (driver as { client: { send: unknown; config: Record<string, unknown> } }).client;
+
+interface S3Config {
+  region: () => Promise<string>;
+  endpoint?: () => Promise<{ hostname: string; port?: number; protocol: string }>;
+  forcePathStyle: boolean | Promise<boolean>;
+}
+const configOf = (driver: unknown): S3Config => clientOf(driver).config as unknown as S3Config;
+
+/** Record every `{Bucket, Key|Prefix}` the drivers would touch. `connect` shares ONE client between cold and
+ *  registry, so a single recorder on that client sees both sides of the wiring. */
+function recorder(client: { send: unknown }): string[] {
+  const seen: string[] = [];
+  client.send = (cmd: {
+    input: Record<string, unknown>;
+    constructor: { name: string };
+  }): Promise<never> => {
+    const { Bucket, Key, Prefix } = cmd.input as Record<string, string | undefined>;
+    seen.push(`${cmd.constructor.name} ${Bucket}|${Key ?? Prefix ?? ''}`);
+    return Promise.reject(Object.assign(new Error('stub'), { name: 'NoSuchKey' }));
+  };
+  return seen;
+}
+
+/** Walk every read path once, swallowing the stub's refusal — what is under test is the keys, not the reads. */
+async function probe(
+  cold: IColdDriver,
+  registry: IRegistryDriver,
+  seen: string[],
+): Promise<string[]> {
+  const ref = { segment: 'users', namespace: 'ns' };
+  const ignore = (): void => {};
+  await cold.getRange({ ...ref, generation: 3 }, 0, 8).catch(ignore);
+  await cold.getTail({ ...ref, generation: 3 }, 64).catch(ignore);
+  await cold.list(ref)[Symbol.asyncIterator]().next().catch(ignore);
+  await registry.get(ref).catch(ignore);
+  await registry.list('ns')[Symbol.asyncIterator]().next().catch(ignore);
+  return seen;
+}
+
+describe('connect: the same store the constructor builds', () => {
+  it('touches exactly the keys a hand-wired store does', async () => {
+    const { cold, registry } = await resolveWiring('s3://my-bitmaps/cloudroaring?region=us-east-1');
+    const client = clientOf(cold);
+    const connected = [...(await probe(cold, registry, recorder(client)))];
+
+    const hand = await probe(
+      new S3ColdDriver({ client: client as never, bucket: 'my-bitmaps', prefix: 'cloudroaring' }),
+      new S3RegistryDriver({
+        client: client as never,
+        bucket: 'my-bitmaps',
+        prefix: 'cloudroaring',
+      }),
+      recorder(client),
+    );
+
+    expect(connected).toEqual(hand);
+    expect(connected.length).toBeGreaterThan(3);
+    expect(connected.join('\n')).toContain('my-bitmaps|cloudroaring/');
+  });
+
+  it('gives a bucket-only URL no prefix, rather than an empty one', async () => {
+    // An empty prefix is not the same as none: it would put a leading `/` on every key.
+    const { cold, registry } = await resolveWiring('s3://my-bitmaps?region=us-east-1');
+    const client = clientOf(cold);
+    const connected = [...(await probe(cold, registry, recorder(client)))];
+    const hand = await probe(
+      new S3ColdDriver({ client: client as never, bucket: 'my-bitmaps' }),
+      new S3RegistryDriver({ client: client as never, bucket: 'my-bitmaps' }),
+      recorder(client),
+    );
+    expect(connected).toEqual(hand);
+    expect(connected.some((k) => k.includes('|/'))).toBe(false);
+  });
+
+  it('carries ?region, ?endpoint and ?pathStyle through to the S3 client', async () => {
+    // "MinIO, Ceph and R2 are the same scheme with an endpoint" is a promise, and this is where it is kept.
+    const { cold } = await resolveWiring(
+      's3://b/p?region=eu-west-1&endpoint=http://127.0.0.1:9000&pathStyle=true',
+    );
+    const cfg = configOf(cold);
+    expect(await cfg.region()).toBe('eu-west-1');
+    const endpoint = await cfg.endpoint?.();
+    expect(endpoint?.hostname).toBe('127.0.0.1');
+    expect(endpoint?.port).toBe(9000);
+    expect(endpoint?.protocol).toBe('http:');
+    expect(await cfg.forcePathStyle).toBe(true);
+  });
+
+  it('leaves an absent parameter absent, so the SDK chain still resolves it', async () => {
+    // "A value that is usually inferred should not look mandatory" only holds if omitting it really leaves
+    // the SDK's own resolution in charge rather than pinning a default here.
+    const { cold } = await resolveWiring('s3://b/p?region=us-east-1');
+    expect(configOf(cold).endpoint).toBeUndefined();
+    expect(await configOf(cold).forcePathStyle).toBe(false);
+  });
+
+  it('configures the DynamoDB registry from the same ?region — one parameter, two clients', async () => {
+    const { registry } = await resolveWiring('s3://b/p?region=eu-west-1&table=cbm');
+    expect(await (configOf(registry) as unknown as S3Config).region()).toBe('eu-west-1');
+  });
+
+  it('passes options to the store, and lets the URL win over any wiring in them', async () => {
+    // Two failures in one: options accepted and dropped, and options quietly overriding the wiring the URL
+    // named — after which `connect('s3://…')` reads and writes somewhere the URL never mentioned.
+    const events: string[] = [];
+    const touched: string[] = [];
+    const trap = new Proxy(
+      {},
+      {
+        get(_target, prop: string) {
+          return (): never => {
+            touched.push(prop);
+            throw new Error(`the options bag's driver was used: ${prop}`);
+          };
+        },
+      },
+    );
+    const store = await connect('memory://', {
+      metrics: { onEvent: (e: { kind: string }): void => void events.push(e.kind) },
+      cold: trap,
+      registry: trap,
+    } as never);
+    await store.load({ segment: 's' }, [1, 2]);
+    expect(await store.segment('s').count()).toBe(2);
+    expect(touched).toEqual([]);
+    expect(events.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── The optional-peer instruction ──────────────────────────────────────────────────────────────────────
+// `connect` answers a missing SDK with "run npm i <pkg>" instead of a module-not-found. That judgement is
+// made about ANOTHER runtime's error objects, and it is silent when wrong in either direction — too loose and
+// a broken install tells you to reinstall what you have; too strict and the instruction never appears. Both
+// directions are asserted here because the guard's own review found it reading only the top-level message,
+// which every wrapper defeats.
+
+const moduleNotFound = (specifier: string): Error =>
+  Object.assign(new Error(`Cannot find package '${specifier}' imported from /app/x.js`), {
+    code: 'ERR_MODULE_NOT_FOUND',
+  });
+
+describe('connect: is the optional peer actually missing?', () => {
+  it('recognises the package being absent', () => {
+    expect(isPackageMissing(moduleNotFound('@aws-sdk/client-s3'), '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('sees through a wrapper that buries the real error in `cause`', () => {
+    // A loader hook, a bundler runtime or a test runner wraps a dynamic import's rejection and puts its own
+    // text in `message`. Reading only the top level misses every one of them — which is what it did.
+    const wrapped = new Error('Failed to load url @aws-sdk/client-s3', {
+      cause: moduleNotFound('@aws-sdk/client-s3'),
+    });
+    expect(isPackageMissing(wrapped, '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('does NOT claim absence when the fault is inside an installed package', () => {
+    // "Run npm i @aws-sdk/client-s3" points away from a missing transitive dependency, not at it.
+    expect(isPackageMissing(moduleNotFound('@smithy/some-internal'), '@aws-sdk/client-s3')).toBe(
+      false,
+    );
+  });
+
+  it('does NOT swallow an unrelated failure', () => {
+    // A throwing module, a syntax error, a native addon that will not load: all must surface as themselves.
+    expect(isPackageMissing(new SyntaxError('Unexpected token'), '@aws-sdk/client-s3')).toBe(false);
+    expect(isPackageMissing(undefined, '@aws-sdk/client-s3')).toBe(false);
+  });
+
+  it('still recognises absence if the message is worded differently', () => {
+    // Another Node version may reword it. The `code` already says module-not-found, and the specifier we
+    // asked for is the likeliest subject — better the instruction than a bare ERR_MODULE_NOT_FOUND.
+    const reworded = Object.assign(new Error('module not resolved'), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    expect(isPackageMissing(reworded, '@aws-sdk/client-s3')).toBe(true);
+  });
+
+  it('terminates on a cyclic cause chain', () => {
+    const a: Error & { cause?: unknown } = new Error('a');
+    const b: Error & { cause?: unknown } = new Error('b');
+    a.cause = b;
+    b.cause = a;
+    expect(isPackageMissing(a, '@aws-sdk/client-s3')).toBe(false);
+  });
+});
+
+describe('connect: the missing-peer instruction itself', () => {
+  // What a user sees when a peer is absent. Unreachable from a real import here — all four SDKs are installed
+  // in this workspace — so the message shipped unverified until `loadOptional` grew an importer seam.
+  const absent = (specifier: string) => (): Promise<never> =>
+    Promise.reject(
+      Object.assign(new Error(`Cannot find package '${specifier}' imported from /app/x.js`), {
+        code: 'ERR_MODULE_NOT_FOUND',
+      }),
+    );
+
+  it('names the package, the command, and why it is not already installed', async () => {
+    const err = await loadOptional(
+      '@aws-sdk/client-s3',
+      's3://',
+      absent('@aws-sdk/client-s3'),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnsupportedError);
+    expect(String(err)).toContain('s3://');
+    expect(String(err)).toContain('npm i @aws-sdk/client-s3');
+    expect(String(err)).toContain('optional peers');
+  });
+
+  it('lets an unrelated failure through unchanged', async () => {
+    // A package that throws on import is not a package that is missing, and hiding it behind "not installed"
+    // sends the reader to reinstall something that is already there.
+    const boom = new SyntaxError('Unexpected token in the SDK');
+    const err = await loadOptional('@aws-sdk/client-s3', 's3://', () => Promise.reject(boom)).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBe(boom);
+  });
+});

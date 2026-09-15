@@ -14,12 +14,15 @@ npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
 ```
 
 ```ts
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { connect } from '@cloudbitmaps/roaring';
+
+const store = await connect('s3://bitmaps/cloudroaring?region=us-east-1');
 ```
 
-Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`, `/dynamodb`); each backend SDK
-is an optional peer dependency, so the main entry stays lean. Ships one CLI: `export-segments`.
+One string wires both halves of a store. Every storage driver is also re-exported on a matching subpath
+(`/s3`, `/gcs`, `/azure`, `/dynamodb`) for when you need to build the clients yourself; each backend SDK is an
+optional peer dependency, so the main entry stays SDK-free and `npm i` pulls only the backends you use. Ships
+one CLI: `export-segments`.
 
 ## The model in one paragraph
 
@@ -31,12 +34,10 @@ leaves the previous generation authoritative, a rerun is idempotent, and there i
 Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole, checksum-verified generation.
 
 ```ts
-const cold = new S3ColdDriver({ client: s3, bucket: 'bitmaps' });
-const registry = new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }); // one bucket is the whole deployment
+const store = await connect('s3://bitmaps'); // one bucket is the whole deployment
 
-await bulkLoadCrbmGeneration(cold, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), { registry });
+await store.load({ segment: 'high-value' }, idsFromWarehouse());
 
-const store = new CloudRoaring({ cold, registry });
 const seg = store.segment('high-value');
 
 await seg.has(1_234_567_890); // one chunk — from the hot cache after the first read
@@ -110,6 +111,21 @@ decides whether it gets built.
   segment names beside the store. An admin/dashboard call, not a request-path one.
 - `checkConsistency()` — after a restore, verify every pointer's object is actually present.
 - `exportSegments(sink, { format })` — eject every segment to portable `roaring` or `ndjson`. Your exit path.
+
+## Wiring: one URL
+
+```ts
+import { connect } from '@cloudbitmaps/roaring';
+
+const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
+```
+
+`s3://` · `gs://` · `az://` · `file://` · `memory://`. The scheme names the storage protocol, so it is the URL
+you already type for `aws s3 cp` or DuckDB, and an S3-compatible store (MinIO, Ceph, R2) is the same scheme
+with `?endpoint=`. Credentials come from the SDK's own chain, never the URL — one carrying them is refused
+rather than ignored, and errors never echo a parameter's value. `connect` returns exactly the
+`CloudRoaring` the constructor returns — build the drivers by hand whenever you need a client it cannot
+express.
 
 ## Retiring data: a per-segment expiry, and a sweep you schedule
 

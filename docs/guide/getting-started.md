@@ -57,11 +57,53 @@
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
 > registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
-## 1. The simplest thing: in-memory
+## 1. The simplest thing: one URL
 
-A `CloudRoaring` store is wired to a **cold** driver (where the `.crbm` generations live) — **the only required
-option** — and, for anything beyond a first look, a **registry** (the pointer that says which generation is
-current). A `segment` is one named bitmap. Data gets into a segment **by loading a generation**: you hand
+A store needs two things: a **cold** driver (where the `.crbm` generations live) and a **registry** (the
+pointer saying which generation is current). `connect` wires both from one string, so the bucket and prefix
+are stated once instead of twice — mismatching them is the classic first-run bug, and it looks like an empty
+store rather than a typo.
+
+```ts
+import { connect } from '@cloudbitmaps/roaring';
+
+const store = await connect('memory://');                      // tests
+const local = await connect('file:///var/lib/cloudbitmaps');   // local disk
+const prod  = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
+
+await prod.load({ segment: 'active-this-week' }, ids);
+await prod.segment('active-this-week').count();
+```
+
+The scheme names the storage **protocol**, so it is the URL you already type for `aws s3 cp`, DuckDB or s3fs —
+and an S3-compatible store (MinIO, Ceph, R2) is the same scheme with an endpoint:
+
+```ts
+await connect('s3://my-bitmaps/pfx?endpoint=http://localhost:9000&pathStyle=true');
+```
+
+Credentials never go in the URL — they come from the SDK's own resolution chain (the shared profile,
+instance metadata, workload identity), because a URL is the kind of string that ends up in a log or a crash
+report. **`az://` is the exception worth knowing:** `connect` reads `AZURE_STORAGE_CONNECTION_STRING` itself
+and builds the client from it, so `DefaultAzureCredential` and managed identity are reached by constructing a
+`ContainerClient` yourself and passing the drivers to `new CloudRoaring(...)`, not through the URL. A URL carrying them is **refused, not ignored**: silently dropping a key would
+leave you believing it was in use while the SDK authenticated as somebody else. For the same reason nothing
+here echoes a URL back verbatim — an error prints the scheme, host, path and the *names* of the query
+parameters, never a value.
+
+`connect` is strict about the rest of the string too, because the failure it is guarding against is a store
+that wires happily to the wrong place: a misspelled or inapplicable parameter (`?pathstyle=true`, `?table=` on
+`file://`) is an error rather than a shrug, and so are a port on the bucket (`s3://bucket:9000` — an
+S3-compatible address belongs in `?endpoint=`) and a `#`, which would truncate the prefix rather than become
+part of it.
+
+`connect` returns exactly the `CloudRoaring` the constructor returns. When you need a client it cannot express
+— a shared credential provider, a proxy agent, a custom retry strategy, or different backends for cold and
+registry — wire the drivers yourself, as the rest of this guide shows. That is a normal step down, not a cliff.
+
+### The same thing, wired by hand
+
+A `segment` is one named bitmap. Data gets into a segment **by loading a generation**: you hand
 `bulkLoadCrbmGeneration` the ids, it writes one immutable object and publishes it. The in-memory drivers need no
 setup — ideal for tests and a first look:
 

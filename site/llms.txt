@@ -15,11 +15,22 @@ Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic eng
 drivers) arrives transitively. Five storage backends: S3, GCS, Azure Blob and DynamoDB as optional-peer
 subpaths, plus the local filesystem in the main entry.
 
+## How a store is wired
+
+`connect(url)` from one string: `s3://bucket/prefix?region=us-east-1`, `gs://bucket/prefix?table=cbm`,
+`az://container/prefix?table=cbm`, `file:///var/lib/cloudbitmaps`, `memory://`. The scheme names the storage
+protocol rather than a vendor, so an S3-compatible store (MinIO, Ceph, R2) is `s3://` with `?endpoint=` and
+`?pathStyle=true`. Credentials never go in the URL — they come from each SDK's own chain, and a URL carrying
+them is refused. `connect` returns exactly the store `new CloudRoaring({ cold, registry })` returns, so
+building the drivers by hand stays available for any client the URL cannot express (a shared credential
+provider, a proxy agent, a custom retry strategy).
+
 ## How data gets in
 
-Only by loading a whole new generation. `bulkLoadCrbmGeneration(cold, {segment, generation}, ids, {registry})`
-streams an array, a Set or an async cursor into one immutable object and then advances the registry pointer,
-forward-only. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
+Only by loading a whole new generation. `store.load({segment}, ids)` streams an array, a Set or an async
+cursor into one immutable object and then advances the registry pointer, forward-only. (The free function
+`bulkLoadCrbmGeneration(cold, {segment, generation}, ids, {registry})` is the same write path with the
+generation chosen by the caller, for tooling that needs it.) Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
 authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
 remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 publishing their result as a new generation of the destination segment.

@@ -43,6 +43,7 @@ const skippedChunks = meter.createCounter('cloudroaring.intersect.skipped_chunks
 const fetchedChunks = meter.createCounter('cloudroaring.intersect.fetched_chunks');
 const opLatency = meter.createHistogram('cloudroaring.op.ms');
 
+// `connect(url, { metrics })` takes the same sink — the wiring is the only thing the URL replaces.
 const store = new CloudRoaring({
   cold,
   registry,
