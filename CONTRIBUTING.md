@@ -76,7 +76,12 @@ stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 p
 ## Branching & merge conventions
 
 - **Branch off `main`** for all code. Prefix by intent: **`feature/<slug>`**, **`fix/<slug>`**,
-  **`chore/<slug>`** (setup/tooling/deps). **Docs-only** changes may go straight to `main`.
+  **`chore/<slug>`** (setup/tooling/deps) — spelled in full; `feat/`, `bug/` and `wip/` are not the set.
+  **Docs-only** changes may go straight to `main`.
+- **The slug names the change, not the area it lives in.** Lowercase `kebab-case`, about three to six
+  words, readable off `git branch` months later by someone who wasn't there:
+  `feature/roll-segment-pointer-back-to-older-generation`, not `feature/rollback`. A one-word slug names a
+  *topic*, and `packages/` already holds those. Leave issue and PR numbers out — the PR carries them.
 - **Squash-merge** every PR into `main` (one commit per PR → linear, readable history).
 - **After merge, delete the branch — remote *and* local** (`git push origin --delete <branch>` +
   `git branch -d <branch>`). Don't let merged branches linger.
