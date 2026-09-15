@@ -114,4 +114,42 @@ describe('published flavor README stays in sync with the shipped API', () => {
         'the worst shape here — see docs/benchmarks.md "Write shape".',
     ).toBe(true);
   });
+
+  it('carries the front door the guide teaches, not the one it used to', async () => {
+    // The THIRD drift of this file, and the first that no check here could see: `connect` shipped as the new
+    // way to build a store, the guide and the root README led with it, and the npm page went on opening with
+    // four imports and three constructors. The two checks above derive from PROTOTYPES, so a module-level
+    // export is structurally invisible to them.
+    //
+    // Deriving from "every free export" was tried and rejected: 62 of them, 55 absent from a page that is a
+    // summary by design — a gate that fires on everything teaches people to route around it. What is actually
+    // load-bearing is narrower: whatever the guide's FIRST sample imports from the package is the front door,
+    // and the most-read page must not be teaching a different one.
+    const firstSample = /```ts\n([\s\S]*?)```/g;
+    let front: string[] | undefined;
+    for (const match of guide.matchAll(firstSample)) {
+      const body = match[1] ?? '';
+      const imported = /import\s*\{([^}]*)\}\s*from\s*'@cloudbitmaps\/roaring'/.exec(body);
+      const names = imported?.[1];
+      if (names === undefined) continue;
+      front = names
+        .split(',')
+        .map((n) => n.trim())
+        .filter((n) => n.length > 0);
+      break;
+    }
+    expect(
+      front,
+      "docs/guide/getting-started.md has no `import { … } from '@cloudbitmaps/roaring'` in a ts block, so " +
+        'this gate cannot tell what the front door is. Restore one, or delete this test deliberately.',
+    ).toBeDefined();
+
+    const absent = (front ?? []).filter((name) => !flavorReadme.includes(name));
+    expect(
+      absent,
+      `packages/roaring/README.md never mentions ${absent.join(', ')}, which the getting-started guide's ` +
+        `first sample imports. npm renders this file: it is the most-read surface in the project and the ` +
+        `easiest to forget, and it has now drifted three times.`,
+    ).toEqual([]);
+  });
 });

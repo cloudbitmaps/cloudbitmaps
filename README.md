@@ -262,25 +262,18 @@ for await (const id of seg.intersect([store.segment('eu-residents')], { exclude:
 }
 ```
 
-Swap the in-memory drivers for the local-filesystem ones (`LocalFsColdDriver` + `LocalFsRegistryDriver`, passed
-straight in — the store wraps the cold driver in its `.crbm` reader for you) and the same code persists to disk
-and survives a restart — see the **[getting-started guide](docs/guide/getting-started.md)** for that and the
-full operation reference.
-
-For the cloud, you pass **raw drivers** and wire each once — e.g. everything on **S3 alone** (cold objects and
-the registry in one bucket; no other service):
+Change the URL and the same code persists to disk, or runs on **S3 alone** — cold objects and the registry in
+one bucket, no other service:
 
 ```ts
-import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
-import { S3Client } from '@aws-sdk/client-s3';
-
-const s3 = new S3Client({ region: 'us-east-1' });
-const store = new CloudRoaring({
-  cold: new S3ColdDriver({ client: s3, bucket: 'bitmaps' }), // raw driver — wrapped for you
-  registry: new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }),
-});
+const local = await connect('file:///var/lib/cloudbitmaps');
+const prod = await connect('s3://bitmaps?region=us-east-1');
 ```
+
+See the **[getting-started guide](docs/guide/getting-started.md)** for the full operation reference, and for
+building the drivers by hand when you need a client the URL cannot express — a shared credential provider, a
+proxy agent, a custom retry strategy, or different backends for cold and registry. That is a documented step
+down, not a cliff.
 
 ## Choosing drivers
 
@@ -299,10 +292,15 @@ Mix freely: cold objects and the registry in **one S3 bucket** is the whole depl
 
 ## The API at a glance
 
-**One config object** — pass raw drivers; the store wires them once (`cold` also accepts a pre-built
-`ColdChunkSource` for source-only backends or advanced reader options):
+**One URL, or one config object.** `connect(url)` wires both drivers from a string; the constructor takes them
+directly when you build the clients yourself (`cold` also accepts a pre-built `ColdChunkSource` for
+source-only backends or advanced reader options). Both produce the same store:
 
 ```ts
+await connect(url, {
+  cacheMaxChunks, cacheTtlMs, coldGenTtlMs, retry, metrics, budget, // the tuning below, minus the wiring
+});
+
 new CloudRoaring({
   cold,                // required
   registry, keystore,  // optional (registry: current-gen pointer + wrapped keys + every lifecycle helper)

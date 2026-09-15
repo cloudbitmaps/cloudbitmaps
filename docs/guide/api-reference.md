@@ -66,22 +66,34 @@ const store = await connect('s3://my-bitmaps/cloudroaring?region=us-east-1');
 | --- | --- | --- |
 | `s3://` | `s3://bucket/prefix?region=us-east-1` | `@aws-sdk/client-s3` |
 | `s3://` (MinIO / Ceph / R2) | `s3://bucket/pfx?endpoint=http://localhost:9000&pathStyle=true` | `@aws-sdk/client-s3` |
-| `gs://` | `gs://bucket/prefix?table=cbm-registry` | `@google-cloud/storage` + a registry |
-| `az://` | `az://container/prefix?table=cbm-registry` | `@azure/storage-blob`, `AZURE_STORAGE_CONNECTION_STRING`, + a registry |
+| `gs://` | `gs://bucket/prefix?table=cbm-registry` | `@google-cloud/storage` + `@aws-sdk/client-dynamodb` |
+| `az://` | `az://container/prefix?table=cbm-registry` | `@azure/storage-blob` + `@aws-sdk/client-dynamodb`, and `AZURE_STORAGE_CONNECTION_STRING` |
 | `file://` | `file:///var/lib/cloudbitmaps` | nothing |
 | `memory://` | `memory://` | nothing — for tests |
 
-Query parameters, all optional: `region`, `endpoint` and `pathStyle` for S3-compatible stores, and `table` to
-use a DynamoDB registry instead of the object-store one. **GCS and Azure have no object-store registry of
-their own**, so they need `?table=` or a hand-wired registry — `connect` says so rather than failing at the
+Query parameters are all optional, and each applies to particular schemes — one a scheme does not take is an
+error rather than a shrug, since a parameter that is ignored produces a store wired differently from the one
+you described:
+
+| parameter | schemes | what it does |
+| --- | --- | --- |
+| `region` | `s3:` `gs:` `az:` | the AWS region. On `s3:` it configures the S3 client **and** a `?table=` registry — a table in a different region from the bucket needs hand-wiring |
+| `endpoint` | `s3:` | an S3-compatible store's address (MinIO, Ceph, R2). Refused together with `table`, which would put the data in one cloud and the pointers in another |
+| `pathStyle` | `s3:` | `true` forces path-style addressing, which most S3-compatible stores need |
+| `table` | `s3:` `gs:` `az:` | use a DynamoDB registry instead of the object-store one. Needs `@aws-sdk/client-dynamodb`, and the URL's path scopes it so two prefixes can share one table |
+
+**GCS and Azure have no object-store registry of their own**, so they need `?table=` or a hand-wired
+registry — `connect` says so rather than failing at the
 first read. With `?table=`, the URL's **path scopes the registry** exactly as it scopes the objects, so
 `s3://bucket/tenantA?table=cbm` and `s3://bucket/tenantB?table=cbm` are two independent stores sharing one
 table (`s3://bucket/team` and `s3://bucket/team/` are the same store).
 
-Credentials never go in the URL: they come from the SDK's own resolution chain, and a URL is the kind of
+Credentials never go in the URL: they come from each SDK's own resolution chain, and a URL is the kind of
 string that ends up in a log. A URL carrying them is **refused, not ignored** — silently dropping a key would
 leave you believing it was in use while the SDK authenticated as somebody else — and an error echoes the
-scheme, host, path and the *names* of the query parameters, never a value.
+scheme, host, path and the *names* of the query parameters, never a value. The one exception to the chain is
+`az://`, which reads `AZURE_STORAGE_CONNECTION_STRING` here rather than through the Azure credential chain —
+`DefaultAzureCredential` and managed identity mean building a `ContainerClient` by hand.
 
 `connect` refuses rather than guesses whenever the string describes something it cannot wire as written: a
 parameter the scheme does not take (`?pathstyle=true`, or `?table=` on `file://`), a port on the bucket
@@ -96,7 +108,6 @@ are optional peers behind subpath exports and the right one has to be imported.
 
 Use this when you need a client `connect` cannot express: a shared credential provider, a proxy agent, a
 custom retry strategy, two different backends for cold and registry. Same object, same capabilities.
-
 
 `cold` is the **only required option**; add `registry` for one-read generation resolution, encrypted segments,
 the `*Into` verbs and every lifecycle helper (recommended for anything beyond a first look). Everything else is

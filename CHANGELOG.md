@@ -15,6 +15,19 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+- **The main entry stays SDK-free in CJS too, and a gate now proves it against the built files.** `connect`
+  reaches a driver through `await import('@cloudbitmaps/core/s3')`, and the CJS bundle has no code splitting,
+  so a lazy import landed *in* `dist/index.cjs` rather than in a chunk: the entry every consumer loads gained
+  `require("@aws-sdk/client-s3")` and ~88 KB of driver code, while three documents went on saying it was
+  SDK-free. The cause was older than this release — each package's tsconfig maps `@cloudbitmaps/core/*` onto
+  core's source so it typechecks without core being built first, and esbuild honours `paths`, so the
+  specifier resolved to a file and was inlined; nothing reached a driver subpath from a main entry until now.
+  The driver subpaths are `external` in the build, and `scripts/smoke.cjs` asserts no `@aws-sdk`,
+  `@google-cloud` or `@azure` specifier appears in either entry or any statically-imported chunk. The eslint
+  rule that enforces the same invariant reads static imports only and cannot see a dynamic one, and nothing
+  else in the gate looked at `dist/` at all.
+
 ### Added
 - **`connect(url)` — a working store from one string.** Reaching S3 meant four imports and three constructors,
   with `bucket` and `prefix` repeated across two drivers; repeating them is not just tedious, it is the

@@ -82,9 +82,11 @@ and an S3-compatible store (MinIO, Ceph, R2) is the same scheme with an endpoint
 await connect('s3://my-bitmaps/pfx?endpoint=http://localhost:9000&pathStyle=true');
 ```
 
-Credentials never go in the URL — they come from the SDK's own resolution chain (`AWS_REGION`, the shared
-profile, instance metadata, `AZURE_STORAGE_CONNECTION_STRING`), because a URL is the kind of string that ends
-up in a log or a crash report. A URL carrying them is **refused, not ignored**: silently dropping a key would
+Credentials never go in the URL — they come from the SDK's own resolution chain (the shared profile,
+instance metadata, workload identity), because a URL is the kind of string that ends up in a log or a crash
+report. **`az://` is the exception worth knowing:** `connect` reads `AZURE_STORAGE_CONNECTION_STRING` itself
+and builds the client from it, so `DefaultAzureCredential` and managed identity are reached by constructing a
+`ContainerClient` yourself and passing the drivers to `new CloudRoaring(...)`, not through the URL. A URL carrying them is **refused, not ignored**: silently dropping a key would
 leave you believing it was in use while the SDK authenticated as somebody else. For the same reason nothing
 here echoes a URL back verbatim — an error prints the scheme, host, path and the *names* of the query
 parameters, never a value.
