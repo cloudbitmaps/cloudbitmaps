@@ -23,8 +23,19 @@ import type {
 } from '@cloudbitmaps/core';
 import { ValidationError, WriteConflictError } from '@cloudbitmaps/core';
 
-const SEG: SegmentRef = { segment: 's' };
-const ref = (chunkKey: number): ChunkRef => ({ segment: 's', chunkKey });
+// The fixtures deliberately carry a colon. A name may contain one, and the character is only safe because
+// each driver maps it onto its physical key correctly — a filesystem driver has to encode it, an object
+// store takes it verbatim. Putting it in the SHARED fixture means every driver is held to that, including
+// ones written after this line, rather than each being trusted to remember.
+/**
+ * The segment every conformance seeder must write. Exported so a driver's own test file derives the name
+ * instead of restating it — a second copy that drifts makes the suite query a segment nobody seeded, which
+ * fails as an empty result rather than as the mismatch it actually is.
+ */
+export const CONFORMANCE_SEGMENT = 's:v1';
+
+const SEG: SegmentRef = { segment: CONFORMANCE_SEGMENT };
+const ref = (chunkKey: number): ChunkRef => ({ segment: 's:v1', chunkKey });
 
 /** Names a conformant driver MUST reject at its boundary (grammar + traversal + control chars). */
 const BAD_NAMES: readonly string[] = [
@@ -40,6 +51,9 @@ const BAD_NAMES: readonly string[] = [
   'a\tb', // tab
   'a\nb', // newline
   'a'.repeat(257), // over the 256 length cap
+  ':leading', // a colon is legal INSIDE a name, never at the front
+  'a%3Ab', // `%` is what makes a filesystem driver's escape reversible; a name may never spell one
+  'a%b',
 ];
 
 async function expectValidationReject(p: Promise<unknown>): Promise<void> {
@@ -127,7 +141,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       });
       const rec = await d.get(SEG);
       expect(rec).not.toBeNull();
-      expect(rec!.segment).toBe('s');
+      expect(rec!.segment).toBe(SEG.segment);
       expect(rec!.currentGen).toBe(3);
       expect(rec!.keyId).toBe('k1');
       expect(rec!.status).toBe('active'); // default
@@ -270,11 +284,15 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const d = makeDriver();
       await d.create({ segment: 'a' }, { currentGen: 0 });
       await d.create({ segment: 'b' }, { currentGen: 0 });
-      await d.create({ namespace: 'tenant', segment: 'c' }, { currentGen: 0 });
+      await d.create({ namespace: 'tenant:acme', segment: 'c:1' }, { currentGen: 0 });
       await d.delete({ segment: 'b' });
-      expect((await drainSegments(d.list())).sort()).toEqual(['a', 'c']);
-      expect(await drainSegments(d.list('tenant'))).toEqual(['c']);
-      expect((await drainSegments(d.list(undefined))).sort()).toEqual(['a', 'c']);
+      // The UNSCOPED list is the one that matters here: it has to recover a namespace from however the driver
+      // stored it, which is where a filesystem driver's encoding has to be undone. Fleet-wide scans — the
+      // retention sweep, the consistency check, subject erasure, eject — all ride on this call, so a driver
+      // that can write a namespace it cannot enumerate takes every one of them down.
+      expect((await drainSegments(d.list())).sort()).toEqual(['a', 'c:1']);
+      expect(await drainSegments(d.list('tenant:acme'))).toEqual(['c:1']);
+      expect((await drainSegments(d.list(undefined))).sort()).toEqual(['a', 'c:1']);
     });
 
     it('rejects a negative / non-integer currentGen', async () => {
@@ -331,7 +349,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       const { token } = await d.create(SEG, { currentGen: 0 });
       await d.compareAndSwap(SEG, token, { status: 'destroyed' });
       const listed = await drainRecords(d.list());
-      expect(listed.map((r) => [r.segment, r.status])).toEqual([['s', 'destroyed']]);
+      expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
 
       // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`, and it used to be a no-op
       // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Cold data,

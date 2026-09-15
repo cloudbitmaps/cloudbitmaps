@@ -990,11 +990,12 @@ for await (const id of head.union(rest)) { /* … */ }
 // Retention = dropping whole buckets, not aging bits.
 ```
 
-> **Names are validated: `/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/`, for both the segment and the namespace.** So
-> the tempting `active:2026-08-01` is **rejected** — no colons. Beyond legality, the namespace split is the
-> better shape anyway: `registry.list('active-daily')` enumerates exactly that family's buckets, which is the
-> list a retention sweep wants, and `eraseNamespace` can retire the whole family at once. One flat
-> `active-2026-08-01` is legal too, but then finding "every daily bucket" means string-matching names.
+> **Names are validated: `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`, for both the segment and the namespace.**
+> `active:2026-08-01` is legal — a colon is fine anywhere but the first character, so a flat Redis-style key
+> works as written. The namespace split is still the better shape for a *family*:
+> `registry.list('active-daily')` enumerates exactly that family's buckets, which is the list a retention
+> sweep wants, and `eraseNamespace` can retire the whole family at once. With one flat name, finding "every
+> daily bucket" means string-matching instead.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
 [the operations table](#the-operations). If a 7-way union per read is too much, materialize the window with

@@ -31,7 +31,7 @@ import {
   validateRegistryPatch,
   type RegistryEnvelope,
 } from '../_shared/registry';
-import { registryDir, registryRowPath, parseRegistryRow } from './paths';
+import { registryDir, registryRowPath, parseNamespaceDir, parseRegistryRow } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 /** Defensive cap on a single registry file read from storage, before allocation. */
@@ -140,8 +140,16 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       if (isCode(err, 'ENOENT')) return [];
       throw mapFsError(err);
     }
-    // A namespace dir name IS the namespace; the `_default` sentinel dir maps back to "no namespace".
-    return entries.map((e) => (e === '_default' ? undefined : e));
+    // A namespace dir name is the namespace ENCODED for a path, so it has to be parsed back rather than used
+    // as-is — `tenant:acme` lives in `tenant%3Aacme`, and `%` is not in the name grammar. Anything that does
+    // not parse is skipped, never thrown on: this enumeration is fleet-wide, so one unrecognised directory
+    // must not take the consistency check, the retention sweep and subject erasure down with it.
+    const namespaces: Array<string | undefined> = [];
+    for (const entry of entries) {
+      const parsed = parseNamespaceDir(entry);
+      if (parsed !== null) namespaces.push(parsed.namespace);
+    }
+    return namespaces;
   }
 
   private async readRow(path: string): Promise<RegistryEnvelope | null> {

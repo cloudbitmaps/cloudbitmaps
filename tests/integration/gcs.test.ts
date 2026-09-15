@@ -3,7 +3,7 @@
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
 import { Storage } from '@google-cloud/storage';
-import { coldChunkSourceConformance } from '@/testing/conformance';
+import { coldChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
 import { GcsColdDriver } from '@/drivers/gcs/cold';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
@@ -43,7 +43,7 @@ const freshDriver = (): GcsColdDriver =>
 // The GCS driver must pass the SAME cold-source contract as in-memory + LocalFs + S3.
 coldChunkSourceConformance('GcsColdDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
-  await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);
+  await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmColdChunkSource(driver);
 });
 

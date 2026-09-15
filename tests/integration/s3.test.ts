@@ -1,5 +1,9 @@
 import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
-import { coldChunkSourceConformance, registryConformance } from '@/testing/conformance';
+import {
+  coldChunkSourceConformance,
+  registryConformance,
+  CONFORMANCE_SEGMENT,
+} from '@/testing/conformance';
 import { S3ColdDriver } from '@/drivers/s3/cold';
 import { S3RegistryDriver } from '@/drivers/s3/registry';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
@@ -38,7 +42,7 @@ const freshDriver = (): S3ColdDriver =>
 // The S3 driver must pass the SAME cold-source contract as in-memory + LocalFs.
 coldChunkSourceConformance('S3ColdDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();
-  await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);
+  await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmColdChunkSource(driver);
 });
 

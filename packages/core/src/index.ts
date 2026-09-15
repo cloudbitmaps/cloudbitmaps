@@ -30,6 +30,7 @@ export { splitId, joinId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
 export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 export { validateSegmentRef } from './core/validate';
+export { encodeNameForPath, decodeNameFromPath } from './drivers/_shared/keys';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
 export { chunkRefKey, segmentKey } from './core/keys';

@@ -329,6 +329,8 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
+| `encodeNameForPath` | percent-encode a name's `:` as `%3A` for use as a **filesystem path** component — a colon is an NTFS alternate-data-stream separator on Windows. Object-store keys need no encoding. Use it if you write your own filesystem `ExportSink`, so your dump matches the drivers' layout |
+| `decodeNameFromPath` | inverse of `encodeNameForPath`; require the encoding to round-trip (`encodeNameForPath(decoded) === raw`) rather than merely decode, so a planted literal-colon entry cannot alias a real one |
 
 ### Driver kit — what you need to *implement* a driver
 

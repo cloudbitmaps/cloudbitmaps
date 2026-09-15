@@ -2,7 +2,7 @@
 // `pnpm test:integration`. No real Azure needed. The well-known dev connection string points at the emulator
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
 import { BlobServiceClient } from '@azure/storage-blob';
-import { coldChunkSourceConformance } from '@/testing/conformance';
+import { coldChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
 import { AzureBlobColdDriver } from '@/drivers/azure/cold';
 import { isConditionalConflict } from '@/drivers/azure/azure-errors';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
@@ -45,7 +45,7 @@ const freshDriver = (): AzureBlobColdDriver =>
 // The Azure driver must pass the SAME cold-source contract as in-memory + LocalFs + S3 + GCS.
 coldChunkSourceConformance('AzureBlobColdDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();
-  await writeCrbmGeneration(driver, { segment: 's', generation: 1 }, chunks);
+  await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmColdChunkSource(driver);
 });
 

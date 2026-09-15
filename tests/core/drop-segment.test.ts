@@ -36,10 +36,9 @@ import { loadedStore } from '../helpers/loaded';
  * an object-store lifecycle rule deleting the bytes while the registry still points at them.
  */
 
-// NOTE the shape: a colon is NOT legal in a name (`/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/`), so the obvious
-// `active:2026-08-01` throws. The dated-bucket pattern belongs in the NAMESPACE/segment split instead, which is
-// also strictly more useful — `registry.list(namespace)` then enumerates exactly the buckets a retention sweep
-// should consider.
+// NOTE the shape: `active:2026-08-01` is legal now, but the NAMESPACE/segment split is still what this suite
+// uses, because it is strictly more useful — `registry.list(namespace)` then enumerates exactly the buckets a
+// retention sweep should consider, which a flat name cannot do without string-matching.
 const SEG: SegmentRef = { namespace: 'active-daily', segment: '2026-08-01' };
 const CONFIRM = { confirmSegment: SEG.segment };
 
