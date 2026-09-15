@@ -103,6 +103,11 @@ decides whether it gets built.
 - `destroySegment` / `eraseNamespace` — **crypto-shred**: drop the segment's wrapped data key so its encrypted
   bytes are unreadable *everywhere, including backups*.
 - `dropSegment(ref, { confirmSegment, dryRun })` — retire a segment and reclaim its storage.
+- `exists(ref)` — whether this segment's pointer resolves a generation, as one registry read. There is no
+  `create`: `segment(name)` is a validated address and does no I/O, so a name can never collide. Not the
+  same as `count() > 0` — a segment loaded with no ids exists and counts zero.
+- `segments({ namespace })` — everything the registry holds, streamed, so you do not keep your own list of
+  segment names beside the store. An admin/dashboard call, not a request-path one.
 - `checkConsistency()` — after a restore, verify every pointer's object is actually present.
 - `exportSegments(sink, { format })` — eject every segment to portable `roaring` or `ndjson`. Your exit path.
 
