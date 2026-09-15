@@ -416,11 +416,13 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           claimed, claim it where the ids are queued and keep the segment as the durable record.
         </p>
         <p class="note">
-          <strong>Names are validated</strong> —
-          <span class="m">/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/</span>, segment and namespace alike, so
-          <span class="m">sent:2026-08-01</span> is legal — a colon is fine anywhere but the first character.
-          The namespace split is still the better shape for a family: listing the namespace enumerates exactly
-          that family&rsquo;s buckets, which is the list a retention sweep wants.
+          <strong>Names</strong> —
+          any non-empty string, segment and namespace alike. <span class="m">sent:2026-08-01</span>,
+          <span class="m">orders/2026</span> and <span class="m">user@example.com</span> are all legal; each
+          storage layer escapes what it cannot take literally. The only limits are non-empty and 256 characters
+          once encoded for a storage key. The namespace split is still the better shape for a family: listing
+          the namespace enumerates exactly that family&rsquo;s buckets, which is the list a retention sweep
+          wants.
         </p>
         <p class="note">
           <strong>Do not reach for an object-store lifecycle rule on its own.</strong> It deletes the bytes while

@@ -38,6 +38,7 @@ export {
   encodeNameForPath,
   decodeNameFromPath,
 } from './core/name-codec';
+export { namespaceKeyPart, namespacePathPart } from './drivers/_shared/keys';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
 export { chunkRefKey, segmentKey } from './core/keys';

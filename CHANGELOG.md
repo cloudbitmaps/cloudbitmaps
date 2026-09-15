@@ -15,6 +15,33 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+- **A segment or namespace name is now any non-empty string.** There is no character allowlist. The old one
+  was `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`, and it rejected names for the storage layer's convenience —
+  which is this library's problem, not yours. `orders/2026`, `user@example.com`, `日本語`, `100%`, `ns#1|seg#2`
+  and `../etc/passwd` are all ordinary names now.
+
+  **Nothing is rejected that used to be accepted, and no stored key moves.** Every previously legal name
+  encodes to itself, which is asserted by a property test rather than assumed, so there is no migration.
+
+  Each physical boundary escapes what *it* cannot take literally, percent-encoded, with `%` escaping itself as
+  `%25` and encoded first — which is what makes the transform injective, so two distinct names can never claim
+  one key. Object keys escape `/`, `#`, `|` and control characters; filesystem paths escape those plus `:`,
+  plus three hazards that are properties of the whole component: `.`/`..` traversal, **Windows reserved device
+  names** and a **trailing dot or space**, which Windows silently strips so that `a.` and `a` would collide.
+
+  That second one is a bug fix, not just a widening: the old grammar **permitted** `con`, `nul`, `aux`,
+  `com1`–`com9` and `lpt1`–`lpt9`. `store.segment('con')` validated cleanly here and failed only on a user's
+  Windows machine.
+
+  **The one limit that stays is size**, because it is a real constraint rather than a taste: S3 caps an object
+  key at 1024 bytes and a name is only part of that key. The cap is 256 characters measured on the **encoded**
+  form — plain ASCII gets the full 256, while heavily non-ASCII text reaches it sooner (one emoji is twelve
+  encoded characters). The error reports both numbers.
+
+  `encodeNameForKey`/`decodeNameFromKey` and `namespaceKeyPart`/`namespacePathPart` join the existing
+  `encodeNameForPath`/`decodeNameFromPath` as exports, for anyone writing their own filesystem `ExportSink`.
+
 ### Added
 - **`store.exists(ref)` and `store.segments({ namespace })` — ask the registry what is there.** The registry has
   always known which segments exist; it is what `checkConsistency`, the retention sweep and `exportSegments`

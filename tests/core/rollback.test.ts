@@ -315,9 +315,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await expect(rollbackSegment({ segment: '' }, 0, w.deps)).rejects.toBeInstanceOf(
       ValidationError,
     );
-    await expect(listGenerations({ segment: '../bad' }, w.deps)).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(listGenerations({ segment: '' }, w.deps)).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('says so when no generations remain at all', async () => {

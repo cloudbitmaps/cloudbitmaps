@@ -244,7 +244,7 @@ describe('segments()', () => {
 
   it('validates a namespace rather than silently scanning everything', async () => {
     const s = store();
-    expect(() => s.segments({ namespace: 'a/b' })).toThrow(ValidationError);
+    expect(() => s.segments({ namespace: '' })).toThrow(ValidationError);
   });
 
   it('needs a registry', () => {

@@ -14,13 +14,13 @@ import {
   DEFAULT_NAMESPACE,
   decodeNameFromPath,
   encodeNameForPath,
-  namespacePart,
+  namespacePathPart,
 } from '../_shared/keys';
 
 /** Directory holding all of a namespace's segment objects. */
 export function segmentsDir(root: string, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return join(root, encodeNameForPath(namespacePart(ref.namespace)), 'segments');
+  return join(root, namespacePathPart(ref.namespace), 'segments');
 }
 
 /** Absolute path of one `.crbm` generation object. */
@@ -59,7 +59,7 @@ export function registryDir(root: string, namespace: string | undefined): string
   // escapes (iteration aborts before yielding) but it answers "does this directory exist?", and the whole
   // point of re-validating at the driver boundary is that a driver driven directly must be safe on its own.
   if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
-  return join(root, encodeNameForPath(namespacePart(namespace)), 'registry');
+  return join(root, namespacePathPart(namespace), 'registry');
 }
 
 /** Absolute path of one segment's registry row file: `<ns>/registry/<segment>.reg`. */

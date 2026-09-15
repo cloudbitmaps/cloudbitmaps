@@ -38,6 +38,7 @@ import {
   LocalFsColdDriver,
   LocalFsRegistryDriver,
   encodeNameForPath,
+  namespacePathPart,
 } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
@@ -82,7 +83,10 @@ export function fsSink(out: string): ExportSink {
       // rather than `failed[]`, and `readdir` never lists it. A dump whose whole value is being a faithful
       // copy would then assert success over data an ordinary file copy will not carry. Same encoding the
       // LocalFs drivers use, so an export is diffable against the store it came from.
-      const dir = join(out, encodeNameForPath(ref.namespace ?? '_default'));
+      // `namespacePathPart`, not `encodeNameForPath(ns ?? '_default')`: the sentinel is emitted literally
+      // while a caller's namespace is encoded, so a segment in a namespace actually named `_default`
+      // does not land in the same directory as the un-namespaced ones.
+      const dir = join(out, namespacePathPart(ref.namespace));
       await mkdir(dir, { recursive: true, mode: 0o700 });
       const finalPath = join(dir, `${encodeNameForPath(ref.segment)}${ext}`);
       const tmpPath = `${finalPath}.${randomUUID()}.part`;

@@ -58,12 +58,28 @@ describe('names that used to be impossible', () => {
     ['héllo', 'h%C3%A9llo'],
     ['日本語', '%E6%97%A5%E6%9C%AC%E8%AA%9E'],
     ['🎉', '%F0%9F%8E%89'],
-    ['_leading', '_leading'],
+    ['_leading', '%5Fleading'], // a LEADING underscore is escaped — see the sentinel test below
   ];
 
   it.each(cases)('encodes %s for an object key', (raw, encoded) => {
     expect(encodeNameForKey(raw)).toBe(encoded);
     expect(decodeNameFromKey(encoded)).toBe(raw);
+  });
+});
+
+describe('the reserved sentinel stays unreachable', () => {
+  it('escapes a leading underscore, so no caller can name the no-namespace sentinel', () => {
+    // `_default` is the physical stand-in for an absent namespace. The old grammar made it unreachable by
+    // banning a leading `_`; dropping the grammar would have let a caller name a namespace `_default` and
+    // resolve to everyone else's un-namespaced data. The encoding restores that by construction.
+    expect(encodeNameForKey('_default')).toBe('%5Fdefault');
+    expect(encodeNameForPath('_default')).toBe('%5Fdefault');
+    expect(encodeNameForKey('_default')).not.toBe('_default');
+    // Only the FIRST one — an underscore elsewhere is an ordinary character.
+    expect(encodeNameForKey('a_b_c')).toBe('a_b_c');
+    // …and it still round-trips, so the caller gets the name they asked for back.
+    expect(decodeNameFromKey(encodeNameForKey('_default'))).toBe('_default');
+    expect(decodeNameFromPath(encodeNameForPath('_x'))).toBe('_x');
   });
 });
 

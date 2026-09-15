@@ -100,6 +100,22 @@ describe('a hostile name is contained, not refused', () => {
     expect(new Set(seen).size).toBe(HOSTILE.length);
   });
 
+  it('a user namespace called `_default` does not collide with the absent namespace', async () => {
+    // The bug this prevents: `_default` is the physical stand-in for "no namespace". Dropping the grammar made
+    // a leading underscore spellable, so without the encoder's leading-`_` escape a caller naming their
+    // namespace `_default` would read and write everyone else's un-namespaced data.
+    const registry = new LocalFsRegistryDriver(root);
+    await registry.create({ segment: 'mine' }, { currentGen: 1 }); // absent namespace
+    await registry.create({ segment: 'theirs', namespace: '_default' }, { currentGen: 2 });
+
+    expect((await registry.get({ segment: 'mine' }))?.currentGen).toBe(1);
+    expect((await registry.get({ segment: 'theirs', namespace: '_default' }))?.currentGen).toBe(2);
+    // The un-namespaced segment is NOT visible under the user's `_default` namespace…
+    expect(await registry.get({ segment: 'mine', namespace: '_default' })).toBeNull();
+    // …and they occupy different directories on disk.
+    expect((await readdir(root)).sort()).toEqual(['%5Fdefault', '_default']);
+  });
+
   it('the root is still a directory the drivers own — no symlink or file was substituted', async () => {
     const cold = new LocalFsColdDriver(root);
     await cold.putImmutable({ segment: '../../evil', generation: 0 }, bytes(new Uint8Array([1])));

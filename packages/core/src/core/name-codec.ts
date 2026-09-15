@@ -49,7 +49,15 @@ function encodeWith(name: string, safe: RegExp): string {
   for (const ch of name) {
     out += ch !== '%' && safe.test(ch) ? ch : escapeChar(ch);
   }
-  return out;
+  // A LEADING underscore is escaped, which is what keeps the reserved namespaces reachable only by us.
+  //
+  // `_default` is the physical stand-in for an absent namespace. Under the old grammar a name could not begin
+  // with `_`, so the sentinel was unreachable for free — and dropping the grammar would have handed any caller
+  // a way to name a namespace `_default` and have it resolve to everyone else's un-namespaced data. Escaping
+  // the first `_` restores that guarantee by construction rather than by a blocklist that has to be maintained.
+  //
+  // It costs nothing and migrates nothing: no previously legal name began with `_`, so no stored key moves.
+  return out.startsWith('_') ? `%5F${out.slice(1)}` : out;
 }
 
 function decodePercent(encoded: string): string {

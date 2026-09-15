@@ -14,7 +14,7 @@ import {
   DEFAULT_NAMESPACE,
   decodeNameFromKey,
   encodeNameForKey,
-  namespacePart,
+  namespaceKeyPart,
 } from '../_shared/keys';
 
 const SUFFIX = '.crbm';
@@ -55,7 +55,7 @@ export function normalizeS3Prefix(prefix: string | undefined): string | undefine
  */
 export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${prefixPart(prefix)}${encodeNameForKey(namespacePart(ref.namespace))}/segments/${encodeNameForKey(ref.segment)}.`;
+  return `${prefixPart(prefix)}${namespaceKeyPart(ref.namespace)}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
 /** The full S3 key of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
@@ -79,13 +79,13 @@ export function registryPrefix(prefix: string | undefined): string {
 /** The full S3 key of one segment's registry object: `<prefix>registry/<ns>/<segment>.reg`. */
 export function registryObjectKey(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${registryPrefix(prefix)}${encodeNameForKey(namespacePart(ref.namespace))}/${encodeNameForKey(ref.segment)}${REGISTRY_SUFFIX}`;
+  return `${registryPrefix(prefix)}${namespaceKeyPart(ref.namespace)}/${encodeNameForKey(ref.segment)}${REGISTRY_SUFFIX}`;
 }
 
 /** The `ListObjectsV2` prefix for discovery: registry-wide, or scoped to one namespace. */
 export function registryListPrefix(prefix: string | undefined, namespace?: string): string {
   const base = registryPrefix(prefix);
-  return namespace === undefined ? base : `${base}${encodeNameForKey(namespacePart(namespace))}/`;
+  return namespace === undefined ? base : `${base}${namespaceKeyPart(namespace)}/`;
 }
 
 /**
