@@ -71,7 +71,7 @@
     "@cloudbitmaps/core": "workspace:*",
     "@cloudbitmaps/roaring": "workspace:*",
     "@eslint/js": "^10.0.1",
-    "@google-cloud/storage": "^7.0.0",
+    "@google-cloud/storage": "^8.1.0",
     "@types/node": "^22.0.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
