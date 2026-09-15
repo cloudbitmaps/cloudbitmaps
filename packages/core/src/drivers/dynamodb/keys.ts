@@ -11,7 +11,7 @@
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { SegmentRef } from '@/core/ports';
-import { namespacePart } from '../_shared/keys';
+import { encodeNameForKey, namespacePart } from '../_shared/keys';
 
 /**
  * Validate a caller-supplied `keyPrefix` so prefix-isolation is *structural*, not convention: it must not
@@ -35,7 +35,9 @@ export function assertValidKeyPrefix(prefix: string | undefined): void {
  */
 export function partitionKey(ref: SegmentRef, prefix?: string): string {
   validateSegmentRef(ref);
-  const base = `ns#${namespacePart(ref.namespace)}|seg#${ref.segment}`;
+  // `#` and `|` delimit this key, and `encodeNameForKey` escapes both — so a name containing either
+  // cannot straddle a delimiter and claim another tenant's partition.
+  const base = `ns#${encodeNameForKey(namespacePart(ref.namespace))}|seg#${encodeNameForKey(ref.segment)}`;
   return prefix === undefined || prefix === '' ? base : `${prefix}|${base}`;
 }
 

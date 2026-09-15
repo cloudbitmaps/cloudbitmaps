@@ -76,9 +76,12 @@ describe('public API', () => {
 
   it('rejects names that could traverse or inject (S2)', () => {
     const cr = store();
-    for (const bad of ['', 'a/b', '../etc', 'a..b', 'a b', 'a#b', '.hidden']) {
+    for (const bad of ['', 'a'.repeat(257)]) {
       expect(() => cr.segment(bad)).toThrow(ValidationError);
     }
-    expect(() => cr.segment('ok', { namespace: 'a/b' })).toThrow(ValidationError);
+    expect(() => cr.segment('ok', { namespace: '' })).toThrow(ValidationError);
+    // Everything that used to be refused is now an ordinary name, escaped at the boundary.
+    for (const ok of ['a/b', '../etc', 'a b', 'a#b', '.hidden', 'con', '100%', 'user@x.com'])
+      expect(() => cr.segment(ok)).not.toThrow();
   });
 });

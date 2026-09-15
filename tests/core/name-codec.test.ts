@@ -4,7 +4,7 @@ import {
   decodeNameFromPath,
   encodeNameForKey,
   encodeNameForPath,
-} from '@/drivers/_shared/name-codec';
+} from '@/core/name-codec';
 
 // A name is any non-empty string. Three properties make that safe, and this file is their contract.
 //

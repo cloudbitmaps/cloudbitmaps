@@ -37,25 +37,42 @@ export const CONFORMANCE_SEGMENT = 's:v1';
 const SEG: SegmentRef = { segment: CONFORMANCE_SEGMENT };
 const ref = (chunkKey: number): ChunkRef => ({ segment: 's:v1', chunkKey });
 
-/** Names a conformant driver MUST reject at its boundary (grammar + traversal + control chars). */
+/**
+ * Names a conformant driver MUST reject. The list is short on purpose.
+ *
+ * A name is **any non-empty string** — there is no character allowlist, because each driver escapes what its
+ * own physical layer cannot take (`encodeNameForKey` / `encodeNameForPath`). So the only refusals left are the
+ * two that no encoding can fix: nothing to name, and a name too large for the key it has to fit inside.
+ */
 const BAD_NAMES: readonly string[] = [
-  '', // empty
-  '.', // dot
-  '..', // dot-dot
-  'a..b', // embedded traversal
-  '.hidden', // leading dot
-  '-leading', // leading dash
-  'a/b', // path separator
-  'a\\b', // backslash
-  'a b', // space
-  'a\tb', // tab
-  'a\nb', // newline
-  'a'.repeat(257), // over the 256 length cap
-  ':leading', // a colon is legal INSIDE a name, never at the front
-  'a%3Ab', // `%` is what makes a filesystem driver's escape reversible; a name may never spell one
-  'a%b',
+  '', // nothing to name
+  'a'.repeat(257), // over the encoded-length cap
 ];
 
+/**
+ * Names that were ILLEGAL under the old grammar and must now work end to end.
+ *
+ * This is the more important list. Rejecting these was the bug; accepting them without letting any of them
+ * reach a key or a path literally is the fix, so a driver that merely stopped validating would pass the list
+ * above and fail here.
+ */
+const NASTY_NAMES: readonly string[] = [
+  'a/b', // would invent hierarchy in an object key
+  'a\\b',
+  '..', // traversal, if it ever reached a path component
+  '../etc/passwd',
+  '.hidden',
+  '-leading',
+  ':leading',
+  'a b',
+  'a%3Ab', // a name that SPELLS an escape; `%` escaping itself is what keeps this unambiguous
+  '100%',
+  'ns#1|seg#2', // the DynamoDB partition-key delimiters
+  'con', // a Windows device name — the OLD grammar accepted this one and it broke on Windows
+  'a.', // Windows strips a trailing dot, so this must not collide with `a`
+  'user@example.com',
+  '\u65e5\u672c\u8a9e',
+];
 async function expectValidationReject(p: Promise<unknown>): Promise<void> {
   await expect(p).rejects.toBeInstanceOf(ValidationError);
 }
@@ -94,7 +111,7 @@ export function coldChunkSourceConformance(
       expect(await source.listChunkKeys({ segment: 'ghost' })).toEqual([]);
     });
 
-    it('rejects traversal / invalid names', async () => {
+    it('rejects only the two names no encoding can fix', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of BAD_NAMES) {
         await expectValidationReject(source.getChunk({ segment: name, chunkKey: 0 }));
@@ -102,6 +119,27 @@ export function coldChunkSourceConformance(
           source.getChunk({ namespace: name, segment: 's', chunkKey: 0 }),
         );
         await expectValidationReject(source.listChunkKeys({ segment: name }));
+      }
+    });
+
+    it('accepts every name the old grammar refused, without letting one reach a key literally', async () => {
+      const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
+      for (const name of NASTY_NAMES) {
+        // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.
+        await expect(
+          source.getChunk({ segment: name, chunkKey: 0 }).catch((e: unknown) => {
+            if (e instanceof ValidationError) throw e;
+            return null;
+          }),
+        ).resolves.not.toThrow();
+        await expect(
+          Promise.resolve(source.listChunkKeys({ namespace: name, segment: 's' })).catch(
+            (e: unknown) => {
+              if (e instanceof ValidationError) throw e;
+              return null;
+            },
+          ),
+        ).resolves.not.toThrow();
       }
     });
   });

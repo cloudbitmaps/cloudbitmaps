@@ -16,7 +16,7 @@
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
-import { namespacePart } from '../_shared/keys';
+import { encodeNameForKey, namespacePart } from '../_shared/keys';
 
 const SUFFIX = '.crbm';
 
@@ -55,7 +55,7 @@ export function normalizeAzurePrefix(prefix: string | undefined): string | undef
  */
 export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${prefixPart(prefix)}${namespacePart(ref.namespace)}/segments/${ref.segment}.`;
+  return `${prefixPart(prefix)}${encodeNameForKey(namespacePart(ref.namespace))}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
 /** The full Azure blob name of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */

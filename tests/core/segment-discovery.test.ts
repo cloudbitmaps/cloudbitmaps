@@ -86,7 +86,7 @@ describe('exists()', () => {
     };
     const s = new CloudRoaring({ cold: new MemoryColdDriver(), registry: counting });
 
-    await expect(s.exists({ segment: ':leading' })).rejects.toBeInstanceOf(ValidationError);
+    await expect(s.exists({ segment: '' })).rejects.toBeInstanceOf(ValidationError);
     expect(gets).toBe(0);
   });
 

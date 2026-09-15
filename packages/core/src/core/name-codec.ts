@@ -1,6 +1,10 @@
 /**
  * Name → physical-key encoding. The library validates *length*, and encodes everything else.
  *
+ * Lives in `core/` rather than beside the drivers because it is pure string logic — no I/O, no SDK, no
+ * `node:` builtin — and because `validate.ts` needs it to measure a name against the key budget. Core may
+ * not import a driver (invariant 7), and a driver may import core, so this is the only layer both can see.
+ *
  * The old grammar was an allowlist — `[A-Za-z0-9._:-]` — and the colon was missing from it by accident rather
  * than by decision, which made `dedup:2026-08-01` throw for every user who spells keys the way Redis users do.
  * The lesson generalises: an allowlist rejects names for the storage layer's convenience, and the storage

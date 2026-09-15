@@ -312,7 +312,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
 
   it('validates the ref before touching storage', async () => {
     const w = world();
-    await expect(rollbackSegment({ segment: '../bad' }, 0, w.deps)).rejects.toBeInstanceOf(
+    await expect(rollbackSegment({ segment: '' }, 0, w.deps)).rejects.toBeInstanceOf(
       ValidationError,
     );
     await expect(listGenerations({ segment: '../bad' }, w.deps)).rejects.toBeInstanceOf(

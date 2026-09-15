@@ -32,7 +32,12 @@ export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } f
 export { validateSegmentRef } from './core/validate';
 export { segmentExists, listSegments } from './core/discover';
 export type { SegmentInfo } from './core/discover';
-export { encodeNameForPath, decodeNameFromPath } from './drivers/_shared/keys';
+export {
+  encodeNameForKey,
+  decodeNameFromKey,
+  encodeNameForPath,
+  decodeNameFromPath,
+} from './core/name-codec';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
 export { chunkRefKey, segmentKey } from './core/keys';
