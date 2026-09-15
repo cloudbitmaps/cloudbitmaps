@@ -372,6 +372,8 @@ describe('AuditEvent union', () => {
           return e.segment;
         case 'segment.load-refused':
           return e.segment;
+        case 'segment.rollback':
+          return e.segment;
         case 'segment.erase':
           return e.segment;
         case 'segment.dispose':
