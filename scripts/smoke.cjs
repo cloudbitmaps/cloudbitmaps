@@ -71,6 +71,48 @@ function exerciseCrossBundleErrors(label, coreMod, dynamoMod) {
   console.log(`  cross-bundle error predicates OK: ${label}`);
 }
 
+/*
+ * The main entry stays SDK-free — asserted against the BUILT files, because that is the only place the claim
+ * is true or false. The eslint rule that enforces it reads STATIC imports of a cloud driver; it cannot see
+ * `await import('@cloudbitmaps/core/s3')`, and nothing else in the gate looks at `dist/` at all. That gap had
+ * already cost something: `connect`'s dynamic imports inlined the S3 and DynamoDB drivers into
+ * `dist/index.cjs` (which has no code splitting, so a lazy import lands in the bundle rather than a chunk),
+ * putting `require("@aws-sdk/client-s3")` in the entry every consumer loads and shipping ~88 KB of driver code
+ * to people who never touch S3 — while three documents went on saying the entry was SDK-free.
+ *
+ * Checks the CJS entry, the ESM entry, and every chunk the ESM entry imports STATICALLY. A chunk reached only
+ * by a lazy import is exactly what is supposed to happen and is not walked.
+ */
+const SDK_SPECIFIER =
+  /(?:require\(|from\s*|import\()\s*["'](@aws-sdk\/[^"']*|@google-cloud\/[^"']*|@azure\/[^"']*|aws-sdk)["']/g;
+
+function assertEntrySdkFree(pkgDir) {
+  const { readFileSync } = require('node:fs');
+  const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
+  const read = (f) => readFileSync(path.join(dist, f), 'utf8');
+
+  const esm = read('index.js');
+  // Only STATIC chunk imports: `import ... from "./chunk-X.js"` at the top level of the entry.
+  const staticChunks = [...esm.matchAll(/from\s*["'](\.\/chunk-[^"']+)["']/g)].map((m) =>
+    m[1].replace('./', ''),
+  );
+
+  for (const file of ['index.cjs', 'index.js', ...staticChunks]) {
+    const hits = [...read(file).matchAll(SDK_SPECIFIER)].map((m) => m[1]);
+    if (hits.length > 0) {
+      throw new Error(
+        `@cloudbitmaps/${pkgDir}: dist/${file} reaches a cloud SDK (${[...new Set(hits)].join(', ')}). ` +
+          `The main entry must stay SDK-free — a driver is reached through its own subpath entry, so ` +
+          `\`npm i\` pulls only the backends actually used. If a main-entry module needs a driver, it imports ` +
+          `it dynamically AND that specifier belongs in \`external\` in scripts/build.mjs.`,
+      );
+    }
+  }
+  console.log(
+    `  main entry SDK-free: @cloudbitmaps/${pkgDir} (cjs, esm, ${staticChunks.length} static chunk(s))`,
+  );
+}
+
 async function main() {
   for (const sub of SUBPATHS) {
     await import(PKG + sub); // ESM `import` condition — the path that used to crash under Node ESM
@@ -92,8 +134,19 @@ async function main() {
 
   exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/dynamodb'));
   exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/dynamodb'));
+
+  assertEntrySdkFree('core');
+  assertEntrySdkFree('roaring');
+
+  // `connect` through the BUILT CJS bundle: its driver imports are external now, so this is the one place
+  // that proves the specifier still resolves from a consumer's `require` rather than only from source.
+  const { connect } = require(PKG);
+  const connected = await connect('s3://smoke-bucket/pfx?region=us-east-1');
+  if (connected == null) throw new Error('smoke: connect("s3://…") returned nothing');
+  console.log('  connect() resolves a driver subpath from the built CJS bundle');
+
   console.log(
-    'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors OK',
+    'smoke: ESM + CJS import (via exports map) + roaring round-trip + cross-bundle errors + SDK-free entries OK',
   );
 }
 

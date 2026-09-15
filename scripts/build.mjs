@@ -42,6 +42,15 @@ const common = {
   target: 'es2022',
   sourcemap: true,
   packages: 'external',
+  // `packages: 'external'` alone does not cover these. Each package's tsconfig maps `@cloudbitmaps/core/*`
+  // onto core's SOURCE so it typechecks without core being built first, and esbuild honours `paths` — so the
+  // specifier resolves to a file, which is not a package, and gets INLINED. That is invisible until something
+  // in a main entry reaches a driver subpath: `connect`'s `await import('@cloudbitmaps/core/s3')` pulled the
+  // S3 driver, and with it `require('@aws-sdk/client-s3')`, into `dist/index.cjs` — the CJS entry has no
+  // code splitting, so a lazy import lands in the bundle rather than a chunk. Listing them here restores what
+  // the tsconfig comment already claims: a driver is reached through its own package entry at runtime, so the
+  // main entry stays SDK-free in both formats. `scripts/smoke.cjs` asserts it against the built files.
+  external: SUBPATHS.map((s) => `@cloudbitmaps/core/${s}`),
   logLevel: 'warning',
   absWorkingDir: pkgDir,
 };
