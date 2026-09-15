@@ -18,19 +18,6 @@ import { validateSegmentRef } from '@/index';
 //   2. every segment/namespace name that documentation shows in a fenced example actually validates.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-// `String(NAME)` is not reachable from outside `validate.ts` on purpose — an exported regex is a compatibility
-// surface for zero benefit. So the gate derives the source of truth the way a reader would: from the error
-// message, which interpolates the live pattern and is therefore the one statement that cannot drift.
-function liveGrammar(): string {
-  try {
-    validateSegmentRef({ segment: '!' });
-  } catch (err) {
-    const m = /(\/\^\[A-Za-z0-9\]\[[^/]*\/)/.exec((err as Error).message);
-    if (m?.[1] !== undefined) return m[1];
-  }
-  throw new Error('could not recover the live name grammar from the validator');
-}
-
 const SKIP = new Set(['node_modules', 'dist', 'coverage', '.git', 'build', '.worktrees', 'golden']);
 const DOC_EXTS = ['.md', '.html'];
 
@@ -52,31 +39,29 @@ function docFiles(): string[] {
 // precisely because it does NOT track the current one.
 const HISTORICAL = new Set(['CHANGELOG.md']);
 
-describe('documented name grammar matches the code', () => {
+describe('documented name rules match the code', () => {
+  // There is no name grammar any more — a name is any non-empty string, and each storage layer escapes what it
+  // cannot take. So the first half of this gate inverts: rather than checking that a published regex matches
+  // the live one, it checks that NO doc publishes a regex at all, because any such regex is now a false claim
+  // about a rule that was deleted.
   const GRAMMAR_SHAPED = /\/\^\[A-Za-z0-9\]\[[^/\n]*\{0,255\}\$\//g;
 
-  it('every restatement of the grammar in docs and on the site is the live one', () => {
-    const live = liveGrammar();
-    const drifted: string[] = [];
+  it('no doc or site page still publishes a name grammar', () => {
+    const stale: string[] = [];
     for (const file of docFiles()) {
       if (HISTORICAL.has(file)) continue;
       const text = readFileSync(join(ROOT, file), 'utf8');
-      for (const [found] of text.matchAll(GRAMMAR_SHAPED)) {
-        if (found !== live) drifted.push(`${file}: ${found}`);
-      }
+      for (const [found] of text.matchAll(GRAMMAR_SHAPED)) stale.push(`${file}: ${found}`);
     }
-    expect(drifted, `stale name-grammar statements (live is ${live})`).toEqual([]);
+    expect(
+      stale,
+      'a published name grammar — names are unrestricted now, so any regex here is a rule that no longer exists',
+    ).toEqual([]);
   });
 
-  it('finds the restatements it is supposed to be guarding (the gate is not vacuous)', () => {
-    const hits = docFiles().filter((f) =>
-      GRAMMAR_SHAPED.test(readFileSync(join(ROOT, f), 'utf8')),
-    ).length;
-    expect(hits).toBeGreaterThan(0);
-  });
-
-  // The original sin was an unrunnable EXAMPLE, not a wrong regex, so the regex check alone would not have
-  // caught it. Every name a doc shows a reader typing goes through the real validator.
+  // The original sin was an unrunnable EXAMPLE, not a wrong regex, and that half is MORE valuable now: with
+  // validation relaxed, a doc example fails only if it is genuinely malformed, which is exactly the case a
+  // reader would never guess.
   it('every segment/namespace name shown in a documented example actually validates', () => {
     const CALL = /\b(?:store\.)?segment\(\s*'([^']+)'/g;
     const NS = /\bnamespace:\s*'([^']+)'/g;
@@ -102,5 +87,9 @@ describe('documented name grammar matches the code', () => {
       }
     }
     expect(bad, 'documented names that would throw if executed').toEqual([]);
+  });
+
+  it('is not vacuous — it really reads the doc tree', () => {
+    expect(docFiles().length).toBeGreaterThan(5);
   });
 });

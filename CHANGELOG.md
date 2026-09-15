@@ -15,6 +15,52 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Breaking
+- **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
+  be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or
+  `lpt1`–`lpt9`, with or without an extension (`con`, `CON`, `con.backup`); and any name ending in `.`
+  (`backup.`). All were legal under the old grammar; all are percent-escaped on the path now, because
+  unescaped they either address a device or silently alias — Windows strips a trailing dot, so `a.` and `a`
+  become one directory.
+
+  **The failure mode is silence, not an error.** The readers require a filename to round-trip through the
+  encoder, so a directory or row written under the old spelling is *skipped*: `get()` returns `null`, `list()`
+  omits it, and `checkConsistency`, the retention sweep and `eraseSubject` never see it. The `.crbm` bytes are
+  intact but unreferenced. Do **not** rely on the repair scan — it reads through the same parser.
+
+  **Detect** before upgrading: list the storage root and flag any entry whose stem matches
+  `/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i` or which ends in `.`. **Migrate** by exporting with
+  `export-segments` on 0.9 and re-loading on 0.10, or by renaming the directory/file to the escaped spelling
+  (`encodeNameForPath` gives it). Cloud backends are unaffected.
+
+### Changed
+- **A segment or namespace name is now any non-empty string.** There is no character allowlist. The old one
+  was `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`, and it rejected names for the storage layer's convenience —
+  which is this library's problem, not yours. `orders/2026`, `user@example.com`, `日本語`, `100%`, `ns#1|seg#2`
+  and `../etc/passwd` are all ordinary names now.
+
+  **Object-store keys are byte-identical** — every previously legal name encodes to itself on the key
+  alphabet, asserted by a property test over the whole old grammar, so S3, GCS, Azure and DynamoDB stores need
+  no migration. **LocalFs is the exception; see Breaking below.**
+
+  Each physical boundary escapes what *it* cannot take literally, percent-encoded, with `%` escaping itself as
+  `%25` and encoded first — which is what makes the transform injective, so two distinct names can never claim
+  one key. Object keys escape `/`, `#`, `|` and control characters; filesystem paths escape those plus `:`,
+  plus three hazards that are properties of the whole component: `.`/`..` traversal, **Windows reserved device
+  names** and a **trailing dot or space**, which Windows silently strips so that `a.` and `a` would collide.
+
+  That second one is a bug fix, not just a widening: the old grammar **permitted** `con`, `nul`, `aux`,
+  `com1`–`com9` and `lpt1`–`lpt9`. `store.segment('con')` validated cleanly here and failed only on a user's
+  Windows machine.
+
+  **The one limit that stays is size**, because it is a real constraint rather than a taste: S3 caps an object
+  key at 1024 bytes and a name is only part of that key. The cap is 256 characters measured on the **encoded**
+  form — plain ASCII gets the full 256, while heavily non-ASCII text reaches it sooner (one emoji is twelve
+  encoded characters). The error reports both numbers.
+
+  `encodeNameForKey`/`decodeNameFromKey` and `namespaceKeyPart`/`namespacePathPart` join the existing
+  `encodeNameForPath`/`decodeNameFromPath` as exports, for anyone writing their own filesystem `ExportSink`.
+
 ### Added
 - **`store.exists(ref)` and `store.segments({ namespace })` — ask the registry what is there.** The registry has
   always known which segments exist; it is what `checkConsistency`, the retention sweep and `exportSegments`

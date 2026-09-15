@@ -232,7 +232,7 @@ describe('setRetention / getRetention / clearRetention', () => {
     it('validates the segment ref like every other admin call', async () => {
       const w = await world();
       await expect(
-        w.store().setRetention({ segment: '../etc/passwd' }, { expiresAt: FUTURE }),
+        w.store().setRetention({ segment: '' }, { expiresAt: FUTURE }),
       ).rejects.toBeInstanceOf(ValidationError);
     });
   });

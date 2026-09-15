@@ -3,8 +3,8 @@
  *
  * Names are re-validated here at the driver boundary — defense in depth, even though the engine already
  * validates (S2) — so a driver is safe against traversal/injection even if driven directly. The default
- * (absent) namespace maps to `_default`, which can never collide with a real namespace because the name
- * grammar forbids a leading underscore.
+ * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
+ * caller's `_default` encodes to `%5Fdefault` while this sentinel is emitted literally.
  */
 import { join } from 'node:path';
 import { ValidationError } from '@/core/errors';
@@ -14,13 +14,13 @@ import {
   DEFAULT_NAMESPACE,
   decodeNameFromPath,
   encodeNameForPath,
-  namespacePart,
+  namespacePathPart,
 } from '../_shared/keys';
 
 /** Directory holding all of a namespace's segment objects. */
 export function segmentsDir(root: string, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return join(root, encodeNameForPath(namespacePart(ref.namespace)), 'segments');
+  return join(root, namespacePathPart(ref.namespace), 'segments');
 }
 
 /** Absolute path of one `.crbm` generation object. */
@@ -59,7 +59,7 @@ export function registryDir(root: string, namespace: string | undefined): string
   // escapes (iteration aborts before yielding) but it answers "does this directory exist?", and the whole
   // point of re-validating at the driver boundary is that a driver driven directly must be safe on its own.
   if (namespace !== undefined) validateSegmentRef({ segment: 'x', namespace });
-  return join(root, encodeNameForPath(namespacePart(namespace)), 'registry');
+  return join(root, namespacePathPart(namespace), 'registry');
 }
 
 /** Absolute path of one segment's registry row file: `<ns>/registry/<segment>.reg`. */
@@ -96,7 +96,7 @@ export function parseRegistryRow(filename: string): string | null {
 /**
  * Parse a namespace out of a directory name under the storage root, or `null` if it was not written by us.
  *
- * The inverse of the `encodeNameForPath(namespacePart(ns))` that {@link segmentsDir} and {@link registryDir}
+ * The inverse of the `namespacePathPart(ns)` that {@link segmentsDir} and {@link registryDir}
  * write. A fleet-wide scan enumerates these directories, so getting it wrong does not fail one segment — it
  * aborts the whole enumeration, taking the consistency check, the retention sweep and subject erasure with it.
  *

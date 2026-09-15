@@ -166,7 +166,7 @@ describe('LocalFsColdDriver', () => {
     for await (const k of driver.list({ segment: 's' })) gens.push(k.generation);
     expect(gens).toEqual([]);
     await expect(
-      driver.getRange({ namespace: '../../etc', segment: 's', generation: 1 }, 0, 1),
+      driver.getRange({ namespace: '', segment: 's', generation: 1 }, 0, 1),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 });

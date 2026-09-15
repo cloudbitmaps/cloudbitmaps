@@ -141,7 +141,7 @@ export class LocalFsRegistryDriver implements IRegistryDriver {
       throw mapFsError(err);
     }
     // A namespace dir name is the namespace ENCODED for a path, so it has to be parsed back rather than used
-    // as-is — `tenant:acme` lives in `tenant%3Aacme`, and `%` is not in the name grammar. Anything that does
+    // as-is — `tenant:acme` lives in `tenant%3Aacme`, and `%` only ever appears in an escape we wrote, so an un-decoded directory name fails the round-trip check. Anything that does
     // not parse is skipped, never thrown on: this enumeration is fleet-wide, so one unrecognised directory
     // must not take the consistency check, the retention sweep and subject erasure down with it.
     const namespaces: Array<string | undefined> = [];

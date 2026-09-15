@@ -271,7 +271,7 @@ describe('eraseIdFromSegment — validation', () => {
     const w = await world();
     await expect(eraseIdFromSegment(SEG, -1, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await expect(eraseIdFromSegment(SEG, 2 ** 32, w.deps)).rejects.toBeInstanceOf(ValidationError);
-    await expect(eraseIdFromSegment({ segment: '../bad' }, 1, w.deps)).rejects.toBeInstanceOf(
+    await expect(eraseIdFromSegment({ segment: '' }, 1, w.deps)).rejects.toBeInstanceOf(
       ValidationError,
     );
   });

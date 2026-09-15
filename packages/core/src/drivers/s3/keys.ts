@@ -4,13 +4,18 @@
  * Pure string logic with no SDK dependency, so it's unit-testable without S3/MinIO. Mirrors the LocalFs
  * layout (`<namespace>/segments/<segment>.<gen>.crbm`) under an optional caller prefix, and re-validates
  * names at the boundary (defense in depth, even though the engine already validates — S2). The default
- * (absent) namespace maps to `_default`, which can't collide with a real namespace (the grammar forbids a
- * leading underscore).
+ * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a caller's
+ * `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  */
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
-import { DEFAULT_NAMESPACE, namespacePart } from '../_shared/keys';
+import {
+  DEFAULT_NAMESPACE,
+  decodeNameFromKey,
+  encodeNameForKey,
+  namespaceKeyPart,
+} from '../_shared/keys';
 
 const SUFFIX = '.crbm';
 const REGISTRY_SUFFIX = '.reg';
@@ -50,7 +55,7 @@ export function normalizeS3Prefix(prefix: string | undefined): string | undefine
  */
 export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${prefixPart(prefix)}${namespacePart(ref.namespace)}/segments/${ref.segment}.`;
+  return `${prefixPart(prefix)}${namespaceKeyPart(ref.namespace)}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
 /** The full S3 key of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
@@ -74,19 +79,20 @@ export function registryPrefix(prefix: string | undefined): string {
 /** The full S3 key of one segment's registry object: `<prefix>registry/<ns>/<segment>.reg`. */
 export function registryObjectKey(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${registryPrefix(prefix)}${namespacePart(ref.namespace)}/${ref.segment}${REGISTRY_SUFFIX}`;
+  return `${registryPrefix(prefix)}${namespaceKeyPart(ref.namespace)}/${encodeNameForKey(ref.segment)}${REGISTRY_SUFFIX}`;
 }
 
 /** The `ListObjectsV2` prefix for discovery: registry-wide, or scoped to one namespace. */
 export function registryListPrefix(prefix: string | undefined, namespace?: string): string {
   const base = registryPrefix(prefix);
-  return namespace === undefined ? base : `${base}${namespacePart(namespace)}/`;
+  return namespace === undefined ? base : `${base}${namespaceKeyPart(namespace)}/`;
 }
 
 /**
  * Parse a `<prefix>registry/<ns>/<segment>.reg` key back to its {@link SegmentRef}, or `null` if it doesn't
- * match (a stray/foreign object under the prefix, or one whose parsed ref fails the name grammar). `_default`
- * maps back to the absent namespace; a segment name can't contain `/`, so the split is unambiguous.
+ * match (a stray/foreign object under the prefix, or one whose parsed ref fails the round-trip check or the size cap). `_default`
+ * maps back to the absent namespace. A name is percent-encoded on the way in, so no encoded name can
+ * contain `/` and the split stays unambiguous whatever the caller named their segment.
  */
 export function parseRegistryKey(prefix: string | undefined, objectKey: string): SegmentRef | null {
   const base = registryPrefix(prefix);
@@ -95,9 +101,14 @@ export function parseRegistryKey(prefix: string | undefined, objectKey: string):
   const slash = rest.indexOf('/');
   if (slash < 0) return null;
   const nsPart = rest.slice(0, slash);
-  const segment = rest.slice(slash + 1);
-  if (segment.length === 0 || segment.includes('/')) return null;
-  const namespace = nsPart === DEFAULT_NAMESPACE ? undefined : nsPart;
+  const encodedSegment = rest.slice(slash + 1);
+  if (encodedSegment.length === 0 || encodedSegment.includes('/')) return null;
+  const segment = decodeNameFromKey(encodedSegment);
+  const namespace = nsPart === DEFAULT_NAMESPACE ? undefined : decodeNameFromKey(nsPart);
+  // The encoding must ROUND-TRIP, not merely decode: a foreign object placed under our prefix could spell a
+  // name two ways, and reporting both would hand a sweep one segment under two identities.
+  if (encodeNameForKey(segment) !== encodedSegment) return null;
+  if (namespace !== undefined && encodeNameForKey(namespace) !== nsPart) return null;
   const ref: SegmentRef = { segment, namespace };
   try {
     validateSegmentRef(ref); // reject a hostile/foreign key that isn't a valid ref

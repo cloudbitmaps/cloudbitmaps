@@ -20,11 +20,40 @@ describe('DynamoDB single-table key grammar', () => {
       expect(partitionKey({ segment: 'vips' }, 'shardA')).toBe('shardA|ns#_default|seg#vips');
       expect(partitionKey({ segment: 'vips' }, '')).toBe('ns#_default|seg#vips'); // empty == none
     });
-    it('rejects an invalid segment/namespace name', () => {
-      for (const bad of ['..', 'a/b', '', '.hidden']) {
+    it('rejects only the names no encoding can fix', () => {
+      for (const bad of ['', 'a'.repeat(257)]) {
         expect(() => partitionKey({ segment: bad })).toThrow(ValidationError);
         expect(() => partitionKey({ namespace: bad, segment: 's' })).toThrow(ValidationError);
       }
+    });
+
+    it('encodes the NAMESPACE too — the PK is the tenancy boundary here', () => {
+      // Encoding the segment and forgetting the namespace leaves `{segment:'s', namespace:'_default'}` and
+      // `{segment:'s'}` on one partition key: the exact cross-tenant aliasing this change exists to prevent,
+      // on the one backend where the PK *is* the isolation.
+      expect(partitionKey({ segment: 's', namespace: '_default' })).toBe('ns#%5Fdefault|seg#s');
+      expect(partitionKey({ segment: 's' })).toBe('ns#_default|seg#s');
+      expect(partitionKey({ segment: 's', namespace: '_default' })).not.toBe(
+        partitionKey({ segment: 's' }),
+      );
+      // A namespace spelling the delimiters cannot straddle them either.
+      expect(partitionKey({ segment: 's', namespace: 'a|seg#b' })).toBe('ns#a%7Cseg%23b|seg#s');
+    });
+
+    it('escapes a name that spells the PK delimiters instead of rejecting it', () => {
+      // `#` and `|` separate the fields of this key, so a name containing them used to be refused. It is now
+      // encoded, which is strictly safer: refusing relied on the grammar staying narrow, while escaping holds
+      // whatever the name contains.
+      expect(partitionKey({ segment: 'a|b' })).toBe('ns#_default|seg#a%7Cb');
+      expect(partitionKey({ segment: 'a#b' })).toBe('ns#_default|seg#a%23b');
+      // The point of it: two different names can never produce one partition key.
+      expect(partitionKey({ namespace: 'a', segment: 'b|seg#c' })).not.toBe(
+        partitionKey({ namespace: 'a', segment: 'b' }),
+      );
+      // …and a name cannot straddle a delimiter to claim another tenant's partition.
+      expect(partitionKey({ segment: 'x|ns#evil|seg#y' })).toBe(
+        'ns#_default|seg#x%7Cns%23evil%7Cseg%23y',
+      );
     });
   });
 
@@ -53,9 +82,13 @@ describe('DynamoDB single-table key grammar', () => {
         pk: 'shardA|ns#t1|seg#s',
         sk: 'reg#',
       });
-      for (const bad of ['..', 'a/b', '']) {
+      for (const bad of ['', 'a'.repeat(257)]) {
         expect(() => registryKeyPair({ segment: bad })).toThrow(ValidationError);
       }
+      // A traversal-shaped name is ordinary now — it is escaped, not refused.
+      expect(registryKeyPair({ segment: '../etc/passwd' }).pk).toBe(
+        'ns#_default|seg#..%2Fetc%2Fpasswd',
+      );
     });
 
     it('the registry sort key is a constant, so a segment can hold exactly one row', () => {

@@ -1038,12 +1038,15 @@ for await (const id of head.union(rest)) { /* … */ }
 // Retention = dropping whole buckets, not aging bits.
 ```
 
-> **Names are validated: `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`, for both the segment and the namespace.**
-> `active:2026-08-01` is legal — a colon is fine anywhere but the first character, so a flat Redis-style key
-> works as written. The namespace split is still the better shape for a *family*:
-> `registry.list('active-daily')` enumerates exactly that family's buckets, which is the list a retention
-> sweep wants, and `eraseNamespace` can retire the whole family at once. With one flat name, finding "every
-> daily bucket" means string-matching instead.
+> **A name is any non-empty string.** `dedup:2026-08-01`, `orders/2026`, `user@example.com`, `日本語`, `100%` —
+> all legal. There is no character allowlist, because each storage layer escapes what *it* cannot take
+> literally, which is the library's problem rather than yours. The only two refusals are an **empty** name and
+> one too long: the limit is **256 characters once encoded for a storage key**, so plain ASCII gets 256 while
+> heavily non-ASCII text reaches it sooner (one emoji is twelve encoded characters).
+>
+> The namespace split is still the better shape for a *family*: `store.segments({ namespace: 'active-daily' })`
+> enumerates exactly that family's buckets, and `eraseNamespace` can retire the whole family at once. With one
+> flat name, finding "every daily bucket" means string-matching instead.
 
 `union` reads every chunk of every operand — it can't skip, and the guide says so in
 [the operations table](#the-operations). If a 7-way union per read is too much, materialize the window with

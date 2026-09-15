@@ -43,20 +43,25 @@
  * machinery that already exists.
  */
 import { ValidationError } from './errors';
+import { MAX_NAME_LENGTH, encodedNameLength } from './validate';
 import type { RegistryRecord, SegmentRef } from './ports';
 
-/** Namespace prefix for due-index rows. Obeys the locked name grammar (leading alphanumeric, dots allowed). */
+/** Namespace prefix for due-index rows. */
 export const DUE_NAMESPACE_PREFIX = 'cbm.due.';
 
 /** Bucket width. One day: small enough that a cycle reads little, coarse enough that the index stays tiny. */
 export const DUE_BUCKET_MS = 86_400_000;
 
 /**
- * The locked name grammar caps a segment or namespace at 256 characters, and an index row encodes **both** of
- * the original ref's parts into one name. A ref whose encoding would exceed this is simply not indexed — see
- * {@link canIndex}.
+ * The name-length cap, and an index row encodes **both** of the original ref's parts into one name — so a ref
+ * whose encoding would exceed it is simply not indexed (see {@link canIndex}).
+ *
+ * Re-exported from the validator rather than restated. The two were separate constants with the same value
+ * until the validator started measuring the **encoded** length; `canIndex` went on counting raw characters and
+ * began answering `true` for refs the registry then refused, turning a documented graceful degradation into a
+ * guaranteed throw on the retention fast path.
  */
-export const MAX_NAME_LENGTH = 256;
+export { MAX_NAME_LENGTH };
 
 /** Which bucket an expiry falls in. Total and reversible; no calendar, no timezone, no ambient time. */
 export function dueBucket(expiresAt: number): number {
@@ -94,7 +99,9 @@ export function encodeDueName(ref: SegmentRef): string {
  * is that it expires on the repair cadence instead of the fast one. Callers must not treat `false` as an error.
  */
 export function canIndex(ref: SegmentRef): boolean {
-  return encodeDueName(ref).length <= MAX_NAME_LENGTH;
+  // Measured the way the registry will measure it. Counting raw characters here made this guard lie: a ref of
+  // 80 `#`s in each part encodes to 483 and was reported indexable, then threw on the write.
+  return encodedNameLength(encodeDueName(ref)) <= MAX_NAME_LENGTH;
 }
 
 /** The registry ref of the pointer for `ref` in `bucket`. Throws if the ref cannot be encoded — check first. */

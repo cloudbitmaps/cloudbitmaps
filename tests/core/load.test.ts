@@ -369,9 +369,7 @@ describe('loadSegment — encryption', () => {
 describe('loadSegment — validation', () => {
   it('rejects a bad ref and bad guard values before touching storage', async () => {
     const w = world();
-    await expect(loadSegment({ segment: '../bad' }, [1], w.deps)).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(loadSegment({ segment: '' }, [1], w.deps)).rejects.toBeInstanceOf(ValidationError);
     await expect(loadSegment(SEG, [1], w.deps, { keep: -1 })).rejects.toBeInstanceOf(
       ValidationError,
     );

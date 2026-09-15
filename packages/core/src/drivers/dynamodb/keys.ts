@@ -6,12 +6,12 @@
  * same partition; the prefix scheme is kept so a table that still holds them is not misread.) Pure string logic,
  * no SDK dependency, so it's unit-testable without DynamoDB-Local. Names are re-validated at the boundary
  * (defense in depth — S2); the absent namespace maps to `_default`, which can't collide with a real namespace
- * (the grammar forbids a leading underscore).
+ * (a caller's `_default` encodes to `%5Fdefault`; the sentinel is emitted literally).
  */
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { SegmentRef } from '@/core/ports';
-import { namespacePart } from '../_shared/keys';
+import { encodeNameForKey, namespaceKeyPart } from '../_shared/keys';
 
 /**
  * Validate a caller-supplied `keyPrefix` so prefix-isolation is *structural*, not convention: it must not
@@ -35,7 +35,9 @@ export function assertValidKeyPrefix(prefix: string | undefined): void {
  */
 export function partitionKey(ref: SegmentRef, prefix?: string): string {
   validateSegmentRef(ref);
-  const base = `ns#${namespacePart(ref.namespace)}|seg#${ref.segment}`;
+  // `#` and `|` delimit this key, and `encodeNameForKey` escapes both — so a name containing either
+  // cannot straddle a delimiter and claim another tenant's partition.
+  const base = `ns#${namespaceKeyPart(ref.namespace)}|seg#${encodeNameForKey(ref.segment)}`;
   return prefix === undefined || prefix === '' ? base : `${prefix}|${base}`;
 }
 

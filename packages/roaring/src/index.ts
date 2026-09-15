@@ -520,7 +520,7 @@ export class CloudRoaring {
     };
   }
 
-  /** Get a handle to a segment. Validates the name/namespace grammar. */
+  /** Get a handle to a segment. Validates the name (non-empty, well-formed, within the encoded-length cap). */
   segment(name: string, options?: SegmentOptions): Segment {
     const ref: SegmentRef = { segment: name, namespace: options?.namespace };
     validateSegmentRef(ref);

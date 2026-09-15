@@ -4,8 +4,8 @@
  * Pure string logic, no SDK dependency — unit-testable without Azure or an emulator. Uses the **same
  * backend-agnostic `.crbm` object-name scheme** as the S3 + GCS + LocalFs cold drivers
  * (`<prefix><ns>/segments/<segment>.<gen>.crbm`), so a segment reads identically whichever cold backend holds
- * it. The default (absent) namespace maps to `_default` (the grammar forbids a leading underscore, so it can't
- * collide with a real namespace).
+ * it. The default (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
+ * caller's `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  *
  * NOTE (DRY): this mirrors the pure cold-key builders in `drivers/s3/keys.ts` + `drivers/gcs/keys.ts`. They
  * are deliberately **not** shared across driver folders today — a driver must stay self-contained so it lifts
@@ -16,7 +16,7 @@
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
-import { namespacePart } from '../_shared/keys';
+import { encodeNameForKey, namespaceKeyPart } from '../_shared/keys';
 
 const SUFFIX = '.crbm';
 
@@ -55,7 +55,7 @@ export function normalizeAzurePrefix(prefix: string | undefined): string | undef
  */
 export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef): string {
   validateSegmentRef(ref);
-  return `${prefixPart(prefix)}${namespacePart(ref.namespace)}/segments/${ref.segment}.`;
+  return `${prefixPart(prefix)}${namespaceKeyPart(ref.namespace)}/segments/${encodeNameForKey(ref.segment)}.`;
 }
 
 /** The full Azure blob name of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */

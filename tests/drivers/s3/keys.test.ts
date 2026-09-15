@@ -37,8 +37,28 @@ describe('S3 object-key grammar', () => {
       }
     });
 
+    it('refuses a key whose encoding does not ROUND-TRIP, so one segment cannot wear two names', () => {
+      // A foreign object placed under our prefix could spell a name two ways; reporting both would hand a
+      // sweep one segment under two identities. The driver only ever writes the canonical spelling.
+      expect(parseRegistryKey(undefined, 'registry/_default/a%2Fb.reg')).toEqual({
+        segment: 'a/b',
+        namespace: undefined,
+      });
+      // Lowercase escape — decodes to the same name, but we never wrote it.
+      expect(parseRegistryKey(undefined, 'registry/_default/a%2fb.reg')).toBeNull();
+      // A literal `%` that is not an escape we emit.
+      expect(parseRegistryKey(undefined, 'registry/_default/a%b.reg')).toBeNull();
+      // Same rule on the namespace half.
+      expect(parseRegistryKey(undefined, 'registry/a%2fb/s.reg')).toBeNull();
+      // …and the sentinel is not impersonable: `%5Fdefault` is the namespace literally named `_default`.
+      expect(parseRegistryKey(undefined, 'registry/%5Fdefault/s.reg')).toEqual({
+        segment: 's',
+        namespace: '_default',
+      });
+    });
+
     it('rejects a traversal / invalid segment or namespace name', () => {
-      for (const bad of ['..', 'a/b', 'a..b', '', '.hidden']) {
+      for (const bad of ['', 'a'.repeat(257)]) {
         expect(() => coldObjectKey(undefined, { segment: bad, generation: 1 })).toThrow(
           ValidationError,
         );

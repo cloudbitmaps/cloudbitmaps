@@ -7,45 +7,38 @@
  */
 
 /**
- * The physical stand-in for an **absent** namespace. The name grammar forbids a leading underscore
- * so `_default` can never collide with a real
- * namespace — `segment("s")` and `segment("s", { namespace: "_default" })` would be a grammar error, not an
- * aliasing hazard.
+ * The physical stand-in for an **absent** namespace. A caller MAY name a namespace `_default`; it simply does not collide, because
+ * `namespaceKeyPart`/`namespacePathPart` encode the caller's namespace (to `%5Fdefault`) and emit this
+ * sentinel literally. The separation is a property of the encoding, not of a grammar — an earlier version of
+ * this comment claimed the latter, and that claim is exactly what made the collision easy to reintroduce.
  */
 export const DEFAULT_NAMESPACE = '_default';
 
-/** Map an optional namespace to its physical part: the namespace itself, or {@link DEFAULT_NAMESPACE}. */
-export function namespacePart(namespace: string | undefined): string {
-  return namespace ?? DEFAULT_NAMESPACE;
+/**
+ * The physical namespace component of an **object key**: the caller's namespace encoded, or the sentinel.
+ *
+ * The sentinel is emitted **literally, never encoded**, and that asymmetry is the whole point. Encoding it too
+ * would send an absent namespace to `%5Fdefault` — exactly where a caller who names their namespace `_default`
+ * already goes, since the encoder escapes their leading underscore. Both would land in one place and read each
+ * other's data. Encoding only the caller's side means `_default` (ours) and `%5Fdefault` (theirs) are two
+ * different strings, and no caller can produce the first.
+ */
+export function namespaceKeyPart(namespace: string | undefined): string {
+  return namespace === undefined ? DEFAULT_NAMESPACE : encodeNameForKey(namespace);
 }
 
-/**
- * Percent-encode the one name character a **filesystem** cannot take literally, for use as a path component.
- *
- * A segment or namespace may contain `:` (`dedup:2026-08-01`). Object stores take that verbatim — an S3, GCS or
- * Azure key and a DynamoDB partition key are all happy — but a path cannot: on Windows
- * `dedup:2026-08-01.0.crbm` names an NTFS **alternate data stream** on a file called `dedup`, a write that can
- * *succeed* while `readdir` never lists the result. POSIX would accept the literal colon, which is exactly why
- * this is applied unconditionally: encoding only where the OS forces it would pass every round-trip test on a
- * Linux runner and lose a user's data on Windows.
- *
- * `%3A` is reversible because `%` is not in the name grammar: no legal name can spell an escape, so
- * {@link decodeNameFromPath} cannot mistake user text for one, and no two names can encode to the same path.
- *
- * Exported because more than one place maps a name onto a path — the LocalFs drivers and the `export-segments`
- * eject sink — and the two spellings must agree for an export to be diffable against the store it came from.
- */
-export function encodeNameForPath(name: string): string {
-  return name.replaceAll(':', '%3A');
+/** As {@link namespaceKeyPart}, for a filesystem path component. */
+export function namespacePathPart(namespace: string | undefined): string {
+  return namespace === undefined ? DEFAULT_NAMESPACE : encodeNameForPath(namespace);
 }
 
-/**
- * Inverse of {@link encodeNameForPath}, for reading a name back off a filesystem.
- *
- * Callers that read a name off disk should also require the encoding to **round-trip**
- * (`encodeNameForPath(decoded) === raw`) rather than merely decode: POSIX will hold a planted literal
- * `a:b` entry alongside the driver's own `a%3Ab`, and both decode to the same name.
- */
-export function decodeNameFromPath(encoded: string): string {
-  return encoded.replaceAll('%3A', ':');
-}
+// The name codec lives in `core/` (pure string logic, and `validate.ts` needs it); imported here so the
+// drivers keep one import for key shaping, and re-exported for the same reason.
+import { encodeNameForKey, encodeNameForPath } from '@/core/name-codec';
+
+export {
+  encodeNameForKey,
+  decodeNameFromKey,
+  encodeNameForPath,
+  decodeNameFromPath,
+} from '@/core/name-codec';
