@@ -57,6 +57,8 @@ import type {
   Budget,
   BudgetOption,
   BulkLoadResult,
+  LoadOptions,
+  LoadResult,
   Clock,
   CodecBitmap,
   CodecInterface,
@@ -89,6 +91,7 @@ import type {
 } from '@cloudbitmaps/core';
 import { bulkLoadCrbmGeneration, eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
+import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
 
@@ -770,6 +773,63 @@ export class CloudRoaring {
   }
 
   /**
+   * **Replace this segment's contents** with `ids`, as one new immutable generation, and make it current.
+   *
+   * The whole write path in one call: take the next generation number, write the object, check the result is
+   * plausible, move the pointer, collect what the move superseded. Composed by hand those are four functions and
+   * the one that gets left out is the last, so segments quietly accumulate superseded generations nobody pays
+   * attention to and everybody pays for.
+   *
+   * ```ts
+   * const r = await store.load('audience:active', idsFromWarehouse, {
+   *   guard: { maxShrink: 0.5 },   // refuse a load that drops more than half the segment
+   * });
+   * if (!r.published) console.warn(`load refused: ${r.reason}`);
+   * ```
+   *
+   * **A load REPLACES.** Whatever the stream contains is what the segment contains afterwards, so an upstream
+   * query that returns fewer rows than usual is a shrink nobody asked for and an empty one is a wipe — both
+   * reported as a successful write, because at the storage layer they are one. That is what `guard` and the
+   * default empty refusal are for, and why they run **between** the write and the publish: the only moment where
+   * the new content is known and the old one is still authoritative.
+   *
+   * **Branch on `published`.** A refusal is a normal outcome, not an exception — `published: false` with a
+   * `reason`, in the same shape as a success — so a discarded result is a load that silently did nothing, and
+   * with the empty guard on by default this verb refuses more readily than any other. Note the sibling `*Into`
+   * verbs *throw* on the same superseded condition rather than reporting it; this one follows
+   * `eraseIdFromSegment` instead, because three of its four refusals are expected guard outcomes rather than
+   * faults.
+   *
+   * The object written for a refused load is deleted again before returning — it sits above `currentGen`, where
+   * generation collection deliberately never looks, so nothing else would reclaim it. The exception is a load
+   * that finds the segment **re-created** underneath it: the generation number it holds may then name the new
+   * incarnation's live object, so it leaves the orphan rather than risk deleting live data.
+   *
+   * Two things it does **throw** for, rather than report: a crypto-shredded segment (`ValidationError` — there
+   * is no key to write under), and a collection pass that could not prove the segment was still the same one
+   * (`WriteConflictError`). The second can be raised **after** the publish already landed, so a throw does not
+   * by itself mean the load did not take effect — re-read the pointer rather than assuming.
+   *
+   * Needs a raw cold driver + registry (throws {@link UnsupportedError} otherwise).
+   */
+  async load(
+    ref: SegmentRef,
+    ids: Iterable<number> | AsyncIterable<number>,
+    options: LoadOptions = {},
+  ): Promise<LoadResult> {
+    validateSegmentRef(ref);
+    const deps = this.lifecycleDeps('load');
+    try {
+      return await loadSegment(ref, ids, deps, options);
+    } finally {
+      // This store's view of the segment is now behind whatever just happened — a published load superseded the
+      // generation the caches were built on, and a throw can still have published before failing its collect.
+      // `finally`, so the one path where the view is most likely stale is not the one path that skips the drop.
+      this.engine.invalidate(ref);
+    }
+  }
+
+  /**
    * **Dispose of a segment — tombstone it, then delete its Cold objects.** Irreversible.
    *
    * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
@@ -1269,7 +1329,9 @@ export class Segment {
    * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
    *
    * (The broader guard — refusing to publish an empty generation over a non-empty one, with an `allowEmpty`
-   * override — belongs to `load()` and covers these verbs too when it lands. This is the narrow case that is
+   * override — shipped on {@link CloudRoaring.load} and does **not** yet cover these verbs: a materialisation
+   * still calls the bulk-load path directly, so a combine that legitimately comes out empty still publishes an
+   * empty generation over `dest`. Routing them through the guarded load is owed. This is the narrow case that is
    * unambiguously a mistake and costs one comparison to catch.)
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
@@ -1489,7 +1551,7 @@ export * from '@cloudbitmaps/core';
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
 // `export *` above, so every signature stays exactly as it was before the family split — e.g.
 // `bulkLoadCrbmGeneration(driver, key, ids)` still works with no options at all.
-export { bulkLoadCrbmGeneration, eraseIdFromSegment, runExport } from './codec-bound';
+export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
 
 // The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /
 // bulk-load path); `roaringCodec` is the `CodecInterface` this facade injects, exported so an advanced caller

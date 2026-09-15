@@ -846,6 +846,16 @@ export interface BulkLoadResult {
   readonly sha256: string;
   /** Distinct non-empty chunks written (≤ 65536). */
   readonly chunkCount: number;
+  /**
+   * The DEK freshly minted for this generation, wrapped — present only when the segment is encrypted AND this
+   * call minted one (an existing segment reuses its key, which is already on the row).
+   *
+   * Returned so a caller that deliberately does **not** pass `registry` here — writing now and publishing later,
+   * which is how a load applies a guard while the old generation is still authoritative — can carry the key onto
+   * its own `publishGeneration`. Without it that publish stores no DEK and the generation it makes current is
+   * unreadable: the bytes are encrypted with a key nothing recorded.
+   */
+  readonly wrappedDeks?: readonly WrappedDek[];
   /** Total distinct ids in the generation (post-dedup). */
   readonly cardinality: number;
   /**
@@ -903,6 +913,19 @@ export async function bulkLoadCrbmGeneration(
      * this seam rather than `setTimeout`.
      */
     clock?: Clock;
+    /**
+     * Write the object but do **not** advance the pointer (default: publish when a `registry` is wired).
+     *
+     * For a caller that has to inspect what it wrote before deciding whether it should become current — a
+     * guarded {@link loadSegment} is the one in-tree case — because the check is only meaningful while the old
+     * generation is still authoritative. The `registry` is still required for an encrypted segment and still
+     * consulted: it is where an existing segment's DEK lives, and reusing that key is not optional. The wrapped
+     * DEK comes back on the result so the deferred publish can store it.
+     *
+     * A caller that defers the publish owns what it wrote: an unpublished object sits ABOVE `currentGen`, where
+     * generation collection deliberately never looks, so nothing else will ever reclaim it.
+     */
+    publish?: boolean;
   } = {},
 ): Promise<BulkLoadResult> {
   if (options.keystore === undefined && options.requireEncryption === true) {
@@ -1069,7 +1092,7 @@ export async function bulkLoadCrbmGeneration(
   });
   // Publish only after the immutable object is durable (write-then-publish): a registry-aware reader should
   // never point at a generation that isn't fully written. A freshly minted DEK is stored on this publish.
-  if (options.registry !== undefined) {
+  if (options.registry !== undefined && options.publish !== false) {
     const becameCurrent = await publishGeneration(options.registry, key, {
       wrappedDeks: newWrapped,
     });
@@ -1084,9 +1107,16 @@ export async function bulkLoadCrbmGeneration(
         generation: key.generation,
       });
     }
-    return { size, sha256, chunkCount: chunks.length, cardinality, becameCurrent };
+    return {
+      size,
+      sha256,
+      chunkCount: chunks.length,
+      cardinality,
+      becameCurrent,
+      wrappedDeks: newWrapped,
+    };
   }
-  return { size, sha256, chunkCount: chunks.length, cardinality };
+  return { size, sha256, chunkCount: chunks.length, cardinality, wrappedDeks: newWrapped };
 }
 
 /**

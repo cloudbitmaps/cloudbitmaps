@@ -143,9 +143,31 @@ await bulkLoadCrbmGeneration(
 
 ## 3. Loading a segment
 
-Loading is **the** write path. `bulkLoadCrbmGeneration` consumes a stream of ids, routes each into its chunk's
-bitmap, writes the whole set as one immutable `.crbm` object, and — when you pass a `registry` — publishes it so
-readers see it. Five things to know:
+Loading is **the** write path, and `store.load(ref, ids)` is how you do it:
+
+```ts
+const r = await store.load({ segment: 'audience:active' }, idsFromWarehouse, {
+  guard: { minRetained: 0.5 }, // refuse a load that would drop more than half the segment
+});
+if (!r.published) console.warn(`load refused: ${r.reason} (${r.cardinalityBefore} → ${r.cardinality})`);
+```
+
+That is one call for what is always four steps — take the next generation number, write one immutable object,
+move the pointer, collect what the move superseded — and **the fourth is the one that gets left out** when the
+sequence is composed by hand, so segments accumulate superseded generations nobody notices and everybody pays
+for.
+
+**Branch on `published`.** A load *replaces*: whatever the stream contains is what the segment contains
+afterwards. So an upstream query returning fewer rows than usual is a shrink nobody asked for and an empty one
+is a wipe — and at the storage layer both are an ordinary successful write. An empty result over a non-empty
+segment is therefore **refused by default** (`allowEmpty` overrides), and `guard: { minCardinality, minRetained }`
+says what else counts as implausible. A refusal is reported rather than thrown, which means a discarded result
+is a load that silently did nothing.
+
+`bulkLoadCrbmGeneration` is the layer underneath, and it is still there when you want the pieces separately —
+writing a generation without publishing it, or publishing on your own schedule. It consumes a stream of ids,
+routes each into its chunk's bitmap, writes the whole set as one immutable `.crbm` object, and — when you pass a
+`registry` — publishes it so readers see it. Five things to know:
 
 **Any id source, any order, duplicates welcome.** The input is a sync *or* async iterable, consumed lazily and
 deduplicated on insert. An array, a `Set`, a generator, a file stream, a warehouse cursor:
@@ -504,7 +526,8 @@ Who calls it today:
 
 | Path | Collects? |
 |---|---|
-| your load job, after `bulkLoadCrbmGeneration` or an `*Into` | **you** — call `gcOrphanGenerations` on your own cadence (right after the load, or a nightly pass) |
+| `store.load` | **it does** — collection is part of the call, keeping `keep` generations (default 1) |
+| your load job, after `bulkLoadCrbmGeneration` or an `*Into` | **you** — call `gcOrphanGenerations` on your own cadence (right after the load, or a nightly pass). This is the step `store.load` exists to stop you forgetting |
 | `eraseSubject` / `eraseIdFromSegment` | **yes**, with `keep: 0` — the whole point is that the generation holding the bit does not survive the call |
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |

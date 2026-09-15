@@ -15,6 +15,30 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **`store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })` — the write path as one call.** A load has always
+  been four steps: take the next generation number, write one immutable object, move the pointer, collect what
+  the move superseded. Composed by hand those are four functions and the one people leave out is the last, so
+  segments quietly accumulate superseded generations nobody notices and everybody pays for.
+  The other reason it is one call is the **guard**. A load *replaces*: whatever the stream contains is what the
+  segment contains afterwards, so an upstream query returning fewer rows than usual is a shrink nobody asked for
+  and an empty one is a wipe — and at the storage layer both are an ordinary successful write. So an empty result
+  over a non-empty segment is now **refused by default** (`allowEmpty` overrides), and `guard: { minCardinality,
+  minRetained }` says what else counts as implausible — a floor on what survives rather than a ceiling on the
+  loss, so `0` means "no bound" on both fields instead of meaning it on one and the opposite on the other. The checks run **between the write and the publish**, the
+  only moment where the new content is known and the old one is still authoritative.
+  A refusal is a normal outcome rather than a throw — `published: false` with a `reason`, in the same shape as a
+  success — and it **deletes the object it wrote**, because an unpublished generation sits above `currentGen`
+  where collection deliberately never looks, and nothing else would ever reclaim it. Emits `segment.publish` on
+  success and the new `segment.load-refused` on a refusal: a replacement that did *not* happen is exactly as
+  reconcilable a fact as one that did. `cardinalityBefore` on the result says what the segment held, so an alert
+  on a refusal is a diagnosis rather than a page. `loadSegment` is the free-function form.
+- **`bulkLoadCrbmGeneration` accepts `publish: false`**, and returns the `wrappedDeks` it minted. Both exist so a
+  caller can write now and publish later under a guard: the registry is still required for an encrypted segment
+  (it is where an existing key lives, and reusing it is not optional), and without the key on the result the
+  deferred publish would store none and make the generation it published unreadable.
+
 ### Changed
 
 - **`@google-cloud/storage` 8 is now supported.** The optional peer range widens from `^7` to `^7 || ^8`, and the
