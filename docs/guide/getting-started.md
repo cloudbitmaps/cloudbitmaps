@@ -221,6 +221,42 @@ on the roadmap, as part of a higher-level `load()`).
 > `has(x) → false`, `iterate() → []`; an empty load just costs an object and a registry row you then have to
 > retire.
 
+### Does this segment already exist?
+
+There is no `create`, so you can never collide with an existing segment: `store.segment(name)` validates a name
+and does no I/O at all. A segment starts existing when something is first **loaded** into it — and a load
+**replaces** whatever was there, so the question worth asking before one is usually "is there data here
+already?", not "will this fail?".
+
+```ts
+if (!(await store.exists({ segment: 'users' }))) {
+  await store.load({ segment: 'users' }, idsFromUpstream);
+}
+```
+
+`exists()` is one registry point read. It is deliberately **not** the same as `count() > 0`: a segment loaded
+with no ids exists and counts zero, and telling *never loaded* from *loaded, and genuinely empty* is exactly
+what `count()` cannot do.
+
+To see everything you have, ask the registry — **do not keep your own list of segment names beside the store.**
+That list is a second source of truth, and it drifts from this one the first time a load fails halfway:
+
+```ts
+for await (const s of store.segments({ namespace: 'active-daily' })) {
+  console.log(s.segment, s.currentGen, s.status);
+}
+```
+
+Scope it to a `namespace` whenever you can. `segments()` is the registry's own enumeration — a `Scan` on
+DynamoDB, a paged LIST on an object-store registry — so its cost tracks the size of your fleet, not the size of
+the answer. It is an admin and dashboard call, not one for a request path. It streams, so stopping the loop
+stops the scan, and it yields crypto-shredded tombstones and rows with no data as-is rather than quietly
+filtering them.
+
+Neither call is a lock: a segment can appear or vanish between the check and whatever you do next. When the
+answer has to *hold*, use the fence built for that — `load`'s `guard` (`minCardinality` / `minRetained`,
+which refuse an implausible result instead of publishing it), or `expectFrom`/`expectToken` on a publish.
+
 For a generation you already hold as bitmaps, the lower-level `writeCrbmGeneration(driver, key, chunks)` takes
 `{ chunkKey, bitmap }` entries directly and does **not** publish — call `publishGeneration(registry, key)` after it.
 

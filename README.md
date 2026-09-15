@@ -473,9 +473,10 @@ freshness meets it by micro-batching into immutable segments, never by mutating 
 that is the shape we build. Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that
 well. If a live tier returns, it will be immutable delta generations on the same bucket.
 
-Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too little, and a `rollback()`, a
-**snapshot handle** so a long export or reconciliation reads one instant rather than whichever generations were
-current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
+Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too
+little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
+keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
+than whichever generations were current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs. The repo is a

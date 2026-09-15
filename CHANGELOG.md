@@ -15,6 +15,27 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`store.exists(ref)` and `store.segments({ namespace })` — ask the registry what is there.** The registry has
+  always known which segments exist; it is what `checkConsistency`, the retention sweep and `exportSegments`
+  each enumerate. Nothing exposed it, so the answer had to be inferred — and both available inferences are
+  wrong in a way that bites: `count()` returns `0` for a segment that was never loaded *and* for one loaded
+  with no ids, and `generations()` pays a bucket listing to answer a question the pointer alone settles. The
+  fallback people reach for is worse still: a hand-maintained list of segment names kept beside the store, a
+  second source of truth that drifts from the first the moment a load fails halfway.
+
+  `exists(ref)` is one registry point read, and answers exactly *would a read find anything* — so it is `false`
+  for a row minted ahead of its first load (`setRetention` does that) and for a crypto-shredded tombstone,
+  because a read answers empty in both. `segments({ namespace })` streams the registry's own enumeration. It is
+  an **admin/discovery call, not a request-path one**: a `Scan` on DynamoDB, a paged LIST on an object-store
+  registry, so its cost tracks the fleet rather than the answer — scope it to a namespace whenever you can.
+  It yields `destroyed` tombstones and rows with `currentGen: null` rather than filtering them, because an
+  enumeration that looks complete and is not is how a sweep ends up permanently skipping rows nobody can see;
+  internal bookkeeping rows are the one exclusion, and only on an unscoped scan. `segmentExists` and
+  `listSegments` are the unwired forms.
+
+  Neither is a lock — for an answer that must hold, the fences are `load`'s guard and `expectFrom`/`expectToken`.
+
 ### Changed
 - **Segment and namespace names may contain `:`** — the grammar is now
   `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/`. `dedup:2026-08-01` and `sent:daily:2026-08-01` are how people
