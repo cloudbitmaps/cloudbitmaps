@@ -3,8 +3,13 @@
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
 import { Storage } from '@google-cloud/storage';
-import { coldChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
+import {
+  coldChunkSourceConformance,
+  registryConformance,
+  CONFORMANCE_SEGMENT,
+} from '@/testing/conformance';
 import { GcsColdDriver } from '@/drivers/gcs/cold';
+import { GcsRegistryDriver } from '@/drivers/gcs/registry';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
@@ -35,6 +40,21 @@ beforeAll(async () => {
     if ((err as { code?: number }).code !== 409) throw err;
   }
 }, 30_000);
+
+// The GCS registry must pass the SAME registry contract as memory / LocalFs / S3 — against real object
+// preconditions (`ifGenerationMatch: 0` for create-only, `ifGenerationMatch: <generation>` for CAS) via
+// fake-gcs-server. This is what makes a GCS-only topology viable: before it, a GCS user had to point the
+// registry at DynamoDB and hold an AWS account purely to store which generation is current.
+let rn = 0;
+const ticking = (): (() => number) => {
+  let t = 1_000;
+  return () => (t += 1);
+};
+registryConformance(
+  'GcsRegistryDriver (fake-gcs-server)',
+  () =>
+    new GcsRegistryDriver({ storage, bucket: BUCKET, prefix: `reg-conf/${rn++}`, now: ticking() }),
+);
 
 let n = 0;
 const freshDriver = (): GcsColdDriver =>

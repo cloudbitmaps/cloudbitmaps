@@ -15,6 +15,37 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+- **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
+  Before this, GCS and Azure were cold-only: the registry that says which generation is current had to live
+  in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes
+  per segment. Now one bucket, or one container, is the whole deployment.
+
+  ```ts
+  import { GcsColdDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
+
+  const store = new CloudRoaring({
+    cold: new GcsColdDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
+    registry: new GcsRegistryDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
+  });
+  ```
+
+  Both ride the same compare-and-swap primitive S3 uses, under each cloud's own name — GCS
+  `ifGenerationMatch: 0` to create and `ifGenerationMatch: <generation>` to swap; Azure `ifNoneMatch: '*'`
+  and `ifMatch: <etag>`. Both pass the **same `IRegistryDriver` conformance suite** as the memory, LocalFs,
+  S3 and DynamoDB registries — 17 cases each, run against fake-gcs-server and Azurite in the integration
+  lane, so the guarantees are proven against real preconditions rather than a mock.
+
+  The protocol they share — the ABA-safe OCC counter, the tombstoning delete, the bounded retry, the key
+  layout — now lives once in `ObjectStoreRegistry`, with each cloud supplying only three I/O calls. The S3
+  registry was moved onto it too, so the three cannot drift; its behaviour and public API are unchanged.
+
+  **Deployment note:** do not apply a lifecycle-expiration rule, retention policy or immutability lock to the
+  `registry/` prefix. `delete` tombstones by overwriting rather than removing, which is what keeps the OCC
+  token monotonic across a delete-then-recreate; a WORM policy would fail every tombstone, and an expiry rule
+  would let a recreate re-issue a stale token.
+
+
 ### Breaking
 - **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
   be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or

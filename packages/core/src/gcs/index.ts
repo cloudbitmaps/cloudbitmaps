@@ -10,3 +10,5 @@
  */
 export { GcsColdDriver } from '../drivers/gcs/cold';
 export type { GcsColdDriverOptions } from '../drivers/gcs/cold';
+export { GcsRegistryDriver } from '../drivers/gcs/registry';
+export type { GcsRegistryDriverOptions } from '../drivers/gcs/registry';

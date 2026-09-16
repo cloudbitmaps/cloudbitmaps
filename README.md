@@ -219,8 +219,8 @@ prefer). `core` itself has **zero runtime dependencies**.
 | `@cloudbitmaps/roaring` | `CloudRoaring` + all in-memory/local drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | — (pulls `roaring` + `@cloudbitmaps/core`) |
 | `@cloudbitmaps/roaring/s3` | `S3ColdDriver`, `S3RegistryDriver` | `@aws-sdk/client-s3` |
 | `@cloudbitmaps/roaring/dynamodb` | `DynamoDbRegistryDriver` | `@aws-sdk/client-dynamodb` |
-| `@cloudbitmaps/roaring/gcs` | `GcsColdDriver` (Google Cloud Storage cold tier) | `@google-cloud/storage` |
-| `@cloudbitmaps/roaring/azure` | `AzureBlobColdDriver` (Azure Blob cold tier) | `@azure/storage-blob` |
+| `@cloudbitmaps/roaring/gcs` | `GcsColdDriver`, `GcsRegistryDriver` | `@google-cloud/storage` |
+| `@cloudbitmaps/roaring/azure` | `AzureBlobColdDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob` |
 | `export-segments` (CLI bin) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
 The cloud SDKs are **optional peer dependencies** — the main entry never imports a cloud SDK (CI-enforced), so
@@ -294,7 +294,7 @@ code runs on any mix:
 | Seam | in-memory | local filesystem | cloud |
 |---|---|---|---|
 | **Cold** (the durable base) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
-| **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `DynamoDbRegistryDriver` |
+| **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` · `DynamoDbRegistryDriver` |
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
 Mix freely: cold objects and the registry in **one S3 bucket** is the whole deployment; put the registry in
