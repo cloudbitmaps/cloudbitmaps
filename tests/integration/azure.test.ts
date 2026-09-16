@@ -2,8 +2,14 @@
 // `pnpm test:integration`. No real Azure needed. The well-known dev connection string points at the emulator
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
 import { BlobServiceClient } from '@azure/storage-blob';
-import { coldChunkSourceConformance, CONFORMANCE_SEGMENT } from '@/testing/conformance';
+import {
+  coldChunkSourceConformance,
+  registryConformance,
+  registryConcurrency,
+  CONFORMANCE_SEGMENT,
+} from '@/testing/conformance';
 import { AzureBlobColdDriver } from '@/drivers/azure/cold';
+import { AzureBlobRegistryDriver } from '@/drivers/azure/registry';
 import { isConditionalConflict } from '@/drivers/azure/azure-errors';
 import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
@@ -37,6 +43,36 @@ beforeAll(async () => {
     }
   }
 }, 30_000);
+
+// The Azure registry must pass the SAME registry contract as memory / LocalFs / S3 — against real blob
+// conditions (`ifNoneMatch: '*'` for create-only, `ifMatch: <etag>` for CAS) via Azurite. This is what makes
+// an Azure-only topology viable: before it, an Azure user had to point the registry at DynamoDB and hold an
+// AWS account purely to store which generation is current.
+let rn = 0;
+const ticking = (): (() => number) => {
+  let t = 1_000;
+  return () => (t += 1);
+};
+registryConformance(
+  'AzureBlobRegistryDriver (Azurite)',
+  () =>
+    new AzureBlobRegistryDriver({
+      containerClient: container,
+      prefix: `reg-conf/${rn++}`,
+      now: ticking(),
+    }),
+);
+
+// The cross-process half of the contract: two drivers over one container, racing the same row. Azurite
+// enforces `If-None-Match: *` / `If-Match` for real, so these prove the fence rather than the in-process
+// token check that answers every sequential case above.
+registryConcurrency('AzureBlobRegistryDriver (Azurite)', () => {
+  const prefix = `reg-race/${rn++}`;
+  return [
+    new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
+    new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
+  ];
+});
 
 let n = 0;
 const freshDriver = (): AzureBlobColdDriver =>

@@ -10,44 +10,15 @@
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
-import {
-  DEFAULT_NAMESPACE,
-  decodeNameFromKey,
-  encodeNameForKey,
-  namespaceKeyPart,
-} from '../_shared/keys';
+import { encodeNameForKey, namespaceKeyPart } from '../_shared/keys';
+// The cold and registry layouts sit under the SAME caller prefix, so they must normalize it identically —
+// a second copy of this three-line function is how the two halves of one bucket drift apart.
+import { prefixPart } from '../_shared/object-registry-keys';
 
 const SUFFIX = '.crbm';
-const REGISTRY_SUFFIX = '.reg';
 
-/** Normalize an optional caller prefix to either `''` or `trimmed/` (no leading/trailing slashes). */
-function prefixPart(prefix: string | undefined): string {
-  if (prefix === undefined) return '';
-  const trimmed = prefix.replace(/^\/+|\/+$/g, '');
-  return trimmed === '' ? '' : `${trimmed}/`;
-}
-
-/**
- * Validate the caller-supplied key prefix (trusted config, but make it a real containment boundary):
- * reject control characters and `.`/`..` path segments so a prefix can't traverse out of its intended space.
- * Returns it unchanged (the key builders normalize slashes). Shared by the S3 cold + registry drivers.
- */
-export function normalizeS3Prefix(prefix: string | undefined): string | undefined {
-  if (prefix === undefined) return undefined;
-  for (const ch of prefix) {
-    if (ch.charCodeAt(0) < 0x20) {
-      throw new ValidationError('prefix must not contain control characters');
-    }
-  }
-  for (const segment of prefix.split('/')) {
-    if (segment === '.' || segment === '..') {
-      throw new ValidationError(
-        `prefix must not contain "." or ".." path segments: ${JSON.stringify(prefix)}`,
-      );
-    }
-  }
-  return prefix;
-}
+/** Validate a caller-supplied key prefix. The rule is shared with every other object store. */
+export { normalizeObjectPrefix as normalizeS3Prefix } from '../_shared/object-registry-keys';
 
 /**
  * The S3 key prefix shared by all of a segment's generations: `<prefix><ns>/segments/<segment>.`. Used
@@ -66,57 +37,16 @@ export function coldObjectKey(prefix: string | undefined, key: GenKey): string {
   return `${segmentObjectPrefix(prefix, key)}${key.generation}${SUFFIX}`;
 }
 
-// ─── Registry keys ({@link S3RegistryDriver}) ───────────────────────────────────────────────────────────
-// Registry objects live under a **registry-first** prefix (`<prefix>registry/<ns>/<segment>.reg`) — separate
-// from the namespace-first cold layout — so discovery is a single `ListObjectsV2` over `registry/` (all
-// namespaces) or `registry/<ns>/` (one), never entangled with the `.crbm` payload objects.
-
-/** The S3 key prefix under which every registry object lives: `<prefix>registry/`. */
-export function registryPrefix(prefix: string | undefined): string {
-  return `${prefixPart(prefix)}registry/`;
-}
-
-/** The full S3 key of one segment's registry object: `<prefix>registry/<ns>/<segment>.reg`. */
-export function registryObjectKey(prefix: string | undefined, ref: SegmentRef): string {
-  validateSegmentRef(ref);
-  return `${registryPrefix(prefix)}${namespaceKeyPart(ref.namespace)}/${encodeNameForKey(ref.segment)}${REGISTRY_SUFFIX}`;
-}
-
-/** The `ListObjectsV2` prefix for discovery: registry-wide, or scoped to one namespace. */
-export function registryListPrefix(prefix: string | undefined, namespace?: string): string {
-  const base = registryPrefix(prefix);
-  return namespace === undefined ? base : `${base}${namespaceKeyPart(namespace)}/`;
-}
-
-/**
- * Parse a `<prefix>registry/<ns>/<segment>.reg` key back to its {@link SegmentRef}, or `null` if it doesn't
- * match (a stray/foreign object under the prefix, or one whose parsed ref fails the round-trip check or the size cap). `_default`
- * maps back to the absent namespace. A name is percent-encoded on the way in, so no encoded name can
- * contain `/` and the split stays unambiguous whatever the caller named their segment.
- */
-export function parseRegistryKey(prefix: string | undefined, objectKey: string): SegmentRef | null {
-  const base = registryPrefix(prefix);
-  if (!objectKey.startsWith(base) || !objectKey.endsWith(REGISTRY_SUFFIX)) return null;
-  const rest = objectKey.slice(base.length, objectKey.length - REGISTRY_SUFFIX.length);
-  const slash = rest.indexOf('/');
-  if (slash < 0) return null;
-  const nsPart = rest.slice(0, slash);
-  const encodedSegment = rest.slice(slash + 1);
-  if (encodedSegment.length === 0 || encodedSegment.includes('/')) return null;
-  const segment = decodeNameFromKey(encodedSegment);
-  const namespace = nsPart === DEFAULT_NAMESPACE ? undefined : decodeNameFromKey(nsPart);
-  // The encoding must ROUND-TRIP, not merely decode: a foreign object placed under our prefix could spell a
-  // name two ways, and reporting both would hand a sweep one segment under two identities.
-  if (encodeNameForKey(segment) !== encodedSegment) return null;
-  if (namespace !== undefined && encodeNameForKey(namespace) !== nsPart) return null;
-  const ref: SegmentRef = { segment, namespace };
-  try {
-    validateSegmentRef(ref); // reject a hostile/foreign key that isn't a valid ref
-  } catch {
-    return null;
-  }
-  return ref;
-}
+// ─── Registry keys ─────────────────────────────────────────────────────────────────────────────────────
+// The registry layout is identical across S3, GCS and Azure Blob — all three encode names the same way and
+// build byte-identical keys — so it lives in `_shared/object-registry-keys` and is re-exported here for the
+// callers (and tests) that already name it through this module.
+export {
+  registryPrefix,
+  registryObjectKey,
+  registryListPrefix,
+  parseRegistryKey,
+} from '../_shared/object-registry-keys';
 
 /**
  * Parse a generation number out of a full object key, given its segment prefix, or `null` if it doesn't

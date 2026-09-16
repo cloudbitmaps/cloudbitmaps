@@ -10,3 +10,5 @@
  */
 export { AzureBlobColdDriver } from '../drivers/azure/cold';
 export type { AzureBlobColdDriverOptions } from '../drivers/azure/cold';
+export { AzureBlobRegistryDriver } from '../drivers/azure/registry';
+export type { AzureBlobRegistryDriverOptions } from '../drivers/azure/registry';

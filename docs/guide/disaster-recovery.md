@@ -125,15 +125,18 @@ Which mechanism to enable depends on the backends you deployed:
 |---|---|---|---|
 | Registry | DynamoDB | PITR (continuous) | ≈ seconds — this is what sets your RPO |
 | Registry | S3 | versioning | one version per row write |
+| Registry | GCS | object versioning | one version per row write |
+| Registry | Azure Blob | blob versioning + soft-delete | one version per row write |
 | Cold | S3 | versioning (+ optional Object Lock) | immutable generations (write-once) |
 | Cold | GCS | object versioning | immutable generations (write-once) |
 | Cold | Azure Blob | blob versioning + soft-delete | immutable generations (write-once) |
 
 All three cold backends store **write-once, immutable generations**, so the coherent restore point is
-backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). The registry's cloud
-implementations are DynamoDB and S3 only — the GCS and Azure drivers are cold-only and do not implement the
-registry — so a non-AWS cold deployment still backs up an S3 or DynamoDB registry, and that half of the
-procedure is the same whichever cold backend you run.
+backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). Every object store can
+host the registry too, so a single-cloud deployment backs up one account: turn on versioning for the
+`registry/` prefix and the rows are recoverable exactly like cold objects. Keep using **PITR** if the registry
+is on DynamoDB — continuous capture is what makes an RPO of seconds achievable, whereas object versioning
+captures one version per row write, which is the coarser bound in the table above.
 
 ## Restore procedure
 

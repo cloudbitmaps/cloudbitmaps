@@ -49,9 +49,12 @@
 
 ### Choosing a registry
 
-> **Four backends ship a registry** — `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
-> (`@cloudbitmaps/roaring/s3`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). The GCS and
-> Azure Blob drivers are **cold-only — neither ships a registry**, so pair them with an S3 or DynamoDB registry.
+> **Every backend ships a registry.** `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
+> (`@cloudbitmaps/roaring/s3`), `GcsRegistryDriver` (`@cloudbitmaps/roaring/gcs`), `AzureBlobRegistryDriver`
+> (`@cloudbitmaps/roaring/azure`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). **Each
+> object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
+> service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
+> S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
 > A registry is **optional for a read-only, cleartext store** (the store then list-scans the bucket for the
 > highest generation), and **required** for encrypted segments, the `*Into` verbs, and every lifecycle helper
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full

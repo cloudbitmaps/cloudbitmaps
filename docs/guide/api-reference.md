@@ -36,8 +36,8 @@ Everything below is reachable from the flavor:
 @cloudbitmaps/roaring            the store + memory/localfs drivers + every function & type
 @cloudbitmaps/roaring/s3         S3ColdDriver, S3RegistryDriver          (peer: @aws-sdk/client-s3)
 @cloudbitmaps/roaring/dynamodb   DynamoDbRegistryDriver                  (peer: @aws-sdk/client-dynamodb)
-@cloudbitmaps/roaring/gcs        GcsColdDriver                           (peer: @google-cloud/storage)
-@cloudbitmaps/roaring/azure      AzureBlobColdDriver                     (peer: @azure/storage-blob)
+@cloudbitmaps/roaring/gcs        GcsColdDriver, GcsRegistryDriver        (peer: @google-cloud/storage)
+@cloudbitmaps/roaring/azure      AzureBlobColdDriver, …RegistryDriver    (peer: @azure/storage-blob)
 CLI (binary):                    export-segments
 ```
 
@@ -62,7 +62,7 @@ Pick one driver per slot (all interchangeable; mix backends freely):
 | Slot | in-memory | local disk | cloud |
 |---|---|---|---|
 | **cold** (the `.crbm` generations) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
-| **registry** (the `currentGen` pointer + wrapped keys) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `DynamoDbRegistryDriver` · `S3RegistryDriver` |
+| **registry** (the `currentGen` pointer + wrapped keys) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` · `DynamoDbRegistryDriver` |
 | **keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same |
 
 Pass a **raw** `IColdDriver` as `cold` and the store builds the `.crbm` reader (`CrbmColdChunkSource`) over it with
@@ -385,7 +385,8 @@ writer in this build) · `GovernanceMeta` · `SegmentSize`
 
 `MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `InProcessKeystoreOptions` ·
 `S3ColdDriverOptions` · `S3RegistryDriverOptions` · `DynamoDbRegistryDriverOptions` ·
-`GcsColdDriverOptions` · `AzureBlobColdDriverOptions`
+`GcsColdDriverOptions` · `GcsRegistryDriverOptions` · `AzureBlobColdDriverOptions` ·
+`AzureBlobRegistryDriverOptions`
 
 ---
 
@@ -479,12 +480,18 @@ This subpath ships a registry only; DynamoDB is not a cold backend.
 
 ### `@cloudbitmaps/roaring/gcs`
 
-`GcsColdDriver` · `GcsColdDriverOptions` — the Google Cloud Storage cold driver (peer: `@google-cloud/storage`).
+`GcsColdDriver` · `GcsRegistryDriver` · `GcsColdDriverOptions` · `GcsRegistryDriverOptions` — the Google
+Cloud Storage drivers (peer: `@google-cloud/storage`). The registry lets a GCS deployment run on **one bucket
+alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
+<generation>` to swap), so no second service is needed to hold the `currentGen` pointer.
 
 ### `@cloudbitmaps/roaring/azure`
 
-`AzureBlobColdDriver` · `AzureBlobColdDriverOptions` — the Azure Blob Storage cold driver (peer:
-`@azure/storage-blob`). Inject a container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`.
+`AzureBlobColdDriver` · `AzureBlobRegistryDriver` · `AzureBlobColdDriverOptions` ·
+`AzureBlobRegistryDriverOptions` — the Azure Blob Storage drivers (peer: `@azure/storage-blob`). Inject a
+container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
+run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
+`ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer.
 
 ## Keeping this in sync
 

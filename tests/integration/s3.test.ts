@@ -2,6 +2,7 @@ import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   coldChunkSourceConformance,
   registryConformance,
+  registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { S3ColdDriver } from '@/drivers/s3/cold';
@@ -58,6 +59,16 @@ registryConformance(
   () =>
     new S3RegistryDriver({ client, bucket: BUCKET, prefix: `reg-conf/${rn++}`, now: ticking() }),
 );
+
+// Two drivers over one bucket, racing the same row — the cross-process fence (`If-None-Match: *` /
+// `If-Match: <etag>`) that the sequential suite never exercises.
+registryConcurrency('S3RegistryDriver (MinIO)', () => {
+  const prefix = `reg-race/${rn++}`;
+  return [
+    new S3RegistryDriver({ client, bucket: BUCKET, prefix, now: ticking() }),
+    new S3RegistryDriver({ client, bucket: BUCKET, prefix, now: ticking() }),
+  ];
+});
 
 describe('S3ColdDriver specifics (MinIO)', () => {
   const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
