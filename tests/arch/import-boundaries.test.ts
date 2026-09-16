@@ -48,7 +48,7 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     expect(
       await boundaryErrors(
         CORE,
-        "import { LocalFsColdDriver } from '../drivers/localfs/cold';\nLocalFsColdDriver;",
+        "import { LocalFsStorageDriver } from '../drivers/localfs/storage';\nLocalFsColdDriver;",
       ),
     ).toHaveLength(1);
     expect(
@@ -76,7 +76,7 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
 
   it('the main entries of both packages stay free of cloud SDKs and cloud drivers', async () => {
     expect(
-      await boundaryErrors(CORE_ROOT, "export { S3ColdDriver } from './drivers/s3/cold';"),
+      await boundaryErrors(CORE_ROOT, "export { S3StorageDriver } from './drivers/s3/storage';"),
     ).toHaveLength(1);
     expect(
       await boundaryErrors(CORE_ROOT, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
@@ -96,7 +96,7 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     expect(
       await boundaryErrors(
         'packages/core/src/s3/index.ts',
-        "export { S3ColdDriver } from '../drivers/s3/cold';",
+        "export { S3StorageDriver } from '../drivers/s3/storage';",
       ),
     ).toEqual([]);
     expect(
@@ -129,7 +129,7 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     expect(
       await boundaryErrors(
         CORE_ROOT,
-        "export { LocalFsColdDriver } from './drivers/localfs/cold';",
+        "export { LocalFsStorageDriver } from './drivers/localfs/storage';",
       ),
     ).toEqual([]);
   });

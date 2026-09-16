@@ -13,7 +13,7 @@
  * this codec's `serialize()` wrote", so seeding is the whole write side of the seam.
  */
 import { SegmentEngine } from '@/core/engine';
-import { MemoryColdChunkSource } from '@/index';
+import { MemoryStorageChunkSource } from '@/index';
 import type { CodecBitmap, CodecInterface } from '@/core/codec';
 import { IntegrityError } from '@/core/errors';
 import { collect } from '../helpers/loaded';
@@ -77,22 +77,22 @@ const setCodec: CodecInterface = {
 
 /** Seed one chunk of a segment with bytes the codec under test produced (remainders, as a chunk holds). */
 function seed(
-  cold: MemoryColdChunkSource,
+  storage: MemoryStorageChunkSource,
   segment: string,
   chunkKey: number,
   rems: number[],
 ): void {
-  cold.seed({ segment, chunkKey }, setCodec.fromValues(rems).serialize());
+  storage.seed({ segment, chunkKey }, setCodec.fromValues(rems).serialize());
 }
 
 describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
   const seg = { segment: 'a' } as const;
 
   it('has / count / iterate all work through an injected SetCodec', async () => {
-    const cold = new MemoryColdChunkSource();
-    seed(cold, 'a', 0, [1, 3, 5]);
-    seed(cold, 'a', 1, [70_000 & 0xffff]); // spans a second 16-bit chunk
-    const engine = new SegmentEngine({ cold, codec: setCodec });
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 0, [1, 3, 5]);
+    seed(storage, 'a', 1, [70_000 & 0xffff]); // spans a second 16-bit chunk
+    const engine = new SegmentEngine({ storage, codec: setCodec });
 
     expect(await engine.has(seg, 5)).toBe(true);
     expect(await engine.has(seg, 2)).toBe(false);
@@ -103,11 +103,11 @@ describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
   it('runs the combine set algebra through the codec — union, andNot, and a folded-in exclude', async () => {
     // Every in-place op the engine calls is exercised here: `orInPlace` (union), `andInPlace` (intersect),
     // `andNotInPlace` (the exclude/andNot fold), over a `clone()` of the first operand's cached chunk.
-    const cold = new MemoryColdChunkSource();
-    seed(cold, 'a', 0, [10, 20, 30]);
-    seed(cold, 'b', 0, [20, 30, 40]);
-    seed(cold, 'sup', 0, [30]);
-    const engine = new SegmentEngine({ cold, codec: setCodec });
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 0, [10, 20, 30]);
+    seed(storage, 'b', 0, [20, 30, 40]);
+    seed(storage, 'sup', 0, [30]);
+    const engine = new SegmentEngine({ storage, codec: setCodec });
     const a = { segment: 'a' };
     const b = { segment: 'b' };
     const sup = { segment: 'sup' };
@@ -118,19 +118,19 @@ describe('bitmap-codec seam: the engine runs on a non-roaring codec', () => {
   });
 
   it('chunk-skipping intersect works through the codec (crown jewel, codec-agnostic)', async () => {
-    const cold = new MemoryColdChunkSource();
-    seed(cold, 'a', 0, [1, 2, 3]);
-    seed(cold, 'b', 0, [2, 3, 4]);
-    const engine = new SegmentEngine({ cold, codec: setCodec });
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 0, [1, 2, 3]);
+    seed(storage, 'b', 0, [2, 3, 4]);
+    const engine = new SegmentEngine({ storage, codec: setCodec });
     expect(await collect(engine.intersect([{ segment: 'a' }, { segment: 'b' }]))).toEqual([2, 3]);
   });
 
   it('the size cap is the codec’s to enforce, and the engine hands it down', async () => {
     // The engine never decodes bytes itself, so the untrusted-input cap (invariant 5) is only real if
     // `maxBitmapBytes` actually reaches `safeDeserialize`. A 1-byte cap makes any real chunk fail.
-    const cold = new MemoryColdChunkSource();
-    seed(cold, 'a', 0, [1, 2, 3]);
-    const engine = new SegmentEngine({ cold, codec: setCodec, maxBitmapBytes: 1 });
+    const storage = new MemoryStorageChunkSource();
+    seed(storage, 'a', 0, [1, 2, 3]);
+    const engine = new SegmentEngine({ storage, codec: setCodec, maxBitmapBytes: 1 });
     await expect(engine.has(seg, 1)).rejects.toThrow(IntegrityError);
   });
 });

@@ -1,5 +1,5 @@
-import { MemoryColdDriver } from '@/index';
-import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-cold-source';
+import { MemoryStorageDriver } from '@/index';
+import { bulkLoadCrbmGeneration as coreBulkLoad } from '@/core/crbm-storage-source';
 import { bulkLoadCrbmGeneration } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SystemClock } from '@/system-clock';
@@ -69,7 +69,7 @@ async function loopTurnsDuring<T>(load: () => Promise<T>): Promise<{ turns: numb
 describe('bulk-load is cooperative', () => {
   it('lets the event loop turn hundreds of times during a load that used to block it entirely', async () => {
     const { turns, result } = await loopTurnsDuring(() =>
-      bulkLoadCrbmGeneration(new MemoryColdDriver() as never, KEY as never, ids),
+      bulkLoadCrbmGeneration(new MemoryStorageDriver() as never, KEY as never, ids),
     );
     // The flavor package pre-binds a real clock, so this is what an ordinary caller gets with no wiring at all.
     //
@@ -87,7 +87,7 @@ describe('bulk-load is cooperative', () => {
     // what they got before. This case is also the control for the one above — without it, a test asserting "many
     // turns" could be passing because the load is slow for some unrelated reason.
     const { turns } = await loopTurnsDuring(() =>
-      coreBulkLoad(new MemoryColdDriver() as never, KEY as never, ids, { codec: roaringCodec }),
+      coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, { codec: roaringCodec }),
     );
     expect(turns).toBeLessThanOrEqual(2);
   });
@@ -97,11 +97,11 @@ describe('bulk-load is cooperative', () => {
     // yield ever let interleaved work observe or disturb a half-built generation, the object would differ. The
     // sha256 the driver returns over the whole `.crbm` is the strongest available statement that it does not.
     const withClock = await bulkLoadCrbmGeneration(
-      new MemoryColdDriver() as never,
+      new MemoryStorageDriver() as never,
       KEY as never,
       ids,
     );
-    const without = await coreBulkLoad(new MemoryColdDriver() as never, KEY as never, ids, {
+    const without = await coreBulkLoad(new MemoryStorageDriver() as never, KEY as never, ids, {
       codec: roaringCodec,
     });
     expect(withClock.sha256).toBe(without.sha256);
@@ -121,7 +121,7 @@ describe('bulk-load is cooperative', () => {
     // ingest yields must come from this loop specifically, on top of whatever the later loops contribute.
     const clock = new SpyClock();
     const result = await bulkLoadCrbmGeneration(
-      new MemoryColdDriver() as never,
+      new MemoryStorageDriver() as never,
       KEY as never,
       stream(),
       { clock } as never,
@@ -144,7 +144,7 @@ describe('bulk-load is cooperative', () => {
         return counting.yieldNow();
       },
     };
-    await bulkLoadCrbmGeneration(new MemoryColdDriver() as never, KEY as never, ids, {
+    await bulkLoadCrbmGeneration(new MemoryStorageDriver() as never, KEY as never, ids, {
       clock: spy,
     } as never);
     expect(yields).toBeGreaterThan(20);

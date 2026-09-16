@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
   destroySegment,
@@ -19,29 +19,29 @@ const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
 /**
- * A world of cold objects + a registry, plus the two things that write generations: `load` (a bulk load at the
+ * A world of storage objects + a registry, plus the two things that write generations: `load` (a bulk load at the
  * next generation) and the erasure rewrite's deps.
  *
  * `store(ks)` opens a *fresh* reader each call, which is deliberate: a store pins the generation it resolved
- * (`coldGenTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
+ * (`storageGenTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
  * since — the honest model of a different reader, with no clock to advance.
  */
 function world(keystore?: IKeystore) {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const deps: EraseIdDeps = { cold, registry, keystore };
+  const deps: EraseIdDeps = { storage, registry, keystore };
   const store = (ks = keystore): CloudRoaring =>
     new CloudRoaring({
-      cold: new CrbmColdChunkSource(cold, { registry, keystore: ks }),
+      storage: new CrbmStorageChunkSource(storage, { registry, keystore: ks }),
       retry: false,
-      coldGenTtlMs: 0,
+      storageGenTtlMs: 0,
     });
   const load = async (ids: number[], ref: SegmentRef = SEG, ks = keystore): Promise<number> => {
-    const generation = await nextGeneration(ref, { cold, registry });
-    await bulkLoadCrbmGeneration(cold, { ...ref, generation }, ids, { registry, keystore: ks });
+    const generation = await nextGeneration(ref, { storage, registry });
+    await bulkLoadCrbmGeneration(storage, { ...ref, generation }, ids, { registry, keystore: ks });
     return generation;
   };
-  return { cold, registry, deps, store, load };
+  return { storage, registry, deps, store, load };
 }
 
 async function members(store: CloudRoaring, ref: SegmentRef = SEG): Promise<number[]> {
@@ -85,7 +85,7 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
     expect(await members(w.store())).toEqual([1, 2, 3]);
     // Genuinely encrypted, not merely marked as such: a reader with no keystore cannot decode it.
     const noKeystore = new CloudRoaring({
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
+      storage: new CrbmStorageChunkSource(w.storage, { registry: w.registry }),
       retry: false,
     });
     await expect(members(noKeystore)).rejects.toBeInstanceOf(KeyUnavailableError);
@@ -115,7 +115,7 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
     // would emit `segment.erase` — "unreadable everywhere, backups included" — over bytes that stay readable
     // from any copy. Over-attestation is the one failure an audit trail exists to prevent.
     await expect(
-      bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [9], { registry: w.registry }),
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [9], { registry: w.registry }),
     ).rejects.toBeInstanceOf(KeyUnavailableError);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0); // the pointer never moved
     expect(await members(w.store())).toEqual([1, 2, 3]);
@@ -133,7 +133,7 @@ describe('encryption lifecycle — one DEK per segment, across every generation'
     expect(await members(w.store())).toEqual([1, 3, 100_000]);
     // And the rewrite is encrypted, not quietly downgraded to cleartext on the way through.
     const noKeystore = new CloudRoaring({
-      cold: new CrbmColdChunkSource(w.cold, { registry: w.registry }),
+      storage: new CrbmStorageChunkSource(w.storage, { registry: w.registry }),
       retry: false,
     });
     await expect(members(noKeystore)).rejects.toBeInstanceOf(KeyUnavailableError);
@@ -179,7 +179,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
     // still in the bucket (that is `dropSegment`'s job) — this is unreadability, not reclamation.
     expect(await members(w.store())).toEqual([]);
     const stillThere: number[] = [];
-    for await (const key of w.cold.list(SEG)) stillThere.push(key.generation);
+    for await (const key of w.storage.list(SEG)) stillThere.push(key.generation);
     expect(stillThere).toEqual([0, 1]);
   });
 
@@ -339,7 +339,7 @@ describe('crypto-shred — destroySegment / eraseNamespace', () => {
 
     // Loading a new generation would mint a DEK that could never be reached → refuse outright.
     await expect(
-      bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [9], {
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [9], {
         registry: w.registry,
         keystore,
       }),

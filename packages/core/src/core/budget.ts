@@ -7,7 +7,7 @@
  * fan-out count transitively bounds bytes — the budget is intentionally count-based, not a second byte
  * accumulator that would add per-chunk work.
  *
- * **What the count is.** For the read ops it is the number of Cold **chunk fetches** (`count`/`iterate`: one per
+ * **What the count is.** For the read ops it is the number of Storage **chunk fetches** (`count`/`iterate`: one per
  * effective chunk; `intersect`: surviving keys × operands). For the admin scans it is the number of **segments
  * fanned out to** (`subjectReport`: one `has()` each; `eraseSubject`: one generation rewrite each) — i.e. it
  * bounds the *breadth* of the fan-out, not the request total of each segment's own rewrite. That's
@@ -17,7 +17,7 @@
 import { BudgetExceededError, ValidationError } from './errors';
 
 export interface Budget {
-  /** Max units of fan-out (Cold chunk fetches, or segments scanned) one op may issue before it is refused. */
+  /** Max units of fan-out (Storage chunk fetches, or segments scanned) one op may issue before it is refused. */
   readonly maxRequests: number;
 }
 
@@ -58,7 +58,7 @@ export function resolvePerOpBudget(
 
 /**
  * Refuse an op whose projected fan-out exceeds the budget. **Call before fan-out**, with the exact fan-out size
- * the op is about to issue (Cold chunk fetches, or segments to scan). O(1). No-op when `budget` is `null`
+ * the op is about to issue (Storage chunk fetches, or segments to scan). O(1). No-op when `budget` is `null`
  * (disabled).
  */
 export function checkBudget(budget: Budget | null, projectedRequests: number, op: string): void {

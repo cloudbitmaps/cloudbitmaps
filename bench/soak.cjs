@@ -11,7 +11,7 @@
  *
  * WHY EVERY VERB IS IN THE LOOP. Each one owns a different piece of the memory story:
  *   - `has`       fills the HOT LRU (decoded chunks) — the count-bounded cache must evict, not grow.
- *   - `count`     parses `.crbm` indices into the cold reader cache — the count+byte-bounded cache under `SOAK_CAP`.
+ *   - `count`     parses `.crbm` indices into the storage reader cache — the count+byte-bounded cache under `SOAK_CAP`.
  *   - `iterate`   streams a whole segment one chunk at a time — nothing may accumulate across the stream.
  *   - combines    the crown jewel: the chunk-aligned window holds at most `concurrency × operands` payloads, and
  *                 `exclude` operands are read only at surviving keys. The *structural* half of that bound is proven
@@ -20,7 +20,7 @@
  *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
  *                 combines, and the RSS gate built on it claimed to bound the window anyway.
  *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
- *                 refresh (`coldGenTtlMs`) and the HOT LRU's generation-keyed entries do real work: a stale reader
+ *                 refresh (`storageGenTtlMs`) and the HOT LRU's generation-keyed entries do real work: a stale reader
  *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with
  *                 no re-loads cannot observe either, so zero re-loads is likewise INCONCLUSIVE.
  *
@@ -45,7 +45,7 @@
  * so the duration isn't corrupted by suspend.
  *
  * Run: `pnpm soak` (builds first). Env knobs:
- *   SOAK_SECONDS=90   duration        SOAK_SEGMENTS=400   fleet size     SOAK_CAP=64   cold reader-cache cap
+ *   SOAK_SECONDS=90   duration        SOAK_SEGMENTS=400   fleet size     SOAK_CAP=64   storage reader-cache cap
  *   SOAK_SAMPLE_MS=2000  heap sample interval             SOAK_SEED=1     load-pattern seed
  *   SOAK_INJECT=1     persist bench/soak-results.json (else a dry run prints only)
  *   SOAK_TASK=reader SOAK_DIR=<dir>   internal: the reader-only child
@@ -57,7 +57,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const {
   CloudRoaring,
-  LocalFsColdDriver,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
@@ -127,27 +127,27 @@ function randIds(rand) {
 }
 function openDrivers(dir) {
   return {
-    cold: new LocalFsColdDriver(dir),
+    storage: new LocalFsStorageDriver(dir),
     registry: new LocalFsRegistryDriver(dir, { now: () => Date.now() }),
   };
 }
 
 /** Seed a LocalFs fleet: one generation per segment, published through the registry. */
 async function seedFleet(dir) {
-  const { cold, registry } = openDrivers(dir);
+  const { storage, registry } = openDrivers(dir);
   const rand = rng(SEED);
   for (let i = 0; i < SEGMENTS; i++) {
-    await bulkLoadCrbmGeneration(cold, { segment: segName(i), generation: 1 }, randIds(rand), {
+    await bulkLoadCrbmGeneration(storage, { segment: segName(i), generation: 1 }, randIds(rand), {
       registry,
     });
   }
-  return { cold, registry };
+  return { storage, registry };
 }
 
 // ── the reader-only child: open the post-soak fleet, read across all of it, report isolated heap+RSS ──
 async function readerChild() {
-  const { cold, registry } = openDrivers(process.env.SOAK_DIR);
-  const store = new CloudRoaring({ cold, registry, coldReaderCacheMax: CAP });
+  const { storage, registry } = openDrivers(process.env.SOAK_DIR);
+  const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: CAP });
   const rand = rng(SEED);
   // Two full passes so a bounded cache cycles eviction (each segment re-opened after eviction). Each segment is
   // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded hot cache, so
@@ -161,7 +161,7 @@ async function readerChild() {
   }
   // Isolated COMBINE footprint, on the same fresh process: a run of chunk-skipping intersections across the
   // fleet, each with an exclude operand, with no seed-phase arena and no load in the picture. This is the closest
-  // thing to the Lambda case the harness can express — a cold process whose entire job is combining segments —
+  // thing to the Lambda case the harness can express — a storage process whose entire job is combining segments —
   // so it is the number worth reporting beside the read-path one.
   let combines = 0;
   let combineIds = 0;
@@ -188,9 +188,9 @@ async function readerChild() {
 async function soak() {
   const dir = mkTmp();
   try {
-    const { cold, registry } = await seedFleet(dir);
-    const store = new CloudRoaring({ cold, registry, coldReaderCacheMax: CAP });
-    const deps = { cold, registry };
+    const { storage, registry } = await seedFleet(dir);
+    const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: CAP });
+    const deps = { storage, registry };
     const rand = rng(SEED ^ 0x9e3779b9);
 
     const samples = [];
@@ -213,13 +213,15 @@ async function soak() {
         for (let r = 0; r < RELOADS_PER_ROUND; r++) {
           const ref = { segment: segName(pick(rand)) };
           const generation = await nextGeneration(ref, deps);
-          await bulkLoadCrbmGeneration(cold, { ...ref, generation }, randIds(rand), { registry });
+          await bulkLoadCrbmGeneration(storage, { ...ref, generation }, randIds(rand), {
+            registry,
+          });
           reloads++;
           // Best-effort: a transient FS fault here must not abort the soak — it's disk hygiene, not the verdict.
           await gcOrphanGenerations(ref, deps, { keep: 1 }).catch(() => undefined);
         }
       }
-      // Reads — count + has across random segments (exercises the bounded cold reader cache AND, right after a
+      // Reads — count + has across random segments (exercises the bounded storage reader cache AND, right after a
       // re-load, the generation refresh that must swap a stale reader rather than stack a second one).
       for (let r = 0; r < 12; r++) {
         const seg = store.segment(segName(pick(rand)));

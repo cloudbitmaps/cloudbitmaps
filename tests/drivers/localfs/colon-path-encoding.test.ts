@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import {
   coldObjectFilename,
@@ -44,17 +44,17 @@ describe('localfs: colons never reach the filesystem', () => {
       namespace: 'tenant:acme',
       generation: 3,
     };
-    const cold = coldObjectPath(root, key);
+    const storage = coldObjectPath(root, key);
     const reg = registryRowPath(root, key);
     // `root` is a tmpdir path we do not control; assert only on what the driver appended.
-    for (const p of [cold, reg]) expect(p.slice(root.length)).not.toContain(':');
-    expect(basename(cold)).toBe('sent%3Adaily%3A2026-08-01.3.crbm');
+    for (const p of [storage, reg]) expect(p.slice(root.length)).not.toContain(':');
+    expect(basename(storage)).toBe('sent%3Adaily%3A2026-08-01.3.crbm');
     expect(basename(reg)).toBe('sent%3Adaily%3A2026-08-01.reg');
-    expect(cold).toContain('tenant%3Aacme');
+    expect(storage).toContain('tenant%3Aacme');
   });
 
   it('a colon segment round-trips through a real write, list and read', async () => {
-    const driver = new LocalFsColdDriver(root);
+    const driver = new LocalFsStorageDriver(root);
     const key: GenKey = { segment: 'dedup:2026-08-01', namespace: 'tenant:acme', generation: 0 };
     const payload = new Uint8Array([1, 2, 3, 4]);
     await driver.putImmutable(key, bytes(payload));

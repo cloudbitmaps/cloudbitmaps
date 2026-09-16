@@ -1,7 +1,7 @@
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MIN_EXPIRES_AT_MS,
   destroySegment,
   clearSegmentRetention,
@@ -64,9 +64,9 @@ async function world(keystore?: InProcessKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
   // A FRESH store per read (`w.store()` is a factory, not the fixture's single instance): the fixture passes no
   // clock, so a store pins each segment's resolved generation for its own lifetime — the documented
-  // `coldGenTtlMs: 0` caveat. Wiring only; no hot-path cost.
+  // `storageGenTtlMs: 0` caveat. Wiring only; no hot-path cost.
   const store = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
   return { ...w, store };
 }
 
@@ -88,7 +88,7 @@ describe('setRetention / getRetention / clearRetention', () => {
 
     // …and now it does — enumerable by every fleet-wide operation, which is the entire point of Part 1.
     const rec = (await w.registry.get(SEG))!;
-    expect(rec.currentGen).toBeNull(); // claims NO Cold generation, so reads resolve exactly as before
+    expect(rec.currentGen).toBeNull(); // claims NO Storage generation, so reads resolve exactly as before
     expect(rec.status).toBe('active');
     expect(rec.retention).toEqual({ expiresAt: FUTURE });
 
@@ -219,7 +219,7 @@ describe('setRetention / getRetention / clearRetention', () => {
 
     it('needs a registry in the store config', async () => {
       const store = new CloudRoaring({
-        cold: new CrbmColdChunkSource(new MemoryColdDriver()),
+        storage: new CrbmStorageChunkSource(new MemoryStorageDriver()),
         retry: false,
       });
       await expect(store.setRetention(SEG, { expiresAt: FUTURE })).rejects.toBeInstanceOf(

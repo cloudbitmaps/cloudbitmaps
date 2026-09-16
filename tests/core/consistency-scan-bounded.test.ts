@@ -38,7 +38,7 @@ const depsWith = (reg: { list: () => AsyncIterable<RegistryRecord> }) =>
       list: () => reg.list(),
       get: () => Promise.resolve(null),
     },
-    cold: { head: () => Promise.resolve(null) },
+    storage: { head: () => Promise.resolve(null) },
   }) as never;
 
 describe('consistency check bounds its registry scan', () => {

@@ -1,5 +1,5 @@
 /**
- * `LocalFsColdDriver` — a zero-cloud {@link IColdDriver} backed by the local filesystem.
+ * `LocalFsStorageDriver` — a zero-cloud {@link IStorageDriver} backed by the local filesystem.
  *
  * Generations are write-once immutable files. A new object is streamed to a temp file (with its content
  * hashed in-flight), `fsync`-ed, then published with an atomic `link` that fails if the destination
@@ -13,14 +13,14 @@ import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import { coldObjectPath, parseGeneration, segmentsDir } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
-export class LocalFsColdDriver implements IColdDriver {
+export class LocalFsStorageDriver implements IStorageDriver {
   constructor(private readonly root: string) {}
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: false };
   }
 

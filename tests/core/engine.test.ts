@@ -1,7 +1,7 @@
-import { CloudRoaring, IntegrityError, type Clock, type ColdChunkSource } from '@/index';
+import { CloudRoaring, IntegrityError, type Clock, type StorageChunkSource } from '@/index';
 import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
-/** A controllable clock, so the store's generation refresh (`coldGenTtlMs`) is driven by the test, not wall time. */
+/** A controllable clock, so the store's generation refresh (`storageGenTtlMs`) is driven by the test, not wall time. */
 function fakeClock(): Clock & { advance: (ms: number) => void } {
   let t = 0;
   return { now: () => t, sleep: () => Promise.resolve(), advance: (ms) => (t += ms) };
@@ -28,11 +28,11 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
 
   it('a reload REPLACES the set — readers see the new generation, and only it', async () => {
     // There is no add/remove: the only way ids leave a segment is a generation that does not hold them. A
-    // reader re-resolves the current generation after `coldGenTtlMs`, driven here by the injected clock.
+    // reader re-resolves the current generation after `storageGenTtlMs`, driven here by the injected clock.
     const clock = fakeClock();
     const { store, load, registry } = await loadedStore(
       { users: [1, 2, 70_000, 70_001] },
-      { clock, coldGenTtlMs: 1 },
+      { clock, storageGenTtlMs: 1 },
     );
     const s = store.segment('users');
     expect(await collect(s.iterate())).toEqual([1, 2, 70_000, 70_001]);
@@ -51,7 +51,7 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
     const clock = fakeClock();
     const { store, load, registry } = await loadedStore(
       { users: [42] },
-      { clock, coldGenTtlMs: 1 },
+      { clock, storageGenTtlMs: 1 },
     );
     const s = store.segment('users');
     expect(await s.has(42)).toBe(true);
@@ -65,8 +65,8 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
   });
 
   it('isolates namespaces', async () => {
-    const { store, cold } = seededStore();
-    seedSegment(cold, { namespace: 'acme', segment: 'seg' }, [1]);
+    const { store, storage } = seededStore();
+    seedSegment(storage, { namespace: 'acme', segment: 'seg' }, [1]);
     const a = store.segment('seg', { namespace: 'acme' });
     const b = store.segment('seg', { namespace: 'globex' });
     expect(await a.has(1)).toBe(true);
@@ -85,11 +85,11 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
   });
 
   it('rejects an out-of-range chunk key from a tier (IntegrityError)', async () => {
-    const badCold: ColdChunkSource = {
+    const badCold: StorageChunkSource = {
       getChunk: () => Promise.resolve(null),
       listChunkKeys: () => Promise.resolve([70_000]), // > 0xffff
     };
-    const s = new CloudRoaring({ cold: badCold }).segment('users');
+    const s = new CloudRoaring({ storage: badCold }).segment('users');
     await expect(s.count()).rejects.toBeInstanceOf(IntegrityError);
   });
 });

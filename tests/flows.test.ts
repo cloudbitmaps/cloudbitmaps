@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CloudRoaring,
-  LocalFsColdDriver,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
   RecordingAuditSink,
 } from '@/index';
@@ -28,7 +28,7 @@ afterEach(async () => {
 
 const store = (opts: { keystore?: InProcessKeystore } = {}): CloudRoaring =>
   new CloudRoaring({
-    cold: new LocalFsColdDriver(root),
+    storage: new LocalFsStorageDriver(root),
     registry: new LocalFsRegistryDriver(root),
     retry: false,
     ...(opts.keystore === undefined ? {} : { keystore: opts.keystore, keyId: 'k1' }),

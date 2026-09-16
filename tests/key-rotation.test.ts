@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
@@ -15,7 +15,7 @@ import type { IKeystore, SegmentRef } from '@/index';
  *
  * `tests/drivers/crypto.test.ts` proves KEK rotation at the keystore primitive (a DEK wrapped under the old
  * KEK still unwraps after `activeKeyId` moves). This proves the SAME rotation survives the whole stack —
- * registry `wrappedDeks`, the encrypted `.crbm` cold source, and a further load onto an already-encrypted
+ * registry `wrappedDeks`, the encrypted `.crbm` storage source, and a further load onto an already-encrypted
  * segment — and that the operator model holds: keep the old KEK to read old segments, and new segments adopt
  * the new active KEK.
  */
@@ -32,25 +32,25 @@ async function members(store: CloudRoaring, seg: string): Promise<number[]> {
 
 function storeWith(
   keystore: IKeystore,
-  cold: MemoryColdDriver,
+  storage: MemoryStorageDriver,
   registry: MemoryRegistryDriver,
 ): CloudRoaring {
   return new CloudRoaring({
-    cold: new CrbmColdChunkSource(cold, { registry, keystore }),
+    storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
     retry: false,
   });
 }
 
-describe('KEK rotation — end to end (through the registry, the cold source, and a further load)', () => {
+describe('KEK rotation — end to end (through the registry, the storage source, and a further load)', () => {
   it('rotates the active KEK without re-encrypting: old segments read under the retained old KEK, new segments adopt the new one', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const kekA = key();
     const kekB = key();
 
     // Before rotation: only KEK "A" exists; it is the active KEK. Seed an encrypted segment under it.
     const ksA = new InProcessKeystore({ keys: { A: kekA }, activeKeyId: 'A' });
-    await bulkLoadCrbmGeneration(cold, { ...OLD, generation: 0 }, [1, 2, 3], {
+    await bulkLoadCrbmGeneration(storage, { ...OLD, generation: 0 }, [1, 2, 3], {
       registry,
       keystore: ksA,
     });
@@ -58,10 +58,11 @@ describe('KEK rotation — end to end (through the registry, the cold source, an
 
     // ── Rotate ── the operator adds KEK "B" and points `activeKeyId` at it, KEEPING "A" to unwrap existing DEKs.
     const ksB = new InProcessKeystore({ keys: { A: kekA, B: kekB }, activeKeyId: 'B' });
-    // A fresh store per read: the cold source caches a generation snapshot for its TTL, so a read after a
+    // A fresh store per read: the storage source caches a generation snapshot for its TTL, so a read after a
     // load must be issued through a new store to observe the new generation (same pattern as the
     // encryption-lifecycle suite). Cheap — wiring only, no hot-path cost.
-    const readB = (seg: string): Promise<number[]> => members(storeWith(ksB, cold, registry), seg);
+    const readB = (seg: string): Promise<number[]> =>
+      members(storeWith(ksB, storage, registry), seg);
 
     // 1. The old segment still reads — its DEK is wrapped under "A", which the rotated keystore retains.
     expect(await readB('old')).toEqual([1, 2, 3]);
@@ -70,7 +71,7 @@ describe('KEK rotation — end to end (through the registry, the cold source, an
     //    load reuses the segment's existing DEK (still wrapped under "A" only), so the segment never becomes
     //    dependent on the new active KEK. This is the load path's `existing.wrappedDeks` reuse — the same
     //    property the erasure rewrite relies on.
-    await bulkLoadCrbmGeneration(cold, { ...OLD, generation: 1 }, [1, 2, 3, 4], {
+    await bulkLoadCrbmGeneration(storage, { ...OLD, generation: 1 }, [1, 2, 3, 4], {
       registry,
       keystore: ksB,
     });
@@ -78,7 +79,7 @@ describe('KEK rotation — end to end (through the registry, the cold source, an
     expect(await readB('old')).toEqual([1, 2, 3, 4]);
 
     // 3. A NEW segment created after rotation adopts the new active KEK "B".
-    await bulkLoadCrbmGeneration(cold, { ...FRESH, generation: 0 }, [9], {
+    await bulkLoadCrbmGeneration(storage, { ...FRESH, generation: 0 }, [9], {
       registry,
       keystore: ksB,
     });
@@ -88,7 +89,7 @@ describe('KEK rotation — end to end (through the registry, the cold source, an
     // 4. Retiring KEK "A" (a keystore holding only "B") genuinely locks out the old segment — proof it was
     //    encrypted under "A", not merely tagged — while the new segment still reads.
     const ksBonly = new InProcessKeystore({ keys: { B: kekB }, activeKeyId: 'B' });
-    const storeBonly = storeWith(ksBonly, cold, registry);
+    const storeBonly = storeWith(ksBonly, storage, registry);
     await expect(members(storeBonly, 'old')).rejects.toBeInstanceOf(KeyUnavailableError);
     expect(await members(storeBonly, 'fresh')).toEqual([9]);
   });

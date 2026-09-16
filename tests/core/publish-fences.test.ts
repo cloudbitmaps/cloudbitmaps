@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { publishGeneration } from '@/core/crbm-cold-source';
+import { publishGeneration } from '@/core/crbm-storage-source';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { CloudRoaring, MemoryColdChunkSource, bulkLoadCrbmGeneration } from '@/index';
-import type { ChunkRef, IColdDriver, IKeystore, SegmentRef } from '@/index';
+import { CloudRoaring, MemoryStorageChunkSource, bulkLoadCrbmGeneration } from '@/index';
+import type { ChunkRef, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
@@ -34,21 +34,21 @@ const key32 = (): Uint8Array => randomBytes(32);
 
 async function world(keystore?: IKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
-  const deps = { cold: w.cold, registry: w.registry, codec: roaringCodec, keystore };
+  const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
   return { ...w, deps, reader };
 }
 
-async function generations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
-  for await (const k of cold.list(ref)) gens.push(k.generation);
+  for await (const k of storage.list(ref)) gens.push(k.generation);
   return gens.sort((a, b) => a - b);
 }
 
 /**
- * Wrap a cold driver so `hook` runs once, right after the first chunk read — by which point the rewrite has the
+ * Wrap a storage driver so `hook` runs once, right after the first chunk read — by which point the rewrite has the
  * content it derived from in hand, and has NOT yet chosen its own generation number.
  *
  * That is the window the fence is about: a writer publishing here is one `nextGeneration` skips past, so the
@@ -63,7 +63,7 @@ async function generations(cold: IColdDriver, ref: SegmentRef): Promise<number[]
  * a **single-chunk** fixture, which is why it never reached the rewrite's own re-reads: that suite spans three
  * chunks deliberately.
  */
-function afterFirstChunkRead(base: IColdDriver, hook: () => Promise<void>): IColdDriver {
+function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): IStorageDriver {
   let fired = false;
   return {
     capabilities: () => base.capabilities(),
@@ -90,20 +90,20 @@ describe('a publish derived from one generation lands only on that generation', 
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
 
-    const cold = afterFirstChunkRead(w.cold, async () => {
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3, 99], {
+    const storage = afterFirstChunkRead(w.storage, async () => {
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2, 3, 99], {
         registry: w.registry,
       });
     });
 
-    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]); // nothing collected — we did not become current
 
     // The load stands, whole, and its object is still there.
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3, 99]);
-    expect(await generations(w.cold, SEG)).toContain(1);
+    expect(await generations(w.storage, SEG)).toContain(1);
   });
 
   it('two erasures racing: the loser reports superseded instead of resurrecting the first id', async () => {
@@ -115,11 +115,11 @@ describe('a publish derived from one generation lands only on that generation', 
     await w.load(SEG, [1, 2, 3]);
 
     let inner: Awaited<ReturnType<typeof eraseIdFromSegment>> | undefined;
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       inner = await eraseIdFromSegment(SEG, 1, w.deps); // a second erasure, start to finish
     });
 
-    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold });
+    const outer = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
 
     expect(inner).toMatchObject({ erased: true, fromGeneration: 0 });
     expect(outer).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
@@ -138,18 +138,18 @@ describe('a publish derived from one generation lands only on that generation', 
     // the `keep: 0` collection then deletes the object we just discarded.
     const w = await world();
     await w.load(SEG, [1, 2, 3]); // gen 0, published
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3, 99]); // no registry ⇒ orphan
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2, 3, 99]); // no registry ⇒ orphan
 
     let landed = false;
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      putImmutable: (k, fn) => w.cold.putImmutable(k, fn),
-      getRange: (k, o, l) => w.cold.getRange(k, o, l),
-      delete: (k) => w.cold.delete(k),
-      list: (ref) => w.cold.list(ref),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (ref) => w.storage.list(ref),
       // `verifyGeneration` is the only thing that opens a reader on the generation we just wrote.
       getTail: async (k, m) => {
-        const res = await w.cold.getTail(k, m);
+        const res = await w.storage.getTail(k, m);
         if (!landed && k.generation >= 2) {
           landed = true;
           await publishGeneration(w.registry, { ...SEG, generation: 1 });
@@ -158,7 +158,7 @@ describe('a publish derived from one generation lands only on that generation', 
       },
     };
 
-    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
     // The orphan's publish stands, whole — including the id it added that our rewrite never knew about.
@@ -172,7 +172,7 @@ describe('a publish derived from one generation lands only on that generation', 
     const res = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1, collected: [0] });
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 3]);
-    expect(await generations(w.cold, SEG)).toEqual([1]); // physically gone on return
+    expect(await generations(w.storage, SEG)).toEqual([1]); // physically gone on return
   });
 
   it('publishGeneration with expectFrom refuses every pointer that is not exactly it', async () => {
@@ -206,7 +206,7 @@ describe('a publish derived from one generation lands only on that generation', 
     // `expectFrom` had been made unconditional this would fail, and re-running a batch job would start throwing.
     const w = await world();
     await w.load(SEG, [1]);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [7, 8], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [7, 8], {
       registry: w.registry,
     });
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
@@ -222,11 +222,11 @@ describe("a segment's encryption posture is decided at its first generation", ()
     // unrecoverable the moment the call returned, and the call reported success.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
       registry: w.registry,
     }); // cleartext, no keystore
 
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3, 4], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2, 3, 4], {
       registry: w.registry,
       keystore, // …and now one is wired
     });
@@ -236,7 +236,7 @@ describe("a segment's encryption posture is decided at its first generation", ()
     expect(rec.wrappedDeks).toBeUndefined(); // the segment is still cleartext, so no key was minted
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3, 4]);
     // Readable WITHOUT the keystore too — the proof that nothing was encrypted under a stranded key.
-    const keyless = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const keyless = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await keyless.segment('s').count()).toBe(4);
   });
 
@@ -245,12 +245,12 @@ describe("a segment's encryption posture is decided at its first generation", ()
     // handed a cleartext generation.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
 
     await expect(
-      bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3], {
+      bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2, 3], {
         registry: w.registry,
         keystore,
         requireEncryption: true,
@@ -266,7 +266,9 @@ describe("a segment's encryption posture is decided at its first generation", ()
     // everywhere, backups included", over plaintext that stays readable from any copy.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {
+      registry: w.registry,
+    });
     const minted = await keystore.createDek();
 
     await expect(
@@ -281,14 +283,14 @@ describe("a segment's encryption posture is decided at its first generation", ()
     // The counter-test: the posture rule must not break the case it exists to protect.
     const keystore = new InProcessKeystore({ keys: { k1: key32() }, activeKeyId: 'k1' });
     const w = await world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
       keystore,
     });
     const first = (await w.registry.get(SEG))!.wrappedDeks;
     expect(first?.length).toBeGreaterThan(0);
 
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2, 3], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2, 3], {
       registry: w.registry,
       keystore,
     });
@@ -305,7 +307,7 @@ describe("a segment's encryption posture is decided at its first generation", ()
     await w.load('b', [2, 3, 4]);
     // Loaded WITHOUT the keystore, unlike the fixture's own `load`: this destination is cleartext, which is the
     // whole premise. (`a` and `b` are encrypted, and the store reads them with its keystore.)
-    await bulkLoadCrbmGeneration(w.cold, { segment: 'dest', generation: 0 }, [99], {
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'dest', generation: 0 }, [99], {
       registry: w.registry,
     });
 
@@ -330,23 +332,23 @@ describe('a materialisation reports whether it actually landed', () => {
     await w.load('dest', [99]); // dest has gen 0, so ours will be numbered 1
 
     // A writer that publishes generation 2 of `dest` while our object is being written.
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      getRange: (k, o, l) => w.cold.getRange(k, o, l),
-      getTail: (k, m) => w.cold.getTail(k, m),
-      delete: (k) => w.cold.delete(k),
-      list: (ref) => w.cold.list(ref),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      delete: (k) => w.storage.delete(k),
+      list: (ref) => w.storage.list(ref),
       putImmutable: async (k, fn) => {
-        const res = await w.cold.putImmutable(k, fn);
+        const res = await w.storage.putImmutable(k, fn);
         if (k.segment === 'dest' && k.generation === 1) {
-          await bulkLoadCrbmGeneration(w.cold, { segment: 'dest', generation: 2 }, [7, 8], {
+          await bulkLoadCrbmGeneration(w.storage, { segment: 'dest', generation: 2 }, [7, 8], {
             registry: w.registry,
           });
         }
         return res;
       },
     };
-    const store = new CloudRoaring({ cold, registry: w.registry, retry: false });
+    const store = new CloudRoaring({ storage, registry: w.registry, retry: false });
 
     await expect(
       store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]),
@@ -410,8 +412,10 @@ describe('a materialisation reports whether it actually landed', () => {
     // current wrote a durable object that no reader will ever resolve.
     const w = await world();
     await w.load(SEG, [1]); // gen 0
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 5 }, [5], { registry: w.registry });
-    const late = await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 1 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [5], {
+      registry: w.registry,
+    });
+    const late = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 1 }, [1, 2], {
       registry: w.registry,
     });
     expect(late.becameCurrent).toBe(false);
@@ -419,7 +423,7 @@ describe('a materialisation reports whether it actually landed', () => {
     expect((await w.registry.get(SEG))!.currentGen).toBe(5); // …and changed nothing
 
     // With no registry there is no pointer, so there is nothing to report.
-    const noReg = await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 9 }, [9]);
+    const noReg = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [9]);
     expect(noReg.becameCurrent).toBeUndefined();
   });
 });
@@ -433,23 +437,25 @@ describe('the guards the suite was carrying untested', () => {
     const w = await world();
     await w.load(SEG, [1, 2, 70_000, 140_000]); // three chunks, so a dropped one is detectable
     // Truncate the re-read: the freshly written object reports a short chunk-key set on verification.
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      putImmutable: (k, fn) => w.cold.putImmutable(k, fn),
-      getRange: (k, o, l) => w.cold.getRange(k, o, l),
-      delete: (k) => w.cold.delete(k),
-      list: (ref) => w.cold.list(ref),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (ref) => w.storage.list(ref),
       // The index lives in the tail, so corrupting the tail read of the NEW generation is what a dropped chunk
       // would look like to the verifier.
       getTail: async (k, m) =>
-        k.generation === 1 ? w.cold.getTail({ ...k, generation: 0 }, m) : w.cold.getTail(k, m),
+        k.generation === 1
+          ? w.storage.getTail({ ...k, generation: 0 }, m)
+          : w.storage.getTail(k, m),
     };
 
-    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold })).rejects.toBeInstanceOf(
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, storage })).rejects.toBeInstanceOf(
       IntegrityError,
     );
     expect((await w.registry.get(SEG))!.currentGen).toBe(0); // never published
-    expect(await generations(w.cold, SEG)).toContain(0); // and the real data survives
+    expect(await generations(w.storage, SEG)).toContain(0); // and the real data survives
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 70_000, 140_000]);
   });
 
@@ -457,16 +463,16 @@ describe('the guards the suite was carrying untested', () => {
     // Invariant 5 ("range-check every chunk key that comes back from storage") is enforced in exactly two
     // places, and the index-only `count()` path — the headline read verb on a loaded segment — had no coverage:
     // the existing out-of-range test uses a source with no `cardinalities`, so it exercises the other one.
-    const cold = new MemoryColdChunkSource();
-    seedSegment(cold, 's', [1, 2, 3]);
-    const hostile: MemoryColdChunkSource = Object.create(cold) as MemoryColdChunkSource;
+    const storage = new MemoryStorageChunkSource();
+    seedSegment(storage, 's', [1, 2, 3]);
+    const hostile: MemoryStorageChunkSource = Object.create(storage) as MemoryStorageChunkSource;
     Object.assign(hostile, {
-      getChunk: (ref: ChunkRef) => cold.getChunk(ref),
-      listChunkKeys: (ref: SegmentRef) => cold.listChunkKeys(ref),
+      getChunk: (ref: ChunkRef) => storage.getChunk(ref),
+      listChunkKeys: (ref: SegmentRef) => storage.listChunkKeys(ref),
       cardinalities: () => Promise.resolve(new Map([[70_000, 3]])), // > 0xffff
     });
 
-    const store = new CloudRoaring({ cold: hostile, retry: false });
+    const store = new CloudRoaring({ storage: hostile, retry: false });
     await expect(store.segment('s').count()).rejects.toBeInstanceOf(IntegrityError);
   });
 
@@ -476,19 +482,19 @@ describe('the guards the suite was carrying untested', () => {
     // decides whether an Art. 17 ledger over-attests.
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      putImmutable: (k, fn) => w.cold.putImmutable(k, fn),
-      getRange: (k, o, l) => w.cold.getRange(k, o, l),
-      getTail: (k, m) => w.cold.getTail(k, m),
-      list: (ref) => w.cold.list(ref),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      list: (ref) => w.storage.list(ref),
       delete: () => Promise.reject(new Error('object lock')),
     };
 
-    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold })).rejects.toThrow(/object lock/);
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, storage })).rejects.toThrow(/object lock/);
     // The publish DID land — that is why this must throw rather than report success: the bit is out of the
     // current generation but the object that held it is still in the bucket.
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
-    expect(await generations(w.cold, SEG)).toEqual([0, 1]);
+    expect(await generations(w.storage, SEG)).toEqual([0, 1]);
   });
 });

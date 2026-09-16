@@ -24,7 +24,7 @@
 #                            parent+child peak, well below a real regression; the build phase is uncapped)
 #   RSS_GATE_SECONDS=30      soak duration under the cap
 #   RSS_GATE_SEGMENTS=400    fleet size (sustained working set)
-#   RSS_GATE_CAP=64          cold reader-cache cap (the bound under test)
+#   RSS_GATE_CAP=64          storage reader-cache cap (the bound under test)
 
 set -euo pipefail
 

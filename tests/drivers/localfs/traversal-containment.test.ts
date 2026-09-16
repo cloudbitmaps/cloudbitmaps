@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import type { BlobSink } from '@/core/blob';
 
@@ -54,11 +54,11 @@ async function entriesUnder(dir: string): Promise<string[]> {
 
 describe('a hostile name is contained, not refused', () => {
   it('writes every traversal-shaped name inside the root and nowhere else', async () => {
-    const cold = new LocalFsColdDriver(root);
+    const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
 
     for (const name of HOSTILE) {
-      await cold.putImmutable(
+      await storage.putImmutable(
         { segment: name, namespace: name, generation: 0 },
         bytes(new Uint8Array([1])),
       );
@@ -78,14 +78,15 @@ describe('a hostile name is contained, not refused', () => {
   });
 
   it('round-trips those names through a real write, list and read', async () => {
-    const cold = new LocalFsColdDriver(root);
+    const storage = new LocalFsStorageDriver(root);
     for (const name of HOSTILE) {
       const key = { segment: name, namespace: 'ns', generation: 0 };
-      await cold.putImmutable(key, bytes(new Uint8Array([7, 8])));
-      expect(await cold.getRange(key, 0, 2)).toEqual(new Uint8Array([7, 8]));
+      await storage.putImmutable(key, bytes(new Uint8Array([7, 8])));
+      expect(await storage.getRange(key, 0, 2)).toEqual(new Uint8Array([7, 8]));
 
       const listed = [];
-      for await (const k of cold.list({ segment: name, namespace: 'ns' })) listed.push(k.segment);
+      for await (const k of storage.list({ segment: name, namespace: 'ns' }))
+        listed.push(k.segment);
       expect(listed).toEqual([name]);
     }
   });
@@ -117,8 +118,11 @@ describe('a hostile name is contained, not refused', () => {
   });
 
   it('the root is still a directory the drivers own — no symlink or file was substituted', async () => {
-    const cold = new LocalFsColdDriver(root);
-    await cold.putImmutable({ segment: '../../evil', generation: 0 }, bytes(new Uint8Array([1])));
+    const storage = new LocalFsStorageDriver(root);
+    await storage.putImmutable(
+      { segment: '../../evil', generation: 0 },
+      bytes(new Uint8Array([1])),
+    );
     const st = await stat(root);
     expect(st.isDirectory()).toBe(true);
   });

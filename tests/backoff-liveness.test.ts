@@ -1,5 +1,5 @@
-import { CloudRoaring, MemoryColdChunkSource, TransientError } from '@/index';
-import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import { CloudRoaring, MemoryStorageChunkSource, TransientError } from '@/index';
+import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { seedSegment } from './helpers/loaded';
 
 /**
@@ -17,15 +17,15 @@ import { seedSegment } from './helpers/loaded';
  *
  * WHAT DRIVES THE BACKOFF NOW. This used to inject an optimistic-concurrency conflict on a warm write, because
  * that was the retry loop everyone hit. With the warm tier gone the surviving user of `Clock.sleep` is the
- * driver transient-retry loop (`withRetry`, wrapped around the cold source by default), so the fault injected
- * here is a transient cold read. The mechanism under test is unchanged — it is the same `SystemClock.sleep` —
+ * driver transient-retry loop (`withRetry`, wrapped around the storage source by default), so the fault injected
+ * here is a transient storage read. The mechanism under test is unchanged — it is the same `SystemClock.sleep` —
  * and the reason it matters is if anything sharper: a Lambda whose only pending handle is a retry of the one
  * GET its whole invocation depends on.
  */
 
-/** A cold source whose first `getChunk` fails transiently, then behaves normally. */
-class FlakyOnce implements ColdChunkSource {
-  readonly inner = new MemoryColdChunkSource();
+/** A storage source whose first `getChunk` fails transiently, then behaves normally. */
+class FlakyOnce implements StorageChunkSource {
+  readonly inner = new MemoryStorageChunkSource();
   failed = false;
 
   async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -42,8 +42,8 @@ class FlakyOnce implements ColdChunkSource {
 
 describe('transient-retry backoff liveness (the default clock keeps a pending retry alive)', () => {
   it('does not unref the backoff timer created during a real transient retry', async () => {
-    const cold = new FlakyOnce();
-    seedSegment(cold.inner, 's', [42]);
+    const storage = new FlakyOnce();
+    seedSegment(storage.inner, 's', [42]);
 
     // Wrap every timer created while the read is in flight and record any `unref()` call on it.
     const realSetTimeout = globalThis.setTimeout;
@@ -68,7 +68,7 @@ describe('transient-retry backoff liveness (the default clock keeps a pending re
 
     try {
       const store = new CloudRoaring({
-        cold,
+        storage,
         // Fixed jitter ⇒ a deterministic non-zero backoff delay, so a real timer is always created. The clock is
         // left as the default SystemClock on purpose — that is the code under test.
         rng: { next: () => 0.5 },
@@ -77,7 +77,7 @@ describe('transient-retry backoff liveness (the default clock keeps a pending re
       // The awaited read survives the blink AND returns the right answer (no swallowed fault).
       expect(await store.segment('s').has(42)).toBe(true);
 
-      expect(cold.failed).toBe(true); // the transient path really fired…
+      expect(storage.failed).toBe(true); // the transient path really fired…
       expect(timersCreated).toBeGreaterThan(0); // …so a backoff timer was created…
       expect(unrefCalls).toBe(0); // …and it must stay ref'd, or a bare process could exit mid-retry.
     } finally {

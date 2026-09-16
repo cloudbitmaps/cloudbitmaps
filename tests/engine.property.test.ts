@@ -143,7 +143,7 @@ describe('loaded segment vs Set oracle (I2, V4, V5)', () => {
         // A reload is only *visible* once the reader's pinned generation snapshot ages out, so the TTL and the
         // clock that drives it are part of the property.
         const clock = fakeClock();
-        const { store, load } = await loadedStore({ s: first }, { clock, coldGenTtlMs: 1 });
+        const { store, load } = await loadedStore({ s: first }, { clock, storageGenTtlMs: 1 });
         const seg = store.segment('s');
         expect(await collect(seg.iterate())).toEqual(asc(first)); // pins generation 0
 

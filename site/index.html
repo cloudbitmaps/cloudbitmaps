@@ -419,9 +419,9 @@
            store — is gone rather than shrunk. The third row and the third card carry the REGISTRY
            instead, which is the piece that makes two immutable tiers behave like one mutable set, and it
            belongs in the legend for the same reason the tiers do: a reader cannot reason about a
-           generation without it. It keeps the amber `r-gen`/`t-gen` hooks deliberately — `--cb-cold`
+           generation without it. It keeps the amber `r-gen`/`t-gen` hooks deliberately — `--cb-storage`
            and `--cb-cyan` are the same hex, so a third row painted cyan would be indistinguishable from
-           the cold one, and the figure's whole job is that its three parts are told apart.
+           the storage one, and the figure's whole job is that its three parts are told apart.
 
            The rows also run in the order a load actually happens now — object, then pointer, then the
            cache a later read fills — rather than in read-priority order, because the stage is titled
@@ -440,7 +440,7 @@
           <div class="pstage">
             <div class="pstage-label"><span>Your call</span></div>
             <div class="pstage-body">
-              <p class="pstage-code">bulkLoadCrbmGeneration(cold,&nbsp;ref,&nbsp;ids)</p>
+              <p class="pstage-code">bulkLoadCrbmGeneration(storage,&nbsp;ref,&nbsp;ids)</p>
               <ul class="ids">
                 <li><i class="pk b1"></i><span>75</span><em>&rarr; key 0x0000</em></li>
                 <li><i class="pk b4"></i><span>99_999</span><em>&rarr; key 0x0001</em></li>
@@ -472,8 +472,8 @@
           <div class="pstage">
             <div class="pstage-label"><span>Where the bytes land</span></div>
             <div class="pstage-body">
-              <div class="trow r-cold">
-                <span class="tkey">Cold</span>
+              <div class="trow r-storage">
+                <span class="tkey">Storage</span>
                 <span class="tfill"
                   ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i
                   ><i class="f"></i><i class="f"></i><i class="f"></i
@@ -516,7 +516,7 @@
 
         <div class="tiers">
           <div class="tier">
-            <span class="tier-chip t-cold">COLD · .crbm</span>
+            <span class="tier-chip t-storage">STORAGE · .crbm</span>
             <p>
               Immutable, generation-keyed objects in your own bucket. Documented format, one-command
               export.
@@ -557,7 +557,7 @@
             <p class="lede">
               Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
-              fetched — 100 of 2,000, in 24.6 ms. The other 1,900 stay cold and unbilled.
+              fetched — 100 of 2,000, in 24.6 ms. The other 1,900 stay storage and unbilled.
             </p>
             <figure class="keys">
               <div class="label">Chunk keys · shared only</div>
@@ -604,18 +604,18 @@
                  usable measure is ~72 characters and the three-id form ran to 82. -->
             <div class="code-head label"><span>segments.ts</span><span>No setup</span></div>
             <pre><code><span class="k">import</span> {
-  CloudRoaring, MemoryColdDriver, MemoryRegistryDriver,
+  CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> cold = <span class="k">new</span> MemoryColdDriver();
+<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
 <span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
 <span class="k">const</span> ref = { segment: <span class="s">'bought-last-90d'</span>, generation: <span class="n">0</span> };
 
 <span class="c">// one write-once object, and then the pointer moves to it</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(cold, ref, [<span class="n">75</span>, <span class="n">99_999</span>], { registry });
+<span class="k">await</span> bulkLoadCrbmGeneration(storage, ref, [<span class="n">75</span>, <span class="n">99_999</span>], { registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ cold, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
 <span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
 <span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
 <span class="c">// fetches only the chunks that can contribute</span>

@@ -1,8 +1,8 @@
 /**
- * A {@link ColdChunkSource} view that holds **one** segment at **one** generation, and passes everything else
+ * A {@link StorageChunkSource} view that holds **one** segment at **one** generation, and passes everything else
  * through to the live source.
  *
- * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `coldGenTtlMs`, so a
+ * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `storageGenTtlMs`, so a
  * publish part-way through an export, a send or a reconciliation means the second half of the job describes a
  * different instant than the first — and nothing in the result says so.
  *
@@ -20,8 +20,8 @@
  * on some other handle. That is why the routing is by segment identity here rather than by which object the
  * caller happened to start from.
  */
-import type { ChunkRef, ColdChunkSource, SegmentRef, SegmentSize } from './ports';
-import type { CrbmColdChunkSource } from './crbm-cold-source';
+import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from './ports';
+import type { CrbmStorageChunkSource } from './crbm-storage-source';
 import { segmentKey } from './keys';
 
 /** What a pin holds for one segment: the generation, and the version identifying those exact bytes. */
@@ -30,9 +30,9 @@ export interface PinnedAt {
   readonly version: string | null;
 }
 
-export class PinnedColdChunkSource implements ColdChunkSource {
+export class PinnedStorageChunkSource implements StorageChunkSource {
   constructor(
-    private readonly inner: CrbmColdChunkSource,
+    private readonly inner: CrbmStorageChunkSource,
     /**
      * The pinned segments, keyed by {@link segmentKey}. A **set** rather than one entry because a combine may
      * involve several pinned handles, and each must be read at its own pin — including when the call was made

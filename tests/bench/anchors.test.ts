@@ -1,8 +1,8 @@
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryColdDriver,
-  CrbmColdChunkSource,
+  MemoryStorageDriver,
+  CrbmStorageChunkSource,
   SafeBitmap,
   writeCrbmGeneration,
   estimateCost,
@@ -20,7 +20,7 @@ import { collect, loadedStore, seededStore } from '../helpers/loaded';
  * offline `pnpm bench`, too noisy for shared CI runners). A failing anchor is a build failure.
  *
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
- * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the cold requests
+ * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the storage requests
  * the engine actually issued (K3).
  */
 
@@ -30,18 +30,18 @@ const GIB = 1024 ** 3;
 describe('bench-as-test anchors', () => {
   it('count() performs 0 payload reads on a loaded segment (the cheap-count claim)', async () => {
     // A loaded segment across several .crbm chunks — the steady state of every segment in this model.
-    const driver = new MemoryColdDriver();
+    const driver = new MemoryStorageDriver();
     await writeCrbmGeneration(driver, { segment: 'counted', generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3]) },
       { chunkKey: 5, bitmap: SafeBitmap.fromValues([10, 20, 30, 40]) },
       { chunkKey: 12, bitmap: SafeBitmap.fromValues([7]) },
     ]);
     const metrics = new CountingMetricsSink();
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver), metrics });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver), metrics });
     const n = await store.segment('counted').count();
     const snap = metrics.snapshot();
     expect(n).toBe(8); // 3 + 4 + 1, summed straight from the .crbm index
-    expect(snap.cold.gets).toBe(0); // ZERO payload reads — counting is nearly free
+    expect(snap.storage.gets).toBe(0); // ZERO payload reads — counting is nearly free
     expect(snap.ops.count.count).toBe(1);
   });
 
@@ -54,10 +54,10 @@ describe('bench-as-test anchors', () => {
       keys.flatMap((k) => Array.from({ length: 1000 }, (_, r) => joinId(k, r)));
 
     const metrics = new CountingMetricsSink();
-    const { store, cold } = seededStore({ a: idsFor(aChunks), b: idsFor(bChunks) }, { metrics });
+    const { store, storage } = seededStore({ a: idsFor(aChunks), b: idsFor(bChunks) }, { metrics });
     const fullBytes =
-      (await cold.sizeOf({ segment: 'a' }))!.sizeBytes +
-      (await cold.sizeOf({ segment: 'b' }))!.sizeBytes;
+      (await storage.sizeOf({ segment: 'a' }))!.sizeBytes +
+      (await storage.sizeOf({ segment: 'b' }))!.sizeBytes;
 
     metrics.reset();
     await collect(store.segment('a').intersect([store.segment('b')]));
@@ -67,9 +67,9 @@ describe('bench-as-test anchors', () => {
     // operands → exactly 2 payload GETs of the 40 chunks; the other 38 are never fetched (the core saving).
     expect(snap.intersect.calls).toBe(1);
     expect(snap.intersect.fetchedChunks).toBe(1); // = common key count
-    expect(snap.cold.gets).toBe(2); // one GET per operand for the shared key
-    // Byte-savings anchor: fetched cold bytes ≤ 10% of a full two-segment download.
-    expect(snap.cold.bytes).toBeLessThanOrEqual(fullBytes * 0.1);
+    expect(snap.storage.gets).toBe(2); // one GET per operand for the shared key
+    // Byte-savings anchor: fetched storage bytes ≤ 10% of a full two-segment download.
+    expect(snap.storage.bytes).toBeLessThanOrEqual(fullBytes * 0.1);
   });
 
   it('at-rest, the reference set costs ≤10% of a flat Redis-HA node', () => {
@@ -98,8 +98,8 @@ describe('bench-as-test anchors', () => {
     expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
   });
 
-  it('K3: the estimator never understates the cold requests the engine actually issued', async () => {
-    // The engine's only billable request on a read path is a cold GET of one chunk, and the sink counts them.
+  it('K3: the estimator never understates the storage requests the engine actually issued', async () => {
+    // The engine's only billable request on a read path is a storage GET of one chunk, and the sink counts them.
     // So the anchor is: price what the sink OBSERVED, then check the model — fed the same read rate and the
     // same observed cache posture — lands on it from above. That is what keeps the published crossover
     // honest: a units slip (per-request vs per-million, a wrong seconds-per-month) shows up here as a gap.
@@ -119,7 +119,7 @@ describe('bench-as-test anchors', () => {
 
     const reads = CHUNKS * IDS_PER_CHUNK;
     // One GET per chunk; the other three reads of each chunk are served by the HOT cache.
-    expect(snap.cold.gets).toBe(CHUNKS);
+    expect(snap.storage.gets).toBe(CHUNKS);
     expect(snap.cache.hits).toBe(reads - CHUNKS);
     const observedHitRate = snap.cache.hits / (snap.cache.hits + snap.cache.misses);
 
@@ -140,12 +140,13 @@ describe('bench-as-test anchors', () => {
 });
 
 /**
- * Price the engine's actual backend requests (from the metrics snapshot) with a pricing profile: cold GETs at
+ * Price the engine's actual backend requests (from the metrics snapshot) with a pricing profile: storage GETs at
  * the published rate, plus the real generation bytes at rest. Reads are the only per-request charge a loaded
  * store's read path can incur.
  */
-function priceSnapshot(snap: MetricsSnapshot, p: PricingProfile, coldBytes: number): number {
+function priceSnapshot(snap: MetricsSnapshot, p: PricingProfile, storageBytes: number): number {
   return (
-    snap.cold.gets * (p.cold.getPerMillion / 1e6) + (coldBytes / GIB) * p.cold.storagePerGiBMonth
+    snap.storage.gets * (p.storage.getPerMillion / 1e6) +
+    (storageBytes / GIB) * p.storage.storagePerGiBMonth
   );
 }

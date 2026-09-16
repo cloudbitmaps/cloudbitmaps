@@ -114,7 +114,7 @@
             <div class="panel-head label">One measured intersection</div>
             <p class="panel-row is-pair"><span>Chunks fetched</span><span class="is-live">100 / 2,000</span></p>
             <p class="panel-row is-pair"><span>Reads skipped</span><span>3,800</span></p>
-            <p class="panel-row is-pair"><span>Cold bytes read</span><span>3,000</span></p>
+            <p class="panel-row is-pair"><span>Storage bytes read</span><span>3,000</span></p>
             <p class="panel-row is-pair"><span>Ids returned</span><span>100,000</span></p>
             <p class="panel-row is-pair"><span>Elapsed</span><span class="is-live">24.6 ms</span></p>
             <p class="link-row"><a href="demo.html">Where these came from →</a></p>
@@ -223,7 +223,7 @@
       </section>
 
       <!-- ── THE TWO TIERS ────────────────────────────────────────────────────
-           The middle row used to be a NoSQL delta tier. There is no delta tier: a segment is immutable cold
+           The middle row used to be a NoSQL delta tier. There is no delta tier: a segment is immutable storage
            generations with a RAM cache in front, and the third row is now the one-row pointer that decides
            WHICH generation — which is the fact the rest of the page rests on, and was previously unstated. -->
       <section>
@@ -256,7 +256,7 @@
                   <td class="num">your memory</td>
                 </tr>
                 <tr>
-                  <td><span class="tier-chip t-cold">COLD · .crbm</span></td>
+                  <td><span class="tier-chip t-storage">STORAGE · .crbm</span></td>
                   <td class="from">
                     Immutable, generation-keyed objects in your bucket. Never mutated in place, so a reader
                     always sees a whole generation and a superseded one can be kept as a snapshot.
@@ -300,10 +300,10 @@
       </section>
 
       <!-- ── AN ERASURE, AND A PUBLISH ──────────────────────────────────────
-           The left figure used to show a delta tier punching a tombstone through a cold chunk. There is no
+           The left figure used to show a delta tier punching a tombstone through a storage chunk. There is no
            delta tier, and erasing an id is now a REWRITE — so the cells show the one bit leaving a streamed
            copy of the generation, which is the mechanism a reader has to trust for a GDPR answer. The right
-           one is unchanged in kind: "cold objects are never overwritten" is a claim, while watching gen 7
+           one is unchanged in kind: "storage objects are never overwritten" is a claim, while watching gen 7
            arrive beside gen 6 and the pointer move afterwards is the mechanism. -->
       <section>
         <h2>An erasure, and a publish</h2>
@@ -359,7 +359,7 @@
                 <span class="dgm-scan" aria-hidden="true"><i></i></span>
               </div>
               <div class="dgm-row">
-                <span class="dgm-key">Cold objects</span>
+                <span class="dgm-key">Storage objects</span>
                 <span class="dgm-objs" aria-hidden="true">
                   <span class="dgm-obj">segment.6.crbm</span
                   ><span class="dgm-obj is-new">segment.7.crbm</span>
@@ -541,7 +541,7 @@
           <li>
             <span class="rl-mark">02</span>
             <span class="rl-what">Where the bytes and the milliseconds went</span>
-            <span class="rl-fig">cold.get · cache · op</span>
+            <span class="rl-fig">storage.get · cache · op</span>
             <span class="rl-note">
               Every object-store GET reports its bytes and its duration, the cache reports hit or miss, and
               <span class="m">op</span> times <span class="m">has</span>, <span class="m">count</span> and the

@@ -1,23 +1,23 @@
 import {
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
-import type { IColdDriver } from '@/index';
+import type { IStorageDriver } from '@/index';
 
 /**
- * Bounded cold-reader cache. `CrbmColdChunkSource` used to hold an
+ * Bounded storage-reader cache. `CrbmStorageChunkSource` used to hold an
  * unbounded `Map` of opened readers (each carrying a fully-parsed `.crbm` index), so a long-running server's
  * footprint grew with every distinct segment ever read → OOM at 100K+ segments. The cache is now a `BoundedLru`
  * capped by `maxOpenSegments`: past the ceiling the least-recently-used segment's reader is evicted, and the
  * next read of it re-opens (one cheap tail GET, since generations are immutable).
  */
 
-/** Wrap a cold driver to count reader opens — `CrbmReader.open` issues exactly one `getTail` per open. */
-function countingCold(base: IColdDriver): { cold: IColdDriver; opens: () => number } {
+/** Wrap a storage driver to count reader opens — `CrbmReader.open` issues exactly one `getTail` per open. */
+function countingCold(base: IStorageDriver): { storage: IStorageDriver; opens: () => number } {
   let opens = 0;
-  const cold: IColdDriver = {
+  const storage: IStorageDriver = {
     capabilities: () => base.capabilities(),
     putImmutable: (k, w) => base.putImmutable(k, w),
     getRange: (k, o, l) => base.getRange(k, o, l),
@@ -28,29 +28,29 @@ function countingCold(base: IColdDriver): { cold: IColdDriver; opens: () => numb
     delete: (k) => base.delete(k),
     list: (r) => base.list(r),
   };
-  return { cold, opens: () => opens };
+  return { storage, opens: () => opens };
 }
 
 async function seed(
-  cold: IColdDriver,
+  storage: IStorageDriver,
   registry: MemoryRegistryDriver,
   segments: string[],
 ): Promise<void> {
   for (const segment of segments) {
-    await bulkLoadCrbmGeneration(cold, { segment, generation: 0 }, [1, 2], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment, generation: 0 }, [1, 2], { registry });
   }
 }
 
 const SEGS = ['s0', 's1', 's2'];
 
-describe('CrbmColdChunkSource — bounded reader cache', () => {
+describe('CrbmStorageChunkSource — bounded reader cache', () => {
   it('evicts the LRU segment past maxOpenSegments and re-opens it on the next read', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });
-    const { cold, opens } = countingCold(new MemoryColdDriver());
-    await seed(cold, registry, SEGS); // bulk-load writes (putImmutable) — no reader opens yet
+    const { storage, opens } = countingCold(new MemoryStorageDriver());
+    await seed(storage, registry, SEGS); // bulk-load writes (putImmutable) — no reader opens yet
     expect(opens()).toBe(0);
 
-    const source = new CrbmColdChunkSource(cold, { registry, maxOpenSegments: 2 });
+    const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: 2 });
     // Read each segment once: 3 opens, but the ceiling is 2 → s0 (LRU) is evicted, cache holds {s1, s2}.
     for (const segment of SEGS) await source.listChunkKeys({ segment });
     expect(opens()).toBe(3);
@@ -73,12 +73,12 @@ describe('CrbmColdChunkSource — bounded reader cache', () => {
     const N = 200;
     const CAP = 20;
     const registry = new MemoryRegistryDriver({ now: () => 0 });
-    const { cold, opens } = countingCold(new MemoryColdDriver());
+    const { storage, opens } = countingCold(new MemoryStorageDriver());
     const fleet = Array.from({ length: N }, (_, i) => `seg${i}`);
     for (const segment of fleet) {
-      await bulkLoadCrbmGeneration(cold, { segment, generation: 0 }, [1, 2], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment, generation: 0 }, [1, 2], { registry });
     }
-    const source = new CrbmColdChunkSource(cold, { registry, maxOpenSegments: CAP });
+    const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: CAP });
 
     for (const segment of fleet) await source.listChunkKeys({ segment }); // pass 1: first touch of each
     expect(opens()).toBe(N);
@@ -88,10 +88,10 @@ describe('CrbmColdChunkSource — bounded reader cache', () => {
 
   it('keeps all readers cached when maxOpenSegments covers the working set (no eviction, no re-open)', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });
-    const { cold, opens } = countingCold(new MemoryColdDriver());
-    await seed(cold, registry, SEGS);
+    const { storage, opens } = countingCold(new MemoryStorageDriver());
+    await seed(storage, registry, SEGS);
 
-    const source = new CrbmColdChunkSource(cold, { registry, maxOpenSegments: 10 });
+    const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: 10 });
     for (const segment of SEGS) await source.listChunkKeys({ segment });
     expect(opens()).toBe(3);
 
@@ -101,7 +101,7 @@ describe('CrbmColdChunkSource — bounded reader cache', () => {
   });
 });
 
-describe('CrbmColdChunkSource — byte-bounded reader cache (second half of the bound)', () => {
+describe('CrbmStorageChunkSource — byte-bounded reader cache (second half of the bound)', () => {
   // Each seeded segment carries [1,2] → one chunk → one parsed index entry (160 B retained, the reader's
   // RETAINED_BYTES_PER_INDEX_ENTRY). The COUNT bound (`maxOpenSegments`) is set generously so the BYTE bound
   // (`maxOpenIndexBytes`) is the one doing the work: this is what a count-only cache missed (1024 wide indices
@@ -109,11 +109,11 @@ describe('CrbmColdChunkSource — byte-bounded reader cache (second half of the 
   // index entries = 320 B.
   it('evicts the LRU reader when the parsed-index byte budget binds before the count budget', async () => {
     const registry = new MemoryRegistryDriver({ now: () => 0 });
-    const { cold, opens } = countingCold(new MemoryColdDriver());
-    await seed(cold, registry, SEGS);
+    const { storage, opens } = countingCold(new MemoryStorageDriver());
+    await seed(storage, registry, SEGS);
 
     // count cap 100 (never binds); byte cap 320 B holds exactly two 160 B indices.
-    const source = new CrbmColdChunkSource(cold, {
+    const source = new CrbmStorageChunkSource(storage, {
       registry,
       maxOpenSegments: 100,
       maxOpenIndexBytes: 320,
@@ -138,12 +138,12 @@ describe('CrbmColdChunkSource — byte-bounded reader cache (second half of the 
     const N = 200;
     const CAP_BYTES = 20 * 160; // ~20 indices resident (160 B each)
     const registry = new MemoryRegistryDriver({ now: () => 0 });
-    const { cold, opens } = countingCold(new MemoryColdDriver());
+    const { storage, opens } = countingCold(new MemoryStorageDriver());
     const fleet = Array.from({ length: N }, (_, i) => `seg${i}`);
     for (const segment of fleet) {
-      await bulkLoadCrbmGeneration(cold, { segment, generation: 0 }, [1, 2], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment, generation: 0 }, [1, 2], { registry });
     }
-    const source = new CrbmColdChunkSource(cold, {
+    const source = new CrbmStorageChunkSource(storage, {
       registry,
       maxOpenSegments: 100_000, // count never binds; bytes do
       maxOpenIndexBytes: CAP_BYTES,

@@ -206,7 +206,7 @@ describe('ObjectStoreRegistry: untrusted bytes from the store', () => {
    * That is deliberate, and it is the safer of the two options rather than the more convenient one.
    * Skipping the bad row would be friendlier right up to the moment it ran: `list()` is what tells orphan
    * generation collection which segments exist, so a row that silently vanishes from the enumeration makes
-   * its cold `.crbm` generations look unreferenced — and the next GC pass would delete them. A parse error
+   * its storage `.crbm` generations look unreferenced — and the next GC pass would delete them. A parse error
    * would become data loss. Refusing to enumerate at all keeps every sweep off a set it cannot vouch for
    * (invariant 5: bytes from the tier are untrusted), and the error names the offending object key so the
    * operator can inspect and remove it.

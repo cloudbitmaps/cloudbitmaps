@@ -1,8 +1,8 @@
 import {
   CloudRoaring,
   InProcessKeystore,
-  MemoryColdChunkSource,
-  MemoryColdDriver,
+  MemoryStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
@@ -26,15 +26,15 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 }
 
 async function world(opts: { keystore?: InProcessKeystore } = {}) {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], {
+  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], {
     registry,
     keystore: opts.keystore,
   });
-  await bulkLoadCrbmGeneration(cold, { ...OTHER, generation: 0 }, [2, 3, 4], { registry });
-  const store = new CloudRoaring({ cold, registry, keystore: opts.keystore });
-  return { cold, registry, store };
+  await bulkLoadCrbmGeneration(storage, { ...OTHER, generation: 0 }, [2, 3, 4], { registry });
+  const store = new CloudRoaring({ storage, registry, keystore: opts.keystore });
+  return { storage, registry, store };
 }
 
 describe('pin holds one segment at one generation', () => {
@@ -43,7 +43,7 @@ describe('pin holds one segment at one generation', () => {
     const snap = await w.store.segment('s').pin();
     expect(await snap.count()).toBe(3);
 
-    await bulkLoadCrbmGeneration(w.cold, { ...REF, generation: 1 }, [1, 2, 3, 4, 5], {
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [1, 2, 3, 4, 5], {
       registry: w.registry,
     });
 
@@ -51,14 +51,16 @@ describe('pin holds one segment at one generation', () => {
     expect(await collect(snap.iterate())).toEqual([1, 2, 3]);
     expect(await snap.has(5)).toBe(false);
 
-    const fresh = new CloudRoaring({ cold: w.cold, registry: w.registry });
+    const fresh = new CloudRoaring({ storage: w.storage, registry: w.registry });
     expect(await fresh.segment('s').count()).toBe(5); // …while the world moved on
   });
 
   it('re-pinning observes the new generation', async () => {
     const w = await world();
     const first = await w.store.segment('s').pin();
-    await bulkLoadCrbmGeneration(w.cold, { ...REF, generation: 1 }, [9], { registry: w.registry });
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [9], {
+      registry: w.registry,
+    });
     const second = await w.store.segment('s').pin();
 
     expect(await first.count()).toBe(3);
@@ -79,7 +81,7 @@ describe('pin holds one segment at one generation', () => {
     // The inverse of the case above, and the one that used to compose silently wrong.
     const w = await world();
     const snap = await w.store.segment('s').pin();
-    await bulkLoadCrbmGeneration(w.cold, { ...REF, generation: 1 }, [1, 2, 3, 4], {
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [1, 2, 3, 4], {
       registry: w.registry,
     });
 
@@ -120,13 +122,13 @@ describe('pin holds one segment at one generation', () => {
   });
 
   it('the pinned reader is bounded by the same LRU — a pin costs a number, not an index', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     for (let i = 0; i < 12; i++) {
-      await bulkLoadCrbmGeneration(cold, { segment: `s${i}`, generation: 0 }, [i], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, [i], { registry });
     }
     // A ceiling far below the number of pins we are about to hold.
-    const store = new CloudRoaring({ cold, registry, coldReaderCacheMax: 2 });
+    const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: 2 });
     const pins = [];
     for (let i = 0; i < 12; i++) pins.push(await store.segment(`s${i}`).pin());
 
@@ -139,12 +141,12 @@ describe('pin holds one segment at one generation', () => {
   it('a transient fault does not poison a pin for its lifetime', async () => {
     // The memoized-rejection bug: `this.reader ??= open()` cached a REJECTED promise, so one fault made the pin
     // the single read path in the library with no resilience.
-    const real = new MemoryColdDriver();
+    const real = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(real, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     let fail = false;
-    const cold = {
+    const storage = {
       capabilities: () => real.capabilities(),
       getRange: (k: never, o: number, l: number) => real.getRange(k, o, l),
       delete: (k: never) => real.delete(k),
@@ -152,9 +154,9 @@ describe('pin holds one segment at one generation', () => {
       putImmutable: (k: never, fn: never) => real.putImmutable(k, fn),
       getTail: (k: never, m: number) =>
         fail ? Promise.reject(new Error('transient')) : real.getTail(k, m),
-    } as unknown as MemoryColdDriver;
+    } as unknown as MemoryStorageDriver;
 
-    const store = new CloudRoaring({ cold, registry, retry: false });
+    const store = new CloudRoaring({ storage, registry, retry: false });
     const snap = await store.segment('s').pin();
 
     fail = true;
@@ -172,8 +174,8 @@ describe('pin holds one segment at one generation', () => {
   });
 
   it('a store that cannot pin says so, rather than pretending', async () => {
-    const source = new MemoryColdChunkSource();
-    const store = new CloudRoaring({ cold: source });
+    const source = new MemoryStorageChunkSource();
+    const store = new CloudRoaring({ storage: source });
     await expect(store.segment('s').pin()).rejects.toThrow(UnsupportedError);
   });
 
@@ -183,8 +185,10 @@ describe('pin holds one segment at one generation', () => {
     const snap = await w.store.segment('s').pin();
     expect(await snap.count()).toBe(3);
 
-    await bulkLoadCrbmGeneration(w.cold, { ...REF, generation: 1 }, [9], { registry: w.registry });
-    await gcOrphanGenerations(REF, { cold: w.cold, registry: w.registry }, { keep: 0 });
+    await bulkLoadCrbmGeneration(w.storage, { ...REF, generation: 1 }, [9], {
+      registry: w.registry,
+    });
+    await gcOrphanGenerations(REF, { storage: w.storage, registry: w.registry }, { keep: 0 });
 
     // It must NOT silently answer from generation 1 — that is the whole point of pinning.
     const answer = await snap.count().catch(() => 'threw');

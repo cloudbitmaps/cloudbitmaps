@@ -1,8 +1,8 @@
 /**
  * Storage-driver contracts the engine depends on.
  *
- * Two tiers and one pointer. **Cold** is immutable object storage holding `.crbm` generations (`IColdDriver`,
- * read by the engine through the per-chunk `ColdChunkSource` view the `.crbm` reader implements); the
+ * Two tiers and one pointer. **Storage** is immutable object storage holding `.crbm` generations (`IStorageDriver`,
+ * read by the engine through the per-chunk `StorageChunkSource` view the `.crbm` reader implements); the
  * **registry** is the authoritative per-segment record — which generation is current, the wrapped DEKs, the
  * governance metadata — under optimistic concurrency (`IRegistryDriver`). Drivers move opaque bytes and OCC
  * tokens; they never understand roaring or the `.crbm` layout.
@@ -29,33 +29,33 @@ export interface GenKey extends SegmentRef {
 }
 
 /**
- * A segment's grounded on-disk footprint — the current generation's Cold object bytes, read cheaply from the
+ * A segment's grounded on-disk footprint — the current generation's Storage object bytes, read cheaply from the
  * `.crbm` footer/index (no payload reads). Powers the grounded `costReport()`.
  */
 export interface SegmentSize {
   readonly sizeBytes: number;
 }
 
-/** Per-chunk read view of the immutable Cold tier (implemented by the `.crbm` reader). */
-export interface ColdChunkSource {
+/** Per-chunk read view of the immutable Storage tier (implemented by the `.crbm` reader). */
+export interface StorageChunkSource {
   /** Read-only bytes for the chunk, or `null` if absent. Callers must not mutate the buffer. */
   getChunk(ref: ChunkRef): Promise<Uint8Array | null>;
   listChunkKeys(ref: SegmentRef): Promise<number[]>;
   /**
    * Optional: the current generation's grounded size, cheaply (from the already-parsed `.crbm` index — no
-   * payload reads), or `null` if the segment has no Cold generation. Powers the grounded `costReport()`.
+   * payload reads), or `null` if the segment has no Storage generation. Powers the grounded `costReport()`.
    */
   sizeOf?(ref: SegmentRef): Promise<SegmentSize | null>;
   /**
    * Optional: the current generation's **per-chunk cardinality** (`chunkKey → count`), read from the
-   * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Cold generation.
+   * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
    * Powers the free `count()` — the engine sums the index instead of fetching a single chunk. A source with no
    * index (e.g. the in-memory source) omits this, and `count()` falls back to fetching every chunk.
    */
   cardinalities?(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null>;
   /**
    * Optional: the segment's **current generation number** as this source resolves it right now (registry
-   * `currentGen`, or the highest cold generation), or `null` if the segment has no Cold generation. The engine
+   * `currentGen`, or the highest storage generation), or `null` if the segment has no Storage generation. The engine
    * keys its HOT chunk cache by this so a generation bump (a load's publish) is observed — a new generation
    * misses the cache instead of serving a stale decoded chunk, and an erased id can't resurrect from a cached
    * superseded chunk. Cheap: served from the source's own (short-TTL-refreshed) snapshot, **not** a fresh
@@ -72,7 +72,7 @@ export interface ColdChunkSource {
    * deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement. After one of those
    * a source that had already resolved the segment keeps answering from memory — with no backend read at all,
    * so no storage-side control can close the window — until its TTL lapses, and **never** if it has no clock
-   * or `coldGenTtlMs: 0` ("pin forever").
+   * or `storageGenTtlMs: 0` ("pin forever").
    *
    * Callers that destroy or retire a segment must call this. It is synchronous and best-effort: dropping
    * memoized state cannot fail, and a source that memoizes nothing may omit the method entirely.
@@ -94,7 +94,7 @@ export interface ColdChunkSource {
    * Optional: an opaque token identifying **which bytes** a read of this segment will see right now —
    * the generation *and* the incarnation of the name it belongs to.
    *
-   * {@link ColdChunkSource.currentGeneration} is not enough to key a decoded-chunk cache, and the gap is not
+   * {@link StorageChunkSource.currentGeneration} is not enough to key a decoded-chunk cache, and the gap is not
    * theoretical: `nextGeneration` returns `max(currentGen, highest object) + 1`, so it **restarts at 0** once
    * a registry row is purged and the bucket emptied. A retired, re-created name therefore serves different
    * data at the same `currentGen`, and a cache keyed on `(segment, chunk, generation)` hands back the previous
@@ -109,8 +109,8 @@ export interface ColdChunkSource {
   currentVersion?(ref: SegmentRef): Promise<string | null>;
 }
 
-/** Capabilities a Cold driver advertises; validated at wiring time, fail-fast. */
-export interface ColdCaps {
+/** Capabilities a Storage driver advertises; validated at wiring time, fail-fast. */
+export interface StorageCaps {
   /** REQUIRED — the format relies on byte-range reads. */
   readonly rangeRead: true;
   /** Largest single object the backend accepts (informs single-object-vs-shard — future). */
@@ -124,8 +124,8 @@ export interface ColdCaps {
  * understands neither roaring nor the `.crbm` layout, only opaque bytes addressed by a {@link GenKey}.
  * The core never reuses a key, so puts are write-once.
  */
-export interface IColdDriver {
-  capabilities(): ColdCaps;
+export interface IStorageDriver {
+  capabilities(): StorageCaps;
   /**
    * Stream a new immutable generation. The driver opens a destination, hands `write` a {@link BlobSink},
    * then atomically commits (and computes the content hash). Throws if the key already exists (write-once).
@@ -167,14 +167,14 @@ export type GovernanceMeta = Record<string, unknown>;
  */
 export interface RegistryRecord extends SegmentRef {
   /**
-   * **The** authoritative LATEST pointer: which immutable Cold generation is current — or **`null` for a segment
-   * that has no Cold generation yet.**
+   * **The** authoritative LATEST pointer: which immutable Storage generation is current — or **`null` for a segment
+   * that has no Storage generation yet.**
    *
-   * `null` is not "unknown", it is a positive statement: *this segment exists and has no Cold data.* It is what
+   * `null` is not "unknown", it is a positive statement: *this segment exists and has no Storage data.* It is what
    * lets a segment have a registry row **before its first load** — `setSegmentRetention` mints one so a policy
    * can be recorded ahead of the data, and so the segment is reachable by `registry.list()` and therefore by
    * retention sweeps, `checkConsistency` and every other fleet-wide operation. The alternative — a row with
-   * `currentGen: 0` and no object behind it — is the forbidden `missing-cold-generation` state, which fails per
+   * `currentGen: 0` and no object behind it — is the forbidden `missing-storage-generation` state, which fails per
    * read with `NotFoundError`. Generation resolution maps `null` onto the same path a segment with **no row**
    * takes: every read answers empty, and the first publish advances the pointer.
    */
@@ -208,7 +208,7 @@ export interface RegistryRecord extends SegmentRef {
 
 /** The caller-settable fields at {@link IRegistryDriver.create} (audit + token are driver-managed). */
 export interface NewRegistryRecord {
-  /** `null` ⇒ the segment has no Cold generation yet — see {@link RegistryRecord.currentGen}. */
+  /** `null` ⇒ the segment has no Storage generation yet — see {@link RegistryRecord.currentGen}. */
   readonly currentGen: number | null;
   readonly wrappedDeks?: readonly WrappedDek[];
   readonly keyId?: string;

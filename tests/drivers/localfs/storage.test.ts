@@ -2,18 +2,18 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { coldObjectPath, segmentsDir } from '@/drivers/localfs/paths';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey } from '@/core/ports';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 
 let root: string;
-let driver: LocalFsColdDriver;
+let driver: LocalFsStorageDriver;
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'crbm-cold-'));
-  driver = new LocalFsColdDriver(root);
+  root = await mkdtemp(join(tmpdir(), 'crbm-storage-'));
+  driver = new LocalFsStorageDriver(root);
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
@@ -26,7 +26,7 @@ const writeBytes =
     for (const p of parts) await sink.write(p);
   };
 
-describe('LocalFsColdDriver', () => {
+describe('LocalFsStorageDriver', () => {
   it('advertises range-read capability', () => {
     expect(driver.capabilities().rangeRead).toBe(true);
   });

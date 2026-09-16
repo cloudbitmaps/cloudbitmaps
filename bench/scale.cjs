@@ -59,10 +59,10 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const {
   bulkLoadCrbmGeneration,
-  CrbmColdChunkSource,
-  LocalFsColdDriver,
+  CrbmStorageChunkSource,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   CloudRoaring,
   CountingMetricsSink,
@@ -117,7 +117,7 @@ function rmTmp(dir) {
 async function measureFleet(n) {
   const dir = mkTmp(`fleet${n}`);
   try {
-    const cold = new LocalFsColdDriver(dir);
+    const storage = new LocalFsStorageDriver(dir);
     const registry = new LocalFsRegistryDriver(dir, { now: () => Date.now() });
     const ids = segmentIds();
 
@@ -125,7 +125,9 @@ async function measureFleet(n) {
     // segment, published forward-only — the store's only write path).
     const seed = await ms(async () => {
       for (let i = 0; i < n; i++) {
-        await bulkLoadCrbmGeneration(cold, { segment: `s${i}`, generation: 0 }, ids, { registry });
+        await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, ids, {
+          registry,
+        });
       }
     });
 
@@ -137,7 +139,7 @@ async function measureFleet(n) {
     // high-water (native + transient), rssAfterGc as the settled resident size.
     gc();
     const heapBaselineMiB = process.memoryUsage().heapUsed / 1024 / 1024;
-    const source = new CrbmColdChunkSource(cold, { registry, maxOpenSegments: CAP });
+    const source = new CrbmStorageChunkSource(storage, { registry, maxOpenSegments: CAP });
     let rssPeak = rssMiB();
     const read = await ms(async () => {
       for (let i = 0; i < n; i++) {
@@ -190,7 +192,7 @@ async function measureIntersect() {
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
   const sharedChunks = Math.max(1, Math.round(CHUNKS * OVERLAP));
 
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver({ now: () => 0 });
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
@@ -201,11 +203,11 @@ async function measureIntersect() {
     const chunk = c < sharedChunks ? c : c + CHUNKS; // shared prefix, then a disjoint tail
     for (let j = 0; j < DENSITY; j++) idsB.push(chunk * 65536 + j);
   }
-  await bulkLoadCrbmGeneration(cold, { segment: 'A', generation: 0 }, idsA, { registry });
-  await bulkLoadCrbmGeneration(cold, { segment: 'B', generation: 0 }, idsB, { registry });
+  await bulkLoadCrbmGeneration(storage, { segment: 'A', generation: 0 }, idsA, { registry });
+  await bulkLoadCrbmGeneration(storage, { segment: 'B', generation: 0 }, idsB, { registry });
 
   const metrics = new CountingMetricsSink();
-  const client = new CloudRoaring({ cold, registry, metrics });
+  const client = new CloudRoaring({ storage, registry, metrics });
   metrics.reset();
   let resultCount = 0;
   const run = await ms(async () => {
@@ -223,7 +225,7 @@ async function measureIntersect() {
     resultCount,
     fetchedChunks: snap.intersect.fetchedChunks,
     skippedChunks: snap.intersect.skippedChunks,
-    coldBytesRead: snap.cold.bytes,
+    coldBytesRead: snap.storage.bytes,
   };
 }
 

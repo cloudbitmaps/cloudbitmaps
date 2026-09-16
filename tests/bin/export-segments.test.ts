@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
 import {
-  LocalFsColdDriver,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
   SafeBitmap,
   bulkLoadCrbmGeneration,
@@ -66,13 +66,15 @@ describe('export-segments CLI', () => {
     it('exports every registered segment to portable roaring files + a complete manifest', async () => {
       // Seed two segments through the SAME LocalFs dirs the CLI reads, and give `a` a second generation so the
       // export is pinned to the CURRENT one rather than to whatever was published first.
-      const cold = new LocalFsColdDriver(join(root, 'cold'));
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
-      await bulkLoadCrbmGeneration(cold, { namespace: 'ns', segment: 'b', generation: 0 }, [9], {
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], {
         registry,
       });
-      await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 1 }, [1, 2, 3, 4], {
+      await bulkLoadCrbmGeneration(storage, { namespace: 'ns', segment: 'b', generation: 0 }, [9], {
+        registry,
+      });
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 1 }, [1, 2, 3, 4], {
         registry,
       });
 
@@ -106,9 +108,11 @@ describe('export-segments CLI', () => {
     });
 
     it('ndjson format writes newline-delimited ids', async () => {
-      const cold = new LocalFsColdDriver(join(root, 'cold'));
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], {
+        registry,
+      });
 
       await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out, CR_EXPORT_FORMAT: 'ndjson' }, () => 0);
       const txt = await readFile(join(out, '_default', 'a.ndjson'), 'utf8');
@@ -129,9 +133,11 @@ describe('export-segments CLI', () => {
     });
 
     it('leaves no manifest.json when the manifest WRITE itself faults (read-only OUT) — no torn marker', async () => {
-      const cold = new LocalFsColdDriver(join(root, 'cold'));
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], {
+        registry,
+      });
 
       // Read-only OUT: per-segment writes are isolated into failed[], then the manifest write itself faults
       // (EACCES) — so main rejects and no `manifest.json` is left behind (a crash/fault ⇒ no marker ⇒ re-run).
@@ -145,14 +151,19 @@ describe('export-segments CLI', () => {
     });
 
     it('isolates a per-segment fault: writes the manifest with the bad segment in failed[], exports the healthy rest', async () => {
-      const cold = new LocalFsColdDriver(join(root, 'cold'));
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      await bulkLoadCrbmGeneration(cold, { segment: 'bad', generation: 0 }, [1, 2, 3], {
+      await bulkLoadCrbmGeneration(storage, { segment: 'bad', generation: 0 }, [1, 2, 3], {
         registry,
       });
-      await bulkLoadCrbmGeneration(cold, { namespace: 'ok', segment: 'good', generation: 0 }, [9], {
-        registry,
-      });
+      await bulkLoadCrbmGeneration(
+        storage,
+        { namespace: 'ok', segment: 'good', generation: 0 },
+        [9],
+        {
+          registry,
+        },
+      );
 
       // Fault ONLY 'bad' while OUT stays writable: pre-create out/_default as a FILE so the sink's
       // mkdir(out/_default) throws for the default-namespace segment; 'good' lives under out/ok and succeeds.
@@ -176,10 +187,10 @@ describe('export-segments CLI', () => {
       // format's promise), but this CLI enumerates the registry it was given, so such a segment is absent from
       // the dump rather than silently half-exported. Pinned because it is the one gap the retired variable used
       // to paper over.
-      const cold = new LocalFsColdDriver(join(root, 'cold'));
+      const storage = new LocalFsStorageDriver(join(root, 'storage'));
       const registry = new LocalFsRegistryDriver(join(root, 'registry'));
-      await bulkLoadCrbmGeneration(cold, { segment: 'reg', generation: 0 }, [1], { registry });
-      await bulkLoadCrbmGeneration(cold, { segment: 'orphan', generation: 0 }, [1000]); // no registry
+      await bulkLoadCrbmGeneration(storage, { segment: 'reg', generation: 0 }, [1], { registry });
+      await bulkLoadCrbmGeneration(storage, { segment: 'orphan', generation: 0 }, [1000]); // no registry
 
       const manifest = await main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out }, () => 0);
       expect(manifest.segments.map((s) => s.segment)).toEqual(['reg']);

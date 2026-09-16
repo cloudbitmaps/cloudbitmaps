@@ -11,8 +11,8 @@ describe('CountingMetricsSink', () => {
   it('tallies each event kind into the snapshot', () => {
     const c = new CountingMetricsSink();
     const events: MetricEvent[] = [
-      { kind: 'cold.get', segment: 's', bytes: 100, ms: 5 },
-      { kind: 'cold.get', segment: 's', bytes: 50, ms: 3 },
+      { kind: 'storage.get', segment: 's', bytes: 100, ms: 5 },
+      { kind: 'storage.get', segment: 's', bytes: 50, ms: 3 },
       { kind: 'cache', hit: true },
       { kind: 'cache', hit: false },
       { kind: 'cache', hit: false },
@@ -28,7 +28,7 @@ describe('CountingMetricsSink', () => {
     for (const e of events) c.onEvent(e);
 
     const s = c.snapshot();
-    expect(s.cold).toEqual({ gets: 2, bytes: 150, totalMs: 8 });
+    expect(s.storage).toEqual({ gets: 2, bytes: 150, totalMs: 8 });
     expect(s.cache).toEqual({ hits: 1, misses: 2 });
     expect(s.retries).toEqual({ transient: 2 });
     expect(s.intersect).toEqual({ calls: 2, fetchedChunks: 7, skippedChunks: 7 });
@@ -41,7 +41,7 @@ describe('CountingMetricsSink', () => {
 
   it('the snapshot has exactly the loaded-store shape — no warm/compaction tallies, transient retries only', () => {
     const s = new CountingMetricsSink().snapshot();
-    expect(Object.keys(s).sort()).toEqual(['cache', 'cold', 'intersect', 'ops', 'retries']);
+    expect(Object.keys(s).sort()).toEqual(['cache', 'intersect', 'ops', 'retries', 'storage']);
     expect(Object.keys(s.retries)).toEqual(['transient']);
     expect(Object.keys(s.ops).sort()).toEqual([
       'andNotInto',
@@ -72,12 +72,12 @@ describe('CountingMetricsSink', () => {
 
   it('reset() zeroes all counters', () => {
     const c = new CountingMetricsSink();
-    c.onEvent({ kind: 'cold.get', segment: 's', bytes: 5, ms: 1 });
+    c.onEvent({ kind: 'storage.get', segment: 's', bytes: 5, ms: 1 });
     c.onEvent({ kind: 'retry', reason: 'transient', attempt: 1, delayMs: 1 });
     c.onEvent({ kind: 'op', name: 'has', ms: 1 });
     c.reset();
     const s = c.snapshot();
-    expect(s.cold).toEqual({ gets: 0, bytes: 0, totalMs: 0 });
+    expect(s.storage).toEqual({ gets: 0, bytes: 0, totalMs: 0 });
     expect(s.retries).toEqual({ transient: 0 });
     expect(s.ops.has).toEqual({ count: 0, totalMs: 0 });
   });

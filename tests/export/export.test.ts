@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  MemoryColdChunkSource,
-  MemoryColdDriver,
+  MemoryStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   SafeBitmap,
   bulkLoadCrbmGeneration,
@@ -60,30 +60,35 @@ const ndjsonIds = (bytes: Uint8Array): number[] =>
     .filter((s) => s.length > 0)
     .map(Number);
 
-/** A store over a raw MemoryColdDriver + registry (so `export` works), with the seeded cold already in place. */
+/** A store over a raw MemoryStorageDriver + registry (so `export` works), with the seeded storage already in place. */
 function freshStore(
   registry: MemoryRegistryDriver,
-  cold: MemoryColdDriver,
+  storage: MemoryStorageDriver,
   keystore?: IKeystore,
 ): CloudRoaring {
-  // `coldGenTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
+  // `storageGenTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
   // reads one snapshot rather than drifting onto a generation published while it was streaming.
-  return new CloudRoaring({ cold, registry, keystore, retry: false, coldGenTtlMs: 0 });
+  return new CloudRoaring({ storage, registry, keystore, retry: false, storageGenTtlMs: 0 });
 }
 
 describe('store.exportSegments', () => {
   it('roaring: exports each segment’s current generation, round-trips + manifest', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     // Include a u32-boundary id (2³²−1) to exercise portable serialization across a high chunk key.
-    await bulkLoadCrbmGeneration(cold, { segment: 'b', generation: 0 }, [10, 20, 4_294_967_295], {
-      registry,
-    });
+    await bulkLoadCrbmGeneration(
+      storage,
+      { segment: 'b', generation: 0 },
+      [10, 20, 4_294_967_295],
+      {
+        registry,
+      },
+    );
     // A second generation of `a`: the export must follow the pointer, not the first object it finds.
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 1 }, [1, 3, 4], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 1 }, [1, 3, 4], { registry });
 
-    const store = freshStore(registry, cold);
+    const store = freshStore(registry, storage);
     const { sink, files } = captureSink();
     const manifest = await store.exportSegments(sink);
 
@@ -100,11 +105,13 @@ describe('store.exportSegments', () => {
   });
 
   it('ndjson: exports the current generation, streamed in batches', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 1 }, [1, 3, 4, 5], { registry });
-    const store = freshStore(registry, cold);
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 1 }, [1, 3, 4, 5], {
+      registry,
+    });
+    const store = freshStore(registry, storage);
 
     const { sink, files } = captureSink();
     // A tiny batch cap forces multiple write() calls, exercising the streaming/flush path.
@@ -119,45 +126,50 @@ describe('store.exportSegments', () => {
   });
 
   it('scopes to a namespace when given one', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { namespace: 'ns', segment: 'a', generation: 0 }, [1], {
+    await bulkLoadCrbmGeneration(storage, { namespace: 'ns', segment: 'a', generation: 0 }, [1], {
       registry,
     });
-    await bulkLoadCrbmGeneration(cold, { namespace: 'other', segment: 'a', generation: 0 }, [9], {
-      registry,
-    });
+    await bulkLoadCrbmGeneration(
+      storage,
+      { namespace: 'other', segment: 'a', generation: 0 },
+      [9],
+      {
+        registry,
+      },
+    );
 
     const { sink, files } = captureSink();
-    const manifest = await freshStore(registry, cold).exportSegments(sink, { namespace: 'ns' });
+    const manifest = await freshStore(registry, storage).exportSegments(sink, { namespace: 'ns' });
     expect(manifest.totalSegments).toBe(1);
     expect([...files.keys()]).toEqual(['ns/a.roaring']);
     expect(roaringIds(files.get('ns/a.roaring')!.bytes)).toEqual([1]);
   });
 
   it('skips crypto-shredded (destroyed) segments', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'live', generation: 0 }, [1, 2], { registry });
-    await bulkLoadCrbmGeneration(cold, { segment: 'gone', generation: 0 }, [3, 4], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'live', generation: 0 }, [1, 2], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'gone', generation: 0 }, [3, 4], { registry });
     // Mark 'gone' destroyed (crypto-shred tombstone) directly in the registry.
     const rec = (await registry.get({ segment: 'gone' }))!;
     await registry.compareAndSwap({ segment: 'gone' }, rec.token, { status: 'destroyed' });
 
     const { sink, files } = captureSink();
-    const manifest = await freshStore(registry, cold).exportSegments(sink);
+    const manifest = await freshStore(registry, storage).exportSegments(sink);
     expect(manifest.segments.map((s) => s.segment)).toEqual(['live']);
     expect([...files.keys()]).toEqual(['_default/live.roaring']);
   });
 
   it('exports an empty segment as an empty (but valid) bitmap', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
     // An empty generation is a legal, publishable state (a source that produced no rows), so the export has to
     // render it as a valid empty bitmap rather than as a failure or a missing file.
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 1 }, [], { registry });
-    const store = freshStore(registry, cold);
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 1 }, [], { registry });
+    const store = freshStore(registry, storage);
 
     const { sink, files } = captureSink();
     const manifest = await store.exportSegments(sink);
@@ -166,30 +178,30 @@ describe('store.exportSegments', () => {
   });
 
   it('decrypts an encrypted segment transparently (export is cleartext) when the keystore is wired', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-    await bulkLoadCrbmGeneration(cold, { segment: 'pii', generation: 0 }, [7, 8, 9], {
+    await bulkLoadCrbmGeneration(storage, { segment: 'pii', generation: 0 }, [7, 8, 9], {
       registry,
       keystore,
     });
 
     const { sink, files } = captureSink();
-    await freshStore(registry, cold, keystore).exportSegments(sink);
+    await freshStore(registry, storage, keystore).exportSegments(sink);
     expect(roaringIds(files.get('_default/pii.roaring')!.bytes)).toEqual([7, 8, 9]); // decrypted, cleartext
   });
 
   it('throws UnsupportedError when the store has no registry', async () => {
-    const store = new CloudRoaring({ cold: new MemoryColdChunkSource() });
+    const store = new CloudRoaring({ storage: new MemoryStorageChunkSource() });
     const { sink } = captureSink();
     await expect(store.exportSegments(sink)).rejects.toBeInstanceOf(UnsupportedError);
   });
 
   it('isolates a segment whose write throws: aborts its partial, records it in failed[], continues', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'bad', generation: 0 }, [1], { registry });
-    await bulkLoadCrbmGeneration(cold, { segment: 'good', generation: 0 }, [2], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'bad', generation: 0 }, [1], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'good', generation: 0 }, [2], { registry });
 
     let badAborted = false;
     let badClosed = false;
@@ -221,7 +233,7 @@ describe('store.exportSegments', () => {
       },
     };
 
-    const manifest = await freshStore(registry, cold).exportSegments(sink); // resolves — one bad seg doesn't throw
+    const manifest = await freshStore(registry, storage).exportSegments(sink); // resolves — one bad seg doesn't throw
     expect(badAborted).toBe(true); // partial discarded
     expect(badClosed).toBe(false); // commit NOT called on the failure path
     expect(manifest.failed.map((f) => f.segment)).toEqual(['bad']);
@@ -231,9 +243,9 @@ describe('store.exportSegments', () => {
   });
 
   it('records the ORIGINAL fault even if abort() also throws, and still finishes the run', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
 
     const sink: ExportSink = {
       open(): ExportWriter {
@@ -248,16 +260,16 @@ describe('store.exportSegments', () => {
         };
       },
     };
-    const manifest = await freshStore(registry, cold).exportSegments(sink); // resolves despite both faults
+    const manifest = await freshStore(registry, storage).exportSegments(sink); // resolves despite both faults
     expect(manifest.failed).toHaveLength(1);
     expect(manifest.failed[0]?.error).toContain('original fault');
     expect(manifest.failed[0]?.error).not.toContain('cleanup fault');
   });
 
   it('isolates a segment whose close() throws — records it, does NOT call abort() (no double-finalize)', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
 
     let aborted = false;
     const sink: ExportSink = {
@@ -273,7 +285,7 @@ describe('store.exportSegments', () => {
         };
       },
     };
-    const manifest = await freshStore(registry, cold).exportSegments(sink);
+    const manifest = await freshStore(registry, storage).exportSegments(sink);
     expect(manifest.segments).toHaveLength(0); // not committed
     expect(manifest.failed.map((f) => f.segment)).toEqual(['a']);
     expect(manifest.failed[0]?.error).toContain('injected close fault');
@@ -282,20 +294,20 @@ describe('store.exportSegments', () => {
 
   it('empty registry → a valid empty manifest (finished, nothing to export)', async () => {
     const registry = new MemoryRegistryDriver();
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const { sink, files } = captureSink();
-    const manifest = await freshStore(registry, cold).exportSegments(sink);
+    const manifest = await freshStore(registry, storage).exportSegments(sink);
     expect(manifest).toMatchObject({ totalSegments: 0, totalIds: 0, segments: [], failed: [] });
     expect(files.size).toBe(0);
   });
 
   it('ndjson: accounts bytes for the final partial batch (default large cap ⇒ a single flush)', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     const { sink, files } = captureSink();
     // The default 64 KiB cap ⇒ the whole segment lands in the single FINAL flush (the `buf.length > 0` path).
-    const manifest = await freshStore(registry, cold).exportSegments(sink, { format: 'ndjson' });
+    const manifest = await freshStore(registry, storage).exportSegments(sink, { format: 'ndjson' });
     const file = files.get('_default/a.ndjson')!;
     expect(file.writes).toBe(1); // one final flush, no mid-loop flushes
     expect(manifest.segments[0]?.bytes).toBe(file.bytes.length); // bytes NOT dropped for the final batch
@@ -308,15 +320,15 @@ describe('store.exportSegments', () => {
     // registry writes an object nothing points at: still readable by any roaring library (the format's own
     // promise), but not part of this store's set, so it is omitted — and omitted *cleanly*, not recorded as a
     // failure, because it was never enumerated in the first place.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'registered', generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(storage, { segment: 'registered', generation: 0 }, [1, 2], {
       registry,
     });
-    await bulkLoadCrbmGeneration(cold, { segment: 'orphan', generation: 0 }, [1000, 2000]); // no registry
+    await bulkLoadCrbmGeneration(storage, { segment: 'orphan', generation: 0 }, [1000, 2000]); // no registry
 
     const { sink, files } = captureSink();
-    const manifest = await freshStore(registry, cold).exportSegments(sink);
+    const manifest = await freshStore(registry, storage).exportSegments(sink);
     expect(manifest.segments.map((s) => s.segment)).toEqual(['registered']);
     expect([...files.keys()]).toEqual(['_default/registered.roaring']);
     expect(manifest.failed).toEqual([]);

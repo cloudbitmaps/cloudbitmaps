@@ -15,7 +15,7 @@ npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
 
 ```ts
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 ```
 
 Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`); each backend SDK
@@ -31,12 +31,12 @@ leaves the previous generation authoritative, a rerun is idempotent, and there i
 Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole, checksum-verified generation.
 
 ```ts
-const cold = new S3ColdDriver({ client: s3, bucket: 'bitmaps' });
+const storage = new S3StorageDriver({ client: s3, bucket: 'bitmaps' });
 const registry = new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }); // one bucket is the whole deployment
 
-await bulkLoadCrbmGeneration(cold, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), { registry });
+await bulkLoadCrbmGeneration(storage, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), { registry });
 
-const store = new CloudRoaring({ cold, registry });
+const store = new CloudRoaring({ storage, registry });
 const seg = store.segment('high-value');
 
 await seg.has(1_234_567_890); // one chunk — from the hot cache after the first read
@@ -150,7 +150,7 @@ enough for daily buckets. Full walkthrough:
 
 There is no daemon, no compaction pass and no lifecycle worker to run: a segment exists once you have loaded a
 generation into it, and the only scheduled work is the retention sweep above (plus `gcOrphanGenerations` if you
-want superseded generations collected sooner than the sweep does it). A store built with just `cold` reads
+want superseded generations collected sooner than the sweep does it). A store built with just `storage` reads
 whatever the bucket holds; add a `registry` to resolve generations with one strong read, to read encrypted
 segments, and to unlock the lifecycle helpers.
 

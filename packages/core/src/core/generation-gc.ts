@@ -2,7 +2,7 @@
  * Generation bookkeeping for the loaded store: which generation a writer should take next, and which
  * superseded generations may be collected.
  *
- * Cold generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
+ * Storage generations are write-once, generation-keyed objects (`<segment>.<gen>.crbm`) behind one registry pointer
  * (`currentGen`). Every write path in the library — a bulk load, an `*Into` materialisation, a subject-erasure
  * rewrite — writes a **new** object and then advances the pointer, forward-only for a load and fenced on its
  * source generation for the rewrite (see invariant 1). That leaves the superseded object
@@ -10,17 +10,17 @@
  * over the driver ports — no I/O, time or randomness of its own.
  */
 import { WriteConflictError } from './errors';
-import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
+import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 
 /** The two ports generation bookkeeping needs: the objects, and the pointer that says which one is current. */
 export interface GenerationDeps {
-  readonly cold: IColdDriver;
+  readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
 }
 
 /**
  * The generation number a writer should use for the segment's **next** object: one above the highest generation
- * the registry points at *or* that is present in Cold — whichever is higher.
+ * the registry points at *or* that is present in Storage — whichever is higher.
  *
  * Both are consulted because they can disagree. A load that wrote its object and crashed before publishing leaves
  * an object *above* `currentGen`; a writer that consulted only the pointer would pick that same number and hit the
@@ -33,14 +33,14 @@ export interface GenerationDeps {
 export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Promise<number> {
   const record = await deps.registry.get(ref);
   let highest = record?.currentGen ?? -1;
-  for await (const key of deps.cold.list(ref)) {
+  for await (const key of deps.storage.list(ref)) {
     if (key.generation > highest) highest = key.generation;
   }
   return highest + 1;
 }
 
 /**
- * Garbage-collect superseded Cold generations for a segment: everything strictly below `currentGen`, keeping
+ * Garbage-collect superseded Storage generations for a segment: everything strictly below `currentGen`, keeping
  * the most recent `keep` of them as a grace window, so a read still fetching from a just-superseded
  * generation need not re-resolve mid-call (**invariant 4**). It is a window, not a lock: a read whose
  * generation is swept anyway re-resolves and retries once rather than failing (see `withFreshSnapshot`), so
@@ -61,7 +61,7 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * an empty array is not: `eraseIdFromSegment` reads the returned list as the physical half of its erasure
  * receipt, and would otherwise report `erased: true` over bytes still in the bucket. Re-run it.
  *
- * That state is reachable in practice: a `dropSegment` whose Cold sweep threw part-way, or a load that was
+ * That state is reachable in practice: a `dropSegment` whose Storage sweep threw part-way, or a load that was
  * already writing its object when the tombstone landed and finished the write afterwards. `dropSegment` re-sweeps
  * and reports whatever it could not reclaim in `generationsRemaining`, but a drop that was never re-run leaves a
  * residual, and this is what eventually collects it from the retention sweep.
@@ -82,11 +82,11 @@ export async function gcOrphanGenerations(
   // twice (the objects are re-created under the numbers just swept), and the grace window below keeps the
   // newest `keep` ENTRIES — so a duplicate would silently consume a keep slot and evict a live generation.
   const seen = new Set<number>();
-  for await (const key of deps.cold.list(ref)) seen.add(key.generation);
+  for await (const key of deps.storage.list(ref)) seen.add(key.generation);
   const gens = [...seen];
   // Everything above was read BEFORE the listing and is acted on after it, and the listing is paginated —
   // seconds wide on a real object store. So re-read the row and reconcile, because BOTH branches can otherwise
-  // delete an object the live pointer names, which is the forbidden `missing-cold-generation` state.
+  // delete an object the live pointer names, which is the forbidden `missing-storage-generation` state.
   //
   // A purged row refuses outright, on either branch: purged-and-idle is indistinguishable from
   // purged-and-being-recreated, and the top of this function already declines to act without an authoritative
@@ -146,7 +146,7 @@ export async function gcOrphanGenerations(
     record.status === 'destroyed'
       ? gens.sort((a, b) => a - b) // all of it: no reader can resolve a generation of a tombstoned segment
       : cutoff === null
-        ? // No Cold pointer yet, so "below current" selects nothing and there is nothing safe to infer: an object
+        ? // No Storage pointer yet, so "below current" selects nothing and there is nothing safe to infer: an object
           // here is either a load about to publish or an orphan we cannot tell apart from it. Deleting would race
           // that publish into a dangling pointer. It is collected once a pointer exists.
           []
@@ -170,7 +170,7 @@ export async function gcOrphanGenerations(
   // and is never on the read path.
   for (const generation of toDelete) {
     await stillCollectable();
-    await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+    await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
   }
   return toDelete;
 }

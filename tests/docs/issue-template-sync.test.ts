@@ -43,16 +43,16 @@ describe('the bug report template lists the drivers that actually ship', () => {
     expect(backends.sort()).toEqual(Object.keys(LABELS).sort());
   });
 
-  it.each(backends)('offers %s as both a cold and a registry option', (backend) => {
+  it.each(backends)('offers %s as both a storage and a registry option', (backend) => {
     const label = LABELS[backend] as string;
     // Both roles, because every backend on disk now implements both seams — which is exactly the fact the
     // template got wrong.
-    expect(template, `no "Cold — ${label}" option`).toContain(`Cold — ${label}`);
+    expect(template, `no "Storage — ${label}" option`).toContain(`Storage — ${label}`);
     expect(template, `no "Registry — ${label}" option`).toContain(`Registry — ${label}`);
   });
 
   it('names no backend that no longer ships', () => {
-    const offered = [...template.matchAll(/^\s*-\s*(?:Cold|Registry) — (.+)$/gm)].map((m) =>
+    const offered = [...template.matchAll(/^\s*-\s*(?:Storage|Registry) — (.+)$/gm)].map((m) =>
       (m[1] as string).trim(),
     );
     const known = new Set(Object.values(LABELS));

@@ -1,5 +1,5 @@
 /**
- * `GcsColdDriver` — an {@link IColdDriver} over Google Cloud Storage.
+ * `GcsStorageDriver` — an {@link IStorageDriver} over Google Cloud Storage.
  *
  * Uses the official `@google-cloud/storage`, an **optional peer dependency** — only consumers of
  * `@cloudbitmaps/roaring/gcs` install it. The `Storage` client is **injected** (dependency injection): the driver owns
@@ -28,7 +28,7 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
   coldObjectName,
   normalizeGcsPrefix,
@@ -48,7 +48,7 @@ const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
  */
 const DEFAULT_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
-export interface GcsColdDriverOptions {
+export interface GcsStorageDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
   /** Target bucket (must already exist). */
@@ -61,14 +61,14 @@ export interface GcsColdDriverOptions {
   readonly simpleUploadThresholdBytes?: number;
 }
 
-export class GcsColdDriver implements IColdDriver {
+export class GcsStorageDriver implements IStorageDriver {
   private readonly storage: Storage;
   private readonly bucket: string;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly threshold: number;
 
-  constructor(options: GcsColdDriverOptions) {
+  constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
@@ -76,7 +76,7 @@ export class GcsColdDriver implements IColdDriver {
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
   }
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
   }
 

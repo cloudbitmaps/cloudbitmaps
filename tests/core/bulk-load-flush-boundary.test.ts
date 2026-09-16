@@ -1,4 +1,4 @@
-import { bulkLoadCrbmGeneration, MemoryColdDriver } from '@/index';
+import { bulkLoadCrbmGeneration, MemoryStorageDriver } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { joinId } from '@/core/bit-route';
 
@@ -16,7 +16,7 @@ import { joinId } from '@/core/bit-route';
 // uses inputs far below the threshold. So this test deliberately crosses it.
 //
 // It is the slowest test in the suite by design; the alternative is leaving a data-loss branch uncovered.
-const FLUSH_AT = 1 << 20; // must match BULK_FLUSH_IDS in crbm-cold-source.ts
+const FLUSH_AT = 1 << 20; // must match BULK_FLUSH_IDS in crbm-storage-source.ts
 const KEY = { segment: 'bulk', namespace: 'ns', generation: 1 } as const;
 
 describe('bulk-load across the flush boundary', () => {
@@ -36,8 +36,8 @@ describe('bulk-load across the flush boundary', () => {
     const expected = new Set<number>();
     for (const id of ids()) expected.add(id);
 
-    const cold = new MemoryColdDriver();
-    const res = await bulkLoadCrbmGeneration(cold as never, KEY as never, ids(), {
+    const storage = new MemoryStorageDriver();
+    const res = await bulkLoadCrbmGeneration(storage as never, KEY as never, ids(), {
       codec: roaringCodec,
     } as never);
 
@@ -47,8 +47,8 @@ describe('bulk-load across the flush boundary', () => {
     expect(expected.size).toBeGreaterThan(65_000); // sanity: the fixture really is wide enough to matter
   });
 
-  // NOT covered here, deliberately: reading the written object back through a cold source. Wiring one needs a
-  // driver shape `MemoryColdDriver` does not satisfy, and the payload round-trip is already exercised at
+  // NOT covered here, deliberately: reading the written object back through a storage source. Wiring one needs a
+  // driver shape `MemoryStorageDriver` does not satisfy, and the payload round-trip is already exercised at
   // smaller scale by the dr-drill, compaction and key-rotation suites — plus the `.crbm` format carries a
   // per-chunk CRC32C, so silent byte corruption fails closed on read regardless. The failure mode UNIQUE to
   // the flush is losing ids, and the cardinality assertion above is what catches that.

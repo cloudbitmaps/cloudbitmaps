@@ -1,5 +1,5 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
-import type { IColdDriver, SegmentRef } from '@/index';
+import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { loadedStore } from '../helpers/loaded';
 
@@ -16,21 +16,21 @@ import { loadedStore } from '../helpers/loaded';
 const SEG: SegmentRef = { segment: 's' };
 const THREE_CHUNKS = [1, 70_000, 140_000];
 
-async function generationsIn(cold: {
+async function generationsIn(storage: {
   list: (ref: SegmentRef) => AsyncIterable<{ generation: number }>;
 }): Promise<number[]> {
   const gens: number[] = [];
-  for await (const k of cold.list(SEG)) gens.push(k.generation);
+  for await (const k of storage.list(SEG)) gens.push(k.generation);
   return gens.sort((a, b) => a - b);
 }
 
 async function world() {
   const w = await loadedStore({}, { retry: false });
-  return { ...w, deps: { cold: w.cold, registry: w.registry, codec: roaringCodec } };
+  return { ...w, deps: { storage: w.storage, registry: w.registry, codec: roaringCodec } };
 }
 
 /** Run `hook` once, immediately after the first chunk read — inside the rewrite's whole-segment stream. */
-function afterFirstChunkRead(base: IColdDriver, hook: () => Promise<void>): IColdDriver {
+function afterFirstChunkRead(base: IStorageDriver, hook: () => Promise<void>): IStorageDriver {
   let fired = false;
   return {
     capabilities: () => base.capabilities(),
@@ -50,7 +50,7 @@ function afterFirstChunkRead(base: IColdDriver, hook: () => Promise<void>): ICol
 }
 
 /** Run `hook` once, before the reader is even opened — the shortest of the three windows. */
-function beforeOpen(base: IColdDriver, hook: () => Promise<void>): IColdDriver {
+function beforeOpen(base: IStorageDriver, hook: () => Promise<void>): IStorageDriver {
   let fired = false;
   return {
     capabilities: () => base.capabilities(),
@@ -72,11 +72,11 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
   it('the generation vanishes between the pointer read and the reader open', async () => {
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    const cold = beforeOpen(w.cold, async () => {
+    const storage = beforeOpen(w.storage, async () => {
       await eraseIdFromSegment(SEG, 1, w.deps); // publishes gen 1 and collects gen 0
     });
 
-    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
     // Nothing was written, so there is no generation to name. Reporting one here named an object that does not
@@ -87,15 +87,15 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
   it('the generation vanishes part-way through the whole-segment rewrite', async () => {
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       await eraseIdFromSegment(SEG, 1, w.deps);
     });
 
-    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     expect(res.collected).toEqual([]);
     expect(res.generation).toBeUndefined(); // the stream threw; `putImmutable` commits atomically
-    expect(await generationsIn(w.cold)).toEqual([1]); // only the winner's object exists
+    expect(await generationsIn(w.storage)).toEqual([1]); // only the winner's object exists
   });
 
   it('the object this call wrote is swept before its own verify', async () => {
@@ -105,13 +105,13 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
     let armed = false;
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      getRange: (k, o, l) => w.cold.getRange(k, o, l),
-      delete: (k) => w.cold.delete(k),
-      list: (ref) => w.cold.list(ref),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getRange: (k, o, l) => w.storage.getRange(k, o, l),
+      delete: (k) => w.storage.delete(k),
+      list: (ref) => w.storage.list(ref),
       putImmutable: async (k, fn) => {
-        const res = await w.cold.putImmutable(k, fn);
+        const res = await w.storage.putImmutable(k, fn);
         armed = true; // our object is durable; the next tail read is the verify
         return res;
       },
@@ -120,11 +120,11 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
           armed = false;
           await eraseIdFromSegment(SEG, 1, w.deps);
         }
-        return w.cold.getTail(k, m);
+        return w.storage.getTail(k, m);
       },
     };
 
-    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
     // Written, then swept by the winner — so naming it is correct. `generation` means "written", not
     // "still in the bucket".
@@ -136,7 +136,7 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     // would send the caller into a retry loop against a segment no re-run can fix.
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    await w.cold.delete({ ...SEG, generation: 0 });
+    await w.storage.delete({ ...SEG, generation: 0 });
 
     await expect(eraseIdFromSegment(SEG, 70_000, w.deps)).rejects.toThrow(/no such generation/);
   });
@@ -150,25 +150,25 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     await w.load(SEG, THREE_CHUNKS);
 
     let reads = 0;
-    const cold: IColdDriver = {
-      capabilities: () => w.cold.capabilities(),
-      getTail: (k, m) => w.cold.getTail(k, m),
-      delete: (k) => w.cold.delete(k),
-      list: (ref) => w.cold.list(ref),
-      putImmutable: (k, fn) => w.cold.putImmutable(k, fn),
+    const storage: IStorageDriver = {
+      capabilities: () => w.storage.capabilities(),
+      getTail: (k, m) => w.storage.getTail(k, m),
+      delete: (k) => w.storage.delete(k),
+      list: (ref) => w.storage.list(ref),
+      putImmutable: (k, fn) => w.storage.putImmutable(k, fn),
       getRange: async (k, o, l) => {
         reads++;
         if (reads === 1) {
-          const res = await w.cold.getRange(k, o, l);
+          const res = await w.storage.getRange(k, o, l);
           await eraseIdFromSegment(SEG, 1, w.deps); // the pointer moves off `from`
           return res;
         }
-        throw new Error('cold storage unavailable'); // …and then a fault that is NOT a missing generation
+        throw new Error('storage unavailable'); // …and then a fault that is NOT a missing generation
       },
     };
 
-    await expect(eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold })).rejects.toThrow(
-      'cold storage unavailable',
+    await expect(eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage })).rejects.toThrow(
+      'storage unavailable',
     );
   });
 
@@ -177,11 +177,11 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
   it('BASELINE — the single-chunk fixture still reports superseded (via the pre-verify check)', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       await eraseIdFromSegment(SEG, 1, w.deps);
     });
 
-    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'superseded', fromGeneration: 0 });
   });
 
@@ -198,25 +198,25 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     // dropped — where a fresh call returns `destroyed`.
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       const row = (await w.registry.get(SEG))!;
       await w.registry.compareAndSwap(SEG, row.token, { ...row, status: 'destroyed' });
-      await w.cold.delete({ ...SEG, generation: 0 });
+      await w.storage.delete({ ...SEG, generation: 0 });
     });
 
-    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'destroyed', fromGeneration: 0 });
   });
 
   it('a row purged mid-rewrite reports `absent`, not superseded', async () => {
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       await w.registry.delete(SEG); // what the retention sweep does to a reclaimed tombstone
-      await w.cold.delete({ ...SEG, generation: 0 });
+      await w.storage.delete({ ...SEG, generation: 0 });
     });
 
-    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const res = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(res).toMatchObject({ erased: false, reason: 'absent', fromGeneration: 0 });
     expect(res.generation).toBeUndefined(); // NOT 0 — `nextGeneration` restarts there on a purged row
   });
@@ -226,7 +226,7 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
     // error in its place tells an operator to retry something no retry fixes.
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    await w.cold.delete({ ...SEG, generation: 0 });
+    await w.storage.delete({ ...SEG, generation: 0 });
 
     let gets = 0;
     const registry = new Proxy(w.registry, {
@@ -248,11 +248,11 @@ describe('an erasure whose generation is swept mid-flight reports superseded, no
   it('the reported answer is actionable: a re-run against the new generation erases the id', async () => {
     const w = await world();
     await w.load(SEG, THREE_CHUNKS);
-    const cold = afterFirstChunkRead(w.cold, async () => {
+    const storage = afterFirstChunkRead(w.storage, async () => {
       await eraseIdFromSegment(SEG, 1, w.deps);
     });
 
-    const first = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, cold });
+    const first = await eraseIdFromSegment(SEG, 70_000, { ...w.deps, storage });
     expect(first).toMatchObject({ erased: false, reason: 'superseded' });
 
     // Exactly what the contract tells the caller to do — and the id really is still there.

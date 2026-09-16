@@ -2,13 +2,13 @@ import {
   CloudRoaring,
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
-  MemoryColdDriver,
-  CrbmColdChunkSource,
+  MemoryStorageDriver,
+  CrbmStorageChunkSource,
   writeCrbmGeneration,
   SafeBitmap,
   ValidationError,
   type PricingProfile,
-  type ColdChunkSource,
+  type StorageChunkSource,
 } from '@/index';
 import { seededStore } from '../helpers/loaded';
 
@@ -57,7 +57,7 @@ describe('estimateCost (planning)', () => {
     expect(atBaseline.verdict).toBe('lose-zone'); // `< redis` is a win; equal is not
   });
 
-  it('read crossover matches the verified ~329 reads/sec (cold S3 GET, no cache)', () => {
+  it('read crossover matches the verified ~329 reads/sec (storage S3 GET, no cache)', () => {
     const r = estimateCost({ segments: [{ sizeBytes: 0 }] });
     // 346 / (2,628,000 s/mo × $0.40/M GET) = 329.147… reads/s
     expect(r.redisCrossover.readsPerSec).toBeGreaterThanOrEqual(329);
@@ -94,15 +94,15 @@ describe('costReport (grounded)', () => {
     expect(planned.assumptions.grounded).toBe(false);
   });
 
-  it('a segment with no Cold generation reports zero storage (grounded)', async () => {
+  it('a segment with no Storage generation reports zero storage (grounded)', async () => {
     const { store } = seededStore();
     const r = await store.segment('empty').costReport();
     expect(r.assumptions.grounded).toBe(true);
     expect(r.monthlyUSD.byOp.storage).toBe(0);
   });
 
-  it('a custom cold source without sizeOf() → grounded:false + a note, not a false $0', async () => {
-    class NoSizeCold implements ColdChunkSource {
+  it('a custom storage source without sizeOf() → grounded:false + a note, not a false $0', async () => {
+    class NoSizeCold implements StorageChunkSource {
       // Minimal impl — omitting the unused params still satisfies the interface.
       async getChunk(): Promise<Uint8Array | null> {
         return null;
@@ -111,19 +111,19 @@ describe('costReport (grounded)', () => {
         return [];
       }
     }
-    const store = new CloudRoaring({ cold: new NoSizeCold() });
+    const store = new CloudRoaring({ storage: new NoSizeCold() });
     const r = await store.segment('x').costReport();
     expect(r.assumptions.grounded).toBe(false); // storage was NOT measured — don't claim a confident $0
     expect(r.monthlyUSD.byOp.storage).toBe(0);
     expect(r.assumptions.notes.some((n) => n.includes('sizeOf'))).toBe(true);
   });
 
-  it('grounded size flows through CrbmColdChunkSource from the .crbm index', async () => {
-    const driver = new MemoryColdDriver();
+  it('grounded size flows through CrbmStorageChunkSource from the .crbm index', async () => {
+    const driver = new MemoryStorageDriver();
     const { size } = await writeCrbmGeneration(driver, { segment: 'g', generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2, 3, 400_000]) },
     ]);
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
     const r = await store.segment('g').costReport();
     expect(r.assumptions.grounded).toBe(true);
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((size / GIB) * 0.023, 9);
@@ -168,12 +168,12 @@ describe('cost model — additional coverage (5b review)', () => {
     const heavy = estimateCost({ segments: [{ sizeBytes: 1000 * GIB }] }); // $23/mo of storage
     expect(heavy.redisCrossover.readsPerSec).toBeLessThan(empty.redisCrossover.readsPerSec);
     expect(heavy.redisCrossover.readsPerSec).toBeCloseTo(
-      (P.redis.monthlyUSD - 1000 * 0.023) / (SECONDS_PER_MONTH * (P.cold.getPerMillion / 1e6)),
+      (P.redis.monthlyUSD - 1000 * 0.023) / (SECONDS_PER_MONTH * (P.storage.getPerMillion / 1e6)),
       6,
     );
   });
 
-  it('the intersection path bills cold fetches (chunks × GET)', () => {
+  it('the intersection path bills storage fetches (chunks × GET)', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { intersectsPerSec: 10, chunksPerIntersect: 4 },
@@ -214,16 +214,19 @@ describe('cost model — additional coverage (5b review)', () => {
   });
 
   it('rejects a malformed pricing profile too (rates are a boundary input)', () => {
-    const badGet: PricingProfile = { ...P, cold: { ...P.cold, getPerMillion: NaN } };
+    const badGet: PricingProfile = { ...P, storage: { ...P.storage, getPerMillion: NaN } };
     expect(() => estimateCost({ segments: [{ sizeBytes: 0 }], pricing: badGet })).toThrow(
       ValidationError,
     );
     // putPerMillion feeds the loads term, so it is a live rate — not decorative.
-    const badPut: PricingProfile = { ...P, cold: { ...P.cold, putPerMillion: -1 } };
+    const badPut: PricingProfile = { ...P, storage: { ...P.storage, putPerMillion: -1 } };
     expect(() => estimateCost({ segments: [{ sizeBytes: 1 }], pricing: badPut })).toThrow(
       ValidationError,
     );
-    const badStorage: PricingProfile = { ...P, cold: { ...P.cold, storagePerGiBMonth: -0.01 } };
+    const badStorage: PricingProfile = {
+      ...P,
+      storage: { ...P.storage, storagePerGiBMonth: -0.01 },
+    };
     expect(() => estimateCost({ segments: [{ sizeBytes: 1 }], pricing: badStorage })).toThrow(
       ValidationError,
     );
@@ -254,7 +257,7 @@ describe('cost model — additional coverage (5b review)', () => {
 // only write path is a load would read as "writes are free" rather than "writes were not modeled".
 // ---------------------------------------------------------------------------------------------------
 describe('loads cost term', () => {
-  const putUSD = P.cold.putPerMillion / 1e6;
+  const putUSD = P.storage.putPerMillion / 1e6;
 
   it('is 0 and disclosed as not-modeled when loadsPerMonth is unset', () => {
     const r = estimateCost({ segments: [{ sizeBytes: 1e9 }] });

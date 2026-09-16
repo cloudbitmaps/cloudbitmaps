@@ -63,7 +63,7 @@ describe('parseRegistryKey — only keys a legitimate write could have produced'
   it('rejects foreign objects and keys outside the configured prefix', () => {
     expect(parseRegistryKey('cr', 'cr/registry/_default/a.txt')).toBeNull(); // wrong suffix
     expect(parseRegistryKey('cr', 'other/registry/_default/a.reg')).toBeNull(); // wrong prefix
-    expect(parseRegistryKey('cr', 'cr/_default/segments/a.0.crbm')).toBeNull(); // a cold object
+    expect(parseRegistryKey('cr', 'cr/_default/segments/a.0.crbm')).toBeNull(); // a storage object
   });
 
   // A name whose encoding does not round-trip must not resolve: it would name a DIFFERENT segment than the

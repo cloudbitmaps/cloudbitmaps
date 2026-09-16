@@ -29,19 +29,19 @@ async function exerciseCore(label, m) {
   for (const name of [
     'CloudRoaring',
     'estimateCost',
-    'MemoryColdDriver',
+    'MemoryStorageDriver',
     'MemoryRegistryDriver',
-    'MemoryColdChunkSource',
+    'MemoryStorageChunkSource',
     'bulkLoadCrbmGeneration',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  const cold = new m.MemoryColdDriver();
+  const storage = new m.MemoryStorageDriver();
   const registry = new m.MemoryRegistryDriver({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(cold, { segment: 'smoke', generation: 0 }, [42, 70_000], {
+  await m.bulkLoadCrbmGeneration(storage, { segment: 'smoke', generation: 0 }, [42, 70_000], {
     registry,
   });
-  const seg = new m.CloudRoaring({ cold, registry }).segment('smoke');
+  const seg = new m.CloudRoaring({ storage, registry }).segment('smoke');
   const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
 }

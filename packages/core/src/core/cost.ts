@@ -22,7 +22,7 @@ import { ValidationError } from './errors';
 /** Pluggable rate card. Rates differ by cloud/region/term and drift over time; the formulas don't. */
 export interface PricingProfile {
   readonly name: string;
-  readonly cold: {
+  readonly storage: {
     /** Object GET (per **million** requests). A ranged GET bills as a full GET. */
     readonly getPerMillion: number;
     /** Object PUT (per million) — what a load pays, per request. */
@@ -39,7 +39,7 @@ export interface PricingProfile {
  */
 export const AWS_US_EAST_1_ONDEMAND: PricingProfile = {
   name: 'aws-us-east-1-ondemand',
-  cold: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
+  storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
   redis: { monthlyUSD: 346 }, // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
 };
 
@@ -52,7 +52,7 @@ export interface Workload {
   readonly intersectsPerSec?: number;
   /** HOT-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
-  /** Cold chunks fetched per intersection (the chunk-skipping survivors). Default 1. */
+  /** Storage chunks fetched per intersection (the chunk-skipping survivors). Default 1. */
   readonly chunksPerIntersect?: number;
   /**
    * Generations published per month across the modeled data — the write side of a loaded store. Default **0**
@@ -134,26 +134,26 @@ function sizingBytes(spec: SegmentSizing): number {
   return 0;
 }
 
-/** Core report builder shared by planning + grounded modes. `coldBytes` is total across all segments. */
+/** Core report builder shared by planning + grounded modes. `storageBytes` is total across all segments. */
 function buildReport(input: {
-  readonly coldBytes: number;
+  readonly storageBytes: number;
   readonly workload: Workload;
   readonly pricing: PricingProfile;
   readonly grounded: boolean;
   readonly extraNotes?: readonly string[];
 }): CostReport {
   const { pricing, grounded } = input;
-  const { cold, redis } = pricing;
+  const { storage, redis } = pricing;
   const S = SECONDS_PER_MONTH;
 
   // The pricing profile is a public, caller-supplied boundary input too — validate every rate that feeds
   // the report so a malformed profile fails fast rather than leaking NaN/Infinity dollars + a bogus verdict.
-  requireFiniteNonNeg(cold.getPerMillion, 'pricing.cold.getPerMillion');
-  requireFiniteNonNeg(cold.putPerMillion, 'pricing.cold.putPerMillion');
-  requireFiniteNonNeg(cold.storagePerGiBMonth, 'pricing.cold.storagePerGiBMonth');
+  requireFiniteNonNeg(storage.getPerMillion, 'pricing.storage.getPerMillion');
+  requireFiniteNonNeg(storage.putPerMillion, 'pricing.storage.putPerMillion');
+  requireFiniteNonNeg(storage.storagePerGiBMonth, 'pricing.storage.storagePerGiBMonth');
   requireFiniteNonNeg(redis.monthlyUSD, 'pricing.redis.monthlyUSD');
 
-  const coldBytes = requireFiniteNonNeg(input.coldBytes, 'coldBytes');
+  const storageBytes = requireFiniteNonNeg(input.storageBytes, 'storageBytes');
   const cacheHitRate = clamp01(
     requireFiniteNonNeg(input.workload.cacheHitRate ?? 0, 'cacheHitRate'),
   );
@@ -173,15 +173,15 @@ function buildReport(input: {
   );
 
   // Per-request unit costs (USD). Same-region egress is free; internet egress not modeled.
-  const coldGetUSD = cold.getPerMillion / 1e6;
-  const putUSD = cold.putPerMillion / 1e6;
+  const coldGetUSD = storage.getPerMillion / 1e6;
+  const putUSD = storage.putPerMillion / 1e6;
 
   // Monthly volumes.
   const missFraction = 1 - cacheHitRate;
   const readMisses = readsPerSec * S * missFraction;
   const intersects = intersectsPerSec * S;
 
-  const storageUSD = (coldBytes / GIB) * cold.storagePerGiBMonth;
+  const storageUSD = (storageBytes / GIB) * storage.storagePerGiBMonth;
   const readsUSD = readMisses * coldGetUSD;
   const intersectsUSD = intersects * chunksPerIntersect * coldGetUSD;
   const loadsUSD = loadsPerMonth * requestsPerLoad * putUSD;
@@ -237,28 +237,28 @@ function buildReport(input: {
 export function estimateCost(input: EstimateInput): CostReport {
   const pricing = input.pricing ?? DEFAULT_PRICING;
   const workload = input.workload ?? {};
-  let coldBytes = 0;
+  let storageBytes = 0;
   for (const spec of input.segments) {
     const count = Math.floor(requireFiniteNonNeg(spec.count ?? 1, 'segment.count'));
-    coldBytes += sizingBytes(spec) * count;
+    storageBytes += sizingBytes(spec) * count;
   }
-  return buildReport({ coldBytes, workload, pricing, grounded: false });
+  return buildReport({ storageBytes, workload, pricing, grounded: false });
 }
 
 /**
  * **Grounded** report from a real segment byte total (from the `.crbm` index) + a supplied workload. Used by
  * `Segment.costReport()` in the facade. `grounded` defaults to true (the size is exact, not estimated); the
- * caller passes `grounded: false` + a note when the Cold source can't measure size.
+ * caller passes `grounded: false` + a note when the Storage source can't measure size.
  */
 export function groundedReport(input: {
-  readonly coldBytes: number;
+  readonly storageBytes: number;
   readonly grounded?: boolean;
   readonly workload?: Workload;
   readonly pricing?: PricingProfile;
   readonly extraNotes?: readonly string[];
 }): CostReport {
   return buildReport({
-    coldBytes: input.coldBytes,
+    storageBytes: input.storageBytes,
     workload: input.workload ?? {},
     pricing: input.pricing ?? DEFAULT_PRICING,
     grounded: input.grounded ?? true,

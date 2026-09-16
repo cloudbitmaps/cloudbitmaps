@@ -137,19 +137,19 @@ npm audit signatures</code></pre>
               <span class="label">quickstart.ts</span><span class="label">No setup</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> {
-  CloudRoaring, MemoryColdDriver, MemoryRegistryDriver,
+  CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> cold = <span class="k">new</span> MemoryColdDriver();
+<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
 <span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(cold,
+<span class="k">await</span> bulkLoadCrbmGeneration(storage,
   { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
   [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ cold, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
 <span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
 <span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span>
 <span class="k">await</span> vips.count();            <span class="c">// exact, 0 payloads</span></code></pre>
@@ -159,17 +159,17 @@ npm audit signatures</code></pre>
               <span class="label">production.ts</span><span class="label">Only the drivers</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-<span class="k">import</span> { S3ColdDriver, S3RegistryDriver }
+<span class="k">import</span> { S3StorageDriver, S3RegistryDriver }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/s3'</span>;
 
 <span class="c">// one bucket holds both the data and the pointer</span>
-<span class="k">const</span> cold = <span class="k">new</span> S3ColdDriver({ client, bucket: <span class="s">'segments'</span> });
+<span class="k">const</span> storage = <span class="k">new</span> S3StorageDriver({ client, bucket: <span class="s">'segments'</span> });
 <span class="k">const</span> registry = <span class="k">new</span> S3RegistryDriver({
   client, bucket: <span class="s">'segments'</span>,
 });
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
-  cold, registry,
+  storage, registry,
   cacheMaxChunks: <span class="n">512</span>,   <span class="c">// optional bounded LRU</span>
 });
 
@@ -178,7 +178,7 @@ npm audit signatures</code></pre>
         </div>
         <p class="note" style="max-width: 82ch">
           The <span class="m">registry</span> is optional in the strict sense — hand the store
-          <span class="m">cold</span> alone and it finds the highest generation in the bucket and reads it. It
+          <span class="m">storage</span> alone and it finds the highest generation in the bucket and reads it. It
           is what resolves a generation in one read instead of a list-scan, what makes an encrypted segment
           readable, and what every write and every lifecycle call publishes through. Wire it for anything past
           a first look.
@@ -210,7 +210,7 @@ npm audit signatures</code></pre>
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="m">bulkLoadCrbmGeneration(cold, key, ids)</span></td>
+                  <td><span class="m">bulkLoadCrbmGeneration(storage, key, ids)</span></td>
                   <td class="from">
                     <strong>The only way data gets in.</strong> Streams an unsorted id source into one
                     immutable <span class="m">.crbm</span> object, then advances the segment's pointer
@@ -224,7 +224,7 @@ npm audit signatures</code></pre>
                     Resolves one chunk of the current generation: the hot cache if it is there, otherwise one
                     ranged GET of that chunk. Never a merge of two sources, so it can never be torn.
                   </td>
-                  <td class="num">hot, else 1 cold GET</td>
+                  <td class="num">hot, else 1 storage GET</td>
                 </tr>
                 <tr>
                   <td><span class="m">count()</span></td>
@@ -238,7 +238,7 @@ npm audit signatures</code></pre>
                   <td><span class="m">intersect(others, { exclude })</span></td>
                   <td class="from">
                     Async-iterates the intersection. Compares chunk keys first and fetches only shared chunks;
-                    the cold payload footprint is bounded by
+                    the storage payload footprint is bounded by
                     <span class="m">concurrency × operands × chunk</span>, and that is the whole term — there
                     is no second tier to snapshot. <span class="m">exclude</span> subtracts suppression
                     segments in the same pass.
@@ -255,7 +255,7 @@ npm audit signatures</code></pre>
                     rather than streaming it to you — superseded, not added to — and hands back
                     <span class="m">{ generation, cardinality, chunkCount, size }</span>.
                   </td>
-                  <td class="num">cold + registry</td>
+                  <td class="num">storage + registry</td>
                 </tr>
                 <tr>
                   <td><span class="m">store.eraseSubject(id)</span></td>
@@ -264,7 +264,7 @@ npm audit signatures</code></pre>
                     bit, so it is <strong>physically gone from the bucket</strong> when the call returns. A
                     compliance operation, not a hot-path verb — there is no per-id write.
                   </td>
-                  <td class="num">cold + registry</td>
+                  <td class="num">storage + registry</td>
                 </tr>
                 <tr>
                   <td><span class="m">store.retireExpired()</span></td>
@@ -273,7 +273,7 @@ npm audit signatures</code></pre>
                     through <span class="m">dropSegment</span>. <strong>A call, not a daemon</strong> —
                     bounded, previewable, and it returns a per-segment ledger instead of throwing.
                   </td>
-                  <td class="num">registry, then cold</td>
+                  <td class="num">registry, then storage</td>
                 </tr>
                 <tr>
                   <td><span class="m">store.exportSegments(sink)</span></td>
@@ -282,7 +282,7 @@ npm audit signatures</code></pre>
                     <span class="m">roaring</span> or newline-delimited <span class="m">ndjson</span>, using
                     only public read APIs. The one-command exit, and there is a CLI that wraps it.
                   </td>
-                  <td class="num">cold</td>
+                  <td class="num">storage</td>
                 </tr>
                 <tr>
                   <td><span class="m">estimateCost(input)</span></td>
@@ -326,10 +326,10 @@ npm audit signatures</code></pre>
 <span class="c">// not an array. Re-run on a cadence — each run</span>
 <span class="c">// publishes the next generation and supersedes the last.</span>
 <span class="k">const</span> generation =
-  <span class="k">await</span> nextGeneration(ref, { cold, registry });
+  <span class="k">await</span> nextGeneration(ref, { storage, registry });
 
 <span class="k">const</span> r = <span class="k">await</span> bulkLoadCrbmGeneration(
-  cold, { ...ref, generation }, athenaCursor(), { registry },
+  storage, { ...ref, generation }, athenaCursor(), { registry },
 );
 r.cardinality;  <span class="c">// distinct ids now published</span></code></pre>
           </div>
@@ -384,8 +384,8 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 <span class="c">// On a cadence — every few minutes, or once at the end</span>
 <span class="c">// of the wave — publish the day so far as one object.</span>
 <span class="k">const</span> generation =
-  <span class="k">await</span> nextGeneration(ref, { cold, registry });
-<span class="k">await</span> bulkLoadCrbmGeneration(cold, { ...ref, generation },
+  <span class="k">await</span> nextGeneration(ref, { storage, registry });
+<span class="k">await</span> bulkLoadCrbmGeneration(storage, { ...ref, generation },
   sentToday(), { registry });</code></pre>
           </div>
           <div class="tpanel">
@@ -427,7 +427,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <p class="note">
           <strong>Do not reach for an object-store lifecycle rule on its own.</strong> It deletes the bytes while
           the registry still points at them — the torn state a DR runbook says not to serve traffic on — and it
-          surfaces <em>intermittently</em>, because a read checks the in-process cache before cold storage. It
+          surfaces <em>intermittently</em>, because a read checks the in-process cache before storage. It
           passes in a process whose hot cache is already populated and starts failing after a restart.
           <span class="m">dropSegment</span> exists so the ordering cannot be got wrong: the pointer is
           tombstoned first, then the objects are swept — and it hands back
@@ -450,8 +450,8 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
       <section id="drivers">
         <h2>Four drivers, two independent choices</h2>
         <p class="lede">
-          Cold and registry are picked separately. Anything with a cheap ranged read and a write-once put
-          works as cold; anything with a cheap compare-and-swap works as the registry. Each backend's SDK is
+          Storage and registry are picked separately. Anything with a cheap ranged read and a write-once put
+          works as storage; anything with a cheap compare-and-swap works as the registry. Each backend's SDK is
           an <strong>optional peer</strong> — install only the ones you use.
         </p>
         <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
@@ -466,7 +466,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
-            <span class="label">Drivers</span><span class="label">Cold · registry</span>
+            <span class="label">Drivers</span><span class="label">Storage · registry</span>
           </div>
           <div class="tscroll">
             <table>
@@ -482,25 +482,25 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
                 <tr>
                   <td>S3</td>
                   <td><span class="m">/s3</span></td>
-                  <td class="from">cold · registry</td>
+                  <td class="from">storage · registry</td>
                   <td class="num">@aws-sdk/client-s3 ^3</td>
                 </tr>
                 <tr>
                   <td>Google Cloud Storage</td>
                   <td><span class="m">/gcs</span></td>
-                  <td class="from">cold · registry</td>
+                  <td class="from">storage · registry</td>
                   <td class="num">@google-cloud/storage ^7</td>
                 </tr>
                 <tr>
                   <td>Azure Blob</td>
                   <td><span class="m">/azure</span></td>
-                  <td class="from">cold · registry</td>
+                  <td class="from">storage · registry</td>
                   <td class="num">@azure/storage-blob ^12</td>
                 </tr>
                 <tr>
                   <td>Filesystem</td>
                   <td class="from">main entry</td>
-                  <td class="from">cold · registry</td>
+                  <td class="from">storage · registry</td>
                   <td class="num">none</td>
                 </tr>
               </tbody>
@@ -595,7 +595,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             <span class="rl-what">The bytes are in your bucket, immutable</span>
             <span class="rl-fig">your account</span>
             <span class="rl-note">
-              Cold objects are generation-keyed and never mutated in place. Nothing is stored anywhere we
+              Storage objects are generation-keyed and never mutated in place. Nothing is stored anywhere we
               control, and there is no service to be shut off.
             </span>
           </li>

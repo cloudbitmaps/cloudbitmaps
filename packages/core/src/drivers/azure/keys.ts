@@ -1,15 +1,15 @@
 /**
- * Logical-ref → Azure blob-name mapping for {@link AzureBlobColdDriver}.
+ * Logical-ref → Azure blob-name mapping for {@link AzureBlobStorageDriver}.
  *
  * Pure string logic, no SDK dependency — unit-testable without Azure or an emulator. Uses the **same
- * backend-agnostic `.crbm` object-name scheme** as the S3 + GCS + LocalFs cold drivers
- * (`<prefix><ns>/segments/<segment>.<gen>.crbm`), so a segment reads identically whichever cold backend holds
+ * backend-agnostic `.crbm` object-name scheme** as the S3 + GCS + LocalFs storage drivers
+ * (`<prefix><ns>/segments/<segment>.<gen>.crbm`), so a segment reads identically whichever storage backend holds
  * it. The default (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
  * caller's `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  *
- * NOTE (DRY): this mirrors the pure cold-key builders in `drivers/s3/keys.ts` + `drivers/gcs/keys.ts`. They
+ * NOTE (DRY): this mirrors the pure storage-key builders in `drivers/s3/keys.ts` + `drivers/gcs/keys.ts`. They
  * are deliberately **not** shared across driver folders today — a driver must stay self-contained so it lifts
- * cleanly into its own package if a driver ever ships separately. At that point the shared cold-key scheme
+ * cleanly into its own package if a driver ever ships separately. At that point the shared storage-key scheme
  * would be promoted into a driver-kit imported by every driver package, which is the right home for it;
  * until then a self-contained copy beats a cross-driver import.
  */

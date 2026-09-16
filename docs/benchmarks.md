@@ -38,7 +38,7 @@ build:
 - **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of a Redis-HA node.
 - **The published crossover is the modelled one** — the estimator's read crossover, at the pessimal cache
   posture, is asserted against the rate this page prints, over the same $346 baseline.
-- **The estimator never quotes a cheaper bill than the engine incurs** — priced against the cold GETs a metrics
+- **The estimator never quotes a cheaper bill than the engine incurs** — priced against the storage GETs a metrics
   sink actually observed for a real read workload, the prediction must land on or above the measured cost.
 
 ## Real-cloud calibration — AWS
@@ -92,7 +92,7 @@ requests**, and any always-on node crosses any per-request meter somewhere.
 - **It is prices × wire-metered ops — not the invoice.** AWS billing lags hours and has no per-run granularity,
   so the run tagged its resources (`cloudbitmaps-calibration=<runId>`) and the Cost Explorer comparison followed
   a day later.
-- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put`
+- **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `storage.put`
   event — a known observability gap). That is why the meter sat at the AWS SDK layer instead. PUTs bill at 12.5×
   a GET, so an ingest-heavy workload priced without them is materially understated.
 - **The registry it measured is not the registry that ships.** Generation resolution ran against a NoSQL table
@@ -126,7 +126,7 @@ Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared): **fet
 _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained heap** (post-GC), flat at 8.2 MiB @ 1,000 · 8.3 MiB @ 10,000 · 7.4 MiB @ 100,000 — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** (shown for context) is a high-water that also folds in the benchmark's own fleet-*seeding* allocations and isn't returned to the OS after GC, so it grows with fleet here — it is not a clean read-path footprint (isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~38–51 durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the `O(total)` **shape** is the point, not the absolute ms._
 <!-- BENCH:SCALE:END -->
 
-- **Memory is a function of the working set, not the fleet.** The cold-reader cache is capped by open-segment
+- **Memory is a function of the working set, not the fleet.** The storage-reader cache is capped by open-segment
   _count_ (`maxOpenSegments`, default 1024) **and** aggregate parsed-index _bytes_ (`maxOpenIndexBytes`, default
   64 MiB), so **retained live heap after reading the _entire_ fleet is flat from 1K to 100K segments** — a 100×
   larger fleet holds the same resident reader set, and unusually _wide_ segments can't pin gigabytes of indices

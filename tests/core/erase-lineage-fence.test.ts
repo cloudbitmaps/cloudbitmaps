@@ -1,9 +1,9 @@
 import { eraseIdFromSegment } from '@/core/erase-id';
-import { openGenerationReader, publishGeneration } from '@/core/crbm-cold-source';
+import { openGenerationReader, publishGeneration } from '@/core/crbm-storage-source';
 import { dropSegment } from '@/core/erasure';
-import { MemoryColdDriver, MemoryRegistryDriver, bulkLoadCrbmGeneration } from '@/index';
+import { MemoryStorageDriver, MemoryRegistryDriver, bulkLoadCrbmGeneration } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
-import type { IColdDriver, SegmentRef } from '@/index';
+import type { IStorageDriver, SegmentRef } from '@/index';
 
 /**
  * A generation number identifies a generation only **within one incarnation of a name**. `nextGeneration`
@@ -19,8 +19,8 @@ import type { IColdDriver, SegmentRef } from '@/index';
  */
 const REF: SegmentRef = { namespace: 'ns', segment: 's' };
 
-async function idsIn(cold: MemoryColdDriver, generation: number): Promise<number[]> {
-  const reader = await openGenerationReader(cold, { ...REF, generation }, undefined);
+async function idsIn(storage: MemoryStorageDriver, generation: number): Promise<number[]> {
+  const reader = await openGenerationReader(storage, { ...REF, generation }, undefined);
   const out: number[] = [];
   for (const ck of reader.chunkKeys()) {
     const bytes = await reader.getChunk(ck);
@@ -33,10 +33,10 @@ async function idsIn(cold: MemoryColdDriver, generation: number): Promise<number
 
 /** Retire the name and re-create it mid-rewrite, once, right after the first chunk read. */
 function reincarnateAfterFirstRead(
-  real: MemoryColdDriver,
+  real: MemoryStorageDriver,
   registry: MemoryRegistryDriver,
   ids: readonly number[],
-): IColdDriver {
+): IStorageDriver {
   let fired = false;
   return {
     capabilities: () => real.capabilities(),
@@ -48,7 +48,7 @@ function reincarnateAfterFirstRead(
       const out = await real.getRange(k, o, l);
       if (!fired) {
         fired = true;
-        await dropSegment(REF, { cold: real, registry }, { confirmSegment: 's' });
+        await dropSegment(REF, { storage: real, registry }, { confirmSegment: 's' });
         await registry.delete(REF); // what the retention sweep does to a reclaimed tombstone
         await bulkLoadCrbmGeneration(real, { ...REF, generation: 0 }, ids, { registry });
       }
@@ -59,12 +59,16 @@ function reincarnateAfterFirstRead(
 
 describe('a derived publish is fenced on the row, not just the pointer value', () => {
   it('an erasure cannot republish a retired incarnation over the live segment', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const wrapped = reincarnateAfterFirstRead(cold, registry, [7, 8, 9]);
-    const res = await eraseIdFromSegment(REF, 2, { cold: wrapped, registry, codec: roaringCodec });
+    const wrapped = reincarnateAfterFirstRead(storage, registry, [7, 8, 9]);
+    const res = await eraseIdFromSegment(REF, 2, {
+      storage: wrapped,
+      registry,
+      codec: roaringCodec,
+    });
 
     // The rewrite was derived from a segment that no longer exists. It must NOT claim an erasure.
     expect(res.erased).toBe(false);
@@ -74,48 +78,48 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     // The live segment is untouched: incarnation 2's ids, whole.
     const live = (await registry.get(REF))!;
     expect(live.currentGen).toBe(0);
-    expect(await idsIn(cold, 0)).toEqual([7, 8, 9]);
+    expect(await idsIn(storage, 0)).toEqual([7, 8, 9]);
   });
 
   it('the reincarnation lands before the verify — reported, not thrown', async () => {
     // Here our own object is swept by the reincarnation's `dropSegment`, so the verify read misses. Without a
     // lineage check on the row re-read, the pointer still reads `from` and the miss propagates as a bare
     // `NotFoundError` — the unactionable face this module stopped presenting.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     let ourObjectWritten = false;
     let fired = false;
-    const wrapped: IColdDriver = {
-      capabilities: () => cold.capabilities(),
-      getRange: (k, o, l) => cold.getRange(k, o, l),
-      delete: (k) => cold.delete(k),
-      list: (r) => cold.list(r),
+    const wrapped: IStorageDriver = {
+      capabilities: () => storage.capabilities(),
+      getRange: (k, o, l) => storage.getRange(k, o, l),
+      delete: (k) => storage.delete(k),
+      list: (r) => storage.list(r),
       putImmutable: async (k, fn) => {
-        const res = await cold.putImmutable(k, fn);
+        const res = await storage.putImmutable(k, fn);
         ourObjectWritten = true;
         return res;
       },
       getTail: async (k, m) => {
         if (ourObjectWritten && !fired) {
           fired = true; // the verify's read: re-create the name first, taking our object with it
-          await dropSegment(REF, { cold, registry }, { confirmSegment: 's' });
+          await dropSegment(REF, { storage, registry }, { confirmSegment: 's' });
           await registry.delete(REF);
-          await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [7, 8, 9], { registry });
+          await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [7, 8, 9], { registry });
         }
-        return cold.getTail(k, m);
+        return storage.getTail(k, m);
       },
     };
 
     const res = await eraseIdFromSegment(REF, 2, {
-      cold: wrapped,
+      storage: wrapped,
       registry,
       codec: roaringCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
-    expect(await idsIn(cold, 0)).toEqual([7, 8, 9]);
+    expect(await idsIn(storage, 0)).toEqual([7, 8, 9]);
   });
 
   it('the reincarnation lands after a SUCCESSFUL verify — only the publish fence is left', async () => {
@@ -123,25 +127,25 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     // and more cheaply. This interleaving slips past both — the verify completes against our own object, and
     // the name is re-created only on the registry read the publish itself makes — so the assertion below
     // rests on `expectToken` alone. It is the guarantee; the other two are optimisations.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     let ourObjectWritten = false;
     let verifyDone = false;
     let fired = false;
-    const wrappedCold: IColdDriver = {
-      capabilities: () => cold.capabilities(),
-      getRange: (k, o, l) => cold.getRange(k, o, l),
-      delete: (k) => cold.delete(k),
-      list: (r) => cold.list(r),
+    const wrappedCold: IStorageDriver = {
+      capabilities: () => storage.capabilities(),
+      getRange: (k, o, l) => storage.getRange(k, o, l),
+      delete: (k) => storage.delete(k),
+      list: (r) => storage.list(r),
       putImmutable: async (k, fn) => {
-        const res = await cold.putImmutable(k, fn);
+        const res = await storage.putImmutable(k, fn);
         ourObjectWritten = true;
         return res;
       },
       getTail: async (k, m) => {
-        const res = await cold.getTail(k, m);
+        const res = await storage.getTail(k, m);
         if (ourObjectWritten) verifyDone = true; // the only tail read after our write is the verify's
         return res;
       },
@@ -152,9 +156,11 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
         return async (ref: SegmentRef) => {
           if (verifyDone && !fired) {
             fired = true; // the publish's own row read: re-create the name just before it looks
-            await dropSegment(REF, { cold, registry }, { confirmSegment: 's' });
+            await dropSegment(REF, { storage, registry }, { confirmSegment: 's' });
             await registry.delete(REF);
-            await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [7, 8, 9], { registry });
+            await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [7, 8, 9], {
+              registry,
+            });
           }
           return registry.get(ref);
         };
@@ -162,25 +168,25 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     }) as unknown as MemoryRegistryDriver;
 
     const res = await eraseIdFromSegment(REF, 2, {
-      cold: wrappedCold,
+      storage: wrappedCold,
       registry: wrappedRegistry,
       codec: roaringCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);
 
     expect(res).toMatchObject({ erased: false, reason: 'superseded' });
     expect((await registry.get(REF))!.currentGen).toBe(0);
-    expect(await idsIn(cold, 0)).toEqual([7, 8, 9]); // the live incarnation, whole
+    expect(await idsIn(storage, 0)).toEqual([7, 8, 9]); // the live incarnation, whole
   });
 
   it('`expectToken` refuses a publish onto a re-created row at the same pointer value', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
     const before = (await registry.get(REF))!;
 
-    await cold.delete({ ...REF, generation: 0 }); // full retirement: objects gone…
+    await storage.delete({ ...REF, generation: 0 }); // full retirement: objects gone…
     await registry.delete(REF); // …and the row purged, so the name is free
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [7, 8, 9], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [7, 8, 9], { registry });
     const after = (await registry.get(REF))!;
     expect(after.currentGen).toBe(before.currentGen); // the pointer VALUE is identical…
     expect(after.token).not.toBe(before.token); // …the row is not
@@ -195,9 +201,9 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
   });
 
   it('`expectFrom` alone still lands on the same row — the ordinary fenced publish', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
     const row = (await registry.get(REF))!;
 
     expect(
@@ -211,13 +217,13 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
   });
 
   it('an ordinary erasure on a stable segment is unaffected', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const res = await eraseIdFromSegment(REF, 2, { cold, registry, codec: roaringCodec });
+    const res = await eraseIdFromSegment(REF, 2, { storage, registry, codec: roaringCodec });
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(res.collected).toEqual([0]);
-    expect(await idsIn(cold, 1)).toEqual([1, 3]);
+    expect(await idsIn(storage, 1)).toEqual([1, 3]);
   });
 });

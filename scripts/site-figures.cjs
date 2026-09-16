@@ -84,7 +84,7 @@ if (strayLatency) {
 
 // ── the estimator's own accuracy (K3) ─────────────────────────────────────────────────────────────────────
 // This is the claim every other figure on the page rests on, since they all come out of estimateCost(). It used
-// to be a tolerance ("within ±N%") and is now a DIRECTION: priced against the cold GETs a metrics sink actually
+// to be a tolerance ("within ±N%") and is now a DIRECTION: priced against the storage GETs a metrics sink actually
 // observed, the prediction must land on or above the measured cost. The direction is the stronger claim — a
 // tolerance permits an under-quote of N%, and an estimator that under-quotes your bill is the one failure mode
 // that matters — so what is gated is that the page still states it, and states it as a floor rather than a band.
@@ -381,7 +381,7 @@ for (const page of PAGES) {
 // six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
 // looking. A number is only anchored where the gate actually reads it.
 //
-// The tier count is deliberately NOT anchored. Hot RAM over cold object storage is the architecture — it cannot
+// The tier count is deliberately NOT anchored. Hot RAM over object storage is the architecture — it cannot
 // drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
 // took), so a check for it is one that CANNOT FAIL, the same reason the bare "22"/"23" calibration quantities
 // above are left out. The two figures that CAN drift silently while CI stays green are derived below.
@@ -402,7 +402,7 @@ const specAnchors = [];
       else if (e.name.endsWith('.ts')) {
         for (const m of fs
           .readFileSync(p, 'utf8')
-          .matchAll(/export class (\w+?)(?:Cold|Registry)\w*Driver\b/g)) {
+          .matchAll(/export class (\w+?)(?:Storage|Registry)\w*Driver\b/g)) {
           const backend = m[1].toLowerCase();
           if (!NOT_A_BACKEND.has(backend)) backends.add(backend);
         }

@@ -35,7 +35,7 @@
  * Which reason comes from **re-reading the row**, not from assuming a supersession: a moved pointer is
  * `'superseded'`, a tombstoned row `'destroyed'`, a purged row `'absent'`, a row with no pointer
  * `'no-generation'`. A pointer still on `from` means the object it names is genuinely gone — the forbidden
- * `missing-cold-generation` state — and that throws, because no re-run fixes it. That `NotFoundError` is the only
+ * `missing-storage-generation` state — and that throws, because no re-run fixes it. That `NotFoundError` is the only
  * signal of that state, so a faulting re-read rethrows it rather than replacing it with a transient-looking
  * registry error.
  *
@@ -64,7 +64,7 @@ import {
   publishGeneration,
   verifyGeneration,
   writeCrbmGenerationStream,
-} from './crbm-cold-source';
+} from './crbm-storage-source';
 import type { CrbmReader } from './crbm/reader';
 import { aadFor } from './crypto';
 import type { Aead, CrbmCrypto, IKeystore } from './crypto';
@@ -76,14 +76,14 @@ import {
   isNotFoundError,
 } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
-import type { GenKey, IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
+import type { GenKey, IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from './ports';
 import { validateSegmentRef } from './validate';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20;
 
 /** What {@link eraseIdFromSegment} needs: the objects, the pointer, the codec, and the key material if encrypted. */
 export interface EraseIdDeps {
-  readonly cold: IColdDriver;
+  readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /**
    * Bitmap codec — the rewrite decodes and re-encodes every chunk through it. Optional in the type so this stays
@@ -114,7 +114,7 @@ export interface EraseIdResult {
   readonly erased: boolean;
   /**
    * Why nothing was rewritten, when `erased` is false. `'absent'` (no registry row), `'destroyed'` (a crypto-shred
-   * tombstone — already unreadable), `'no-generation'` (a row with no Cold data yet), `'not-member'` (the id is not
+   * tombstone — already unreadable), `'no-generation'` (a row with no Storage data yet), `'not-member'` (the id is not
    * in the current generation — the common case across a fleet scan), or `'superseded'`.
    *
    * **`'superseded'` means this call did not erase the id, not that the id is still there.** Another writer — a
@@ -141,7 +141,7 @@ export interface EraseIdResult {
    * non-empty `collected` as evidence and an empty one as "someone else got there", never as a failure.
    *
    * A call that cannot establish the claim **throws** rather than report `erased: true` over bytes that are
-   * still there. Three ways that happens: a Cold `delete` fault, a collection pass that could not prove the
+   * still there. Three ways that happens: a Storage `delete` fault, a collection pass that could not prove the
    * segment was still the same one (`WriteConflictError`, which an ordinary retirement landing mid-call is
    * enough to cause), and the same refusal on the collect-only path below, where nothing was published at all.
    *
@@ -185,10 +185,10 @@ async function assertCollected(
   ref: SegmentRef,
   holder: number,
   collected: readonly number[],
-  cold: IColdDriver,
+  storage: IStorageDriver,
 ): Promise<void> {
   if (collected.includes(holder)) return;
-  for await (const key of cold.list(ref)) {
+  for await (const key of storage.list(ref)) {
     if (key.generation !== holder) continue;
     throw new WriteConflictError(
       `erasure of segment ${ref.segment} could not remove generation ${holder} — the one holding the id — which is still in the bucket; re-run`,
@@ -294,7 +294,7 @@ export async function eraseIdFromSegment(
    *
    * **A `NotFoundError` is translated only after re-reading the row, and the row decides which answer.** The
    * pointer still at exactly `from` means the object it names is genuinely absent — the forbidden
-   * `missing-cold-generation` state a failed publish leaves behind — and that **throws**, because it is an
+   * `missing-storage-generation` state a failed publish leaves behind — and that **throws**, because it is an
    * integrity problem rather than a race and no re-run fixes it. A pointer that moved is `'superseded'`. The
    * other two states are not supersessions and are not reported as one: the row **gone** (the retention sweep
    * purged a tombstone while we worked) is `'absent'`, and a row whose `currentGen` is `null` is
@@ -340,7 +340,7 @@ export async function eraseIdFromSegment(
     // then erase, and the erasure reported `'not-member'` — filtered out of the subject ledger entirely, a clean
     // Art. 17 receipt — while the subject's bit sat in a generation one rollback away from being served again.
     const superseded: number[] = [];
-    for await (const key of deps.cold.list(ref)) {
+    for await (const key of deps.storage.list(ref)) {
       if (key.generation !== from) superseded.push(key.generation);
     }
     if (superseded.length === 0) {
@@ -351,7 +351,7 @@ export async function eraseIdFromSegment(
       let held = false;
       try {
         const reader = await openGenerationReader(
-          deps.cold,
+          deps.storage,
           { ...base, generation },
           cryptoAt(generation),
         );
@@ -373,10 +373,10 @@ export async function eraseIdFromSegment(
       // would mean the erasure is undoable by an ordinary operator action, which is not erasure.
       const alsoCollected = [...collected];
       if (from !== null && generation > from) {
-        await deps.cold.delete({ namespace: ref.namespace, segment: ref.segment, generation });
+        await deps.storage.delete({ namespace: ref.namespace, segment: ref.segment, generation });
         alsoCollected.push(generation);
       }
-      await assertCollected(ref, generation, alsoCollected, deps.cold);
+      await assertCollected(ref, generation, alsoCollected, deps.storage);
       return { ...base, erased: true, fromGeneration: generation, collected: alsoCollected };
     }
     return { ...base, erased: false, reason: 'not-member', fromGeneration: from, collected: [] };
@@ -386,7 +386,7 @@ export async function eraseIdFromSegment(
     /** Set only once the object exists in the bucket — see the note above. */
     let written: number | undefined;
     try {
-      const reader = await openGenerationReader(deps.cold, fromKey, cryptoAt(from));
+      const reader = await openGenerationReader(deps.storage, fromKey, cryptoAt(from));
       const bytes = await reader.getChunk(chunkKey);
       if (bytes === null) return notInCurrent();
       const target = codec.safeDeserialize(bytes, maxBytes);
@@ -397,7 +397,7 @@ export async function eraseIdFromSegment(
       const generation = await nextGeneration(ref, deps);
       const key: GenKey = { ...base, generation };
       const tally = await writeCrbmGenerationStream(
-        deps.cold,
+        deps.storage,
         key,
         rewrite(reader, chunkKey, target, codec, maxBytes),
         { crypto: cryptoAt(generation), clock: deps.clock },
@@ -408,7 +408,7 @@ export async function eraseIdFromSegment(
       const beforeVerify = await deps.registry.get(ref);
       const early = rowVerdict(beforeVerify);
       if (early !== null) return refused(early, written);
-      await verifyGeneration(deps.cold, key, tally, cryptoAt(generation));
+      await verifyGeneration(deps.storage, key, tally, cryptoAt(generation));
       return { generation, key };
     } catch (err) {
       if (!isNotFoundError(err)) throw err;
@@ -476,7 +476,7 @@ export async function eraseIdFromSegment(
   // flight. Across incarnations the pointer CAN regress (invariant 1), which is why the collector re-proves the
   // row rather than trusting the one this call read, and why the receipt is checked below rather than assumed.
   const collected = await gcOrphanGenerations(ref, deps, { keep: 0 });
-  await assertCollected(ref, from, collected, deps.cold);
+  await assertCollected(ref, from, collected, deps.storage);
   return { ...base, erased: true, fromGeneration: from, generation, collected };
 }
 

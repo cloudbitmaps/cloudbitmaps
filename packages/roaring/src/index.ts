@@ -3,12 +3,12 @@
  *
  * The `CloudRoaring` class is the read engine over **loaded** segments: write-once `.crbm` generations in an
  * object store, behind one registry pointer per segment. You wire storage **once**, as a single config object: a
- * Cold driver (`cold`) and optionally a `registry` (the authoritative generation pointer — needed to read
- * encrypted segments, to resolve generations without a cold `list`-scan, and for every lifecycle helper) and a
- * `keystore` (encryption-at-rest / crypto-shred). Pass a **raw** {@link IColdDriver} as `cold` (e.g.
- * `S3ColdDriver`, `LocalFsColdDriver`, `MemoryColdDriver`) and the store assembles the `.crbm` cold source
- * ({@link CrbmColdChunkSource}) for you — so each driver is named exactly once. Or pass an already-built
- * {@link ColdChunkSource} to control advanced reader options yourself.
+ * Storage driver (`storage`) and optionally a `registry` (the authoritative generation pointer — needed to read
+ * encrypted segments, to resolve generations without a storage `list`-scan, and for every lifecycle helper) and a
+ * `keystore` (encryption-at-rest / crypto-shred). Pass a **raw** {@link IStorageDriver} as `storage` (e.g.
+ * `S3StorageDriver`, `LocalFsStorageDriver`, `MemoryStorageDriver`) and the store assembles the `.crbm` storage source
+ * ({@link CrbmStorageChunkSource}) for you — so each driver is named exactly once. Or pass an already-built
+ * {@link StorageChunkSource} to control advanced reader options yourself.
  *
  * **Data gets in by loading a generation**, never by mutating one: `bulkLoadCrbmGeneration` streams a set of ids
  * into one immutable object and publishes it forward-only. Every other write in the library is a load in
@@ -18,17 +18,17 @@
  *
  * In-process lifecycle helpers — `eraseSubject`, `subjectReport`, `dropSegment`, `retireExpired`,
  * `checkConsistency`, `exportSegments` — reuse the store's own drivers, so you never re-pass them (they need the
- * store built with a raw cold driver + registry). See the README and the getting-started guide.
+ * store built with a raw storage driver + registry). See the README and the getting-started guide.
  */
 
 import {
   BoundedLru,
-  PinnedColdChunkSource,
+  PinnedStorageChunkSource,
   segmentKey,
-  CrbmColdChunkSource,
+  CrbmStorageChunkSource,
   DEFAULT_BUDGET,
   NOOP_METRICS,
-  RetryingColdChunkSource,
+  RetryingStorageChunkSource,
   SegmentEngine,
   UnsupportedError,
   ValidationError,
@@ -64,7 +64,7 @@ import type {
   Clock,
   CodecBitmap,
   CodecInterface,
-  ColdChunkSource,
+  StorageChunkSource,
   ConsistencyReport,
   CostReport,
   EngineDeps,
@@ -74,7 +74,7 @@ import type {
   ExportOptions,
   ExportSink,
   IAuditSink,
-  IColdDriver,
+  IStorageDriver,
   IKeystore,
   IMetricsSink,
   IRegistryDriver,
@@ -134,8 +134,8 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
 }
 
 /**
- * Wiring for a {@link CloudRoaring} store. **Only `cold` is required** — the minimal call is
- * `new CloudRoaring({ cold })`, which reads cleartext segments by list-scanning the bucket for the latest
+ * Wiring for a {@link CloudRoaring} store. **Only `storage` is required** — the minimal call is
+ * `new CloudRoaring({ storage })`, which reads cleartext segments by list-scanning the bucket for the latest
  * generation. Add a `registry` to resolve generations with one strong read, to read encrypted segments, and to
  * unlock every lifecycle helper (recommended for anything beyond a quick look). Everything else is **optional
  * tuning with sensible defaults** — resilience/retries are already on, the hot cache is bounded, metrics are a
@@ -143,31 +143,31 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
  */
 export interface CloudRoaringOptions {
   /**
-   * Cold tier. Pass a **raw** {@link IColdDriver} (`S3ColdDriver`, `LocalFsColdDriver`, `MemoryColdDriver`, …)
-   * and the store wraps it in a {@link CrbmColdChunkSource} using `registry`/`keystore` below — the common case,
-   * so you wire each driver **once**. Or pass an already-built {@link ColdChunkSource} (`MemoryColdChunkSource`,
-   * or a `CrbmColdChunkSource` you configured with advanced reader options) to use as-is.
+   * Storage tier. Pass a **raw** {@link IStorageDriver} (`S3StorageDriver`, `LocalFsStorageDriver`, `MemoryStorageDriver`, …)
+   * and the store wraps it in a {@link CrbmStorageChunkSource} using `registry`/`keystore` below — the common case,
+   * so you wire each driver **once**. Or pass an already-built {@link StorageChunkSource} (`MemoryStorageChunkSource`,
+   * or a `CrbmStorageChunkSource` you configured with advanced reader options) to use as-is.
    */
-  readonly cold: IColdDriver | ColdChunkSource;
+  readonly storage: IStorageDriver | StorageChunkSource;
   /**
-   * Authoritative registry — the per-segment `currentGen` pointer + wrapped-DEK holder. Applies when `cold` is a
-   * **raw driver**: it (a) resolves the current generation with one strong read instead of a cold `list`-scan,
+   * Authoritative registry — the per-segment `currentGen` pointer + wrapped-DEK holder. Applies when `storage` is a
+   * **raw driver**: it (a) resolves the current generation with one strong read instead of a storage `list`-scan,
    * (b) lets the store read **encrypted** segments (that's where wrapped DEKs live), and (c) is what the
    * lifecycle helpers and the `*Into` verbs publish through. Optional — a registry-less store reads the highest
-   * generation by list-scanning Cold (cleartext only, read-only). When you pass a pre-built `ColdChunkSource`,
+   * generation by list-scanning Storage (cleartext only, read-only). When you pass a pre-built `StorageChunkSource`,
    * that source resolves its own generations, so a top-level `registry` is inert there and rejected as a wiring
    * mistake — configure it on the source instead.
    */
   readonly registry?: IRegistryDriver;
   /**
    * Keystore for encryption-at-rest / crypto-shred. Required to read encrypted segments; needs a `registry`
-   * (that's where wrapped DEKs are stored). Applied only when `cold` is a raw driver — when you pass a pre-built
-   * {@link ColdChunkSource}, configure the keystore on that source instead.
+   * (that's where wrapped DEKs are stored). Applied only when `storage` is a raw driver — when you pass a pre-built
+   * {@link StorageChunkSource}, configure the keystore on that source instead.
    */
   readonly keystore?: IKeystore;
   /**
    * Refuse to touch a **cleartext** segment — a guard against silently reading, or writing, data that should be
-   * encrypted. Needs a `registry`; applied only when `cold` is a raw driver. Off by default (encryption is opt-in).
+   * encrypted. Needs a `registry`; applied only when `storage` is a raw driver. Off by default (encryption is opt-in).
    *
    * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both carry
    * it into their write path, so on a cleartext segment a materialisation throws and an erasure records
@@ -180,36 +180,36 @@ export interface CloudRoaringOptions {
   readonly clock?: Clock;
   /** Injected for deterministic tests; defaults to `Math.random`-backed. Drives transient-retry jitter. */
   readonly rng?: Rng;
-  /** HOT cache ceiling (decoded Cold chunks). */
+  /** HOT cache ceiling (decoded Storage chunks). */
   readonly cacheMaxChunks?: number;
   /** Optional TTL on cached chunks (ms). */
   readonly cacheTtlMs?: number;
   /**
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
    * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies only when
-   * `cold` is a raw driver **and** a `registry` is wired (the cheap `currentGen` read the refresh needs; a
+   * `storage` is a raw driver **and** a `registry` is wired (the cheap `currentGen` read the refresh needs; a
    * registry-less store pins per source lifetime). Lazy — no timer; ≤ one registry read per segment per window,
    * opening a new reader only when the generation actually advanced.
    */
-  readonly coldGenTtlMs?: number;
+  readonly storageGenTtlMs?: number;
   /**
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
-   * Applies only when `cold` is a raw driver (a pre-built `ColdChunkSource` manages its own reader cache).
+   * Applies only when `storage` is a raw driver (a pre-built `StorageChunkSource` manages its own reader cache).
    */
-  readonly coldReaderCacheMax?: number;
+  readonly storageReaderCacheMax?: number;
   /**
    * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
-   * of the memory bound, complementing the `coldReaderCacheMax` *count* bound. A wide/dense segment's parsed
+   * of the memory bound, complementing the `storageReaderCacheMax` *count* bound. A wide/dense segment's parsed
    * index can be several MB, so a count-only bound could let the open readers pin ~GBs and blow a small heap
    * (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint would
    * exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight deployments
-   * that read across wide segments. Applies only when `cold` is a raw driver.
+   * that read across wide segments. Applies only when `storage` is a raw driver.
    */
-  readonly coldReaderCacheMaxBytes?: number;
+  readonly storageReaderCacheMaxBytes?: number;
   /**
-   * Resilience: by default every cold read retries **transient** faults (throttling, 5xx, dropped connections)
+   * Resilience: by default every storage read retries **transient** faults (throttling, 5xx, dropped connections)
    * with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}). Pass a {@link RetryPolicy} to
    * tune it, or `false` to disable the transient-retry wrapper entirely (e.g. if your injected client already
    * retries). Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried
@@ -219,7 +219,7 @@ export interface CloudRoaringOptions {
   /** Observability: called before each transient-retry backoff wait. */
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
   /**
-   * Observability sink: receives typed metric events (cold GET/bytes, cache hit/miss, retries, intersection
+   * Observability sink: receives typed metric events (storage GET/bytes, cache hit/miss, retries, intersection
    * efficiency, op latency). Defaults to a no-op — emission is skipped entirely when unused (near-zero
    * overhead). Any exception the sink throws is swallowed — metrics can never break a read.
    */
@@ -298,7 +298,7 @@ export interface SubjectErasureEntry {
    * erase the id; re-run against the new generation, which erases it if it is still there and reports nothing
    * for the segment if the racing writer already removed it. `` `error: <message>` `` — an isolated per-segment
    * fault (per-segment faults are recorded so one segment can't discard the whole ledger); re-run after fixing
-   * the fault. A fault that landed once part of the work was already done — a Cold `delete` fault, or a collect
+   * the fault. A fault that landed once part of the work was already done — a Storage `delete` fault, or a collect
    * that could not prove the segment was still the same one, whether or not a rewrite was published first —
    * also re-runs, but **read what the re-run says**: it usually reports `erased: true` against the superseded generation it found the id in, it reports
    * nothing at all if a racing collector took that generation first (the bit is gone, but no run holds a
@@ -335,48 +335,48 @@ export interface MaterializeResult {
 }
 
 /**
- * Resolve the `cold` option to a {@link ColdChunkSource} at construction (wiring-time only — no hot-path cost).
+ * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
  *
- * `cold` is discriminated **structurally, without a brand**: a raw {@link IColdDriver} exposes `putImmutable`
- * (the byte-mover seam); a pre-built {@link ColdChunkSource} exposes `getChunk` (the engine's read seam). The
+ * `storage` is discriminated **structurally, without a brand**: a raw {@link IStorageDriver} exposes `putImmutable`
+ * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
  * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
  * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
  * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
  *
- * A raw driver is wrapped into a {@link CrbmColdChunkSource} using the config's `registry`/`keystore`/
+ * A raw driver is wrapped into a {@link CrbmStorageChunkSource} using the config's `registry`/`keystore`/
  * `requireEncryption`; a pre-built source is used as-is. Those three options are meaningful **only** on the
  * raw-driver path (a pre-built source carries its own registry/keystore) — pairing any of them with a source is
- * a wiring mistake, so reject it rather than silently ignore it. The `CrbmColdChunkSource` constructor enforces
+ * a wiring mistake, so reject it rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces
  * the rest (a keystore / `requireEncryption` needs a registry; the driver needs range reads).
  *
  * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
  * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
- * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IColdDriver` to
+ * you re-passing drivers. `driver` is `undefined` for a pre-built source (there's no underlying `IStorageDriver` to
  * write through — those callers use the free functions).
  */
-function resolveColdSource(
+function resolveStorageSource(
   options: CloudRoaringOptions,
   clock: Pick<Clock, 'now'>,
 ): {
-  source: ColdChunkSource;
-  driver: IColdDriver | undefined;
+  source: StorageChunkSource;
+  driver: IStorageDriver | undefined;
 } {
-  const cold: unknown = options.cold;
-  if (cold === null || typeof cold !== 'object') {
-    throw new ValidationError('`cold` must be an IColdDriver or a ColdChunkSource');
+  const storage: unknown = options.storage;
+  if (storage === null || typeof storage !== 'object') {
+    throw new ValidationError('`storage` must be an IStorageDriver or a StorageChunkSource');
   }
-  const hasGetChunk = typeof (cold as Partial<ColdChunkSource>).getChunk === 'function';
-  const hasPutImmutable = typeof (cold as Partial<IColdDriver>).putImmutable === 'function';
+  const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
+  const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
   if (hasGetChunk && hasPutImmutable) {
     throw new ValidationError(
-      '`cold` exposes both `getChunk` and `putImmutable` — ambiguous; pass an IColdDriver or a ColdChunkSource, not a hybrid',
+      '`storage` exposes both `getChunk` and `putImmutable` — ambiguous; pass an IStorageDriver or a StorageChunkSource, not a hybrid',
     );
   }
   if (!hasGetChunk && !hasPutImmutable) {
-    throw new ValidationError('`cold` must be an IColdDriver or a ColdChunkSource');
+    throw new ValidationError('`storage` must be an IStorageDriver or a StorageChunkSource');
   }
   if (hasGetChunk) {
-    // Already a ColdChunkSource — used as-is. registry/keystore/requireEncryption only apply when the store
+    // Already a StorageChunkSource — used as-is. registry/keystore/requireEncryption only apply when the store
     // builds the source from a raw driver; with a pre-built source they're inert, so reject them rather than
     // mislead (configure them on the source you passed instead).
     if (
@@ -385,32 +385,32 @@ function resolveColdSource(
       options.requireEncryption === true
     ) {
       throw new ValidationError(
-        'registry/keystore/requireEncryption apply only when `cold` is a raw IColdDriver; configure them on ' +
-          'the ColdChunkSource you passed instead',
+        'registry/keystore/requireEncryption apply only when `storage` is a raw IStorageDriver; configure them on ' +
+          'the StorageChunkSource you passed instead',
       );
     }
-    return { source: cold as ColdChunkSource, driver: undefined };
+    return { source: storage as StorageChunkSource, driver: undefined };
   }
-  // A raw IColdDriver → assemble the `.crbm` cold source with the store's registry/keystore; keep the raw
+  // A raw IStorageDriver → assemble the `.crbm` storage source with the store's registry/keystore; keep the raw
   // driver for the store's lifecycle helpers.
-  const driver = cold as IColdDriver;
+  const driver = storage as IStorageDriver;
   return {
-    source: new CrbmColdChunkSource(driver, {
+    source: new CrbmStorageChunkSource(driver, {
       registry: options.registry,
       keystore: options.keystore,
       requireEncryption: options.requireEncryption,
       clock,
-      currentGenTtlMs: options.coldGenTtlMs,
-      maxOpenSegments: options.coldReaderCacheMax,
-      maxOpenIndexBytes: options.coldReaderCacheMaxBytes,
+      currentGenTtlMs: options.storageGenTtlMs,
+      maxOpenSegments: options.storageReaderCacheMax,
+      maxOpenIndexBytes: options.storageReaderCacheMaxBytes,
     }),
     driver,
   };
 }
 
-/** The deps every write-side helper on the store shares: raw cold + registry + the store's codec/crypto/clock. */
+/** The deps every write-side helper on the store shares: raw storage + registry + the store's codec/crypto/clock. */
 interface LifecycleDeps {
-  readonly cold: IColdDriver;
+  readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   readonly codec: CodecInterface;
   readonly clock: Clock;
@@ -421,13 +421,13 @@ interface LifecycleDeps {
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
-  private readonly crbmSource: CrbmColdChunkSource | undefined;
+  private readonly crbmSource: CrbmStorageChunkSource | undefined;
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
-  // you re-pass deps. `coldDriver` is set only when `cold` was a raw IColdDriver (a pre-built ColdChunkSource has
+  // you re-pass deps. `coldDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
   // no underlying driver to write through).
-  private readonly coldDriver: IColdDriver | undefined;
+  private readonly coldDriver: IStorageDriver | undefined;
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -444,10 +444,10 @@ export class CloudRoaring {
       ttlMs: options.cacheTtlMs,
       clock,
     });
-    // Resolve the Cold seam to a ColdChunkSource: a raw IColdDriver is wrapped into the `.crbm` cold source
+    // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
     // here (with the store's registry/keystore) so drivers are wired once; a pre-built source is used as-is.
-    const resolved = resolveColdSource(options, clock);
-    let cold: ColdChunkSource = resolved.source;
+    const resolved = resolveStorageSource(options, clock);
+    let storage: StorageChunkSource = resolved.source;
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
     if (options.retry !== false) {
@@ -466,13 +466,13 @@ export class CloudRoaring {
           options.onRetry?.(info);
         },
       };
-      cold = new RetryingColdChunkSource(cold, retryOpts);
+      storage = new RetryingStorageChunkSource(storage, retryOpts);
     }
     // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
     // engine (count/iterate/combines) and the facade's admin scans (subjectReport/eraseSubject).
     this.budget = resolveBudget(options.budget, DEFAULT_BUDGET);
     const deps: EngineDeps = {
-      cold,
+      storage,
       cache,
       codec: roaringCodec, // the facade injects the flagship codec; core stays codec-agnostic
       clock,
@@ -483,7 +483,8 @@ export class CloudRoaring {
     this.cache = cache;
     // The UNWRAPPED `.crbm` source, kept for `pin()` — the only reader that resolves a specific generation.
     // `undefined` when the caller supplied a pre-built source, which has nothing to pin.
-    this.crbmSource = resolved.source instanceof CrbmColdChunkSource ? resolved.source : undefined;
+    this.crbmSource =
+      resolved.source instanceof CrbmStorageChunkSource ? resolved.source : undefined;
     this.clock = clock;
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
@@ -496,14 +497,14 @@ export class CloudRoaring {
 
   /**
    * The write-side deps, from the store's own drivers, for the lifecycle helpers and the `*Into` verbs. Requires
-   * the store to have been constructed with a **raw cold driver** (a pre-built `ColdChunkSource` has no
-   * underlying `IColdDriver` to write through) and a `registry` (the pointer every write publishes through).
+   * the store to have been constructed with a **raw storage driver** (a pre-built `StorageChunkSource` has no
+   * underlying `IStorageDriver` to write through) and a `registry` (the pointer every write publishes through).
    * Out-of-process callers use the free functions with explicit deps.
    */
   private lifecycleDeps(op: string): LifecycleDeps {
     if (this.coldDriver === undefined) {
       throw new UnsupportedError(
-        `${op} needs the store built with a raw cold driver (IColdDriver), not a pre-built ColdChunkSource — ` +
+        `${op} needs the store built with a raw storage driver (IStorageDriver), not a pre-built StorageChunkSource — ` +
           'or call the equivalent free function with explicit deps',
       );
     }
@@ -511,7 +512,7 @@ export class CloudRoaring {
       throw new UnsupportedError(`${op} needs a \`registry\` in the store config`);
     }
     return {
-      cold: this.coldDriver,
+      storage: this.coldDriver,
       registry: this.registry,
       clock: this.clock,
       codec: roaringCodec, // facade injects the flagship codec
@@ -556,7 +557,7 @@ export class CloudRoaring {
    * Write `ids` as a **new generation of `dest`** and publish it forward-only — the shared body of the `*Into`
    * verbs. A load in disguise: `bulkLoadCrbmGeneration` over the store's own drivers, at the generation number
    * after the highest the registry or the bucket knows. The destination's previous generation stays readable
-   * until the publish lands (readers re-resolve within `coldGenTtlMs`) and is collected by the next
+   * until the publish lands (readers re-resolve within `storageGenTtlMs`) and is collected by the next
    * `gcOrphanGenerations`/retention sweep — this call deletes nothing.
    */
   private async materialize(
@@ -568,7 +569,7 @@ export class CloudRoaring {
     const deps = this.lifecycleDeps(op);
     const generation = await nextGeneration(dest, deps);
     const result: BulkLoadResult = await bulkLoadCrbmGeneration(
-      deps.cold,
+      deps.storage,
       { ...dest, generation },
       ids,
       {
@@ -664,9 +665,9 @@ export class CloudRoaring {
    * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
    * emitted per rewrite when you pass `audit`).
    *
-   * Uses the store's **own** drivers (raw cold + registry), so the membership check and the rewrite provably run
-   * over the same generation. Requires the store built with a **raw cold driver + registry** (throws
-   * {@link UnsupportedError} otherwise; a pre-built `ColdChunkSource` store has no `IColdDriver` to write
+   * Uses the store's **own** drivers (raw storage + registry), so the membership check and the rewrite provably run
+   * over the same generation. Requires the store built with a **raw storage driver + registry** (throws
+   * {@link UnsupportedError} otherwise; a pre-built `StorageChunkSource` store has no `IStorageDriver` to write
    * through — use the `eraseIdFromSegment` free function there).
    *
    * **One contract remains** (an integrator obligation the library cannot check): **do not load the segment
@@ -733,7 +734,7 @@ export class CloudRoaring {
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         try {
           // The rewrite does its own membership check against the CURRENT registry generation — not the
-          // engine's cached view, which may lag a load by up to `coldGenTtlMs`. An Art. 17 erasure must never
+          // engine's cached view, which may lag a load by up to `storageGenTtlMs`. An Art. 17 erasure must never
           // skip a segment because a read cache hasn't caught up yet.
           const result = await eraseIdFromSegment(ref, id, deps, { audit: options.audit });
           if (result.reason === 'not-member' || result.reason === 'absent') return null;
@@ -785,7 +786,7 @@ export class CloudRoaring {
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
    * choose from, which is the reason to look at it. One `list` call; it does not open the objects.
    *
-   * Needs a raw cold driver + registry.
+   * Needs a raw storage driver + registry.
    */
   async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
     validateSegmentRef(ref);
@@ -878,7 +879,7 @@ export class CloudRoaring {
    * pointer past them. An operator who has just undone a bad load should not have the evidence collected out from
    * under them.
    *
-   * Needs a raw cold driver + registry.
+   * Needs a raw storage driver + registry.
    */
   async rollback(
     ref: SegmentRef,
@@ -934,7 +935,7 @@ export class CloudRoaring {
    * (`WriteConflictError`). The second can be raised **after** the publish already landed, so a throw does not
    * by itself mean the load did not take effect — re-read the pointer rather than assuming.
    *
-   * Needs a raw cold driver + registry (throws {@link UnsupportedError} otherwise).
+   * Needs a raw storage driver + registry (throws {@link UnsupportedError} otherwise).
    */
   async load(
     ref: SegmentRef,
@@ -954,7 +955,7 @@ export class CloudRoaring {
   }
 
   /**
-   * **Dispose of a segment — tombstone it, then delete its Cold objects.** Irreversible.
+   * **Dispose of a segment — tombstone it, then delete its Storage objects.** Irreversible.
    *
    * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
    * backups, but still sitting in your bucket and still billed, and it requires encryption), while this one
@@ -982,14 +983,14 @@ export class CloudRoaring {
    * finishes its object, so a single sweep can miss it — this call re-sweeps and then reports whatever it still
    * could not remove rather than returning a result that looks like a clean drop.
    *
-   * Reads become empty within `coldGenTtlMs` (default 2 s), not instantly: a store that had already read this
+   * Reads become empty within `storageGenTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + hot chunks until that window lapses. A reader that never
-   * touched it sees empty at once. **That bound needs a clock and `coldGenTtlMs > 0`** — a store built without a
-   * clock, or with `coldGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
+   * touched it sees empty at once. **That bound needs a clock and `storageGenTtlMs > 0`** — a store built without a
+   * clock, or with `storageGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
    * keep answering `true` for a dropped segment indefinitely; restart it.
    *
-   * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
-   * because it has to enumerate and delete generations — a pre-built `ColdChunkSource` only reads.
+   * Needs the store built with a **raw storage driver + a registry** (throws {@link UnsupportedError} otherwise),
+   * because it has to enumerate and delete generations — a pre-built `StorageChunkSource` only reads.
    */
   async dropSegment(
     ref: SegmentRef,
@@ -998,7 +999,7 @@ export class CloudRoaring {
     validateSegmentRef(ref);
     const deps = this.lifecycleDeps('dropSegment');
     try {
-      return await dropSegment(ref, { registry: deps.registry, cold: deps.cold }, options);
+      return await dropSegment(ref, { registry: deps.registry, storage: deps.storage }, options);
     } finally {
       if (options.dryRun !== true) this.engine.invalidate(ref);
     }
@@ -1022,7 +1023,7 @@ export class CloudRoaring {
    * ```
    *
    * **Works before the first load**: a segment with no registry row yet gets one (`createdRow: true` in the
-   * result) with **no Cold generation**, so the policy is recorded ahead of the data and the segment is already
+   * result) with **no Storage generation**, so the policy is recorded ahead of the data and the segment is already
    * enumerable by the sweep; the first load then publishes onto that row.
    *
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
@@ -1063,7 +1064,7 @@ export class CloudRoaring {
    * the job that runs your loads). A library that started a timer would behave differently in a Lambda, an edge
    * isolate and a long-lived server, which is worse than not having one.
    *
-   * Each retirement goes through `dropSegment`, so the registry → Cold ordering, the re-sweep for an object a
+   * Each retirement goes through `dropSegment`, so the registry → Storage ordering, the re-sweep for an object a
    * load was still writing, and the `generationsRemaining` report all come from one implementation rather than
    * two.
    *
@@ -1086,28 +1087,28 @@ export class CloudRoaring {
    * sweep would leave the caller unable to say which segments were retired, having already retired some. (A bad
    * argument does throw, and so does a fleet larger than `maxScanSegments`.) `limited: true` means the per-cycle
    * `limit` (default 100) cut the pass short and more are eligible. That cap is charged on **attempts**, not
-   * successes, which is what makes it a real bound: `dropSegment` writes the tombstone before sweeping Cold, so a
-   * fault in the Cold phase is a segment that is already retired. Retirements are sequential, so `limit` is a
+   * successes, which is what makes it a real bound: `dropSegment` writes the tombstone before sweeping Storage, so a
+   * fault in the Storage phase is a segment that is already retired. Retirements are sequential, so `limit` is a
    * wall-clock knob too, and `retired` counts deletions only — a dry run reports `wouldRetire` instead, so a
    * dashboard summing `retired` can never show a phantom deletion.
    *
    * It also **deletes the tombstone rows its own past retirements left**, after `tombstoneGraceMs` (default 24 h)
-   * and only once that segment's Cold generations are provably gone — collecting a straggler generation itself
+   * and only once that segment's Storage generations are provably gone — collecting a straggler generation itself
    * first, since nothing else ever would for a tombstoned segment. Attribution is a **positive marker the sweep
    * stamps on its own retirements**, not an inference from "destroyed + an expired policy": a crypto-shred leaves
    * `retention` untouched, so setting a policy and then honouring a right-to-erasure request mid-window produces
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. Pass
    * `purgeTombstones: false` to keep every tombstone.
    *
-   * Needs the store built with a **raw cold driver + a registry** (throws {@link UnsupportedError} otherwise),
-   * because retiring a segment deletes its Cold objects. `now` defaults to the store's clock.
+   * Needs the store built with a **raw storage driver + a registry** (throws {@link UnsupportedError} otherwise),
+   * because retiring a segment deletes its Storage objects. `now` defaults to the store's clock.
    */
   async retireExpired(
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
   ): Promise<RetireExpiredResult> {
     const deps = this.lifecycleDeps('retireExpired');
     const result = await retireExpired(
-      { registry: deps.registry, cold: deps.cold },
+      { registry: deps.registry, storage: deps.storage },
       { ...options, now: options.now ?? this.clock.now() },
     );
     // A retirement tombstones and reclaims segments this store may already have resolved. `dryRun` changes
@@ -1136,14 +1137,14 @@ export class CloudRoaring {
    *   here, so a crypto-shred performed beside this store leaves it holding an open reader and an unwrapped
    *   DEK. Until it is told, it keeps decrypting — including chunks it had never fetched before the shred.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
-   *   staleness by `coldGenTtlMs`, and a store built with no clock or `coldGenTtlMs: 0` ("pin forever") never
+   *   staleness by `storageGenTtlMs`, and a store built with no clock or `storageGenTtlMs: 0` ("pin forever") never
    *   converges at all. If a compliance deadline depends on every reader converging, you need to signal them —
    *   this is the call to make when your own fan-out delivers.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
    * ```ts
-   * await destroySegment(ref, { cold, registry, keystore }, { confirmSegment: ref.segment });
+   * await destroySegment(ref, { storage, registry, keystore }, { confirmSegment: ref.segment });
    * store.invalidate(ref);                       // this process
    * await bus.publish('cloudbitmaps.invalidate', ref); // and every other one
    * ```
@@ -1166,7 +1167,7 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` cold source — pass a raw cold driver as `cold` (a pre-built ColdChunkSource ' +
+        'pin() needs the `.crbm` storage source — pass a raw storage driver as `storage` (a pre-built StorageChunkSource ' +
           'that cannot resolve a generation has nothing to pin)',
       );
     }
@@ -1197,12 +1198,12 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` cold source — pass a raw cold driver as `cold` (a pre-built ColdChunkSource ' +
+        'pin() needs the `.crbm` storage source — pass a raw storage driver as `storage` (a pre-built StorageChunkSource ' +
           'that cannot resolve a generation has nothing to pin)',
       );
     }
     return new SegmentEngine({
-      cold: new PinnedColdChunkSource(crbm, pins),
+      storage: new PinnedStorageChunkSource(crbm, pins),
       cache: this.cache,
       codec: roaringCodec,
       clock: this.clock,
@@ -1239,11 +1240,11 @@ export class CloudRoaring {
 
   /**
    * **Cross-tier DR consistency check.** After a restore/failover, verify every registered segment's `currentGen`
-   * actually has its `.crbm` present in Cold — catching a **torn restore** where the registry (`currentGen`) came
+   * actually has its `.crbm` present in Storage — catching a **torn restore** where the registry (`currentGen`) came
    * back ahead of the object store, so a pointer references a generation that isn't there (reads would then
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent }` —
    * `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object store, or
-   * roll the registry back to a coherent point). Needs the store built with a **raw cold driver + a registry**
+   * roll the registry back to a coherent point). Needs the store built with a **raw storage driver + a registry**
    * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
    */
@@ -1251,7 +1252,7 @@ export class CloudRoaring {
     options: { namespace?: string; concurrency?: number } = {},
   ): Promise<ConsistencyReport> {
     const deps = this.lifecycleDeps('checkConsistency');
-    return runConsistencyCheck({ cold: deps.cold, registry: deps.registry }, options);
+    return runConsistencyCheck({ storage: deps.storage, registry: deps.registry }, options);
   }
 
   /**
@@ -1286,7 +1287,7 @@ export class CloudRoaring {
 
 /** Options common to every chunk-aligned combine (`intersect` / `union` / `andNot`). */
 export interface BaseCombineOptions {
-  /** Max chunk keys resolved concurrently — bounds the Cold footprint. A positive integer. */
+  /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
   readonly concurrency?: number;
   /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
   readonly budget?: BudgetOption;
@@ -1393,7 +1394,7 @@ export class Segment {
   /**
    * **Hold this segment at the generation that is current right now**, for as long as you keep the handle.
    *
-   * An ordinary handle re-resolves on `coldGenTtlMs`, so a publish part-way through a long job means its second
+   * An ordinary handle re-resolves on `storageGenTtlMs`, so a publish part-way through a long job means its second
    * half describes a different instant than its first — every chunk whole and verified, but the answer covering
    * two moments, with nothing in the result saying so. That is fine for a dashboard and wrong for an export, a
    * reconciliation, or a send that has to match the count you reported. A pin is how you get one instant.
@@ -1418,7 +1419,7 @@ export class Segment {
    * taken before a crypto-shred stops reading when the shred lands: the destroyed row is re-checked every time
    * the pinned reader opens, so a pin cannot outlive the key it was using.
    *
-   * Needs a store built on the `.crbm` cold source (the default when you pass a raw cold driver). Throws
+   * Needs a store built on the `.crbm` storage source (the default when you pass a raw storage driver). Throws
    * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
    */
   async pin(): Promise<Segment> {
@@ -1522,8 +1523,8 @@ export class Segment {
 
   /**
    * Chunk-skipping intersection: stream the ids in **this** segment AND every segment in `others`, ascending.
-   * Fetches only the Cold chunks present in *all* operands (a key absent from any operand contributes nothing
-   * and is never downloaded), streaming under a bounded in-flight window — so the Cold footprint stays small
+   * Fetches only the Storage chunks present in *all* operands (a key absent from any operand contributes nothing
+   * and is never downloaded), streaming under a bounded in-flight window — so the Storage footprint stays small
    * (Lambda-friendly) regardless of segment size. Pass `concurrency` to tune that window (a positive integer).
    * AND is commutative, so `a.intersect([b])` and `b.intersect([a])` yield the same ids. Pass `budget` to
    * override the store's per-op denial-of-wallet budget for this call (or `false` to lift it).
@@ -1542,7 +1543,7 @@ export class Segment {
    * Materialize `this ∩ others…` (minus `exclude`) as a **new generation of `dest`** — `dest`'s previous contents
    * are superseded, not added to. Streaming + bounded-memory; the result is one immutable object published
    * forward-only, so readers of `dest` see either the old generation or the new one, never a partial. Needs the
-   * store built with a raw cold driver + registry (throws {@link UnsupportedError} otherwise).
+   * store built with a raw storage driver + registry (throws {@link UnsupportedError} otherwise).
    *
    * **An empty result publishes an empty generation** — deliberate for now (the guard that refuses empty over
    * non-empty arrives with `load()`), with one exception: a call involving an **expired handle** is refused
@@ -1644,23 +1645,23 @@ export class Segment {
 
   /**
    * Grounded cost report for this segment: storage cost from its **real** `.crbm` size (exact, no payload
-   * reads); request cost from the supplied `workload` rates. A segment with no Cold generation reports zero
+   * reads); request cost from the supplied `workload` rates. A segment with no Storage generation reports zero
    * storage. See {@link CostReport} — it always includes a verdict (incl. the lose-zone).
    */
   async costReport(options?: {
     pricing?: PricingProfile;
     workload?: Workload;
   }): Promise<CostReport> {
-    const canMeasure = this.engine.supportsColdSize;
+    const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
     return groundedReport({
-      coldBytes: size?.sizeBytes ?? 0,
+      storageBytes: size?.sizeBytes ?? 0,
       grounded: canMeasure,
       workload: options?.workload,
       pricing: options?.pricing,
       extraNotes: canMeasure
         ? undefined
-        : ['cold source has no sizeOf() — storage not measured, reported as $0.'],
+        : ['storage source has no sizeOf() — storage not measured, reported as $0.'],
     });
   }
 }

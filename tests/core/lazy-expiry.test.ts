@@ -13,12 +13,12 @@ import { collect, seededStore } from '../helpers/loaded';
 const DAY = 86_400_000;
 const T0 = 1_754_000_000_000;
 
-/** A store over a seeded cold source and a hand-cranked clock — expiry is a clock question, so inject one. */
+/** A store over a seeded storage source and a hand-cranked clock — expiry is a clock question, so inject one. */
 function harness(segments: Record<string, number[]> = {}, start = T0) {
   let t = start;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const { store, cold } = seededStore(segments, { clock });
-  return { store, cold, advance: (ms: number) => (t += ms) };
+  const { store, storage } = seededStore(segments, { clock });
+  return { store, storage, advance: (ms: number) => (t += ms) };
 }
 
 describe('lazy expiry — single-segment reads', () => {
@@ -50,13 +50,13 @@ describe('lazy expiry — single-segment reads', () => {
   });
 
   it('costs no backend I/O once expired', async () => {
-    const { store, cold, advance } = harness({ rolled: [1, 2, 3] });
+    const { store, storage, advance } = harness({ rolled: [1, 2, 3] });
     const seg = store.segment('rolled', { expiresAt: T0 + DAY });
-    expect(await seg.count()).toBe(3); // live: the reads really do reach the cold source
+    expect(await seg.count()).toBe(3); // live: the reads really do reach the storage source
 
     advance(DAY);
-    const getChunk = vi.spyOn(cold, 'getChunk');
-    const listChunkKeys = vi.spyOn(cold, 'listChunkKeys');
+    const getChunk = vi.spyOn(storage, 'getChunk');
+    const listChunkKeys = vi.spyOn(storage, 'listChunkKeys');
     await seg.count();
     await seg.has(1);
     await collect(seg.iterate());

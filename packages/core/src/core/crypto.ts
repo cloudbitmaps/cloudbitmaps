@@ -18,7 +18,7 @@ export interface AeadSealed {
  * Authenticated encryption bound to a single key (a segment's DEK). `aad` (associated data) is authenticated
  * but not encrypted — the codec passes each chunk's `(namespace, segment, generation, chunkKey)` identity
  * ({@link aadFor}), so a chunk's ciphertext can't be silently relocated to another segment/generation/chunk or
- * the index, even by someone who can rewrite Cold objects. The seam is symmetric and self-framing-agnostic:
+ * the index, even by someone who can rewrite Storage objects. The seam is symmetric and self-framing-agnostic:
  * the caller decides where the nonce/tag go (inline with a chunk, or in the footer for the index).
  */
 export interface Aead {
@@ -63,7 +63,7 @@ export interface IKeystore {
 
 /**
  * What the encrypting codec needs: the {@link Aead} for this segment's DEK plus a way to build the AAD for a
- * given scope (`'index'` or a chunkKey). Built per (segment, generation) by the cold-source bridge so the
+ * given scope (`'index'` or a chunkKey). Built per (segment, generation) by the storage-source bridge so the
  * codec itself stays segment-agnostic.
  */
 export interface CrbmCrypto {

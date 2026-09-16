@@ -1,14 +1,14 @@
 /**
- * `@cloudbitmaps/core/gcs` — the Google Cloud Storage driver subpath entry: cold storage AND the registry.
+ * `@cloudbitmaps/core/gcs` — the Google Cloud Storage driver subpath entry: storage AND the registry.
  *
  * Kept out of the main entry point so the core package stays SDK-free: `@google-cloud/storage` is an
  * **optional peerDependency** that only consumers of this subpath install. Import as:
  *
  * ```ts
- * import { GcsColdDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
+ * import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
  * ```
  */
-export { GcsColdDriver } from '../drivers/gcs/cold';
-export type { GcsColdDriverOptions } from '../drivers/gcs/cold';
+export { GcsStorageDriver } from '../drivers/gcs/storage';
+export type { GcsStorageDriverOptions } from '../drivers/gcs/storage';
 export { GcsRegistryDriver } from '../drivers/gcs/registry';
 export type { GcsRegistryDriverOptions } from '../drivers/gcs/registry';

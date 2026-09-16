@@ -16,9 +16,9 @@ async function exercise(label, m) {
   for (const name of [
     'CloudRoaring',
     'estimateCost',
-    'MemoryColdDriver',
+    'MemoryStorageDriver',
     'MemoryRegistryDriver',
-    'MemoryColdChunkSource',
+    'MemoryStorageChunkSource',
     'bulkLoadCrbmGeneration',
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
@@ -26,12 +26,17 @@ async function exercise(label, m) {
   // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
   // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
   // chunk routing and the native bitmap both run rather than a single-container no-op.
-  const cold = new m.MemoryColdDriver();
+  const storage = new m.MemoryStorageDriver();
   const registry = new m.MemoryRegistryDriver({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(cold, { segment: 'lambda-smoke', generation: 0 }, [42, 70_000], {
-    registry,
-  });
-  const seg = new m.CloudRoaring({ cold, registry }).segment('lambda-smoke');
+  await m.bulkLoadCrbmGeneration(
+    storage,
+    { segment: 'lambda-smoke', generation: 0 },
+    [42, 70_000],
+    {
+      registry,
+    },
+  );
+  const seg = new m.CloudRoaring({ storage, registry }).segment('lambda-smoke');
   const ok =
     (await seg.has(42)) &&
     (await seg.has(70_000)) &&

@@ -8,10 +8,10 @@ import {
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
-import { AzureBlobColdDriver } from '@/drivers/azure/cold';
+import { AzureBlobStorageDriver } from '@/drivers/azure/storage';
 import { AzureBlobRegistryDriver } from '@/drivers/azure/registry';
 import { isConditionalConflict } from '@/drivers/azure/azure-errors';
-import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
+import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -75,17 +75,17 @@ registryConcurrency('AzureBlobRegistryDriver (Azurite)', () => {
 });
 
 let n = 0;
-const freshDriver = (): AzureBlobColdDriver =>
-  new AzureBlobColdDriver({ containerClient: container, prefix: `conf/${n++}` });
+const freshDriver = (): AzureBlobStorageDriver =>
+  new AzureBlobStorageDriver({ containerClient: container, prefix: `conf/${n++}` });
 
-// The Azure driver must pass the SAME cold-source contract as in-memory + LocalFs + S3 + GCS.
-coldChunkSourceConformance('AzureBlobColdDriver (Azurite)', async (chunks) => {
+// The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
+coldChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
-  return new CrbmColdChunkSource(driver);
+  return new CrbmStorageChunkSource(driver);
 });
 
-describe('AzureBlobColdDriver specifics (Azurite)', () => {
+describe('AzureBlobStorageDriver specifics (Azurite)', () => {
   const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
   const gen = (generation: number): GenKey => ({ segment: 's', generation });
 
@@ -96,15 +96,15 @@ describe('AzureBlobColdDriver specifics (Azurite)', () => {
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // The original is intact.
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    const storage = new CrbmStorageChunkSource(driver);
+    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 
   it('is write-once on the STAGED path too (object forced past one block)', async () => {
     // A tiny blockBytes forces the staged `commitBlockList` path; write-once must hold there as well.
-    const staged = (): AzureBlobColdDriver =>
-      new AzureBlobColdDriver({
+    const staged = (): AzureBlobStorageDriver =>
+      new AzureBlobStorageDriver({
         containerClient: container,
         prefix: `staged/${n++}`,
         blockBytes: 8,
@@ -116,8 +116,8 @@ describe('AzureBlobColdDriver specifics (Azurite)', () => {
     await expect(
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(1) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    const storage = new CrbmStorageChunkSource(driver);
+    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual(many);
   });
 
@@ -126,8 +126,8 @@ describe('AzureBlobColdDriver specifics (Azurite)', () => {
     // uploads to the same blob name overwrite each other's pooled uncommitted blocks and the winning commit
     // could reference an INTERLEAVED mix of both payloads (corrupt blob, wrong-vs-returned-hash). With the
     // per-sink nonce, each writer stages a disjoint id space → the winner commits only its own blocks.
-    const staged = (): AzureBlobColdDriver =>
-      new AzureBlobColdDriver({
+    const staged = (): AzureBlobStorageDriver =>
+      new AzureBlobStorageDriver({
         containerClient: container,
         prefix: `race/${n++}`,
         blockBytes: 8, // tiny → many blocks → heavy interleaving, forcing the staged path
@@ -146,8 +146,8 @@ describe('AzureBlobColdDriver specifics (Azurite)', () => {
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
     // The committed blob is ONE writer's payload intact — never an interleaved mix of both.
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    const storage = new CrbmStorageChunkSource(driver);
+    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     const got = JSON.stringify(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray());
     expect([JSON.stringify(aVals), JSON.stringify(bVals)]).toContain(got);
   });
@@ -215,16 +215,16 @@ describe('AzureBlobColdDriver specifics (Azurite)', () => {
   });
 });
 
-describe('AzureBlobColdDriver end-to-end through the engine (Azurite)', () => {
-  // Proves the driver works behind a real `CloudRoaring` store — not just the low-level cold-source contract:
+describe('AzureBlobStorageDriver end-to-end through the engine (Azurite)', () => {
+  // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
   // bulk-load two segments to Azure Blob, then count + chunk-skipping intersect via the engine's public API.
   it('bulk-load → Azure Blob → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
-    const driver = new AzureBlobColdDriver({ containerClient: container, prefix: `e2e/${n++}` });
+    const driver = new AzureBlobStorageDriver({ containerClient: container, prefix: `e2e/${n++}` });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
 
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
     expect(await store.segment('a').count()).toBe(4);
 
     const iterated: number[] = [];

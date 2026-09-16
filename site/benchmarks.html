@@ -291,7 +291,7 @@
                   <td>Per-GET request rate</td>
                   <td class="num">on-demand</td>
                   <td class="from">
-                    The profile's <span class="m">cold.getPerMillion</span>, at the published
+                    The profile's <span class="m">storage.getPerMillion</span>, at the published
                     <span class="m">us-east-1</span> list rate, with no volume or committed discount applied.
                     The line is inversely proportional to it, and a store with no per-request charge at all
                     removes it outright:
@@ -589,7 +589,7 @@
             <p class="label">Metered at the wire</p>
             <p>
               Request counts come from the AWS SDK layer, not from the library's metrics sink — which cannot see
-              a PUT at all (it emits no <span class="m">cold.put</span> event, a known observability gap). A PUT
+              a PUT at all (it emits no <span class="m">storage.put</span> event, a known observability gap). A PUT
               bills at 12.5× a GET, so an ingest-heavy workload priced without them is understated.
             </p>
           </div>
@@ -610,7 +610,7 @@
             <p class="label">And the estimator itself</p>
             <p>
               <span class="m">estimateCost()</span> produces every figure above, so its own accuracy is the
-              claim they all rest on. Priced against the cold GETs a metrics sink actually observed, the
+              claim they all rest on. Priced against the storage GETs a metrics sink actually observed, the
               prediction must land on or above what the engine incurred: it
               <strong>never quotes a cheaper bill</strong> than the run cost. It may over-quote. It may not
               under-quote, which is the failure mode that would cost you money.

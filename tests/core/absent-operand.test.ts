@@ -1,6 +1,6 @@
 import {
   CloudRoaring,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
@@ -26,13 +26,13 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 }
 
 async function world() {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  await bulkLoadCrbmGeneration(cold, { ...AUDIENCE, generation: 0 }, [1, 2, 3, 4], { registry });
-  await bulkLoadCrbmGeneration(cold, { ...OPTOUT, generation: 0 }, [2, 3], { registry });
-  const store = new CloudRoaring({ cold, registry });
+  await bulkLoadCrbmGeneration(storage, { ...AUDIENCE, generation: 0 }, [1, 2, 3, 4], { registry });
+  await bulkLoadCrbmGeneration(storage, { ...OPTOUT, generation: 0 }, [2, 3], { registry });
+  const store = new CloudRoaring({ storage, registry });
   return {
-    cold,
+    storage,
     registry,
     store,
     audience: store.segment('active-30d', { namespace: 'audiences' }),
@@ -109,7 +109,7 @@ describe('a combine refuses an operand that names a segment which does not exist
   });
 
   it('costs nothing when every operand has data', async () => {
-    const real = new MemoryColdDriver();
+    const real = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(real, { ...AUDIENCE, generation: 0 }, [1, 2, 3, 4], { registry });
     await bulkLoadCrbmGeneration(real, { ...OPTOUT, generation: 0 }, [2, 3], { registry });
@@ -125,7 +125,7 @@ describe('a combine refuses an operand that names a segment which does not exist
       },
     }) as unknown as MemoryRegistryDriver;
 
-    const store = new CloudRoaring({ cold: real, registry: counting, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage: real, registry: counting, storageGenTtlMs: 0 });
     const audience = store.segment('active-30d', { namespace: 'audiences' });
     const optout = store.segment('global-opt-out', { namespace: 'suppression' });
     await collect(audience.andNot([optout]));

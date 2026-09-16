@@ -38,14 +38,14 @@ from constructing a cross-region topology. The points where personal data moves 
 
 | Location | What's there | Residency note |
 |---|---|---|
-| **Cold** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
+| **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
 | **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the bucket you wire |
 | **HOT cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`bulkLoadCrbmGeneration`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
-*and* run your loaders and erasure jobs in-region; keep a segment's Cold, registry, and the querying compute in
+*and* run your loaders and erasure jobs in-region; keep a segment's Storage, registry, and the querying compute in
 one jurisdiction; treat the HOT cache and the intersection runtime as **processing locations** in your transfer
 assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). A fail-closed
 residency-enforcement policy in the library was considered and deferred as over-engineering for v1 — the honest
@@ -58,7 +58,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
 | **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. A retained *superseded* generation still holding the id (an ex-member dropped by a re-seed) is found and collected too. A per-segment fault is reported as an `error: …` ledger entry rather than thrown, so "on return" is a claim about every segment whose entry is **not** `error: …`. The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
-| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Cold generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
+| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total at rest* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
@@ -67,7 +67,7 @@ every **registered** segment the id is in, it rewrites the current generation wi
 rewrite, and deletes the generation that held the bit — so the bit is physically gone from the bucket on
 return, for idle and archival segments as much as busy ones. There is no logical-then-physical gap and no
 scheduled step to wait for: an erasure *is* a new generation, the same shape as every other write in the library.
-It reuses the store's own drivers (so build the store with a raw cold driver + a registry). It returns an
+It reuses the store's own drivers (so build the store with a raw storage driver + a registry). It returns an
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id erased out
@@ -90,7 +90,7 @@ it as orphans (`store.checkConsistency()` finds those). Because a settled segmen
 ledger entirely, **the attestation for a subject is the ledger of the run that reported `erased: true`** — if you
 must hold one artifact per request, re-run until no entry carries a `'superseded'` note, and keep that run's
 ledger alongside any earlier one. An `error: …` note is an isolated per-segment fault; if it occurred *after* the
-rewrite was published — a Cold `delete` fault, or a collection pass that could not prove the segment was still
+rewrite was published — a Storage `delete` fault, or a collection pass that could not prove the segment was still
 the same one — then the pointer has already moved, and the re-run searches the *superseded* generations as well
 as the current one. (The same refusal can come from the collect-only path, where the bit was found in a
 superseded generation and nothing was published; there the pointer has not moved, and a re-run simply repeats
@@ -113,10 +113,10 @@ no bus, and no connection between two stores that happen to point at the same bu
 |---|---|
 | storage | on return — the generation holding it is deleted, the DEK is destroyed |
 | the store that performed the call | on return — it invalidates what it cached |
-| another store, with a clock and a registry | within `coldGenTtlMs` (default 2 s), when its snapshot re-resolves |
-| another store with **no clock**, or `coldGenTtlMs: 0` | **never**, until something tells it |
+| another store, with a clock and a registry | within `storageGenTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store with **no clock**, or `storageGenTtlMs: 0` | **never**, until something tells it |
 
-That last row is the one to design around. `coldGenTtlMs: 0` means "pin forever" and is a legitimate setting for
+That last row is the one to design around. `storageGenTtlMs: 0` means "pin forever" and is a legitimate setting for
 a read-only replica of immutable data — but a segment pinned that way does not observe a shred at all. If a
 compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
 process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is
@@ -179,12 +179,12 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
 - **`store.dropSegment(ref, { confirmSegment })` is the retention primitive**, and `setRetention` +
   `retireExpired` is the policy-driven form that calls it — and its result must be inspected, not
   assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones
-  the segment and deletes **every Cold generation** — so the storage is actually reclaimed. It works on a
+  the segment and deletes **every Storage generation** — so the storage is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
-- **`destroySegment` crypto-shreds** — it discards the key, so the Cold bytes become unreadable *everywhere
+- **`destroySegment` crypto-shreds** — it discards the key, so the Storage bytes become unreadable *everywhere
   including backups, replicas and WORM-locked copies*, which no object deletion can achieve. But **the objects
   remain in your bucket** and you keep paying for them, and it **requires encryption at rest** (a cleartext
-  segment has no key to discard; `allowCleartext` writes the tombstone while leaving the Cold bytes readable — and
+  segment has no key to discard; `allowCleartext` writes the tombstone while leaving the Storage bytes readable — and
   still in the bucket).
 - **`gcOrphanGenerations`** deletes only *superseded* generations, never the current one — with `keep: 0` it is
   how a subject erasure removes the generation that held the bit.
@@ -193,8 +193,8 @@ So the two are complements, not alternatives: **`dropSegment` for "stop paying f
 "it must be unreadable even in backups"** — and on an encrypted segment `dropSegment` gives you both at once.
 
 > ⚠️ **Do not use an object-store lifecycle rule as your retention mechanism.** It deletes the bytes while the
-> registry still points at them, which is the `missing-cold-generation` torn state — and it surfaces
-> *intermittently*, because a read consults the in-process cache before Cold, so it passes testing on a warm
+> registry still points at them, which is the `missing-storage-generation` torn state — and it surfaces
+> *intermittently*, because a read consults the in-process cache before Storage, so it passes testing on a warm
 > process and starts failing after a restart. A lifecycle rule is a fine **backstop** for orphans left by a
 > failed `dropSegment`, and a fine way to expire *noncurrent* object versions; give it a window comfortably
 > longer than your retention and never let it touch a current generation. Earlier revisions of this document
@@ -216,10 +216,10 @@ Full detail, including the dated-bucket pattern and the pitfalls, is in the rete
 
 A litigation/regulatory hold *forbids* deletion — the opposite of erasure — and can apply to the same segment.
 **Enforce a hold with S3 Object Lock**, which is the real, tamper-proof mechanism: in **COMPLIANCE** mode a
-locked Cold object *cannot* be deleted before its retention date by anyone (not even the account root); in
+locked Storage object *cannot* be deleted before its retention date by anyone (not even the account root); in
 **GOVERNANCE** mode a privileged role can override. To place a hold on a segment:
 
-1. Enable **Object Lock** on the segment's Cold `.crbm` objects (and enable versioning) for the hold period.
+1. Enable **Object Lock** on the segment's Storage `.crbm` objects (and enable versioning) for the hold period.
 2. **Exclude the segment from your erasure runs and your loads** — don't call `eraseSubject` in a scope that
    reaches it, `destroySegment`, **`dropSegment`**, or load a new generation onto a held segment, so the current
    generation (and its members) is preserved. Because `eraseSubject` scans a whole namespace, the practical
@@ -281,7 +281,7 @@ A minimal Data-Protection-Impact-Assessment outline to adapt:
 1. **Processing description** — which segments, what each membership *means*, source of the IDs, volume.
 2. **Necessity & proportionality** — lawful basis per segment (esp. Art. 9 special-category); why membership
    is retained and for how long.
-3. **Data flow & residency** — Cold and registry regions, where compute (loaders, the HOT cache, intersection)
+3. **Data flow & residency** — Storage and registry regions, where compute (loaders, the HOT cache, intersection)
    runs, cross-border transfers and their safeguards.
 4. **Risks** — re-identification, sensitive inference (incl. *derived* segments from intersections — treat a
    `paying ∩ pregnant` result as at least as sensitive as its inputs, and note it's a point-in-time snapshot

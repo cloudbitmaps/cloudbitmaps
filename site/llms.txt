@@ -5,7 +5,7 @@
 > of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
 > `andNot`.
 
-CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a hot in-process LRU over a cold
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a hot in-process LRU over a storage
 tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
 current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
@@ -13,12 +13,12 @@ and `count()` on a published segment does zero payload reads.
 
 Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
 drivers) arrives transitively. Four storage backends: S3, GCS and Azure Blob as optional-peer subpaths, plus
-the local filesystem in the main entry. Each of the three clouds hosts both the cold generations and the
+the local filesystem in the main entry. Each of the three clouds hosts both the storage generations and the
 registry, so a deployment needs exactly one cloud account.
 
 ## How data gets in
 
-Only by loading a whole new generation. `bulkLoadCrbmGeneration(cold, {segment, generation}, ids, {registry})`
+Only by loading a whole new generation. `bulkLoadCrbmGeneration(storage, {segment, generation}, ids, {registry})`
 streams an array, a Set or an async cursor into one immutable object and then advances the registry pointer,
 forward-only. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
 authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,

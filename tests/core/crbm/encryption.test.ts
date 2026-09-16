@@ -13,7 +13,7 @@ import type { SegmentRef } from '@/index';
 const SEG: SegmentRef = { segment: 'secrets' };
 const GEN = 7;
 
-/** A CrbmCrypto bound to a DEK + a (segment, generation) — what the cold-source bridge builds per object. */
+/** A CrbmCrypto bound to a DEK + a (segment, generation) — what the storage-source bridge builds per object. */
 function cryptoFor(dek: Uint8Array, generation = GEN, ref = SEG): CrbmCrypto {
   return { aead: new NodeAead(dek), aadFor: (scope) => aadFor(ref, generation, scope) };
 }

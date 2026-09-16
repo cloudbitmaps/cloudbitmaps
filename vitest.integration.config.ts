@@ -5,8 +5,8 @@ const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
 
 // Integration suite — runs against the object stores via `docker compose` (see docker-compose.yml).
-// The first real integration test was the S3 cold driver against MinIO; the lane now covers MinIO,
-// fake-gcs-server and Azurite, each hosting both the cold tier and its own registry.
+// The first real integration test was the S3 storage driver against MinIO; the lane now covers MinIO,
+// fake-gcs-server and Azurite, each hosting both the storage tier and its own registry.
 export default defineConfig({
   test: {
     globals: true,

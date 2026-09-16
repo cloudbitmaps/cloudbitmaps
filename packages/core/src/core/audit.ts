@@ -19,7 +19,7 @@
 /** A security/compliance-relevant state change. Vendor-neutral; the sink adds its own timestamp/actor. */
 export type AuditEvent =
   | {
-      /** A new immutable Cold generation *became the segment's current generation* (via bulk-load publish). */
+      /** A new immutable Storage generation *became the segment's current generation* (via bulk-load publish). */
       readonly kind: 'segment.publish';
       readonly namespace?: string;
       readonly segment: string;
@@ -75,9 +75,9 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment was **crypto-shredded** — its wrapped DEK(s) are gone, so its at-rest Cold bytes are now
+       * A segment was **crypto-shredded** — its wrapped DEK(s) are gone, so its at-rest Storage bytes are now
        * permanently unreadable. Emitted only for a genuine key shred, never for a cleartext tombstone (which
-       * leaves the Cold bytes readable) or an idempotent re-run.
+       * leaves the Storage bytes readable) or an idempotent re-run.
        */
       readonly kind: 'segment.erase';
       readonly namespace?: string;
@@ -85,7 +85,7 @@ export type AuditEvent =
     }
   | {
       /**
-       * A segment was **disposed of** — tombstoned and its storage reclaimed (its Cold generations deleted) by
+       * A segment was **disposed of** — tombstoned and its storage reclaimed (its Storage generations deleted) by
        * `dropSegment`, *without* a key shred.
        *
        * Deliberately a separate kind from {@link AuditEvent} `segment.erase`, and the distinction is the point.
@@ -97,7 +97,7 @@ export type AuditEvent =
        * An **encrypted** segment dropped via `dropSegment` emits **both** — `segment.erase` for the key shred and
        * this for the storage reclamation — because both things genuinely happened.
        *
-       * `generationsDeleted` is how many Cold generations went. It can be 0 (a segment whose bytes were already
+       * `generationsDeleted` is how many Storage generations went. It can be 0 (a segment whose bytes were already
        * gone), and it does not promise the storage is now fully reclaimed: check `DropResult.generationsRemaining`
        * for that.
        */

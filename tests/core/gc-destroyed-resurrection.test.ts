@@ -1,20 +1,20 @@
 import { gcOrphanGenerations, nextGeneration } from '@/core/generation-gc';
 import {
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   WriteConflictError,
   bulkLoadCrbmGeneration,
 } from '@/index';
-import type { GenKey, IColdDriver, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, SegmentRef } from '@/index';
 
 /**
  * A row read before the listing, acted on after it — on both of `gcOrphanGenerations`' branches.
  *
- * The row comes from a read *before* `cold.list()`, and the deletes happen *after* it. That window is seconds
+ * The row comes from a read *before* `storage.list()`, and the deletes happen *after* it. That window is seconds
  * wide on S3, where the listing is paginated, and every step of the sequence is an ordinary in-repo path: the
  * retention sweep purges tombstone rows, and nothing stops a loader re-creating a segment by that name
  * afterwards. Both branches can then delete an object the live pointer names — the forbidden
- * `missing-cold-generation` state, which the grace window cannot prevent because it is not a question of age.
+ * `missing-storage-generation` state, which the grace window cannot prevent because it is not a question of age.
  *
  * - On a **tombstone**, every enumerated generation is deleted, `currentGen` included (correct in itself: a
  *   tombstoned segment resolves no generation for any reader). A segment re-created mid-pass therefore loses
@@ -31,28 +31,28 @@ import type { GenKey, IColdDriver, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
-async function generations(cold: IColdDriver): Promise<number[]> {
+async function generations(storage: IStorageDriver): Promise<number[]> {
   const out: number[] = [];
-  for await (const key of cold.list(SEG)) out.push(key.generation);
+  for await (const key of storage.list(SEG)) out.push(key.generation);
   return out.sort((a, b) => a - b);
 }
 
 /**
- * A cold driver whose `list()` runs `during` after yielding its first key — the window under test.
+ * A storage driver whose `list()` runs `during` after yielding its first key — the window under test.
  *
  * `yielded` records what the listing actually enumerated. Every test here races an object into the bucket
  * mid-listing and then asserts what GC did with it, which is only meaningful if the listing SAW it — and
- * whether it does is a property of the driver, not of the test: `MemoryColdDriver.list` walks a live `Map`
+ * whether it does is a property of the driver, not of the test: `MemoryStorageDriver.list` walks a live `Map`
  * iterator, so a key inserted mid-iteration is still yielded. Snapshot that iterator (a defensible change, and
  * arguably the more S3-like behaviour for a single page) and these tests would go green against code with no
  * fence at all. Asserting `yielded` keeps the precondition owned by the test instead of inherited from a driver
  * it does not control.
  */
 function coldWithRaceDuringList(
-  inner: MemoryColdDriver,
+  inner: MemoryStorageDriver,
   during: () => Promise<void>,
   yielded: number[] = [],
-): IColdDriver {
+): IStorageDriver {
   return new Proxy(inner, {
     get(target, prop, rx) {
       if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
@@ -68,16 +68,16 @@ function coldWithRaceDuringList(
         }
       };
     },
-  }) as IColdDriver;
+  }) as IStorageDriver;
 }
 
 describe('gcOrphanGenerations — a segment resurrected while GC is listing', () => {
   it('does not delete the new generation of a segment recreated mid-pass', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
 
     await load([1]); // gen 0
@@ -96,7 +96,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     await expect(
       gcOrphanGenerations(SEG, {
-        cold: coldWithRaceDuringList(cold, resurrect, yielded),
+        storage: coldWithRaceDuringList(storage, resurrect, yielded),
         registry,
       }),
     ).rejects.toBeInstanceOf(WriteConflictError);
@@ -108,8 +108,8 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // because GC never saw the new object, which proves nothing about the fence.
     expect(yielded).toContain(row!.currentGen!);
     // The object the live pointer names must still exist. Without the fence GC deletes every generation it
-    // enumerated — including the one published during the listing — leaving `missing-cold-generation`.
-    expect(await generations(cold)).toContain(row!.currentGen!);
+    // enumerated — including the one published during the listing — leaving `missing-storage-generation`.
+    expect(await generations(storage)).toContain(row!.currentGen!);
   });
 
   it('refuses on a re-created incarnation wearing the SAME generation number', async () => {
@@ -117,11 +117,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // identity. `nextGeneration` restarts at 0 once a row is purged and the bucket emptied, so a re-created
     // segment can wear the very `currentGen` the tombstone carried. A fence that compared `currentGen` would
     // see no change here and delete the new incarnation's live object; only the token tells them apart.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     await load([1]); // gen 0
     await load([1, 2]); // gen 1 — the tombstone carries currentGen 1
@@ -137,13 +137,13 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     };
 
     await expect(
-      gcOrphanGenerations(SEG, { cold: coldWithRaceDuringList(cold, recreate), registry }),
+      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringList(storage, recreate), registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;
     expect(row.currentGen).toBe(destroyed.currentGen); // identical pointer…
     expect(row.token).not.toBe(destroyed.token); // …different incarnation
-    expect(await generations(cold)).toEqual([0, 1]); // and nothing was collected
+    expect(await generations(storage)).toEqual([0, 1]); // and nothing was collected
   });
 
   it('ORDINARY branch: refuses to delete the live object of a re-created incarnation', async () => {
@@ -152,11 +152,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // incarnation. Purge-and-recreate makes the pointer go BACKWARDS, and `g < current` then selects the new
     // incarnation's live object. Every step is an ordinary in-repo path, and `keep: 0` is what the erasure
     // rewrite passes.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     for (let i = 0; i <= 5; i++) await load([i]); // gens 0..5, current = 5
     expect((await registry.get(SEG))!.currentGen).toBe(5);
@@ -164,7 +164,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // Fires after GC has read `current = 5` and started listing: the segment is retired, the bucket swept, the
     // tombstone row purged by the sweep, and then a loader re-creates the name — restarting at generation 0.
     const retireAndRecreate = async (): Promise<void> => {
-      for (const g of await generations(cold)) await cold.delete({ ...SEG, generation: g });
+      for (const g of await generations(storage)) await storage.delete({ ...SEG, generation: g });
       await registry.delete(SEG);
       await load([99]);
     };
@@ -172,7 +172,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     const deleted = await gcOrphanGenerations(
       SEG,
-      { cold: coldWithRaceDuringList(cold, retireAndRecreate, yielded), registry },
+      { storage: coldWithRaceDuringList(storage, retireAndRecreate, yielded), registry },
       { keep: 0 },
     );
 
@@ -181,7 +181,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     expect(row.currentGen).toBe(0); // the pointer regressed — a different segment wearing the same name
     expect(yielded).toContain(0); // the listing really did enumerate the new incarnation's object
     expect(deleted).not.toContain(0);
-    expect(await generations(cold)).toContain(0);
+    expect(await generations(storage)).toContain(0);
   });
 
   it('refuses when the tombstone row is purged mid-pass, even before anything is recreated', async () => {
@@ -189,11 +189,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // resurrection. Purged-and-idle is indistinguishable from purged-and-about-to-be-recreated, and the top
     // of `gcOrphanGenerations` already declines to act without an authoritative row — so this must refuse
     // rather than treat a missing row as permission.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     await load([1]);
     await load([1, 2]);
@@ -206,9 +206,9 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     };
 
     await expect(
-      gcOrphanGenerations(SEG, { cold: coldWithRaceDuringList(cold, purge), registry }),
+      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringList(storage, purge), registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
-    expect(await generations(cold)).toEqual([0, 1]);
+    expect(await generations(storage)).toEqual([0, 1]);
   });
 
   it('an ORDINARY pass still collects when a publish lands mid-listing', async () => {
@@ -217,11 +217,11 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // mid-listing moves the pointer FORWARD and changes nothing. Refusing on any token change instead would
     // make routine GC refuse whenever a load lands during a listing, which on a busy segment is most of the
     // time. This is the test that says so.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     await load([1]); // gen 0
     await load([1, 2]); // gen 1
@@ -234,14 +234,14 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     const deleted = await gcOrphanGenerations(
       SEG,
-      { cold: coldWithRaceDuringList(cold, publishDuring, yielded), registry },
+      { storage: coldWithRaceDuringList(storage, publishDuring, yielded), registry },
       { keep: 0 },
     );
     expect(yielded).toContain(3); // the mid-pass publish was enumerated — the control is not vacuous
     // Generations below the pointer GC read (2) are collected; the one published mid-pass is untouched. A
     // FORWARD publish must not narrow the cutoff, or routine GC would refuse on every busy segment.
     expect([...deleted].sort((a, b) => a - b)).toEqual([0, 1]);
-    expect(await generations(cold)).toEqual([2, 3]);
+    expect(await generations(storage)).toEqual([2, 3]);
   });
 
   it('refuses when the incarnation changes DURING the delete loop, not just the listing', async () => {
@@ -249,39 +249,40 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // round trip each, so the exposure is the whole loop — and the ordinary branch deletes newest-first, which
     // puts a restarted incarnation's generation 0 last, the worst possible ordering. Here the row is perfectly
     // consistent across the listing and every check up to the first delete; the retirement lands after it.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     for (let i = 0; i <= 5; i++) await load([i]); // gens 0..5, current = 5
 
-    // Fire once, after the FIRST cold.delete has landed.
+    // Fire once, after the FIRST storage.delete has landed.
     let fired = false;
-    const coldWithRaceDuringDeletes = new Proxy(cold, {
+    const coldWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
         return async (key: { namespace?: string; segment: string; generation: number }) => {
-          await cold.delete(key);
+          await storage.delete(key);
           if (fired) return;
           fired = true;
-          for (const g of await generations(cold)) await cold.delete({ ...SEG, generation: g });
+          for (const g of await generations(storage))
+            await storage.delete({ ...SEG, generation: g });
           await registry.delete(SEG); // the sweep purges the tombstone row
           await load([99]); // a loader re-creates the name — nextGeneration restarts at 0
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
     await expect(
-      gcOrphanGenerations(SEG, { cold: coldWithRaceDuringDeletes, registry }, { keep: 0 }),
+      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringDeletes, registry }, { keep: 0 }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;
     expect(row.currentGen).toBe(0);
     // The new incarnation's live object survived: without the per-delete check the loop would have carried on
     // down its queue and taken generation 0 last.
-    expect(await generations(cold)).toContain(0);
+    expect(await generations(storage)).toContain(0);
   });
 
   it('a listing that yields a generation twice does not eat the grace window', async () => {
@@ -290,42 +291,46 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // just swept — and a duplicate would then consume the one keep slot and evict a generation that is still
     // inside the grace window. That matters beyond storage: a pinned read does not heal forward, it fails, so
     // `keep` is sized against the longest pinned job.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     await load([1]); // gen 0
     await load([1, 2]); // gen 1 — the grace window
     await load([1, 2, 3]); // gen 2 — current
 
-    const doubleListing = new Proxy(cold, {
+    const doubleListing = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
         return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
-          for await (const key of cold.list(ref)) {
+          for await (const key of storage.list(ref)) {
             yield key;
             yield key; // the same object, seen twice
           }
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
-    const deleted = await gcOrphanGenerations(SEG, { cold: doubleListing, registry }, { keep: 1 });
+    const deleted = await gcOrphanGenerations(
+      SEG,
+      { storage: doubleListing, registry },
+      { keep: 1 },
+    );
     expect(deleted).toEqual([0]); // only the one outside the window
-    expect(await generations(cold)).toEqual([1, 2]); // the grace window survived
+    expect(await generations(storage)).toEqual([1, 2]); // the grace window survived
   });
 
   it('TOMBSTONE branch: refuses when the incarnation changes during the delete loop', async () => {
     // The mirror of the ordinary-branch loop test, on the branch that deletes at and above `currentGen`. This
     // branch deletes ASCENDING, so a restarted incarnation's low generations land INSIDE the queue still being
     // walked — the pass would carry on and delete objects that now belong to a live segment.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     for (let i = 0; i <= 5; i++) await load([i]); // gens 0..5
     const rec = (await registry.get(SEG))!;
@@ -334,24 +339,25 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // After the first delete: another collector finishes the job and the sweep purges the row, then a loader
     // re-creates the name. `nextGeneration` restarts at 0, so the new generations reuse numbers still queued.
     let fired = false;
-    const coldWithRaceDuringDeletes = new Proxy(cold, {
+    const coldWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
         return async (key: { namespace?: string; segment: string; generation: number }) => {
-          await cold.delete(key);
+          await storage.delete(key);
           if (fired) return;
           fired = true;
-          for (const g of await generations(cold)) await cold.delete({ ...SEG, generation: g });
+          for (const g of await generations(storage))
+            await storage.delete({ ...SEG, generation: g });
           await registry.delete(SEG);
           await load([7]); // gen 0
           await load([8]); // gen 1
           await load([9]); // gen 2 — current
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
     await expect(
-      gcOrphanGenerations(SEG, { cold: coldWithRaceDuringDeletes, registry }),
+      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringDeletes, registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;
@@ -359,26 +365,26 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     expect(row.currentGen).toBe(2);
     // The live pointer's object survived: without the per-delete token check the ascending queue walks straight
     // through the new incarnation's generations and empties the bucket under an active row.
-    expect(await generations(cold)).toContain(2);
+    expect(await generations(storage)).toContain(2);
   });
 
   it('still collects everything on a tombstone that stays a tombstone', async () => {
     // The control. The fence must not cost the destroyed branch its whole purpose, which is that these
     // objects are billed forever and nothing else in the library would ever collect them.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const load = async (ids: number[]) => {
-      const generation = await nextGeneration(SEG, { cold, registry });
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation }, ids, { registry });
+      const generation = await nextGeneration(SEG, { storage, registry });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation }, ids, { registry });
     };
     await load([1]);
     await load([1, 2]);
     const rec = (await registry.get(SEG))!;
     await registry.compareAndSwap(SEG, rec.token, { status: 'destroyed' });
 
-    expect([...(await gcOrphanGenerations(SEG, { cold, registry }))].sort((a, b) => a - b)).toEqual(
-      [0, 1],
-    );
-    expect(await generations(cold)).toEqual([]);
+    expect(
+      [...(await gcOrphanGenerations(SEG, { storage, registry }))].sort((a, b) => a - b),
+    ).toEqual([0, 1]);
+    expect(await generations(storage)).toEqual([]);
   });
 });

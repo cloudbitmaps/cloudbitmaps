@@ -13,10 +13,10 @@ import { chunkRefKey, segmentKey, segmentPrefix } from '../core/keys';
 import { validateChunkRef, validateSegmentRef } from '../core/validate';
 import type {
   ChunkRef,
-  ColdCaps,
-  ColdChunkSource,
+  StorageCaps,
+  StorageChunkSource,
   GenKey,
-  IColdDriver,
+  IStorageDriver,
   IRegistryDriver,
   NewRegistryRecord,
   RegCaps,
@@ -33,7 +33,7 @@ import {
   validateRegistryPatch,
 } from './_shared/registry';
 
-export class MemoryColdChunkSource implements ColdChunkSource {
+export class MemoryStorageChunkSource implements StorageChunkSource {
   private readonly chunks = new Map<string, Uint8Array>();
 
   async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -64,7 +64,7 @@ export class MemoryColdChunkSource implements ColdChunkSource {
     return found ? { sizeBytes } : null;
   }
 
-  /** Test/seed helper — populate immutable Cold bytes for a chunk directly (bypassing the `.crbm` format). */
+  /** Test/seed helper — populate immutable Storage bytes for a chunk directly (bypassing the `.crbm` format). */
   seed(ref: ChunkRef, bytes: Uint8Array): void {
     validateChunkRef(ref); // keep seed symmetric with the validated read path
     this.chunks.set(chunkRefKey(ref), bytes);
@@ -149,14 +149,14 @@ export class MemoryRegistryDriver implements IRegistryDriver {
 }
 
 /**
- * In-memory {@link IColdDriver} — write-once immutable generation objects as opaque bytes. A "dumb byte
- * mover" (understands neither roaring nor `.crbm`), so it's a faithful cold backend for tests and a zero-setup
- * local cold tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
+ * In-memory {@link IStorageDriver} — write-once immutable generation objects as opaque bytes. A "dumb byte
+ * mover" (understands neither roaring nor `.crbm`), so it's a faithful storage backend for tests and a zero-setup
+ * local storage tier. Mirrors the LocalFs/S3 contract (write-once, range/tail reads).
  */
-export class MemoryColdDriver implements IColdDriver {
+export class MemoryStorageDriver implements IStorageDriver {
   private readonly objects = new Map<string, Uint8Array>();
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: true };
   }
 

@@ -11,7 +11,7 @@ grown one capability per phase (so it never describes vapor).
 - [**Disaster recovery**](disaster-recovery.md) — what to back up, the coordinated-restore procedure, RPO/RTO,
   and the `checkConsistency()` torn-restore check.
 
-Shipped capabilities — **intersection** (the crown jewel), the **cloud drivers** (S3/GCS/Azure cold,
+Shipped capabilities — **intersection** (the crown jewel), the **cloud drivers** (S3/GCS/Azure storage,
 registry in the same bucket), and loading, encryption, retention, cost, and observability — are
 covered in [getting started](getting-started.md). Writing your own driver builds on the internal conformance
 suite (`packages/roaring/src/testing/conformance.ts`); it is not yet exported as a public package subpath. For

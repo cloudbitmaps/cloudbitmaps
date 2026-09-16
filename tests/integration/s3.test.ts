@@ -5,9 +5,9 @@ import {
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
-import { S3ColdDriver } from '@/drivers/s3/cold';
+import { S3StorageDriver } from '@/drivers/s3/storage';
 import { S3RegistryDriver } from '@/drivers/s3/registry';
-import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
+import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -37,14 +37,14 @@ beforeAll(async () => {
 });
 
 let n = 0;
-const freshDriver = (): S3ColdDriver =>
-  new S3ColdDriver({ client, bucket: BUCKET, prefix: `conf/${n++}` });
+const freshDriver = (): S3StorageDriver =>
+  new S3StorageDriver({ client, bucket: BUCKET, prefix: `conf/${n++}` });
 
-// The S3 driver must pass the SAME cold-source contract as in-memory + LocalFs.
-coldChunkSourceConformance('S3ColdDriver (MinIO)', async (chunks) => {
+// The S3 driver must pass the SAME storage-source contract as in-memory + LocalFs.
+coldChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
-  return new CrbmColdChunkSource(driver);
+  return new CrbmStorageChunkSource(driver);
 });
 
 // The S3 registry must pass the SAME registry contract as memory / LocalFs / GCS / Azure — against real S3
@@ -70,7 +70,7 @@ registryConcurrency('S3RegistryDriver (MinIO)', () => {
   ];
 });
 
-describe('S3ColdDriver specifics (MinIO)', () => {
+describe('S3StorageDriver specifics (MinIO)', () => {
   const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
   const gen = (generation: number): GenKey => ({ segment: 's', generation });
 
@@ -81,8 +81,8 @@ describe('S3ColdDriver specifics (MinIO)', () => {
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // The original is intact.
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    const storage = new CrbmStorageChunkSource(driver);
+    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 
@@ -135,19 +135,19 @@ describe('S3ColdDriver specifics (MinIO)', () => {
     const gens: number[] = [];
     for await (const k of driver.list({ segment: 's' })) gens.push(k.generation);
     expect(gens.sort((a, b) => a - b)).toEqual([1, 5]);
-    // CrbmColdChunkSource pins the highest generation.
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    // CrbmStorageChunkSource pins the highest generation.
+    const storage = new CrbmStorageChunkSource(driver);
+    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([9]);
   });
 
   it('end to end: bulk-load → S3 → engine count/iterate/intersect', async () => {
-    const driverA = new S3ColdDriver({ client, bucket: BUCKET, prefix: `e2e/${n++}` });
+    const driverA = new S3StorageDriver({ client, bucket: BUCKET, prefix: `e2e/${n++}` });
     const driverB = driverA; // same prefix space, different segments
     await bulkLoadCrbmGeneration(driverA, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driverB, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
 
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driverA) });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driverA) });
     expect(await store.segment('a').count()).toBe(4);
 
     const got: number[] = [];
