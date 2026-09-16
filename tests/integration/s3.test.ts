@@ -47,7 +47,7 @@ coldChunkSourceConformance('S3ColdDriver (MinIO)', async (chunks) => {
   return new CrbmColdChunkSource(driver);
 });
 
-// The S3 registry must pass the SAME registry contract as memory / LocalFs / DynamoDB — against real S3
+// The S3 registry must pass the SAME registry contract as memory / LocalFs / GCS / Azure — against real S3
 // conditional-write (If-None-Match / If-Match) semantics via MinIO. Proves S3-only topology is viable.
 let rn = 0;
 const ticking = (): (() => number) => {

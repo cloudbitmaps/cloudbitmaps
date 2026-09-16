@@ -68,7 +68,8 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
       await bulkLoadCrbmGeneration(cold, { segment: seg, generation: 0 }, ids, { registry });
     }
     // "Backup" — there is no application-level snapshot API, so a real operator relies on the store's own
-    // durability (S3 versioning + DynamoDB PITR). On LocalFs that is a coordinated copy of the data root.
+    // durability (object versioning over both the registry and cold prefixes). On LocalFs that is a
+    // coordinated copy of the data root.
     backup = `${root}.backup`;
     cpSync(root, backup, { recursive: true });
   });

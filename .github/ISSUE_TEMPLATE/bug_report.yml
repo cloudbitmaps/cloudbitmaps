@@ -44,7 +44,6 @@ body:
         - Cold — Azure Blob
         - Cold — local filesystem
         - Registry — S3
-        - Registry — DynamoDB
         - Registry — local filesystem
         - In-memory / no cloud backend
     validations:

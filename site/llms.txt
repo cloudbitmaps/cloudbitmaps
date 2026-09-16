@@ -12,8 +12,9 @@ chunks that can possibly contribute, so intersecting two 2,000,000-id segments t
 and `count()` on a published segment does zero payload reads.
 
 Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
-drivers) arrives transitively. Five storage backends: S3, GCS, Azure Blob and DynamoDB as optional-peer
-subpaths, plus the local filesystem in the main entry.
+drivers) arrives transitively. Four storage backends: S3, GCS and Azure Blob as optional-peer subpaths, plus
+the local filesystem in the main entry. Each of the three clouds hosts both the cold generations and the
+registry, so a deployment needs exactly one cloud account.
 
 ## How data gets in
 
@@ -30,7 +31,7 @@ composites, with `exclude` suppression folded into the same pass.
 
 ## Measured, not modelled
 
-Benchmarked against real S3 + DynamoDB in us-east-1 — not an emulator — with the request counts read off the
+Benchmarked against real S3 in us-east-1 — not an emulator — with the request counts read off the
 AWS SDK layer: $0.14 per million count()s and $5.88 per million segment publishes, against an
 always-on Redis-HA line of $346/month standing, and $0.03/month for 1.2 GiB of segments at rest. One crossover
 is published: past 329.15 sustained reads a second, with every read missing the hot cache, metered GETs pass

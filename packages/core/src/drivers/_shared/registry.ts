@@ -2,7 +2,7 @@
  * Shared, SDK-free helpers for assembling + validating {@link RegistryRecord}s.
  *
  * The registry's record-construction, patch-application, and field-validation are identical across every
- * backend (memory / LocalFs / DynamoDB) — only the *storage* + OCC mechanics differ. This is the one home
+ * backend (memory / LocalFs / object store) — only the *storage* + OCC mechanics differ. This is the one home
  * for that logic so the three drivers can't drift. Pure: no I/O, no SDK, no clock (the caller passes `now`).
  */
 import { IntegrityError, UnsupportedError, ValidationError } from '@/core/errors';
@@ -153,7 +153,7 @@ export interface RegistryEnvelope {
 
 /**
  * Current registry-row schema version — a pre-1.0 format-freeze prerequisite. Every persistent
- * registry driver — the LocalFs/S3 `{ deleted, record }` envelope and the DynamoDB body — stamps its rows
+ * registry driver — every one of which persists the `{ deleted, record }` envelope — stamps its rows
  * with this so a reader can fail-closed on a future, incompatible layout instead of misparsing it. Bump only
  * on a backward-incompatible change. Policy: a **higher** stamp than this build knows → `UnsupportedError`
  * (fail-closed); an **absent** stamp → legacy pre-freeze row, tolerated as v1.

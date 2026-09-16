@@ -9,13 +9,6 @@
 # is a far smaller target than nine. If Docker Hub 429s return, that image is the one to deal with, either by
 # authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
 services:
-  dynamodb:
-    image: public.ecr.aws/aws-dynamodb-local/aws-dynamodb-local:latest
-    container_name: cloud-roaring-dynamodb
-    ports:
-      - '8000:8000'
-    command: ['-jar', 'DynamoDBLocal.jar', '-inMemory', '-sharedDb']
-
   minio:
     image: quay.io/minio/minio:latest
     container_name: cloud-roaring-minio

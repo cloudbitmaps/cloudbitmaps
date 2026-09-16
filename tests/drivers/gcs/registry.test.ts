@@ -113,7 +113,7 @@ const driverOver = (storage: FakeGcs, prefix = 'cloudroaring'): GcsRegistryDrive
     now: ticking(),
   });
 
-// The GCS registry must pass the SAME contract as memory / LocalFs / S3 / DynamoDB, in the fast lane.
+// The GCS registry must pass the SAME contract as memory / LocalFs / S3 / Azure, in the fast lane.
 registryConformance('GcsRegistryDriver (fake GCS)', () => driverOver(new FakeGcs()));
 
 // …and the cross-process fence, against a fake that enforces preconditions exactly where GCS does.

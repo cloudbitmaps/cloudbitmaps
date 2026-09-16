@@ -89,7 +89,7 @@ const ticking = (): (() => number) => {
   return () => (t += 1);
 };
 
-// The S3 registry must pass the SAME contract as memory / LocalFs / DynamoDB — including the
+// The S3 registry must pass the SAME contract as memory / LocalFs / GCS / Azure — including the
 // ABA-safe token across delete→recreate, which its tombstone-object + monotonic counter provide.
 registryConformance('S3RegistryDriver (fake S3)', () => {
   const client = new FakeS3() as unknown as S3Client;

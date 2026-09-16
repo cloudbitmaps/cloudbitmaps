@@ -5,7 +5,7 @@
  */
 
 /**
- * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./dynamodb`
+ * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./gcs`
  * subpaths — and the builder inlines `core/errors` into each. A driver in a subpath bundle therefore throws a
  * *different* class object than the one the core engine/retry code would `instanceof`-check, so `instanceof`
  * silently returns false across that boundary in the published CJS package (defeating transient retry and the
@@ -38,7 +38,7 @@ export class IntegrityError extends CloudRoaringError {}
 
 /**
  * A requested object/row does not exist. Part of the driver error vocabulary; thrown by
- * the persistent drivers (S3, GCS, Azure Blob, DynamoDB, local filesystem) — the in-memory drivers return
+ * the persistent drivers (S3, GCS, Azure Blob, local filesystem) — the in-memory drivers return
  * `null` instead.
  */
 export class NotFoundError extends CloudRoaringError {}
@@ -110,7 +110,7 @@ export class TimeoutError extends TransientError {}
 
 /**
  * Bundle-safe error predicates — use these, not `instanceof`, wherever an error may cross the core↔driver
- * (`./s3` / `./dynamodb`) boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
+ * (`./s3` / `./gcs` / `./azure`) boundary (and prefer them in consumer `catch` blocks too, for the same reason). They
  * match the {@link ERROR_BRAND} registry brand + the runtime `name`, both of which survive separate bundling.
  */
 function hasBrand(err: unknown, brand: symbol): boolean {

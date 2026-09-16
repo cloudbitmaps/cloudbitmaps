@@ -71,7 +71,7 @@ jobs:
       - run: node scripts/audit.cjs
 
   integration:
-    name: integration (DynamoDB-Local + MinIO + fake-gcs-server + Azurite)
+    name: integration (MinIO + fake-gcs-server + Azurite)
     runs-on: ubuntu-latest # needs Docker on the runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -84,7 +84,7 @@ jobs:
       # Pull SERIALLY with backoff before starting anything. `docker compose up` pulls all the images at once,
       # and every public registry throttles a shared GitHub-runner IP: Docker Hub answers with a 6-hour quota
       # (`pull rate limit`), public.ecr.aws with a per-second rate (`Rate exceeded`). The second kind clears in
-      # moments, so the fix that actually works is to stop asking for nine things simultaneously. Failing here
+      # moments, so the fix that actually works is to stop asking for every image simultaneously. Failing here
       # is a real failure — the retries are what make the difference between throttling and a broken image.
       - name: Pull backend images (serial, with backoff)
         run: |
@@ -95,7 +95,7 @@ jobs:
           rc=0
           for img in $(docker compose config --images); do
             docker_pull_with_backoff "$img" || rc=1
-            sleep 2 # still serial: nine simultaneous pulls is what provokes the rate limit in the first place
+            sleep 2 # still serial: simultaneous pulls are what provoke the rate limit in the first place
           done
           exit "$rc"
       # `--wait-timeout` so a stuck backend (e.g. an Azurite container that never goes healthy) fails the step fast

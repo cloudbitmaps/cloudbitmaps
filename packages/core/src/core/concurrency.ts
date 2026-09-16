@@ -1,6 +1,6 @@
 /**
  * Bounded-concurrency fan-out — the missing primitive for running async work over many items without either
- * a thundering herd (unbounded `Promise.all` → N simultaneous S3/DynamoDB calls) or full serial latency
+ * a thundering herd (unbounded `Promise.all` → N simultaneous object-store calls) or full serial latency
  * (`for await`). Pure + I/O-free, so it lives in `core/`; callers inject the async work.
  */
 

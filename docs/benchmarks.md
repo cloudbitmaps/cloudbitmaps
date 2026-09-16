@@ -44,6 +44,8 @@ build:
 ## Real-cloud calibration — AWS
 
 > ✅ **MEASURED** against real S3 + DynamoDB on **2026-07-25**, `us-east-1`, run id `2026-07-25-60291`.
+> The registry in that run was a NoSQL table. **CloudBitmaps no longer ships one** — the registry now lives in
+> the object store beside the data — so read the pointer-round-trip caveat below before reusing these numbers.
 > Everything else on this page is either the cost **model** (`estimateCost`) or a **local** run. This is the
 > section that reports what AWS actually charged.
 
@@ -65,9 +67,10 @@ meter. The figures below are the record.
 No total is published for the run: the rows above are two terms out of four, and a "total" over a subset would be
 a number no run produced.
 
-**Unit economics that fall out of it** — both are paths the loaded store still takes, so both still describe what
-you would pay. Each is a whole operation end to end, so it includes the registry round trip that resolves or
-advances the segment's current generation:
+**Unit economics that fall out of it** — both are paths the loaded store still takes, so both still describe the
+object-store half of what you would pay. In the measured run, the round trip that resolves or advances the
+segment's current generation was billed to the NoSQL registry, whose line items are withheld — so these two
+figures are the S3 cost **excluding** that pointer access:
 
 | Operation | Measured cost |
 | --- | --- |
@@ -91,6 +94,11 @@ requests**, and any always-on node crosses any per-request meter somewhere.
 - **The measured cost counts S3 PUTs**, which the library's own metrics sink cannot see (it emits no `cold.put`
   event — a known observability gap). That is why the meter sat at the AWS SDK layer instead. PUTs bill at 12.5×
   a GET, so an ingest-heavy workload priced without them is materially understated.
+- **The registry it measured is not the registry that ships.** Generation resolution ran against a NoSQL table
+  in that run; today the pointer is an object in the same bucket, so the same operations additionally pay an
+  object-store request for it (a GET to resolve, a conditional PUT to advance) that is not in the two rows
+  above. How much that adds depends on how often the resolution is served from the reader's cache rather than
+  re-fetched, which this run cannot tell you — it is [owed](#what-is-still-owed), not estimated here.
 - **It says nothing about latency.** The run was driven from a laptop outside the region, so its wall-clock
   figures were dominated by internet transit and calibrated the **cost** claim only. In-region latency for the
   loaded read path is [owed](#what-is-still-owed), not published.
@@ -167,6 +175,10 @@ The loaded store's own measurements are the next benchmark pass, and none of the
   `exclude`, against a real object store rather than local disk.
 - **RSS soak** — a recorded envelope from `pnpm rss-gate`. The gate exists and has teeth (an OOM-kill fails the
   build), but no measured RSS figure from it is published here.
+- **Single-bucket cost.** Every published cost figure was metered on a topology whose registry was a separate
+  NoSQL table. The shipped topology keeps the registry in the object store, which trades that table's cost for
+  object-store requests — a different bill, in both directions, and not yet measured. Until it is, treat the
+  figures above as the object-store half of an older shape rather than as today's total.
 
 Nothing above should be read as covering any of the three.
 

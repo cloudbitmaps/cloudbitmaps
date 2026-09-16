@@ -46,8 +46,8 @@ beforeAll(async () => {
 
 // The Azure registry must pass the SAME registry contract as memory / LocalFs / S3 — against real blob
 // conditions (`ifNoneMatch: '*'` for create-only, `ifMatch: <etag>` for CAS) via Azurite. This is what makes
-// an Azure-only topology viable: before it, an Azure user had to point the registry at DynamoDB and hold an
-// AWS account purely to store which generation is current.
+// an Azure-only topology viable: before it, an Azure user had to point the registry at a separate AWS-hosted
+// table and hold an AWS account purely to store which generation is current.
 let rn = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;

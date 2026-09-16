@@ -22,7 +22,7 @@ const SDK_ROOTS = ['@aws-sdk/', '@google-cloud/', '@azure/', 'aws-sdk'];
  * consumer's bundler follows that specifier into the driver entry and hits `@aws-sdk/client-s3` there, which
  * is exactly the failure this gate exists to prevent. Naming a driver IS reaching an SDK.
  */
-const DRIVER_SUBPATH = /^@cloudbitmaps\/[^/]+\/(s3|dynamodb|gcs|azure)(\/|$)/;
+const DRIVER_SUBPATH = /^@cloudbitmaps\/[^/]+\/(s3|gcs|azure)(\/|$)/;
 
 /**
  * Blank out comments while KEEPING string and template literals.

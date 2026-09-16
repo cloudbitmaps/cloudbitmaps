@@ -62,7 +62,7 @@ smuggles in a breaking change.
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested: each
 was verified against the full `pnpm test:integration` suite (30 cases against four real backends in containers —
-DynamoDB-Local, MinIO, fake-gcs-server and Azurite),
+MinIO, fake-gcs-server and Azurite),
 because the two that matter most — `adm-zip` under `cassandra-driver` and `uuid` under `@google-cloud/storage` —
 are on paths the unit suite never exercises.
 

@@ -20,7 +20,7 @@
  * **export to a fresh directory** for a clean dump. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
- * ~10-line script that builds an `S3ColdDriver` (+ `DynamoDb*`/`S3RegistryDriver`) + a `CloudRoaring`, and calls
+ * ~10-line script that builds an `S3ColdDriver` + an `S3RegistryDriver` + a `CloudRoaring`, and calls
  * `store.exportSegments(sink, { format })` with your own sink — the binary stays SDK-free.
  *
  * Config is read from the environment (12-factor-friendly):

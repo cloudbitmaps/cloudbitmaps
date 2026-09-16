@@ -2,7 +2,7 @@
  * Retry decorators.
  *
  * Transparent wrappers that add bounded, jittered retry of **transient** faults to any driver, using the one
- * shared `core/retry` primitive — so every backend (S3, GCS, Azure, DynamoDB, LocalFS, …) inherits the same
+ * shared `core/retry` primitive — so every backend (S3, GCS, Azure Blob, LocalFS, …) inherits the same
  * policy instead of each rolling its own. Pure composition over the port interfaces (no SDK, no I/O of their
  * own); the wrapped driver is responsible for *classifying* its transient faults (raising {@link TransientError});
  * these decorators decide *whether and when* to retry.

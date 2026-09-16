@@ -3,8 +3,8 @@
  *
  * Lets an **Azure deployment run on one container alone** — cold `.crbm` generations and the registry in the
  * same place, with no second cloud involved. Before this existed, an Azure user had to point the registry at
- * DynamoDB, which meant holding an AWS account purely to store the pointer that says which generation is
- * current.
+ * a separate AWS-hosted table, which meant holding an AWS account purely to store the pointer that says which
+ * generation is current.
  *
  * The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout) lives once
  * in {@link ObjectStoreRegistry}; this file is only the three I/O calls Azure makes.

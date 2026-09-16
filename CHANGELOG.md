@@ -69,6 +69,27 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 
 ### Breaking
+- **The DynamoDB registry is removed** — `DynamoDbRegistryDriver`, the `@cloudbitmaps/roaring/dynamodb` and
+  `@cloudbitmaps/core/dynamodb` subpaths, and the `@aws-sdk/client-dynamodb` optional peer dependency are all
+  gone. **Storage backends go from five to four**, and the library no longer has a non-object-store driver of
+  any kind.
+
+  It existed because the pointer needed a home with a conditional write, and object stores did not offer one
+  when this library started. They all do now — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
+  `If-None-Match`/`If-Match` — and with `GcsRegistryDriver` and `AzureBlobRegistryDriver` landing above, every
+  cloud can host its own pointer beside its own data. Keeping DynamoDB would mean maintaining a second
+  registry protocol, a second key layout, a second set of conformance wiring and a container in the
+  integration lane, to serve a topology whose only remaining advantage is faster pointer swaps on a workload
+  that publishes far more often than this library is designed for.
+
+  **Migrating.** The registry holds one small row per segment — the current-generation pointer, wrapped keys
+  and retention metadata — and the cold `.crbm` objects are untouched by this change. Stand up an
+  `S3RegistryDriver` (or the GCS / Azure equivalent) against the bucket you already use for cold data, then
+  re-`create` each segment's row with its current `currentGen`, reading the old values from your DynamoDB
+  table while both exist. Pointer identity is per-registry, so do this with writers quiesced. If you would
+  rather keep the pointer off the object store, `IRegistryDriver` is a three-method interface — implement it
+  against a database you already run.
+
 - **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
   be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or
   `lpt1`–`lpt9`, with or without an extension (`con`, `CON`, `con.backup`); and any name ending in `.`

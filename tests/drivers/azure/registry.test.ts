@@ -108,7 +108,7 @@ const driverOver = (container: FakeContainer, prefix = 'cloudroaring'): AzureBlo
     now: ticking(),
   });
 
-// The Azure registry must pass the SAME contract as memory / LocalFs / S3 / GCS / DynamoDB, in the fast lane.
+// The Azure registry must pass the SAME contract as memory / LocalFs / S3 / GCS, in the fast lane.
 registryConformance('AzureBlobRegistryDriver (fake Azure)', () => driverOver(new FakeContainer()));
 
 // …and the cross-process fence, which the sequential suite short-circuits before ever reaching.

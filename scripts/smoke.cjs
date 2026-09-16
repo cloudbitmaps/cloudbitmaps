@@ -8,7 +8,7 @@
  * — so the package.json `exports` map and its `import`/`require` conditions are exercised too, not just the
  * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every subpath, then run the
  * roaring-backed load/read path. The roaring interop is exercised specifically by the main `.` entry (only it
- * pulls in the SafeBitmap); the `/s3` + `/dynamodb` entries additionally guard the exports map and their
+ * pulls in the SafeBitmap); the `/s3` + `/gcs` + `/azure` entries additionally guard the exports map and their
  * AWS-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
  * too. Any regression fails the build. Run via `pnpm smoke` (builds first) or `node scripts/smoke.cjs`.
  */
@@ -19,7 +19,7 @@ const { pathToFileURL } = require('node:url');
 // users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
-const SUBPATHS = ['', '/s3', '/dynamodb', '/gcs', '/azure'];
+const SUBPATHS = ['', '/s3', '/gcs', '/azure'];
 
 // The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
 // `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
@@ -47,22 +47,22 @@ async function exerciseCore(label, m) {
 }
 
 /*
- * Cross-bundle error identity. A driver subpath (`/dynamodb`, `/s3`) is a SEPARATE bundle with
+ * Cross-bundle error identity. A driver subpath (`/s3`, `/gcs`, `/azure`) is a SEPARATE bundle with
  * its OWN copy of the core error classes, so `instanceof` against the core entry's class fails in CJS — which
  * silently defeated transient-retry and publish-race handling. The brand-based predicates must still
  * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
- * where the whole test suite — one source graph — could not see it). Trigger: the DynamoDb registry driver
- * validates its `keyPrefix` synchronously in the constructor and throws a ValidationError from its own bundle.
+ * where the whole test suite — one source graph — could not see it). Trigger: the S3 registry driver
+ * validates its `prefix` synchronously in the constructor and throws a ValidationError from its own bundle.
  */
-function exerciseCrossBundleErrors(label, coreMod, dynamoMod) {
+function exerciseCrossBundleErrors(label, coreMod, driverMod) {
   let caught;
   try {
-    new dynamoMod.DynamoDbRegistryDriver({ client: {}, tableName: 't', keyPrefix: 'a|b' });
+    new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
   } catch (e) {
     caught = e;
   }
   if (caught === undefined)
-    throw new Error(`${label}: expected a ValidationError from the /dynamodb bundle`);
+    throw new Error(`${label}: expected a ValidationError from the /s3 bundle`);
   if (!coreMod.isValidationError(caught) || !coreMod.isCloudRoaringError(caught)) {
     throw new Error(
       `${label}: core predicates failed to classify a driver-bundle error — cross-bundle brand broken`,
@@ -96,7 +96,7 @@ function exerciseCrossBundleErrors(label, coreMod, dynamoMod) {
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 
 /** Driver homes, relative to a package's `dist/` — the one place an SDK specifier is correct. */
-const DRIVER_DIRS = ['s3', 'dynamodb', 'gcs', 'azure'];
+const DRIVER_DIRS = ['s3', 'gcs', 'azure'];
 
 function isDriverPath(rel) {
   const parts = rel.split(path.sep);
@@ -177,8 +177,8 @@ async function main() {
   await exerciseCore('esm', await import(PKG));
   await exerciseCore('cjs', require(PKG));
 
-  exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/dynamodb'));
-  exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/dynamodb'));
+  exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/s3'));
+  exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/s3'));
   for (const pkgDir of require('node:fs')
     .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
     .filter((e) => e.isDirectory())

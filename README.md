@@ -20,8 +20,8 @@
 > what isn't — is set out in the [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt).
 > **Works today:** the loaded store over **in-memory** and **local-filesystem** storage, with every cloud driver
 > on its own `@cloudbitmaps/roaring/<backend>` subpath — **cold** object storage on **S3-compatible** (`/s3`),
-> **GCS** (`/gcs`), and **Azure Blob** (`/azure`); a **segment registry** (memory / LocalFs / **S3** /
-> **DynamoDB**), so a deployment can run on **S3 alone**. `bulkLoadCrbmGeneration` (write one immutable
+> **GCS** (`/gcs`), and **Azure Blob** (`/azure`); a **segment registry** on each of those same three clouds
+> (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `bulkLoadCrbmGeneration` (write one immutable
 > generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
 > `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
 > the same pass · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
@@ -62,7 +62,7 @@ stateless functions, and costing nothing while nobody is asking.
 A fair question before you build on any storage library: *if I put billions of IDs across thousands of
 segments into this and the library breaks, am I stuck?* Short answer — **no** — and here's why, by construction:
 
-- **It's a library, not a service.** Your data lives in **your** S3 bucket, **your** DynamoDB table, **your**
+- **It's a library, not a service.** Your data lives in **your** bucket, **your** account, **your**
   filesystem — accounts and stores you own. CloudBitmaps never sees or holds it (you're the data controller;
   see [`PRIVACY.md`](PRIVACY.md)). If the project vanished tomorrow, nothing is deleted or held hostage — the
   objects are still in your bucket.
@@ -168,20 +168,26 @@ default, tunable, or `retry: false` to defer to your client's own retry. Retries
 generations are write-once, so a timed-out-but-committed object write is detected as a conflict rather than
 duplicated; the pointer moves only forward, so a retried publish can never regress a segment; and all tier
 bytes are checksum-verified (and AEAD-authenticated when encrypted) before use, so corruption is rejected
-rather than returned as a wrong answer. Set a request timeout on your injected S3/DynamoDB client (it's
+rather than returned as a wrong answer. Set a request timeout on your injected storage client (it's
 retried as transient); see the [getting-started guide](docs/guide/getting-started.md) for tuning.
 
 ## What it costs — measured on real AWS
 
-Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real S3 +
-DynamoDB drivers against a real AWS account in `us-east-1` — 20 segments, 20 segment publishes, 2,000 reads —
-and the two figures a loaded store actually pays are:
+Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real drivers
+against a real AWS account in `us-east-1` — 20 segments, 20 segment publishes, 2,000 reads — and the two figures
+a loaded store actually pays are:
 
 | Operation | Measured cost | | Always-on Redis-HA |
 |---|---|---|---|
 | `count()` on a published segment | **$0.14 / million** | | **$346 / month**, standing |
 | Segment publish (one S3 PUT + the pointer write) | **$5.88 / million** | | whether you send traffic or not |
 | 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | | |
+
+That run kept the pointer in a NoSQL table, which the library no longer ships — the registry now lives in the
+same bucket as the data. The object-store figures still describe the paths a loaded store takes, but the
+pointer round trip is now an object request rather than a table one, so treat these as the object-store half
+rather than today's total. The [benchmarks page](docs/benchmarks.md) states exactly what was and was not
+measured.
 
 Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
 from the library's own metrics, which cannot see a PUT. The same run also measured the things a cost model can
@@ -205,7 +211,6 @@ and an explicit list of what the run does *not* establish:
 ```bash
 npm i @cloudbitmaps/roaring    # the engine + in-memory & local drivers (one third-party dep: roaring)
 npm i @aws-sdk/client-s3       # only if you use the S3 tier
-npm i @aws-sdk/client-dynamodb # only if you keep the segment registry in DynamoDB
 ```
 
 **You install one package.** `@cloudbitmaps/roaring` is the *flavor* — the roaring codec + the `CloudRoaring`
@@ -218,7 +223,6 @@ prefer). `core` itself has **zero runtime dependencies**.
 |---|---|---|
 | `@cloudbitmaps/roaring` | `CloudRoaring` + all in-memory/local drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | — (pulls `roaring` + `@cloudbitmaps/core`) |
 | `@cloudbitmaps/roaring/s3` | `S3ColdDriver`, `S3RegistryDriver` | `@aws-sdk/client-s3` |
-| `@cloudbitmaps/roaring/dynamodb` | `DynamoDbRegistryDriver` | `@aws-sdk/client-dynamodb` |
 | `@cloudbitmaps/roaring/gcs` | `GcsColdDriver`, `GcsRegistryDriver` | `@google-cloud/storage` |
 | `@cloudbitmaps/roaring/azure` | `AzureBlobColdDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob` |
 | `export-segments` (CLI bin) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
@@ -294,12 +298,12 @@ code runs on any mix:
 | Seam | in-memory | local filesystem | cloud |
 |---|---|---|---|
 | **Cold** (the durable base) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
-| **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` · `DynamoDbRegistryDriver` |
+| **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` |
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
-Mix freely: cold objects and the registry in **one S3 bucket** is the whole deployment; put the registry in
-**DynamoDB** instead if you want single-digit-millisecond pointer reads, or in your own store behind the
-`IRegistryDriver` interface.
+Mix freely: cold objects and the registry in **one bucket** is the whole deployment, on any of the three
+clouds. Put the registry somewhere else entirely — a database you already run — behind the `IRegistryDriver`
+interface if you would rather.
 
 ## The API at a glance
 
@@ -399,7 +403,7 @@ the **[getting-started guide](docs/guide/getting-started.md)**.
   sets) that you want **durable and cheap at rest**, not pinned in always-on RAM.
 - **You need fast membership + set algebra** (union/intersection/difference) over those sets — including
   intersecting very large sets from stateless/serverless workers.
-- **You want to own your storage** (your S3/DynamoDB, your costs, your residency) rather than a managed
+- **You want to own your storage** (your bucket, your costs, your residency) rather than a managed
   bitmap service, and to keep a clean, embeddable API.
 
 **Why the shape works at segmentation scale.** Per-operation latency is the wrong lens for a workload with

@@ -82,7 +82,7 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
       await boundaryErrors(CORE_ROOT, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
     ).toHaveLength(1);
     expect(
-      await boundaryErrors(ROARING_ROOT, "export * from '@cloudbitmaps/core/dynamodb';"),
+      await boundaryErrors(ROARING_ROOT, "export * from '@cloudbitmaps/core/azure';"),
     ).toHaveLength(1);
     expect(
       await boundaryErrors(
@@ -101,8 +101,8 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toEqual([]);
     expect(
       await boundaryErrors(
-        'packages/core/src/drivers/dynamodb/registry.ts',
-        "import { DynamoDBClient } from '@aws-sdk/client-dynamodb';\nDynamoDBClient;",
+        'packages/core/src/drivers/azure/registry.ts',
+        "import { ContainerClient } from '@azure/storage-blob';\nContainerClient;",
       ),
     ).toEqual([]);
     expect(

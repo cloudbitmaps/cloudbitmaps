@@ -82,10 +82,10 @@ store's versioning:
 
 - **Object store (cold):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
   generations mean you rarely need to roll cold back at all.
-- **Registry:** if backed by DynamoDB, enable **PITR (point-in-time recovery)** — this is a **requirement, not a
-  nice-to-have**, because it's the only way to pick a registry restore point that lines up at-or-before your
-  cold point. If backed by the object store (`S3RegistryDriver`), use the bucket's versioning with a
-  coordinated timestamp.
+- **Registry:** enable **versioning** on the bucket or container holding the `registry/` prefix — this is a
+  **requirement, not a nice-to-have**, because it's the only way to pick a registry restore point that lines up
+  at-or-before your cold point. The registry lives in the object store, so this is usually the same setting you
+  just enabled for cold; confirm it covers the `registry/` prefix too.
 - Pick a **single target timestamp** for both, then restore the registry to that timestamp and cold to that
   timestamp **or later**.
 
@@ -95,7 +95,7 @@ CloudBitmaps imposes no fixed RPO/RTO — they fall out of how you back the stor
 
 | | Driven by | Guidance |
 |---|---|---|
-| **RPO** (data you can lose) | the **registry's** backup lag. A load is durable the moment its pointer advance is, and a registry restored to *T* forgets every load published after *T* — their objects may still sit in cold, above the restored pointer, but no read sees them (see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct)). | Continuous backup (DynamoDB PITR ≈ seconds) keeps RPO near zero. Cold objects are versioned and write-once, so they are rarely the thing you lose. |
+| **RPO** (data you can lose) | the **registry's** backup lag. A load is durable the moment its pointer advance is, and a registry restored to *T* forgets every load published after *T* — their objects may still sit in cold, above the restored pointer, but no read sees them (see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct)). | Object versioning captures one version per row write, so your RPO is the gap between the last pointer advance and your restore point — not a fixed interval. Cold objects are versioned and write-once, so they are rarely the thing you lose. |
 | **RTO** (time to recover) | restoring the **largest** store — almost always **cold** — plus the `checkConsistency()` sweep | Object-store restore dominates; the consistency check is `O(registered segments)` at bounded concurrency and is cheap next to it. Budget RTO ≈ cold-restore time + a consistency sweep. |
 
 The practical takeaway: **the registry sets your RPO, cold sets your RTO.** Back the registry continuously; keep
@@ -111,8 +111,8 @@ cold versioned.
       parts behind. The library aborts the upload on any error it survives to handle, but it cannot abort one
       whose process is gone — that is the case this rule exists for. Incomplete parts are **billed and invisible**:
       they do not appear in an object listing, so nothing but your bill reveals them.
-- [ ] **Registry**: PITR (DynamoDB) or versioning (object store) on — **required** to hit an at-or-before-cold
-      restore point, and the store that sets your RPO.
+- [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to hit an
+      at-or-before-cold restore point, and the store that sets your RPO.
 - [ ] **Keystore**: backed up and restorable **independently** of the data stores, with its own access controls
       (a data-store leak must not also leak keys). Losing it is unrecoverable.
 - [ ] A written target: which timestamp/snapshot IDs constitute a coordinated restore point.
@@ -123,8 +123,7 @@ Which mechanism to enable depends on the backends you deployed:
 
 | Store | Backend | Backup / PITR mechanism | Characteristic |
 |---|---|---|---|
-| Registry | DynamoDB | PITR (continuous) | ≈ seconds — this is what sets your RPO |
-| Registry | S3 | versioning | one version per row write |
+| Registry | S3 | versioning | one version per row write — this is what sets your RPO |
 | Registry | GCS | object versioning | one version per row write |
 | Registry | Azure Blob | blob versioning + soft-delete | one version per row write |
 | Cold | S3 | versioning (+ optional Object Lock) | immutable generations (write-once) |
@@ -132,11 +131,10 @@ Which mechanism to enable depends on the backends you deployed:
 | Cold | Azure Blob | blob versioning + soft-delete | immutable generations (write-once) |
 
 All three cold backends store **write-once, immutable generations**, so the coherent restore point is
-backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). Every object store can
-host the registry too, so a single-cloud deployment backs up one account: turn on versioning for the
-`registry/` prefix and the rows are recoverable exactly like cold objects. Keep using **PITR** if the registry
-is on DynamoDB — continuous capture is what makes an RPO of seconds achievable, whereas object versioning
-captures one version per row write, which is the coarser bound in the table above.
+backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). Every object store
+hosts the registry too, so a single-cloud deployment backs up one account: turn on versioning and the registry
+rows are recoverable exactly like cold objects, from the same snapshot, at the same timestamp — which is what
+makes the coordinated restore point easy to hit rather than something you have to line up across two services.
 
 ## Restore procedure
 
@@ -333,7 +331,7 @@ if (report.errored.length > 0) {
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
 - **Detection is driver-agnostic.** It relies only on `IColdDriver.list()` + `IRegistryDriver.get()`, so it
   covers **any** cold backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
-  DynamoDB/S3-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
+  backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
   *exists* in cold. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
   - **byte corruption inside a present object** — the trust boundary catches that on read, failing closed with
     `IntegrityError` (the per-chunk CRC), which is what the read spot-check in the procedure is for;

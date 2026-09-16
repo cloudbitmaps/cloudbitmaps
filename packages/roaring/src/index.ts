@@ -829,13 +829,12 @@ export class CloudRoaring {
    * The registry is already the list of your segments, which is why you should not keep a second one beside it:
    * a hand-maintained list is a source of truth that drifts from this one the first time a load fails halfway.
    *
-   * **An admin/discovery call, not a request-path one.** This is the registry's own enumeration — a `Scan` on
-   * DynamoDB, a paged LIST on an object-store registry — so its cost grows with the size of the fleet rather
-   * than with what you are looking for.
+   * **An admin/discovery call, not a request-path one.** This is the registry's own enumeration — a paged
+   * LIST over the `registry/` prefix — so its cost grows with the size of the fleet rather than with what you
+   * are looking for.
    *
-   * Scoping to a namespace does not cost the same everywhere: on an object-store registry it narrows the LIST
-   * prefix and really is the difference between one tenant and all of them, while on DynamoDB it is a `Scan`
-   * with a `begins_with` filter applied *after* reading — fewer bytes back, the same table read.
+   * Scoping to a namespace narrows the LIST prefix, so it really is the difference between reading one tenant
+   * and reading all of them.
    *
    * It streams, and stopping the iteration stops the scan — except behind a driver that buffers its
    * enumeration to retry it as a unit, which `RetryingRegistryDriver` does: wrapped in that, the whole scan is

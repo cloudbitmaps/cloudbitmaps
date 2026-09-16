@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 // Guards that no user-facing file still tells a reader to install or import the RETIRED unscoped package name.
 //
 // `cloud-roaring` survives on npm only as a non-functional `0.0.0` placeholder; the real
-// packages are `@cloudbitmaps/roaring` (+ `/s3`, `/dynamodb`, …) and `@cloudbitmaps/core`. A doc or site page
+// packages are `@cloudbitmaps/roaring` (+ `/s3`, `/gcs`, `/azure`) and `@cloudbitmaps/core`. A doc or site page
 // that says `npm i cloud-roaring` or `from 'cloud-roaring'` hands the reader an empty package and a
 // `Cannot find module`, and it is the *most* copy-pasted content we publish.
 //

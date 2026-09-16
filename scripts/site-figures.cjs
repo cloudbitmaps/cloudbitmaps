@@ -111,7 +111,9 @@ const calRun = /run id `([\w-]+)`/.exec(doc);
 if (!calDate || !calRun)
   fail('docs/benchmarks.md no longer dates/identifies the AWS calibration run');
 
-// Line items: `| DynamoDB write | 2,020 WRU | $0.625/M | $0.001263 |` and the bolded Total row.
+// Line items: `| S3 GET | 23 | $0.40/M | $0.000009 |` and the bolded Total row. The `Dynamo` term is still
+// matched below so a re-added NoSQL line item is caught, not quietly published — the driver is gone, but the
+// half-run those figures came from is still the source this page transcribes.
 const calRows = [
   ...doc.matchAll(
     /^\|\s*(?:\*\*)?([\w /]+?)(?:\*\*)?\s*\|\s*(?:\*\*)?([\d,]+(?: \w+)?)(?:\*\*)?\s*\|[^|\n]*\|\s*(?:\*\*)?(\$[\d.]+)(?:\*\*)?\s*\|$/gm,
@@ -330,11 +332,10 @@ for (const page of PAGES) {
 // above are left out. The two figures that CAN drift silently while CI stays green are derived below.
 const specAnchors = [];
 {
-  // A backend counts once, whether it stores the chunks or the pointer. Registry drivers used to be excluded
-  // as "a separate axis from the tiering the page is describing" — but with one storage tier left, the axis the
-  // page describes IS this one: which services the library can talk to. DynamoDB is the case that makes the
-  // distinction untenable, since it is now a registry driver and nothing else, and dropping it would make the
-  // count disagree with the `/dynamodb` subpath the install line advertises.
+  // A backend counts once, whether it stores the chunks or the pointer — which is now the same answer for all
+  // three clouds, since each hosts both. Registry drivers used to be excluded as "a separate axis from the
+  // tiering the page is describing", but with one storage tier left the axis the page describes IS this one:
+  // which services the library can talk to, and that is what the install line advertises.
   // `Memory` is the in-process dev/test pair and `Retrying` is a decorator wrapping another driver — neither is
   // a backend a reader could point at.
   const NOT_A_BACKEND = new Set(['memory', 'retrying']);
