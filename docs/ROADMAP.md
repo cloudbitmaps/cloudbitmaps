@@ -61,7 +61,7 @@ Current install and publish status lives in the [README](../README.md) — this 
 restate it, so the two can't drift. You install **one codec flavor** plus only the backend SDKs you use:
 
 ```bash
-npm i @cloudbitmaps/roaring @aws-sdk/client-s3 @aws-sdk/client-dynamodb   # roaring on AWS: S3 cold + DynamoDB registry
+npm i @cloudbitmaps/roaring @aws-sdk/client-s3                            # roaring on AWS: one bucket, cold + registry
 ```
 
 `@cloudbitmaps/core` — the codec-agnostic engine and every storage driver, with **zero runtime
@@ -161,15 +161,15 @@ faithful emulator) — an implementation isn't "done" until it passes.
 | Store | Backends |
 | --- | --- |
 | **Cold** (immutable objects) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
-| **Registry** (generation pointer, discovery, wrapped keys) | DynamoDB · S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
+| **Registry** (generation pointer, discovery, wrapped keys) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
 
 Two things worth knowing before you pick:
 
 - **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: cold
   generations and the pointer live in the same bucket or container. Each native registry rides its own store's
   conditional-write primitive — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
-  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. DynamoDB
-  remains available for deployments that would rather keep the pointer off the object store.
+  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. To keep
+  the pointer off the object store entirely, implement `IRegistryDriver` against a database you already run.
 - **A registry is optional only for a cleartext, read-only store**, which list-scans the bucket for the latest
   generation. Encrypted segments, the `*Into` verbs and every lifecycle helper need one.
 
@@ -182,7 +182,7 @@ envelope**:
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
-| **Backends** | S3 cold + DynamoDB registry — the validated pair | the others (GCS and Azure Blob cold, and the S3, GCS and Azure Blob registries): conformance-passing and correctness-clean, but not envelope-validated |
+| **Backends** | S3 cold — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob cold: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency** beyond the one `has()` run; and every loaded-store figure listed as owed below |
 
@@ -203,7 +203,8 @@ between here and there:
 1. **Real-cloud calibration — the cost side is half done.**
    The [object-store half](benchmarks.md#real-cloud-calibration--aws) of the 2026-07-25 run is published: two S3
    line items, and the unit economics that fall out of them (**$0.14 per million** `count()`s, **$5.88 per
-   million** publishes, each including the registry round trip). Its **total is deliberately not published** —
+   million** publishes — the object-store half only; the measured run billed the pointer round trip to a
+   NoSQL registry that no longer ships). Its **total is deliberately not published** —
    the other half metered the removed delta tier, and a total over two of four terms is a figure no run
    produced. **No latency figure is published either**, from that run or any other: it was driven from a laptop
    outside the region, so it calibrates cost only. What remains: an **in-region** run for read latency, a

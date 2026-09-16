@@ -8,7 +8,7 @@
 ## TL;DR — the trust boundary
 
 **CloudBitmaps is an embedded library.** It runs inside *your* process/function and talks to *your* storage
-accounts (S3, DynamoDB, local disk — whatever drivers you wire). **It has no hosted backend and transmits no
+accounts (S3, GCS, Azure Blob, local disk — whatever drivers you wire). **It has no hosted backend and transmits no
 data to the authors or any third party** — there is no telemetry, no phone-home, no usage ping. The metrics
 and audit sinks are local and off by default; they only go where *you* send them.
 
@@ -39,7 +39,7 @@ from constructing a cross-region topology. The points where personal data moves 
 | Location | What's there | Residency note |
 |---|---|---|
 | **Cold** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
-| **Registry** (DynamoDB / S3 / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the table or bucket you wire |
+| **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the bucket you wire |
 | **HOT cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`bulkLoadCrbmGeneration`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |

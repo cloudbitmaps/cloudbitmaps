@@ -113,7 +113,7 @@ export {
   KeyUnavailableError,
   BudgetExceededError,
   // Bundle-safe predicates — prefer these over `instanceof` when catching errors that cross the core↔driver
-  // (`./s3` / `./dynamodb`) boundary, where a per-bundle class copy makes `instanceof` unreliable in CJS.
+  // (`./s3` / `./gcs` / `./azure`) boundary, where a per-bundle class copy makes `instanceof` unreliable in CJS.
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,

@@ -4,7 +4,7 @@
 > exposes, covered by the test suite. The API may still change before `1.0`. CloudBitmaps is a **loaded store**:
 > a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
 > **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
-> DynamoDB). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
+> GCS / Azure Blob). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
 > and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
 > crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
@@ -16,7 +16,7 @@
 > `@cloudbitmaps/core/s3` is equivalent if you prefer it).
 
 > **Every export at a glance:** for the complete list of everything you can import and call (across
-> `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure` and `/dynamodb` subpaths), see the
+> `@cloudbitmaps/roaring` and its `/s3`, `/gcs` and `/azure` subpaths), see the
 > **[API Reference](api-reference.md)** — it's kept in sync with the code by CI. This guide is the narrated
 > walkthrough of that same surface.
 
@@ -34,7 +34,7 @@
 | **GCS + Azure Blob** cold storage (`@cloudbitmaps/roaring/gcs`, `@cloudbitmaps/roaring/azure`) — write-once immutable generations | ✅ |
 | `.crbm` archive read/write + a bounded HOT cache | ✅ |
 | **Automatic retry + backoff** for transient faults (on by default) | ✅ |
-| **Segment registry** (memory / LocalFs / DynamoDB / **S3** — run on S3 alone) — one strong read resolves the current generation, no per-read scan | ✅ |
+| **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
 | **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
 | **Observability** — optional metrics sink (`IMetricsSink`): `cold.get` / `cache` / `retry` / `intersect` / `op` events | ✅ |
@@ -51,7 +51,7 @@
 
 > **Every backend ships a registry.** `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
 > (`@cloudbitmaps/roaring/s3`), `GcsRegistryDriver` (`@cloudbitmaps/roaring/gcs`), `AzureBlobRegistryDriver`
-> (`@cloudbitmaps/roaring/azure`), and `DynamoDbRegistryDriver` (`@cloudbitmaps/roaring/dynamodb`). **Each
+> (`@cloudbitmaps/roaring/azure`). **Each
 > object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
 > service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
 > S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
@@ -255,13 +255,12 @@ for await (const s of store.segments({ namespace: 'active-daily' })) {
 }
 ```
 
-`segments()` is the registry's own enumeration — a `Scan` on DynamoDB, a paged LIST on an object-store
+`segments()` is the registry's own enumeration — a paged LIST over the `registry/` prefix on an object-store
 registry — so its cost tracks the size of your fleet, not the size of the answer. It is an admin and dashboard
 call, not one for a request path.
 
-Scope it to a `namespace` whenever you can, but budget honestly: on an object-store registry that narrows the
-LIST prefix and really is the difference between one tenant and all of them, while on DynamoDB it is a `Scan`
-with a `begins_with` filter applied *after* the read — fewer bytes come back, the same table is read.
+Scope it to a `namespace` whenever you can: that narrows the LIST prefix, and really is the difference between
+reading one tenant and reading all of them.
 
 It streams, so stopping the loop stops the scan — unless you have wrapped the registry in
 `RetryingRegistryDriver`, which buffers the enumeration in order to retry it as a unit, and then the whole scan
@@ -359,7 +358,8 @@ per deployment:
 | `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
 | `LocalFsRegistryDriver` | `@cloudbitmaps/roaring` | single node / on-prem |
 | `S3RegistryDriver` | `@cloudbitmaps/roaring/s3` | **the same bucket as your cold data — one store, no second service** |
-| `DynamoDbRegistryDriver` | `@cloudbitmaps/roaring/dynamodb` | many segments republished often (single-digit-ms pointer swaps vs an S3 GET+PUT); GCS / Azure cold |
+| `GcsRegistryDriver` | `@cloudbitmaps/roaring/gcs` | the same, on Google Cloud Storage |
+| `AzureBlobRegistryDriver` | `@cloudbitmaps/roaring/azure` | the same, on Azure Blob Storage |
 
 The **`S3RegistryDriver`** keeps the current-generation pointer as a tiny object in the *same bucket* as your
 Cold data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a deployment runs on
@@ -369,23 +369,19 @@ Cold data, using S3's conditional writes (`If-Match`) for the atomic generation 
 import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 
 const cold = new S3ColdDriver({ client: s3, bucket: 'my-bitmaps' });
-const registry = new S3RegistryDriver({ client: s3, bucket: 'my-bitmaps' }); // same bucket, no DynamoDB
+const registry = new S3RegistryDriver({ client: s3, bucket: 'my-bitmaps' }); // same bucket, no second service
 const store = new CloudRoaring({ cold, registry });
 ```
 
 > **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
 > MinIO), the IAM principal needs **`s3:ListBucket`** (else a missing key returns `403` not `404`, and
 > discovery can't list), and **don't put a lifecycle-expiration rule on the `registry/` prefix** (deleted rows are
-> tombstoned for the pointer's ABA-safety). DynamoDB is the better fit when pointers move very frequently.
+> tombstoned for the pointer's ABA-safety).
 
-The **DynamoDB** registry is one item per segment in a single table (`PK = ns#…|seg#…`, `SK = reg#`) you provision
-once with a `(PK, SK)` string key schema; an optional `keyPrefix` lets several logical stores share one table, and
-DynamoDB-Local works for development:
-
-```ts
-import { DynamoDbRegistryDriver } from '@cloudbitmaps/roaring/dynamodb';
-const registry = new DynamoDbRegistryDriver({ client: dynamo, tableName: 'cloudbitmaps' });
-```
+**GCS and Azure Blob work exactly the same way**, each using its own cloud's conditional write —
+`ifGenerationMatch` on GCS, `If-None-Match` / `If-Match` on Azure — so the compare-and-swap is enforced by the
+service rather than by the client. The same "no lifecycle rule on the `registry/` prefix" caveat applies to all
+three.
 
 > **One lifecycle rule you should add:** **`AbortIncompleteMultipartUpload`**, on the bucket holding cold
 > objects (a few days is plenty). A large generation is written as a multipart upload; the library aborts it on
@@ -402,40 +398,42 @@ and takes the first publish. To publish a generation you wrote yourself, call
 
 ## Production wiring for the cloud drivers
 
-§4–§5 wired S3 and the two cloud registries. The two remaining cloud **cold** drivers — GCS and Azure Blob —
-follow the same shape: construct your own client, hand it to the driver. Both are **cold-only** (no registry): pair
-them with an S3 or DynamoDB registry (see [Choosing a registry](#choosing-a-registry)).
+§4–§5 wired S3. The two remaining clouds — GCS and Azure Blob — follow the same shape: construct your own
+client, hand it to the driver. Each hosts **both** the cold tier and the registry, so either one is a complete
+deployment on its own (see [Choosing a registry](#choosing-a-registry)).
 
-### GCS cold (`@cloudbitmaps/roaring/gcs`)
+### GCS — cold + registry (`@cloudbitmaps/roaring/gcs`)
 
 ```ts
 import { Storage } from '@google-cloud/storage';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { GcsColdDriver } from '@cloudbitmaps/roaring/gcs';
+import { GcsColdDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
 
 const storage = new Storage(); // ADC; or { apiEndpoint } to point at fake-gcs-server locally
 const cold = new GcsColdDriver({ storage, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const store = new CloudRoaring({ cold, registry }); // registry: S3 or DynamoDB, per §5
+const registry = new GcsRegistryDriver({ storage, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const store = new CloudRoaring({ cold, registry }); // one bucket is the whole deployment
 ```
 
 > **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
-> simple and resumable upload paths). GCS ships **no registry** — pair with an S3 or DynamoDB registry.
+> simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
 
-### Azure Blob cold (`@cloudbitmaps/roaring/azure`)
+### Azure Blob — cold + registry (`@cloudbitmaps/roaring/azure`)
 
 ```ts
 import { BlobServiceClient } from '@azure/storage-blob';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { AzureBlobColdDriver } from '@cloudbitmaps/roaring/azure';
+import { AzureBlobColdDriver, AzureBlobRegistryDriver } from '@cloudbitmaps/roaring/azure';
 
 const containerClient = BlobServiceClient.fromConnectionString(process.env.AZURE_CONN)
   .getContainerClient('bitmaps');
 const cold = new AzureBlobColdDriver({ containerClient, prefix: 'cloudroaring' });
-const store = new CloudRoaring({ cold, registry }); // registry: S3 or DynamoDB, per §5
+const registry = new AzureBlobRegistryDriver({ containerClient, prefix: 'cloudroaring' });
+const store = new CloudRoaring({ cold, registry }); // one container is the whole deployment
 ```
 
 > **Checklist.** Peer `@azure/storage-blob`; inject a container-scoped `ContainerClient`; generations are
-> write-once via `If-None-Match: '*'`. Azure ships **no registry** — pair with an S3 or DynamoDB registry.
+> write-once via `If-None-Match: '*'`, and the registry swaps the pointer with `If-Match: <etag>`.
 
 Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the
 [disaster-recovery runbook](disaster-recovery.md).
@@ -470,7 +468,7 @@ can't help or would be wrong): `ValidationError` (bad input), `IntegrityError` (
 was contended past its own re-read-and-retry loop).
 
 **Set a timeout on your client.** CloudBitmaps intentionally has no homegrown timeout (it would abandon
-in-flight requests). Instead, give your injected S3/DynamoDB client a request timeout — the resulting timeout
+in-flight requests). Instead, give your injected storage client a request timeout — the resulting timeout
 is treated as transient and retried:
 
 ```ts
@@ -1256,7 +1254,7 @@ a correct answer:
 
 **Once a day is enough** for daily buckets — retention windows are measured in days, so an hourly sweep just
 re-scans the same registry 24 times. Match the cadence to the granularity of your policies, not to how fast you
-want the deletion to feel. On DynamoDB a fleet scan is a billed full-table `Scan`, and on S3 a `LIST` — the
+want the deletion to feel. A fleet scan is a billed `LIST` over the registry prefix — the
 default `'fleet'` scan costs what the fleet *holds*; `scan: 'index'` reads only the due buckets of the **due
 index** and costs what is *expiring*. The index is a fast path, not the source of truth: each candidate's live
 row is re-read before anything is decided, and a policy written before the index existed has no pointer, so run

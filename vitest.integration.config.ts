@@ -4,9 +4,9 @@ import { defineConfig } from 'vitest/config';
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
 
-// Integration suite — runs against DynamoDB-Local + MinIO via `docker compose` (see docker-compose.yml).
-// The first real integration test was the S3 cold driver against MinIO; the lane now also covers
-// DynamoDB-Local, fake-gcs-server and Azurite.
+// Integration suite — runs against the object stores via `docker compose` (see docker-compose.yml).
+// The first real integration test was the S3 cold driver against MinIO; the lane now covers MinIO,
+// fake-gcs-server and Azurite, each hosting both the cold tier and its own registry.
 export default defineConfig({
   test: {
     globals: true,

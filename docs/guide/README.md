@@ -12,7 +12,7 @@ grown one capability per phase (so it never describes vapor).
   and the `checkConsistency()` torn-restore check.
 
 Shipped capabilities — **intersection** (the crown jewel), the **cloud drivers** (S3/GCS/Azure cold,
-S3/DynamoDB registry), and loading, encryption, retention, cost, and observability — are
+registry in the same bucket), and loading, encryption, retention, cost, and observability — are
 covered in [getting started](getting-started.md). Writing your own driver builds on the internal conformance
 suite (`packages/roaring/src/testing/conformance.ts`); it is not yet exported as a public package subpath. For
 what's shipped, what's proven to what degree, and what's next, read the [roadmap](../ROADMAP.md); for the

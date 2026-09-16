@@ -12,14 +12,12 @@ const BARRELS = [
   '../../packages/core/src/index.ts',
   // The driver subpaths live in core; the roaring package's same-named barrels are one-line re-exports of these.
   '../../packages/core/src/s3/index.ts',
-  '../../packages/core/src/dynamodb/index.ts',
   '../../packages/core/src/gcs/index.ts',
   '../../packages/core/src/azure/index.ts',
   // The flavor's own driver barrels are declared entry points too (`@cloudbitmaps/roaring/s3`, …). They are
   // one-line re-exports of core's equivalents today, but they ARE public surface — parse them so an own export
   // added to one can't become public undocumented.
   '../../packages/roaring/src/s3/index.ts',
-  '../../packages/roaring/src/dynamodb/index.ts',
   '../../packages/roaring/src/gcs/index.ts',
   '../../packages/roaring/src/azure/index.ts',
 ] as const;

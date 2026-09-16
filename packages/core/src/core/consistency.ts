@@ -1,8 +1,9 @@
 /**
- * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`, e.g. in
- * DynamoDB) and the immutable `.crbm` generations (e.g. in S3) back up and restore **independently**, so a
- * failover can recover the registry *ahead of* the object store — leaving `currentGen` pointing at a generation
- * whose `.crbm` isn't present yet. That's a torn restore: reads of the affected segment then throw. This scan
+ * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`) and the immutable `.crbm`
+ * generations can be restored **independently**, so a failover can recover the registry *ahead of* the cold
+ * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
+ * than it sounds even now that both usually live in one bucket: a restore scoped to a prefix, or replayed
+ * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Cold is intentionally

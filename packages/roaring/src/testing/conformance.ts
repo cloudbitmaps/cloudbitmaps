@@ -67,7 +67,7 @@ const NASTY_NAMES: readonly string[] = [
   'a b',
   'a%3Ab', // a name that SPELLS an escape; `%` escaping itself is what keeps this unambiguous
   '100%',
-  'ns#1|seg#2', // the DynamoDB partition-key delimiters
+  'ns#1|seg#2', // the characters the key codec keeps reserved
   'con', // a Windows device name — the OLD grammar accepted this one and it broke on Windows
   'a.', // Windows strips a trailing dot, so this must not collide with `a`
   'user@example.com',

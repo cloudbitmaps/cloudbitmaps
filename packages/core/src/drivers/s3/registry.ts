@@ -2,7 +2,7 @@
  * `S3RegistryDriver` — an {@link IRegistryDriver} over S3-compatible object storage.
  *
  * Lets a **read-mostly deployment run on S3 alone** — cold `.crbm` generations + the registry in one bucket,
- * no DynamoDB. The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout)
+ * no separate database. The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout)
  * lives once in {@link ObjectStoreRegistry}; this file is only the three I/O calls S3 makes, so the S3, GCS
  * and Azure registries cannot drift from one another.
  *

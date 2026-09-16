@@ -102,7 +102,7 @@ describe('assertStoredRecordShape — an older row with the removed daemon field
  * Registry-row schema-version stamps (a format-freeze prerequisite). The persisted envelope carries a
  * `schemaVersion` so a reader can fail-closed on a future, incompatible layout. Policy: absent → legacy v1
  * (tolerated — pre-freeze rows stay readable across the upgrade); higher → UnsupportedError; malformed →
- * IntegrityError. This pins the LocalFs/S3 envelope path; the DynamoDB body path is tested in its own suite.
+ * IntegrityError. This pins the envelope path every registry driver shares.
  */
 describe('registry envelope schema version (format freeze)', () => {
   const record: RegistryRecord = {

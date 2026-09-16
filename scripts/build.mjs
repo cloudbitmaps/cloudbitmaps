@@ -29,7 +29,7 @@ const fuzzBuild = path.resolve(pkgDir, '..', '..', 'fuzz', 'build');
 
 await rm(dist, { recursive: true, force: true });
 
-const SUBPATHS = ['s3', 'dynamodb', 'gcs', 'azure'];
+const SUBPATHS = ['s3', 'gcs', 'azure'];
 const entries = { index: 'src/index.ts' };
 for (const s of SUBPATHS) {
   if (existsSync(path.join(pkgDir, 'src', s, 'index.ts')))

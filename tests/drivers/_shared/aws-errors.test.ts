@@ -7,7 +7,7 @@ import {
   isServerSide,
 } from '@/drivers/_shared/aws-errors';
 
-// Shared structural AWS-error readers, used by both the S3 and DynamoDB transient classifiers.
+// Shared structural AWS-error readers, used by the S3 transient classifier.
 describe('shared AWS error helpers', () => {
   it('reads name / httpStatus / code defensively (null-safe)', () => {
     expect(errorName({ name: 'X' })).toBe('X');

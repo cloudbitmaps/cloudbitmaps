@@ -95,7 +95,7 @@ const ticking = (): (() => number) => {
   return () => (t += 1);
 };
 
-// The same contract every other IRegistryDriver passes — memory, LocalFs, S3, GCS, Azure, DynamoDB.
+// The same contract every other IRegistryDriver passes — memory, LocalFs, S3, GCS, Azure.
 registryConformance(
   'ObjectStoreRegistry (fake object store)',
   () => new ObjectStoreRegistry(new FakeObjectStore(), 'conf', ticking()),

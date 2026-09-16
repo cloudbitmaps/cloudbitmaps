@@ -59,15 +59,12 @@ export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver):
 /**
  * Every segment the registry holds, streamed — optionally scoped to one namespace.
  *
- * **This is an admin/discovery call, not a request-path one.** It is the registry's own enumeration, which on
- * DynamoDB is a `Scan` and on an object-store registry a paged LIST: cost grows with the fleet, not with what
- * you are looking for. The fleet-wide sweeps that *drain* it bound it (`maxScanSegments`); this one streams, so
- * the bound is yours.
+ * **This is an admin/discovery call, not a request-path one.** It is the registry's own enumeration — a paged
+ * LIST over the `registry/` prefix — so cost grows with the fleet, not with what you are looking for. The
+ * fleet-wide sweeps that *drain* it bound it (`maxScanSegments`); this one streams, so the bound is yours.
  *
- * **Scoping to a namespace does not cost the same everywhere.** On an object-store registry it narrows the LIST
- * prefix and really is the difference between reading one tenant and reading all of them. On DynamoDB it is a
- * `Scan` with a `begins_with` filter, and DynamoDB filters *after* reading — so it cuts the bytes returned but
- * not the table read. Scope it anyway; just do not budget for it as a saving on DynamoDB.
+ * **Scoping to a namespace narrows the LIST prefix**, so it really is the difference between reading one
+ * tenant and reading all of them.
  *
  * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — **with one
  * exception that matters**: a driver that buffers its enumeration defeats both properties, and

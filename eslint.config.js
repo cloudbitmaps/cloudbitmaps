@@ -117,8 +117,8 @@ export default tseslint.config(
     files: ['packages/core/src/**/*.ts'],
     ignores: [
       'packages/core/src/core/**',
-      'packages/core/src/drivers/{s3,dynamodb,gcs,azure}/**',
-      'packages/core/src/{s3,dynamodb,gcs,azure}/**',
+      'packages/core/src/drivers/{s3,gcs,azure}/**',
+      'packages/core/src/{s3,gcs,azure}/**',
     ],
     rules: {
       'no-restricted-imports': [
@@ -136,7 +136,7 @@ export default tseslint.config(
                 'A cloud SDK may be imported only from its own subpath (src/drivers/<cloud>, src/<cloud>) — the main entry must stay SDK-free.',
             },
             {
-              regex: '(^|/)drivers/(s3|dynamodb|gcs|azure)(/|$)',
+              regex: '(^|/)drivers/(s3|gcs|azure)(/|$)',
               message:
                 'A cloud driver is reached only through its own subpath entry — importing it here would pull its SDK into the main bundle.',
             },
@@ -148,8 +148,8 @@ export default tseslint.config(
   {
     // The cloud subpaths of core may import their SDK and their driver — but still never a flavor.
     files: [
-      'packages/core/src/drivers/{s3,dynamodb,gcs,azure}/**/*.ts',
-      'packages/core/src/{s3,dynamodb,gcs,azure}/**/*.ts',
+      'packages/core/src/drivers/{s3,gcs,azure}/**/*.ts',
+      'packages/core/src/{s3,gcs,azure}/**/*.ts',
     ],
     rules: {
       'no-restricted-imports': [
@@ -170,7 +170,7 @@ export default tseslint.config(
     // @cloudbitmaps/roaring outside its cloud subpath barrels: SDK-free, and a cloud driver is reached only
     // through its own `@cloudbitmaps/roaring/<cloud>` entry.
     files: ['packages/roaring/src/**/*.ts'],
-    ignores: ['packages/roaring/src/{s3,dynamodb,gcs,azure}/**'],
+    ignores: ['packages/roaring/src/{s3,gcs,azure}/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -182,7 +182,7 @@ export default tseslint.config(
                 'A cloud SDK may be imported only from its own subpath barrel (src/<cloud>) — the main entry must stay SDK-free.',
             },
             {
-              regex: '^@cloudbitmaps/core/(s3|dynamodb|gcs|azure)(/|$)',
+              regex: '^@cloudbitmaps/core/(s3|gcs|azure)(/|$)',
               message:
                 'A cloud driver is reached only through its own subpath entry — importing it here would pull its SDK into the main bundle.',
             },

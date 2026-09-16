@@ -7,7 +7,7 @@
  * place where "it drifted between callers" costs memory rather than tidiness, so it lives once.
  *
  * **Why drain at all rather than stream.** Every caller mutates rows as it goes (a CAS, a delete), and iterating a
- * live listing while doing so is driver-dependent — a DynamoDB `Scan` may or may not observe its own writes. A
+ * live listing while doing so is driver-dependent — a paged LIST may or may not observe its own writes. A
  * snapshot also makes per-cycle counters and limits mean something. The cost is resident memory proportional to
  * the fleet, which is why the ceiling is not optional: at the default of 250,000 rows the snapshot is tens of MB,
  * comfortably more than the 128–256 MB Lambda the guide suggests starting with, so it fails loudly instead.

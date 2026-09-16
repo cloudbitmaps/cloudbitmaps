@@ -161,8 +161,9 @@
                   <td class="num">$0.14</td>
                   <td class="from">
                     Zero payload reads — summed straight from the <span class="m">.crbm</span> index, and exact
-                    rather than estimated. Priced end to end, so the registry round trip that resolves the
-                    segment's current generation is in it.
+                    rather than estimated. This is the object-store half: in the measured run the round trip
+                    that resolves the segment's current generation was billed to a NoSQL registry that no
+                    longer ships, so it is <strong>not</strong> in this figure.
                   </td>
                   <td><span class="status is-shipped">Win</span></td>
                 </tr>
@@ -187,8 +188,9 @@
                   <td>1M segment publishes</td>
                   <td class="num">$5.88</td>
                   <td class="from">
-                    The whole write path: a generation written once, then the forward-only registry publish that
-                    makes it current. The meter counts objects, not ids — so batch a refresh.
+                    A generation written once. The forward-only registry publish that makes it current was
+                    billed to a NoSQL registry that no longer ships, so it is not in this figure. The meter
+                    counts objects, not ids — so batch a refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -679,6 +681,19 @@
           Each of these is a real limit on what you should conclude.
         </p>
         <ul class="rowlist">
+          <li>
+            <span class="rl-mark">00</span>
+            <span class="rl-what">The registry it measured is not the registry that ships</span>
+            <span class="rl-fig">pointer cost unmeasured</span>
+            <span class="rl-note">
+              Generation resolution ran against a NoSQL table in that run. The library now keeps the pointer in
+              the same bucket as the data, so the same operations additionally pay an object-store request for
+              it — a GET to resolve, a conditional PUT to advance — which is not in the figures above. How much
+              that adds depends on how often the resolution is served from the reader's cache rather than
+              re-fetched, and this run cannot tell you. Treat these as the object-store half of an older shape
+              rather than today's total.
+            </span>
+          </li>
           <li>
             <span class="rl-mark">01</span>
             <span class="rl-what">Published rates × wire-metered ops — not a cloud bill</span>

@@ -48,7 +48,7 @@ describe('the SDK-free gate detects a specifier', () => {
       'OUR OWN driver subpath — stays external so no SDK string appears, but a bundler follows it',
       'await import("@cloudbitmaps/core/s3")',
     ],
-    ['a flavor driver subpath', 'require("@cloudbitmaps/roaring/dynamodb")'],
+    ['a flavor driver subpath', 'require("@cloudbitmaps/roaring/azure")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source).length).toBeGreaterThan(0);
   });

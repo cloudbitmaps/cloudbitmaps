@@ -19,7 +19,7 @@
     <title>CloudBitmaps flavors — one engine, pluggable codecs</title>
     <meta
       name="description"
-      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. The hot cache over immutable generations, the load-and-publish write path, chunk-skipping intersection, retention and the five storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
+      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. The hot cache over immutable generations, the load-and-publish write path, chunk-skipping intersection, retention and the four storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       property="og:description"
-      content="A flavor decides how a chunk of ids is represented. Everything else — the hot cache, the load-and-publish write path, chunk-skipping, five drivers — is codec-agnostic."
+      content="A flavor decides how a chunk of ids is represented. Everything else — the hot cache, the load-and-publish write path, chunk-skipping, four drivers — is codec-agnostic."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -97,7 +97,7 @@
             <p class="hero-lede">
               <span class="m">@cloudbitmaps/core</span> is codec-agnostic. The hot cache over immutable
               generations, the load-and-publish write path, chunk-skipping intersection, generation GC,
-              erasure-by-rewrite, encryption, retention and the five storage drivers live there and do not
+              erasure-by-rewrite, encryption, retention and the four storage drivers live there and do not
               change. A flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
             </p>
             <p class="actions">
@@ -109,7 +109,7 @@
 
           <aside class="panel">
             <div class="panel-head label">Shared by every flavor</div>
-            <p class="panel-row is-pair"><span>Storage drivers</span><span class="is-live">5</span></p>
+            <p class="panel-row is-pair"><span>Storage drivers</span><span class="is-live">4</span></p>
             <p class="panel-row is-pair"><span>Tiers</span><span>RAM cache · cold objects</span></p>
             <p class="panel-row is-pair">
               <span>API surface</span
@@ -251,7 +251,7 @@
               result as a new generation of a destination segment instead of returning it. Data arrives the one
               way whichever you pick — <span class="m">bulkLoadCrbmGeneration</span>, one immutable object
               then a forward-only pointer move. A flavor is a <span class="m">CodecInterface</span>
-              implementation underneath five drivers and two tiers, and changes none of these signatures.
+              implementation underneath four drivers and two tiers, and changes none of these signatures.
             </p>
           </div>
         </div>
@@ -271,7 +271,7 @@
               <a class="btn btn-primary" href="flavors/roaring.html">How Roaring works →</a>
               <a class="btn" href="architecture.html">The engine underneath</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 5 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>One flavor</span></div>

@@ -45,7 +45,7 @@ beforeAll(async () => {
 // The GCS registry must pass the SAME registry contract as memory / LocalFs / S3 — against real object
 // preconditions (`ifGenerationMatch: 0` for create-only, `ifGenerationMatch: <generation>` for CAS) via
 // fake-gcs-server. This is what makes a GCS-only topology viable: before it, a GCS user had to point the
-// registry at DynamoDB and hold an AWS account purely to store which generation is current.
+// registry at a separate AWS-hosted table and hold an AWS account purely to store which generation is current.
 let rn = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;

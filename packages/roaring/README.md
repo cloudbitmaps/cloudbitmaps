@@ -18,7 +18,7 @@ import { CloudRoaring, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
 import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 ```
 
-Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`, `/dynamodb`); each backend SDK
+Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`); each backend SDK
 is an optional peer dependency, so the main entry stays lean. Ships one CLI: `export-segments`.
 
 ## The model in one paragraph
@@ -51,11 +51,13 @@ than streaming it to you, using the same write-once-then-publish protocol.
 
 ## Measured, not modeled
 
-Benchmarked against **real** S3 + DynamoDB in `us-east-1`, not an emulator: **$0.14 per million** `count()`s and
+Benchmarked against **real** S3 in `us-east-1`, not an emulator: **$0.14 per million** `count()`s and
 **$5.88 per million** segment publishes — against an always-on Redis-HA line of **$346/month, standing**, and
 **$0.03/month** for 1.2 GiB of segments at rest. Request counts are read off the AWS SDK layer rather than
 estimated from sizes. `count()` on a published segment does **0 payload reads**, and intersecting two
-2,000,000-id segments fetches only the shared chunks.
+2,000,000-id segments fetches only the shared chunks. That run kept the generation pointer in a NoSQL
+registry that no longer ships, so both figures are the object-store half rather than today's total — the
+pointer is now an object request that is not in them.
 
 The trade is stated plainly rather than buried: a membership check that misses the hot cache costs a ranged GET
 against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a

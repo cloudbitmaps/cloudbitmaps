@@ -33,7 +33,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   Both ride the same compare-and-swap primitive S3 uses, under each cloud's own name — GCS
   `ifGenerationMatch: 0` to create and `ifGenerationMatch: <generation>` to swap; Azure `ifNoneMatch: '*'`
   and `ifMatch: <etag>`. Both pass the **same `IRegistryDriver` conformance suite** as the memory, LocalFs,
-  S3 and DynamoDB registries, run against fake-gcs-server and Azurite in the integration lane — **and a new
+  S3 registries, run against fake-gcs-server and Azurite in the integration lane — **and a new
   `registryConcurrency` suite that drives two registries at the same row at once.** That second suite is the
   one that proves the fence: the shared class compares the OCC token in memory before it ever issues a
   conditional write, so every *sequential* test is answered before the store is asked to fence anything. A
@@ -69,6 +69,45 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 
 ### Breaking
+- **The DynamoDB registry is removed** — `DynamoDbRegistryDriver`, the `@cloudbitmaps/roaring/dynamodb` and
+  `@cloudbitmaps/core/dynamodb` subpaths, and the `@aws-sdk/client-dynamodb` optional peer dependency are all
+  gone. **Storage backends go from five to four**, and the library no longer has a non-object-store driver of
+  any kind.
+
+  It existed because the pointer needed a home with a conditional write, and object stores did not offer one
+  when this library started. They all do now — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
+  `If-None-Match`/`If-Match` — and with `GcsRegistryDriver` and `AzureBlobRegistryDriver` landing above, every
+  cloud can host its own pointer beside its own data. Keeping DynamoDB would mean maintaining a second
+  registry protocol, a second key layout, a second set of conformance wiring and a container in the
+  integration lane, to serve a topology whose only remaining advantage is faster pointer swaps on a workload
+  that publishes far more often than this library is designed for.
+
+  **Migrating. Do this on `0.9.x`, before you upgrade.** `0.9.x` is the only line in which the DynamoDB
+  driver and an object-store registry both exist, so it is the only place the library itself can read the old
+  rows and write the new ones. The cold `.crbm` objects are untouched either way.
+
+  On `0.9.x`, stand up an `S3RegistryDriver` against the bucket you already use for cold data, and for every
+  segment copy the row across **with every field it holds**, not just the pointer:
+
+  - `currentGen` — the generation pointer.
+  - `wrappedDeks` and `keyId` — **an encrypted segment whose wrapped keys you drop is unrecoverable.** They
+    exist nowhere else; losing them is a crypto-shred you performed on yourself.
+  - `status` — so a `destroyed` tombstone stays a tombstone rather than coming back `active` and un-fencing a
+    name that was erased on request.
+  - `retention` and `residency` — drop these and the retention sweep silently stops expiring anything.
+
+  Do it with writers quiesced: pointer identity is per-registry, and a publish landing in the old row during
+  the copy is lost. Verify with `checkConsistency()` before you upgrade.
+
+  **GCS and Azure users have no in-library bridge**, because their registry drivers arrive in this same
+  release, after DynamoDB is gone. Copy the rows out yourself while still on `0.9.x` — the old table's key
+  layout was `PK = ns#<namespace>|seg#<segment>`, `SK = reg#` — or migrate onto S3 first and move buckets
+  afterwards.
+
+  If you would rather keep the pointer off the object store entirely, implement `IRegistryDriver` against a
+  database you already run: six methods (`capabilities`, `get`, `create`, `compareAndSwap`, `list`,
+  `delete`), and the shared conformance suite is what tells you it is correct.
+
 - **A LocalFs store holding a segment or namespace whose name is a Windows device name or ends in a dot must
   be migrated.** Affected names are exactly: a stem of `con`, `prn`, `aux`, `nul`, `com1`–`com9` or
   `lpt1`–`lpt9`, with or without an extension (`con`, `CON`, `con.backup`); and any name ending in `.`
@@ -93,7 +132,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   and `../etc/passwd` are all ordinary names now.
 
   **Object-store keys are byte-identical** — every previously legal name encodes to itself on the key
-  alphabet, asserted by a property test over the whole old grammar, so S3, GCS, Azure and DynamoDB stores need
+  alphabet, asserted by a property test over the whole old grammar, so S3, GCS and Azure stores need
   no migration. **LocalFs is the exception; see Breaking below.**
 
   Each physical boundary escapes what *it* cannot take literally, percent-encoded, with `%` escaping itself as
@@ -151,7 +190,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
   **This is purely a widening: every name legal before is legal now**, and nothing on disk moves — the
   encoding below is the identity on every previously legal name, so existing paths stay byte-identical and
-  no migration is needed. The S3, GCS, Azure and DynamoDB drivers take a colon verbatim; the shared
+  no migration is needed. The S3, GCS and Azure drivers take a colon verbatim; the shared
   conformance suite every driver must pass now carries a colon in its fixtures, so that is checked rather
   than asserted.
 

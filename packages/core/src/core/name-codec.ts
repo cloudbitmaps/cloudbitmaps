@@ -21,16 +21,23 @@
  *
  * There are two alphabets, because the boundaries differ:
  *
- * - **Object keys** (S3, GCS, Azure, DynamoDB) take almost anything. They need `/` escaped so a name cannot
- *   invent hierarchy or break a key parser that splits on it, `#` and `|` because DynamoDB delimits its
- *   partition key with them, and control characters because they are not legal in the XML an S3 LIST returns.
+ * - **Object keys** (S3, GCS, Azure Blob) take almost anything. They need `/` escaped so a name cannot
+ *   invent hierarchy or break a key parser that splits on it, `#` and `|` (see below), and control characters
+ *   because they are not legal in the XML an S3 LIST returns.
  * - **Filesystem paths** need all of that plus `:` (an NTFS alternate-data-stream separator, where a write can
  *   *succeed* while `readdir` never lists the result), plus three hazards that are about the component as a
  *   whole rather than its characters — see {@link encodeNameForPath}.
  *
- * **Every name that was legal before encodes to itself on the OBJECT-KEY alphabet** — so S3, GCS, Azure and
- * DynamoDB keys are byte-identical and there is nothing to migrate there. That is the property to preserve if
- * this file is ever edited, and a property test asserts it over the whole old grammar.
+ * **`#` and `|` are escaped for compatibility, not for any backend still here.** They were reserved because
+ * the DynamoDB registry composed its partition key from `<namespace>#<segment>|…`, and that driver is gone.
+ * The escaping stays anyway: it is baked into every key already written, and un-reserving the two characters
+ * would change what `encodeNameForKey` emits for a name containing either — silently moving those segments
+ * to a key nothing looks up. A cheap two-character reservation is the right price for not migrating a
+ * bucket; the property test below pins it.
+ *
+ * **Every name that was legal before encodes to itself on the OBJECT-KEY alphabet** — so S3, GCS and Azure
+ * keys are byte-identical and there is nothing to migrate there. That is the property to preserve if this
+ * file is ever edited, and a property test asserts it over the whole old grammar.
  *
  * The **path** alphabet is not identical, and the difference is a breaking change for an existing LocalFs
  * store. Two classes move: a Windows device-name stem (`con`, `nul`, `com1`, `con.backup`) and a trailing dot
@@ -96,11 +103,12 @@ function decodePercent(encoded: string): string {
 }
 
 /**
- * Encode a name for use inside an **object key** (S3, GCS, Azure, DynamoDB).
+ * Encode a name for use inside an **object key** (S3, GCS, Azure Blob).
  *
  * Leaves the historically-legal alphabet literal so existing keys do not move, and escapes everything else —
- * including `/` (which would invent hierarchy and break a parser that splits on it), `#` and `|` (DynamoDB's
- * partition-key delimiters), and control characters (not legal in S3's XML responses).
+ * including `/` (which would invent hierarchy and break a parser that splits on it), `#` and `|` (reserved by
+ * the former DynamoDB registry and kept reserved so existing keys stay valid), and control characters (not
+ * legal in S3's XML responses).
  */
 export function encodeNameForKey(name: string): string {
   return defuseDotComponent(encodeWith(name, KEY_SAFE));

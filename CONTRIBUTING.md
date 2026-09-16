@@ -17,7 +17,7 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
 
 - `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · `pnpm typecheck` · `pnpm test` · `pnpm build` ·
   `pnpm smoke`
-- `pnpm test:integration` — against the docker-compose backends (DynamoDB-Local, MinIO, fake-gcs-server,
+- `pnpm test:integration` — against the docker-compose backends (MinIO, fake-gcs-server,
   Azurite) — no real cloud account needed
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic, and every import-boundary rule in `eslint.config.js` (the storage-agnostic-core rule and its siblings) is proven to fire on a planted violation — and, since
   `core-no-node-builtins`, the **runtime**-agnostic one too.
@@ -37,7 +37,7 @@ The `@cloudbitmaps` family split makes this repo a workspace
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `dynamodb` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject |
 | `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, one-line re-export barrels for each driver subpath, the `export-segments` CLI, and the test-only conformance SDK |
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the two packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | benchmarks, fuzz targets, gate scripts, the static site, and the docs trees below |
