@@ -182,7 +182,7 @@ envelope**:
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
-| **Backends** | S3 — the validated backend, cold and registry | GCS and Azure Blob: conformance-passing and correctness-clean, but not envelope-validated |
+| **Backends** | S3 cold — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob cold: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency** beyond the one `has()` run; and every loaded-store figure listed as owed below |
 
@@ -203,7 +203,8 @@ between here and there:
 1. **Real-cloud calibration — the cost side is half done.**
    The [object-store half](benchmarks.md#real-cloud-calibration--aws) of the 2026-07-25 run is published: two S3
    line items, and the unit economics that fall out of them (**$0.14 per million** `count()`s, **$5.88 per
-   million** publishes, each including the registry round trip). Its **total is deliberately not published** —
+   million** publishes — the object-store half only; the measured run billed the pointer round trip to a
+   NoSQL registry that no longer ships). Its **total is deliberately not published** —
    the other half metered the removed delta tier, and a total over two of four terms is a figure no run
    produced. **No latency figure is published either**, from that run or any other: it was driven from a laptop
    outside the region, so it calibrates cost only. What remains: an **in-region** run for read latency, a

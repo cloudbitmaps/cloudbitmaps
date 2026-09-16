@@ -173,14 +173,14 @@ retried as transient); see the [getting-started guide](docs/guide/getting-starte
 
 ## What it costs — measured on real AWS
 
-Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real drivers
-against a real AWS account in `us-east-1` — 20 segments, 20 segment publishes, 2,000 reads — and the two figures
-a loaded store actually pays are:
+Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real S3 cold
+driver — and a registry driver that no longer ships — against a real AWS account in `us-east-1`: 20 segments,
+20 segment publishes, 2,000 reads. The two figures a loaded store actually pays are:
 
 | Operation | Measured cost | | Always-on Redis-HA |
 |---|---|---|---|
 | `count()` on a published segment | **$0.14 / million** | | **$346 / month**, standing |
-| Segment publish (one S3 PUT + the pointer write) | **$5.88 / million** | | whether you send traffic or not |
+| Segment publish (one S3 PUT; the pointer write is **not** in this figure — see below) | **$5.88 / million** | | whether you send traffic or not |
 | 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | | |
 
 That run kept the pointer in a NoSQL table, which the library no longer ships — the registry now lives in the

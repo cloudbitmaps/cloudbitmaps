@@ -53,6 +53,12 @@ async function exerciseCore(label, m) {
  * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
  * where the whole test suite — one source graph — could not see it). Trigger: the S3 registry driver
  * validates its `prefix` synchronously in the constructor and throws a ValidationError from its own bundle.
+ *
+ * **Only the CJS leg can actually fail.** esbuild's ESM output code-splits, so `dist/index.js` and
+ * `dist/s3/index.js` import ONE shared copy of `core/errors` and `instanceof` works there by construction —
+ * the ESM call is a cheap consistency check, not the guard. CJS is where each bundle gets its own copy of the
+ * class and where the bug lived. Both are run so that a future build change which stops sharing the ESM chunk
+ * is covered without anyone having to remember to add it.
  */
 function exerciseCrossBundleErrors(label, coreMod, driverMod) {
   let caught;

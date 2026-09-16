@@ -77,8 +77,9 @@ loads published after the registry's point, not correctness.
 That single rule prevents the torn restore. It holds because cold generations are immutable and write-once:
 every `currentGen` the registry named at time *T* referred to a `.crbm` that was already durable by *T* (the
 object is written and verified before the pointer moves), so a cold snapshot taken at *T* or later contains it.
-To make the rule achievable you need **point-in-time recovery on the registry**, coordinated with the object
-store's versioning:
+To make the rule achievable you need **object versioning covering the `registry/` prefix**, and a restore
+that is coordinated with cold — which is easier than it used to be, since both now live in the same bucket
+and share one version history:
 
 - **Object store (cold):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
   generations mean you rarely need to roll cold back at all.
@@ -98,8 +99,9 @@ CloudBitmaps imposes no fixed RPO/RTO — they fall out of how you back the stor
 | **RPO** (data you can lose) | the **registry's** backup lag. A load is durable the moment its pointer advance is, and a registry restored to *T* forgets every load published after *T* — their objects may still sit in cold, above the restored pointer, but no read sees them (see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct)). | Object versioning captures one version per row write, so your RPO is the gap between the last pointer advance and your restore point — not a fixed interval. Cold objects are versioned and write-once, so they are rarely the thing you lose. |
 | **RTO** (time to recover) | restoring the **largest** store — almost always **cold** — plus the `checkConsistency()` sweep | Object-store restore dominates; the consistency check is `O(registered segments)` at bounded concurrency and is cheap next to it. Budget RTO ≈ cold-restore time + a consistency sweep. |
 
-The practical takeaway: **the registry sets your RPO, cold sets your RTO.** Back the registry continuously; keep
-cold versioned.
+The practical takeaway: **the registry sets your RPO, cold sets your RTO.** Version both — one bucket
+setting now covers them — and remember that the registry's version history is the thing that bounds how much
+you can lose.
 
 ## Backup checklist
 
@@ -117,11 +119,11 @@ cold versioned.
       (a data-store leak must not also leak keys). Losing it is unrecoverable.
 - [ ] A written target: which timestamp/snapshot IDs constitute a coordinated restore point.
 
-### Per-backend backup & PITR mechanisms
+### Per-backend backup & versioning mechanisms
 
 Which mechanism to enable depends on the backends you deployed:
 
-| Store | Backend | Backup / PITR mechanism | Characteristic |
+| Store | Backend | Backup mechanism | Characteristic |
 |---|---|---|---|
 | Registry | S3 | versioning | one version per row write — this is what sets your RPO |
 | Registry | GCS | object versioning | one version per row write |
@@ -142,7 +144,11 @@ makes the coordinated restore point easy to hit rather than something you have t
 2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materialisations, `eraseSubject`, the
    retention sweep.
 3. **Restore cold** to `T` (or later — cold being ahead is safe).
-4. **Restore the registry** to `T` (or earlier — never later than cold). Use PITR to hit `T`.
+4. **Restore the registry** to `T` (or earlier — never later than cold). There is **no single
+   restore-to-timestamp operation on an object store**, so this is a sweep, not a button: for every object
+   under the `registry/` prefix, find the newest version whose timestamp is at-or-before `T` and copy it back
+   to current. Script it — and note that a row created after `T` has no such version, so it should be deleted
+   rather than left at its current value. Step 6 is what tells you the result is coherent.
 5. **Restore the keystore** (if encryption is on) — verify the keys the restored segments reference are present.
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
 7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry
@@ -421,7 +427,7 @@ registry row). So:
 ## Deferred: self-healing rebuild from cold
 
 A future capability — rebuilding a **lost** registry purely from surviving cold objects — is **not** shipped.
-Today the registry is authoritative and must be restored from its own backup (hence the PITR requirement above).
+Today the registry is authoritative and must be restored from its own version history (hence the versioning requirement above).
 Making cold objects self-describing enough to rebuild the registry (and to decrypt without the original keystore)
 requires a `.crbm` **format change** — carrying a KEK-wrapped DEK in the footer — which the current fully-packed
 104-byte footer has no room for, and which changes the crypto-shred model (shredding would then have to delete the

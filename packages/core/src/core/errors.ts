@@ -5,7 +5,7 @@
  */
 
 /**
- * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./gcs`
+ * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./gcs` / `./azure`
  * subpaths — and the builder inlines `core/errors` into each. A driver in a subpath bundle therefore throws a
  * *different* class object than the one the core engine/retry code would `instanceof`-check, so `instanceof`
  * silently returns false across that boundary in the published CJS package (defeating transient retry and the

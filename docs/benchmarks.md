@@ -49,9 +49,10 @@ build:
 > Everything else on this page is either the cost **model** (`estimateCost`) or a **local** run. This is the
 > section that reports what AWS actually charged.
 
-**This is half of a run.** Its other half metered a NoSQL delta tier that the library no longer has, so those
-line items, their unit rates and the latency table they produced are **not** restated here — republishing them
-would put a price on a code path you cannot take. What is left is the object-store half, and the object store is
+**This is half of a run.** The other half is DynamoDB's two line items, and they covered both of that
+topology's NoSQL uses: the delta tier the library no longer has, and the pointer round trip that resolved a
+segment's current generation. Neither is restated here — republishing the first would put a price on a code
+path you cannot take, and the second is priced differently now that the pointer lives in the object store. What is left is the object-store half, and the object store is
 now the whole write path and the whole read path.
 
 The harness that produced the run, and its raw artifact, were removed along with the tier they were built to

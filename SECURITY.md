@@ -61,8 +61,8 @@ smuggles in a breaking change.
 | `adm-zip >=0.6.0` | *nothing, now* | it reached us through `cassandra-driver`, a warm-tier dependency that left with the tier. The entry is inert and goes at the next dependency pass |
 
 An override is a **claim that the forced version still works**, which is only worth making if it is tested: each
-was verified against the full `pnpm test:integration` suite (30 cases against four real backends in containers —
-MinIO, fake-gcs-server and Azurite),
+was verified against the full `pnpm test:integration` suite (against the real backends in containers — MinIO,
+fake-gcs-server and Azurite),
 because the two that matter most — `adm-zip` under `cassandra-driver` and `uuid` under `@google-cloud/storage` —
 are on paths the unit suite never exercises.
 

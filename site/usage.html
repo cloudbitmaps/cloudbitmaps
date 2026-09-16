@@ -92,13 +92,13 @@
             <p class="eyebrow">Usage · @cloudbitmaps/roaring v0.9.0</p>
             <h1>Zero setup, then the same code in production.</h1>
             <p class="hero-lede">
-              The in-memory drivers need nothing — no bucket, no table, no credentials. Swap them for S3 and
-              later and <strong>every line that loads or reads stays as it was</strong>.
+              The in-memory drivers need nothing — no bucket, no credentials. Swap them for S3 later and
+              <strong>every line that loads or reads stays as it was</strong>.
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="#quickstart">The eight lines →</a>
               <a class="btn" href="#api">The whole API</a>
-              <a class="btn" href="#drivers">Five drivers</a>
+              <a class="btn" href="#drivers">Four drivers</a>
               <a class="btn" href="#retention">Retention</a>
             </p>
             <p class="meta">
@@ -448,7 +448,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
            A matrix rather than a list of names. Which ROLES a backend can fill is the question a reader
            actually has, and a flat list of logos does not answer it. -->
       <section id="drivers">
-        <h2>Five drivers, two independent choices</h2>
+        <h2>Four drivers, two independent choices</h2>
         <p class="lede">
           Cold and registry are picked separately. Anything with a cheap ranged read and a write-once put
           works as cold; anything with a cheap compare-and-swap works as the registry. Each backend's SDK is

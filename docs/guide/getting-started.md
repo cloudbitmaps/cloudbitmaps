@@ -4,7 +4,7 @@
 > exposes, covered by the test suite. The API may still change before `1.0`. CloudBitmaps is a **loaded store**:
 > a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
 > **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
-> GCS, Azure Blob). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
+> GCS / Azure Blob). You compute a set upstream, **load** it as a generation, and read it — `has`, `count`, `iterate`
 > and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
 > crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
@@ -402,7 +402,7 @@ and takes the first publish. To publish a generation you wrote yourself, call
 client, hand it to the driver. Each hosts **both** the cold tier and the registry, so either one is a complete
 deployment on its own (see [Choosing a registry](#choosing-a-registry)).
 
-### GCS cold (`@cloudbitmaps/roaring/gcs`)
+### GCS — cold + registry (`@cloudbitmaps/roaring/gcs`)
 
 ```ts
 import { Storage } from '@google-cloud/storage';
@@ -418,7 +418,7 @@ const store = new CloudRoaring({ cold, registry }); // one bucket is the whole d
 > **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
 
-### Azure Blob cold (`@cloudbitmaps/roaring/azure`)
+### Azure Blob — cold + registry (`@cloudbitmaps/roaring/azure`)
 
 ```ts
 import { BlobServiceClient } from '@azure/storage-blob';

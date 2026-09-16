@@ -37,6 +37,7 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
 const DOC = path.join(ROOT, 'docs', 'benchmarks.md');
+const SITE = path.join(ROOT, 'site');
 
 const problems = [];
 const fail = (m) => problems.push(m);
@@ -106,7 +107,7 @@ if (/prediction lands within ±\d+%/.test(doc)) {
 // are also the only ones a reader has no way to sanity-check. Every line item, the total, the request count,
 // the date and the run id come out of the docs table. Transcribing a receipt by hand is exactly how a page ends
 // up quoting a number no run produced.
-const calDate = /MEASURED\*\* against real S3 \+ DynamoDB on \*\*(\d{4}-\d{2}-\d{2})\*\*/.exec(doc);
+const calDate = /MEASURED\*\* against real S3[^*]*on \*\*(\d{4}-\d{2}-\d{2})\*\*/.exec(doc);
 const calRun = /run id `([\w-]+)`/.exec(doc);
 if (!calDate || !calRun)
   fail('docs/benchmarks.md no longer dates/identifies the AWS calibration run');
@@ -142,6 +143,57 @@ if (calRows.some((r) => /Dynamo/i.test(r.term))) {
     "docs/benchmarks.md's calibration table restates a DynamoDB line item — those terms metered the removed " +
       'delta tier; publishing them prices a path the library no longer has',
   );
+}
+
+// ── every OTHER statement of the driver count, on every page ──────────────────────────────────────────────
+// Home's spec strip is anchored above. This catches the same number wherever else it is written: the
+// `<p class="meta">` footer that repeats across most pages, and the spelled-out form in prose, headings, nav
+// buttons and `<meta>` description tags — which is where it actually went stale, and which a digit-only check
+// cannot see. Spelled-out numbers are checked one past the true count in both directions, so this keeps working
+// when a driver is added or removed rather than pinning today's answer.
+const NUMBER_WORDS = [
+  'zero',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+];
+function checkDriverCountEverywhere(want) {
+  const correctWord = NUMBER_WORDS[want];
+  let checked = 0;
+  for (const rel of fs
+    .readdirSync(SITE, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.html'))
+    .map((e) => path.relative(SITE, path.join(e.parentPath ?? e.path, e.name)))) {
+    const html = fs.readFileSync(path.join(SITE, rel), 'utf8');
+
+    // `· N storage drivers` in the footer meta line.
+    for (const m of html.matchAll(/(\d+)\s+storage drivers/g)) {
+      checked++;
+      if (Number(m[1]) !== want) {
+        fail(`site/${rel} says "${m[1]} storage drivers" but the source has ${want}`);
+      }
+    }
+    // The spelled-out form, anywhere: prose, a heading, a nav button, a <meta> description.
+    for (const m of html.matchAll(
+      new RegExp(`\\b(${NUMBER_WORDS.join('|')})\\s+(?:storage\\s+)?drivers\\b`, 'gi'),
+    )) {
+      checked++;
+      if (m[1].toLowerCase() !== correctWord) {
+        fail(
+          `site/${rel} says "${m[0]}" but the source has ${want} (${correctWord}) — ` +
+            'a spelled-out count drifts exactly like a digit one',
+        );
+      }
+    }
+  }
+  return checked;
 }
 
 // ── the reserved-RAM baseline's SPEC ──────────────────────────────────────────────────────────────────────
@@ -321,10 +373,13 @@ for (const page of PAGES) {
 }
 
 // ── the spec strip on Home, derived from the source tree ───────────────────────────────────────────────────
-// `2 tiers · 5 drivers · 1 third-party dependency` sits under the keys figure on Home. Home is now the ONLY
-// page that states the driver count — it used to also sit in the final section's meta line, and consolidating
-// it there left the figure with nothing holding it true. That is the exact shape of the failure this script was
-// written for: a number on a page with no source behind it.
+// `2 tiers · 4 drivers · 1 third-party dependency` sits under the keys figure on Home. This block anchors that
+// strip; `checkDriverCountEverywhere` below anchors every OTHER statement of the same number, on every page.
+//
+// Both exist because a comment here once claimed Home was the only page stating the count. It was not — five
+// pages carried it in a `<p class="meta">` footer and two more spelled it as a word — so removing a driver left
+// six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
+// looking. A number is only anchored where the gate actually reads it.
 //
 // The tier count is deliberately NOT anchored. Hot RAM over cold object storage is the architecture — it cannot
 // drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
@@ -557,6 +612,10 @@ const specAnchors = [];
       }
     }
   }
+
+  // …and the same number wherever else any page states it, in digits or in words.
+  const alsoChecked = checkDriverCountEverywhere(backends.size);
+  specAnchors.push(['Site-wide · driver-count statements', String(alsoChecked)]);
 }
 
 if (problems.length) {

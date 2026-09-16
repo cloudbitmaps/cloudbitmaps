@@ -490,7 +490,7 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 ## Keeping this in sync
 
 - The **sync test** ([`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts))
-  parses the ten barrel files (both package barrels + the four driver subpaths in each package) and asserts each
+  parses the eight barrel files (both package barrels + the three driver subpaths in each package) and asserts each
   exported name appears (backtick-wrapped) somewhere on this page — so **adding an export without documenting it
   breaks CI**. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
   keeping every export explicit; the allowed exceptions are the flavor barrels re-exporting core's same-named
