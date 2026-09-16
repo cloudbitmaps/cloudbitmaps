@@ -28,6 +28,7 @@ import { IntegrityError, TransientError, WriteConflictError } from '@/core/error
 import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
+  ObjectVersionRaced,
   type ObjectRegistryStore,
   type ObjectRow,
 } from '../_shared/object-registry';
@@ -65,18 +66,20 @@ class AzureBlobStore implements ObjectRegistryStore {
     if (size > MAX_ROW_BYTES) {
       throw new IntegrityError(`registry object ${size}B exceeds cap ${MAX_ROW_BYTES}B`);
     }
+    // A zero-length blob can carry no envelope; skip the fetch and let the caller's parse reject it.
+    if (size === 0) return { bytes: new Uint8Array(0), version: etag };
     try {
       // Pin the download to the ETag we just read, so a concurrent overwrite between the two calls cannot
-      // hand us bytes that do not match the fence we are about to compare-and-swap against.
-      const buf = await blob.downloadToBuffer(0, undefined, { conditions: { ifMatch: etag } });
+      // hand us bytes that do not match the fence we are about to compare-and-swap against. `count` is the
+      // length we just measured rather than `undefined`, because `downloadToBuffer` answers a falsy count by
+      // issuing its own `getProperties` — a third round trip for a number already in hand.
+      const buf = await blob.downloadToBuffer(0, size, { conditions: { ifMatch: etag } });
       return { bytes: new Uint8Array(buf), version: etag };
     } catch (err) {
-      if (isNotFound(err)) return null; // raced with a delete between properties and download
-      if (isConditionalConflict(err)) {
-        // Overwritten mid-read. Report it as a conflict rather than returning a torn view: every caller of
-        // `read` is about to compare-and-swap, and a stale fence would fail that anyway.
-        throw new WriteConflictError(`registry row changed while reading: ${key}`);
-      }
+      // Losing the pin means the blob moved on (overwritten), or went away (deleted), between the two
+      // calls. Neither is this read's answer: `read` reports whether the object exists, and most callers
+      // here are read-only. Re-reading settles it — the next pass sees the new version, or a clean absence.
+      if (isNotFound(err) || isConditionalConflict(err)) throw new ObjectVersionRaced(key);
       throw mapError(err);
     }
   }

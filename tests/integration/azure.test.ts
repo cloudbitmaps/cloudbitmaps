@@ -5,6 +5,7 @@ import { BlobServiceClient } from '@azure/storage-blob';
 import {
   coldChunkSourceConformance,
   registryConformance,
+  registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { AzureBlobColdDriver } from '@/drivers/azure/cold';
@@ -61,6 +62,17 @@ registryConformance(
       now: ticking(),
     }),
 );
+
+// The cross-process half of the contract: two drivers over one container, racing the same row. Azurite
+// enforces `If-None-Match: *` / `If-Match` for real, so these prove the fence rather than the in-process
+// token check that answers every sequential case above.
+registryConcurrency('AzureBlobRegistryDriver (Azurite)', () => {
+  const prefix = `reg-race/${rn++}`;
+  return [
+    new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
+    new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
+  ];
+});
 
 let n = 0;
 const freshDriver = (): AzureBlobColdDriver =>

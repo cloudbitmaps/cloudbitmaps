@@ -33,12 +33,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   Both ride the same compare-and-swap primitive S3 uses, under each cloud's own name — GCS
   `ifGenerationMatch: 0` to create and `ifGenerationMatch: <generation>` to swap; Azure `ifNoneMatch: '*'`
   and `ifMatch: <etag>`. Both pass the **same `IRegistryDriver` conformance suite** as the memory, LocalFs,
-  S3 and DynamoDB registries — 17 cases each, run against fake-gcs-server and Azurite in the integration
-  lane, so the guarantees are proven against real preconditions rather than a mock.
+  S3 and DynamoDB registries, run against fake-gcs-server and Azurite in the integration lane — **and a new
+  `registryConcurrency` suite that drives two registries at the same row at once.** That second suite is the
+  one that proves the fence: the shared class compares the OCC token in memory before it ever issues a
+  conditional write, so every *sequential* test is answered before the store is asked to fence anything. A
+  registry whose writes carried no precondition at all passed the sequential suite; it does not pass this
+  one.
 
   The protocol they share — the ABA-safe OCC counter, the tombstoning delete, the bounded retry, the key
   layout — now lives once in `ObjectStoreRegistry`, with each cloud supplying only three I/O calls. The S3
   registry was moved onto it too, so the three cannot drift; its behaviour and public API are unchanged.
+
+  **A read that races a write re-reads, on every backend.** S3 serves bytes and `ETag` from one `GetObject`,
+  but GCS and Azure need two round trips — metadata for the version fence, then the bytes pinned to it — and
+  a writer landing in between retires the version that was pinned. The store port now names that case
+  explicitly instead of leaving each cloud to interpret it, because the three interpretations did not agree:
+  reporting it as absence makes a live row vanish from `get`, hand `delete` a false success and drop out of
+  `list`, while reporting it as a write conflict fails a read-only caller with a write error. Both are now
+  a single bounded re-read in the shared class.
+
+  **Prefix containment** additionally rejects `DEL`, backslash separators, and percent-encoded `..` — the
+  spellings `gsutil`, `s3fs`, `gcsfuse`, `azcopy` and ADLS Gen2 resolve on their way to a local path, which
+  the segment-name codec already guarded against but the prefix did not.
+
+  **Discovery is fail-closed.** An unreadable object under the `registry/` prefix aborts `list()` for every
+  namespace until an operator removes it (the error names the key). This is deliberate: `list()` is what
+  tells orphan generation collection which segments exist, so silently skipping an unparseable row would
+  make its cold generations look unreferenced and the next GC pass would delete them — a parse error turned
+  into data loss.
 
   **Deployment note:** do not apply a lifecycle-expiration rule, retention policy or immutability lock to the
   `registry/` prefix. `delete` tombstones by overwriting rather than removing, which is what keeps the OCC

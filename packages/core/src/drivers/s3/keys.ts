@@ -11,15 +11,11 @@ import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
 import { encodeNameForKey, namespaceKeyPart } from '../_shared/keys';
+// The cold and registry layouts sit under the SAME caller prefix, so they must normalize it identically —
+// a second copy of this three-line function is how the two halves of one bucket drift apart.
+import { prefixPart } from '../_shared/object-registry-keys';
 
 const SUFFIX = '.crbm';
-
-/** Normalize an optional caller prefix to either `''` or `trimmed/` (no leading/trailing slashes). */
-function prefixPart(prefix: string | undefined): string {
-  if (prefix === undefined) return '';
-  const trimmed = prefix.replace(/^\/+|\/+$/g, '');
-  return trimmed === '' ? '' : `${trimmed}/`;
-}
 
 /** Validate a caller-supplied key prefix. The rule is shared with every other object store. */
 export { normalizeObjectPrefix as normalizeS3Prefix } from '../_shared/object-registry-keys';

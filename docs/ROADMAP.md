@@ -161,13 +161,15 @@ faithful emulator) — an implementation isn't "done" until it passes.
 | Store | Backends |
 | --- | --- |
 | **Cold** (immutable objects) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
-| **Registry** (generation pointer, discovery, wrapped keys) | DynamoDB · S3 · local filesystem · in-memory |
+| **Registry** (generation pointer, discovery, wrapped keys) | DynamoDB · S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
 
 Two things worth knowing before you pick:
 
-- **The registry's cloud implementations are DynamoDB and S3 only** (plus local-filesystem and in-memory), so a
-  non-AWS **cloud** deployment — say GCS cold — still needs an S3 or DynamoDB registry. Native registries on the
-  other cloud backends are on the list below.
+- **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: cold
+  generations and the pointer live in the same bucket or container. Each native registry rides its own store's
+  conditional-write primitive — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
+  `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. DynamoDB
+  remains available for deployments that would rather keep the pointer off the object store.
 - **A registry is optional only for a cleartext, read-only store**, which list-scans the bucket for the latest
   generation. Encrypted segments, the `*Into` verbs and every lifecycle helper need one.
 
@@ -180,7 +182,7 @@ envelope**:
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
-| **Backends** | S3 cold + DynamoDB registry — the validated pair | the others (GCS, Azure Blob, and the S3 registry): conformance-passing and correctness-clean, but not envelope-validated |
+| **Backends** | S3 cold + DynamoDB registry — the validated pair | the others (GCS and Azure Blob cold, and the S3, GCS and Azure Blob registries): conformance-passing and correctness-clean, but not envelope-validated |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency** beyond the one `has()` run; and every loaded-store figure listed as owed below |
 
@@ -254,7 +256,6 @@ move it up.
   where we spend **5 milliseconds** reaching storage. It would have been a plausible wrong turn: chosen for dense
   ids, which is exactly where Roaring has already become the same bitset. The codec seam stays; nothing is queued
   to fill it.
-- **Native registry drivers** for GCS and Azure, so a non-AWS deployment needs no AWS dependency.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the

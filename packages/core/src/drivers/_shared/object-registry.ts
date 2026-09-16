@@ -30,9 +30,23 @@
  * - **Do not apply a lifecycle-expiration rule to the `registry/` prefix.** `delete` tombstones (keeps the
  *   object with an advanced counter) for ABA-safety; expiring a tombstone would let a recreate reset the
  *   token to 0 and re-issue a stale one.
+ *
+ * **`list()` is fail-closed, and one bad object stops it for everyone.** An object under the `registry/`
+ * prefix whose key parses but whose body does not aborts the whole enumeration — every namespace, not just
+ * the affected segment — and it stays that way until an operator removes the object. The error names the
+ * offending key.
+ *
+ * That is the deliberate choice, and it is the *safer* one rather than the more convenient one. Skipping the
+ * unreadable row would keep discovery running, but `list()` is what tells orphan generation collection which
+ * segments exist: a row missing from the enumeration makes its cold `.crbm` generations look unreferenced,
+ * and the next GC pass would delete them. Silently skipping turns a parse error into data loss. Refusing to
+ * enumerate keeps every sweep off a set it cannot vouch for (invariant 5 — bytes from the tier are
+ * untrusted). **Recovery:** read the named object, and either restore a valid envelope or delete it; nothing
+ * else is damaged, and discovery resumes on its own.
  */
 import {
   IntegrityError,
+  TransientError,
   ValidationError,
   WriteConflictError,
   isWriteConflictError,
@@ -63,8 +77,30 @@ import { parseRegistryKey, registryListPrefix, registryObjectKey } from './objec
 export const MAX_ROW_BYTES = 1 * 1024 * 1024;
 /** Bounded retry for `delete`'s read→tombstone under cross-process contention (converges; then fails typed). */
 const MAX_DELETE_ATTEMPTS = 8;
+/** Bounded re-read when a store's pinned version is overwritten mid-read (see {@link ObjectVersionRaced}). */
+const MAX_READ_ATTEMPTS = 8;
 /** In-flight reads per `list()` page — turns the serial N+1 into one list plus bounded parallel reads. */
 const LIST_READ_CONCURRENCY = 16;
+
+/**
+ * Raised by a store when the version it pinned for a read vanished before it could fetch the bytes —
+ * a concurrent writer overwrote or deleted the object in between.
+ *
+ * This is deliberately **neither** of the two things it superficially resembles. It is not absence: the row
+ * is very likely still live, just one version further on. And it is not a write conflict: the caller may be
+ * a read-only `get()`, which has nothing to conflict with. Both of those mistakes were made — one per cloud —
+ * before this type existed, which is exactly why the signal is now part of the port rather than left to each
+ * store's judgement. {@link ObjectStoreRegistry} answers it the only way that is correct for every caller:
+ * it reads again.
+ *
+ * Stores whose read is atomic (S3 serves bytes and `ETag` from one `GetObject`) can never raise it.
+ */
+export class ObjectVersionRaced extends Error {
+  constructor(objectKey: string) {
+    super(`registry object was overwritten mid-read: ${objectKey}`);
+    this.name = 'ObjectVersionRaced';
+  }
+}
 
 /** One object as read, with the opaque version that fences a later conditional write. */
 export interface ObjectRow {
@@ -80,7 +116,18 @@ export interface ObjectRow {
 export interface ObjectRegistryStore {
   /** A label for error messages, e.g. `GCS` or `Azure Blob`. */
   readonly label: string;
-  /** Read one object, or `null` when it is absent. Must throw {@link TransientError} for retryable faults. */
+  /**
+   * Read one object, or `null` when it is absent.
+   *
+   * **`null` means the object does not exist** — nothing weaker. A store that reads in two round trips
+   * (metadata for the version fence, then the bytes pinned to it) can find that version already gone; it
+   * MUST report that with {@link ObjectVersionRaced} rather than `null` or {@link WriteConflictError}, and
+   * the caller re-reads. Retryable faults throw {@link TransientError}.
+   *
+   * `bytes` and `version` MUST describe the **same** observation of the object: `version` is the fence a
+   * later conditional write is conditioned on, so a pair drawn from two different versions would either
+   * fail a write that should have succeeded or, worse, pass one that should not.
+   */
   read(key: string): Promise<ObjectRow | null>;
   /**
    * Write one object under a precondition: `'absent'` means create-only, a version means
@@ -200,11 +247,18 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     );
   }
 
-  /** Read + parse a registry object, returning its envelope and version fence, or null if absent. */
+  /**
+   * Read + parse a registry object, returning its envelope and version fence, or null if absent.
+   *
+   * A store that pins a version to read consistently ({@link ObjectVersionRaced}) loses that pin whenever a
+   * concurrent writer lands mid-read. Re-reading is the whole answer — the next read simply observes the
+   * newer version — and it is bounded so a row under permanent write saturation fails typed instead of
+   * spinning. Only a store racing itself gets here; S3 never does.
+   */
   private async readRow(
     objectKey: string,
   ): Promise<{ env: RegistryEnvelope; version: string } | null> {
-    const row = await this.store.read(objectKey);
+    const row = await this.readRaced(objectKey);
     if (row === null) return null;
     if (row.bytes.length > MAX_ROW_BYTES) {
       throw new IntegrityError(
@@ -219,6 +273,21 @@ export class ObjectStoreRegistry implements IRegistryDriver {
     }
     const env = parseRegistryEnvelope(new TextDecoder().decode(row.bytes), objectKey);
     return { env, version: row.version };
+  }
+
+  /** {@link ObjectRegistryStore.read}, retrying the bounded number of times a mid-read overwrite allows. */
+  private async readRaced(objectKey: string): Promise<ObjectRow | null> {
+    for (let attempt = 0; attempt < MAX_READ_ATTEMPTS; attempt++) {
+      try {
+        return await this.store.read(objectKey);
+      } catch (err) {
+        if (!(err instanceof ObjectVersionRaced)) throw err;
+      }
+    }
+    throw new TransientError(
+      `registry read: ${this.store.label} object "${objectKey}" was overwritten on every one of ` +
+        `${MAX_READ_ATTEMPTS} attempts — retry`,
+    );
   }
 
   /** Conditional write of an envelope. The store maps a lost precondition to {@link WriteConflictError}. */

@@ -23,13 +23,17 @@
  * - **Do not apply an Object Lifecycle rule to the `registry/` prefix**, and do not enable a retention
  *   policy that blocks overwrite. `delete` tombstones rather than removing, for ABA-safety — see
  *   {@link ObjectStoreRegistry}.
- * - Object versioning is neither required nor used; the driver always reads the live generation.
+ * - Object versioning is neither required nor used; the driver always reads the live generation. Because a
+ *   non-versioned bucket retires a superseded generation immediately, a read whose pinned generation is
+ *   overwritten mid-flight reports {@link ObjectVersionRaced} and is retried by {@link ObjectStoreRegistry},
+ *   never mistaken for an absent row.
  */
 import type { Storage } from '@google-cloud/storage';
 import { IntegrityError, TransientError, WriteConflictError } from '@/core/errors';
 import {
   MAX_ROW_BYTES,
   ObjectStoreRegistry,
+  ObjectVersionRaced,
   type ObjectRegistryStore,
   type ObjectRow,
 } from '../_shared/object-registry';
@@ -85,7 +89,12 @@ class GcsStore implements ObjectRegistryStore {
       const [buf] = await this.file(key, generation).download();
       return { bytes: new Uint8Array(buf), version: generation };
     } catch (err) {
-      if (isNotFound(err)) return null; // raced with a delete between metadata and download
+      // A 404 on the PINNED download does not mean the object is gone — it means the generation we pinned
+      // is. Buckets here run without Object Versioning (the registry neither needs nor uses it), so an
+      // overwrite retires the superseded generation immediately and this is simply what losing the pin looks
+      // like. Reporting it as absence would make a live row disappear from `get`, hand `delete` a false
+      // success, and silently drop rows from `list`; the caller re-reads instead.
+      if (isNotFound(err)) throw new ObjectVersionRaced(key);
       throw mapError(err);
     }
   }
@@ -98,8 +107,14 @@ class GcsStore implements ObjectRegistryStore {
     try {
       await this.file(key).save(Buffer.from(body), {
         contentType: 'application/json',
+        // `resumable: false` is load-bearing, not a tuning knob. `save()` otherwise opens a resumable
+        // session, and a registry row is a few hundred bytes — one round trip's worth of data carried over
+        // two. It also costs the fence: fake-gcs-server does not enforce `ifGenerationMatch` on the
+        // resumable path, so the whole integration lane would pass over a registry with no
+        // compare-and-swap at all. `GcsColdDriver` pins the same flag for the same reason.
+        resumable: false,
         preconditionOpts: {
-          ifGenerationMatch: expect === 'absent' ? 0 : Number(expect.version),
+          ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),
         },
       });
     } catch (err) {
@@ -128,6 +143,20 @@ class GcsStore implements ObjectRegistryStore {
       pageToken = next?.pageToken;
     } while (pageToken !== undefined);
   }
+}
+
+/**
+ * Narrow a version fence back to the number `ifGenerationMatch` takes. The fence always originates as
+ * `meta.generation` in {@link GcsStore.read}, so this cannot fire in practice — but `Number()` answers `NaN`
+ * for anything non-numeric, and `ifGenerationMatch: NaN` serializes to a precondition GCS ignores. That
+ * failure is invisible (writes simply stop being fenced), so it is checked rather than assumed.
+ */
+function generationFence(version: string, key: string): number {
+  const generation = Number(version);
+  if (!Number.isSafeInteger(generation) || generation <= 0) {
+    throw new IntegrityError(`registry version fence is not a GCS generation: ${key}`);
+  }
+  return generation;
 }
 
 /** Reclassify a transient GCS fault as a retryable {@link TransientError}; pass everything else through. */

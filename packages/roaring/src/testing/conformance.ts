@@ -410,5 +410,193 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
         await expectValidationReject(d.delete({ segment: name }));
       }
     });
+
+    // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
+    // wrote segment names into its key VERBATIM passed this whole suite. `NASTY_NAMES` is the list that
+    // catches that, and until now only the cold-source suite used it. The failure it guards against is
+    // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
+    // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
+    it('round-trips names that need encoding, through create, get AND list', async () => {
+      for (const segment of NASTY_NAMES) {
+        const d = makeDriver();
+        await d.create({ segment }, { currentGen: 4 });
+
+        const got = await d.get({ segment });
+        expect(got, `get() lost ${JSON.stringify(segment)}`).not.toBeNull();
+        expect(got!.segment).toBe(segment);
+        expect(got!.currentGen).toBe(4);
+
+        const listed: string[] = [];
+        for await (const rec of d.list()) listed.push(rec.segment);
+        expect(listed, `list() lost ${JSON.stringify(segment)}`).toContain(segment);
+      }
+    });
+
+    // The single-cycle ABA case above covers one delete→recreate. This is the repeated case, and it is the
+    // one that catches a counter which advances on *some* transitions but not all: such a driver still hands
+    // out a fresh token each cycle, so `t0b !== t0` holds every time, while two incarnations several cycles
+    // apart quietly collide. Tokens are opaque strings, so the contract is asserted as identity — no token
+    // is ever issued twice, and no retired token is ever accepted again — not as a numbering scheme.
+    it('never re-issues a token across repeated delete-and-recreate cycles (ABA-safe)', async () => {
+      const d = makeDriver();
+      const retired: string[] = [];
+      for (let cycle = 0; cycle < 4; cycle++) {
+        const { token } = await d.create(SEG, { currentGen: cycle });
+        retired.push(token);
+        await d.delete(SEG);
+      }
+      expect(new Set(retired).size, 'a token was issued to two different incarnations').toBe(
+        retired.length,
+      );
+      // The live incarnation must refuse every token any previous one ever held.
+      const { token: live } = await d.create(SEG, { currentGen: 0 });
+      expect(retired).not.toContain(live);
+      for (const stale of retired) {
+        await expect(
+          d.compareAndSwap(SEG, stale, { currentGen: 99 }),
+          `a retired token (${stale}) was accepted by the live row`,
+        ).rejects.toBeInstanceOf(WriteConflictError);
+      }
+      expect((await d.get(SEG))!.currentGen).toBe(0); // and none of them moved the pointer
+      await d.compareAndSwap(SEG, live, { currentGen: 1 }); // the current token still works
+    });
+
+    it('refuses a compare-and-swap against a tombstoned row, and leaves it deleted', async () => {
+      const d = makeDriver();
+      const { token } = await d.create(SEG, { currentGen: 0 });
+      await d.delete(SEG);
+      // A stale token holder must not be able to resurrect a deleted row — that row may have been
+      // crypto-shredded or erased, and un-deleting it would undo a compliance action.
+      await expect(d.compareAndSwap(SEG, token, { currentGen: 1 })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+      expect(await d.get(SEG)).toBeNull();
+    });
+
+    // `delete is idempotent` above asserts only that a repeat call does not throw, which a driver that
+    // re-tombstones on every call also satisfies. Observable state must be unchanged too.
+    it('re-deleting an already-tombstoned row leaves the row observably unchanged', async () => {
+      const d = makeDriver();
+      const { token: first } = await d.create(SEG, { currentGen: 0 });
+      await d.delete(SEG);
+      const listedOnce = [];
+      for await (const r of d.list()) listedOnce.push(r);
+
+      await d.delete(SEG);
+      await d.delete(SEG);
+
+      expect(await d.get(SEG)).toBeNull();
+      const listedThrice = [];
+      for await (const r of d.list()) listedThrice.push(r);
+      expect(listedThrice).toEqual(listedOnce);
+      // Still ABA-safe: the recreate's token is new, and the original stays refused.
+      const { token: next } = await d.create(SEG, { currentGen: 0 });
+      expect(next).not.toBe(first);
+      await expect(d.compareAndSwap(SEG, first, { currentGen: 9 })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+    });
+
+    it('list(namespace) excludes a namespace that merely shares its prefix', async () => {
+      const d = makeDriver();
+      await d.create({ namespace: 'ns', segment: 'a' }, { currentGen: 0 });
+      await d.create({ namespace: 'ns2', segment: 'b' }, { currentGen: 0 });
+      await d.create({ namespace: 'nsextra', segment: 'c' }, { currentGen: 0 });
+      const seen: string[] = [];
+      for await (const rec of d.list('ns')) seen.push(rec.segment);
+      expect(seen).toEqual(['a']);
+    });
+  });
+}
+
+/**
+ * Contract tests for an {@link IRegistryDriver} under **concurrent writers** — `makeDrivers` MUST return two
+ * independent driver instances over the **same** backing store, as two processes would see it.
+ *
+ * This exists because {@link registryConformance} drives one driver sequentially, and `ObjectStoreRegistry`
+ * checks the OCC token in memory before it ever issues a conditional write. That in-process check answers
+ * every sequential case, so the store-level precondition — the only thing that fences writers *across*
+ * processes, and the entire reason these drivers are built on conditional writes — is never load-bearing
+ * there. A backend that accepted `If-Match` and ignored it passed the full suite; so did a GCS driver whose
+ * writes were not fenced at all. These cases are what make the fence testable.
+ */
+export function registryConcurrency(
+  label: string,
+  makeDrivers: () => readonly [IRegistryDriver, IRegistryDriver],
+): void {
+  describe(`IRegistryDriver concurrency: ${label}`, () => {
+    /** Exactly one of two racing writers wins; the loser reports a conflict, not a crash or a silent no-op. */
+    const expectOneWinner = (results: PromiseSettledResult<unknown>[]): void => {
+      const won = results.filter((r) => r.status === 'fulfilled');
+      const lost = results.filter((r) => r.status === 'rejected');
+      expect(won).toHaveLength(1);
+      expect(lost).toHaveLength(1);
+      expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
+    };
+
+    it('two concurrent creates of the same segment: exactly one wins', async () => {
+      const [a, b] = makeDrivers();
+      expectOneWinner(
+        await Promise.allSettled([
+          a.create(SEG, { currentGen: 0 }),
+          b.create(SEG, { currentGen: 0 }),
+        ]),
+      );
+      expect((await a.get(SEG))!.currentGen).toBe(0);
+    });
+
+    it('two concurrent swaps from the same token: exactly one wins, and the pointer lands once', async () => {
+      const [a, b] = makeDrivers();
+      const { token } = await a.create(SEG, { currentGen: 0 });
+      expectOneWinner(
+        await Promise.allSettled([
+          a.compareAndSwap(SEG, token, { currentGen: 1 }),
+          b.compareAndSwap(SEG, token, { currentGen: 2 }),
+        ]),
+      );
+      // The loser's write must not have landed on top of the winner's.
+      const after = await a.get(SEG);
+      expect([1, 2]).toContain(after!.currentGen);
+      expect(after!.token).not.toBe(token);
+      // And the winner's token is the only one that can swap again.
+      await expect(a.compareAndSwap(SEG, token, { currentGen: 9 })).rejects.toBeInstanceOf(
+        WriteConflictError,
+      );
+    });
+
+    it('a delete racing a swap leaves exactly one outcome, never both', async () => {
+      const [a, b] = makeDrivers();
+      const { token } = await a.create(SEG, { currentGen: 0 });
+      const [del, cas] = await Promise.allSettled([
+        a.delete(SEG),
+        b.compareAndSwap(SEG, token, { currentGen: 1 }),
+      ]);
+      const row = await a.get(SEG);
+      if (cas.status === 'fulfilled') {
+        // The swap won the fence. The delete then either tombstoned the swapped row (row gone) or lost.
+        expect(row === null || row.currentGen === 1).toBe(true);
+      } else {
+        expect((cas as PromiseRejectedResult).reason).toBeInstanceOf(WriteConflictError);
+        expect(del.status).toBe('fulfilled');
+        expect(row).toBeNull();
+      }
+    });
+
+    it('a reader never observes a row as absent while a writer is overwriting it', async () => {
+      const [a, b] = makeDrivers();
+      let { token } = await a.create(SEG, { currentGen: 0 });
+      // Hammer the row while reading it. A store that reads in two round trips (metadata, then bytes pinned
+      // to that version) loses its pin on every one of these writes; if it answers that with `null`, a live
+      // row disappears — which is what `ObjectVersionRaced` and the bounded re-read exist to prevent.
+      for (let i = 1; i <= 12; i++) {
+        const [, read] = await Promise.all([
+          b.compareAndSwap(SEG, token, { currentGen: i }).then((r) => {
+            token = r.token;
+          }),
+          a.get(SEG),
+        ]);
+        expect(read, `get() reported an absent row on overwrite ${i}`).not.toBeNull();
+      }
+    });
   });
 }

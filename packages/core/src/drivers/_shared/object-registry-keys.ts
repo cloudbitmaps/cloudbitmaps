@@ -28,19 +28,41 @@ export function prefixPart(prefix: string | undefined): string {
  * Validate a caller-supplied key prefix (trusted config, but make it a real containment boundary): reject
  * control characters and `.`/`..` path segments so a prefix cannot traverse out of its intended space.
  * Returns it unchanged — the key builders normalize slashes.
+ *
+ * The traversal check covers three spellings, because the tools that walk these buckets do. A bare `..` is
+ * the obvious one. A **backslash** segment matters on ADLS Gen2 and to Windows-side tooling, which treat it
+ * as a separator this code otherwise would not. And a percent-encoded `..` matters because `gsutil`,
+ * `s3fs`, `gcsfuse` and `azcopy` decode a key on their way to a local path — the same reasoning
+ * `name-codec.ts` already applies to segment names, which a prefix has no reason to be exempt from.
  */
 export function normalizeObjectPrefix(prefix: string | undefined): string | undefined {
   if (prefix === undefined) return undefined;
   for (const ch of prefix) {
-    if (ch.charCodeAt(0) < 0x20) {
+    const code = ch.charCodeAt(0);
+    // C0 plus DEL: a bare `< 0x20` lets U+007F through, and it is as unprintable as the rest.
+    if (code < 0x20 || code === 0x7f) {
       throw new ValidationError('prefix must not contain control characters');
     }
   }
-  for (const segment of prefix.split('/')) {
-    if (segment === '.' || segment === '..') {
-      throw new ValidationError(
-        `prefix must not contain "." or ".." path segments: ${JSON.stringify(prefix)}`,
-      );
+  if (prefix.includes('\\')) {
+    throw new ValidationError(
+      `prefix must not contain backslashes (a path separator on some backends): ${JSON.stringify(prefix)}`,
+    );
+  }
+  // Check the decoded spelling too, so an encoded `..` cannot slip past the literal comparison.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(prefix);
+  } catch {
+    decoded = prefix; // not valid percent-encoding; the literal check still applies
+  }
+  for (const source of decoded === prefix ? [prefix] : [prefix, decoded]) {
+    for (const segment of source.split('/')) {
+      if (segment === '.' || segment === '..') {
+        throw new ValidationError(
+          `prefix must not contain "." or ".." path segments: ${JSON.stringify(prefix)}`,
+        );
+      }
     }
   }
   return prefix;

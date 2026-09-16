@@ -6,6 +6,7 @@ import { Storage } from '@google-cloud/storage';
 import {
   coldChunkSourceConformance,
   registryConformance,
+  registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { GcsColdDriver } from '@/drivers/gcs/cold';
@@ -55,6 +56,18 @@ registryConformance(
   () =>
     new GcsRegistryDriver({ storage, bucket: BUCKET, prefix: `reg-conf/${rn++}`, now: ticking() }),
 );
+
+// And it must fence writers that do NOT share a process — the property the sequential suite above cannot
+// reach, because the shared class short-circuits on its in-memory token check before the store is asked.
+// The emulator only enforces `ifGenerationMatch` on the simple (non-resumable) upload path, which is
+// precisely why `GcsStore.write` pins `resumable: false`; these cases fail without it.
+registryConcurrency('GcsRegistryDriver (fake-gcs-server)', () => {
+  const prefix = `reg-race/${rn++}`;
+  return [
+    new GcsRegistryDriver({ storage, bucket: BUCKET, prefix, now: ticking() }),
+    new GcsRegistryDriver({ storage, bucket: BUCKET, prefix, now: ticking() }),
+  ];
+});
 
 let n = 0;
 const freshDriver = (): GcsColdDriver =>
