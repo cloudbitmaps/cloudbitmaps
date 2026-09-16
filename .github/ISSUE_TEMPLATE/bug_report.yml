@@ -44,7 +44,10 @@ body:
         - Cold — Azure Blob
         - Cold — local filesystem
         - Registry — S3
+        - Registry — GCS
+        - Registry — Azure Blob
         - Registry — local filesystem
+        - No registry wired (cleartext, read-only)
         - In-memory / no cloud backend
     validations:
       required: false
