@@ -237,9 +237,10 @@ export interface RegCaps {
  * Brand for {@link StorageBackend}.
  *
  * `Symbol.for` rather than a class check, for the same reason the error brands are: a class object is only
- * shared while there is one copy of the package. Two copies — a version skew, or a bundler emitting the
- * shared chunk twice — and `instanceof` silently returns false. A registered symbol is identity-stable
- * across copies, bundles and realms.
+ * shared inside one package's bundle. `@cloudbitmaps/roaring` carries its own copy of core, so a backend
+ * built from one package and checked by the other would fail an `instanceof` on an ordinary install — no
+ * version skew required — as would a genuine second copy from a skew or a duplicating bundler. A registered
+ * symbol is identity-stable across all of them, and across realms.
  *
  * The string says `cloudbitmaps` while the error brands still say `cloud-roaring`: those are locked, because
  * changing one would break error identity against already-published bundles. A new brand has no such

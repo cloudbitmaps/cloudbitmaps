@@ -7,12 +7,18 @@
 /**
  * Registry-symbol brands, so an error stays classifiable when the class object is not shared.
  *
- * Within one installed copy it IS shared: the `./s3` / `./gcs` / `./azure` subpaths import these classes from
- * the same emitted chunk as the main entry, so `instanceof` holds. What breaks it is a *second copy* of the
- * package — a version skew an installer could not dedupe, or a bundler emitting the shared chunk twice —
- * after which a driver throws a different class object than the engine/retry code would check, and
- * `instanceof` silently returns false. Silently is the problem: a `catch` that stops matching just falls
- * through, defeating transient retry and the publish path's conflict handling with no error of its own.
+ * Within one package it IS shared: the `./s3` / `./gcs` / `./azure` subpaths import these classes from the
+ * same emitted chunk as their own main entry, so `instanceof` holds there.
+ *
+ * It does NOT hold between `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, and that needs no version skew
+ * and no duplicate install — the flavor package is built with its own copy of core bundled in, so the two
+ * ship different class objects by construction. Anyone mixing the two (the docs say importing
+ * `@cloudbitmaps/core/s3` is equivalent to the roaring subpath, and for behaviour it is) gets a driver
+ * throwing a class the other side's `instanceof` will not match. A genuine second copy — version skew, or a
+ * bundler emitting the shared chunk twice — does the same.
+ *
+ * Silently is the problem: a `catch` that stops matching just falls through, defeating transient retry and
+ * the publish path's conflict handling with no error of its own.
  *
  * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with the exported
  * predicates below (never `instanceof`) anywhere an error may cross that boundary.

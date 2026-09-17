@@ -42,12 +42,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
      release is proved against that image on every CI run. On 22.12 exactly, `require()` also prints an
      `ExperimentalWarning` about loading ES modules; it is gone by Node 24.
   2. **Any host that implements its own CommonJS loader, on any Node version.** Node's `require(esm)` does
-     not reach those. The one that will actually bite people is **Jest** with its default configuration:
-     `jest-runtime` has its own loader, so a test that `require()`s this package now fails with
-     `Must use import to load ES Module`. Measured on Jest 30 — it passed against the previous dual build
-     and fails against this one, same project, same Node. The remedy is Jest's ESM support
-     (`--experimental-vm-modules`) or importing rather than requiring. Legacy `main`-field-only bundlers are
-     the same class.
+     not reach those. Two are worth naming because people will actually meet them, and both were measured
+     A/B — passing against the previous dual build, failing against this one, same project, same Node:
+     - **Jest** in its default configuration: `jest-runtime` has its own loader, so a test that `require()`s
+       this package fails with `Must use import to load ES Module`. Remedy: Jest's ESM support
+       (`--experimental-vm-modules`), or importing rather than requiring.
+     - **Yarn PnP** (`nodeLinker: pnp`): its runtime installs its own `require` and throws
+       `ERR_REQUIRE_ESM` — and unlike the Node-version case, this one does not go away on Node 24. Remedy:
+       `import`, or `nodeLinker: node-modules`.
+
+     Legacy `main`-field-only bundlers are the same class. Everything with a real ESM path is fine: esbuild,
+     webpack, rollup, Vite, ts-node, tsx, Bun and Deno were all verified, emitting CommonJS as well as ESM.
 
   **One type-level caveat, which this release does not introduce and does not fix:** a *TypeScript* CommonJS
   consumer on `module: node16` gets `TS1479` on a static import and needs `nodenext` (which understands
@@ -57,10 +62,13 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   would have closed, and it is now simply correct, because there is no CommonJS entry left to describe.
 
   One thing gets *better* rather than merely simpler, for CommonJS consumers specifically. The
-  self-contained CJS bundle was the only reason `instanceof` failed across a driver subpath, so a CJS
-  consumer who caught a driver-thrown error with `instanceof` was silently missing it; that is fixed. ESM
-  consumers already had it working — the ESM output of this build is byte-identical to the previous one, so
-  nothing changed for them. (The `Symbol.for` predicates remain the right thing to catch with either way:
+  self-contained CJS bundle was the only reason `instanceof` failed **between the main entry and a driver
+  subpath of the same package**, so a CJS consumer who caught a driver-thrown error that way was silently
+  missing it; that is fixed. ESM consumers already had it working — the ESM output of this build is
+  byte-identical to the previous one, so nothing changed for them. Note this does **not** extend to
+  `@cloudbitmaps/core` vs `@cloudbitmaps/roaring`: the flavor package bundles its own copy of core, so
+  `instanceof` across the two never matches, on any install. That is unchanged, now documented in the API
+  reference, and asserted by the smoke test. (The `Symbol.for` predicates remain the right thing to catch with either way:
   they also hold when two copies of the package are in play, which `instanceof` never will.)
 
   The SDK-free gate was rewritten but **not** widened: it used to read the CJS bundle, which with no code

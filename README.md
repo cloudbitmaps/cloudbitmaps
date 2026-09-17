@@ -223,10 +223,14 @@ npm i @aws-sdk/client-s3       # only if you use the S3 tier
 >
 > Two things to know before you upgrade:
 >
-> - **A runner with its own CommonJS loader does not get `require(esm)`.** In practice this means **Jest**:
->   with its default configuration, `require('@cloudbitmaps/roaring')` in a test fails with
->   `Must use import to load ES Module`. Use Jest's ESM support (`--experimental-vm-modules`), or `import`
->   the package instead of requiring it.
+> - **A loader that is not Node's own does not get `require(esm)`**, on any Node version. Two you are likely
+>   to meet:
+>   - **Jest**, in its default configuration — `require('@cloudbitmaps/roaring')` in a test fails with
+>     `Must use import to load ES Module`. Use Jest's ESM support (`--experimental-vm-modules`), or `import`
+>     the package instead of requiring it.
+>   - **Yarn PnP** (`nodeLinker: pnp`) — its runtime implements `require` itself and throws
+>     `ERR_REQUIRE_ESM`. Unlike the Node-version case this does not go away on Node 24; `import` the package,
+>     or use `nodeLinker: node-modules`.
 > - **On TypeScript**, a `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`.
 >   `node16` and `node18` do not know about `require(esm)` and report `TS1479` on the import. A project on
 >   `moduleResolution: bundler` is unaffected.

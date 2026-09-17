@@ -123,10 +123,10 @@ export {
   TimeoutError,
   KeyUnavailableError,
   BudgetExceededError,
-  // Copy-safe predicates — prefer these over `instanceof` when catching errors that cross the core↔driver
-  // (`./s3` / `./gcs` / `./azure`) boundary. One installed copy shares the class object, but a second copy
-  // (version skew, or a bundler duplicating the shared chunk) gives each its own, and `instanceof` then
-  // silently stops matching.
+  // Copy-safe predicates — prefer these over `instanceof` whenever an error may have been thrown by another
+  // package's bundle. Within one package the class object is shared, but `@cloudbitmaps/roaring` bundles its
+  // own copy of core, so `instanceof` across the two fails on an ordinary install — as it does with a real
+  // second copy from a version skew or a duplicating bundler. It fails silently, by simply not matching.
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,
