@@ -81,7 +81,7 @@ describe('public API', () => {
     }
     expect(() => cr.segment('ok', { namespace: '' })).toThrow(ValidationError);
     // Everything that used to be refused is now an ordinary name, escaped at the boundary.
-    for (const ok of ['a/b', '../etc', 'a b', 'a#b', '.hidden', 'con', '100%', 'user@x.com'])
+    for (const ok of ['a/b', '../etc', 'a b', 'a#b', '.hidden', 'con', '100%', 'user@example.com'])
       expect(() => cr.segment(ok)).not.toThrow();
   });
 });

@@ -144,9 +144,30 @@ const HARD = [
   //      gate outright. A scanner that cries wolf gets bypassed, so a false positive here is not cosmetic.
   //   3. `(?!\d+\b)` — reject an all-numeric value, so widening (1) can't newly trip on `tokenExpiryNanos =
   //      1730000000000000000`. A real secret is essentially never pure digits.
+  //   4. `(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])` — reject a value that READS a property
+  //      instead of stating a literal. Sibling of (2): that one catches `crypto.randomUUID()`, this one
+  //      catches the same thing without the call, which is what
+  //      `...(options.credentials === undefined ? {} : { credentials: options.credentials })` in the S3
+  //      backend is. `credentials` is the AWS SDK's own option name, so the collision cannot be renamed away
+  //      and the rule has to learn the difference. It failed the RELEASE workflow's tarball scan — a step no
+  //      other job runs, so nothing else noticed.
+  //
+  //      Deliberately narrow, because every character here trades a false positive against a false negative:
+  //        - a DOT is required, so a bare 16-char word is still a secret. `API_KEY=<16 bare chars>` in a
+  //          .env is exactly the shape this must never stop catching.
+  //        - a closing token must FOLLOW it, so a dotted value that simply ends the line stays a finding.
+  //          A JWT written unquoted in a .env (`TOKEN=<header>.<payload>.<sig>`) is three identifier-shaped
+  //          segments and would otherwise be excused by the dot alone.
+  //      What that leaves uncovered, stated rather than discovered later: an unquoted dotted secret inside
+  //      a YAML *flow* mapping (`{token: <header>.<payload>.<sig>}`). Block style — the normal way to write
+  //      one — ends the line and is still caught.
+  //
+  //      (Those examples are written with `<…>` placeholders on purpose: spelled out literally they are
+  //      real-looking secrets, and this scanner reads its own source. Renaming the collision is the repo's
+  //      rule; widening the pattern to excuse a comment would blind it to the real thing.)
   {
     name: 'hardcoded secret literal',
-    re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*['"]?(?![A-Za-z_$][\w$.]*\s*\()(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}/i,
+    re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*['"]?(?![A-Za-z_$][\w$.]*\s*\()(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}/i,
   },
   { name: 'absolute local machine path', re: /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\// },
 ];

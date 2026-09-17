@@ -15,6 +15,25 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **Releases were blocked by a false positive in the secret scanner.** `scripts/leak-scan-tarballs.cjs` is a
+  hard step in the release workflow and it exited 1 on
+  `...(options.credentials === undefined ? {} : { credentials: options.credentials })` in the S3 backend —
+  a property read, not a hardcoded secret. Nothing else noticed, because neither scanner runs in the ordinary
+  CI lane: `pnpm test` and all 14 checks were green while `main` could not be released.
+
+  The rule already rejected a value that is a CALL (`crypto.randomUUID()` had tripped it once before); it now
+  also rejects one that reads a property. `credentials` is the AWS SDK's own option name, so the collision
+  could not be renamed away and the pattern had to learn the difference. Kept deliberately narrow, because
+  narrowing a secret rule is the direction that blinds a scanner: a dot is required, so a bare 16-character
+  word is still a secret, and a closing token must follow it, so an unquoted JWT that merely ends a line is
+  still a secret. Both directions are pinned in `tests/scripts/leak-scan.test.ts`.
+
+  The second finding — an `@` in a test's list of now-legal segment names — was fixed the other way, by
+  renaming the collision rather than touching the email rule.
+
+
 ### Changed
 
 - **BREAKING — the packages are ESM-only, and `engines` now requires Node >=22.12.** The CJS bundle is gone;

@@ -73,6 +73,22 @@ describe('leak-scan', () => {
       expect(scan(`${line}\n`).status).toBe(0);
     });
 
+    // Defect 3, found by the ESM-only review: a value that READS A PROPERTY is not a literal. The S3
+    // backend's `...(options.credentials === undefined ? {} : { credentials: options.credentials })` was
+    // reported as a hardcoded secret and failed the RELEASE workflow's tarball scan — a step no other job
+    // runs, so `pnpm test` and 14 CI checks were green while releases were blocked. `credentials` is the AWS
+    // SDK's own option name, so this collision cannot be renamed away; the rule had to learn the difference.
+    it.each([
+      'const c = { credentials: options.credentials };',
+      '...(options.credentials === undefined ? {} : { credentials: options.credentials }),',
+      'const s = config.applicationSecret;',
+      'return { token: this.session.accessToken };',
+      'fn(opts.apiKeyMaterial, other);',
+      'const p = { password: creds.databasePassword, port: 5432 };',
+    ])('a property read: %s', (line) => {
+      expect(scan(`${line}\n`).status).toBe(0);
+    });
+
     // Guards the widening that fixed defect 2 — it must not newly trip on long numbers.
     it.each(['tokenExpiryNanos = 1730000000000000000', 'const tokenCount = 1234567890123456789;'])(
       'an all-numeric value: %s',
@@ -90,6 +106,23 @@ describe('leak-scan', () => {
       ['a suffixed env-var name', 'DJANGO_SECRET_KEY=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['another suffixed shape', 'MY_API_TOKEN_VALUE=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['a passphrase', 'passphrase:"correct-horse-battery-staple-99"'],
+      // The boundary of defect 3's fix, from both sides. Narrowing a secret rule is the direction that
+      // blinds a scanner, so every shape the new lookahead could have swallowed is pinned here.
+      // A DOT is required, so a bare word is still a secret even though it is identifier-shaped:
+      ['a bare word ending a line', 'API_KEY=aB3xY9zQ1mN7pL2k'],
+      ['a bare word before a closing brace', '{api_key: aB3xY9zQ1mN7pL2k}'],
+      // A CLOSING TOKEN must follow, so a dotted value that merely ends the line is still a secret —
+      // an unquoted JWT in a .env is three identifier-shaped segments and must not be excused:
+      [
+        'an unquoted JWT at end of line',
+        'TOKEN=eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4',
+      ],
+      ['a dotted value ending a line', 'secret=aB3xY9zQ1mN.7pL2kR5tV8w'],
+      // Quoted always wins: a literal with dots is a literal, wherever it sits.
+      [
+        'a quoted dotted literal in an object',
+        'const o = { token: "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ" };',
+      ],
     ])('%s', (_label, line) => {
       const { status, out } = scan(`${line}\n`);
       expect(status).toBe(1);
