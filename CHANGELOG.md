@@ -15,6 +15,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **Published types now resolve under `node16`/`nodenext`.** The emitted `.d.ts` files named their relative
+  imports without an extension (`from './core/engine'`), which that resolution mode rejects — and the failure
+  is silent, because the near-universal `skipLibCheck: true` suppresses the diagnostic and TypeScript then
+  silently types **everything reaching you through a re-export as `any`** — which is the whole of
+  `@cloudbitmaps/core` and all six driver subpaths. Consumers on the modern Node ESM settings got no error
+  and no types for any of it: no autocomplete, and none of the compile-time guards that refuse a bad wiring.
+  Measured on a packed install, `new CloudRoaring({ storage: 123 })` compiled clean before this and errors
+  after, and 113 of the 115 runtime exports were `any`. (The two survivors are the handful of types declared
+  directly in `@cloudbitmaps/roaring`'s own entry rather than re-exported.) The build now appends the explicit `.js` (or `/index.js` for a directory), and the
+  smoke test fails the build if any extensionless relative specifier survives — or if one points at no file,
+  which would be just as unresolvable. Both halves share one scanner, so the check can never drift from the
+  fix, and it skips comments: a doc-comment showing a relative import is neither rewritten nor flagged.
+
 ### Changed
 
 - **BREAKING — a `StorageBackend` must now be built, not assembled.** The port was structural, so any

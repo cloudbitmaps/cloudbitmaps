@@ -130,6 +130,7 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
  * which is why it asserts it actually found chunks rather than silently walking none.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
+const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
 
 /** Driver homes, relative to a package's `dist/` — the one place an SDK specifier is correct. */
 const DRIVER_DIRS = ['s3', 'gcs', 'azure'];
@@ -141,15 +142,20 @@ function isDriverPath(rel) {
   );
 }
 
-/** Every `.d.ts` under `dist/` that is not a driver's. */
-function declarationFiles(dist) {
+/**
+ * Every `.d.ts` under `dist/`, as a path relative to `dist`. `includeDrivers` distinguishes the two
+ * callers: the SDK sweep must skip the driver trees (naming an SDK is exactly what they are for), while
+ * the specifier sweep covers them too — a driver subpath is published with the same resolution rules.
+ */
+function declarationFiles(dist, { includeDrivers = false } = {}) {
   const { readdirSync } = require('node:fs');
   const out = [];
   const walk = (dir, rel) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const childRel = rel ? path.join(rel, entry.name) : entry.name;
       if (entry.isDirectory()) walk(path.join(dir, entry.name), childRel);
-      else if (entry.name.endsWith('.d.ts') && !isDriverPath(childRel)) out.push(childRel);
+      else if (entry.name.endsWith('.d.ts') && (includeDrivers || !isDriverPath(childRel)))
+        out.push(childRel);
     }
   };
   walk(dist, '');
@@ -157,7 +163,7 @@ function declarationFiles(dist) {
 }
 
 function assertEntrySdkFree(pkgDir) {
-  const { readFileSync } = require('node:fs');
+  const { readFileSync, existsSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
@@ -191,6 +197,61 @@ function assertEntrySdkFree(pkgDir) {
   console.log(
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
       `(cjs, esm, ${staticChunks.length} static chunk(s), ${declarationFiles(dist).length} .d.ts)`,
+  );
+
+  // Every relative specifier in an emitted .d.ts must carry an explicit extension, and must resolve.
+  //
+  // Without an extension, `moduleResolution: node16`/`nodenext` cannot resolve it (TS2834) — and the failure
+  // is SILENT for almost everyone, because the near-universal `skipLibCheck: true` suppresses the error and
+  // TypeScript then types everything reached through that specifier as `any`. Since an entry re-exports
+  // nearly everything, that is nearly the whole published surface — and a consumer gets no diagnostic at
+  // all; they just lose it, including compile-time guards meant to refuse a bad wiring.
+  //
+  // The scanner is the same module `scripts/build.mjs` rewrites with, so the gate cannot check something
+  // other than what the build fixes, and neither one touches a relative path inside a doc-comment.
+  //
+  // The second half checks the build's own work: a specifier the rewrite produced that points at no file
+  // would be just as unresolvable, and is the one remaining way to ship a broken `.d.ts` quietly.
+  const bad = [];
+  const unresolvable = [];
+  const allDts = declarationFiles(dist, { includeDrivers: true });
+  for (const file of allDts) {
+    const source = read(file);
+    for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
+    for (const spec of allSpecifiers(source)) {
+      if (!EXTENSIONED.test(spec)) continue; // already reported above
+      const abs = path.resolve(path.dirname(path.join(dist, file)), spec);
+      const candidates = [
+        abs, // .json, and anything already naming a real file
+        abs.replace(/\.js$/, '.d.ts'),
+        abs.replace(/\.mjs$/, '.d.mts'),
+        abs.replace(/\.cjs$/, '.d.cts'),
+      ];
+      if (!candidates.some((c) => existsSync(c))) unresolvable.push(`${file} → ${spec}`);
+    }
+  }
+  const report = (list, what) => {
+    const shown = list.slice(0, 5).join('\n  ');
+    const rest = list.length > 5 ? `\n  … and ${list.length - 5} more` : '';
+    return `${list.length} ${what}\n  ${shown}${rest}`;
+  };
+  if (bad.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(bad, 'extensionless relative specifier(s) in emitted .d.ts — ') +
+        `\n  node16/nodenext consumers would silently get \`any\` for everything behind it.`,
+    );
+  }
+  if (unresolvable.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(unresolvable, 'relative specifier(s) in emitted .d.ts pointing at no file — ') +
+        `\n  The extension pass in scripts/build.mjs produced a path that does not resolve.`,
+    );
+  }
+  console.log(
+    `  .d.ts specifiers all extensioned and resolvable: @cloudbitmaps/${pkgDir} ` +
+      `(${allDts.length} file(s))`,
   );
 }
 
