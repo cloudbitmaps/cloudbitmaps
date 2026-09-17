@@ -22,13 +22,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
-const freshCold = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(root, `d${n++}`));
+const freshStorage = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(root, `d${n++}`));
 const count = (source: CrbmStorageChunkSource): Promise<number> =>
   new CloudRoaring({ storage: source }).segment('s').count();
 
 describe('registry-aware CrbmStorageChunkSource', () => {
   it('resolves currentGen via the registry (no list-scan) and bulk-load publishes it', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     // bulk-load gen 0 AND publish it to the registry in one call.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
@@ -39,7 +39,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
   });
 
   it('a registry-aware source returns empty when there is no registry row', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     // A generation exists on disk, but the registry has no row → registry-aware source reads it as empty
     // (the registry is authoritative; nothing has published a currentGen).
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3]); // no registry passed
@@ -48,7 +48,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
   });
 
   it('falls back to the list-scan when no registry is provided', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3]);
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
     const source = new CrbmStorageChunkSource(storage); // no registry → max-generation list-scan
@@ -56,7 +56,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
   });
 
   it('serves the registry-pinned generation even if a higher one exists on disk', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
     // Write a newer generation on disk but DON'T publish it — registry-aware reads stay on gen 0.
@@ -93,7 +93,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     // Its only test went with `live-invalidation.test.ts`, and nothing else in the suite counts registry reads —
     // so a refactor that awaited before installing the promise would have been invisible. Counting them is the
     // only way to see it; the observable answers are identical either way.
-    const storage = freshCold();
+    const storage = freshStorage();
     const base = new MemoryRegistryDriver();
     let gets = 0;
     const registry = {
@@ -126,7 +126,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
   });
 
   it('self-heals when GC sweeps the exact generation a reader pinned mid-read (I5, no torn read)', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
 

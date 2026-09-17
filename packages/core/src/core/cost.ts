@@ -173,7 +173,7 @@ function buildReport(input: {
   );
 
   // Per-request unit costs (USD). Same-region egress is free; internet egress not modeled.
-  const coldGetUSD = storage.getPerMillion / 1e6;
+  const storageGetUSD = storage.getPerMillion / 1e6;
   const putUSD = storage.putPerMillion / 1e6;
 
   // Monthly volumes.
@@ -182,8 +182,8 @@ function buildReport(input: {
   const intersects = intersectsPerSec * S;
 
   const storageUSD = (storageBytes / GIB) * storage.storagePerGiBMonth;
-  const readsUSD = readMisses * coldGetUSD;
-  const intersectsUSD = intersects * chunksPerIntersect * coldGetUSD;
+  const readsUSD = readMisses * storageGetUSD;
+  const intersectsUSD = intersects * chunksPerIntersect * storageGetUSD;
   const loadsUSD = loadsPerMonth * requestsPerLoad * putUSD;
   const total = readsUSD + intersectsUSD + storageUSD + loadsUSD;
 
@@ -191,7 +191,9 @@ function buildReport(input: {
   // evaluated at this report's cache posture (misses).
   const headroom = Math.max(0, redis.monthlyUSD - storageUSD);
   const readsCross =
-    coldGetUSD > 0 && missFraction > 0 ? headroom / (S * coldGetUSD * missFraction) : Infinity;
+    storageGetUSD > 0 && missFraction > 0
+      ? headroom / (S * storageGetUSD * missFraction)
+      : Infinity;
 
   const verdict: CostReport['verdict'] =
     total <= redis.monthlyUSD * 0.1 ? 'win-big' : total < redis.monthlyUSD ? 'win' : 'lose-zone';

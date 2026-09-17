@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fsSink, main, parseConfig } from '@/bin/export-segments';
@@ -15,6 +15,45 @@ const roaringIds = (bytes: Uint8Array): number[] =>
     .sort((a, b) => a - b);
 
 describe('export-segments CLI', () => {
+  // The generations directory was `cold/` before the tier was renamed to `storage`. `exportSegments` reports
+  // per-segment failures rather than refusing outright, so pointing this tool at an older store would finish,
+  // write a manifest and exit ZERO having exported nothing — a successful-looking empty dump, from the one
+  // tool someone reaches for when they are trying to get their data out.
+  describe('a store written before the rename', () => {
+    it('refuses, naming the directory to rename, instead of exporting nothing successfully', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'cbm-oldlayout-'));
+      const out = await mkdtemp(join(tmpdir(), 'cbm-oldout-'));
+      try {
+        await mkdir(join(root, 'cold'), { recursive: true });
+        await mkdir(join(root, 'registry'), { recursive: true });
+        await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out })).rejects.toThrow(
+          /"cold\/" directory but no "storage\/"/,
+        );
+        // And nothing was written — no manifest, so no run can be mistaken for a finished one.
+        expect(await readdir(out)).toEqual([]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(out, { recursive: true, force: true });
+      }
+    });
+
+    it('does not fire when the store is current, or when neither directory exists yet', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'cbm-newlayout-'));
+      const out = await mkdtemp(join(tmpdir(), 'cbm-newout-'));
+      try {
+        await mkdir(join(root, 'storage'), { recursive: true });
+        await mkdir(join(root, 'cold'), { recursive: true }); // a leftover copy must not trip it
+        await mkdir(join(root, 'registry'), { recursive: true });
+        await expect(main({ CR_EXPORT_ROOT: root, CR_EXPORT_OUT: out })).resolves.toMatchObject({
+          totalSegments: 0,
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(out, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('parseConfig', () => {
     it('requires CR_EXPORT_ROOT and CR_EXPORT_OUT', () => {
       expect(() => parseConfig({})).toThrow(/CR_EXPORT_ROOT/);

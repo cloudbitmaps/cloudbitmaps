@@ -4,7 +4,7 @@
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
 import { Storage } from '@google-cloud/storage';
 import {
-  coldChunkSourceConformance,
+  storageChunkSourceConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
@@ -74,7 +74,7 @@ const freshDriver = (): GcsStorageDriver =>
   new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `conf/${n++}` });
 
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
-coldChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
+storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmStorageChunkSource(driver);
@@ -91,8 +91,8 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // The original is intact.
-    const storage = new CrbmStorageChunkSource(driver);
-    const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
+    const source = new CrbmStorageChunkSource(driver);
+    const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 

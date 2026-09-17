@@ -85,11 +85,11 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
   });
 
   it('rejects an out-of-range chunk key from a tier (IntegrityError)', async () => {
-    const badCold: StorageChunkSource = {
+    const badStorage: StorageChunkSource = {
       getChunk: () => Promise.resolve(null),
       listChunkKeys: () => Promise.resolve([70_000]), // > 0xffff
     };
-    const s = new CloudRoaring({ storage: badCold }).segment('users');
+    const s = new CloudRoaring({ storage: badStorage }).segment('users');
     await expect(s.count()).rejects.toBeInstanceOf(IntegrityError);
   });
 });

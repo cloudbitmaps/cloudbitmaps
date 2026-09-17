@@ -14,7 +14,7 @@ import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
-import { coldObjectPath, parseGeneration, segmentsDir } from './paths';
+import { storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
 export class LocalFsStorageDriver implements IStorageDriver {
@@ -28,7 +28,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const finalPath = coldObjectPath(this.root, key);
+    const finalPath = storageObjectPath(this.root, key);
     await mkdir(dirname(finalPath), { recursive: true });
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
@@ -108,7 +108,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
 
   async delete(key: GenKey): Promise<void> {
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
-    await unlink(coldObjectPath(this.root, key)).catch((err) => {
+    await unlink(storageObjectPath(this.root, key)).catch((err) => {
       if (!isCode(err, 'ENOENT')) throw mapFsError(err);
     });
   }
@@ -132,7 +132,7 @@ export class LocalFsStorageDriver implements IStorageDriver {
 
   private async openRead(key: GenKey): Promise<Awaited<ReturnType<typeof open>>> {
     try {
-      return await open(coldObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
+      return await open(storageObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
       if (isCode(err, 'ENOENT')) {
         throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);

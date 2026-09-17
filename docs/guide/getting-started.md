@@ -409,14 +409,17 @@ import { Storage } from '@google-cloud/storage';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
 
-const storage = new Storage(); // ADC; or { apiEndpoint } to point at fake-gcs-server locally
-const storage = new GcsStorageDriver({ storage, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const registry = new GcsRegistryDriver({ storage, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const gcs = new Storage(); // ADC; or { apiEndpoint } to point at fake-gcs-server locally
+const storage = new GcsStorageDriver({ storage: gcs, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const registry = new GcsRegistryDriver({ storage: gcs, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
 const store = new CloudRoaring({ storage, registry }); // one bucket is the whole deployment
 ```
 
 > **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
+> Note the two senses of the word in that snippet: the drivers' own `storage` option takes the **GCS client**
+> (`@google-cloud/storage` names its client class `Storage`), which is why it is built as `gcs` above — while
+> `CloudRoaring`'s `storage` option takes the driver.
 
 ### Azure Blob — storage + registry (`@cloudbitmaps/roaring/azure`)
 

@@ -29,7 +29,7 @@
   --cb-signal-fill: #0f62e8; /* the only fill allowed under a white label */
   --cb-cyan: #19c5f4; /* links, live figures, "this is the number" */
 
-  /* Tier ramp — semantics, not brand. Only ever labels a storage temperature. */
+  /* Tier ramp — semantics, not brand. Only ever labels a tier, never a product or a vendor. */
   --cb-hot: #e8834a;
   --cb-warm: #d7b25a;
   --cb-storage: #19c5f4;
@@ -2479,7 +2479,7 @@ section > .lede {
 
 /* Container cards reuse the tier grid — it is a three-up card grid, and a second
    one would be the same CSS under a different name. Only the chip's colour differs,
-   because a container is not a storage temperature. */
+   because a container is not a tier. */
 .tier-chip.t-c {
   color: var(--cb-cyan);
 }

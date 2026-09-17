@@ -16,7 +16,7 @@ const instantClock: Clock = { now: () => 0, sleep: () => Promise.resolve() };
 const zeroRng: Rng = { next: () => 0 };
 
 /** A storage source that delegates to an in-memory one but fails its first `transientOnGet` payload reads. */
-class FaultyCold implements StorageChunkSource {
+class FaultyStorage implements StorageChunkSource {
   private gets = 0;
   constructor(
     private readonly inner: MemoryStorageChunkSource,
@@ -94,7 +94,7 @@ describe('metrics emission (via CloudRoaring)', () => {
     const inner = new MemoryStorageChunkSource();
     seedSegment(inner, 'users', [5]);
     const store = new CloudRoaring({
-      storage: new FaultyCold(inner, 1),
+      storage: new FaultyStorage(inner, 1),
       metrics: counter,
       clock: instantClock,
       rng: zeroRng,

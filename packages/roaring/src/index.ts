@@ -425,9 +425,9 @@ export class CloudRoaring {
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
   // The store's own drivers, kept so the lifecycle helpers and the `*Into` verbs reuse them instead of making
-  // you re-pass deps. `coldDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
+  // you re-pass deps. `storageDriver` is set only when `storage` was a raw IStorageDriver (a pre-built StorageChunkSource has
   // no underlying driver to write through).
-  private readonly coldDriver: IStorageDriver | undefined;
+  private readonly storageDriver: IStorageDriver | undefined;
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -489,7 +489,7 @@ export class CloudRoaring {
     this.metrics = metrics;
     // Keep the raw drivers for the lifecycle helpers (see the fields above). They use the raw drivers directly —
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood.
-    this.coldDriver = resolved.driver;
+    this.storageDriver = resolved.driver;
     this.registry = options.registry;
     this.keystore = options.keystore;
     this.requireEncryption = options.requireEncryption ?? false;
@@ -502,7 +502,7 @@ export class CloudRoaring {
    * Out-of-process callers use the free functions with explicit deps.
    */
   private lifecycleDeps(op: string): LifecycleDeps {
-    if (this.coldDriver === undefined) {
+    if (this.storageDriver === undefined) {
       throw new UnsupportedError(
         `${op} needs the store built with a raw storage driver (IStorageDriver), not a pre-built StorageChunkSource — ` +
           'or call the equivalent free function with explicit deps',
@@ -512,7 +512,7 @@ export class CloudRoaring {
       throw new UnsupportedError(`${op} needs a \`registry\` in the store config`);
     }
     return {
-      storage: this.coldDriver,
+      storage: this.storageDriver,
       registry: this.registry,
       clock: this.clock,
       codec: roaringCodec, // facade injects the flagship codec

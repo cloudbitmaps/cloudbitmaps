@@ -59,6 +59,6 @@
     "resultCount": 100000,
     "fetchedChunks": 100,
     "skippedChunks": 3800,
-    "coldBytesRead": 3000
+    "storageBytesRead": 3000
   }
 }

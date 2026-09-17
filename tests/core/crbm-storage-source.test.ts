@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
-import { coldObjectPath } from '@/drivers/localfs/paths';
+import { storageObjectPath } from '@/drivers/localfs/paths';
 import { SafeBitmap } from '@/roaring-codec';
 import { CapabilityError, IntegrityError, ValidationError } from '@/core/errors';
 import type { IStorageDriver } from '@/core/ports';
@@ -139,7 +139,7 @@ describe('CrbmStorageChunkSource + writeCrbmGeneration', () => {
       { chunkKey: 0, bitmap: bm(1, 2) },
     ]);
     // Flip the first payload byte (payload region starts at offset 8) → chunk CRC mismatch.
-    const handle = await fsOpen(coldObjectPath(root, { segment: 's', generation: 1 }), 'r+');
+    const handle = await fsOpen(storageObjectPath(root, { segment: 's', generation: 1 }), 'r+');
     const buf = Buffer.alloc(1);
     await handle.read(buf, 0, 1, 8);
     buf[0]! ^= 0xff;

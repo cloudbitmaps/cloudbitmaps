@@ -3,7 +3,7 @@
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
 import { BlobServiceClient } from '@azure/storage-blob';
 import {
-  coldChunkSourceConformance,
+  storageChunkSourceConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
@@ -79,7 +79,7 @@ const freshDriver = (): AzureBlobStorageDriver =>
   new AzureBlobStorageDriver({ containerClient: container, prefix: `conf/${n++}` });
 
 // The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
-coldChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
+storageChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
   return new CrbmStorageChunkSource(driver);

@@ -230,7 +230,7 @@ describe('loadSegment — racing writers', () => {
 
     // A concurrent writer publishes a HIGHER generation while this load is between its write and its publish.
     let raced = false;
-    const racingCold = new Proxy(w.storage, {
+    const racingStorage = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'put' && p !== 'putImmutable') return Reflect.get(t, p, rx) as unknown;
         const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
@@ -248,7 +248,7 @@ describe('loadSegment — racing writers', () => {
       },
     }) as IStorageDriver;
 
-    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racingCold }, { keep: 0 });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racingStorage }, { keep: 0 });
     expect(raced).toBe(true);
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     // The object is deliberately NOT deleted here: the row changed under this call, and a generation number

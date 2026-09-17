@@ -416,7 +416,7 @@ const specAnchors = [];
   // silence by editing the page rather than the derivation.
   if (backends.size === 0) {
     fail(
-      'the driver-count derivation matched no `export class …ColdDriver/…RegistryDriver` under packages/core/src — ' +
+      'the driver-count derivation matched no `export class …StorageDriver/…RegistryDriver` under packages/core/src — ' +
         'the classes moved or were renamed, so this check is no longer measuring anything',
     );
   }

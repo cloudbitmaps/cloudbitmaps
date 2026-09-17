@@ -1,5 +1,5 @@
 import {
-  coldObjectName,
+  storageObjectName,
   normalizeGcsPrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
@@ -9,11 +9,11 @@ import { ValidationError } from '@/core/errors';
 /** Pure GCS object-name logic — the same `.crbm` scheme as S3/LocalFs, so a segment reads identically. */
 describe('GCS keys', () => {
   it('builds the namespace-first .crbm object name', () => {
-    expect(coldObjectName(undefined, { segment: 's', generation: 0 })).toBe(
+    expect(storageObjectName(undefined, { segment: 's', generation: 0 })).toBe(
       '_default/segments/s.0.crbm',
     );
     expect(
-      coldObjectName('cloudroaring', { segment: 'seg1', generation: 42, namespace: 'ns' }),
+      storageObjectName('cloudroaring', { segment: 'seg1', generation: 42, namespace: 'ns' }),
     ).toBe('cloudroaring/ns/segments/seg1.42.crbm');
   });
 
@@ -23,10 +23,10 @@ describe('GCS keys', () => {
   });
 
   it('rejects a negative / non-integer generation', () => {
-    expect(() => coldObjectName(undefined, { segment: 's', generation: -1 })).toThrow(
+    expect(() => storageObjectName(undefined, { segment: 's', generation: -1 })).toThrow(
       ValidationError,
     );
-    expect(() => coldObjectName(undefined, { segment: 's', generation: 1.5 })).toThrow(
+    expect(() => storageObjectName(undefined, { segment: 's', generation: 1.5 })).toThrow(
       ValidationError,
     );
   });

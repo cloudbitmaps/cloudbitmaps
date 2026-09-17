@@ -473,7 +473,7 @@
             <div class="pstage-label"><span>Where the bytes land</span></div>
             <div class="pstage-body">
               <div class="trow r-storage">
-                <span class="tkey">Storage</span>
+                <span class="tkey">Storage · .crbm</span>
                 <span class="tfill"
                   ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i
                   ><i class="f"></i><i class="f"></i><i class="f"></i
@@ -557,7 +557,7 @@
             <p class="lede">
               Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
               compared first, and only chunks whose keys appear in <strong>both</strong> are ever
-              fetched — 100 of 2,000, in 24.6 ms. The other 1,900 stay storage and unbilled.
+              fetched — 100 of 2,000, in 24.6 ms. The other 1,900 are never fetched, and never billed.
             </p>
             <figure class="keys">
               <div class="label">Chunk keys · shared only</div>

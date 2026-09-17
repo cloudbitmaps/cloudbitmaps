@@ -102,7 +102,7 @@ describe('costReport (grounded)', () => {
   });
 
   it('a custom storage source without sizeOf() → grounded:false + a note, not a false $0', async () => {
-    class NoSizeCold implements StorageChunkSource {
+    class NoSizeStorage implements StorageChunkSource {
       // Minimal impl — omitting the unused params still satisfies the interface.
       async getChunk(): Promise<Uint8Array | null> {
         return null;
@@ -111,7 +111,7 @@ describe('costReport (grounded)', () => {
         return [];
       }
     }
-    const store = new CloudRoaring({ storage: new NoSizeCold() });
+    const store = new CloudRoaring({ storage: new NoSizeStorage() });
     const r = await store.segment('x').costReport();
     expect(r.assumptions.grounded).toBe(false); // storage was NOT measured — don't claim a confident $0
     expect(r.monthlyUSD.byOp.storage).toBe(0);

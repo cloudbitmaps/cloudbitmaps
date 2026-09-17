@@ -42,7 +42,7 @@ import {
 } from '@/core/errors';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectKey,
+  storageObjectKey,
   normalizeS3Prefix,
   parseGenerationFromKey,
   segmentObjectPrefix,
@@ -104,7 +104,7 @@ export class S3StorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectKey = coldObjectKey(this.prefix, key); // validates ref + generation
+    const objectKey = storageObjectKey(this.prefix, key); // validates ref + generation
     const sink = new S3MultipartSink(
       this.client,
       this.bucket,
@@ -135,7 +135,7 @@ export class S3StorageDriver implements IStorageDriver {
     if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
-    const objectKey = coldObjectKey(this.prefix, key);
+    const objectKey = storageObjectKey(this.prefix, key);
     if (length === 0) return new Uint8Array(0);
     try {
       const res = await this.client.send(
@@ -159,7 +159,7 @@ export class S3StorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectKey = coldObjectKey(this.prefix, key);
+    const objectKey = storageObjectKey(this.prefix, key);
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
       try {
@@ -200,7 +200,7 @@ export class S3StorageDriver implements IStorageDriver {
     // Idempotent: S3 DeleteObject succeeds even if the key is absent (GC may race / retry).
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: coldObjectKey(this.prefix, key) }),
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: storageObjectKey(this.prefix, key) }),
       );
     } catch (err) {
       throw this.mapError(err);

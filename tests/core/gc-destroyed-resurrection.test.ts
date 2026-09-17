@@ -48,7 +48,7 @@ async function generations(storage: IStorageDriver): Promise<number[]> {
  * fence at all. Asserting `yielded` keeps the precondition owned by the test instead of inherited from a driver
  * it does not control.
  */
-function coldWithRaceDuringList(
+function storageWithRaceDuringList(
   inner: MemoryStorageDriver,
   during: () => Promise<void>,
   yielded: number[] = [],
@@ -96,7 +96,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     await expect(
       gcOrphanGenerations(SEG, {
-        storage: coldWithRaceDuringList(storage, resurrect, yielded),
+        storage: storageWithRaceDuringList(storage, resurrect, yielded),
         registry,
       }),
     ).rejects.toBeInstanceOf(WriteConflictError);
@@ -137,7 +137,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     };
 
     await expect(
-      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringList(storage, recreate), registry }),
+      gcOrphanGenerations(SEG, { storage: storageWithRaceDuringList(storage, recreate), registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;
@@ -172,7 +172,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     const deleted = await gcOrphanGenerations(
       SEG,
-      { storage: coldWithRaceDuringList(storage, retireAndRecreate, yielded), registry },
+      { storage: storageWithRaceDuringList(storage, retireAndRecreate, yielded), registry },
       { keep: 0 },
     );
 
@@ -206,7 +206,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     };
 
     await expect(
-      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringList(storage, purge), registry }),
+      gcOrphanGenerations(SEG, { storage: storageWithRaceDuringList(storage, purge), registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
     expect(await generations(storage)).toEqual([0, 1]);
   });
@@ -234,7 +234,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     const yielded: number[] = [];
     const deleted = await gcOrphanGenerations(
       SEG,
-      { storage: coldWithRaceDuringList(storage, publishDuring, yielded), registry },
+      { storage: storageWithRaceDuringList(storage, publishDuring, yielded), registry },
       { keep: 0 },
     );
     expect(yielded).toContain(3); // the mid-pass publish was enumerated — the control is not vacuous
@@ -259,7 +259,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
 
     // Fire once, after the FIRST storage.delete has landed.
     let fired = false;
-    const coldWithRaceDuringDeletes = new Proxy(storage, {
+    const storageWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
         return async (key: { namespace?: string; segment: string; generation: number }) => {
@@ -275,7 +275,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     }) as IStorageDriver;
 
     await expect(
-      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringDeletes, registry }, { keep: 0 }),
+      gcOrphanGenerations(SEG, { storage: storageWithRaceDuringDeletes, registry }, { keep: 0 }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;
@@ -339,7 +339,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     // After the first delete: another collector finishes the job and the sweep purges the row, then a loader
     // re-creates the name. `nextGeneration` restarts at 0, so the new generations reuse numbers still queued.
     let fired = false;
-    const coldWithRaceDuringDeletes = new Proxy(storage, {
+    const storageWithRaceDuringDeletes = new Proxy(storage, {
       get(target, prop, rx) {
         if (prop !== 'delete') return Reflect.get(target, prop, rx) as unknown;
         return async (key: { namespace?: string; segment: string; generation: number }) => {
@@ -357,7 +357,7 @@ describe('gcOrphanGenerations — a segment resurrected while GC is listing', ()
     }) as IStorageDriver;
 
     await expect(
-      gcOrphanGenerations(SEG, { storage: coldWithRaceDuringDeletes, registry }),
+      gcOrphanGenerations(SEG, { storage: storageWithRaceDuringDeletes, registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     const row = (await registry.get(SEG))!;

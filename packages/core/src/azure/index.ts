@@ -1,5 +1,5 @@
 /**
- * `@cloudbitmaps/core/azure` — the Azure Blob Storage driver subpath entry: storage AND the registry.
+ * `@cloudbitmaps/core/azure` — the Azure Blob driver subpath entry: the storage tier AND the registry.
  *
  * Kept out of the main entry point so the core package stays SDK-free: `@azure/storage-blob` is an
  * **optional peerDependency** that only consumers of this subpath install. Import as:

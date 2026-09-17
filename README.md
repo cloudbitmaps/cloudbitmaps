@@ -107,7 +107,7 @@ remainder** (the bottom half). Each chunk is itself a small Roaring bitmap holdi
 This is the unit of storage and transfer — you never read a whole segment to test one ID, and a load groups
 its ids by chunk first (10,000 IDs spanning 12 chunks become **12 chunks in one object**, not 10,000 writes).
 
-**Two storage tiers and one pointer, behind pluggable drivers.** The engine is storage-agnostic — it talks to
+**Two tiers and one pointer, behind pluggable drivers.** The engine is storage-agnostic — it talks to
 driver *interfaces*, never a specific cloud SDK — so the same code runs on local files, AWS, GCP, Azure, or
 MinIO:
 
@@ -312,7 +312,7 @@ interface if you would rather.
 
 ```ts
 new CloudRoaring({
-  storage,                // required
+  storage,             // required
   registry, keystore,  // optional (registry: current-gen pointer + wrapped keys + every lifecycle helper)
   cacheMaxChunks, cacheTtlMs, storageGenTtlMs, retry, metrics, budget, // optional tuning (resilience is on by default)
 });

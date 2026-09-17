@@ -31,7 +31,7 @@ function recordingClock(): Clock & { sleeps: number[] } {
 const zeroRng: Rng = { next: () => 0 };
 
 /** Storage source that counts physical reads, to prove the HOT cache is wired. */
-class CountingCold implements StorageChunkSource {
+class CountingStorage implements StorageChunkSource {
   getChunkCalls = 0;
   constructor(private readonly inner: MemoryStorageChunkSource) {}
   getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -48,7 +48,7 @@ describe('HOT cache (C6) — wired through the engine', () => {
     const inner = new MemoryStorageChunkSource();
     inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([1]).serialize());
     inner.seed({ segment: 's', chunkKey: 1 }, SafeBitmap.fromValues([0]).serialize()); // id 65536
-    const storage = new CountingCold(inner);
+    const storage = new CountingStorage(inner);
     const clock = fakeClock();
     const s = new CloudRoaring({ storage, clock, cacheTtlMs: 100, cacheMaxChunks: 1 }).segment('s');
 
@@ -83,7 +83,7 @@ describe('HOT cache (C6) — wired through the engine', () => {
 });
 
 /** A storage source that fails its first `failTimes` payload reads with a transient fault, then behaves. */
-class FlakyCold implements StorageChunkSource {
+class FlakyStorage implements StorageChunkSource {
   private fails = 0;
   constructor(
     private readonly inner: MemoryStorageChunkSource,
@@ -108,7 +108,7 @@ describe('transient-retry resilience (wired by default)', () => {
     seedSegment(inner, 's', [42]);
     const attempts: number[] = [];
     const s = new CloudRoaring({
-      storage: new FlakyCold(inner, 2), // two transient faults, then the bytes arrive
+      storage: new FlakyStorage(inner, 2), // two transient faults, then the bytes arrive
       clock,
       rng: zeroRng,
       retry: { maxAttempts: 4, baseDelayMs: 5, maxDelayMs: 200, backoffFactor: 2, jitter: 'none' },
@@ -127,7 +127,7 @@ describe('transient-retry resilience (wired by default)', () => {
     const inner = new MemoryStorageChunkSource();
     seedSegment(inner, 's', [42]);
     const s = new CloudRoaring({
-      storage: new FlakyCold(inner, 99),
+      storage: new FlakyStorage(inner, 99),
       clock,
       rng: zeroRng,
       retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 4, backoffFactor: 2, jitter: 'none' },
@@ -140,9 +140,11 @@ describe('transient-retry resilience (wired by default)', () => {
     const clock = recordingClock();
     const inner = new MemoryStorageChunkSource();
     seedSegment(inner, 's', [42]);
-    const s = new CloudRoaring({ storage: new FlakyCold(inner, 1), clock, retry: false }).segment(
-      's',
-    );
+    const s = new CloudRoaring({
+      storage: new FlakyStorage(inner, 1),
+      clock,
+      retry: false,
+    }).segment('s');
     await expect(s.has(42)).rejects.toBeInstanceOf(TransientError);
     expect(clock.sleeps).toEqual([]);
   });

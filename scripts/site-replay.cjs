@@ -59,7 +59,7 @@ const need = [
   'resultCount',
   'fetchedChunks',
   'skippedChunks',
-  'coldBytesRead',
+  'storageBytesRead',
 ];
 for (const k of need) {
   if (typeof m[k] !== 'number') fail(`\`intersect.${k}\` missing or not a number`);
@@ -121,10 +121,10 @@ for (const [name, measured, derived, why] of checks) {
   }
 }
 
-if (m.coldBytesRead % shared !== 0) {
-  fail(`coldBytesRead (${m.coldBytesRead}) is not divisible by the ${shared} fetched chunks`);
+if (m.storageBytesRead % shared !== 0) {
+  fail(`storageBytesRead (${m.storageBytesRead}) is not divisible by the ${shared} fetched chunks`);
 }
-const bytesPerChunk = m.coldBytesRead / shared;
+const bytesPerChunk = m.storageBytesRead / shared;
 
 // ── key-space geometry, entirely derived ──────────────────────────────────────────────────────────────────
 const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the high half
@@ -152,7 +152,7 @@ const out = {
     sharedChunks: shared,
     fetchedChunks: m.fetchedChunks,
     skippedChunks: m.skippedChunks,
-    coldBytesRead: m.coldBytesRead,
+    storageBytesRead: m.storageBytesRead,
     intersectMs: m.intersectMs,
     resultCount: m.resultCount,
   },
@@ -192,7 +192,7 @@ const out = {
     {
       id: 'fetch',
       label: 'Fetch',
-      headline: `${m.coldBytesRead.toLocaleString()} bytes, ${shared} chunks`,
+      headline: `${m.storageBytesRead.toLocaleString()} bytes, ${shared} chunks`,
       body:
         `Only the ${shared} aligned chunks are requested — ${bytesPerChunk.toLocaleString()} bytes each. ` +
         `The other ${m.skippedChunks.toLocaleString()} chunk reads never happen, and are never billed.`,
@@ -232,7 +232,7 @@ function checkPage() {
     ['chunksPerSegment', grouped(chunks)],
     ['idsPerSegment', grouped(m.idsPerSegment)],
     ['skippedChunks', grouped(m.skippedChunks)],
-    ['coldBytesRead', grouped(m.coldBytesRead)],
+    ['storageBytesRead', grouped(m.storageBytesRead)],
     ['resultCount', grouped(m.resultCount)],
     ['intersectMs', String(m.intersectMs)],
     ['bytesPerFetchedChunk', grouped(bytesPerChunk)],
@@ -263,7 +263,7 @@ function checkPage() {
       axisKeys - 1, // B's last key
       density,
       bytesPerChunk,
-      m.coldBytesRead,
+      m.storageBytesRead,
       m.skippedChunks,
       m.resultCount,
       // format constants, sourced above rather than allow-listed
@@ -292,7 +292,7 @@ function checkPage() {
     ['data-b-from', chunks + shared],
     ['data-shared', shared],
     ['data-skipped', m.skippedChunks],
-    ['data-bytes', m.coldBytesRead],
+    ['data-bytes', m.storageBytesRead],
     ['data-ids', m.resultCount],
     ['data-bytes-per-chunk', bytesPerChunk],
     ['data-density', density],
@@ -361,6 +361,6 @@ fs.mkdirSync(path.dirname(TARGET), { recursive: true });
 fs.writeFileSync(TARGET, text);
 console.log(`site-replay: wrote ${path.relative(ROOT, TARGET)}`);
 console.log(
-  `  ${shared}/${chunks} keys aligned · ${m.coldBytesRead.toLocaleString()} bytes read · ` +
+  `  ${shared}/${chunks} keys aligned · ${m.storageBytesRead.toLocaleString()} bytes read · ` +
     `${m.resultCount.toLocaleString()} ids · ${m.intersectMs} ms`,
 );

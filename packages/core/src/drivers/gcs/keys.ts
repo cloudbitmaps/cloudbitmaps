@@ -59,7 +59,7 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
 }
 
 /** The full GCS object name of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
-export function coldObjectName(prefix: string | undefined, key: GenKey): string {
+export function storageObjectName(prefix: string | undefined, key: GenKey): string {
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
   }

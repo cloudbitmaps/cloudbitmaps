@@ -49,7 +49,7 @@ async function world(keystore?: IKeystore) {
   return { ...w, reader };
 }
 
-async function coldGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
+async function storageGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
   for await (const key of storage.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
@@ -200,7 +200,7 @@ describe('a registry row with no Storage generation (currentGen: null)', () => {
 
       await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1]); // written, not yet published
       expect(await gcOrphanGenerations(SEG, w, { keep: 0 })).toEqual([]);
-      expect(await coldGenerations(w.storage, SEG)).toEqual([0]);
+      expect(await storageGenerations(w.storage, SEG)).toEqual([0]);
       expect(await nextGeneration(SEG, w)).toBe(1); // …and the object counts, so a retry skips past it
     });
 

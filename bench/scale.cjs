@@ -225,7 +225,7 @@ async function measureIntersect() {
     resultCount,
     fetchedChunks: snap.intersect.fetchedChunks,
     skippedChunks: snap.intersect.skippedChunks,
-    coldBytesRead: snap.storage.bytes,
+    storageBytesRead: snap.storage.bytes,
   };
 }
 

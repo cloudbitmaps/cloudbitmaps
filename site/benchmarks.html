@@ -244,7 +244,7 @@
            read axis as headroom, and the baseline is a three-node HA cluster rather than a single node.
 
            Two of the four can remove the crossover altogether, and this is the estimator's own arithmetic
-           (core/cost.ts): `readsCross` is `Infinity` unless `coldGetUSD > 0 && missFraction > 0`, so a 100%
+           (core/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
            cache-hit rate or a store with no per-request charge leaves no meter to cross.
 
            Publishing the most pessimistic supported configuration is the right instinct. Publishing it without

@@ -45,7 +45,7 @@ from constructing a cross-region topology. The points where personal data moves 
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
-*and* run your loaders and erasure jobs in-region; keep a segment's Storage, registry, and the querying compute in
+*and* run your loaders and erasure jobs in-region; keep a segment's storage objects, its registry row, and the querying compute in
 one jurisdiction; treat the HOT cache and the intersection runtime as **processing locations** in your transfer
 assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). A fail-closed
 residency-enforcement policy in the library was considered and deferred as over-engineering for v1 — the honest
@@ -58,7 +58,7 @@ CloudBitmaps gives you three levers with different guarantees. Use them delibera
 | Lever | API | Guarantee | Use for |
 |---|---|---|---|
 | **Subject erasure** | `store.eraseSubject(id, { namespace })` (or `eraseIdFromSegment(ref, id, deps)` for one segment) | *Physical on return* — the segment's current generation is rewritten without the id (every chunk streamed through, one bit cleared), published **fenced on the generation it streamed**, and **the generation that held the bit is deleted before the call returns**. A retained *superseded* generation still holding the id (an ex-member dropped by a re-seed) is found and collected too. A per-segment fault is reported as an `error: …` ledger entry rather than thrown, so "on return" is a claim about every segment whose entry is **not** `error: …`. The store that performs the call stops serving the id immediately; **other processes converge on their own read TTL** — see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). Does **not** reach backups, replicas or noncurrent object versions — those hold the old generation until their own lifecycle removes it. | "forget this person" — GDPR Art. 17 |
-| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the storage. **Check `generationsRemaining`:** if it is non-empty the storage was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
+| **Dispose** | `store.dropSegment(ref, { confirmSegment })` | *Immediate* — the segment is tombstoned and its Storage generations deleted, reclaiming the space. **Check `generationsRemaining`:** if it is non-empty the space was *not* fully reclaimed and the drop should be re-run (a load that was already writing when the tombstone landed still finishes its object). Works on cleartext; on an encrypted segment it *also* discards the key. Does **not** reach noncurrent versions / replicas / PITR snapshots — deleting an object is weaker than destroying a key. | retiring a dated bucket; rolling-window retention |
 | **Crypto-shred** | `destroySegment` / `eraseNamespace` | *Instant + total at rest* — destroys the segment's wrapped key, so **every** copy (current, prior generations, backups, WORM-locked objects) becomes unreadable without touching the bytes. Requires the segment to be encrypted. A process that had already opened the segment holds the **unwrapped** key in memory and keeps reading until it is told — call `store.invalidate(ref)` there; see [One process, and the rest of your fleet](#one-process-and-the-rest-of-your-fleet). | whole-segment / tenant offboarding; erasure under immutable backups (see below) |
 
 **Subject-wide erasure** (GDPR Art. 17 — "forget this person everywhere") is
@@ -179,7 +179,7 @@ to run, and the deletion is ours to perform correctly.** Practical patterns:
 - **`store.dropSegment(ref, { confirmSegment })` is the retention primitive**, and `setRetention` +
   `retireExpired` is the policy-driven form that calls it — and its result must be inspected, not
   assumed: `generationsRemaining` non-empty means bytes survived and the call should be repeated. It tombstones
-  the segment and deletes **every Storage generation** — so the storage is actually reclaimed. It works on a
+  the segment and deletes **every Storage generation** — so the space is actually reclaimed. It works on a
   cleartext segment, and on an encrypted one it *also* discards the key, making it a strict superset there.
 - **`destroySegment` crypto-shreds** — it discards the key, so the Storage bytes become unreadable *everywhere
   including backups, replicas and WORM-locked copies*, which no object deletion can achieve. But **the objects

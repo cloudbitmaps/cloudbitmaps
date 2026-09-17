@@ -28,7 +28,7 @@ A running CloudBitmaps is up to three independent, separately-backed-up systems:
 
 ```text
   ┌─────────────────┐   generation-keyed, immutable .crbm objects (segment.<gen>.crbm).
-  │  STORAGE (objects) │   Every write is a new object; nothing is overwritten in place.
+  │  STORAGE        │   Every write is a new object; nothing is overwritten in place.
   └─────────────────┘   Largest ⇒ usually dominates your RTO.
   ┌─────────────────┐   per-segment row: which storage generation is current (currentGen),
   │  REGISTRY       │   plus wrapped keys and retention metadata. Small, but the linchpin:
@@ -53,7 +53,7 @@ case is a **registry that is ahead of the object store**:
 
 ```text
   09:00  a load publishes segment "S" generation 42:
-           1. PUT  storage/S.42.crbm                 (object store; written, then verified)
+           1. PUT  storage/S.42.crbm              (object store; written, then verified)
            2. SET  registry[S].currentGen = 42    (registry; forward-only CAS)
 
   A backup taken between step 1 and step 2, or a restore where the registry
@@ -81,7 +81,7 @@ To make the rule achievable you need **object versioning covering the `registry/
 that is coordinated with storage — which is easier than it used to be, since both now live in the same bucket
 and share one version history:
 
-- **Object store (storage):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
+- **Storage (the object store):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
   generations mean you rarely need to roll storage back at all.
 - **Registry:** enable **versioning** on the bucket or container holding the `registry/` prefix — this is a
   **requirement, not a nice-to-have**, because it's the only way to pick a registry restore point that lines up

@@ -100,7 +100,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
 }
 
 /** Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. */
-function coldBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
+function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
   return {
     getRange(offset, length) {
       return driver.getRange(key, offset, length);
@@ -487,7 +487,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       generation: target.generation,
     };
     const crypto = await this.cryptoForRead(ref, target.generation, target.wrappedDeks);
-    return CrbmReader.open(coldBlobReader(this.driver, genKey), {
+    return CrbmReader.open(storageBlobReader(this.driver, genKey), {
       ...this.readerOptions,
       crypto,
       lineage: target.lineage,
@@ -1130,7 +1130,7 @@ export function openGenerationReader(
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
 ): Promise<CrbmReader> {
-  return CrbmReader.open(coldBlobReader(storage, key), { ...options, crypto });
+  return CrbmReader.open(storageBlobReader(storage, key), { ...options, crypto });
 }
 
 /**

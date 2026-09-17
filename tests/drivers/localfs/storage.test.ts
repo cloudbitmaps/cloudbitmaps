@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
-import { coldObjectPath, segmentsDir } from '@/drivers/localfs/paths';
+import { storageObjectPath, segmentsDir } from '@/drivers/localfs/paths';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey } from '@/core/ports';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
@@ -133,7 +133,7 @@ describe('LocalFsStorageDriver', () => {
   it('refuses to follow a symlink at the object path', async () => {
     const secret = join(root, 'secret.bin');
     await writeFile(secret, 'topsecret');
-    const target = coldObjectPath(root, KEY);
+    const target = storageObjectPath(root, KEY);
     await mkdir(dirname(target), { recursive: true });
     await symlink(secret, target);
     await expect(driver.getRange(KEY, 0, 1)).rejects.toBeInstanceOf(NotFoundError);

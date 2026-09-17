@@ -17,16 +17,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 - **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
-  Before this, GCS and Azure were cold-only: the registry that says which generation is current had to live
+  Before this, GCS and Azure were storage-only: the registry that says which generation is current had to live
   in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes
   per segment. Now one bucket, or one container, is the whole deployment.
 
   ```ts
   import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
 
+  const gcs = new Storage();
   const store = new CloudRoaring({
-    cold: new GcsStorageDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
-    registry: new GcsRegistryDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
+    storage: new GcsStorageDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
+    registry: new GcsRegistryDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
   });
   ```
 
@@ -116,9 +117,23 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   - **The cost model's pricing key is now `pricing.storage`**, not `pricing.cold`, and `coldBytes` is
     `storageBytes`. A hand-built pricing object keeps its old shape at runtime and silently prices at the
     defaults.
+  - **`checkConsistency()` reports `issue: 'missing-storage-generation'`**, not `'missing-cold-generation'`.
+    TypeScript callers get a compile error, but a plain-JS caller — and every alert rule, dashboard filter and
+    runbook automation keyed to that string — keeps matching nothing, which reads exactly like "no torn
+    restores found".
 
   Driver **subpaths are unchanged** (`/s3`, `/gcs`, `/azure`), and so is every wire-visible string: object
-  keys, the `.crbm` format, the registry row and its OCC token.
+  keys, the `.crbm` format, the registry row and its OCC token. Nothing in your bucket moves.
+
+  **One on-disk path does change, and only for the `export-segments` CLI.** It reads a local-filesystem store
+  from `<CR_EXPORT_ROOT>/storage` now, not `<CR_EXPORT_ROOT>/cold`. Rename that directory before running it —
+  the objects inside are untouched.
+
+  The CLI **refuses to run** when it finds the old layout. Without that check it would not fail silently, but
+  it would fail with the wrong diagnosis: every segment lands in the manifest's `failed[]` with
+  `no such generation: <segment>.<gen>`, which is the signature of a **torn restore**. The runbook's answers
+  to that signal include rolling `currentGen` back — destructive, and aimed at a store that was never
+  damaged, by someone already reaching for the escape hatch because something has gone wrong.
 
 - **The DynamoDB registry is removed** — `DynamoDbRegistryDriver`, the `@cloudbitmaps/roaring/dynamodb` and
   `@cloudbitmaps/core/dynamodb` subpaths, and the `@aws-sdk/client-dynamodb` optional peer dependency are all

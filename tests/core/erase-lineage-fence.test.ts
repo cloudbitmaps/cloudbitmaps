@@ -134,7 +134,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     let ourObjectWritten = false;
     let verifyDone = false;
     let fired = false;
-    const wrappedCold: IStorageDriver = {
+    const wrappedStorage: IStorageDriver = {
       capabilities: () => storage.capabilities(),
       getRange: (k, o, l) => storage.getRange(k, o, l),
       delete: (k) => storage.delete(k),
@@ -168,7 +168,7 @@ describe('a derived publish is fenced on the row, not just the pointer value', (
     }) as unknown as MemoryRegistryDriver;
 
     const res = await eraseIdFromSegment(REF, 2, {
-      storage: wrappedCold,
+      storage: wrappedStorage,
       registry: wrappedRegistry,
       codec: roaringCodec,
     }).catch((e: Error) => `threw ${e.name}: ${e.message}`);

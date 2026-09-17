@@ -5,8 +5,8 @@ import { basename, join } from 'node:path';
 import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import {
-  coldObjectFilename,
-  coldObjectPath,
+  storageObjectFilename,
+  storageObjectPath,
   parseGeneration,
   parseRegistryRow,
   registryRowPath,
@@ -44,7 +44,7 @@ describe('localfs: colons never reach the filesystem', () => {
       namespace: 'tenant:acme',
       generation: 3,
     };
-    const storage = coldObjectPath(root, key);
+    const storage = storageObjectPath(root, key);
     const reg = registryRowPath(root, key);
     // `root` is a tmpdir path we do not control; assert only on what the driver appended.
     for (const p of [storage, reg]) expect(p.slice(root.length)).not.toContain(':');
@@ -87,7 +87,7 @@ describe('localfs: colons never reach the filesystem', () => {
   it('parseGeneration only matches the ENCODED filename, never the literal one', () => {
     expect(parseGeneration('a:b', 'a%3Ab.4.crbm')).toBe(4);
     expect(parseGeneration('a:b', 'a:b.4.crbm')).toBeNull();
-    expect(coldObjectFilename('a:b', 4)).toBe('a%3Ab.4.crbm');
+    expect(storageObjectFilename('a:b', 4)).toBe('a%3Ab.4.crbm');
   });
 
   it('parseRegistryRow refuses a planted literal-colon file rather than aliasing it', async () => {
@@ -150,13 +150,13 @@ describe('localfs: colons never reach the filesystem', () => {
         const b = withColons(base, pb);
         fc.pre(!a.includes('..') && !b.includes('..'));
 
-        const fa = coldObjectFilename(a, 0);
+        const fa = storageObjectFilename(a, 0);
         expect(fa.includes(':')).toBe(false);
         expect(parseGeneration(a, fa)).toBe(0);
         // A real decode, through the parser that reads a name back off disk — the earlier version of this
         // property only ever re-ENCODED, so a broken decoder satisfied it.
         expect(parseRegistryRow(basename(registryRowPath(root, { segment: a })))).toBe(a);
-        if (a !== b) expect(fa).not.toBe(coldObjectFilename(b, 0));
+        if (a !== b) expect(fa).not.toBe(storageObjectFilename(b, 0));
       }),
       { numRuns: 500 },
     );

@@ -54,7 +54,7 @@ async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<nu
 }
 
 /** Wrap a raw Storage driver so `getTail` (what opening a generation reads first) rejects for one segment. */
-function poisonColdReadOf(base: IStorageDriver, segment: string): IStorageDriver {
+function poisonStorageReadOf(base: IStorageDriver, segment: string): IStorageDriver {
   return {
     capabilities: () => base.capabilities(),
     putImmutable: (key, wr) => base.putImmutable(key, wr),
@@ -134,7 +134,7 @@ describe('subjectReport', () => {
     ).rejects.toBeInstanceOf(ValidationError);
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
-      storage: poisonColdReadOf(w.storage, 'a'), // raw storage → the facade wraps it; the registry resolves generations
+      storage: poisonStorageReadOf(w.storage, 'a'), // raw storage → the facade wraps it; the registry resolves generations
       registry: w.registry,
       retry: false,
     });
@@ -349,7 +349,7 @@ describe('eraseSubject', () => {
     const w = await world();
     for (const s of ['a', 'b', 'poison']) await w.seed(s, [1, 2]);
     const store = new CloudRoaring({
-      storage: poisonColdReadOf(w.storage, 'poison'), // bites when the rewrite opens `poison`'s generation
+      storage: poisonStorageReadOf(w.storage, 'poison'), // bites when the rewrite opens `poison`'s generation
       registry: w.registry,
       retry: false,
     });

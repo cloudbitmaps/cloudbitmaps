@@ -21,7 +21,7 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 // trivially right.
 
 /** Counts the (segment, chunkKey) pairs actually fetched from storage, so chunk-skipping is observable. */
-class CountingCold implements StorageChunkSource {
+class CountingStorage implements StorageChunkSource {
   fetched: string[] = [];
   readonly inner = new MemoryStorageChunkSource();
   getChunk = (ref: ChunkRef): Promise<Uint8Array | null> => {
@@ -36,11 +36,11 @@ class CountingCold implements StorageChunkSource {
 
 /** A store over a counting source; `seed` writes a segment's chunks exactly as a `.crbm` generation holds them. */
 function harness(): {
-  storage: CountingCold;
+  storage: CountingStorage;
   store: CloudRoaring;
   seed: (segment: string, ids: number[]) => void;
 } {
-  const storage = new CountingCold();
+  const storage = new CountingStorage();
   const store = new CloudRoaring({ storage });
   return { storage, store, seed: (segment, ids) => void seedSegment(storage.inner, segment, ids) };
 }

@@ -11,7 +11,7 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
  * A StorageChunkSource that records every getChunk call — to prove chunk-skipping (non-overlapping keys are never
  * fetched). Delegates to an in-memory source; seed it through `inner`.
  */
-class CountingCold implements StorageChunkSource {
+class CountingStorage implements StorageChunkSource {
   readonly inner = new MemoryStorageChunkSource();
   readonly fetched: string[] = [];
 
@@ -26,11 +26,11 @@ class CountingCold implements StorageChunkSource {
 
 /** A store over a counting source; `seed` writes a segment's chunks exactly as a `.crbm` generation holds them. */
 function harness(): {
-  storage: CountingCold;
+  storage: CountingStorage;
   store: CloudRoaring;
   seed: (segment: string, ids: number[]) => void;
 } {
-  const storage = new CountingCold();
+  const storage = new CountingStorage();
   const store = new CloudRoaring({ storage });
   return { storage, store, seed: (segment, ids) => void seedSegment(storage.inner, segment, ids) };
 }

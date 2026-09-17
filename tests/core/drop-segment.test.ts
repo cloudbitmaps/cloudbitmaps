@@ -299,7 +299,7 @@ function hook<T extends object>(target: T, prop: string, impl: (...args: never[]
  */
 describe('dropSegment ordering (observed mid-drop, not after)', () => {
   it('at the instant the tombstone lands, Storage is still intact', async () => {
-    // One observation point pins the contract: a Storage-before-registry inversion would show coldGens as [].
+    // One observation point pins the contract: a Storage-before-registry inversion would show storageGens as [].
     const w = await world();
     await seed(w, [1, 2, 3]);
 

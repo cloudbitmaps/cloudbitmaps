@@ -1,7 +1,7 @@
 /**
  * Whole-segment erasure: crypto-shred (`destroySegment`, `eraseNamespace`) and disposal (`dropSegment`).
  *
- * GDPR "right to erasure" on immutable/backed-up Storage: you can't delete a `.crbm` object from every
+ * GDPR "right to erasure" on immutable, backed-up storage: you can't delete a `.crbm` object from every
  * backup, but you can **delete its key**. `destroySegment` drops the segment's wrapped DEK(s) from the registry
  * (a CAS to a `destroyed` tombstone) — the encrypted Storage bytes are then permanently unreadable, everywhere,
  * forever. **Immediate + irreversible**, so it's gated behind an explicit confirmation (name the exact
@@ -61,7 +61,7 @@ const ERASE_CONCURRENCY = 8;
  * *publishing* a new generation, so the supply of late objects is whatever was already mid-write, and any
  * residual is reported rather than silently dropped.
  */
-const MAX_COLD_SWEEPS = 3;
+const MAX_STORAGE_SWEEPS = 3;
 
 /**
  * Crypto-shred one segment. **Irreversible.** `confirmSegment` must equal `ref.segment` (a guard against an
@@ -384,7 +384,7 @@ export async function dropSegment(
   // ascending. Failures are swallowed per item so the pool never aborts — one unreachable generation must not
   // leave the rest orphaned too.
   const generationsDeleted: number[] = [];
-  for (let pass = 0; pass < MAX_COLD_SWEEPS; pass++) {
+  for (let pass = 0; pass < MAX_STORAGE_SWEEPS; pass++) {
     const present = await listGenerations(deps.storage, ref);
     if (present.length === 0) break;
     const outcomes = await mapWithConcurrency(present, ERASE_CONCURRENCY, async (generation) => {

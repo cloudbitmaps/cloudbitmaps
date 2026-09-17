@@ -33,7 +33,7 @@ import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
  * fetch to park on a timer makes the window's true width observable, which is the difference between measuring
  * the bound and measuring the scheduler.
  */
-class ConcurrencyTrackingCold implements StorageChunkSource {
+class ConcurrencyTrackingStorage implements StorageChunkSource {
   private readonly inner = new MemoryStorageChunkSource();
   private inFlight = 0;
   peak = 0;
@@ -62,7 +62,7 @@ class ConcurrencyTrackingCold implements StorageChunkSource {
  * Seed two segments that share every one of `chunks` chunk keys, so the intersection has to fetch all of them
  * and the window is the only thing limiting how many are resident.
  */
-function seedOverlapping(storage: ConcurrencyTrackingCold, chunks: number): void {
+function seedOverlapping(storage: ConcurrencyTrackingStorage, chunks: number): void {
   for (let key = 0; key < chunks; key++) {
     storage.seedChunk({ segment: 'a', chunkKey: key }, [1, 2, 3]);
     storage.seedChunk({ segment: 'b', chunkKey: key }, [2, 3, 4]);
@@ -76,7 +76,7 @@ async function drain(it: AsyncIterable<number>): Promise<number> {
 }
 
 async function peakFor(chunks: number, concurrency?: number) {
-  const storage = new ConcurrencyTrackingCold();
+  const storage = new ConcurrencyTrackingStorage();
   const store = new CloudRoaring({ storage });
   seedOverlapping(storage, chunks);
   const yielded = await drain(
@@ -138,7 +138,7 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
   it('bounds the window across three operands too', async () => {
     // The ceiling is `concurrency × operands`, so it must move with operand count in the way documented —
     // a bound that only holds for the two-segment case would be a bound on the test, not the code.
-    const storage = new ConcurrencyTrackingCold();
+    const storage = new ConcurrencyTrackingStorage();
     const store = new CloudRoaring({ storage });
     for (let key = 0; key < 120; key++) {
       for (const seg of ['a', 'b', 'c'])
@@ -156,7 +156,7 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
     // suppression case (`andNot` against a large opt-out list) is precisely where an unbounded window would
     // hurt most in production.
     for (const op of ['andNot', 'union'] as const) {
-      const storage = new ConcurrencyTrackingCold();
+      const storage = new ConcurrencyTrackingStorage();
       const store = new CloudRoaring({ storage });
       seedOverlapping(storage, 150);
       const a = store.segment('a');

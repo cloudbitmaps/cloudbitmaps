@@ -1,5 +1,5 @@
 /**
- * `@cloudbitmaps/core/s3` — the S3 storage driver subpath entry.
+ * `@cloudbitmaps/core/s3` — the S3 driver subpath entry: the storage tier AND the registry.
  *
  * Kept out of the main entry point so the core package stays SDK-free: `@aws-sdk/client-s3` is an
  * **optional peerDependency** that only consumers of this subpath install. Import as:

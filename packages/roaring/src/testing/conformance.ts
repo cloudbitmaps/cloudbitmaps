@@ -81,7 +81,7 @@ async function expectValidationReject(p: Promise<unknown>): Promise<void> {
  * Contract tests for a {@link StorageChunkSource}. `makeSource` MUST build a fresh source seeded with the
  * given chunks (each an immutable Storage bitmap) and nothing else.
  */
-export function coldChunkSourceConformance(
+export function storageChunkSourceConformance(
   label: string,
   makeSource: (
     chunks: Array<{ chunkKey: number; bitmap: SafeBitmap }>,

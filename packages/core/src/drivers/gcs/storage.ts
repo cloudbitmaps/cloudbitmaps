@@ -30,7 +30,7 @@ import {
 } from '@/core/errors';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectName,
+  storageObjectName,
   normalizeGcsPrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
@@ -88,7 +88,7 @@ export class GcsStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = coldObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
     const sink = new GcsUploadSink(this.file(objectName), this.maxObjectBytes, this.threshold);
     try {
       await write(sink);
@@ -111,7 +111,7 @@ export class GcsStorageDriver implements IStorageDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // GCS `end` is inclusive.
       const [buf] = await this.file(objectName).download({
@@ -131,7 +131,7 @@ export class GcsStorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // Two round-trips (metadata for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op hot
@@ -153,7 +153,7 @@ export class GcsStorageDriver implements IStorageDriver {
   async delete(key: GenKey): Promise<void> {
     // Idempotent: `ignoreNotFound` so a racing/retried GC sweep of an absent object is a no-op.
     try {
-      await this.file(coldObjectName(this.prefix, key)).delete({ ignoreNotFound: true });
+      await this.file(storageObjectName(this.prefix, key)).delete({ ignoreNotFound: true });
     } catch (err) {
       throw this.mapError(err);
     }

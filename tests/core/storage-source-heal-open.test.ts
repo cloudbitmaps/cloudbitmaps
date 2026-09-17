@@ -20,7 +20,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
-const freshCold = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(root, `d${n++}`));
+const freshStorage = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(root, `d${n++}`));
 
 /**
  * A registry that answers "generation 0 is current" and, in the same breath, lets a publish + sweep land —
@@ -50,7 +50,7 @@ function sweepingRegistry(
 
 describe('CrbmStorageChunkSource heals a generation swept before the reader opens', () => {
   it('getChunk does not surface NotFoundError when the resolved generation is gone by open time', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
 
@@ -69,7 +69,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
   });
 
   it('currentGeneration does not surface NotFoundError in the same race', async () => {
-    const storage = freshCold();
+    const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
 
@@ -93,7 +93,7 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
  */
 function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver) {
   const calls = { regGet: 0, getTail: 0 };
-  const countedCold: IStorageDriver = {
+  const countedStorage: IStorageDriver = {
     capabilities: () => storage.capabilities(),
     getTail: (k, m) => {
       calls.getTail++;
@@ -113,12 +113,12 @@ function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver)
       };
     },
   }) as unknown as IRegistryDriver;
-  return { calls, storage: countedCold, registry: countedRegistry };
+  return { calls, storage: countedStorage, registry: countedRegistry };
 }
 
 /** The pointer names a generation whose object is gone for good — the forbidden `missing-storage-generation` state. */
 async function tornSegment(): Promise<ReturnType<typeof counting>> {
-  const storage = freshCold();
+  const storage = freshStorage();
   const registry = new MemoryRegistryDriver();
   await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
   await storage.delete({ ...SEG, generation: 0 });
@@ -145,7 +145,7 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
   it('an error that is NOT NotFound propagates on the first attempt, unretried', async () => {
     // The widened `try` now encloses the registry read and the reader open, so it could have swallowed faults
     // that have nothing to do with a swept generation. Only `NotFoundError` may be retried.
-    const storage = freshCold();
+    const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
     let regGet = 0;

@@ -33,7 +33,7 @@ import {
 } from '@/core/errors';
 import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectName,
+  storageObjectName,
   normalizeAzurePrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
@@ -113,7 +113,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = coldObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
     const sink = new AzureBlockBlobSink(
       this.blob(objectName),
       this.blockBytes,
@@ -145,7 +145,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       const res = await this.blob(objectName).download(offset, length);
       const bytes = await collect(res.readableStreamBody);
@@ -163,7 +163,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op hot
@@ -185,7 +185,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
   async delete(key: GenKey): Promise<void> {
     // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
     try {
-      await this.blob(coldObjectName(this.prefix, key)).deleteIfExists();
+      await this.blob(storageObjectName(this.prefix, key)).deleteIfExists();
     } catch (err) {
       throw this.mapError(err);
     }

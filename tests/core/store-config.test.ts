@@ -138,8 +138,8 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     });
 
     it('rejects a `storage` that is neither an IStorageDriver nor a StorageChunkSource', () => {
-      const notCold = {} as unknown as IStorageDriver; // e.g. a typo / wrong object
-      expect(() => new CloudRoaring({ storage: notCold })).toThrow(ValidationError);
+      const notAStorageDriver = {} as unknown as IStorageDriver; // e.g. a typo / wrong object
+      expect(() => new CloudRoaring({ storage: notAStorageDriver })).toThrow(ValidationError);
     });
 
     it('rejects a nullish `storage` with a typed error (not a raw TypeError)', () => {

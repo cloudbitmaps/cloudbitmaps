@@ -62,14 +62,14 @@ function world() {
   return { storage, registry, dropDeps, clock, store, load };
 }
 
-async function coldGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
+async function storageGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
   for await (const key of storage.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
 }
 
 /** A Storage driver that is up for everything except the one method a test wants to fail. */
-function faultyCold(base: IStorageDriver, overrides: Partial<IStorageDriver>): IStorageDriver {
+function faultyStorage(base: IStorageDriver, overrides: Partial<IStorageDriver>): IStorageDriver {
   return {
     capabilities: () => base.capabilities(),
     putImmutable: (k, fn) => base.putImmutable(k, fn),
@@ -126,9 +126,9 @@ describe('retireExpired — selection', () => {
 
     // The effects, not just the report: every generation of both retired segments is gone — including the
     // superseded one, which no reader could reach but the bucket was still billing for.
-    expect(await coldGenerations(w.storage, { segment: 'gone-once' })).toEqual([]);
-    expect(await coldGenerations(w.storage, { segment: 'gone-twice' })).toEqual([]);
-    expect(await coldGenerations(w.storage, { segment: 'later' })).toEqual([0]);
+    expect(await storageGenerations(w.storage, { segment: 'gone-once' })).toEqual([]);
+    expect(await storageGenerations(w.storage, { segment: 'gone-twice' })).toEqual([]);
+    expect(await storageGenerations(w.storage, { segment: 'later' })).toEqual([0]);
     expect(await w.store().segment('gone-once').count()).toBe(0);
     expect(await w.store().segment('gone-twice').count()).toBe(0);
     expect(await w.store().segment('later').count()).toBe(1);
@@ -190,7 +190,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     expect(entry.action === 'would-retire' && entry.result.wouldDelete).toEqual([0]);
     expect(entry.action === 'would-retire' && entry.result.wouldCryptoShred).toBe(false);
 
-    expect(await coldGenerations(w.storage, { segment: 'd' })).toEqual([0]);
+    expect(await storageGenerations(w.storage, { segment: 'd' })).toEqual([0]);
     expect((await w.registry.get({ segment: 'd' }))!.status).toBe('active');
     expect(await w.store().segment('d').count()).toBe(2);
   });
@@ -226,7 +226,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
       await w.store().setRetention({ segment: day }, { expiresAt: EXPIRED });
     }
     // A Storage driver that cannot enumerate one segment — the shape of a partial outage mid-sweep.
-    const storage = faultyCold(w.storage, {
+    const storage = faultyStorage(w.storage, {
       list: (ref) => (ref.segment === 'boom' ? listUnavailable() : w.storage.list(ref)),
     });
 
@@ -247,7 +247,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     // tombstone is flipped BEFORE the Storage sweep, precisely so a failure part-way leaks bytes instead of leaving
     // a segment that still answers `true`. What the sweep owes the caller is the entry above.
     expect((await w.registry.get({ segment: 'boom' }))!.status).toBe('destroyed');
-    expect(await coldGenerations(w.storage, { segment: 'boom' })).toEqual([0]);
+    expect(await storageGenerations(w.storage, { segment: 'boom' })).toEqual([0]);
     // And the leak is not silent on the next pass either: the tombstone carries the sweep's own retirement stamp,
     // so a later sweep re-examines it, cannot prove the storage is gone, and says so rather than purging the row.
     const followUp = await retireExpired({ ...w.dropDeps, storage }, { now: T0 + 2 * DAY });
@@ -304,7 +304,7 @@ describe('retireExpired — what the adversarial review found', () => {
       await w.load(day, [1]);
       await w.store().setRetention({ segment: day }, { expiresAt: EXPIRED });
     }
-    const storage = faultyCold(w.storage, { list: () => listUnavailable() });
+    const storage = faultyStorage(w.storage, { list: () => listUnavailable() });
 
     const res = await retireExpired({ ...w.dropDeps, storage }, { now: T0, limit: 2 });
     expect(res.limited).toBe(true); // …and it says so, rather than looking like a clean pass
@@ -496,7 +496,7 @@ describe('retireExpired — tombstone purge', () => {
 
     const res = await retireExpired(w.dropDeps, { now: T0 + 2 * DAY });
     expect(res.tombstonesPurged).toBe(1);
-    expect(await coldGenerations(w.storage, { segment: 'day' })).toEqual([]); // the billing leak is gone
+    expect(await storageGenerations(w.storage, { segment: 'day' })).toEqual([]); // the billing leak is gone
     expect(await w.registry.get({ segment: 'day' })).toBeNull();
   });
 
@@ -507,7 +507,7 @@ describe('retireExpired — tombstone purge', () => {
     await w.load('day', [1]);
     await w.store().setRetention({ segment: 'day' }, { expiresAt: EXPIRED });
     await retireExpired(w.dropDeps, { now: T0 });
-    const storage = faultyCold(w.storage, { list: () => listUnavailable() });
+    const storage = faultyStorage(w.storage, { list: () => listUnavailable() });
 
     const res = await retireExpired({ ...w.dropDeps, storage }, { now: T0 + 2 * DAY });
     expect(res.tombstonesPurged).toBe(0);
@@ -524,7 +524,7 @@ describe('retireExpired — tombstone purge', () => {
     await w.store().setRetention({ segment: 'day' }, { expiresAt: EXPIRED });
     await retireExpired(w.dropDeps, { now: T0 });
     await bulkLoadCrbmGeneration(w.storage, { segment: 'day', generation: 7 }, [1]); // a straggler object
-    const storage = faultyCold(w.storage, {
+    const storage = faultyStorage(w.storage, {
       delete: () => Promise.reject(new Error('object locked')),
     });
 
@@ -534,7 +534,7 @@ describe('retireExpired — tombstone purge', () => {
       { segment: 'day', namespace: undefined, action: 'skipped', reason: 'tombstone-not-empty' },
     ]);
     expect((await w.registry.get({ segment: 'day' }))!.status).toBe('destroyed');
-    expect(await coldGenerations(w.storage, { segment: 'day' })).toEqual([7]); // still there, still reported
+    expect(await storageGenerations(w.storage, { segment: 'day' })).toEqual([7]); // still there, still reported
   });
 
   it('charges tombstone purges against the same per-cycle limit', async () => {
@@ -614,14 +614,14 @@ describe('store.retireExpired', () => {
     await w.load('day', [1, 2, 100_000]);
     await w.load('day', [1, 2, 3, 100_000]);
     await w.store().setRetention({ segment: 'day' }, { expiresAt: EXPIRED });
-    expect(await coldGenerations(w.storage, { segment: 'day' })).toEqual([0, 1]);
+    expect(await storageGenerations(w.storage, { segment: 'day' })).toEqual([0, 1]);
 
     const res = await w.store().retireExpired();
     expect(res.retired).toBe(1);
     const entry = res.entries[0]!;
     expect(entry.action === 'retired' && entry.result.generationsDeleted).toEqual([0, 1]);
     expect(entry.action === 'retired' && entry.result.generationsRemaining).toEqual([]);
-    expect(await coldGenerations(w.storage, { segment: 'day' })).toEqual([]);
+    expect(await storageGenerations(w.storage, { segment: 'day' })).toEqual([]);
     expect(await w.store().segment('day').count()).toBe(0);
   });
 });

@@ -30,7 +30,7 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
 }
 
 /** The full S3 key of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
-export function coldObjectKey(prefix: string | undefined, key: GenKey): string {
+export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
   }

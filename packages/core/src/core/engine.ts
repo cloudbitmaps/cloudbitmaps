@@ -102,8 +102,8 @@ export class SegmentEngine {
   /** Membership: one chunk lookup — the HOT cache, else one Storage fetch of that chunk. */
   async has(seg: SegmentRef, id: number): Promise<boolean> {
     const { chunkKey, remainder } = splitId(id);
-    const storage = await this.storageChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
-    return storage ? storage.has(remainder) : false;
+    const chunk = await this.storageChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
+    return chunk ? chunk.has(remainder) : false;
   }
 
   /**
