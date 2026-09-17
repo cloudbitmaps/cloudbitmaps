@@ -15,6 +15,44 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the packages are ESM-only, and `engines` now requires Node >=22.12.** The CJS bundle is gone;
+  `dist/` ships one ES module per entry and the exports map offers a single `default` condition.
+
+  It was never honest packaging. The map declared one `"types"` for both conditions while the package is
+  `"type": "module"`, so a CommonJS consumer was handed an *ESM* declaration file to describe a CJS runtime —
+  `attw` calls it "masquerading as ESM", `publint` warns that "the types only work when dynamically importing
+  the package, even though the package exports CJS". The two honest options were to build a real `.d.cts`
+  tree or to stop shipping CJS. Shipping CJS bought little: Node has loaded ESM from `require()` since 22.12,
+  so a CommonJS codebase keeps working —
+
+  ```js
+  const { CloudRoaring } = require('@cloudbitmaps/roaring'); // still works, via require(esm)
+  ```
+
+  — and `import` is unaffected, as is bundling: esbuild bundles the package to **both** ESM and CommonJS
+  output, so a bundler targeting CJS consumes it fine.
+
+  **What breaks at runtime:** a CommonJS consumer on Node 22.0–22.11, where `require()` of an ES module
+  throws `ERR_REQUIRE_ESM`. That is the whole of the *runtime* blast radius, and it is why the floor gained a
+  minor rather than staying `>=22`: measured, 22.11.0 throws, 22.12.0 loads, and AWS Lambda's `nodejs22.x`
+  runs 22.23 — well clear, and the release is proved against that image on every CI run.
+
+  **One type-level caveat, which this release does not introduce and does not fix:** a *TypeScript* CommonJS
+  consumer on `module: node16` gets `TS1479` on a static import and needs `nodenext` (which understands
+  `require(esm)`) or a dynamic `import()`. That error fired identically before this change — verified against
+  a build that still had the CJS bundle — because the exports map has always offered a single ESM `"types"`.
+  What changes is the remedy rather than the symptom: it used to be a packaging gap that a `.d.cts` tree
+  would have closed, and it is now simply correct, because there is no CommonJS entry left to describe.
+
+  Two things get *better* rather than merely simpler. The self-contained CJS bundle was the only reason
+  `instanceof` failed across a driver subpath — the ESM subpaths share a chunk with the main entry, so within
+  one installed copy the error classes are now the same objects. (The `Symbol.for` predicates are still the
+  right thing to catch with: they also hold when two copies of the package are in play, which `instanceof`
+  never will.) And the SDK-free gate got stronger: it used to lean on the CJS bundle inlining lazily-imported
+  modules, and now walks the main entry's transitive closure directly, through `import()` as well as `from`.
+
 ### Fixed
 
 - **Published types now resolve under `node16`/`nodenext`.** The emitted `.d.ts` files named their relative

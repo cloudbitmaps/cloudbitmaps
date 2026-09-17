@@ -213,6 +213,14 @@ npm i @cloudbitmaps/roaring    # the engine + in-memory & local drivers (one thi
 npm i @aws-sdk/client-s3       # only if you use the S3 tier
 ```
 
+> **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
+> unaffected, and so is bundling — the package bundles to CommonJS output fine if that is what you emit.
+>
+> A CommonJS codebase can load it too: `require('@cloudbitmaps/roaring')` works through Node's `require(esm)`,
+> which is exactly why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). **If you are on
+> TypeScript**, a `.ts` file in a CommonJS package needs `"module": "nodenext"` — `node16` does not know about
+> `require(esm)` and will report `TS1479` on the import. `nodenext` is the right setting for Node 22 anyway.
+
 **You install one package.** `@cloudbitmaps/roaring` is the *flavor* — the roaring codec + the `CloudRoaring`
 facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds every storage driver.
 Core arrives **transitively** — you never install it, and the subpaths below re-export its drivers so
@@ -576,8 +584,9 @@ dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring`
 
 ## Building & contributing
 
-A fresh clone passes the full gate with no manual setup. You need **Node ≥ 20** (`.nvmrc` pins 22) and
-**pnpm 9**; Docker is needed only for the integration lane.
+A fresh clone passes the full gate with no manual setup. You need **Node ≥ 22.12** (`.nvmrc` pins the major,
+22, which resolves to a release well past the floor) and **pnpm 9**; Docker is needed only for the integration
+lane.
 
 ```bash
 pnpm install

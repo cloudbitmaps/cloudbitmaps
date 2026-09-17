@@ -460,9 +460,13 @@ Two things worth knowing:
 
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
 `isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
-errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`): those subpaths are
-separate bundles, so a driver-thrown error is not `instanceof` the class object from the core entry in CJS. The
-predicates match a `Symbol.for` brand + the runtime `name`, so they hold across bundles.
+errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`).
+
+Within a single installed copy `instanceof` does hold: the driver subpaths share a chunk with the main entry,
+so the error classes are the same objects. It stops holding as soon as **two copies of the package are in
+play** — a version skew your installer could not dedupe, or a bundler that emits the shared chunk twice — and
+the failure is silent, because a `catch` that no longer matches simply falls through to the next handler.
+The predicates match a `Symbol.for` brand plus the runtime `name`, so they hold either way.
 
 ---
 

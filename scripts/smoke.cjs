@@ -119,15 +119,14 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
  * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
  * never called the feature: a bundler resolves specifiers before it tree-shakes.
  *
- * WHAT IS CHECKED. The CJS entry, the ESM entry, the chunks the ESM entry imports statically, and the
- * published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
+ * WHAT IS CHECKED. The ESM entry, every module reachable from it (transitively, lazy `import()` included),
+ * and the published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
  * `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a hard `Cannot find module` for any
  * consumer building with `skipLibCheck: false` who did not install the optional peer.
  *
- * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read.
- * A lazily-imported chunk is not walked either — though note the CJS bundle has no code splitting, so it
- * inlines a lazy import anyway and catches it there; the ESM walk is insurance for the day CJS goes away,
- * which is why it asserts it actually found chunks rather than silently walking none.
+ * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read, and
+ * neither is the chunk only they share — unreachable from the main entry, which is the whole point.
+ * The walk asserts it actually reached a chunk rather than silently covering none.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
@@ -167,21 +166,45 @@ function assertEntrySdkFree(pkgDir) {
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
-  const esm = read('index.js');
-  const staticChunks = [...esm.matchAll(/from\s*["'](\.\/chunk-[^"']+)["']/g)].map((m) =>
-    m[1].replace('./', ''),
-  );
-  // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal above.
-  // Rename it there and this walk would quietly cover nothing, so make that loud instead.
-  if (staticChunks.length === 0) {
+  // Everything the main entry can reach, followed TRANSITIVELY and through lazy `import()` as well as
+  // static `from`.
+  //
+  // This used to read `index.cjs` plus the chunks `index.js` imported statically — one level, static only —
+  // and the CJS bundle was what covered the rest, because it had no code splitting and therefore inlined a
+  // lazily-imported module instead of emitting a chunk for it. Dropping the CJS bundle removed that
+  // incidental cover, so the walk has to earn it directly. The closure is strictly stronger than what CJS
+  // gave: it reaches a lazy chunk, a chunk imported only by another chunk, and any nesting of the two.
+  //
+  // It also stays correctly SCOPED. A driver-only chunk is not reachable from `index.js` — verified: each
+  // package emits one chunk shared by the three driver subpaths and never imported by the main entry — so
+  // it is not walked, which is right, since naming an SDK is exactly what a driver is for.
+  const reachable = (entry) => {
+    const seen = new Set();
+    const queue = [entry];
+    while (queue.length > 0) {
+      const rel = queue.shift();
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      for (const spec of allSpecifiers(read(rel))) {
+        const next = path.normalize(path.join(path.dirname(rel), spec));
+        if (existsSync(path.join(dist, next))) queue.push(next);
+      }
+    }
+    return [...seen];
+  };
+  const entryGraph = reachable('index.js');
+
+  // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
+  // Rename it there and this walk would quietly cover less, so make that loud instead.
+  if (!entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
-      `@cloudbitmaps/${pkgDir}: dist/index.js imports no ./chunk-* file, so the chunk walk covers nothing. ` +
+      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file, so the chunk walk covers nothing. ` +
         `Either the build stopped splitting, or \`chunkNames\` in scripts/build.mjs no longer emits ` +
         `\`chunk-\` — update the pattern here to match.`,
     );
   }
 
-  for (const file of ['index.cjs', 'index.js', ...staticChunks, ...declarationFiles(dist)]) {
+  for (const file of [...entryGraph, ...declarationFiles(dist)]) {
     const hits = findSdkSpecifiers(read(file));
     if (hits.length > 0) {
       throw new Error(
@@ -196,7 +219,7 @@ function assertEntrySdkFree(pkgDir) {
   }
   console.log(
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
-      `(cjs, esm, ${staticChunks.length} static chunk(s), ${declarationFiles(dist).length} .d.ts)`,
+      `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
   );
 
   // Every relative specifier in an emitted .d.ts must carry an explicit extension, and must resolve.
