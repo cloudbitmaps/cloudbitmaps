@@ -67,11 +67,22 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
 | `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
 
+**A backend comes from one of these five classes, or from `createBackend`.** A plain `{ storage, registry }` object is
+refused — it is also the shape of the free functions' deps, so before this it was possible to build a store
+from halves belonging to two *unrelated* stores, which constructed happily and then read as **empty** because
+the pointer it consulted lived where nothing had been written.
+
+| function | what it is for |
+|---|---|
+| `createBackend({ storage, registry })` → `StorageBackend` | the deliberate door, for what a class cannot express: a driver wrapped for auditing/metrics/tenant-scoping, a registry in a database you already run, a fault-injecting double in a test. It validates each half, but **cannot** check that the two agree — the driver interfaces expose no location — so calling it is you taking that on. |
+| `isStorageBackend(value)` → `value is StorageBackend` | checks the brand, not the shape |
+
 Each builds its own SDK client unless you pass one, exposes both halves as `.storage` and `.registry`, and
 accepts an injected `now` for deterministic tests.
 
-The individual drivers remain exported for wiring a backend does not cover — a different store for the pointer
-than for the objects, a decorator around one half, a backend of your own:
+The individual drivers remain exported for wiring a backend class does not cover — a different store for the
+pointer than for the objects, or a decorator around one half. Combine them with `createBackend`; you cannot
+write your own class implementing `StorageBackend`, because the brand is not exported:
 
 | Slot | in-memory | local disk | cloud |
 |---|---|---|---|
@@ -461,7 +472,7 @@ Every export, by entry point. This section is the completeness anchor the sync t
 
 ### `@cloudbitmaps/roaring` — values
 
-`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` ·
+`CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `createBackend` · `isStorageBackend` ·
 `MemoryStorageDriver` · `MemoryRegistryDriver` · `MemoryStorageChunkSource` · `PinnedStorageChunkSource` ·
 `LocalFsStorageDriver` · `LocalFsRegistryDriver` · `bulkLoadCrbmGeneration` · `writeCrbmGeneration` ·
 `publishGeneration` · `CrbmStorageChunkSource` · `nextGeneration` · `gcOrphanGenerations` · `loadSegment` · `listGenerations` · `rollbackSegment` · `segmentExists` · `listSegments` · `eraseIdFromSegment` ·

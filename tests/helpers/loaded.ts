@@ -12,6 +12,7 @@
  *    end, and the fixture for anything that touches generations, the registry, or the lifecycle helpers.
  */
 import {
+  MemoryStorage,
   CloudRoaring,
   MemoryStorageChunkSource,
   MemoryStorageDriver,
@@ -63,6 +64,8 @@ export function seededStore(
 
 export interface LoadedStore {
   readonly store: CloudRoaring;
+  /** The backend both halves came from — pass this to build a second store over the same data. */
+  readonly backend: MemoryStorage;
   readonly storage: MemoryStorageDriver;
   readonly registry: MemoryRegistryDriver;
   /** Load `ids` as the next generation of `seg` and publish it — the production write path. */
@@ -91,14 +94,14 @@ export async function loadedStore(
   segments: Record<string, Iterable<number>> = {},
   options: Omit<CloudRoaringOptions, 'storage'> = {},
 ): Promise<LoadedStore> {
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver();
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
   const pinned = options.seams?.clock === undefined && options.cache?.genTtlMs === undefined;
   const store = new CloudRoaring({
     ...options,
     // Pin the generation unless the caller is deliberately exercising the refresh path.
     ...(pinned ? { cache: { ...options.cache, genTtlMs: 0 } } : {}),
-    storage: { storage: storage, registry: registry },
+    storage: backend,
   });
   const load: LoadedStore['load'] = async (seg, ids) => {
     const ref = asRef(seg);
@@ -113,7 +116,7 @@ export async function loadedStore(
     });
   };
   for (const [name, ids] of Object.entries(segments)) await load(name, ids);
-  return { store, storage, registry, load };
+  return { store, backend, storage, registry, load };
 }
 
 /** Drain an async iterable of ids into an array. */

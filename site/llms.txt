@@ -12,7 +12,7 @@ chunks that can possibly contribute, so intersecting two 2,000,000-id segments t
 and `count()` on a published segment does zero payload reads.
 
 Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
-drivers) arrives transitively. Four storage backends: S3, GCS and Azure Blob as optional-peer subpaths, plus
+drivers) arrives transitively. Five storage backends: S3, GCS and Azure Blob as optional-peer subpaths, plus
 the local filesystem in the main entry. Each of the three clouds hosts both the storage generations and the
 registry, so a deployment needs exactly one cloud account.
 
@@ -24,8 +24,10 @@ their subpaths. There is no separate `registry` option.
 ## How data gets in
 
 Only by loading a whole new generation. `store.load(ref, ids)` writes one immutable object, checks the result is plausible, moves the pointer forward-only, and collects what the move superseded.
-streams an array, a Set or an async cursor into one immutable object and then advances the registry pointer,
-forward-only. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
+It takes an array, a Set or an async cursor.
+A backend (MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both halves and
+is the only thing `storage` accepts; a hand-written `{ storage, registry }` object is refused. To supply a half
+of your own — an instrumented driver, a registry elsewhere — use `createBackend({ storage, registry })`. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
 authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
 remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 publishing their result as a new generation of the destination segment.

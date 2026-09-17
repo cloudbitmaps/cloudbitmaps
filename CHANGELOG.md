@@ -15,6 +15,45 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — a `StorageBackend` must now be built, not assembled.** The port was structural, so any
+  `{ storage, registry }` object satisfied it — and that shape is also the free functions' deps object, which
+  made the wrong thing the easy thing. Concretely, this constructed happily and answered **`0`** for a segment
+  holding three ids:
+
+  ```ts
+  const a = new MemoryStorage(), b = new MemoryStorage();
+  await new CloudRoaring({ storage: a }).load({ segment: 'v' }, [1, 2, 3]);
+
+  // …and then, with halves from two unrelated stores:
+  new CloudRoaring({ storage: { storage: a.storage, registry: b.registry } });
+  //                           ^^^^^^^^^ data      ^^^^^^^^^^ pointer, read from somewhere else
+  ```
+
+  Data in one place, pointer in another; the store reads the pointer, finds nothing, and answers empty — which
+  is indistinguishable from "new segment". That is the exact silent-empty failure one-class-per-backend exists
+  to remove, reachable in five lines of public API. Backends now carry a brand only the classes set, so the
+  store's boundary is closed to the accident: the brand is stamped **non-enumerably**, so neither an object
+  literal nor `{ ...backend, registry: other }` carries it. It is not a security boundary — the symbol is
+  registered, so a determined caller can still write it — but that is deliberate effort equivalent to calling
+  `createBackend`, and the check exists for the accident.
+
+- **Added `createBackend({ storage, registry })`** — the deliberate door, for what a class cannot express: a
+  driver wrapped for auditing, metrics, tenant scoping or client-side encryption; a registry in a database you
+  already run; a fault-injecting double in a test. It validates each half. It **cannot** check that the two
+  agree — the driver interfaces expose no location — so calling it is you taking that on, which is the whole
+  difference between a decision and a mistake. Also exports `isStorageBackend`.
+
+- **A driver that wraps another driver now works instead of being refused.** Such a wrapper holds its inner
+  driver on `.storage`, which used to be indistinguishable from a backend; the store read straight through it
+  and the wrapper's own methods never ran, so an audit or metrics layer was silently removed while every
+  answer still looked right. With the brand it is unambiguously a driver and is actually used. To keep a
+  registry alongside an instrumented half, pass `createBackend({ storage: wrapper, registry })`.
+
+- `MemoryStorage.storage` / `.registry` and the `LocalFsStorage` pair are now typed as their concrete drivers
+  rather than the interfaces, so reading a half off a backend keeps the type a free function needs.
+
 ### Documentation
 
 - **The docs now lead with `store.load(ref, ids)`, not `bulkLoadCrbmGeneration`.** The guide's §3 already
@@ -183,12 +222,14 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   **cleartext and read-only**, which was already true and is now the only way to express it.
 
   **Migrating:** replace the two driver constructions with the backend for your cloud and drop the `registry`
-  key. If you genuinely want the halves apart — a registry in a database you already run, say — pass them as an
-  object literal, which *is* a `StorageBackend`, so nothing downstream changes:
+  key. If you genuinely want the halves apart — a registry in a database you already run, say — build one with
+  `createBackend({ storage, registry })`:
 
   ```ts
-  // Any object with both halves satisfies `StorageBackend` — there is no class to extend.
-  const backend = { storage: new S3StorageDriver({ bucket, prefix }), registry: myRegistryDriver };
+  const backend = createBackend({
+    storage: new S3StorageDriver({ bucket, prefix }),
+    registry: myRegistryDriver,
+  });
   const store = new CloudRoaring({ storage: backend });
   ```
 

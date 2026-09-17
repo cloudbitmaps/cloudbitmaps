@@ -5,13 +5,7 @@ import { NotFoundError, ValidationError } from '@/core/errors';
 import { destroySegment } from '@/core/erasure';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
-import {
-  CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
-  RecordingAuditSink,
-  bulkLoadCrbmGeneration,
-} from '@/index';
+import { MemoryStorage, CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
 import { WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
@@ -29,9 +23,10 @@ import { roaringCodec } from '@/roaring-codec';
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
 function world() {
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver();
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
   return {
+    backend,
     storage,
     registry,
     deps: { storage, registry },
@@ -69,7 +64,7 @@ describe('rollbackSegment', () => {
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
     const store = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1);
@@ -78,7 +73,7 @@ describe('rollbackSegment', () => {
     expect(r).toEqual({ fromGeneration: 1, generation: 0 });
 
     const after = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await after.segment('s', { namespace: 'ns' }).count()).toBe(3);
@@ -168,8 +163,8 @@ describe('rollbackSegment', () => {
   });
 
   it('refuses a crypto-shredded segment — every generation of it is unreadable', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
     await loadSegment(SEG, [1], { storage, registry, codec: roaringCodec, keystore });
     await loadSegment(SEG, [2], { storage, registry, codec: roaringCodec, keystore }, { keep: 9 });
@@ -287,7 +282,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
     );
 
     const store = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
@@ -304,7 +299,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
     const store = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // warm the caches
@@ -316,7 +311,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
     const store = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await store.generations(SEG)).toEqual([

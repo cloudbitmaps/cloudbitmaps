@@ -1,4 +1,5 @@
 import {
+  MemoryStorage,
   CloudRoaring,
   MemoryStorageDriver,
   MemoryRegistryDriver,
@@ -39,8 +40,8 @@ async function generations(storage: MemoryStorageDriver): Promise<number[]> {
 
 describe('erasure reaches an ex-member in a retained generation', () => {
   it('the ordinary re-seed lifecycle: dropped from the audience, then asks for erasure', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry }); // day 1
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [5, 6], { registry }); // day 2, 7 dropped
     await gcOrphanGenerations(REF, { storage, registry }); // the documented post-load call, default keep: 1
@@ -56,21 +57,21 @@ describe('erasure reaches an ex-member in a retained generation', () => {
   });
 
   it('the ledger now lists the segment instead of filtering it out', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [5, 6], { registry });
     await gcOrphanGenerations(REF, { storage, registry });
 
-    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
+    const store = new CloudRoaring({ storage: backend });
     const ledger = await store.eraseSubject(7, { namespace: 'audiences' });
     expect(ledger.erasedFrom).toHaveLength(1);
     expect(ledger.erasedFrom[0]).toMatchObject({ segment: 'active-30d', erased: true });
   });
 
   it('an id that was never in the segment is still `not-member`, and collects nothing', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [5, 6], { registry });
     await gcOrphanGenerations(REF, { storage, registry });
@@ -82,8 +83,8 @@ describe('erasure reaches an ex-member in a retained generation', () => {
   });
 
   it('a current member is unaffected — it still rewrites', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [5, 6, 7], { registry });
 
     const res = await eraseIdFromSegment(REF, 6, { storage, registry, codec: roaringCodec });

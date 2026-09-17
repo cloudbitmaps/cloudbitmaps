@@ -37,13 +37,12 @@ async function world(keystore?: IKeystore) {
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime (no clock ⇒ TTL 0). */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { keystore },
     });
   /** A fresh store with NO keystore — what an encrypted segment must be unreadable through. */
-  const keylessReader = (): CloudRoaring =>
-    new CloudRoaring({ storage: { storage: w.storage, registry: w.registry }, retry: false });
+  const keylessReader = (): CloudRoaring => new CloudRoaring({ storage: w.backend, retry: false });
   return { ...w, deps, reader, keylessReader };
 }
 

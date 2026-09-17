@@ -11,7 +11,8 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ValidationError } from '@/core/errors';
-import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
+import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
+import type { StorageBackend } from '@/core/ports';
 import { MemoryRegistryDriver, MemoryStorageDriver } from './memory';
 import { LocalFsStorageDriver } from './localfs/storage';
 import { LocalFsRegistryDriver } from './localfs/registry';
@@ -28,12 +29,15 @@ export interface MemoryStorageOptions {
  * anything: it is the whole store, held in RAM, so a restart is a data loss.
  */
 export class MemoryStorage implements StorageBackend {
-  readonly storage: IStorageDriver;
-  readonly registry: IRegistryDriver;
+  /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
+  declare readonly [STORAGE_BACKEND]: true;
+  readonly storage: MemoryStorageDriver;
+  readonly registry: MemoryRegistryDriver;
 
   constructor(options: MemoryStorageOptions = {}) {
     this.storage = new MemoryStorageDriver();
     this.registry = new MemoryRegistryDriver(options.now === undefined ? {} : { now: options.now });
+    brandAsBackend(this);
   }
 }
 
@@ -58,8 +62,10 @@ export interface LocalFsStorageOptions {
  * damaged. One `existsSync` at wiring time is a cheap price for not sending someone down that path.
  */
 export class LocalFsStorage implements StorageBackend {
-  readonly storage: IStorageDriver;
-  readonly registry: IRegistryDriver;
+  /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
+  declare readonly [STORAGE_BACKEND]: true;
+  readonly storage: LocalFsStorageDriver;
+  readonly registry: LocalFsRegistryDriver;
 
   constructor(
     readonly root: string,
@@ -78,5 +84,6 @@ export class LocalFsStorage implements StorageBackend {
       join(root, 'registry'),
       options.now === undefined ? {} : { now: options.now },
     );
+    brandAsBackend(this);
   }
 }

@@ -1,9 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
+  MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
   dropSegment,
   gcOrphanGenerations,
@@ -63,8 +62,7 @@ const seed = (w: World, ids: number[]): Promise<unknown> => w.load(SEG, ids);
 const handle = (w: World) => w.store.segment(SEG.segment, { namespace: SEG.namespace });
 
 /** A reader that has cached nothing — sees the truth at once (see the "only eventually empty" test). */
-const fresh = (w: World): CloudRoaring =>
-  new CloudRoaring({ storage: { storage: w.storage, registry: w.registry }, retry: false });
+const fresh = (w: World): CloudRoaring => new CloudRoaring({ storage: w.backend, retry: false });
 
 async function generationsInStorage(w: World): Promise<number[]> {
   const gens: number[] = [];
@@ -663,8 +661,8 @@ describe('store.dropSegment (facade)', () => {
 
   it('throws UnsupportedError when the store has no raw storage driver', async () => {
     // The docstring promises this, and nothing asserted it.
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const store = new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry }),
       retry: false,

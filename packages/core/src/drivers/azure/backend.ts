@@ -8,6 +8,7 @@
  * scoped. Supply `containerClient` directly, or give a `connectionString` + `container` and one is built.
  */
 import { BlobServiceClient, type ContainerClient } from '@azure/storage-blob';
+import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
 import { ValidationError } from '@/core/errors';
 import { AzureBlobStorageDriver } from './storage';
@@ -27,6 +28,8 @@ export interface AzureBlobStorageOptions {
 }
 
 export class AzureBlobStorage implements StorageBackend {
+  /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
+  declare readonly [STORAGE_BACKEND]: true;
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** The container client both halves share — built here unless one was supplied. */
@@ -64,5 +67,6 @@ export class AzureBlobStorage implements StorageBackend {
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
     });
+    brandAsBackend(this);
   }
 }

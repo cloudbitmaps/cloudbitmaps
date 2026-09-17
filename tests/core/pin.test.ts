@@ -1,4 +1,6 @@
 import {
+  createBackend,
+  MemoryStorage,
   CloudRoaring,
   InProcessKeystore,
   MemoryStorageChunkSource,
@@ -26,18 +28,18 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 }
 
 async function world(opts: { keystore?: InProcessKeystore } = {}) {
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver();
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
   await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], {
     registry,
     keystore: opts.keystore,
   });
   await bulkLoadCrbmGeneration(storage, { ...OTHER, generation: 0 }, [2, 3, 4], { registry });
   const store = new CloudRoaring({
-    storage: { storage: storage, registry: registry },
+    storage: backend,
     encryption: { keystore: opts.keystore },
   });
-  return { storage, registry, store };
+  return { backend, storage, registry, store };
 }
 
 describe('pin holds one segment at one generation', () => {
@@ -54,7 +56,7 @@ describe('pin holds one segment at one generation', () => {
     expect(await collect(snap.iterate())).toEqual([1, 2, 3]);
     expect(await snap.has(5)).toBe(false);
 
-    const fresh = new CloudRoaring({ storage: { storage: w.storage, registry: w.registry } });
+    const fresh = new CloudRoaring({ storage: w.backend });
     expect(await fresh.segment('s').count()).toBe(5); // …while the world moved on
   });
 
@@ -125,14 +127,14 @@ describe('pin holds one segment at one generation', () => {
   });
 
   it('the pinned reader is bounded by the same LRU — a pin costs a number, not an index', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     for (let i = 0; i < 12; i++) {
       await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, [i], { registry });
     }
     // A ceiling far below the number of pins we are about to hold.
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       cache: { readerMax: 2 },
     });
     const pins = [];
@@ -163,7 +165,7 @@ describe('pin holds one segment at one generation', () => {
     } as unknown as MemoryStorageDriver;
 
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: createBackend({ storage, registry }),
       retry: false,
     });
     const snap = await store.segment('s').pin();

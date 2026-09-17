@@ -309,8 +309,10 @@ deployment (a registry in a database you already run, say):
 
 Mix freely: storage objects and the registry in **one bucket** is the whole deployment, on any of the three
 clouds — which is exactly what a backend builds for you. To put the registry somewhere else entirely, behind
-the `IRegistryDriver` interface, pass the two halves yourself as `{ storage, registry }`; that object *is* a
-`StorageBackend`, so everything downstream is unchanged.
+the `IRegistryDriver` interface, build the backend deliberately with
+`createBackend({ storage, registry })`. A plain object literal is refused — it was also how halves from two
+unrelated stores got paired by accident, which reads as an empty segment rather than an error. `createBackend`
+cannot check that your two halves agree either; calling it is you taking that on.
 
 ## The whole surface, in three steps
 

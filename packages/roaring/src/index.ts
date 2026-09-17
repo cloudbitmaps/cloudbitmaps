@@ -29,6 +29,7 @@ import {
   CrbmStorageChunkSource,
   DEFAULT_BUDGET,
   DEFAULT_RETRY_POLICY,
+  isStorageBackend,
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
@@ -387,7 +388,7 @@ export interface MaterializeResult {
 /**
  * Resolve the `storage` option to a {@link StorageChunkSource} at construction (wiring-time only — no hot-path cost).
  *
- * `storage` is discriminated **structurally, without a brand**: a raw {@link IStorageDriver} exposes `putImmutable`
+ * `storage` is discriminated by a **brand** for the backend arm and structurally for the other two: a raw {@link IStorageDriver} exposes `putImmutable`
  * (the byte-mover seam); a pre-built {@link StorageChunkSource} exposes `getChunk` (the engine's read seam). The
  * two interfaces are deliberately **disjoint** on these methods (an invariant the driver SDK maintains, pinned
  * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
@@ -408,7 +409,7 @@ export interface MaterializeResult {
 /**
  * Work out what the caller handed us, and build the read path from it.
  *
- * Three accepted shapes, distinguished structurally rather than by `instanceof`, so a backend or driver from a
+ * Three accepted shapes. A backend is identified by its brand, the other two structurally — never by `instanceof`, so a backend or driver from a
  * different copy of the package still works (the same reason the error predicates are brand-based).
  */
 function resolveStorageSource(
@@ -428,43 +429,73 @@ function resolveStorageSource(
   const asBackend = storage as Partial<StorageBackend>;
   const isObject = (v: unknown): v is Record<string, unknown> =>
     v !== null && typeof v === 'object';
-  const storageHalfOk =
-    isObject(asBackend.storage) && typeof asBackend.storage.putImmutable === 'function';
-  const registryHalfOk =
-    isObject(asBackend.registry) && typeof asBackend.registry.compareAndSwap === 'function';
-  const hasBothHalves = storageHalfOk && registryHalfOk;
-
   const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
   const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
 
-  // A decorator is the reason this is checked BEFORE the backend branch. An `IStorageDriver` wrapper that
-  // keeps the thing it wraps on `.storage` — the natural field name now that the tier is called storage — and
-  // a registry on `.registry` satisfies the backend duck-test at the same time as the driver one. Dispatching
-  // on the backend shape alone would read straight through to the halves, and the wrapper's own
-  // `putImmutable`/`getRange`/`getTail` would never run: an audit, metrics, tenant-scoping or client-side
-  // encryption layer silently removed, every answer still correct-looking. That is the exact failure this
-  // whole `StorageBackend` shape exists to rule out, so it is refused rather than guessed at.
-  if (hasBothHalves && (hasGetChunk || hasPutImmutable)) {
+  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of the free functions' deps
+  // object, so before the brand any literal satisfied it — including one holding halves from two unrelated
+  // stores, which the store accepted and then answered empty for a segment that holds data.
+  const isBackend = isStorageBackend(storage);
+
+  // A branded backend that ALSO quacks like a driver or a source is genuinely ambiguous. Unreachable for the
+  // five classes, kept because the alternative to refusing is guessing.
+  if (isBackend && (hasGetChunk || hasPutImmutable)) {
     throw new ValidationError(
-      '`storage` looks like BOTH a StorageBackend (it has `.storage` and `.registry`) and a ' +
-        `${hasGetChunk ? 'StorageChunkSource (it has `getChunk`)' : 'IStorageDriver (it has `putImmutable`)'}` +
-        ' — ambiguous. If this is a driver that wraps another, rename its inner field so it is not `.storage`, ' +
-        'and pass `{ storage: <your wrapper>, registry }` to use it as a backend.',
+      '`storage` is a StorageBackend that also exposes ' +
+        `${hasGetChunk ? '`getChunk`' : '`putImmutable`'} — ambiguous. A backend must not also be a driver ` +
+        'or a source; pass whichever one you mean.',
     );
   }
 
-  // Both halves are present but one fails its duck-test — say which, rather than repeating the generic list.
-  if (!hasBothHalves && isObject(asBackend.storage) && isObject(asBackend.registry)) {
-    const bad = !storageHalfOk
-      ? '`storage` half is missing `putImmutable`'
-      : '`registry` half is missing `compareAndSwap`';
+  // Unbranded, but carrying both halves. Three sub-cases, and they want different things said.
+  const hasStorageHalf = isObject(asBackend.storage);
+  const hasRegistryHalf = isObject(asBackend.registry);
+
+  // (a) A DRIVER that also carries a registry — the audit/metrics/tenant-scoping wrapper. Without this it
+  // falls through to the bare-driver path, where there is no pointer at all: generations resolve by
+  // list-scan, so the store answers from the HIGHEST object in the bucket rather than the published one, and
+  // a load that wrote an object but never published it is served as if it had been. Silently, and with the
+  // wrapper's registry sitting right there unused.
+  if (!isBackend && hasPutImmutable && hasRegistryHalf) {
     throw new ValidationError(
-      `\`storage\` looks like a StorageBackend but its ${bad} — pass a backend such as S3Storage, GcsStorage, ` +
-        'AzureBlobStorage, LocalFsStorage or MemoryStorage, or an object with both halves fully implemented',
+      '`storage` looks like a driver that also carries a `registry`. Passed as a bare driver it would have ' +
+        'no pointer at all — generations would resolve by list-scan, so reads could serve a generation that ' +
+        'was written but never published. If you meant a backend, say so: ' +
+        '`createBackend({ storage: <your driver>, registry })`.',
     );
   }
 
-  if (hasBothHalves) {
+  // (b) Both halves, neither of them a driver or a source: the hand-assembled literal, or a spread of a real
+  // backend with one half swapped. Name the classes AND the door — the five classes cannot express an
+  // instrumented half or a foreign registry, which is exactly the case that lands here.
+  if (!isBackend && !hasGetChunk && !hasPutImmutable && hasStorageHalf && hasRegistryHalf) {
+    const storageOk =
+      typeof (asBackend.storage as Partial<IStorageDriver>).putImmutable === 'function';
+    const registryOk =
+      typeof (asBackend.registry as Partial<IRegistryDriver>).compareAndSwap === 'function';
+    // (c) …and if a half is not actually a driver, say THAT rather than lecturing about buckets.
+    if (!storageOk || !registryOk) {
+      const bad = !storageOk
+        ? '`storage` half is not an IStorageDriver (no `putImmutable`)'
+        : '`registry` half is not an IRegistryDriver (no `compareAndSwap`)';
+      throw new ValidationError(
+        '`storage` looks like a backend but its ' +
+          bad +
+          ' — build one with a backend class, or with `createBackend({ storage, registry })`.',
+      );
+    }
+    throw new ValidationError(
+      '`storage` must be a backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ' +
+        'MemoryStorage. An object with `.storage` and `.registry` is not one: a backend builds both halves ' +
+        'from a single bucket and prefix, so they cannot disagree, and hand-assembling them re-opens exactly ' +
+        'that mismatch — a store whose pointer and generations live in different places reads as empty ' +
+        'rather than failing. If you genuinely want halves of your own — an instrumented driver, a registry ' +
+        'in a database you already run — say so with `createBackend({ storage, registry })`, which is you ' +
+        'taking on that they agree.',
+    );
+  }
+
+  if (isBackend) {
     const backend = storage as StorageBackend;
     return {
       source: new CrbmStorageChunkSource(backend.storage, {

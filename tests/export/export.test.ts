@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
+  createBackend,
+  MemoryStorage,
   CloudRoaring,
   MemoryStorageChunkSource,
   MemoryStorageDriver,
@@ -69,7 +71,7 @@ function freshStore(
   // `cache.genTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
   // reads one snapshot rather than drifting onto a generation published while it was streaming.
   return new CloudRoaring({
-    storage: { storage: storage, registry: registry },
+    storage: createBackend({ storage, registry }),
     retry: false,
     cache: { genTtlMs: 0 },
     encryption: { keystore },
@@ -78,8 +80,8 @@ function freshStore(
 
 describe('store.exportSegments', () => {
   it('roaring: exports each segment’s current generation, round-trips + manifest', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     // Include a u32-boundary id (2³²−1) to exercise portable serialization across a high chunk key.
     await bulkLoadCrbmGeneration(
@@ -110,8 +112,8 @@ describe('store.exportSegments', () => {
   });
 
   it('ndjson: exports the current generation, streamed in batches', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 1 }, [1, 3, 4, 5], {
       registry,
@@ -131,8 +133,8 @@ describe('store.exportSegments', () => {
   });
 
   it('scopes to a namespace when given one', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { namespace: 'ns', segment: 'a', generation: 0 }, [1], {
       registry,
     });
@@ -153,8 +155,8 @@ describe('store.exportSegments', () => {
   });
 
   it('skips crypto-shredded (destroyed) segments', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'live', generation: 0 }, [1, 2], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'gone', generation: 0 }, [3, 4], { registry });
     // Mark 'gone' destroyed (crypto-shred tombstone) directly in the registry.
@@ -168,8 +170,8 @@ describe('store.exportSegments', () => {
   });
 
   it('exports an empty segment as an empty (but valid) bitmap', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
     // An empty generation is a legal, publishable state (a source that produced no rows), so the export has to
     // render it as a valid empty bitmap rather than as a failure or a missing file.
@@ -183,8 +185,8 @@ describe('store.exportSegments', () => {
   });
 
   it('decrypts an encrypted segment transparently (export is cleartext) when the keystore is wired', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     await bulkLoadCrbmGeneration(storage, { segment: 'pii', generation: 0 }, [7, 8, 9], {
       registry,
@@ -203,8 +205,8 @@ describe('store.exportSegments', () => {
   });
 
   it('isolates a segment whose write throws: aborts its partial, records it in failed[], continues', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'bad', generation: 0 }, [1], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'good', generation: 0 }, [2], { registry });
 
@@ -248,8 +250,8 @@ describe('store.exportSegments', () => {
   });
 
   it('records the ORIGINAL fault even if abort() also throws, and still finishes the run', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
 
     const sink: ExportSink = {
@@ -272,8 +274,8 @@ describe('store.exportSegments', () => {
   });
 
   it('isolates a segment whose close() throws — records it, does NOT call abort() (no double-finalize)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1], { registry });
 
     let aborted = false;
@@ -307,8 +309,8 @@ describe('store.exportSegments', () => {
   });
 
   it('ndjson: accounts bytes for the final partial batch (default large cap ⇒ a single flush)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     const { sink, files } = captureSink();
     // The default 64 KiB cap ⇒ the whole segment lands in the single FINAL flush (the `buf.length > 0` path).
@@ -325,8 +327,8 @@ describe('store.exportSegments', () => {
     // registry writes an object nothing points at: still readable by any roaring library (the format's own
     // promise), but not part of this store's set, so it is omitted — and omitted *cleanly*, not recorded as a
     // failure, because it was never enumerated in the first place.
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'registered', generation: 0 }, [1, 2], {
       registry,
     });
