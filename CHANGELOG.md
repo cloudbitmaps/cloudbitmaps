@@ -15,6 +15,26 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Documentation
+
+- **The docs now lead with `store.load(ref, ids)`, not `bulkLoadCrbmGeneration`.** The guide's §3 already
+  framed the primitive correctly as "the layer underneath" — but §1, §2, the README quick start, the npm
+  README and the site landing sample all still taught it first, so a reader met the primitive before the verb.
+  That was history, not design: `bulkLoadCrbmGeneration` shipped several phases before `store.load` existed,
+  and the surrounding prose was never re-centred.
+
+  It matters because the two are not equivalent. `store.load` is four steps — take the next generation number,
+  write the object, **run the empty/shrink guard**, move the pointer, **collect what the move superseded** —
+  and a bare `bulkLoadCrbmGeneration` does neither of the bold ones. Every reader who copied the old quick
+  start got a write path with no guard against an upstream query that returned too little, and generations
+  that accumulate until someone notices the bill.
+
+  It also explains why `registry` looked like something users configure. It is not: a backend derives it, and
+  in the re-centred docs it appears in no user-facing sample at all.
+
+  `bulkLoadCrbmGeneration` and the other free functions are unchanged and still exported, now described as
+  what they are — the lower level, for when you have no store to hold.
+
 ### Changed
 
 - **BREAKING — the 14 flat constructor options become one required `storage` plus six groups.** Five of the

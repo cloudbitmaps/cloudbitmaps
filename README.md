@@ -21,7 +21,7 @@
 > **Works today:** the loaded store over **in-memory** and **local-filesystem** storage, with every cloud driver
 > on its own `@cloudbitmaps/roaring/<backend>` subpath — **object storage** on **S3-compatible** (`/s3`),
 > **GCS** (`/gcs`), and **Azure Blob** (`/azure`); a **segment registry** on each of those same three clouds
-> (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `bulkLoadCrbmGeneration` (write one immutable
+> (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `store.load` (write one immutable
 > generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
 > `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
 > the same pass · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
@@ -127,9 +127,9 @@ MinIO:
 - **The registry** — one small row per segment saying which generation is current (plus its wrapped data key
   and its retention policy). It is the only thing a write mutates, and it moves by compare-and-swap.
 
-**Data enters by loading a generation, never by mutating one.** `bulkLoadCrbmGeneration` streams your ids —
-an array, a Set, or an async cursor straight out of Athena/BigQuery/Postgres — into a single write-once object
-and then advances the pointer. That makes the write path trivially safe in the ways that usually hurt: a crash
+**Data enters by loading a generation, never by mutating one.** `store.load(ref, ids)` streams your ids —
+an array, a Set, or an async cursor straight out of Athena/BigQuery/Postgres — into a single write-once object,
+checks the result is plausible, advances the pointer, and collects what the move superseded. That makes the write path trivially safe in the ways that usually hurt: a crash
 before the publish leaves the previous generation authoritative, a rerun is idempotent, two loaders racing the
 same generation number means one of them gets a `WriteConflictError` rather than a torn segment, and there is
 no such thing as a partially-visible load. The same protocol backs the derived writes — `intersectInto`,
@@ -241,19 +241,14 @@ you pull one in only for the tier you use.
 The in-memory drivers need zero setup — ideal for a first look or a test:
 
 ```ts
-import {
-  CloudRoaring,
-  MemoryStorage,
-  bulkLoadCrbmGeneration,
-} from '@cloudbitmaps/roaring';
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
 
 // One object carries both halves: where the generations go, and where the pointer goes.
-const backend = new MemoryStorage();
+const store = new CloudRoaring({ storage: new MemoryStorage() });
 
 // A load is how data gets in: one immutable object, then the pointer moves to it.
-await bulkLoadCrbmGeneration(backend.storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry: backend.registry });
+await store.load({ segment: 'high-value-shoppers' }, [5, 99_999, 1_234_567_890, 2_000_000_000]);
 
-const store = new CloudRoaring({ storage: backend });
 const seg = store.segment('high-value-shoppers');
 
 await seg.has(1_234_567_890); // → true  (one chunk, from the cache after the first read)
@@ -358,12 +353,17 @@ new CloudRoaring({
 | `store.exportSegments(sink, { format })` | eject every segment to `roaring`/`ndjson` via an injected sink (your exit path) |
 | `CloudRoaring.estimateCost(input)` | planning estimate (static, no data) |
 
-**Out-of-process** free functions (wire their own deps — for scheduled jobs, CLIs, load jobs):
-`bulkLoadCrbmGeneration` (write + publish a generation), `nextGeneration` / `gcOrphanGenerations` (generation
-bookkeeping), `eraseIdFromSegment` (the single-segment erasure rewrite), `destroySegment` / `eraseNamespace`
-(crypto-shred), `dropSegment` (retire + reclaim storage), `setSegmentRetention` / `getSegmentRetention` /
-`clearSegmentRetention` (the policy) and `retireExpired` (the sweep). Schedule them from a cron, a Lambda on a
-timer, or a `CronJob` — nothing here schedules itself.
+**Lower-level free functions.** Everything above is also exported as a standalone function taking explicit
+deps — `bulkLoadCrbmGeneration` (write one generation), `nextGeneration` / `gcOrphanGenerations` (generation
+bookkeeping), `eraseIdFromSegment`, `destroySegment` / `eraseNamespace`, `dropSegment`,
+`setSegmentRetention` / `getSegmentRetention` / `clearSegmentRetention`, and `retireExpired` (the sweep).
+Nothing here schedules itself — run the sweep from a cron, a Lambda on a timer, or a `CronJob`.
+
+**Prefer the store's own methods.** Building a store is free — no I/O, no connection — so a scheduled job has
+no reason to compose a write path by hand, and composing is where steps get dropped: `store.load` runs the
+empty guard *and* collects what the publish superseded, and a bare `bulkLoadCrbmGeneration` does neither.
+Reach for these only when you have no store to hold — most often a read-only store built on a pre-built
+`StorageChunkSource`, where the lifecycle helpers throw by design.
 
 ### What this is not
 
@@ -400,11 +400,15 @@ One call, three input shapes, and it bills **per object, not per id**:
 
 ```ts
 // From memory, from a Set, or straight off a cursor — the ids never all sit in RAM as JS numbers.
-await bulkLoadCrbmGeneration(storage, { segment: 'audience', generation }, athenaCursor(), { registry });
+const result = await store.load({ segment: 'audience' }, athenaCursor());
+if (!result.published) {
+  // A refusal is a normal outcome, not a throw — an upstream query that returned too little is caught here
+  // rather than landing as a silent wipe of a live audience.
+  logger.warn({ reason: result.reason, had: result.cardinalityBefore }, 'audience load refused');
+}
 ```
 
-`generation` is the number after the highest the registry and the bucket know — `nextGeneration(ref, { storage, registry })`
-computes it. Peak memory is the segment's compressed size (~2 MB for a million ids), not the id list: ids are
+The generation number is picked for you, from the highest the registry and the bucket know. Peak memory is the segment's compressed size (~2 MB for a million ids), not the id list: ids are
 folded into per-chunk bitmaps as they arrive and the object streams out in 8 MiB parts. Re-running after a crash
 is safe — a crash before the publish leaves the previous generation authoritative — and two loaders racing the
 same generation number means one gets a `WriteConflictError`, never a torn segment.

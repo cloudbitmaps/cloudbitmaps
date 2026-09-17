@@ -136,19 +136,14 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">quickstart.ts</span><span class="label">No setup</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> {
-  CloudRoaring, MemoryStorage,
-  bulkLoadCrbmGeneration,
-} <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(backend.storage,
-  { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
-  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry: backend.registry });
-
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
+<span class="k">await</span> store.load({ segment: <span class="s">'high-value-shoppers'</span> },
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
 <span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
 <span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span>
 <span class="k">await</span> vips.count();            <span class="c">// exact, 0 payloads</span></code></pre>
@@ -207,7 +202,7 @@ npm audit signatures</code></pre>
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="m">bulkLoadCrbmGeneration(storage, key, ids)</span></td>
+                  <td><span class="m">store.load(ref, ids)</span></td>
                   <td class="from">
                     <strong>The only way data gets in.</strong> Streams an unsorted id source into one
                     immutable <span class="m">.crbm</span> object, then advances the segment's pointer
@@ -314,20 +309,15 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">load.ts</span><span class="label">Per object, not per id</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { bulkLoadCrbmGeneration, nextGeneration }
-  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre class="code-plain"><code><span class="c">// `store` from above — the backend is already wired.</span>
 
 <span class="k">const</span> ref = { namespace: <span class="s">'audience'</span>, segment: <span class="s">'high-value'</span> };
 
 <span class="c">// The warehouse decides the set; hand over the cursor,</span>
 <span class="c">// not an array. Re-run on a cadence — each run</span>
 <span class="c">// publishes the next generation and supersedes the last.</span>
-<span class="k">const</span> generation =
-  <span class="k">await</span> nextGeneration(ref, { storage, registry });
+<span class="k">const</span> r = <span class="k">await</span> store.load(ref, athenaCursor());
 
-<span class="k">const</span> r = <span class="k">await</span> bulkLoadCrbmGeneration(
-  storage, { ...ref, generation }, athenaCursor(), { registry },
-);
 r.cardinality;  <span class="c">// distinct ids now published</span></code></pre>
           </div>
           <div class="tpanel">
@@ -380,10 +370,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 
 <span class="c">// On a cadence — every few minutes, or once at the end</span>
 <span class="c">// of the wave — publish the day so far as one object.</span>
-<span class="k">const</span> generation =
-  <span class="k">await</span> nextGeneration(ref, { storage, registry });
-<span class="k">await</span> bulkLoadCrbmGeneration(storage, { ...ref, generation },
-  sentToday(), { registry });</code></pre>
+<span class="k">await</span> store.load(ref, sentToday());</code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">

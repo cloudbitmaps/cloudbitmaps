@@ -14,7 +14,7 @@ npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
 ```
 
 ```ts
-import { CloudRoaring, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/roaring/s3';
 ```
 
@@ -25,8 +25,8 @@ is an optional peer dependency, so the main entry stays lean. Ships one CLI: `ex
 
 A segment is a set of **write-once `.crbm` generations** in your bucket behind one small registry row saying which
 generation is current. Data gets in by **loading** a new generation — you compute the set upstream (a warehouse
-query, a batch job, a combine of other segments) and `bulkLoadCrbmGeneration` streams it into a single immutable
-object, then advances the pointer forward-only. Nothing mutates a stored bitmap, so a crash before the publish
+query, a batch job, a combine of other segments) and `store.load` streams it into a single immutable object,
+checks the result is plausible, then advances the pointer forward-only. Nothing mutates a stored bitmap, so a crash before the publish
 leaves the previous generation authoritative, a rerun is idempotent, and there is no partially-visible write.
 Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole, checksum-verified generation.
 
@@ -34,11 +34,11 @@ Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole,
 // One bucket is the whole deployment: the generations and the pointer, stated once.
 const backend = new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' });
 
-await bulkLoadCrbmGeneration(backend.storage, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), {
-  registry: backend.registry,
-});
-
 const store = new CloudRoaring({ storage: backend });
+
+// One call is the whole write path: write the object, check it, move the pointer, collect the old generation.
+await store.load({ segment: 'high-value' }, idsFromWarehouse());
+
 const seg = store.segment('high-value');
 
 await seg.has(1_234_567_890); // one chunk — from the cache after the first read

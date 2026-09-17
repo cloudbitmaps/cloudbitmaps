@@ -71,7 +71,7 @@ dependencies** — arrives transitively and is never installed directly.
 
 ### The loaded store
 
-- **One write path: the load.** `bulkLoadCrbmGeneration` builds a generation from an unsorted sync **or async**
+- **One write path: the load.** `store.load` builds a generation from an unsorted sync **or async**
   ID stream without holding the *input* in memory (memory is bounded by the distinct result set, not the input
   length), writes it as one write-once object, verifies it, and publishes it **forward-only** — a CAS on the
   registry pointer that never moves backwards. A segment larger than RAM wants the external-merge bulk load

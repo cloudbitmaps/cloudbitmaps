@@ -306,7 +306,7 @@
                   <td class="from">
                     Ids are u32, same as a bit offset, but a segment changes only by getting a new
                     generation. Compute the set upstream and
-                    <span class="call">bulkLoadCrbmGeneration</span> it as one object.
+                    <span class="call">store.load</span> writes it as one object.
                   </td>
                 </tr>
                 <tr>
@@ -611,17 +611,14 @@
           </div>
           <div class="install">
             <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorage,
-  bulkLoadCrbmGeneration } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(backend.storage,
-  { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
-  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry: backend.registry });
-
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
+<span class="k">await</span> store.load({ segment: <span class="s">'high-value-shoppers'</span> },
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
 <span class="k">await</span> store.segment(<span class="s">'high-value-shoppers'</span>).has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
             <p class="link-row"><a href="../usage.html">Every driver and its peer deps →</a></p>
           </div>

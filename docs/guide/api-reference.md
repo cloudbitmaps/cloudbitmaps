@@ -21,7 +21,7 @@ CloudRoaring            store.segment('name')    <segment>.<gen>.crbm  ·  regis
 ```
 
 A segment holds **IDs** (`u32` integers, `[0, 2³²)`). Data enters a segment **only as a new generation**: a load
-(`bulkLoadCrbmGeneration`) writes one immutable object and then publishes it — a forward-only compare-and-swap of
+(`store.load`) writes one immutable object and then publishes it — a forward-only compare-and-swap of
 the pointer. Every other write in the library is a load in disguise: the `*Into` verbs write a new generation of
 their destination, and a subject erasure rewrites the current generation without one id. Reads (`has` / `count` /
 `iterate` / `intersect` / `union` / `andNot`) resolve the current generation once and read whole, checksum-verified
@@ -98,7 +98,10 @@ expected state in that window) and it does **not** apply to other handles — re
 `setRetention` to make it durable, fleet-visible and reclaimable. A seconds-shaped value is refused at the
 handle rather than silently making the segment permanently empty. `seg.expiresAt` reads it back.
 
-### Load a generation — `bulkLoadCrbmGeneration(storage, { segment, namespace?, generation }, ids, { registry, … })`
+### Load a generation — `store.load(ref, ids, { allowEmpty?, guard?, keep?, audit? })`
+
+The whole write path in one call. The lower-level `bulkLoadCrbmGeneration(storage, key, ids, { registry, … })`
+writes a single object without the guard or the collect, and is listed under the free functions below.
 
 **The write path.** Streams `ids` — any sync **or async** iterable, unsorted, duplicates welcome — into one
 immutable `.crbm` object at `generation`, then publishes it through `registry` (forward-only). Returns a
@@ -186,7 +189,7 @@ it is the same function over the store's own drivers.
 
 | Call | Does |
 |---|---|
-| `bulkLoadCrbmGeneration(storage, key, ids, { registry?, keystore?, requireEncryption?, audit?, codec?, clock?, publish? })` → `BulkLoadResult` | **load** a generation from a (huge, unsorted, sync or async) id stream and publish it — see [above](#load-a-generation--bulkloadcrbmgenerationstorage--segment-namespace-generation--ids--registry) |
+| `bulkLoadCrbmGeneration(storage, key, ids, { registry?, keystore?, requireEncryption?, audit?, codec?, clock?, publish? })` → `BulkLoadResult` | **load** a generation from a (huge, unsorted, sync or async) id stream and publish it — see [above](#load-a-generation--storeloadref-ids--allowempty-guard-keep-audit) |
 | `nextGeneration(ref, { storage, registry })` → `number` | the generation number a writer should take next: one above the highest the registry points at **or** that is present in Storage (a load that wrote its object and crashed before publishing leaves an object above `currentGen`; skipping past it keeps the retry trivial). A segment with no row and no objects starts at `0` |
 | `gcOrphanGenerations(ref, { storage, registry }, { keep? })` → `number[]` | delete superseded generations — everything below `currentGen` except the newest `keep` (default 1) as a grace window for in-flight readers. Never touches `currentGen` or anything above it, and deletes nothing while `currentGen` is `null`. **Exception:** on a `destroyed` segment every generation is garbage and all are collected. The row is read before the listing and acted on after it, so both branches reconcile with a re-read: a tombstone must still be the same row (compared by **token** — a generation number is not an identity, and a re-created name can wear the very `currentGen` the tombstone held), and the ordinary branch takes the **lower** of the pointers read before and after, so a publish landing mid-listing still collects while a pointer that *regressed* — a purge-and-re-create, or a deliberate `rollback` — narrows the cutoff instead. **Throws `WriteConflictError` if the segment changed underneath the pass** (re-checked before every delete, since the deletes are a round trip each — so a refusal may already have deleted some of the objects it will now never report); re-run it. It still returns an empty array for the two cases that really are "nothing to collect" — no row at all, or no pointer yet — so an empty array is **not** a receipt: `eraseIdFromSegment` reads the list as the physical half of its erasure receipt, and verifies that the generation it needed is **gone from the bucket** rather than merely present in this list — a concurrent collector may have taken it first, which is the outcome rather than a failure. `keep` counts distinct generations, not listing entries. Nothing schedules this: the erasure rewrite calls it with `keep: 0`, the retention sweep calls it on tombstones, and a caller writing generations by hand collects on its own cadence. Returns the generations deleted |
 | `publishGeneration(registry, key, { wrappedDeks?, expectFrom? })` → `boolean` | point `currentGen` at `key.generation`. **Forward-only and idempotent**: creates the row if absent, advances via CAS, returns `false` (a no-op) if a newer generation is already current, refuses a `destroyed` row. Separated from the object write so a caller publishes only after the object is durable. `expectFrom` makes it a **read-modify-write**: the publish lands only while `currentGen` is still exactly that number, and returns `false` otherwise — which is what a writer whose content was *derived* from a particular generation needs (the erasure rewrite), as against a load, whose ids come from upstream and lose nothing by winning. New key material is refused on an advance: a segment's encryption is decided at its first generation |
