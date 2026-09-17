@@ -243,18 +243,17 @@ The in-memory drivers need zero setup — ideal for a first look or a test:
 ```ts
 import {
   CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
+  MemoryStorage,
   bulkLoadCrbmGeneration,
 } from '@cloudbitmaps/roaring';
 
-const storage = new MemoryStorageDriver();
-const registry = new MemoryRegistryDriver();
+// One object carries both halves: where the generations go, and where the pointer goes.
+const backend = new MemoryStorage();
 
 // A load is how data gets in: one immutable object, then the pointer moves to it.
-await bulkLoadCrbmGeneration(storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry });
+await bulkLoadCrbmGeneration(backend.storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry: backend.registry });
 
-const store = new CloudRoaring({ storage, registry });
+const store = new CloudRoaring({ storage: backend });
 const seg = store.segment('high-value-shoppers');
 
 await seg.has(1_234_567_890); // → true  (one chunk, from the cache after the first read)
@@ -270,30 +269,42 @@ for await (const id of seg.intersect([store.segment('eu-residents')], { exclude:
 }
 ```
 
-Swap the in-memory drivers for the local-filesystem ones (`LocalFsStorageDriver` + `LocalFsRegistryDriver`, passed
+Swap `MemoryStorage` for `LocalFsStorage('./.cloudbitmaps')` (one root; the generations and the pointer land
 straight in — the store wraps the storage driver in its `.crbm` reader for you) and the same code persists to disk
 and survives a restart — see the **[getting-started guide](docs/guide/getting-started.md)** for that and the
 full operation reference.
 
-For the cloud, you pass **raw drivers** and wire each once — e.g. everything on **S3 alone** (storage objects and
+For the cloud, you pass **one backend** — e.g. everything on **S3 alone** (storage objects and
 the registry in one bucket; no other service):
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
-import { S3Client } from '@aws-sdk/client-s3';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
 
-const s3 = new S3Client({ region: 'us-east-1' });
+// Bucket stated once, for both the generations and the pointer. Builds its own client from the
+// ambient credential chain; pass `client`, or `endpoint` + `pathStyle` + `credentials`, when you need to.
 const store = new CloudRoaring({
-  storage: new S3StorageDriver({ client: s3, bucket: 'bitmaps' }), // raw driver — wrapped for you
-  registry: new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }),
+  storage: new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' }),
 });
 ```
 
 ## Choosing drivers
 
-Each seam is an independent, swappable driver — all pass the same conformance suite, so the same application
-code runs on any mix:
+**Normally you pick a backend, not drivers.** One class names the location once and carries both halves, so
+the mismatch that silently answers "empty" — generations at one prefix, the pointer at another — cannot be
+written:
+
+| Backend | from | example |
+|---|---|---|
+| `MemoryStorage` | `@cloudbitmaps/roaring` | `new MemoryStorage()` |
+| `LocalFsStorage` | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps')` |
+| `S3Storage` | `@cloudbitmaps/roaring/s3` | `new S3Storage({ bucket, prefix })` |
+| `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix })` |
+| `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ connectionString, container })` |
+
+Underneath, each seam is still an independent, swappable driver — all pass the same conformance suite, so the
+same application code runs on any mix. Reach for these directly only when a backend cannot express your
+deployment (a registry in a database you already run, say):
 
 | Seam | in-memory | local filesystem | cloud |
 |---|---|---|---|
@@ -302,18 +313,20 @@ code runs on any mix:
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
 Mix freely: storage objects and the registry in **one bucket** is the whole deployment, on any of the three
-clouds. Put the registry somewhere else entirely — a database you already run — behind the `IRegistryDriver`
-interface if you would rather.
+clouds — which is exactly what a backend builds for you. To put the registry somewhere else entirely, behind
+the `IRegistryDriver` interface, pass the two halves yourself as `{ storage, registry }`; that object *is* a
+`StorageBackend`, so everything downstream is unchanged.
 
 ## The API at a glance
 
-**One config object** — pass raw drivers; the store wires them once (`storage` also accepts a pre-built
-`StorageChunkSource` for source-only backends or advanced reader options):
+**One config object, and one required key** — a backend carries both halves, so there is nothing else to wire
+(`storage` also accepts a raw `IStorageDriver` for a cleartext read-only store, or a pre-built
+`StorageChunkSource` for advanced reader options):
 
 ```ts
 new CloudRoaring({
-  storage,             // required
-  registry, keystore,  // optional (registry: current-gen pointer + wrapped keys + every lifecycle helper)
+  storage,   // required — S3Storage | GcsStorage | AzureBlobStorage | LocalFsStorage | MemoryStorage
+  keystore,  // optional (encryption at rest; the wrapped DEKs live in the backend's registry)
   cacheMaxChunks, cacheTtlMs, storageGenTtlMs, retry, metrics, budget, // optional tuning (resilience is on by default)
 });
 ```
@@ -329,7 +342,7 @@ new CloudRoaring({
 | `intersectInto(dest, …)` · `unionInto(dest, …)` · `andNotInto(dest, …)` | materialise the result as a **new generation of `dest`** (write-once, published forward-only) and report what was written |
 | `costReport({ workload, pricing })` | grounded cost from the segment's real `.crbm` size |
 
-**Store admin** (reuse the store's own drivers; need a raw storage driver + registry):
+**Store admin** (reuse the store's own drivers; need the store built with a backend):
 
 | Method | Does |
 |---|---|

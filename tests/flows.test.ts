@@ -28,8 +28,7 @@ afterEach(async () => {
 
 const store = (opts: { keystore?: InProcessKeystore } = {}): CloudRoaring =>
   new CloudRoaring({
-    storage: new LocalFsStorageDriver(root),
-    registry: new LocalFsRegistryDriver(root),
+    storage: { storage: new LocalFsStorageDriver(root), registry: new LocalFsRegistryDriver(root) },
     retry: false,
     ...(opts.keystore === undefined ? {} : { keystore: opts.keystore, keyId: 'k1' }),
   });

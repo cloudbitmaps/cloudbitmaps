@@ -15,7 +15,7 @@ npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
 
 ```ts
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
 ```
 
 Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`); each backend SDK
@@ -31,12 +31,14 @@ leaves the previous generation authoritative, a rerun is idempotent, and there i
 Reads (`has`, `count`, `iterate`, `intersect`, `union`, `andNot`) see one whole, checksum-verified generation.
 
 ```ts
-const storage = new S3StorageDriver({ client: s3, bucket: 'bitmaps' });
-const registry = new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }); // one bucket is the whole deployment
+// One bucket is the whole deployment: the generations and the pointer, stated once.
+const backend = new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' });
 
-await bulkLoadCrbmGeneration(storage, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), { registry });
+await bulkLoadCrbmGeneration(backend.storage, { segment: 'high-value', generation: 0 }, idsFromWarehouse(), {
+  registry: backend.registry,
+});
 
-const store = new CloudRoaring({ storage, registry });
+const store = new CloudRoaring({ storage: backend });
 const seg = store.segment('high-value');
 
 await seg.has(1_234_567_890); // one chunk — from the cache after the first read

@@ -89,7 +89,7 @@ export interface LoadedStore {
  */
 export async function loadedStore(
   segments: Record<string, Iterable<number>> = {},
-  options: Omit<CloudRoaringOptions, 'storage' | 'registry'> & { keystore?: IKeystore } = {},
+  options: Omit<CloudRoaringOptions, 'storage'> & { keystore?: IKeystore } = {},
 ): Promise<LoadedStore> {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
@@ -97,8 +97,7 @@ export async function loadedStore(
   const store = new CloudRoaring({
     ...(pinned ? { storageGenTtlMs: 0 } : {}),
     ...options,
-    storage,
-    registry,
+    storage: { storage: storage, registry: registry },
   });
   const load: LoadedStore['load'] = async (seg, ids) => {
     const ref = asRef(seg);

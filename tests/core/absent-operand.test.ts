@@ -30,7 +30,7 @@ async function world() {
   const registry = new MemoryRegistryDriver();
   await bulkLoadCrbmGeneration(storage, { ...AUDIENCE, generation: 0 }, [1, 2, 3, 4], { registry });
   await bulkLoadCrbmGeneration(storage, { ...OPTOUT, generation: 0 }, [2, 3], { registry });
-  const store = new CloudRoaring({ storage, registry });
+  const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
   return {
     storage,
     registry,
@@ -125,7 +125,10 @@ describe('a combine refuses an operand that names a segment which does not exist
       },
     }) as unknown as MemoryRegistryDriver;
 
-    const store = new CloudRoaring({ storage: real, registry: counting, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: real, registry: counting },
+      storageGenTtlMs: 0,
+    });
     const audience = store.segment('active-30d', { namespace: 'audiences' });
     const optout = store.segment('global-opt-out', { namespace: 'suppression' });
     await collect(audience.andNot([optout]));

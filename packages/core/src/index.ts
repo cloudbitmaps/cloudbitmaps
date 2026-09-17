@@ -54,6 +54,10 @@ export {
 export type { MemoryRegistryDriverOptions } from './drivers/memory';
 export { LocalFsStorageDriver } from './drivers/localfs/storage';
 export { LocalFsRegistryDriver } from './drivers/localfs/registry';
+// The two SDK-free backends: each states its location once, so the objects and the pointer cannot be
+// mismatched. Their cloud siblings live on the driver subpaths, where the SDK does.
+export { LocalFsStorage, MemoryStorage } from './drivers/backends';
+export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
 // The loaded store's write path: build one immutable generation from ids (bulk-load), or from pre-grouped
 // bitmaps, then make it current (publish). Every write in the library is one of these.
@@ -96,6 +100,7 @@ export type {
   SegmentRef,
   GenKey,
   IRegistryDriver,
+  StorageBackend,
   RegistryRecord,
   NewRegistryRecord,
   RegistryPatch,

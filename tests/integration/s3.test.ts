@@ -6,6 +6,7 @@ import {
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
 import { S3StorageDriver } from '@/drivers/s3/storage';
+import { S3Storage } from '@/s3/index';
 import { S3RegistryDriver } from '@/drivers/s3/registry';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
@@ -153,5 +154,32 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     const got: number[] = [];
     for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
     expect(got).toEqual([2, 3, 200_000]);
+  });
+});
+
+// The backend is the shape users are given, so it gets an end-to-end run of its own — and it is the only test
+// that exercises the client it BUILDS rather than one handed in, which is where an endpoint/path-style/
+// credentials mistake would hide.
+describe('S3Storage (MinIO) — the backend builds its own client', () => {
+  it('loads and reads through one object, with both halves in the same bucket and prefix', async () => {
+    const storage = new S3Storage({
+      bucket: BUCKET,
+      prefix: `backend/${n++}`,
+      endpoint: ENDPOINT,
+      pathStyle: true,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
+    });
+    const store = new CloudRoaring({ storage });
+    await bulkLoadCrbmGeneration(
+      storage.storage,
+      { segment: 'via-backend', generation: 0 },
+      [1, 2, 200_000],
+      { registry: storage.registry },
+    );
+    expect(await store.segment('via-backend').count()).toBe(3);
+    expect(await store.segment('via-backend').has(200_000)).toBe(true);
+    // The pointer resolves, which is the half that silently reads empty when the two are mismatched.
+    expect(await storage.registry.get({ segment: 'via-backend' })).not.toBeNull();
   });
 });

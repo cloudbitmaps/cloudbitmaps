@@ -68,13 +68,19 @@ describe('rollbackSegment', () => {
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 });
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
-    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1);
 
     const r = await rollbackSegment(SEG, 0, w.deps);
     expect(r).toEqual({ fromGeneration: 1, generation: 0 });
 
-    const after = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const after = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await after.segment('s', { namespace: 'ns' }).count()).toBe(3);
   });
 
@@ -280,7 +286,10 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
       NotFoundError,
     );
 
-    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
   });
 });
@@ -294,7 +303,10 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 });
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
-    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // warm the caches
     await store.rollback(SEG, 0);
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3); // same instance
@@ -303,7 +315,10 @@ describe('rollback — the facade, and the validation the core owes', () => {
   it('store.generations reports what the bucket holds', async () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
-    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await store.generations(SEG)).toEqual([
       { generation: 0, current: false },
       { generation: 1, current: true },

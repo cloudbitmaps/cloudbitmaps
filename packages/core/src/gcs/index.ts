@@ -12,3 +12,5 @@ export { GcsStorageDriver } from '../drivers/gcs/storage';
 export type { GcsStorageDriverOptions } from '../drivers/gcs/storage';
 export { GcsRegistryDriver } from '../drivers/gcs/registry';
 export type { GcsRegistryDriverOptions } from '../drivers/gcs/registry';
+export { GcsStorage } from '../drivers/gcs/backend';
+export type { GcsStorageOptions } from '../drivers/gcs/backend';

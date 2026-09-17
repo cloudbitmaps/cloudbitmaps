@@ -38,7 +38,11 @@ async function world(keystore?: IKeystore) {
   // generation (and its cached chunks) for its lifetime — the documented `storageGenTtlMs: 0` caveat. A reader that
   // touched the segment before the erase would keep answering from that snapshot.
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      keystore,
+      retry: false,
+    });
   const seed = (segment: string, ids: number[], namespace = NS) =>
     w.load({ namespace, segment }, ids);
   return { ...w, reader, seed };
@@ -134,8 +138,8 @@ describe('subjectReport', () => {
     ).rejects.toBeInstanceOf(ValidationError);
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
-      storage: poisonStorageReadOf(w.storage, 'a'), // raw storage → the facade wraps it; the registry resolves generations
-      registry: w.registry,
+      // raw objects behind a poisoned read, paired with the real registry that resolves generations
+      storage: { storage: poisonStorageReadOf(w.storage, 'a'), registry: w.registry },
       retry: false,
     });
     await expect(store.subjectReport(1, { namespace: NS })).rejects.toThrow(/poison/);
@@ -306,8 +310,7 @@ describe('eraseSubject', () => {
     const audit = new RecordingAuditSink();
 
     const res = await new CloudRoaring({
-      storage,
-      registry: w.registry,
+      storage: { storage: storage, registry: w.registry },
       retry: false,
     }).eraseSubject(1, {
       namespace: NS,
@@ -349,8 +352,8 @@ describe('eraseSubject', () => {
     const w = await world();
     for (const s of ['a', 'b', 'poison']) await w.seed(s, [1, 2]);
     const store = new CloudRoaring({
-      storage: poisonStorageReadOf(w.storage, 'poison'), // bites when the rewrite opens `poison`'s generation
-      registry: w.registry,
+      // bites when the rewrite opens `poison`'s generation
+      storage: { storage: poisonStorageReadOf(w.storage, 'poison'), registry: w.registry },
       retry: false,
     });
 
@@ -381,8 +384,7 @@ describe('eraseSubject', () => {
     );
 
     const res = await new CloudRoaring({
-      storage,
-      registry: w.registry,
+      storage: { storage: storage, registry: w.registry },
       retry: false,
     }).eraseSubject(1, {
       allNamespaces: true,
@@ -414,7 +416,10 @@ describe('eraseSubject', () => {
     expect((await w.registry.get(ref))!.wrappedDeks).toEqual(wrappedBefore); // same DEK, not re-minted
     expect(await members(w.reader(), 'enc')).toEqual([1, 3]);
     // The rewritten generation is genuinely encrypted: a store without the keystore cannot read it.
-    const noKeystore = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const noKeystore = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     await expect(members(noKeystore, 'enc')).rejects.toBeInstanceOf(KeyUnavailableError);
   });
 
@@ -422,8 +427,7 @@ describe('eraseSubject', () => {
     const w = await world();
     await w.seed('plain', [1, 2]);
     const strict = new CloudRoaring({
-      storage: w.storage,
-      registry: w.registry,
+      storage: { storage: w.storage, registry: w.registry },
       requireEncryption: true,
       retry: false,
     });
@@ -455,18 +459,17 @@ describe('eraseSubject', () => {
   it('works with retry left ON (default) — the lifecycle helpers use the raw drivers', async () => {
     const w = await world();
     await w.seed('a', [1, 2, 3]);
-    const res = await new CloudRoaring({ storage: w.storage, registry: w.registry }).eraseSubject(
-      1,
-      {
-        allNamespaces: true,
-      },
-    );
+    const res = await new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+    }).eraseSubject(1, {
+      allNamespaces: true,
+    });
     expect(res.erasedFrom[0]).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(await members(w.reader(), 'a')).toEqual([2, 3]);
   });
 });
 
-describe('lifecycle helpers require a raw storage driver + registry', () => {
+describe('lifecycle helpers require a backend', () => {
   it('throws UnsupportedError naming the op when the store was built with a pre-built StorageChunkSource', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
@@ -482,7 +485,7 @@ describe('lifecycle helpers require a raw storage driver + registry', () => {
       UnsupportedError,
     );
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
-      /eraseSubject.*raw storage driver/,
+      /eraseSubject needs the store built with a storage backend/,
     );
     await expect(store.subjectReport(1)).rejects.toThrow(/subjectReport.*registry/);
   });

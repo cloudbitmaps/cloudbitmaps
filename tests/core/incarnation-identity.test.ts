@@ -49,7 +49,11 @@ describe('a re-created name is a different segment, not the same one', () => {
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      clock,
+      storageGenTtlMs: 10,
+    });
     expect(await store.segment('s').has(1)).toBe(true); // warms the snapshot AND chunk 0
 
     await reincarnate(storage, registry, [9]);
@@ -68,7 +72,11 @@ describe('a re-created name is a different segment, not the same one', () => {
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      clock,
+      storageGenTtlMs: 10,
+    });
     expect(await store.segment('s').count()).toBe(3);
 
     await reincarnate(storage, registry, [9]);
@@ -83,7 +91,11 @@ describe('a re-created name is a different segment, not the same one', () => {
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      clock,
+      storageGenTtlMs: 10,
+    });
     expect(await store.segment('s').count()).toBe(3);
 
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [1, 2, 3, 4], { registry });
@@ -97,7 +109,7 @@ describe('a re-created name is a different segment, not the same one', () => {
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
     await reincarnate(storage, registry, [9]);
 
-    const fresh = new CloudRoaring({ storage, registry });
+    const fresh = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     expect(await fresh.segment('s').count()).toBe(1);
     expect(await fresh.segment('s').has(1)).toBe(false);
   });

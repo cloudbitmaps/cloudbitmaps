@@ -71,21 +71,21 @@ setup — ideal for tests and a first look:
 ```ts
 import {
   CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
+  MemoryStorage,
   bulkLoadCrbmGeneration,
   nextGeneration,
 } from '@cloudbitmaps/roaring';
 
-const storage = new MemoryStorageDriver();
-const registry = new MemoryRegistryDriver();
-const store = new CloudRoaring({ storage, registry });
+// One object carries both halves — where the generations go, and where the pointer goes.
+const backend = new MemoryStorage();
+const store = new CloudRoaring({ storage: backend });
 
 // Load a generation: any sync or async iterable of ids — an array here, a warehouse cursor in §3.
 const ref = { segment: 'high-value-shoppers' };
-const generation = await nextGeneration(ref, { storage, registry }); // → 0 on a brand-new segment
-await bulkLoadCrbmGeneration(storage, { ...ref, generation }, [5, 99_999, 1_234_567_890, 2_000_000_000], {
-  registry,
+// A backend is also the deps object the free functions take, so it passes straight through.
+const generation = await nextGeneration(ref, backend); // → 0 on a brand-new segment
+await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation }, [5, 99_999, 1_234_567_890, 2_000_000_000], {
+  registry: backend.registry,
 });
 
 // Read it.
@@ -109,36 +109,36 @@ throwing, so there is nothing to create before the first load.
 
 ## 2. Persistent: the local filesystem
 
-Same API, but state lives on disk and survives a restart. Pass the **raw** `LocalFsStorageDriver` as `storage` —
-the store wraps it in the `.crbm` reader for you, so you wire each driver exactly once:
+Same API, but state lives on disk and survives a restart. Pass a `LocalFsStorage` backend as `storage` — it
+names one root and derives both halves from it, so you wire the location exactly once:
 
 ```ts
 import {
   CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
+  LocalFsStorage,
   bulkLoadCrbmGeneration,
   nextGeneration,
 } from '@cloudbitmaps/roaring';
 
-const storage = new LocalFsStorageDriver('./.cloudbitmaps/storage');
-const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
-const store = new CloudRoaring({ storage, registry, cacheMaxChunks: 1024 }); // optional CACHE-cache ceiling
+// One root: generations under `./.cloudbitmaps/storage`, pointers under `./.cloudbitmaps/registry`.
+const backend = new LocalFsStorage('./.cloudbitmaps');
+const store = new CloudRoaring({ storage: backend, cacheMaxChunks: 1024 }); // optional cache ceiling
 
 const ref = { segment: 'active-this-week' };
 await bulkLoadCrbmGeneration(
-  storage,
-  { ...ref, generation: await nextGeneration(ref, { storage, registry }) },
+  backend.storage,
+  { ...ref, generation: await nextGeneration(ref, backend) },
   activeUserIds,
-  { registry },
+  { registry: backend.registry },
 );
 // ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
 ```
 
-> **The `storage` option takes either shape.** Usually you pass a **raw `IStorageDriver`** (`LocalFsStorageDriver`,
-> `S3StorageDriver`, `MemoryStorageDriver`) and the store builds the `.crbm` storage source — reading the
-> `registry` / `keystore` / `requireEncryption` you pass alongside in the same config (§5 registry, §9
-> encryption). Or pass an already-built **`StorageChunkSource`** — a `MemoryStorageChunkSource` seeded chunk by chunk
+> **The `storage` option takes three shapes, and you want the first.** A **backend** (`MemoryStorage`,
+> `LocalFsStorage`, `S3Storage`, `GcsStorage`, `AzureBlobStorage`) carries both halves — the generations and
+> the pointer — from one bucket and one prefix, and is the whole wiring. Below it, a **raw `IStorageDriver`**
+> still works, but it has no pointer, so generations resolve by list-scan: **cleartext and read-only**. Or pass
+> an already-built **`StorageChunkSource`** — a `MemoryStorageChunkSource` seeded chunk by chunk
 > in a test, or a `CrbmStorageChunkSource` you configured with advanced reader options (`tailBytes`, size caps). On
 > that path, configure the registry/keystore **on the source itself** — passing them at the top level is rejected
 > as a wiring mistake — and the store is **read-only**: the `*Into` verbs and the lifecycle helpers need the raw
@@ -293,18 +293,18 @@ how you configure the client:
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { CloudRoaring, bulkLoadCrbmGeneration, nextGeneration } from '@cloudbitmaps/roaring';
-import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
 
-const client = new S3Client({ region: 'us-east-1' }); // or { endpoint, forcePathStyle: true } for MinIO
-const storage = new S3StorageDriver({ client, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const registry = new S3RegistryDriver({ client, bucket: 'my-bitmaps', prefix: 'cloudroaring' }); // same bucket
+// Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
+// chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2.
+const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudroaring', region: 'us-east-1' });
 
 // Load a generation straight to S3, then read it through the engine:
 const ref = { segment: 'active-this-week' };
-await bulkLoadCrbmGeneration(storage, { ...ref, generation: await nextGeneration(ref, { storage, registry }) }, ids, {
-  registry,
+await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation: await nextGeneration(ref, backend) }, ids, {
+  registry: backend.registry,
 });
-const store = new CloudRoaring({ storage, registry }); // raw S3 driver, wrapped for you
+const store = new CloudRoaring({ storage: backend });
 await store.segment('active-this-week').count(); // read from the .crbm index on S3 — no payload GET
 ```
 
@@ -326,18 +326,18 @@ authoritative record (`currentGen`) read once, and it is what every write publis
 import {
   CloudRoaring,
   bulkLoadCrbmGeneration,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
+  LocalFsStorage,
 } from '@cloudbitmaps/roaring';
 
-const storage = new LocalFsStorageDriver('./.cloudbitmaps/storage');
-const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
+const backend = new LocalFsStorage('./.cloudbitmaps');
 
 // Load a generation AND publish it to the registry in one call:
-await bulkLoadCrbmGeneration(storage, { segment: 'active', generation: 0 }, [1, 2, 3], { registry });
+await bulkLoadCrbmGeneration(backend.storage, { segment: 'active', generation: 0 }, [1, 2, 3], {
+  registry: backend.registry,
+});
 
-// Pass the raw driver + registry — the store resolves currentGen via the registry (no list-scan):
-const store = new CloudRoaring({ storage, registry });
+// The backend carries the pointer, so the store resolves currentGen with one read (no list-scan):
+const store = new CloudRoaring({ storage: backend });
 await store.segment('active').count(); // → 3, generation resolved from the registry
 ```
 
@@ -353,6 +353,9 @@ tear the result. Without a registry the generation is pinned for the source's li
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:
 
+**You normally do not choose one** — a backend brings its own, in the same bucket as the generations. The
+table is here for the case where you are assembling the halves yourself:
+
 | Backend | Import | Use for |
 | --- | --- | --- |
 | `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
@@ -366,11 +369,10 @@ Storage data, using S3's conditional writes (`If-Match`) for the atomic generati
 **S3 only**:
 
 ```ts
-import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
 
-const storage = new S3StorageDriver({ client: s3, bucket: 'my-bitmaps' });
-const registry = new S3RegistryDriver({ client: s3, bucket: 'my-bitmaps' }); // same bucket, no second service
-const store = new CloudRoaring({ storage, registry });
+const backend = new S3Storage({ bucket: 'my-bitmaps', client: s3 }); // one bucket, no second service
+const store = new CloudRoaring({ storage: backend });
 ```
 
 > **S3 registry requirements:** the bucket backend must honor `If-Match` conditional writes (AWS S3; recent
@@ -405,14 +407,12 @@ deployment on its own (see [Choosing a registry](#choosing-a-registry)).
 ### GCS — storage + registry (`@cloudbitmaps/roaring/gcs`)
 
 ```ts
-import { Storage } from '@google-cloud/storage';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
+import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
 
-const gcs = new Storage(); // ADC; or { apiEndpoint } to point at fake-gcs-server locally
-const storage = new GcsStorageDriver({ storage: gcs, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const registry = new GcsRegistryDriver({ storage: gcs, bucket: 'my-bitmaps', prefix: 'cloudroaring' });
-const store = new CloudRoaring({ storage, registry }); // one bucket is the whole deployment
+// Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own.
+const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudroaring' });
+const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
 ```
 
 > **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
@@ -424,15 +424,16 @@ const store = new CloudRoaring({ storage, registry }); // one bucket is the whol
 ### Azure Blob — storage + registry (`@cloudbitmaps/roaring/azure`)
 
 ```ts
-import { BlobServiceClient } from '@azure/storage-blob';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { AzureBlobStorageDriver, AzureBlobRegistryDriver } from '@cloudbitmaps/roaring/azure';
+import { AzureBlobStorage } from '@cloudbitmaps/roaring/azure';
 
-const containerClient = BlobServiceClient.fromConnectionString(process.env.AZURE_CONN)
-  .getContainerClient('bitmaps');
-const storage = new AzureBlobStorageDriver({ containerClient, prefix: 'cloudroaring' });
-const registry = new AzureBlobRegistryDriver({ containerClient, prefix: 'cloudroaring' });
-const store = new CloudRoaring({ storage, registry }); // one container is the whole deployment
+// Give it a container client, or a connection string + container name and it builds one.
+const backend = new AzureBlobStorage({
+  connectionString: process.env.AZURE_CONN,
+  container: 'bitmaps',
+  prefix: 'cloudroaring',
+});
+const store = new CloudRoaring({ storage: backend }); // one container is the whole deployment
 ```
 
 > **Checklist.** Peer `@azure/storage-blob`; inject a container-scoped `ContainerClient`; generations are
@@ -448,15 +449,14 @@ read automatically retries transient faults** (throttling, 5xx, dropped connecti
 bounded exponential backoff + full jitter. It's **on by default** — you don't have to do anything:
 
 ```ts
-const store = new CloudRoaring({ storage, registry }); // retries already enabled
+const store = new CloudRoaring({ storage: backend }); // retries already enabled
 ```
 
 Tune it, or turn it off, per store:
 
 ```ts
 const store = new CloudRoaring({
-  storage,
-  registry,
+  storage, // a backend — S3Storage, GcsStorage, …
   // Tune the policy (these are the defaults):
   retry: { maxAttempts: 4, baseDelayMs: 50, maxDelayMs: 2_000, backoffFactor: 2, jitter: 'full' },
   // …or `retry: false` to disable our wrappers entirely (e.g. your client already retries).
@@ -529,8 +529,8 @@ Three properties, all consequences of "a write is a load":
 - **It deletes nothing.** The destination's previous generation stays in the bucket until you collect it — see
   [§8](#8-generation-bookkeeping-what-a-load-leaves-behind).
 
-An empty result publishes an empty generation. The verbs need the store built with a raw storage driver **and** a
-registry (they publish through it) and throw `UnsupportedError` otherwise. To suppress the result of an
+An empty result publishes an empty generation. The verbs need the store built with a **backend** (they publish through its registry) and throw
+`UnsupportedError` otherwise. To suppress the result of an
 intersection, pass `exclude` to `intersectInto` rather than materializing a temp segment and then `andNotInto` —
 the suppression folds into the same chunk-aligned pass and each exclude is read only where the intersection
 survived.
@@ -659,14 +659,16 @@ const keystore = new InProcessKeystore({
   // recoveryKeyId: 'offline-escrow',         // optional: also wrap under an offline recovery KEK
 });
 
-const storage = new LocalFsStorageDriver('./.cloudroaring/storage');
-const registry = new LocalFsRegistryDriver('./.cloudroaring/registry');
+const backend = new LocalFsStorage('./.cloudroaring');
 
 // Load encrypted (the DEK is minted + wrapped into the registry on the first publish; later loads reuse it):
-await bulkLoadCrbmGeneration(storage, { segment: 'pii', generation: 0 }, ids, { registry, keystore });
+await bulkLoadCrbmGeneration(backend.storage, { segment: 'pii', generation: 0 }, ids, {
+  registry: backend.registry,
+  keystore,
+});
 
-// Read encrypted — pass the raw driver + registry + keystore; the store unwraps the DEK and decrypts transparently:
-const store = new CloudRoaring({ storage, registry, keystore });
+// Read encrypted — the backend carries the wrapped DEK in its registry; the store unwraps and decrypts transparently:
+const store = new CloudRoaring({ storage: backend, keystore });
 await store.segment('pii').count(); // works; without the keystore this throws KeyUnavailableError
 ```
 
@@ -734,7 +736,7 @@ entirely when unused); pass one and the library pushes typed events to it:
 import { CloudRoaring, CountingMetricsSink } from '@cloudbitmaps/roaring';
 
 const metrics = new CountingMetricsSink(); // a ready-made tally sink
-const store = new CloudRoaring({ storage, registry, metrics });
+const store = new CloudRoaring({ storage: backend, metrics });
 
 await store.segment('users').has(42);
 console.log(metrics.snapshot());
@@ -756,7 +758,7 @@ the handful you care about:
 A quick look in dev is one line:
 
 ```ts
-const store = new CloudRoaring({ storage, registry, metrics: { onEvent: (e) => console.log(e) } });
+const store = new CloudRoaring({ storage: backend, metrics: { onEvent: (e) => console.log(e) } });
 ```
 
 **OpenTelemetry** (or Datadog, CloudWatch, …) is a ~12-line adapter you write — CloudBitmaps adds no telemetry
@@ -769,8 +771,7 @@ const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
 const cacheHits = meter.createCounter('cloudroaring.cache.hits');
 
 const store = new CloudRoaring({
-  storage,
-  registry,
+  storage, // a backend — S3Storage, GcsStorage, …
   metrics: {
     onEvent(e) {
       if (e.kind === 'storage.get') storageBytes.add(e.bytes); // NB: see the label caveat below
@@ -940,7 +941,7 @@ generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit i
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
-built with a raw storage driver + a `registry` (it writes generations); `subjectReport` needs only a `registry` (it
+built with a **backend** (it writes generations); `subjectReport` needs only the backend's registry (it
 just enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a
 pre-built-`StorageChunkSource` store can't run `eraseSubject`; use the `eraseIdFromSegment(ref, id, { storage, registry,
 keystore? })` free function out-of-process instead. The returned `erasedFrom` list is your **erasure ledger**
@@ -1085,7 +1086,7 @@ encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted
 
 ### Retiring a bucket
 
-`store.dropSegment` needs the store built with a **raw storage driver + a registry** (it has to enumerate and
+`store.dropSegment` needs the store built with a **backend** (it has to enumerate and
 delete generations, which a pre-built `StorageChunkSource` cannot do) — the same requirement as `eraseSubject` in
 §13. Without it you get an `UnsupportedError`.
 
@@ -1412,7 +1413,7 @@ segments scanned) and refuses (throws `BudgetExceededError`) rather than running
 import { CloudRoaring, BudgetExceededError } from '@cloudbitmaps/roaring';
 
 // on by default — generous (1,000,000 units); set your own store-wide ceiling:
-const store = new CloudRoaring({ storage, registry, budget: { maxRequests: 50_000 } });
+const store = new CloudRoaring({ storage: backend, budget: { maxRequests: 50_000 } });
 
 try {
   for await (const id of store.segment('huge').intersect([store.segment('other')])) {
@@ -1470,7 +1471,7 @@ if (report.errored.length > 0) {
 }
 ```
 
-Run it **after any restore** and as a periodic health check. It needs a raw storage driver + a `registry` (same
+Run it **after any restore** and as a periodic health check. It needs a **backend** (same
 requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
 `concurrency` (default 8). A single unreadable segment never aborts the scan — it lands in `errored` so you still
 get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
@@ -1488,7 +1489,7 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 | `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
 | `union(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
 | `andNot(excludes, { concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
-| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a raw storage driver + registry |
+| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 
 There is no per-id write on a segment: data enters as a generation — `bulkLoadCrbmGeneration`

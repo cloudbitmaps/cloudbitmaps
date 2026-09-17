@@ -44,8 +44,7 @@ const fetchedChunks = meter.createCounter('cloudroaring.intersect.fetched_chunks
 const opLatency = meter.createHistogram('cloudroaring.op.ms');
 
 const store = new CloudRoaring({
-  storage,
-  registry,
+  storage, // a backend — S3Storage, GcsStorage, …
   metrics: {
     onEvent(e) {
       switch (e.kind) {
@@ -187,7 +186,7 @@ them would make your dashboard over-attest.**
 
 | Event | What it proves | What it does NOT prove |
 |---|---|---|
-| `segment.erase` | The wrapped DEK(s) are gone, so the segment's at-rest bytes are unreadable **everywhere — backups, replicas, PITR snapshots, WORM included**. The only erasure claim that survives immutable storage | — |
+| `segment.erase` | The wrapped DEK(s) are gone, so the segment's at-rest bytes are unreadable **everywhere — backups, replicas, PITR snapshots, WORM included**. The only erasure claim that survives immutable objects | — |
 | `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that survives those, the segment has to be encrypted and the receipt is `segment.erase` |
 | `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Storage generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
 

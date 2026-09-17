@@ -611,18 +611,17 @@
           </div>
           <div class="install">
             <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorage,
   bulkLoadCrbmGeneration } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
-<span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
+<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
 
 <span class="c">// the whole set, as one immutable generation</span>
 <span class="k">await</span> bulkLoadCrbmGeneration(storage,
   { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
-  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry: backend.registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
 <span class="k">await</span> store.segment(<span class="s">'high-value-shoppers'</span>).has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
             <p class="link-row"><a href="../usage.html">Every driver and its peer deps →</a></p>
           </div>

@@ -12,3 +12,5 @@ export { AzureBlobStorageDriver } from '../drivers/azure/storage';
 export type { AzureBlobStorageDriverOptions } from '../drivers/azure/storage';
 export { AzureBlobRegistryDriver } from '../drivers/azure/registry';
 export type { AzureBlobRegistryDriverOptions } from '../drivers/azure/registry';
+export { AzureBlobStorage } from '../drivers/azure/backend';
+export type { AzureBlobStorageOptions } from '../drivers/azure/backend';

@@ -89,7 +89,8 @@ describe('engine over LocalFs storage (.crbm)', () => {
     // `currentGen` from the on-disk pointer rather than a directory scan.
     const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
-    const fresh = (): CloudRoaring => new CloudRoaring({ storage, registry });
+    const fresh = (): CloudRoaring =>
+      new CloudRoaring({ storage: { storage: storage, registry: registry } });
 
     await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 0 }, [1, 2, 3, 100], {
       registry,
@@ -113,7 +114,9 @@ describe('engine over LocalFs storage (.crbm)', () => {
       registry,
     });
 
-    const seg = new CloudRoaring({ storage, registry }).segment('seg');
+    const seg = new CloudRoaring({ storage: { storage: storage, registry: registry } }).segment(
+      'seg',
+    );
     expect(await collect(seg.iterate())).toEqual([1, 3, 70_000]);
     expect(await seg.has(2)).toBe(false); // superseded, not merged: a load replaces the set
     expect(await seg.count()).toBe(3);

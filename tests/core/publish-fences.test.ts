@@ -37,7 +37,11 @@ async function world(keystore?: IKeystore) {
   const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      keystore,
+      retry: false,
+    });
   return { ...w, deps, reader };
 }
 
@@ -236,7 +240,10 @@ describe("a segment's encryption posture is decided at its first generation", ()
     expect(rec.wrappedDeks).toBeUndefined(); // the segment is still cleartext, so no key was minted
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3, 4]);
     // Readable WITHOUT the keystore too — the proof that nothing was encrypted under a stranded key.
-    const keyless = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+    const keyless = new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      retry: false,
+    });
     expect(await keyless.segment('s').count()).toBe(4);
   });
 
@@ -348,7 +355,10 @@ describe('a materialisation reports whether it actually landed', () => {
         return res;
       },
     };
-    const store = new CloudRoaring({ storage, registry: w.registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: w.registry },
+      retry: false,
+    });
 
     await expect(
       store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]),

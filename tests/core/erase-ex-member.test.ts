@@ -62,7 +62,7 @@ describe('erasure reaches an ex-member in a retained generation', () => {
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [5, 6], { registry });
     await gcOrphanGenerations(REF, { storage, registry });
 
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     const ledger = await store.eraseSubject(7, { namespace: 'audiences' });
     expect(ledger.erasedFrom).toHaveLength(1);
     expect(ledger.erasedFrom[0]).toMatchObject({ segment: 'active-30d', erased: true });

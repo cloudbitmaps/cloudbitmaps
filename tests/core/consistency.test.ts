@@ -126,7 +126,10 @@ describe('store.checkConsistency (facade)', () => {
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { segment: 's', generation: 0 }, [1], { registry });
     await tearRestore(registry, { segment: 's' });
-    const store = new CloudRoaring({ storage, registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      retry: false,
+    });
     const report = await store.checkConsistency();
     expect(report.inconsistent.map((i) => i.segment)).toEqual(['s']);
   });

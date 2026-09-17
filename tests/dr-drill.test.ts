@@ -47,7 +47,10 @@ const FLEET: Record<string, number[]> = {
 function stores(root: string) {
   const storage = new LocalFsStorageDriver(root);
   const registry = new LocalFsRegistryDriver(root, { now: () => Date.now() });
-  const store = new CloudRoaring({ storage, registry, retry: false });
+  const store = new CloudRoaring({
+    storage: { storage: storage, registry: registry },
+    retry: false,
+  });
   return { storage, registry, store };
 }
 

@@ -53,6 +53,14 @@ function exportedNames(src: string): string[] {
 
 describe('API reference (docs/guide/api-reference.md) is in sync with the exported surface', () => {
   const doc = read(DOC_PATH);
+  // The check is scoped to the "Complete export index" section, which the page itself calls the completeness
+  // anchor. Matching the whole page instead let five new exports (`MemoryStorage`, `LocalFsStorage`,
+  // `StorageBackend` and their option types) count as documented purely because they were named in a table or
+  // in prose elsewhere — so the one section whose job is to be exhaustive was the only one not checked.
+  const INDEX_HEADING = '## Complete export index';
+  const indexStart = doc.indexOf(INDEX_HEADING);
+  if (indexStart === -1) throw new Error(`api-reference.md is missing "${INDEX_HEADING}"`);
+  const exportIndex = doc.slice(indexStart);
 
   for (const barrel of BARRELS) {
     const label = barrel.replace('../../', '');
@@ -73,10 +81,10 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
         `${label}: use explicit named exports (no \`export *\`) so the sync guard sees every name — ` +
           `the only exception is re-exporting a barrel this test also parses`,
       ).toEqual([]);
-      const missing = exportedNames(src).filter((name) => !doc.includes(`\`${name}\``));
+      const missing = exportedNames(src).filter((name) => !exportIndex.includes(`\`${name}\``));
       expect(
         missing,
-        `undocumented export(s) — add to docs/guide/api-reference.md: ${missing.join(', ')}`,
+        `export(s) missing from the "Complete export index" section of docs/guide/api-reference.md: ${missing.join(', ')}`,
       ).toEqual([]);
     });
   }
