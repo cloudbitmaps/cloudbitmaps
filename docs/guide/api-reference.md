@@ -235,7 +235,9 @@ The option / result types the public methods above reference — you import thes
 
 ### Construction & result types
 
-`CloudRoaringOptions` · `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
+`CloudRoaringOptions` and its six groups — `CacheOptions` · `EncryptionOptions` · `RetryOptions` ·
+`SeamOptions` (`metrics` and `budget` take `IMetricsSink` / `BudgetOption` directly) · `SegmentOptions` ·
+`SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
 `EraseSubjectResult` · `MaterializeResult` (`{ generation, cardinality, chunkCount, size }` — what an `*Into` verb
 wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurrent?, wrappedDeks? }` — `becameCurrent` is absent with no `registry`, and `false` means the object is durable but a concurrent writer published a higher generation first, so the load did not take effect)
 

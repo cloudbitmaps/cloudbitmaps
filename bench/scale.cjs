@@ -207,7 +207,8 @@ async function measureIntersect() {
   await bulkLoadCrbmGeneration(storage, { segment: 'B', generation: 0 }, idsB, { registry });
 
   const metrics = new CountingMetricsSink();
-  const client = new CloudRoaring({ storage, registry, metrics });
+  // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
+  const client = new CloudRoaring({ storage: { storage, registry }, metrics });
   metrics.reset();
   let resultCount = 0;
   const run = await ms(async () => {

@@ -325,10 +325,12 @@ the `IRegistryDriver` interface, pass the two halves yourself as `{ storage, reg
 
 ```ts
 new CloudRoaring({
-  storage,   // required — S3Storage | GcsStorage | AzureBlobStorage | LocalFsStorage | MemoryStorage
-  keystore,  // optional (encryption at rest; the wrapped DEKs live in the backend's registry)
-  cache,     // optional — { maxChunks, ttlMs, genTtlMs, readerMax, readerMaxBytes }
-  retry, metrics, budget, seams, // optional tuning (resilience is on by default)
+  storage,      // required — S3Storage | GcsStorage | AzureBlobStorage | LocalFsStorage | MemoryStorage
+  cache,        // optional — { maxChunks, ttlMs, genTtlMs, readerMax, readerMaxBytes }
+  encryption,   // optional — { keystore, required }; the wrapped DEKs live in the backend's registry
+  retry,        // optional — a PARTIAL RetryPolicy plus { onRetry }, or `false` to disable
+  metrics, budget,
+  seams,        // optional — { clock, rng }; determinism, for tests and replayable jobs
 });
 ```
 

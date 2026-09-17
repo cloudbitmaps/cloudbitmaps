@@ -144,7 +144,7 @@ npm audit signatures</code></pre>
 <span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(storage,
+<span class="k">await</span> bulkLoadCrbmGeneration(backend.storage,
   { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
   [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry: backend.registry });
 

@@ -76,8 +76,8 @@ export interface LoadedStore {
  * A `CloudRoaring` over `MemoryStorageDriver` + `MemoryRegistryDriver`, with every entry of `segments` loaded as
  * generation 0 through `bulkLoadCrbmGeneration` (+ publish). `load()` writes further generations.
  *
- * **`storageGenTtlMs` defaults to `0` ("pin the generation for this store's lifetime") when the caller passes
- * neither a `clock` nor a `storageGenTtlMs`,** and that default is what keeps these fixtures deterministic. Left
+ * **`cache.genTtlMs` defaults to `0` ("pin the generation for this store's lifetime") when the caller passes
+ * neither a `seams.clock` nor a `cache.genTtlMs`,** and that default is what keeps these fixtures deterministic. Left
  * alone, the store would take its real defaults — a `SystemClock` and a 2,000 ms refresh TTL — so whether a
  * re-load became visible to an already-reading store would depend on how much *wall clock* elapsed between two
  * lines of a unit test: normally the stale generation, but the fresh one if the machine happened to pause. That

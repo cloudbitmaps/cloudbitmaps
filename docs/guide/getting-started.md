@@ -60,6 +60,32 @@
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
 > registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
+## Upgrading from 0.9.x?
+
+Two constructor changes, both of which **throw with a message naming the fix** rather than being ignored — so
+you will find them the first time you run, not the first time something reads wrong.
+
+1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
+   `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
+   the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
+   expressible. Every driver is still exported, and `{ storage, registry }` as an object literal *is* a
+   `StorageBackend` if you genuinely want the halves apart.
+2. **The flat tuning options became six groups** — `cache` · `encryption` · `retry` · `metrics` · `budget` ·
+   `seams`:
+
+   | before | after |
+   |---|---|
+   | `cacheMaxChunks` · `cacheTtlMs` · `storageGenTtlMs` · `storageReaderCacheMax` · `storageReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
+   | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
+   | `onRetry` | `retry.onRetry` |
+   | `clock` · `rng` | `seams.clock` · `seams.rng` |
+
+   `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
+   default instead of requiring all five.
+
+The full entry, with a runnable before/after, is in
+[`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
+
 ## 1. The simplest thing: in-memory
 
 A `CloudRoaring` store is wired to a **storage** driver (where the `.crbm` generations live) — **the only required
@@ -652,8 +678,12 @@ dependency**. Each segment gets its own random **DEK** that's wrapped under your
 the Storage chunks + index are AES-256-GCM-encrypted with the DEK, under an AAD bound to `(segment, generation)`.
 
 ```ts
-import { CloudRoaring, InProcessKeystore, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { LocalFsStorageDriver, LocalFsRegistryDriver } from '@cloudbitmaps/roaring';
+import {
+  CloudRoaring,
+  InProcessKeystore,
+  LocalFsStorage,
+  bulkLoadCrbmGeneration,
+} from '@cloudbitmaps/roaring';
 
 // Your KEK(s) — load from your secrets manager; keyId-aware so you can rotate without re-encrypting data.
 const keystore = new InProcessKeystore({
@@ -671,7 +701,7 @@ await bulkLoadCrbmGeneration(backend.storage, { segment: 'pii', generation: 0 },
 });
 
 // Read encrypted — the backend carries the wrapped DEK in its registry; the store unwraps and decrypts transparently:
-const store = new CloudRoaring({ storage: backend, keystore });
+const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
 await store.segment('pii').count(); // works; without the keystore this throws KeyUnavailableError
 ```
 

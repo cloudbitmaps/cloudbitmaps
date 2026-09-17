@@ -17,7 +17,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **BREAKING — the 15 flat constructor options become one required `storage` plus six groups.** Five of the
+- **BREAKING — the 14 flat constructor options become one required `storage` plus six groups.** Five of the
   old keys were cache knobs distinguished only by a prefix (`cacheMaxChunks`, `cacheTtlMs`,
   `storageGenTtlMs`, `storageReaderCacheMax`, `storageReaderCacheMaxBytes`), which is a naming convention
   standing in for a structure. They are now `cache` · `encryption` · `retry` · `metrics` · `budget` · `seams`:
@@ -75,8 +75,6 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - `CacheOptions`, `EncryptionOptions`, `RetryOptions` and `SeamOptions` are exported, so a caller can name the
   shape of a group it builds separately.
-
-### Added
 - **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
   Before this, GCS and Azure were storage-only: the registry that says which generation is current had to live
   in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes

@@ -20,7 +20,7 @@
  *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
  *                 combines, and the RSS gate built on it claimed to bound the window anyway.
  *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
- *                 refresh (`storageGenTtlMs`) and the cache's generation-keyed entries do real work: a stale reader
+ *                 refresh (`cache.genTtlMs`) and the cache's generation-keyed entries do real work: a stale reader
  *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with
  *                 no re-loads cannot observe either, so zero re-loads is likewise INCONCLUSIVE.
  *
@@ -147,7 +147,11 @@ async function seedFleet(dir) {
 // ── the reader-only child: open the post-soak fleet, read across all of it, report isolated heap+RSS ──
 async function readerChild() {
   const { storage, registry } = openDrivers(process.env.SOAK_DIR);
-  const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: CAP });
+  // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
+  const store = new CloudRoaring({
+    storage: { storage, registry },
+    cache: { readerMax: CAP },
+  });
   const rand = rng(SEED);
   // Two full passes so a bounded cache cycles eviction (each segment re-opened after eviction). Each segment is
   // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded cache, so
@@ -189,7 +193,11 @@ async function soak() {
   const dir = mkTmp();
   try {
     const { storage, registry } = await seedFleet(dir);
-    const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: CAP });
+    // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
+    const store = new CloudRoaring({
+      storage: { storage, registry },
+      cache: { readerMax: CAP },
+    });
     const deps = { storage, registry };
     const rand = rng(SEED ^ 0x9e3779b9);
 

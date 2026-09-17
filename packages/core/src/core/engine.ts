@@ -177,7 +177,7 @@ export class SegmentEngine {
    * Generation-consistent within the call (normal case): each operand's current generation is resolved **once**
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
-   * hit: if it straddles a mid-call `storageGenTtlMs` boundary and a load has published, an operand's not-yet-read
+   * hit: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an operand's not-yet-read
    * chunks may re-resolve forward to the newer generation (a generation hop within one long call) — the call
    * never crashes or returns a torn object, but may mix generations. A shorter call is unaffected **unless the
    * reader cache evicts an operand mid-call** (`maxOpenSegments`): the re-read re-resolves fresh (bypassing the
@@ -259,7 +259,7 @@ export class SegmentEngine {
     // satisfying the port — a custom source that resolves its shape and its generation independently can still
     // produce that state — not because a test can currently tell the difference.
     //
-    // Within a call shorter than `storageGenTtlMs` the two share one snapshot, so the read is
+    // Within a call shorter than `cache.genTtlMs` the two share one snapshot, so the read is
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
       const keys = await this.chunkKeys(seg);

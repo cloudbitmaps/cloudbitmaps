@@ -117,10 +117,10 @@ no bus, and no connection between two stores that happen to point at the same bu
 |---|---|
 | storage | on return — the generation holding it is deleted, the DEK is destroyed |
 | the store that performed the call | on return — it invalidates what it cached |
-| another store, with a clock and a registry | within `storageGenTtlMs` (default 2 s), when its snapshot re-resolves |
-| another store with **no clock**, or `storageGenTtlMs: 0` | **never**, until something tells it |
+| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
 
-That last row is the one to design around. `storageGenTtlMs: 0` means "pin forever" and is a legitimate setting for
+That last row is the one to design around. `cache: { genTtlMs: 0 }` means "pin forever" and is a legitimate setting for
 a read-only replica of immutable data — but a segment pinned that way does not observe a shred at all. If a
 compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
 process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is

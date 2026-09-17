@@ -214,7 +214,7 @@ export interface CloudRoaringOptions {
 
 /** {@link CloudRoaringOptions.cache} — the memory and staleness bounds. */
 export interface CacheOptions {
-  /** Ceiling on decoded Storage chunks held in RAM (default {@link DEFAULT_CACHE_MAX_CHUNKS}). */
+  /** Ceiling on decoded Storage chunks held in RAM (default 1024). */
   readonly maxChunks?: number;
   /** Optional TTL on cached chunks (ms). Omit to keep a chunk until it is evicted by the count bound. */
   readonly ttlMs?: number;
@@ -394,7 +394,7 @@ export interface MaterializeResult {
  * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
  *
  * A backend is wrapped into a {@link CrbmStorageChunkSource} over its storage half, pinned to its registry,
- * with the config's `keystore`/`requireEncryption`; a bare driver is wrapped the same way but without a
+ * with the config's `encryption` group; a bare driver is wrapped the same way but without a
  * registry; a pre-built source is used as-is. `keystore`/`requireEncryption` are meaningful **only** where the
  * store builds the source itself — pairing either with a pre-built source is a wiring mistake, so reject it
  * rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces the rest (a keystore /
@@ -728,7 +728,7 @@ export class CloudRoaring {
    * Write `ids` as a **new generation of `dest`** and publish it forward-only — the shared body of the `*Into`
    * verbs. A load in disguise: `bulkLoadCrbmGeneration` over the store's own drivers, at the generation number
    * after the highest the registry or the bucket knows. The destination's previous generation stays readable
-   * until the publish lands (readers re-resolve within `storageGenTtlMs`) and is collected by the next
+   * until the publish lands (readers re-resolve within `cache.genTtlMs`) and is collected by the next
    * `gcOrphanGenerations`/retention sweep — this call deletes nothing.
    */
   private async materialize(
@@ -905,7 +905,7 @@ export class CloudRoaring {
         const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
         try {
           // The rewrite does its own membership check against the CURRENT registry generation — not the
-          // engine's cached view, which may lag a load by up to `storageGenTtlMs`. An Art. 17 erasure must never
+          // engine's cached view, which may lag a load by up to `cache.genTtlMs`. An Art. 17 erasure must never
           // skip a segment because a read cache hasn't caught up yet.
           const result = await eraseIdFromSegment(ref, id, deps, { audit: options.audit });
           if (result.reason === 'not-member' || result.reason === 'absent') return null;
@@ -1154,10 +1154,10 @@ export class CloudRoaring {
    * finishes its object, so a single sweep can miss it — this call re-sweeps and then reports whatever it still
    * could not remove rather than returning a result that looks like a clean drop.
    *
-   * Reads become empty within `storageGenTtlMs` (default 2 s), not instantly: a store that had already read this
+   * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses. A reader that never
-   * touched it sees empty at once. **That bound needs a clock and `storageGenTtlMs > 0`** — a store built without a
-   * clock, or with `storageGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
+   * touched it sees empty at once. **That bound needs a clock and `cache.genTtlMs > 0`** — a store built without a
+   * clock, or with `cache.genTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
    * keep answering `true` for a dropped segment indefinitely; restart it.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
@@ -1308,7 +1308,7 @@ export class CloudRoaring {
    *   here, so a crypto-shred performed beside this store leaves it holding an open reader and an unwrapped
    *   DEK. Until it is told, it keeps decrypting — including chunks it had never fetched before the shred.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
-   *   staleness by `storageGenTtlMs`, and a store built with no clock or `storageGenTtlMs: 0` ("pin forever") never
+   *   staleness by `cache.genTtlMs`, and a store built with no clock or `cache.genTtlMs: 0` ("pin forever") never
    *   converges at all. If a compliance deadline depends on every reader converging, you need to signal them —
    *   this is the call to make when your own fan-out delivers.
    *
@@ -1569,7 +1569,7 @@ export class Segment {
   /**
    * **Hold this segment at the generation that is current right now**, for as long as you keep the handle.
    *
-   * An ordinary handle re-resolves on `storageGenTtlMs`, so a publish part-way through a long job means its second
+   * An ordinary handle re-resolves on `cache.genTtlMs`, so a publish part-way through a long job means its second
    * half describes a different instant than its first — every chunk whole and verified, but the answer covering
    * two moments, with nothing in the result saying so. That is fine for a dashboard and wrong for an export, a
    * reconciliation, or a send that has to match the count you reported. A pin is how you get one instant.

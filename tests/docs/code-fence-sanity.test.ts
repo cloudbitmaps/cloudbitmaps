@@ -175,7 +175,7 @@ describe('documentation code samples', () => {
     'coldGenTtlMs',
     'coldReaderCacheMax',
     'coldReaderCacheMaxBytes',
-    // The 15 flat options became six groups. Each of these is now a member of a group, and a sample still
+    // The 14 flat options became six groups. Each of these is now a member of a group, and a sample still
     // passing the flat spelling is not merely out of date: the store REFUSES it, so the sample throws on its
     // first line. They are listed here rather than left to review because the previous regrouping-adjacent
     // change shipped three broken samples.
@@ -212,7 +212,30 @@ describe('documentation code samples', () => {
   // option on `bulkLoadCrbmGeneration` and the lifecycle free functions. Listing it above would flag every
   // correct load example, so the check is scoped to the one literal it was removed from — which means
   // brace-matching, because `new CloudRoaring({ … })` spans lines and nests.
-  it('no sample passes `registry` to CloudRoaring, which no longer takes it', () => {
+  /**
+   * Keys that are illegal at the TOP LEVEL of a `new CloudRoaring({…})` literal, and where each one went.
+   *
+   * These cannot go in `REMOVED_KEYS`, which matches a key anywhere in a fence: `keystore`, `clock` and
+   * `registry` are all still correct on the free-function deps objects (`bulkLoadCrbmGeneration`,
+   * `loadSegment`, `eraseIdFromSegment`) and on `CrbmStorageChunkSourceOptions`, and `onRetry` is still
+   * correct one level down inside `retry`. Listing them there made this suite fire on the correct new
+   * spelling. But at the top level of the store's own options every one of them now THROWS — so the
+   * position is what decides, which is exactly what the top-level scan below can see and a flat match cannot.
+   *
+   * Two samples shipped in this state — the repo's front-door README options summary and the only worked
+   * encryption example in the guide — with all eleven doc gates green, because the machinery existed and was
+   * pointed at one key instead of five.
+   */
+  const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = [
+    ['registry', 'a backend carries it'],
+    ['keystore', 'it moved to `encryption.keystore`'],
+    ['requireEncryption', 'it moved to `encryption.required`'],
+    ['onRetry', 'it moved inside `retry`'],
+    ['clock', 'it moved to `seams.clock`'],
+    ['rng', 'it moved to `seams.rng`'],
+  ];
+
+  it('no sample passes a moved key at the top level of CloudRoaring options', () => {
     const offenders: string[] = [];
     for (const fence of allFences) {
       const code = fence.code;
@@ -248,12 +271,13 @@ describe('documentation code samples', () => {
           }
           return out;
         })();
-        // `registry:` (a value), `registry,` and `registry }` (shorthand) — the shorthand form is how the
-        // option was usually written, and an earlier pattern that required a trailing `:` missed all of it.
-        if (/(^|[{,\s])registry\s*([:,}]|$)/m.test(topLevelOnly.replace(/\/\/.*$/gm, ''))) {
-          offenders.push(
-            `${fence.file}:${line} — passes \`registry\` to CloudRoaring; a backend carries it`,
-          );
+        // `key:` (a value), `key,` and `key }` (shorthand) — the shorthand form is how these were usually
+        // written, and an earlier pattern that required a trailing `:` missed all of it.
+        const scannable = topLevelOnly.replace(/\/\/.*$/gm, '');
+        for (const [key, moved] of ILLEGAL_AT_TOP_LEVEL) {
+          if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(scannable)) {
+            offenders.push(`${fence.file}:${line} — passes \`${key}\` to CloudRoaring; ${moved}`);
+          }
         }
       }
     }

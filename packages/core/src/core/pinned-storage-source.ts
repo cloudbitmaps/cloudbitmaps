@@ -2,7 +2,7 @@
  * A {@link StorageChunkSource} view that holds **one** segment at **one** generation, and passes everything else
  * through to the live source.
  *
- * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `storageGenTtlMs`, so a
+ * A pin exists so a long job describes a single instant. An ordinary handle re-resolves on `cache.genTtlMs`, so a
  * publish part-way through an export, a send or a reconciliation means the second half of the job describes a
  * different instant than the first — and nothing in the result says so.
  *
