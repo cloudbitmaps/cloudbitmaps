@@ -19,7 +19,7 @@
     <title>CloudBitmaps flavors — one engine, pluggable codecs</title>
     <meta
       name="description"
-      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. The hot cache over immutable generations, the load-and-publish write path, chunk-skipping intersection, retention and the four storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
+      content="A flavor decides one thing: how a chunk of ids is represented on the wire and at rest. The cache over immutable generations, the load-and-publish write path, chunk-skipping intersection, retention and the four storage drivers are codec-agnostic and do not change. Choose on the shape of your id space."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -29,7 +29,7 @@
     <meta property="og:title" content="CloudBitmaps flavors — one engine, pluggable codecs" />
     <meta
       property="og:description"
-      content="A flavor decides how a chunk of ids is represented. Everything else — the hot cache, the load-and-publish write path, chunk-skipping, four drivers — is codec-agnostic."
+      content="A flavor decides how a chunk of ids is represented. Everything else — the cache, the load-and-publish write path, chunk-skipping, four drivers — is codec-agnostic."
     />
     <meta property="og:url" content="https://cloudbitmaps.pages.dev/flavors" />
     <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
@@ -95,7 +95,7 @@
             <p class="eyebrow">Flavors · one engine, pluggable codecs</p>
             <h1>Pick the codec that matches your ids.</h1>
             <p class="hero-lede">
-              <span class="m">@cloudbitmaps/core</span> is codec-agnostic. The hot cache over immutable
+              <span class="m">@cloudbitmaps/core</span> is codec-agnostic. The cache over immutable
               generations, the load-and-publish write path, chunk-skipping intersection, generation GC,
               erasure-by-rewrite, encryption, retention and the four storage drivers live there and do not
               change. A flavor decides one thing — how a chunk of ids is represented on the wire and at rest.
@@ -208,7 +208,7 @@
         <h2>Where the choice does not matter</h2>
         <p class="lede">
           Every flavor is a codec plugged into the same store. Swapping one is an import change and a
-          re-load of your segments — the drivers, the forward-only pointer protocol, the hot cache and the
+          re-load of your segments — the drivers, the forward-only pointer protocol, the cache and the
           container format around the payload all stay put.
         </p>
         <div class="matters">
@@ -233,7 +233,7 @@
             <p class="label">When to walk away</p>
             <p>
               <strong>No flavor fixes this.</strong> Sub-millisecond p99 on a working set that fits a bounded
-              hot cache is a different machine; a membership check that misses the hot cache costs one ranged
+              cache is a different machine; a membership check that misses the cache costs one ranged
               GET against object storage, where a RAM store costs a memory read. Use Redis.
             </p>
           </div>

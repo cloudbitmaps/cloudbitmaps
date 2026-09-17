@@ -44,13 +44,13 @@ from constructing a cross-region topology. The points where personal data moves 
 |---|---|---|
 | **Storage** (object store) | immutable `.crbm` generations — every generation a segment has had, until a superseded one is collected | the region of the bucket you wire |
 | **Registry** (S3 / GCS / Azure Blob / local) | one row per segment: the current-generation pointer, wrapped keys, retention metadata — no IDs | the region of the bucket you wire |
-| **HOT cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
+| **cache** (process RAM) | decoded chunks, bounded LRU | **wherever your process/Lambda runs** — an EU segment queried from a US function is processed in the US |
 | **Loads and rewrites** (`bulkLoadCrbmGeneration`, the `*Into` verbs, `eraseSubject`) | read your source (or existing generations), write a new generation | run wherever you run them — a loader in one region writing to a bucket in another is a transfer |
 | **Intersection** | pulls chunks from N segments into one process | co-locates those segments in one region |
 
 **Guidance (not enforced by the library):** to keep EU data in EU infrastructure, wire region-local drivers
 *and* run your loaders and erasure jobs in-region; keep a segment's storage objects, its registry row, and the querying compute in
-one jurisdiction; treat the HOT cache and the intersection runtime as **processing locations** in your transfer
+one jurisdiction; treat the cache and the intersection runtime as **processing locations** in your transfer
 assessment and breach scope (process RAM, and any heap/core dumps, hold personal data). A fail-closed
 residency-enforcement policy in the library was considered and deferred as over-engineering for v1 — the honest
 posture is "you wire it correctly," documented here.
@@ -285,7 +285,7 @@ A minimal Data-Protection-Impact-Assessment outline to adapt:
 1. **Processing description** — which segments, what each membership *means*, source of the IDs, volume.
 2. **Necessity & proportionality** — lawful basis per segment (esp. Art. 9 special-category); why membership
    is retained and for how long.
-3. **Data flow & residency** — Storage and registry regions, where compute (loaders, the HOT cache, intersection)
+3. **Data flow & residency** — Storage and registry regions, where compute (loaders, the cache, intersection)
    runs, cross-border transfers and their safeguards.
 4. **Risks** — re-identification, sensitive inference (incl. *derived* segments from intersections — treat a
    `paying ∩ pregnant` result as at least as sensitive as its inputs, and note it's a point-in-time snapshot

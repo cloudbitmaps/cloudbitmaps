@@ -1,5 +1,5 @@
 /**
- * Bounded LRU cache with optional TTL — the HOT tier's memory ceiling.
+ * Bounded LRU cache with optional TTL — the cache tier's memory ceiling.
  *
  * Time comes from an injected `Clock` (never `Date.now()`) so the cache is deterministic
  * under simulation.

@@ -10,7 +10,7 @@
  * state" a long-running server actually sees.
  *
  * WHY EVERY VERB IS IN THE LOOP. Each one owns a different piece of the memory story:
- *   - `has`       fills the HOT LRU (decoded chunks) — the count-bounded cache must evict, not grow.
+ *   - `has`       fills the cache (decoded chunks) — the count-bounded cache must evict, not grow.
  *   - `count`     parses `.crbm` indices into the storage reader cache — the count+byte-bounded cache under `SOAK_CAP`.
  *   - `iterate`   streams a whole segment one chunk at a time — nothing may accumulate across the stream.
  *   - combines    the crown jewel: the chunk-aligned window holds at most `concurrency × operands` payloads, and
@@ -20,7 +20,7 @@
  *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
  *                 combines, and the RSS gate built on it claimed to bound the window anyway.
  *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
- *                 refresh (`storageGenTtlMs`) and the HOT LRU's generation-keyed entries do real work: a stale reader
+ *                 refresh (`storageGenTtlMs`) and the cache's generation-keyed entries do real work: a stale reader
  *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with
  *                 no re-loads cannot observe either, so zero re-loads is likewise INCONCLUSIVE.
  *
@@ -150,7 +150,7 @@ async function readerChild() {
   const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: CAP });
   const rand = rng(SEED);
   // Two full passes so a bounded cache cycles eviction (each segment re-opened after eviction). Each segment is
-  // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded hot cache, so
+  // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded cache, so
   // the reported native footprint reflects a real decoded working set (not the ~0 an index-only count shows).
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < SEGMENTS; i++) {

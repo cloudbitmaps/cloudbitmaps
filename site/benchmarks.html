@@ -197,16 +197,16 @@
                 <!-- This row names its AXIS — "read throughput" — because a reader scanning the verdict column
                      will otherwise generalise a threshold on one axis into a verdict on the library. The chip is
                      advice rather than a defeat for the same reason, and because what loses here is per-request
-                     billing, not this engine: a hot cache that actually hits moves the line out by the
+                     billing, not this engine: a cache that actually hits moves the line out by the
                      reciprocal of the miss rate. See #crossover directly below.
 
-                     Still .is-counter, still --cb-hot: this page's whole stance is that the counter-case gets a
+                     Still .is-counter, still --cb-cache: this page's whole stance is that the counter-case gets a
                      DIFFERENT colour, never a quieter one. Relabelling it does not demote it. -->
                 <tr>
                   <td>Sustained read throughput above</td>
                   <td class="num">329.15 /s</td>
                   <td class="from">
-                    Object GETs with the hot cache off — the pessimal posture, chosen deliberately — against a
+                    Object GETs with the cache off — the pessimal posture, chosen deliberately — against a
                     standing Redis-HA node at $346 /mo. <a href="#crossover">What moves this line</a>.
                   </td>
                   <td><span class="status is-counter">Use a flat tier</span></td>
@@ -223,7 +223,7 @@
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
                rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
-            Assumptions: hot-cache hit rate <strong>0</strong>, the stored-bytes term at
+            Assumptions: cache-cache hit rate <strong>0</strong>, the stored-bytes term at
             <strong>zero</strong>, <span class="m">us-east-1</span> on-demand request rates, and the
             reserved-RAM baseline is an ElastiCache HA cluster — <strong>1 primary + 2 replicas</strong> on
             <span class="m">cache.m7g.large</span>, about $115/mo single-node. And one crossover rather than
@@ -278,7 +278,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Hot-cache hit rate</td>
+                  <td>Cache-cache hit rate</td>
                   <td class="num">0</td>
                   <td class="from">
                     Every read billed — the pessimal value, chosen so the figure cannot flatter us. A cache that
@@ -719,7 +719,7 @@
             <span class="rl-what">Your region and workload move the crossover</span>
             <span class="rl-fig is-live">estimateCost()</span>
             <span class="rl-note">
-              These are <span class="m">us-east-1</span> on-demand rates with the hot cache off and the
+              These are <span class="m">us-east-1</span> on-demand rates with the cache off and the
               stored-bytes term at zero. Feed your own pricing profile in and get your own crossover — the same
               function generates this page. <a href="usage.html">How</a>.
             </span>
@@ -736,7 +736,7 @@
               size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak
               issues combines: <strong>7262</strong> of them over 90 s, alongside <strong>2908</strong>
               re-loads — each re-load publishes a new generation, which is what makes the reader cache's
-              generation refresh and the hot LRU's generation-keyed entries do real work instead of sitting
+              generation refresh and the cache's generation-keyed entries do real work instead of sitting
               idle — after which the roaring engine's live off-heap bytes had moved by
               <strong>0.00 MiB</strong> — where 0.28 MiB would have failed the run. What is still true is
               the <em>driver</em>: both run against local storage, so this bounds our own bookkeeping and says

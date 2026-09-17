@@ -381,7 +381,7 @@ for (const page of PAGES) {
 // six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
 // looking. A number is only anchored where the gate actually reads it.
 //
-// The tier count is deliberately NOT anchored. Hot RAM over object storage is the architecture — it cannot
+// The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot
 // drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
 // took), so a check for it is one that CANNOT FAIL, the same reason the bare "22"/"23" calibration quantities
 // above are left out. The two figures that CAN drift silently while CI stays green are derived below.

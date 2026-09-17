@@ -1,6 +1,6 @@
 /**
  * Canonical key encoding for a segment / chunk — one source of truth, used by both the storage
- * drivers and the HOT cache (DRY). The encoding is collision-proof and injection-proof.
+ * drivers and the cache (DRY). The encoding is collision-proof and injection-proof.
  *
  * **The name parts are encoded, and that is what makes the delimiters safe.** This module used to rest on the
  * name grammar instead: a space and `/` were characters a name could not contain, so neither could be injected
@@ -14,7 +14,7 @@
  * segmentKey({ namespace: 'a b', segment: 'c' })   → "a b c"  ← the same key
  * ```
  *
- * These keys reach the reader LRU and the decoded-chunk HOT cache, so a collision is one segment serving
+ * These keys reach the reader LRU and the decoded-chunk cache, so a collision is one segment serving
  * another's data on the read path, on every backend — invariant 3, and a tenant-isolation break.
  *
  * `encodeNameForKey` escapes both delimiters (`/` → `%2F`, space → `%20`) along with control characters, so
@@ -45,7 +45,7 @@ export function chunkRefKey(ref: ChunkRef): string {
 }
 
 /**
- * HOT-cache key for a chunk scoped to a specific **version** of the segment — {@link chunkRefKey} plus that
+ * CACHE-cache key for a chunk scoped to a specific **version** of the segment — {@link chunkRefKey} plus that
  * version (space-delimited, injection-proof exactly as above — the name parts are already encoded). A publish bumps the version, so it naturally
  * misses the cache instead of serving a stale superseded chunk, and the superseded entries age out under the
  * LRU ceiling (no active purge needed).

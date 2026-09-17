@@ -32,7 +32,7 @@
 | Persistent **local filesystem** drivers (survive restart) | ✅ |
 | **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/roaring/s3`), multipart for large generations | ✅ |
 | **GCS + Azure Blob** storage (`@cloudbitmaps/roaring/gcs`, `@cloudbitmaps/roaring/azure`) — write-once immutable generations | ✅ |
-| `.crbm` archive read/write + a bounded HOT cache | ✅ |
+| `.crbm` archive read/write + a bounded cache | ✅ |
 | **Automatic retry + backoff** for transient faults (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
 | **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
@@ -98,7 +98,7 @@ for await (const id of vips.iterate()) {
 ```
 
 IDs are integers in `[0, 2³²)`. Each is split into a 16-bit chunk key + a 16-bit remainder, and a chunk is the unit
-of storage and transfer: `has()` fetches one chunk (or answers from the hot cache), `count()` fetches none, and
+of storage and transfer: `has()` fetches one chunk (or answers from the cache), `count()` fetches none, and
 `intersect()` fetches only the chunks two segments could share.
 
 **There is no `add` or `remove` on a segment.** A segment changes by getting a *new generation* — the next load
@@ -123,7 +123,7 @@ import {
 
 const storage = new LocalFsStorageDriver('./.cloudbitmaps/storage');
 const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
-const store = new CloudRoaring({ storage, registry, cacheMaxChunks: 1024 }); // optional HOT-cache ceiling
+const store = new CloudRoaring({ storage, registry, cacheMaxChunks: 1024 }); // optional CACHE-cache ceiling
 
 const ref = { segment: 'active-this-week' };
 await bulkLoadCrbmGeneration(
@@ -345,7 +345,7 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 segment's current generation on a short TTL (`storageGenTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
-registry reads (`0` pins the first generation resolved for the store's lifetime). The hot cache is keyed by
+registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
 `intersect` — the generation is resolved **once** and every chunk comes from it, so a load landing mid-call cannot
 tear the result. Without a registry the generation is pinned for the source's lifetime (single-process/local use).
@@ -585,7 +585,7 @@ Who calls it today:
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
 **Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
-generation within `storageGenTtlMs` (default 2 s) and its hot cache is keyed by generation, so it never serves a
+generation within `storageGenTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
 stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
 consistent. A **long** call is the one shape where the generation can move underneath you — a resolved snapshot
 is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
@@ -747,8 +747,8 @@ the handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
-| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Storage (a hot-cache miss) |
-| `cache` | `hit` | every hot-cache lookup |
+| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Storage (a cache-cache miss) |
+| `cache` | `hit` | every cache-cache lookup |
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |
@@ -845,7 +845,7 @@ flat always-on baseline. It is not a ceiling on the library — it is a property
 
 | Input | Default | Change it and |
 | --- | --- | --- |
-| `cacheHitRate` | `0` | Every read is billed. A working hot cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` (it never crosses). |
+| `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` (it never crosses). |
 | `pricing.storage.getPerMillion` | `$0.40` | Your region's or your committed rate; the formula is the spec, the rate is yours. |
 
 Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month is
@@ -1166,7 +1166,7 @@ Two limits worth knowing before you automate it:
 > [`checkConsistency()`](disaster-recovery.md) reports as **`missing-storage-generation`** — the torn-restore
 > failure the DR guide says not to serve traffic on.
 >
-> **And it presents intermittently.** A read checks the hot LRU before Storage, so cached chunks answer correctly
+> **And it presents intermittently.** A read checks the cache before Storage, so cached chunks answer correctly
 > while uncached or evicted ones raise `NotFoundError`. It passes a warm-process test and starts failing after a
 > restart or a deploy, looking like a transient cloud fault rather than a misconfiguration.
 >
@@ -1482,7 +1482,7 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 
 | Method | Returns | Notes |
 |---|---|---|
-| `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The hot cache, else **one** ranged GET of that id's chunk — never budgeted |
+| `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The cache, else **one** ranged GET of that id's chunk — never budgeted |
 | `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
 | `iterate()` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded |
 | `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
@@ -1679,7 +1679,7 @@ They are separate on purpose, and it is worth knowing which one you just hit.
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
 | bounds | **cost** — backend requests a single op may fan out into | **memory** — what a process holds resident, whatever the segments' size |
-| knobs | `budget: { maxRequests }`; `false` disables it | `cacheMaxChunks` (decoded hot chunks, default 1024) · `storageReaderCacheMax` / `storageReaderCacheMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap — **`budget: false` lifts none of them** |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cacheMaxChunks` (decoded cached chunks, default 1024) · `storageReaderCacheMax` / `storageReaderCacheMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap — **`budget: false` lifts none of them** |
 | covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
 
 Why not one control? Because `intersect`'s budget is a *product* — surviving keys × operands — while its memory is

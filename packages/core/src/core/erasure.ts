@@ -238,7 +238,7 @@ export interface DropResult {
  * Before this existed there was no supported way to delete a segment and stop paying for it, and the obvious
  * workaround — an object-store lifecycle rule on the key prefix — deletes the bytes while the registry still
  * points at them. That is exactly the `missing-storage-generation` state the DR runbook says not to serve traffic
- * on, and it surfaces *intermittently*, because a read consults the hot cache before Storage: cached chunks answer
+ * on, and it surfaces *intermittently*, because a read consults the cache before Storage: cached chunks answer
  * correctly and evicted ones throw. The whole value of this function is that the ordering below cannot be got
  * wrong by a caller.
  *
@@ -258,13 +258,13 @@ export interface DropResult {
  * fence on **publishing**, so only already-in-flight writes can appear and they are finite.
  *
  * **When "reads as empty" starts being true.** Not instantly, for a store that has already read this segment: a
- * resolved generation is cached and decoded chunks sit in the hot LRU, so an in-flight reader can answer from
+ * resolved generation is cached and decoded chunks sit in the cache, so an in-flight reader can answer from
  * cache for a window. A fresh store, or any reader that had not touched the segment, sees empty at once.
  *
  * That window is bounded by `storageGenTtlMs` (default 2 s) **only for a reader whose storage source has both a clock
  * and a registry and a positive TTL** — expiry needs all three. A source built without a clock, or with
  * `storageGenTtlMs: 0` (documented as "pin forever"), holds its resolved snapshot for its own lifetime; because a
- * hot-LRU hit never reaches Storage, such a reader can answer `true` for a dropped segment **indefinitely** and must
+ * cache-LRU hit never reaches Storage, such a reader can answer `true` for a dropped segment **indefinitely** and must
  * be restarted. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
  * than loudly — it cuts both ways.
  *

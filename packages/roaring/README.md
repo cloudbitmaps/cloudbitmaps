@@ -39,7 +39,7 @@ await bulkLoadCrbmGeneration(storage, { segment: 'high-value', generation: 0 }, 
 const store = new CloudRoaring({ storage, registry });
 const seg = store.segment('high-value');
 
-await seg.has(1_234_567_890); // one chunk — from the hot cache after the first read
+await seg.has(1_234_567_890); // one chunk — from the cache after the first read
 await seg.count(); // exact, and summed from the index with 0 payload reads
 for await (const id of seg.intersect([store.segment('eu-residents')], { exclude: [store.segment('opted-out')] })) {
   /* streamed ascending; only the chunks that can contribute are ever fetched */
@@ -59,9 +59,9 @@ estimated from sizes. `count()` on a published segment does **0 payload reads**,
 registry that no longer ships, so both figures are the object-store half rather than today's total — the
 pointer is now an object request that is not in them.
 
-The trade is stated plainly rather than buried: a membership check that misses the hot cache costs a ranged GET
+The trade is stated plainly rather than buried: a membership check that misses the cache costs a ranged GET
 against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a
-working set that fits a bounded hot cache, use Redis. If your sets are large, mostly read, and shouldn't cost
+working set that fits a bounded cache, use Redis. If your sets are large, mostly read, and shouldn't cost
 $346/month to keep warm, use this.
 
 ## Coming from Redis bitmaps?

@@ -138,7 +138,7 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
  * `new CloudRoaring({ storage })`, which reads cleartext segments by list-scanning the bucket for the latest
  * generation. Add a `registry` to resolve generations with one strong read, to read encrypted segments, and to
  * unlock every lifecycle helper (recommended for anything beyond a quick look). Everything else is **optional
- * tuning with sensible defaults** — resilience/retries are already on, the hot cache is bounded, metrics are a
+ * tuning with sensible defaults** — resilience/retries are already on, the cache is bounded, metrics are a
  * no-op — so reach for them only when you need to.
  */
 export interface CloudRoaringOptions {
@@ -180,7 +180,7 @@ export interface CloudRoaringOptions {
   readonly clock?: Clock;
   /** Injected for deterministic tests; defaults to `Math.random`-backed. Drives transient-retry jitter. */
   readonly rng?: Rng;
-  /** HOT cache ceiling (decoded Storage chunks). */
+  /** cache ceiling (decoded Storage chunks). */
   readonly cacheMaxChunks?: number;
   /** Optional TTL on cached chunks (ms). */
   readonly cacheTtlMs?: number;
@@ -984,7 +984,7 @@ export class CloudRoaring {
    * could not remove rather than returning a result that looks like a clean drop.
    *
    * Reads become empty within `storageGenTtlMs` (default 2 s), not instantly: a store that had already read this
-   * segment may answer from its cached generation + hot chunks until that window lapses. A reader that never
+   * segment may answer from its cached generation + cached chunks until that window lapses. A reader that never
    * touched it sees empty at once. **That bound needs a clock and `storageGenTtlMs > 0`** — a store built without a
    * clock, or with `storageGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
    * keep answering `true` for a dropped segment indefinitely; restart it.
@@ -1493,7 +1493,7 @@ export class Segment {
     }
   }
 
-  /** Membership: one chunk — the hot cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */
+  /** Membership: one chunk — the cache, else one ranged GET. Throws {@link ValidationError} on a bad id. */
   has(id: number): Promise<boolean> {
     if (this.expired()) return Promise.resolve(false);
     return this.timed('has', () => this.engine.has(this.ref, id));

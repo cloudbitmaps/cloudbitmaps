@@ -1,7 +1,7 @@
 # @cloudbitmaps/core
 
 The **codec-agnostic cloud engine** behind the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family:
-a bounded HOT RAM cache over immutable `.crbm` objects in STORAGE, serverless chunk-skipping intersection, the segment
+a bounded RAM cache over immutable `.crbm` objects in STORAGE, serverless chunk-skipping intersection, the segment
 registry, the write-once load-and-publish write path, generation GC, encryption-at-rest + crypto-shred, subject
 erasure by generation rewrite, segment lifecycle (disposal, and a per-segment retention policy with the sweep
 that enforces it), and **every storage driver** (S3 · GCS · Azure Blob — each hosts both the generations and the

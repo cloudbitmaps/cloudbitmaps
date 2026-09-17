@@ -221,10 +221,10 @@ npm audit signatures</code></pre>
                 <tr>
                   <td><span class="m">has(id)</span></td>
                   <td class="from">
-                    Resolves one chunk of the current generation: the hot cache if it is there, otherwise one
+                    Resolves one chunk of the current generation: the cache if it is there, otherwise one
                     ranged GET of that chunk. Never a merge of two sources, so it can never be torn.
                   </td>
-                  <td class="num">hot, else 1 storage GET</td>
+                  <td class="num">cache, else 1 storage GET</td>
                 </tr>
                 <tr>
                   <td><span class="m">count()</span></td>
@@ -428,7 +428,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           <strong>Do not reach for an object-store lifecycle rule on its own.</strong> It deletes the bytes while
           the registry still points at them — the torn state a DR runbook says not to serve traffic on — and it
           surfaces <em>intermittently</em>, because a read checks the in-process cache before storage. It
-          passes in a process whose hot cache is already populated and starts failing after a restart.
+          passes in a process whose cache is already populated and starts failing after a restart.
           <span class="m">dropSegment</span> exists so the ordering cannot be got wrong: the pointer is
           tombstoned first, then the objects are swept — and it hands back
           <span class="m">generationsRemaining</span>, which is non-empty exactly when bytes survived and the
@@ -550,7 +550,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             </li>
             <li>
               <span class="rl-mark">02</span>
-              <span class="rl-what">Bound the hot cache to what your runtime can hold</span>
+              <span class="rl-what">Bound the cache to what your runtime can hold</span>
               <span class="rl-fig is-live">cacheMaxChunks</span>
               <span class="rl-note">
                 An LRU with a hard ceiling — 1,024 decoded chunks by default — and the ceiling is yours to

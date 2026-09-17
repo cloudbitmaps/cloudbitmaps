@@ -106,7 +106,7 @@ resolve. Branch on it if two writers can target one segment; the orphan is colle
 
 | Call | Does |
 |---|---|
-| `seg.has(id)` → `Promise<boolean>` | membership: the hot cache, else **one** ranged GET of that id's chunk |
+| `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | exact cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment |
 | `seg.iterate()` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time |
 | `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle — so a long export, reconciliation or send describes **one instant** instead of whichever generations happened to be current as it ran. An ordinary handle re-resolves on `storageGenTtlMs`; a pinned one does not. Only *this* segment is pinned: `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query — and a pinned handle used as an operand is still read at its pin, never live. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath you, and a pinned read deliberately does *not* heal forward (silently serving a different generation is what a pin exists to prevent), so it fails instead — size `keep` past your longest pinned job. The pinned reader lives in the same bounded LRU as every other, so a pin costs a generation number, not a retained index. A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops reading when the shred lands: the row's `status` is re-checked every time the pinned reader opens. Needs the `.crbm` storage source (`UnsupportedError` otherwise) |
@@ -137,7 +137,7 @@ All three are charged against the same per-op budget, so a wide union is refused
 **Read consistency.** Every read op resolves the segment's current generation **once** and reads every chunk from
 that generation. With a `registry` wired, a long-lived store re-resolves the pointer on a short TTL
 (`storageGenTtlMs`, default 2000 ms), so after a load publishes, a reader may serve the previous generation for at most
-that long, then converges; the hot cache is keyed by generation, so a new generation is never served from stale
+that long, then converges; the cache is keyed by generation, so a new generation is never served from stale
 decoded chunks.
 
 ---
@@ -225,7 +225,7 @@ The option / result types the public methods above reference — you import thes
 wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurrent?, wrappedDeks? }` — `becameCurrent` is absent with no `registry`, and `false` means the object is durable but a concurrent writer published a higher generation first, so the load did not take effect)
 
 `CloudRoaringOptions`, in full: `storage` (required) · `registry?` · `keystore?` · `requireEncryption?` · `clock?` ·
-`rng?` · `cacheMaxChunks?` (hot-cache ceiling, default 1024 decoded chunks) · `cacheTtlMs?` · `storageGenTtlMs?`
+`rng?` · `cacheMaxChunks?` (cache-cache ceiling, default 1024 decoded chunks) · `cacheTtlMs?` · `storageGenTtlMs?`
 (default 2000 — the bound on read staleness after a publish; needs a registry) · `storageReaderCacheMax?` (open
 `.crbm` readers, default 1024) · `storageReaderCacheMaxBytes?` (their parsed indices, default 64 MiB) · `retry?`
 (`RetryPolicy` or `false`) · `onRetry?` · `metrics?` · `budget?` (`{ maxRequests }` or `false`).
@@ -318,7 +318,7 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 |---|---|
 | `SegmentEngine` / `EngineDeps` | the codec-agnostic **read** engine over a `StorageChunkSource` (`has` / `count` / `iterate` / `intersect` / `union` / `andNot`, plus `supportsStorageSize` / `segmentSize` for grounded cost) + its injected deps (**`codec` is required** — core has no default; `cache?`, `maxBitmapBytes?`, `clock?`, `metrics?`, `budget?`). Read-only by design — there are no `*Into` verbs here |
 | `EngineCombineOptions` | the engine-level `{ concurrency?, budget?, exclude?: SegmentRef[] }` (the facade's `CombineOptions` maps `Segment` handles down to these refs) |
-| `BoundedLru` | the count+byte-bounded LRU the facade uses for the HOT chunk cache and the `.crbm` reader cache |
+| `BoundedLru` | the count+byte-bounded LRU the facade uses for the chunk cache and the `.crbm` reader cache |
 | `safeMetrics` | wrap a user `IMetricsSink` so a throwing sink can never break the data path |
 | `groundedReport` | build a `CostReport` from measured segment sizes (backs `segment.costReport()`) |
 | `runExport` | the eject/export driver (**needs a `codec` for the `roaring` format**; the flavor binds it) |

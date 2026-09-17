@@ -56,7 +56,7 @@ export interface StorageChunkSource {
   /**
    * Optional: the segment's **current generation number** as this source resolves it right now (registry
    * `currentGen`, or the highest storage generation), or `null` if the segment has no Storage generation. The engine
-   * keys its HOT chunk cache by this so a generation bump (a load's publish) is observed — a new generation
+   * keys its chunk cache by this so a generation bump (a load's publish) is observed — a new generation
    * misses the cache instead of serving a stale decoded chunk, and an erased id can't resurrect from a cached
    * superseded chunk. Cheap: served from the source's own (short-TTL-refreshed) snapshot, **not** a fresh
    * backend read per call. A source that pins one immutable generation for its whole lifetime and never

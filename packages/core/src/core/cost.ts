@@ -50,7 +50,7 @@ export interface Workload {
   /** Point reads (`has`) per second. Each cache miss is one object GET. */
   readonly readsPerSec?: number;
   readonly intersectsPerSec?: number;
-  /** HOT-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
+  /** CACHE-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
   /** Storage chunks fetched per intersection (the chunk-skipping survivors). Default 1. */
   readonly chunksPerIntersect?: number;

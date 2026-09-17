@@ -86,7 +86,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
 
   it('coalesces a concurrent burst at the TTL boundary into ONE registry re-resolve', async () => {
     // The in-flight refresh is installed **synchronously**, before any await, so every reader that arrives in
-    // the window past the TTL shares the one re-resolve instead of each issuing its own registry read. On a hot
+    // the window past the TTL shares the one re-resolve instead of each issuing its own registry read. On a cache
     // segment that difference is the whole cost of the refresh: N concurrent reads at the boundary become one
     // strong read, not N.
     //

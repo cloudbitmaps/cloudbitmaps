@@ -380,7 +380,7 @@
                  items keep their point and lose their elaboration.
 
                  The p99 item also used to overstate itself: it said "on a working set that fits a bounded
-                 hot cache", but our hot tier IS in-process RAM, so on a hit there is nothing between us.
+                 cache", but our cache tier IS in-process RAM, so on a hit there is nothing between us.
                  The limit is the tail. Its old "10–20× faster" is gone — never a sourced figure — and so
                  are the p50/p99 milliseconds that replaced it: they were metered on a tier the library no
                  longer has, and no in-region latency figure is published until an in-region run measures
@@ -389,7 +389,7 @@
             <div class="label is-peer">Use something else when</div>
             <p class="trade-title">You need a sub-millisecond p99.</p>
             <p class="trade-body">
-              Not just on hits. Our hot tier is in-process RAM, but a miss is a ranged
+              Not just on hits. Our cache tier is in-process RAM, but a miss is a ranged
               <span class="m">GET</span> against object storage, where a resident set is a memory read.
               A sub-millisecond tail needs the whole set resident, which is a different machine — and we
               publish no in-region latency figure until an in-region run measures one.
@@ -487,8 +487,8 @@
                 ></span>
                 <p class="tnote">currentGen &rarr; 7 · compare-and-swap, forward-only</p>
               </div>
-              <div class="trow r-hot">
-                <span class="tkey">Hot · RAM</span>
+              <div class="trow r-cache">
+                <span class="tkey">Cache · RAM</span>
                 <span class="tfill"
                   ><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i
                 ></span>
@@ -530,7 +530,7 @@
             </p>
           </div>
           <div class="tier">
-            <span class="tier-chip t-hot">HOT · RAM</span>
+            <span class="tier-chip t-cache">CACHE · RAM</span>
             <p>
               A bounded LRU of decoded chunks inside your process. Nothing is pinned, and a new
               generation misses rather than serving stale bytes.

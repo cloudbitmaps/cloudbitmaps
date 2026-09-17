@@ -105,7 +105,7 @@ describe('dropSegment', () => {
   it('leaves NO torn pointer — the segment reads as empty, not as an error', async () => {
     // THE load-bearing test. The workaround this replaces (a lifecycle rule deleting objects while the registry
     // still points at them) produces `missing-storage-generation`: reads throw NotFoundError, intermittently,
-    // because the hot cache masks it until eviction. Ordering the tombstone BEFORE the delete is what converts
+    // because the cache masks it until eviction. Ordering the tombstone BEFORE the delete is what converts
     // that into a benign empty read, so assert the benign outcome rather than the ordering directly.
     const w = await world();
     await seed(w, [1, 2, 3]);
@@ -245,7 +245,7 @@ describe('dropSegment', () => {
 
   it('is only eventually empty to a reader that had already cached the segment', async () => {
     // The docs said "afterwards the segment reads as empty", full stop. False for up to `storageGenTtlMs`
-    // (default 2s): a resolved generation is cached and decoded chunks sit in the hot LRU, so a store that
+    // (default 2s): a resolved generation is cached and decoded chunks sit in the cache, so a store that
     // touched the segment BEFORE the drop keeps answering from cache. The original tests all passed only because
     // none of them read first — the blind spot was in the fixture, not the assertion.
     //

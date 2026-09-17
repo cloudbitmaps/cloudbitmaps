@@ -25,7 +25,7 @@
 > generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
 > `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
 > the same pass · `intersectInto` / `unionInto` / `andNotInto`, which publish a new generation of their
-> destination · the `.crbm` archive format · a bounded, generation-keyed HOT cache · **automatic retry with
+> destination · the `.crbm` archive format · a bounded, generation-keyed cache · **automatic retry with
 > backoff** that rides out transient cloud faults · registry-resolved generation pointers (no per-read scan)
 > with a short refresh TTL · generation GC that never touches the current generation · **subject erasure by
 > generation rewrite** (the bit is physically gone from the bucket when the call returns) · `dropSegment`,
@@ -115,12 +115,12 @@ MinIO:
   load(ids) ─► group by chunk ─► write ONE immutable .crbm object ─► publish the pointer
                                    (segment.<gen>.crbm, write-once)     (registry CAS, forward-only)
 
-  has(id)   ─► HOT? (RAM + bounded LRU) ─► STORAGE (single-chunk byte-range read)
+  has(id)   ─► CACHE? (RAM + bounded LRU) ─► STORAGE (single-chunk byte-range read)
   count()   ─► the object's footer index (0 payload reads)
   intersect(A,B) ─► align chunk indexes ─► fetch only the chunks present in BOTH ─► stream IDs
 ```
 
-- **Hot** — a bounded in-RAM LRU of decoded chunks, keyed by generation (a hard memory ceiling; performance
+- **Cache** — a bounded in-RAM LRU of decoded chunks, keyed by generation (a hard memory ceiling; performance
   only, never truth). A new generation misses the cache rather than serving stale bytes.
 - **Storage** — the durable base: immutable, generation-keyed `.crbm` archive objects in object storage (S3,
   etc.), with a footer index that makes `count()` and single-chunk reads cheap.
@@ -193,7 +193,7 @@ Request counts are read off the AWS SDK layer, command by command — not estima
 from the library's own metrics, which cannot see a PUT. The same run also measured the things a cost model can
 only assume: **zero retry billing** (HTTP
 attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
-list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded hot
+list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded cache
 cache did its job.
 
 That run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
@@ -257,7 +257,7 @@ await bulkLoadCrbmGeneration(storage, { segment: 'high-value-shoppers', generati
 const store = new CloudRoaring({ storage, registry });
 const seg = store.segment('high-value-shoppers');
 
-await seg.has(1_234_567_890); // → true  (one chunk, from the hot cache after the first read)
+await seg.has(1_234_567_890); // → true  (one chunk, from the cache after the first read)
 await seg.count(); // → 4     (summed from the object's index — no payload reads)
 for await (const id of seg.iterate()) {
   /* ascending IDs */
@@ -419,8 +419,8 @@ millions of users per segment, because the operations that govern it don't scale
 
 It is **not** a general database, a full-text index, or a replacement for Redis as a low-latency cache —
 it's a specialized engine for big, durable, cloud-resident bitmaps. A single membership check that misses the
-hot cache costs a **ranged GET against object storage**, where an in-process RAM store costs a memory read —
-so if you need a sub-millisecond p99 on a working set that fits a bounded hot cache, that's the right tool and
+cache costs a **ranged GET against object storage**, where an in-process RAM store costs a memory read —
+so if you need a sub-millisecond p99 on a working set that fits a bounded cache, that's the right tool and
 this isn't. (We deliberately publish no in-region latency *figure* until an in-region run measures one — see
 [benchmarks](docs/benchmarks.md#what-is-still-owed).) Honest cost/performance
 trade-offs (and where Redis or a columnar store wins instead) are documented as part of the design, not buried.
