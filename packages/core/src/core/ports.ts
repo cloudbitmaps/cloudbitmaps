@@ -194,7 +194,7 @@ export interface RegistryRecord extends SegmentRef {
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
-   * is stored and round-tripped with no semantics yet. Both must be plain storage, and both must survive a
+   * is stored and round-tripped with no semantics yet. Both must be plain objects, and both must survive a
    * `list()` projection — a fleet sweep reads the policy from the enumeration rather than per-segment.
    */
   readonly retention?: GovernanceMeta;

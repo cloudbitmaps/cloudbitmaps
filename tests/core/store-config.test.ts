@@ -153,6 +153,73 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       }
     });
 
+    // A driver that WRAPS another driver is the natural thing to build for auditing, metrics, tenant scoping
+    // or client-side encryption — and now that the tier is called storage, the natural name for the field it
+    // wraps is `storage`. Add a registry alongside it and the object satisfies the StorageBackend duck-test
+    // and the IStorageDriver one at the same time. Dispatching on the backend shape first read straight
+    // through to the halves: the wrapper's own methods never ran, every answer still looked right, and no
+    // diagnostic was produced anywhere. Nothing here needs a cast — the union accepts it and `tsc` is clean,
+    // which is why this could only ever be caught at runtime.
+    it('rejects a driver that is ALSO shaped like a backend, rather than reading through it', async () => {
+      const inner = new MemoryStorageDriver();
+      const registry = new MemoryRegistryDriver();
+      await bulkLoadCrbmGeneration(inner, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
+
+      const calls: string[] = [];
+      class AuditingStorageDriver implements IStorageDriver {
+        constructor(
+          readonly storage: IStorageDriver,
+          readonly registry: MemoryRegistryDriver,
+        ) {}
+        capabilities: IStorageDriver['capabilities'] = () => {
+          calls.push('capabilities');
+          return this.storage.capabilities();
+        };
+        putImmutable: IStorageDriver['putImmutable'] = (...a) => {
+          calls.push('putImmutable');
+          return this.storage.putImmutable(...a);
+        };
+        getRange: IStorageDriver['getRange'] = (...a) => {
+          calls.push('getRange');
+          return this.storage.getRange(...a);
+        };
+        getTail: IStorageDriver['getTail'] = (...a) => {
+          calls.push('getTail');
+          return this.storage.getTail(...a);
+        };
+        delete: IStorageDriver['delete'] = (...a) => {
+          calls.push('delete');
+          return this.storage.delete(...a);
+        };
+        list: IStorageDriver['list'] = (...a) => {
+          calls.push('list');
+          return this.storage.list(...a);
+        };
+      }
+
+      const audited = new AuditingStorageDriver(inner, registry);
+      expect(() => new CloudRoaring({ storage: audited })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ storage: audited })).toThrow(/ambiguous/i);
+      // The point of the guard: before it, this construction succeeded, answered 3, and never once called
+      // the wrapper. A silently-removed audit layer is the "right answer, wrong path" failure it exists to stop.
+      expect(calls).toEqual([]);
+    });
+
+    // A hand-rolled backend that is one method short used to get the same generic three-way list as a typo,
+    // which says nothing about what is actually wrong with it.
+    it('names which half of a near-miss backend failed its check', () => {
+      const halfBuilt = {
+        storage: new MemoryStorageDriver(),
+        registry: {} as unknown as MemoryRegistryDriver, // no compareAndSwap
+      };
+      expect(() => new CloudRoaring({ storage: halfBuilt })).toThrow(/registry.*compareAndSwap/);
+      const noPut = {
+        storage: {} as unknown as IStorageDriver,
+        registry: new MemoryRegistryDriver(),
+      };
+      expect(() => new CloudRoaring({ storage: noPut })).toThrow(/storage.*putImmutable/);
+    });
+
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {
       const hybrid = {
         getChunk: () => null,

@@ -9,7 +9,7 @@
  * **It will build a client for you**, which is the common case — `new S3Storage({ bucket })` picks up the
  * ambient credential chain and region exactly as the SDK would. Pass `client` instead when you need a
  * credential chain the SDK cannot infer (SSO, an assumed role, a custom retry strategy); pass `endpoint` +
- * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.objects` and
+ * `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2). Both halves stay reachable as `.storage` and
  * `.registry` for anyone wiring something the facade does not cover.
  */
 import { S3Client } from '@aws-sdk/client-s3';

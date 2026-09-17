@@ -13,6 +13,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// Azurite's fixed, publicly-documented dev account + key (not a secret — the same value ships in every SDK).
+// Constructing a client parses this string but talks to nothing, which is all these wiring tests need.
+const AZURITE_CONN =
+  'DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;' +
+  'AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;' +
+  'BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;';
+
 /**
  * A backend exists to state a location ONCE.
  *
@@ -50,6 +57,14 @@ describe('a backend configures both halves from one place', () => {
     for (const [label, backend] of [
       ['S3', new S3Storage({ bucket: 'b', prefix: 'p' })],
       ['GCS', new GcsStorage({ bucket: 'b', prefix: 'p', apiEndpoint: 'http://127.0.0.1:4443' })],
+      // Azure was missing here, and only here. A mutant pointing its registry at a different prefix survived
+      // BOTH the unit suite and the Azurite integration run — the integration test writes and reads through
+      // the same mismatched registry, so a uniform prefix error is invisible to it. This is the single failure
+      // mode the backend shape exists to make unexpressible, so it is asserted on every cloud, not most.
+      [
+        'Azure',
+        new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', prefix: 'p' }),
+      ],
     ] as const) {
       const [objectsPrefix, registryPrefix] = halves(backend);
       expect(objectsPrefix, `${label}: objects prefix`).toBe('p');
@@ -73,14 +88,89 @@ describe('a backend configures both halves from one place', () => {
     );
   });
 
+  // The old driver took the GCS client as `storage`. A caller collapsing two constructions into one keeps
+  // the name — and ignoring it would fall back to ambient credentials and the PUBLIC endpoint, so a user
+  // pointed at fake-gcs-server would silently start talking to production.
+  it('GcsStorage rejects the old `storage` option instead of ignoring it', () => {
+    const client = new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }).client;
+    expect(
+      () => new GcsStorage({ bucket: 'b', storage: client } as unknown as { bucket: string }),
+    ).toThrow(ValidationError);
+    expect(() => new GcsStorage({ bucket: 'b', client })).not.toThrow();
+  });
+
   it('AzureBlobStorage refuses a half-specified container rather than failing at the first read', () => {
     expect(() => new AzureBlobStorage({})).toThrow(ValidationError);
     expect(() => new AzureBlobStorage({ container: 'c' })).toThrow(ValidationError);
     expect(() => new AzureBlobStorage({ connectionString: 'x' })).toThrow(ValidationError);
   });
 
+  // `now` exists so tests and replayable jobs can pin the clock. It is threaded to the REGISTRY half (the
+  // half that stamps rows), and a backend that quietly dropped it would pass every suite today and produce
+  // unreproducible timestamps later — the defect that only shows up as flake. Every backend, no exceptions:
+  // all five drop-`now` mutants survived the suite before this existed.
+  it('threads an injected `now` to the registry half of every backend', async () => {
+    const now = (): number => 1_700_000_000_000;
+    const dir = await mkdtemp(join(tmpdir(), 'cbm-now-'));
+    try {
+      const cloudRegistryNow = (b: { registry: unknown }): unknown =>
+        (b.registry as { now?: unknown }).now;
+      expect(cloudRegistryNow(new S3Storage({ bucket: 'b', now })), 'S3').toBe(now);
+      expect(
+        cloudRegistryNow(
+          new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443', now }),
+        ),
+        'GCS',
+      ).toBe(now);
+      expect(
+        cloudRegistryNow(
+          new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c', now }),
+        ),
+        'Azure',
+      ).toBe(now);
+
+      // Memory and LocalFs hold the clock differently, so assert the OBSERVABLE effect rather than the field:
+      // the timestamp actually stamped on a row.
+      for (const [label, backend] of [
+        ['Memory', new MemoryStorage({ now })],
+        ['LocalFs', new LocalFsStorage(dir, { now })],
+      ] as const) {
+        const ref = { segment: 'clock-check' };
+        await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation: 0 }, [1], {
+          registry: backend.registry,
+        });
+        const row = await backend.registry.get(ref);
+        expect(row?.createdAt, `${label}: createdAt`).toBe(1_700_000_000_000);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A containerClient already names the account and the container. Accepting a contradicting
+  // `container` alongside it and silently keeping one of them points the store at a container nobody asked
+  // for — the same silent-empty failure the backend shape exists to remove, just one level up.
+  it('AzureBlobStorage refuses a containerClient AND a container/connectionString', () => {
+    const client = new AzureBlobStorage({
+      connectionString: AZURITE_CONN,
+      container: 'c',
+    }).containerClient;
+    expect(() => new AzureBlobStorage({ containerClient: client, container: 'other' })).toThrow(
+      ValidationError,
+    );
+    expect(
+      () => new AzureBlobStorage({ containerClient: client, connectionString: AZURITE_CONN }),
+    ).toThrow(ValidationError);
+    expect(() => new AzureBlobStorage({ containerClient: client })).not.toThrow();
+  });
+
   it('every backend satisfies the port: both halves present and usable', () => {
-    for (const backend of [new MemoryStorage(), new S3Storage({ bucket: 'b' })]) {
+    for (const backend of [
+      new MemoryStorage(),
+      new S3Storage({ bucket: 'b' }),
+      new GcsStorage({ bucket: 'b', apiEndpoint: 'http://127.0.0.1:4443' }),
+      new AzureBlobStorage({ connectionString: AZURITE_CONN, container: 'c' }),
+    ]) {
       expect(typeof backend.storage.putImmutable).toBe('function');
       expect(typeof backend.registry.compareAndSwap).toBe('function');
     }
@@ -128,6 +218,39 @@ describe('a backend is all the wiring a store needs', () => {
     expect(await nextGeneration(ref, backend)).toBe(1);
   });
 
+  // The failure this prevents is not "it does not work" — it is that it fails wearing someone else's
+  // symptoms. A 0.9 store keeps its generations in `<root>/cold`; point `LocalFsStorage` at that root and the
+  // registry half resolves a pointer the storage half cannot satisfy, which reports
+  // `missing-storage-generation` — the torn-restore signature, whose runbook remedy is to roll `currentGen`
+  // back. Destructive, on a store that was never damaged.
+  it('refuses a root written before the tier was renamed, naming the directory to rename', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cbm-oldroot-'));
+    try {
+      const { mkdir } = await import('node:fs/promises');
+      await mkdir(join(root, 'cold'), { recursive: true });
+      await mkdir(join(root, 'registry'), { recursive: true });
+      expect(() => new LocalFsStorage(root)).toThrow(ValidationError);
+      expect(() => new LocalFsStorage(root)).toThrow(/"cold\/" directory but no "storage\/"/);
+      // And it says what NOT to conclude, because the wrong conclusion here is the destructive one.
+      expect(() => new LocalFsStorage(root)).toThrow(/torn\s+restore/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fire on a current root, or on a fresh one, or on a leftover cold/ beside storage/', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cbm-newroot-'));
+    try {
+      const { mkdir } = await import('node:fs/promises');
+      expect(() => new LocalFsStorage(root)).not.toThrow(); // nothing there yet — a first run
+      await mkdir(join(root, 'storage'), { recursive: true });
+      await mkdir(join(root, 'cold'), { recursive: true }); // an already-renamed store's leftover copy
+      expect(() => new LocalFsStorage(root)).not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('a raw driver still works, and is read-only-cleartext because it has no pointer', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { segment: 's', generation: 0 }, [9], {
@@ -137,8 +260,10 @@ describe('a backend is all the wiring a store needs', () => {
     const readOnly = new CloudRoaring({ storage: backend.storage });
     expect(await readOnly.segment('s').count()).toBe(1);
     // …and the verbs that must publish through a pointer say so, rather than half-working.
+    // The message must name what to DO, not an option that no longer exists — an earlier version said
+    // "needs a `registry` in the store config", sending the reader to add a key TypeScript rejects.
     await expect(readOnly.dropSegment({ segment: 's' }, { confirmSegment: 's' })).rejects.toThrow(
-      /registry/i,
+      /needs a storage backend/,
     );
   });
 });

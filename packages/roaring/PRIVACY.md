@@ -71,7 +71,7 @@ every **registered** segment the id is in, it rewrites the current generation wi
 rewrite, and deletes the generation that held the bit — so the bit is physically gone from the bucket on
 return, for idle and archival segments as much as busy ones. There is no logical-then-physical gap and no
 scheduled step to wait for: an erasure *is* a new generation, the same shape as every other write in the library.
-It reuses the store's own drivers (so build the store with a raw storage driver + a registry). It returns an
+It reuses the store's own drivers (so build the store with a backend). It returns an
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id erased out
@@ -151,7 +151,7 @@ inputs: erasing a subject from a source does not touch a destination computed ea
 durability, a subject-erasure rewrite *does not* reach the retained copies — the deleted bit survives in
 noncurrent versions, locked objects, and backups. **Crypto-shred is the only erasure that survives all of
 them**, because it destroys the key, not the bytes. So: use **per-segment/tenant encryption** as your erasure
-posture under immutable storage; give noncurrent versions a short expiry (a lifecycle rule on *noncurrent*
+posture under immutable objects; give noncurrent versions a short expiry (a lifecycle rule on *noncurrent*
 versions is fine — it is *current* generations that a rule must never expire, see below); reserve S3 Object
 Lock **COMPLIANCE** mode for data under a genuine legal hold (it *cannot* be deleted before its retention date,
 by anyone — incompatible with on-demand erasure), and prefer **GOVERNANCE** mode where erasure must remain

@@ -2,13 +2,14 @@
  * CloudRoaring — distributed, cloud-native Roaring Bitmaps, read from object storage.
  *
  * The `CloudRoaring` class is the read engine over **loaded** segments: write-once `.crbm` generations in an
- * object store, behind one registry pointer per segment. You wire storage **once**, as a single config object: a
- * Storage driver (`storage`) and optionally a `registry` (the authoritative generation pointer — needed to read
- * encrypted segments, to resolve generations without a storage `list`-scan, and for every lifecycle helper) and a
- * `keystore` (encryption-at-rest / crypto-shred). Pass a **raw** {@link IStorageDriver} as `storage` (e.g.
- * `S3StorageDriver`, `LocalFsStorageDriver`, `MemoryStorageDriver`) and the store assembles the `.crbm` storage source
- * ({@link CrbmStorageChunkSource}) for you — so each driver is named exactly once. Or pass an already-built
- * {@link StorageChunkSource} to control advanced reader options yourself.
+ * object store, behind one registry pointer per segment. You wire storage **once**, as a single config object:
+ * pass a **backend** as `storage` — `S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage` or
+ * `MemoryStorage` — and it carries both halves, the generations and the pointer, from one bucket and one
+ * prefix. Add a `keystore` for encryption-at-rest / crypto-shred.
+ *
+ * Two narrower shapes are also accepted for `storage`: a bare {@link IStorageDriver}, which has no pointer and
+ * so resolves generations by list-scanning storage (**cleartext and read-only**), and an already-built
+ * {@link StorageChunkSource} for advanced reader options you configure yourself.
  *
  * **Data gets in by loading a generation**, never by mutating one: `bulkLoadCrbmGeneration` streams a set of ids
  * into one immutable object and publishes it forward-only. Every other write in the library is a load in
@@ -18,7 +19,7 @@
  *
  * In-process lifecycle helpers — `eraseSubject`, `subjectReport`, `dropSegment`, `retireExpired`,
  * `checkConsistency`, `exportSegments` — reuse the store's own drivers, so you never re-pass them (they need the
- * store built with a raw storage driver + registry). See the README and the getting-started guide.
+ * store built with a backend). See the README and the getting-started guide.
  */
 
 import {
@@ -136,9 +137,9 @@ function requireScope(options: { namespace?: string; allNamespaces?: boolean }, 
 
 /**
  * Wiring for a {@link CloudRoaring} store. **Only `storage` is required** — the minimal call is
- * `new CloudRoaring({ storage })`, which reads cleartext segments by list-scanning the bucket for the latest
- * generation. Add a `registry` to resolve generations with one strong read, to read encrypted segments, and to
- * unlock every lifecycle helper (recommended for anything beyond a quick look). Everything else is **optional
+ * `new CloudRoaring({ storage: backend })`. A backend resolves generations with one strong read, reads
+ * encrypted segments, and unlocks every lifecycle helper; the narrower shapes `storage` also accepts are
+ * described on the option itself. Everything else is **optional
  * tuning with sensible defaults** — resilience/retries are already on, the cache is bounded, metrics are a
  * no-op — so reach for them only when you need to.
  */
@@ -149,6 +150,11 @@ export interface CloudRoaringOptions {
    * Pass a {@link StorageBackend} — `S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage`,
    * `MemoryStorage` — and you are done: it carries both halves, the generations and the `currentGen` pointer,
    * configured from one bucket and one prefix. That is the whole wiring, and it is the shape to reach for.
+   *
+   * **Pass the backend itself, not `backend.storage`.** They differ by one property access and the mistake is
+   * silent: `storage: backend` is the store, while `storage: backend.storage` hands over the *driver half*
+   * alone, which constructs without complaint and gives you a cleartext, read-only store that fails later on
+   * the first write or lifecycle call. The free functions take `backend.storage`; the store takes `backend`.
    *
    * Two lower-level shapes stay accepted for wiring the facade does not cover:
    *
@@ -180,9 +186,9 @@ export interface CloudRoaringOptions {
   readonly cacheTtlMs?: number;
   /**
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
-   * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies only when
-   * `storage` is a raw driver **and** a `registry` is wired (the cheap `currentGen` read the refresh needs; a
-   * registry-less store pins per source lifetime). Lazy — no timer; ≤ one registry read per segment per window,
+   * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when `storage`
+   * is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. A store wired with
+   * a bare `IStorageDriver` has no registry at all and pins the generation for the source's lifetime. Lazy — no timer; ≤ one registry read per segment per window,
    * opening a new reader only when the generation actually advanced.
    */
   readonly storageGenTtlMs?: number;
@@ -190,7 +196,8 @@ export interface CloudRoaringOptions {
    * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
    * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
    * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
-   * Applies only when `storage` is a raw driver (a pre-built `StorageChunkSource` manages its own reader cache).
+   * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
+   * `StorageChunkSource` manages its own reader cache.
    */
   readonly storageReaderCacheMax?: number;
   /**
@@ -245,7 +252,7 @@ export interface SegmentOptions {
    * **Two things this does NOT do, both deliberate:**
    *
    * - It does not reclaim the bytes. That is {@link CloudRoaring.retireExpired}, and until it runs the data is
-   *   still stored and still billed. `count()` reporting 0 while storage exist is the expected state in that
+   *   still stored and still billed. `count()` reporting 0 while objects exist is the expected state in that
    *   window, not a bug.
    * - It does not apply to *other* handles. The deadline lives on this handle; a second handle opened without
    *   the option reads the segment normally. Record the policy with {@link CloudRoaring.setRetention} to make
@@ -337,11 +344,12 @@ export interface MaterializeResult {
  * by a test) — an object exposing *both* is ambiguous and rejected, as is one exposing *neither* (incl. a
  * nullish/non-object value from a JS caller): fail fast with a typed error rather than crash on a probe.
  *
- * A raw driver is wrapped into a {@link CrbmStorageChunkSource} using the config's `registry`/`keystore`/
- * `requireEncryption`; a pre-built source is used as-is. Those three options are meaningful **only** on the
- * raw-driver path (a pre-built source carries its own registry/keystore) — pairing any of them with a source is
- * a wiring mistake, so reject it rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces
- * the rest (a keystore / `requireEncryption` needs a registry; the driver needs range reads).
+ * A backend is wrapped into a {@link CrbmStorageChunkSource} over its storage half, pinned to its registry,
+ * with the config's `keystore`/`requireEncryption`; a bare driver is wrapped the same way but without a
+ * registry; a pre-built source is used as-is. `keystore`/`requireEncryption` are meaningful **only** where the
+ * store builds the source itself — pairing either with a pre-built source is a wiring mistake, so reject it
+ * rather than silently ignore it. The `CrbmStorageChunkSource` constructor enforces the rest (a keystore /
+ * `requireEncryption` needs a registry, so they need a backend; the driver needs range reads).
  *
  * Returns the resolved `source` (what the engine reads through) **and** the raw `driver` when one was passed —
  * the store keeps the raw driver so its lifecycle helpers and the `*Into` verbs can write generations without
@@ -369,13 +377,43 @@ function resolveStorageSource(
     );
   }
   const asBackend = storage as Partial<StorageBackend>;
-  const hasBothHalves =
-    asBackend.storage !== null &&
-    typeof asBackend.storage === 'object' &&
-    typeof (asBackend.storage as Partial<IStorageDriver>).putImmutable === 'function' &&
-    asBackend.registry !== null &&
-    typeof asBackend.registry === 'object' &&
-    typeof (asBackend.registry as Partial<IRegistryDriver>).compareAndSwap === 'function';
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object';
+  const storageHalfOk =
+    isObject(asBackend.storage) && typeof asBackend.storage.putImmutable === 'function';
+  const registryHalfOk =
+    isObject(asBackend.registry) && typeof asBackend.registry.compareAndSwap === 'function';
+  const hasBothHalves = storageHalfOk && registryHalfOk;
+
+  const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
+  const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
+
+  // A decorator is the reason this is checked BEFORE the backend branch. An `IStorageDriver` wrapper that
+  // keeps the thing it wraps on `.storage` — the natural field name now that the tier is called storage — and
+  // a registry on `.registry` satisfies the backend duck-test at the same time as the driver one. Dispatching
+  // on the backend shape alone would read straight through to the halves, and the wrapper's own
+  // `putImmutable`/`getRange`/`getTail` would never run: an audit, metrics, tenant-scoping or client-side
+  // encryption layer silently removed, every answer still correct-looking. That is the exact failure this
+  // whole `StorageBackend` shape exists to rule out, so it is refused rather than guessed at.
+  if (hasBothHalves && (hasGetChunk || hasPutImmutable)) {
+    throw new ValidationError(
+      '`storage` looks like BOTH a StorageBackend (it has `.storage` and `.registry`) and a ' +
+        `${hasGetChunk ? 'StorageChunkSource (it has `getChunk`)' : 'IStorageDriver (it has `putImmutable`)'}` +
+        ' — ambiguous. If this is a driver that wraps another, rename its inner field so it is not `.storage`, ' +
+        'and pass `{ storage: <your wrapper>, registry }` to use it as a backend.',
+    );
+  }
+
+  // Both halves are present but one fails its duck-test — say which, rather than repeating the generic list.
+  if (!hasBothHalves && isObject(asBackend.storage) && isObject(asBackend.registry)) {
+    const bad = !storageHalfOk
+      ? '`storage` half is missing `putImmutable`'
+      : '`registry` half is missing `compareAndSwap`';
+    throw new ValidationError(
+      `\`storage\` looks like a StorageBackend but its ${bad} — pass a backend such as S3Storage, GcsStorage, ` +
+        'AzureBlobStorage, LocalFsStorage or MemoryStorage, or an object with both halves fully implemented',
+    );
+  }
 
   if (hasBothHalves) {
     const backend = storage as StorageBackend;
@@ -394,8 +432,6 @@ function resolveStorageSource(
     };
   }
 
-  const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
-  const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
   if (hasGetChunk && hasPutImmutable) {
     throw new ValidationError(
       '`storage` exposes both `getChunk` and `putImmutable` — ambiguous; pass a StorageBackend, an IStorageDriver, or a StorageChunkSource, not a hybrid',
@@ -522,19 +558,26 @@ export class CloudRoaring {
 
   /**
    * The write-side deps, from the store's own drivers, for the lifecycle helpers and the `*Into` verbs. Requires
-   * the store to have been constructed with a **raw storage driver** (a pre-built `StorageChunkSource` has no
-   * underlying `IStorageDriver` to write through) and a `registry` (the pointer every write publishes through).
+   * the store to have been constructed with a **backend**, which supplies both halves: an `IStorageDriver` to
+   * write generations through (a pre-built `StorageChunkSource` has none) and the registry holding the pointer
+   * every write publishes.
    * Out-of-process callers use the free functions with explicit deps.
    */
   private lifecycleDeps(op: string): LifecycleDeps {
     if (this.storageDriver === undefined) {
       throw new UnsupportedError(
-        `${op} needs the store built with a raw storage driver (IStorageDriver), not a pre-built StorageChunkSource — ` +
-          'or call the equivalent free function with explicit deps',
+        `${op} needs the store built with a storage backend — S3Storage, GcsStorage, AzureBlobStorage, ` +
+          `LocalFsStorage or MemoryStorage. A pre-built StorageChunkSource is read-only: it has no ` +
+          `IStorageDriver underneath to write generations through. Out of process, call the equivalent ` +
+          `free function with explicit deps instead.`,
       );
     }
     if (this.registry === undefined) {
-      throw new UnsupportedError(`${op} needs a \`registry\` in the store config`);
+      throw new UnsupportedError(
+        `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
+          `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
+          `no longer a separate \`registry\` option to add.`,
+      );
     }
     return {
       storage: this.storageDriver,
@@ -690,8 +733,8 @@ export class CloudRoaring {
    * persist it / route it to your audit sink as the proof of deletion (a `segment.rewrite` audit event is also
    * emitted per rewrite when you pass `audit`).
    *
-   * Uses the store's **own** drivers (raw storage + registry), so the membership check and the rewrite provably run
-   * over the same generation. Requires the store built with a **raw storage driver + registry** (throws
+   * Uses the backend's **own** two halves, so the membership check and the rewrite provably run
+   * over the same generation. Requires the store built with a **backend** (throws
    * {@link UnsupportedError} otherwise; a pre-built `StorageChunkSource` store has no `IStorageDriver` to write
    * through — use the `eraseIdFromSegment` free function there).
    *
@@ -807,11 +850,11 @@ export class CloudRoaring {
   /**
    * Every generation still in the bucket for this segment, ascending, with the current one marked.
    *
-   * What the bucket holds, not what the segment has ever been — collection deletes superseded storage, so this is
+   * What the bucket holds, not what the segment has ever been — collection deletes superseded objects, so this is
    * the grace window plus whatever has not been collected yet. It is the set {@link CloudRoaring.rollback} can
-   * choose from, which is the reason to look at it. One `list` call; it does not open the storage.
+   * choose from, which is the reason to look at it. One `list` call; it does not open the objects.
    *
-   * Needs a raw storage driver + registry.
+   * Needs a backend.
    */
   async generations(ref: SegmentRef): Promise<GenerationEntry[]> {
     validateSegmentRef(ref);
@@ -904,7 +947,7 @@ export class CloudRoaring {
    * pointer past them. An operator who has just undone a bad load should not have the evidence collected out from
    * under them.
    *
-   * Needs a raw storage driver + registry.
+   * Needs a backend.
    */
   async rollback(
     ref: SegmentRef,
@@ -960,7 +1003,7 @@ export class CloudRoaring {
    * (`WriteConflictError`). The second can be raised **after** the publish already landed, so a throw does not
    * by itself mean the load did not take effect — re-read the pointer rather than assuming.
    *
-   * Needs a raw storage driver + registry (throws {@link UnsupportedError} otherwise).
+   * Needs a backend (throws {@link UnsupportedError} otherwise).
    */
   async load(
     ref: SegmentRef,
@@ -980,7 +1023,7 @@ export class CloudRoaring {
   }
 
   /**
-   * **Dispose of a segment — tombstone it, then delete its Storage storage.** Irreversible.
+   * **Dispose of a segment — tombstone it, then delete its storage objects.** Irreversible.
    *
    * The operation a rolling window needs: `destroySegment` crypto-shreds (bytes unreadable everywhere including
    * backups, but still sitting in your bucket and still billed, and it requires encryption), while this one
@@ -1014,7 +1057,7 @@ export class CloudRoaring {
    * clock, or with `storageGenTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
    * keep answering `true` for a dropped segment indefinitely; restart it.
    *
-   * Needs the store built with a **raw storage driver + a registry** (throws {@link UnsupportedError} otherwise),
+   * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
    * because it has to enumerate and delete generations — a pre-built `StorageChunkSource` only reads.
    */
   async dropSegment(
@@ -1125,8 +1168,8 @@ export class CloudRoaring {
    * exactly that row, and deleting it would destroy the Art. 17 attestation and un-fence the name. Pass
    * `purgeTombstones: false` to keep every tombstone.
    *
-   * Needs the store built with a **raw storage driver + a registry** (throws {@link UnsupportedError} otherwise),
-   * because retiring a segment deletes its Storage storage. `now` defaults to the store's clock.
+   * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
+   * because retiring a segment deletes its storage objects. `now` defaults to the store's clock.
    */
   async retireExpired(
     options: Omit<RetireExpiredOptions, 'now'> & { now?: number } = {},
@@ -1192,7 +1235,7 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a raw storage driver as `storage` (a pre-built StorageChunkSource ' +
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
           'that cannot resolve a generation has nothing to pin)',
       );
     }
@@ -1223,7 +1266,7 @@ export class CloudRoaring {
     const crbm = this.crbmSource;
     if (crbm === undefined) {
       throw new UnsupportedError(
-        'pin() needs the `.crbm` storage source — pass a raw storage driver as `storage` (a pre-built StorageChunkSource ' +
+        'pin() needs the `.crbm` storage source — pass a backend or a raw IStorageDriver as `storage` (a pre-built StorageChunkSource ' +
           'that cannot resolve a generation has nothing to pin)',
       );
     }
@@ -1258,7 +1301,11 @@ export class CloudRoaring {
   /** The store's registry, or a typed error naming the operation that needs one. */
   private requireRegistry(op: string): IRegistryDriver {
     if (this.registry === undefined) {
-      throw new UnsupportedError(`${op} needs a \`registry\` in the store config`);
+      throw new UnsupportedError(
+        `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
+          `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
+          `no longer a separate \`registry\` option to add.`,
+      );
     }
     return this.registry;
   }
@@ -1269,7 +1316,7 @@ export class CloudRoaring {
    * back ahead of the object store, so a pointer references a generation that isn't there (reads would then
    * throw). Read-only, bounded fan-out; run it at startup after a restore. Returns `{ checked, inconsistent }` —
    * `inconsistent` empty ⇒ coherent; otherwise it names the segments to recover (restore the object store, or
-   * roll the registry back to a coherent point). Needs the store built with a **raw storage driver + a registry**
+   * roll the registry back to a coherent point). Needs the store built with a **backend**
    * (throws {@link UnsupportedError} otherwise). `destroyed` (crypto-shredded) segments are skipped. Pair it with
    * the DR runbook (docs/guide/disaster-recovery.md).
    */
@@ -1444,7 +1491,7 @@ export class Segment {
    * taken before a crypto-shred stops reading when the shred lands: the destroyed row is re-checked every time
    * the pinned reader opens, so a pin cannot outlive the key it was using.
    *
-   * Needs a store built on the `.crbm` storage source (the default when you pass a raw storage driver). Throws
+   * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
    * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
    */
   async pin(): Promise<Segment> {
@@ -1568,7 +1615,7 @@ export class Segment {
    * Materialize `this ∩ others…` (minus `exclude`) as a **new generation of `dest`** — `dest`'s previous contents
    * are superseded, not added to. Streaming + bounded-memory; the result is one immutable object published
    * forward-only, so readers of `dest` see either the old generation or the new one, never a partial. Needs the
-   * store built with a raw storage driver + registry (throws {@link UnsupportedError} otherwise).
+   * store built with a backend (throws {@link UnsupportedError} otherwise).
    *
    * **An empty result publishes an empty generation** — deliberate for now (the guard that refuses empty over
    * non-empty arrives with `load()`), with one exception: a call involving an **expired handle** is refused

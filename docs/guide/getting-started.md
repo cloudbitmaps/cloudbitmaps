@@ -109,8 +109,8 @@ throwing, so there is nothing to create before the first load.
 
 ## 2. Persistent: the local filesystem
 
-Same API, but state lives on disk and survives a restart. Pass the **raw** `LocalFsStorageDriver` as `storage` —
-the store wraps it in the `.crbm` reader for you, so you wire each driver exactly once:
+Same API, but state lives on disk and survives a restart. Pass a `LocalFsStorage` backend as `storage` — it
+names one root and derives both halves from it, so you wire the location exactly once:
 
 ```ts
 import {
@@ -129,7 +129,7 @@ await bulkLoadCrbmGeneration(
   backend.storage,
   { ...ref, generation: await nextGeneration(ref, backend) },
   activeUserIds,
-  { registry },
+  { registry: backend.registry },
 );
 // ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
 ```
@@ -326,12 +326,10 @@ authoritative record (`currentGen`) read once, and it is what every write publis
 import {
   CloudRoaring,
   bulkLoadCrbmGeneration,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
+  LocalFsStorage,
 } from '@cloudbitmaps/roaring';
 
-const storage = new LocalFsStorageDriver('./.cloudbitmaps/storage');
-const registry = new LocalFsRegistryDriver('./.cloudbitmaps/registry');
+const backend = new LocalFsStorage('./.cloudbitmaps');
 
 // Load a generation AND publish it to the registry in one call:
 await bulkLoadCrbmGeneration(backend.storage, { segment: 'active', generation: 0 }, [1, 2, 3], {
@@ -531,8 +529,8 @@ Three properties, all consequences of "a write is a load":
 - **It deletes nothing.** The destination's previous generation stays in the bucket until you collect it — see
   [§8](#8-generation-bookkeeping-what-a-load-leaves-behind).
 
-An empty result publishes an empty generation. The verbs need the store built with a raw storage driver **and** a
-registry (they publish through it) and throw `UnsupportedError` otherwise. To suppress the result of an
+An empty result publishes an empty generation. The verbs need the store built with a **backend** (they publish through its registry) and throw
+`UnsupportedError` otherwise. To suppress the result of an
 intersection, pass `exclude` to `intersectInto` rather than materializing a temp segment and then `andNotInto` —
 the suppression folds into the same chunk-aligned pass and each exclude is read only where the intersection
 survived.
@@ -661,8 +659,7 @@ const keystore = new InProcessKeystore({
   // recoveryKeyId: 'offline-escrow',         // optional: also wrap under an offline recovery KEK
 });
 
-const storage = new LocalFsStorageDriver('./.cloudroaring/storage');
-const registry = new LocalFsRegistryDriver('./.cloudroaring/registry');
+const backend = new LocalFsStorage('./.cloudroaring');
 
 // Load encrypted (the DEK is minted + wrapped into the registry on the first publish; later loads reuse it):
 await bulkLoadCrbmGeneration(backend.storage, { segment: 'pii', generation: 0 }, ids, {
@@ -944,7 +941,7 @@ generation that held the bit** (`gcOrphanGenerations` with `keep: 0`). The bit i
 bucket when the call returns, constant memory, one chunk in flight. Segments the id is not in are not listed.
 
 Both helpers **reuse the store's own drivers** — no `registry`/deps to re-pass. `eraseSubject` needs the store
-built with a raw storage driver + a `registry` (it writes generations); `subjectReport` needs only a `registry` (it
+built with a **backend** (it writes generations); `subjectReport` needs only the backend's registry (it
 just enumerates + `has()`). A store missing what a helper needs throws `UnsupportedError` — a
 pre-built-`StorageChunkSource` store can't run `eraseSubject`; use the `eraseIdFromSegment(ref, id, { storage, registry,
 keystore? })` free function out-of-process instead. The returned `erasedFrom` list is your **erasure ledger**
@@ -1089,7 +1086,7 @@ encryption at rest (§9) is a prerequisite — and `dropSegment` on an encrypted
 
 ### Retiring a bucket
 
-`store.dropSegment` needs the store built with a **raw storage driver + a registry** (it has to enumerate and
+`store.dropSegment` needs the store built with a **backend** (it has to enumerate and
 delete generations, which a pre-built `StorageChunkSource` cannot do) — the same requirement as `eraseSubject` in
 §13. Without it you get an `UnsupportedError`.
 
@@ -1474,7 +1471,7 @@ if (report.errored.length > 0) {
 }
 ```
 
-Run it **after any restore** and as a periodic health check. It needs a raw storage driver + a `registry` (same
+Run it **after any restore** and as a periodic health check. It needs a **backend** (same
 requirement as the other lifecycle helpers; throws `UnsupportedError` otherwise) and fans out at a bounded
 `concurrency` (default 8). A single unreadable segment never aborts the scan — it lands in `errored` so you still
 get the full picture; and each segment is checked against its authoritative **live** pointer (a strong read), not
@@ -1492,7 +1489,7 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 | `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
 | `union(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
 | `andNot(excludes, { concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
-| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a raw storage driver + registry |
+| `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 
 There is no per-id write on a segment: data enters as a generation — `bulkLoadCrbmGeneration`

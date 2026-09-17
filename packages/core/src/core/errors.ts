@@ -48,7 +48,7 @@ export class NotFoundError extends CloudRoaringError {}
  * (1) **format** — the bytes are well-formed but unreadable here (an unknown `.crbm` major version, an
  * encrypted file before the crypto path exists) — distinct from `IntegrityError` (corruption); and (2)
  * **store configuration** — an operation this store's wiring doesn't support (e.g. a lifecycle helper like
- * `eraseSubject`/`retireExpired` called on a store built without a raw storage driver + registry). Raised at
+ * `eraseSubject`/`retireExpired` called on a store built without a storage backend). Raised at
  * operation time, before any mutation.
  */
 export class UnsupportedError extends CloudRoaringError {}

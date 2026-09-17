@@ -190,7 +190,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     } = options;
     if (keystore !== undefined && registry === undefined) {
       throw new CapabilityError(
-        'a keystore needs a registry (that is where wrapped DEKs are stored)',
+        'a keystore needs a storage backend — that is where the wrapped DEKs live. A bare IStorageDriver has no registry to hold them',
       );
     }
     if (requireEncryption === true && registry === undefined) {

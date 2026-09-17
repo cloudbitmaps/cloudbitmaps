@@ -604,18 +604,17 @@
                  usable measure is ~72 characters and the three-id form ran to 82. -->
             <div class="code-head label"><span>segments.ts</span><span>No setup</span></div>
             <pre><code><span class="k">import</span> {
-  CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
+  CloudRoaring, MemoryStorage,
   bulkLoadCrbmGeneration,
 } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
-<span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
+<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
 <span class="k">const</span> ref = { segment: <span class="s">'bought-last-90d'</span>, generation: <span class="n">0</span> };
 
 <span class="c">// one write-once object, and then the pointer moves to it</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(storage, ref, [<span class="n">75</span>, <span class="n">99_999</span>], { registry });
+<span class="k">await</span> bulkLoadCrbmGeneration(backend.storage, ref, [<span class="n">75</span>, <span class="n">99_999</span>], { registry: backend.registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
 <span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
 <span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
 <span class="c">// fetches only the chunks that can contribute</span>

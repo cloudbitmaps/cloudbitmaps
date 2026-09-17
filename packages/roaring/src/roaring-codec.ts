@@ -68,7 +68,7 @@ export class SafeBitmap implements CodecBitmap {
    * a different baseline that happens to land near 63× on the run shape too. `pnpm bench:encoding` prints both
    * columns; don't carry a figure between them without checking which denominator it had.
    *
-   * Called only when writing an immutable storage generation — see {@link CodecBitmap.optimize} for why the read
+   * Called only when writing an immutable objects generation — see {@link CodecBitmap.optimize} for why the read
    * path deliberately does not.
    */
   optimize(): void {

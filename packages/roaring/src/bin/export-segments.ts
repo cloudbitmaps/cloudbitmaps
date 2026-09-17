@@ -30,7 +30,7 @@
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
  */
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CloudRoaring, LocalFsStorage, encodeNameForPath, namespacePathPart } from '../index';
@@ -44,37 +44,6 @@ export interface ExportConfig {
 }
 
 /** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
-/**
- * Refuse the one export-root layout that would otherwise mislead.
- *
- * This directory was called `cold/` before the tier was renamed to `storage`, so a store written by an older
- * version has its generations somewhere this tool no longer looks. It does not fail silently — every segment
- * lands in the manifest's `failed[]` and the process exits non-zero — but it fails with **the wrong
- * diagnosis**, which is worse here than a vague one: each entry reads `no such generation: <segment>.<gen>`,
- * the exact signature of the `missing-storage-generation` torn-restore state. The DR runbook's documented
- * answers to that signal are "restore from backup" and "roll `currentGen` back", the second of which is
- * destructive — and it would be applied to a store that was never damaged, by someone already reaching for
- * the escape hatch because something has gone wrong.
- *
- * So: if `storage/` is absent while `cold/` is present, stop before any of that and say exactly what to
- * rename. `LocalFsStorage` owns the layout itself; this only guards the upgrade.
- */
-async function assertCurrentLayout(root: string): Promise<void> {
-  const storage = join(root, 'storage');
-  const exists = async (p: string): Promise<boolean> =>
-    access(p).then(
-      () => true,
-      () => false,
-    );
-  if (!(await exists(storage)) && (await exists(join(root, 'cold')))) {
-    throw new Error(
-      `${root} holds a "cold/" directory but no "storage/" — this store was written before the tier was ` +
-        `renamed. Rename it (\`mv ${join(root, 'cold')} ${storage}\`) and re-run; the objects inside are ` +
-        `unchanged.`,
-    );
-  }
-}
-
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
@@ -156,7 +125,6 @@ export async function main(
   now: () => number = () => Date.now(),
 ): Promise<ExportManifest> {
   const config = parseConfig(env);
-  await assertCurrentLayout(config.root);
   const storage = new LocalFsStorage(config.root);
   const store = new CloudRoaring({ storage });
 

@@ -469,7 +469,7 @@ describe('eraseSubject', () => {
   });
 });
 
-describe('lifecycle helpers require a raw storage driver + registry', () => {
+describe('lifecycle helpers require a backend', () => {
   it('throws UnsupportedError naming the op when the store was built with a pre-built StorageChunkSource', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
@@ -485,7 +485,7 @@ describe('lifecycle helpers require a raw storage driver + registry', () => {
       UnsupportedError,
     );
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
-      /eraseSubject.*raw storage driver/,
+      /eraseSubject needs the store built with a storage backend/,
     );
     await expect(store.subjectReport(1)).rejects.toThrow(/subjectReport.*registry/);
   });

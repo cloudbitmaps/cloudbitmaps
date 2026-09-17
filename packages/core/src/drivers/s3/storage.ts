@@ -6,7 +6,7 @@
  * **injected** (dependency injection): the driver owns no credential/region/endpoint logic, so it's thin,
  * testable against MinIO (point a client at its endpoint), and reuses the caller's existing client.
  *
- * Generations are write-once immutable storage: a conditional `PutObject` with `If-None-Match: *` makes the
+ * Generations are write-once immutable objects: a conditional `PutObject` with `If-None-Match: *` makes the
  * publish atomic — a second write to the same key fails with `WriteConflictError`, never a silent overwrite
  * (C13), the cloud analogue of the LocalFs atomic `link`. **This requires a backend that honors
  * `If-None-Match: *`** (AWS S3 — GA Aug 2024; recent MinIO): a backend that silently ignored the

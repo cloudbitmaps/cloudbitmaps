@@ -584,7 +584,7 @@ describe('retireExpired — tombstone purge', () => {
 });
 
 describe('store.retireExpired', () => {
-  it('takes `now` from the store clock and needs a raw storage driver + registry', async () => {
+  it('takes `now` from the store clock and needs a backend', async () => {
     const w = world();
     await w.load('day', [1]);
     await w.store().setRetention({ segment: 'day' }, { expiresAt: EXPIRED });
@@ -598,7 +598,9 @@ describe('store.retireExpired', () => {
       retry: false,
     });
     await expect(noDriver.retireExpired()).rejects.toBeInstanceOf(UnsupportedError);
-    await expect(noDriver.retireExpired()).rejects.toThrow(/raw storage driver/);
+    await expect(noDriver.retireExpired()).rejects.toThrow(
+      /needs the store built with a storage backend/,
+    );
 
     // …and with the driver but no registry there is nothing to enumerate policies from. Two distinct messages,
     // because "wire a registry" and "pass the driver, not a source" are two different fixes.

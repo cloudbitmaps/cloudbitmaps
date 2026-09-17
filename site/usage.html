@@ -137,19 +137,18 @@ npm audit signatures</code></pre>
               <span class="label">quickstart.ts</span><span class="label">No setup</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> {
-  CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
+  CloudRoaring, MemoryStorage,
   bulkLoadCrbmGeneration,
 } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
-<span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
+<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
 
 <span class="c">// the whole set, as one immutable generation</span>
 <span class="k">await</span> bulkLoadCrbmGeneration(storage,
   { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
-  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry: backend.registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
 <span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
 <span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span>
 <span class="k">await</span> vips.count();            <span class="c">// exact, 0 payloads</span></code></pre>
@@ -159,17 +158,15 @@ npm audit signatures</code></pre>
               <span class="label">production.ts</span><span class="label">Only the drivers</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-<span class="k">import</span> { S3StorageDriver, S3RegistryDriver }
-  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/s3'</span>;
+<span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/s3'</span>;
 
-<span class="c">// one bucket holds both the data and the pointer</span>
-<span class="k">const</span> storage = <span class="k">new</span> S3StorageDriver({ client, bucket: <span class="s">'segments'</span> });
-<span class="k">const</span> registry = <span class="k">new</span> S3RegistryDriver({
-  client, bucket: <span class="s">'segments'</span>,
+<span class="c">// one bucket holds both the data and the pointer, stated once</span>
+<span class="k">const</span> backend = <span class="k">new</span> S3Storage({
+  bucket: <span class="s">'segments'</span>, region: <span class="s">'us-east-1'</span>,
 });
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
-  storage, registry,
+  storage: backend,
   cacheMaxChunks: <span class="n">512</span>,   <span class="c">// optional bounded LRU</span>
 });
 

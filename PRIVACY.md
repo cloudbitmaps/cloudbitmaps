@@ -147,7 +147,7 @@ inputs: erasing a subject from a source does not touch a destination computed ea
 durability, a subject-erasure rewrite *does not* reach the retained copies — the deleted bit survives in
 noncurrent versions, locked objects, and backups. **Crypto-shred is the only erasure that survives all of
 them**, because it destroys the key, not the bytes. So: use **per-segment/tenant encryption** as your erasure
-posture under immutable storage; give noncurrent versions a short expiry (a lifecycle rule on *noncurrent*
+posture under immutable objects; give noncurrent versions a short expiry (a lifecycle rule on *noncurrent*
 versions is fine — it is *current* generations that a rule must never expire, see below); reserve S3 Object
 Lock **COMPLIANCE** mode for data under a genuine legal hold (it *cannot* be deleted before its retention date,
 by anyone — incompatible with on-demand erasure), and prefer **GOVERNANCE** mode where erasure must remain

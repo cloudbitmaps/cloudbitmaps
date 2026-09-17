@@ -6,7 +6,7 @@
  * no credential/project/endpoint logic, so it's thin, reuses the caller's client, and is testable against the
  * `fake-gcs-server` emulator (point a `Storage` at its `apiEndpoint`).
  *
- * Generations are write-once immutable storage: a resumable upload with the **`ifGenerationMatch: 0`**
+ * Generations are write-once immutable objects: a resumable upload with the **`ifGenerationMatch: 0`**
  * precondition ("create only if it does not exist") makes the publish atomic — a second write to the same
  * object fails with 412 → {@link WriteConflictError}, never a silent overwrite (C13), the GCS analogue of S3's
  * `If-None-Match: *` and LocalFs's atomic `link`. **Writes stream in constant memory:** the codec's bytes are

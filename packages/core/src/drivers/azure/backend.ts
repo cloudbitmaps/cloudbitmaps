@@ -34,6 +34,15 @@ export class AzureBlobStorage implements StorageBackend {
 
   constructor(options: AzureBlobStorageOptions) {
     if (options.containerClient !== undefined) {
+      // `containerClient` already names the account AND the container, so anything that also names them is
+      // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed
+      // at a container the caller did not ask for. Refuse instead of picking one.
+      if (options.connectionString !== undefined || options.container !== undefined) {
+        throw new ValidationError(
+          'AzureBlobStorage takes `containerClient` OR `connectionString` + `container`, not both — ' +
+            'the `containerClient` already determines the account and container',
+        );
+      }
       this.containerClient = options.containerClient;
     } else if (options.connectionString !== undefined && options.container !== undefined) {
       this.containerClient = BlobServiceClient.fromConnectionString(

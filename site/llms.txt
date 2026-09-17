@@ -16,6 +16,11 @@ drivers) arrives transitively. Four storage backends: S3, GCS and Azure Blob as 
 the local filesystem in the main entry. Each of the three clouds hosts both the storage generations and the
 registry, so a deployment needs exactly one cloud account.
 
+A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
+carries both halves, the generations and the currentGen pointer, from one bucket and one prefix.
+MemoryStorage and LocalFsStorage come from the main entry; S3Storage, GcsStorage and AzureBlobStorage from
+their subpaths. There is no separate `registry` option.
+
 ## How data gets in
 
 Only by loading a whole new generation. `bulkLoadCrbmGeneration(storage, {segment, generation}, ids, {registry})`

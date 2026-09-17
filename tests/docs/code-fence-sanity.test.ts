@@ -37,6 +37,29 @@ interface Fence {
 }
 
 /**
+ * The site writes its samples as `<pre><code>` with a `<span>` per token, not as ``` fences — so the markdown
+ * scanner below found **zero** samples in all seven site pages while the file glob made it look covered.
+ * That is worse than not scanning them: it reads as coverage. This strips the markup and hands back the code.
+ */
+function htmlSamplesOf(file: string): Fence[] {
+  const text = readFileSync(join(ROOT, file), 'utf8');
+  const out: Fence[] = [];
+  for (const m of text.matchAll(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/g)) {
+    const code = (m[1] as string)
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+    // Only the samples that are actually code we ship — skip shell blocks and prose-in-a-box.
+    if (!/\b(new CloudRoaring|import\s|const\s|await\s)/.test(code)) continue;
+    out.push({ file, line: text.slice(0, m.index).split('\n').length, code });
+  }
+  return out;
+}
+
+/**
  * Fenced ```ts / ```js blocks, with the 1-based line the fence opens on.
  *
  * Leading indentation is matched and then stripped, because a fence nested inside a list item — which is how
@@ -59,11 +82,16 @@ function fencesOf(file: string): Fence[] {
   return out;
 }
 
-const allFences = docs.flatMap(fencesOf);
+const allFences = [
+  ...docs.flatMap(fencesOf),
+  ...docs.filter((f) => f.endsWith('.html')).flatMap(htmlSamplesOf),
+];
 
 describe('documentation code samples', () => {
   it('finds samples to check (the scan itself must not silently match nothing)', () => {
     expect(allFences.length).toBeGreaterThan(30);
+    // …and specifically in the site, which the markdown scanner cannot see at all.
+    expect(allFences.filter((f) => f.file.endsWith('.html')).length).toBeGreaterThan(0);
   });
 
   // A binding declared twice at the same level of a sample is a SyntaxError wherever it is pasted. Only
@@ -86,6 +114,56 @@ describe('documentation code samples', () => {
           seen.set(name, i);
         }
       });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  // A sample whose wiring vocabulary contradicts ITSELF is a half-applied rename. The rename from a
+  // `storage` + `registry` pair to a single `backend` was applied fence by fence, and three fences ended up
+  // holding both halves of it: declaring `const storage = …` / `const registry = …` and then passing
+  // `storage: backend`, or declaring `const backend = …` and then passing `{ registry }`. Each throws
+  // `ReferenceError` on the first line a reader runs.
+  //
+  // What this deliberately does NOT flag is a fence that only *references* `backend` — samples on a page
+  // routinely elide the construction shown in an earlier fence, which is why a plain free-identifier check
+  // reported eight passages, every one of them correct. The defect is the contradiction, not the elision.
+  it('does not mix the old `storage`/`registry` wiring with the new `backend` wiring in one sample', () => {
+    // Comments, strings and template literals are stripped before anything is matched: half these names appear
+    // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry"),
+    // and matching those reported ten correct samples. What is left is code.
+    const codeOnly = (src: string): string =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/\/\/[^\n]*/g, ' ')
+        .replace(/`(?:[^`\\]|\\.)*`/g, ' ')
+        .replace(/'(?:[^'\\\n]|\\.)*'/g, ' ')
+        .replace(/"(?:[^"\\\n]|\\.)*"/g, ' ');
+
+    const offenders: string[] = [];
+    for (const fence of allFences) {
+      const code = codeOnly(fence.code);
+      const declares = (name: string): boolean =>
+        new RegExp(`\\b(?:const|let)\\s+${name}\\b`).test(code);
+      /** A bare reference — not `x.name` (a property) and not `name:` (an option key naming its own value). */
+      const referencesBare = (name: string): boolean =>
+        new RegExp(`(?<![.\\w])${name}\\b(?!\\s*:)`).test(code);
+
+      // Declaring either old-style half and then reaching for `backend` — the rename stopped halfway.
+      if (
+        referencesBare('backend') &&
+        !declares('backend') &&
+        (declares('storage') || declares('registry'))
+      ) {
+        offenders.push(
+          `${fence.file}:${fence.line} — sample declares the old \`storage\`/\`registry\` wiring but uses \`backend\``,
+        );
+      }
+      // Declaring `backend` and then passing a bare `registry` that the rename should have absorbed into it.
+      if (declares('backend') && referencesBare('registry') && !declares('registry')) {
+        offenders.push(
+          `${fence.file}:${fence.line} — sample builds a \`backend\` but still references an undeclared \`registry\``,
+        );
+      }
     }
     expect(offenders).toEqual([]);
   });
@@ -137,22 +215,31 @@ describe('documentation code samples', () => {
           }
         }
         const body = code.slice(open + 1, end);
-        const line = fence.line + code.slice(0, open).split('\n').length;
+        const line = fence.line + code.slice(0, open).split('\n').length - 1;
         if (isMarkedAsHistorical(code.split('\n'), code.slice(0, open).split('\n').length - 1))
           continue;
-        // Top-level `registry` only — a nested `{ registry: … }` belongs to some other call's options.
-        let d = 0;
-        for (const part of body.split('\n')) {
-          if (d === 0 && /(^|[{,\s])registry\s*[:,]/.test(part.replace(/\/\/.*$/, ''))) {
-            offenders.push(
-              `${fence.file}:${line} — passes \`registry\` to CloudRoaring; a backend carries it`,
-            );
-            break;
+        // Top-level `registry` only. Everything nested is blanked out FIRST, because a legitimate backend
+        // literal — `storage: { storage: driver, registry: myRegistry }` — carries a perfectly correct
+        // `registry` one level down, and on a single line a per-line depth counter still reads it as top
+        // level. Blanking makes the depth question positional rather than line-ordered.
+        const topLevelOnly = ((): string => {
+          let out = '';
+          let d = 0;
+          for (const ch of body) {
+            const opening = ch === '{' || ch === '(' || ch === '[';
+            const closing = ch === '}' || ch === ')' || ch === ']';
+            if (closing) d--;
+            out += d === 0 && !opening && !closing ? ch : ' ';
+            if (opening) d++;
           }
-          for (const ch of part) {
-            if (ch === '{' || ch === '(' || ch === '[') d++;
-            else if (ch === '}' || ch === ')' || ch === ']') d--;
-          }
+          return out;
+        })();
+        // `registry:` (a value), `registry,` and `registry }` (shorthand) — the shorthand form is how the
+        // option was usually written, and an earlier pattern that required a trailing `:` missed all of it.
+        if (/(^|[{,\s])registry\s*([:,}]|$)/m.test(topLevelOnly.replace(/\/\/.*$/gm, ''))) {
+          offenders.push(
+            `${fence.file}:${line} — passes \`registry\` to CloudRoaring; a backend carries it`,
+          );
         }
       }
     }

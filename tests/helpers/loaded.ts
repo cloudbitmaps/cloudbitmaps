@@ -89,15 +89,15 @@ export interface LoadedStore {
  */
 export async function loadedStore(
   segments: Record<string, Iterable<number>> = {},
-  options: Omit<CloudRoaringOptions, 'storage' | 'registry'> & { keystore?: IKeystore } = {},
+  options: Omit<CloudRoaringOptions, 'storage'> & { keystore?: IKeystore } = {},
 ): Promise<LoadedStore> {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   const pinned = options.clock === undefined && options.storageGenTtlMs === undefined;
   const store = new CloudRoaring({
-    storage: { storage: storage, registry: registry },
     ...(pinned ? { storageGenTtlMs: 0 } : {}),
     ...options,
+    storage: { storage: storage, registry: registry },
   });
   const load: LoadedStore['load'] = async (seg, ids) => {
     const ref = asRef(seg);

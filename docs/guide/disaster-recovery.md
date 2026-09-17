@@ -320,9 +320,9 @@ if (report.errored.length > 0) {
 }
 ```
 
-- It needs a **raw storage driver + a `registry`** (the same requirement as every lifecycle helper); a store built
+- It needs a **backend** (the same requirement as every lifecycle helper); a store built
   around a pre-wrapped `StorageChunkSource` throws `UnsupportedError` — run it from an admin/ops store wired with
-  the raw drivers. The standalone `runConsistencyCheck({ storage, registry })` is available for out-of-process ops
+  a backend. The standalone `runConsistencyCheck({ storage, registry })` is available for out-of-process ops
   tooling.
 - It fans out at a bounded `concurrency` (default 8; pass `{ concurrency }`), and can be scoped to one
   `{ namespace }`. Like every fleet-wide scan it refuses past `maxScanSegments` rather than materialising a
