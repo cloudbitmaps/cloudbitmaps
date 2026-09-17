@@ -54,7 +54,7 @@ The essentials, in order:
 2. **Build with tests, not after** — new behavior ships with tests in the same commit; each
    [hard invariant](#hard-correctness-invariants) gets named tests (property tests over loaded generations, and
    crash/race tests for the write-then-publish path).
-3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build`; every one
+3. **Run the full local gate green** — `lint · lint:arch · format:check · typecheck · test · build · smoke`; every one
    must pass before review. **`pnpm typecheck` is required exactly like `test`/`lint`** — zero `tsc` errors *and*
    zero editor red squiggles; never deferred or `@ts-ignore`-d.
 4. **Run the adversarial review gate — MANDATORY, after every phase AND sub-phase.** **Spawn multiple
@@ -76,9 +76,9 @@ The essentials, in order:
 7. **Never** `git commit --no-verify` / `git push --no-verify`.
 8. **Agent history** is working history, not documentation — durable conclusions land in tracked docs. Keeping the transcripts themselves is machine setup, not project setup: set your agent's transcript retention explicitly and back the agent config directory up to a private remote.
 
-**Gate** (CI runs all; all must pass): `pnpm lint · lint:arch · format:check · typecheck · test · build`, plus
+**Gate** (CI runs all; all must pass): `pnpm lint · lint:arch · format:check · typecheck · test · build · smoke`, plus
 `pnpm test:integration` against real backends via docker-compose. A fresh clone must pass
-`install → lint → format:check → typecheck → test → build` with no manual setup. **`pnpm typecheck` runs two
+`install → lint → lint:arch → format:check → typecheck → test → build → smoke` with no manual setup. **`pnpm typecheck` runs two
 compilers** — TypeScript 5.9 (primary; drives lint and the dts build) and a TS7 forward `--noEmit` gate
 (`typecheck:next`); it collapses to TS7-primary once `typescript-eslint` supports it.
 
