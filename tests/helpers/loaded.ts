@@ -95,10 +95,9 @@ export async function loadedStore(
   const registry = new MemoryRegistryDriver();
   const pinned = options.clock === undefined && options.storageGenTtlMs === undefined;
   const store = new CloudRoaring({
+    storage: { storage: storage, registry: registry },
     ...(pinned ? { storageGenTtlMs: 0 } : {}),
     ...options,
-    storage,
-    registry,
   });
   const load: LoadedStore['load'] = async (seg, ids) => {
     const ref = asRef(seg);

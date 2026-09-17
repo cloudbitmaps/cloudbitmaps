@@ -56,7 +56,22 @@ surface from `@cloudbitmaps/core` and its `/s3`, `/gcs`, `/azure` subpaths. Appl
 the `*Into` verbs and every lifecycle helper (recommended for anything beyond a first look). Everything else is
 optional tuning with sensible defaults — see [`CloudRoaringOptions`](#construction--result-types).
 
-Pick one driver per slot (all interchangeable; mix backends freely):
+**Normally you pick a backend, not drivers.** A `StorageBackend` carries both halves — the generations and the
+pointer — configured from one bucket and one prefix, which is what makes them impossible to mismatch:
+
+| Backend | Import | Construct |
+|---|---|---|
+| `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage()` |
+| `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps')` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects |
+| `S3Storage` | `@cloudbitmaps/roaring/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle? })` |
+| `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
+| `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
+
+Each builds its own SDK client unless you pass one, exposes both halves as `.objects` and `.registry`, and
+accepts an injected `now` for deterministic tests.
+
+The individual drivers remain exported for wiring a backend does not cover — a different store for the pointer
+than for the objects, a decorator around one half, a backend of your own:
 
 | Slot | in-memory | local disk | cloud |
 |---|---|---|---|
@@ -470,19 +485,28 @@ Every export, by entry point. This section is the completeness anchor the sync t
 
 ### `@cloudbitmaps/roaring/s3`
 
-`S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions`
+`S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
+
+`S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions` — the halves.
 
 ### `@cloudbitmaps/roaring/gcs`
 
-`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the Google
-Cloud Storage drivers (peer: `@google-cloud/storage`). The registry lets a GCS deployment run on **one bucket
+`GcsStorage` · `GcsStorageOptions` — the backend, both halves in one bucket. It builds its own client, which
+also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, so the
+lower-level driver option that takes it is `storage` too.
+
+`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves
+(peer: `@google-cloud/storage`). The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer.
 
 ### `@cloudbitmaps/roaring/azure`
 
+`AzureBlobStorage` · `AzureBlobStorageOptions` — the backend, both halves in one container. Give it a
+`containerClient`, or a `connectionString` + `container` and it builds one.
+
 `AzureBlobStorageDriver` · `AzureBlobRegistryDriver` · `AzureBlobStorageDriverOptions` ·
-`AzureBlobRegistryDriverOptions` — the Azure Blob Storage drivers (peer: `@azure/storage-blob`). Inject a
+`AzureBlobRegistryDriverOptions` — the halves (peer: `@azure/storage-blob`). Inject a
 container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer.

@@ -49,7 +49,8 @@ function world() {
   const registry = new MemoryRegistryDriver({ now: () => T0 });
   const dropDeps: DropDeps = { registry, storage };
   const clock = { now: () => T0, sleep: (): Promise<void> => Promise.resolve() };
-  const store = (): CloudRoaring => new CloudRoaring({ storage, registry, retry: false, clock });
+  const store = (): CloudRoaring =>
+    new CloudRoaring({ storage: { storage: storage, registry: registry }, retry: false, clock });
   /**
    * Put `ids` in a segment the only way anything can: load them as its next generation and publish. A fresh
    * `store()` per read, because a store pins each segment's resolved generation (the clock here never advances).
@@ -591,7 +592,7 @@ describe('store.retireExpired', () => {
     const res = await w.store().retireExpired();
     expect(res.retired).toBe(1); // the store's clock reads T0, so the policy is due
 
-    // A pre-built `StorageChunkSource` reads fine but cannot delete objects: the sweep needs the raw driver.
+    // A pre-built `StorageChunkSource` reads fine but cannot delete storage: the sweep needs the raw driver.
     const noDriver = new CloudRoaring({
       storage: new CrbmStorageChunkSource(new MemoryStorageDriver()),
       retry: false,

@@ -33,13 +33,7 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  encodeNameForPath,
-  namespacePathPart,
-} from '../index';
+import { CloudRoaring, LocalFsStorage, encodeNameForPath, namespacePathPart } from '../index';
 import type { ExportFormat, ExportManifest, ExportSink, SegmentRef } from '../index';
 
 export interface ExportConfig {
@@ -51,7 +45,7 @@ export interface ExportConfig {
 
 /** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
 /**
- * The generations directory under the export root, refusing the one case that would otherwise mislead.
+ * Refuse the one export-root layout that would otherwise mislead.
  *
  * This directory was called `cold/` before the tier was renamed to `storage`, so a store written by an older
  * version has its generations somewhere this tool no longer looks. It does not fail silently — every segment
@@ -62,10 +56,10 @@ export interface ExportConfig {
  * destructive — and it would be applied to a store that was never damaged, by someone already reaching for
  * the escape hatch because something has gone wrong.
  *
- * So: use `storage/`, and if it is absent while `cold/` is present, stop before any of that and say exactly
- * what to rename.
+ * So: if `storage/` is absent while `cold/` is present, stop before any of that and say exactly what to
+ * rename. `LocalFsStorage` owns the layout itself; this only guards the upgrade.
  */
-async function storageDir(root: string): Promise<string> {
+async function assertCurrentLayout(root: string): Promise<void> {
   const storage = join(root, 'storage');
   const exists = async (p: string): Promise<boolean> =>
     access(p).then(
@@ -79,7 +73,6 @@ async function storageDir(root: string): Promise<string> {
         `unchanged.`,
     );
   }
-  return storage;
 }
 
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
@@ -163,11 +156,9 @@ export async function main(
   now: () => number = () => Date.now(),
 ): Promise<ExportManifest> {
   const config = parseConfig(env);
-  const registry = new LocalFsRegistryDriver(join(config.root, 'registry'));
-  const store = new CloudRoaring({
-    storage: new LocalFsStorageDriver(await storageDir(config.root)),
-    registry,
-  });
+  await assertCurrentLayout(config.root);
+  const storage = new LocalFsStorage(config.root);
+  const store = new CloudRoaring({ storage });
 
   const manifest = await store.exportSegments(fsSink(config.out), {
     format: config.format,

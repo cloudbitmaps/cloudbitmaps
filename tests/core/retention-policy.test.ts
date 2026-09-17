@@ -66,7 +66,11 @@ async function world(keystore?: InProcessKeystore) {
   // clock, so a store pins each segment's resolved generation for its own lifetime — the documented
   // `storageGenTtlMs: 0` caveat. Wiring only; no hot-path cost.
   const store = (): CloudRoaring =>
-    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      keystore,
+      retry: false,
+    });
   return { ...w, store };
 }
 

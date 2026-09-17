@@ -33,7 +33,10 @@ async function world(opts: { keystore?: InProcessKeystore } = {}) {
     keystore: opts.keystore,
   });
   await bulkLoadCrbmGeneration(storage, { ...OTHER, generation: 0 }, [2, 3, 4], { registry });
-  const store = new CloudRoaring({ storage, registry, keystore: opts.keystore });
+  const store = new CloudRoaring({
+    storage: { storage: storage, registry: registry },
+    keystore: opts.keystore,
+  });
   return { storage, registry, store };
 }
 
@@ -51,7 +54,7 @@ describe('pin holds one segment at one generation', () => {
     expect(await collect(snap.iterate())).toEqual([1, 2, 3]);
     expect(await snap.has(5)).toBe(false);
 
-    const fresh = new CloudRoaring({ storage: w.storage, registry: w.registry });
+    const fresh = new CloudRoaring({ storage: { storage: w.storage, registry: w.registry } });
     expect(await fresh.segment('s').count()).toBe(5); // …while the world moved on
   });
 
@@ -128,7 +131,10 @@ describe('pin holds one segment at one generation', () => {
       await bulkLoadCrbmGeneration(storage, { segment: `s${i}`, generation: 0 }, [i], { registry });
     }
     // A ceiling far below the number of pins we are about to hold.
-    const store = new CloudRoaring({ storage, registry, storageReaderCacheMax: 2 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageReaderCacheMax: 2,
+    });
     const pins = [];
     for (let i = 0; i < 12; i++) pins.push(await store.segment(`s${i}`).pin());
 
@@ -156,7 +162,10 @@ describe('pin holds one segment at one generation', () => {
         fail ? Promise.reject(new Error('transient')) : real.getTail(k, m),
     } as unknown as MemoryStorageDriver;
 
-    const store = new CloudRoaring({ storage, registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      retry: false,
+    });
     const snap = await store.segment('s').pin();
 
     fail = true;

@@ -58,7 +58,7 @@ const handle = (w: World) => w.store.segment(SEG.segment, { namespace: SEG.names
 
 /** A reader that has cached nothing — sees the truth at once (see the "only eventually empty" test). */
 const fresh = (w: World): CloudRoaring =>
-  new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
+  new CloudRoaring({ storage: { storage: w.storage, registry: w.registry }, retry: false });
 
 async function generationsInStorage(w: World): Promise<number[]> {
   const gens: number[] = [];

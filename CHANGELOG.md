@@ -22,12 +22,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   per segment. Now one bucket, or one container, is the whole deployment.
 
   ```ts
-  import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
+  import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
 
-  const gcs = new Storage();
   const store = new CloudRoaring({
-    storage: new GcsStorageDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
-    registry: new GcsRegistryDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
+    storage: new GcsStorage({ bucket: 'bitmaps', prefix: 'cr' }),
   });
   ```
 
@@ -70,6 +68,43 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 
 ### Breaking
+- **One backend object replaces two driver wirings, and the `registry` option is gone.**
+
+  ```ts
+  // before
+  const client = new S3Client({ region: 'us-east-1' });
+  new CloudRoaring({
+    cold: new S3ColdDriver({ client, bucket: 'bitmaps', prefix: 'cr' }),
+    registry: new S3RegistryDriver({ client, bucket: 'bitmaps', prefix: 'cr' }),
+  });
+  // after
+  new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'cr', region: 'us-east-1' }) });
+  ```
+
+  The bucket and prefix were written twice, and **mismatching them is the classic first-run bug**: the
+  registry points somewhere the objects never land, so the store reads as *empty* rather than as
+  *misconfigured*. "Empty" is indistinguishable from "new", which is why it costs an afternoon. Writing the
+  location once makes it unexpressible.
+
+  Five backends, each carrying both halves: **`MemoryStorage`** and **`LocalFsStorage`** from the main entry,
+  **`S3Storage`**, **`GcsStorage`** and **`AzureBlobStorage`** from their subpaths. The cloud three **build
+  their own SDK client** from the ambient credential chain; pass `client` for one the SDK cannot infer, or
+  `endpoint` + `pathStyle` + `credentials` for an S3-compatible store (MinIO, Ceph, R2).
+
+  Both halves stay reachable as `.storage` and `.registry`, and they are named that way on purpose: a backend
+  is *structurally* the `{ storage, registry }` deps object the free functions already take, so
+  `nextGeneration(ref, backend)` works with no destructuring.
+
+  **The `registry` option is removed rather than kept alongside.** It existed to let the pointer live somewhere
+  other than the objects, which was only ever necessary while object stores lacked a conditional write. They
+  all have one now, so the choice bought nothing and cost the mismatch above. A store built on a raw
+  `IStorageDriver` still works — it has no pointer, resolves generations by list-scan, and is therefore
+  **cleartext and read-only**, which was already true and is now the only way to express it.
+
+  **Migrating:** replace the two driver constructions with the backend for your cloud and drop the `registry`
+  key. Nothing in your bucket moves — same keys, same layout, same `.crbm` objects. Keep wiring the halves by
+  hand only if you genuinely want them apart; the drivers are all still exported.
+
 - **`cold` is now `storage`, everywhere.** Every cloud vendor uses "cold storage" to mean *archival* —
   Glacier, Coldline, Azure Archive — and ours is the opposite: the primary durable tier that every read
   hits. The word actively misled anyone arriving from AWS or GCP documentation, and it had leaked into the

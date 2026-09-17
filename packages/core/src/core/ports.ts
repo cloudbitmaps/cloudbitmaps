@@ -194,7 +194,7 @@ export interface RegistryRecord extends SegmentRef {
   readonly status: RegistryStatus;
   /**
    * Governance policy. `retention.expiresAt` drives the retention sweep (see {@link GovernanceMeta}); `residency`
-   * is stored and round-tripped with no semantics yet. Both must be plain objects, and both must survive a
+   * is stored and round-tripped with no semantics yet. Both must be plain storage, and both must survive a
    * `list()` projection — a fleet sweep reads the policy from the enumeration rather than per-segment.
    */
   readonly retention?: GovernanceMeta;
@@ -230,6 +230,25 @@ export type RegistryPatch = Partial<
 export interface RegCaps {
   /** REQUIRED — `currentGen` feeds read correctness + the publish CAS, so reads must be strongly consistent. */
   readonly strongRead: true;
+}
+
+/**
+ * A backend, whole: the storage **and** the pointer, configured once.
+ *
+ * A store needs two things from a backend — somewhere to put immutable `.crbm` generations, and somewhere to
+ * keep the pointer that says which generation is current. They were two constructor calls, each repeating the
+ * bucket and the prefix, and **mismatching them is the classic first-run bug**: the registry points somewhere
+ * the storage never land, so the store reads as *empty* rather than as *misconfigured*, which is the hardest
+ * kind of wrong answer to debug. Stating the location once makes that unexpressible.
+ *
+ * Implementations live with their driver (`S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage`,
+ * `MemoryStorage`). Both halves stay available on the object for anyone who needs to reach past the facade.
+ */
+export interface StorageBackend {
+  /** Where the immutable `.crbm` generations live. */
+  readonly storage: IStorageDriver;
+  /** Where the `currentGen` pointer, the discovery index and the wrapped DEKs live. */
+  readonly registry: IRegistryDriver;
 }
 
 /**

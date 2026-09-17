@@ -35,7 +35,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warms the snapshot + chunk 0
 
     const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
@@ -53,7 +53,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageGenTtlMs: 0,
+    });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true);
     await store.eraseSubject(4242, { namespace: 'ns' });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(false);
@@ -64,7 +67,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     expect((await store.subjectReport(4242, { namespace: 'ns' })).segments).toHaveLength(1);
 
     await store.eraseSubject(4242, { namespace: 'ns' });
@@ -76,7 +79,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     await store.segment('seg', { namespace: 'ns' }).has(4242); // warm it
     await store.eraseSubject(4242, { namespace: 'ns' });
 
@@ -97,8 +100,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry, keystore });
 
     const store = new CloudRoaring({
-      storage,
-      registry,
+      storage: { storage: storage, registry: registry },
       keystore,
       storageGenTtlMs: 0,
     });
@@ -120,7 +122,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
-    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageGenTtlMs: 0,
+    });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
 
     await store.retireExpired({ now: PAST + 1 });
@@ -134,7 +139,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
-    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageGenTtlMs: 0,
+    });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     await store.retireExpired({ now: PAST + 1, dryRun: true });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
@@ -147,7 +155,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
     await bulkLoadCrbmGeneration(storage, { ...other, generation: 0 }, [5, 6], { registry });
 
-    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageGenTtlMs: 0,
+    });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(2);
 
@@ -180,7 +191,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
       },
     };
 
-    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      storageGenTtlMs: 0,
+    });
     await store.segment('seg', { namespace: 'ns' }).has(4242);
     const warmed = fetches;
     expect(warmed).toBeGreaterThan(0);
@@ -221,7 +235,10 @@ describe('destructive verbs invalidate what this store derived from the segment'
       },
     });
 
-    const store = new CloudRoaring({ storage, registry: flaky as typeof registry, retry: false });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: flaky as typeof registry },
+      retry: false,
+    });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warm the caches
     armed = true;
     const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
@@ -237,7 +254,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
   it('invalidating a segment this store never read is a no-op, not an error', async () => {
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     expect(() => store.invalidate({ namespace: 'ns', segment: 'never-seen' })).not.toThrow();
   });
 });

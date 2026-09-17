@@ -30,7 +30,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
 
     // The point of PR A: pass the RAW driver + registry — no manual CrbmStorageChunkSource wrap. If `registry`
     // were dropped when wrapping, this would read the max gen (5) instead of the pinned gen 0 (3).
-    const store = new CloudRoaring({ storage, registry });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
     expect(await store.segment('s').count()).toBe(3);
     expect(await store.segment('s').has(2)).toBe(true); // forces a payload getChunk through the wrapped source
     expect(await store.segment('s').has(5)).toBe(false); // 5 lives only in the unpublished gen 1
@@ -71,7 +71,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       keystore,
     });
 
-    const store = new CloudRoaring({ storage, registry, keystore });
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry }, keystore });
     expect(await store.segment('s').count()).toBe(3); // decrypts the .crbm index
     expect(await store.segment('s').has(2)).toBe(true); // decrypts a chunk payload (getChunk)
   });
@@ -85,7 +85,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       keystore,
     });
 
-    const store = new CloudRoaring({ storage, registry }); // no keystore
+    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } }); // no keystore
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
 
@@ -97,16 +97,19 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
 
     // requireEncryption:true must reach the wrapped source; reading cleartext then throws. If the flag were
     // dropped when wrapping, count() would return 3 instead.
-    const store = new CloudRoaring({ storage, registry, requireEncryption: true });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      requireEncryption: true,
+    });
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
 
   describe('fail-fast wiring guards', () => {
-    it('rejects registry/keystore/requireEncryption paired with a pre-built StorageChunkSource', () => {
+    // `registry` is no longer an option — a backend carries its own — so the pairing that used to be rejected
+    // is now unexpressible. What is left to reject is the pair that is still expressible and still inert.
+    it('rejects keystore/requireEncryption paired with a pre-built StorageChunkSource', () => {
       const source = (): MemoryStorageChunkSource => new MemoryStorageChunkSource();
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-      const registry = new MemoryRegistryDriver();
-      expect(() => new CloudRoaring({ storage: source(), registry })).toThrow(ValidationError);
       expect(() => new CloudRoaring({ storage: source(), keystore })).toThrow(ValidationError);
       expect(() => new CloudRoaring({ storage: source(), requireEncryption: true })).toThrow(
         ValidationError,

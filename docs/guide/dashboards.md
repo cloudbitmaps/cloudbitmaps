@@ -44,8 +44,7 @@ const fetchedChunks = meter.createCounter('cloudroaring.intersect.fetched_chunks
 const opLatency = meter.createHistogram('cloudroaring.op.ms');
 
 const store = new CloudRoaring({
-  storage,
-  registry,
+  storage, // a backend — S3Storage, GcsStorage, …
   metrics: {
     onEvent(e) {
       switch (e.kind) {

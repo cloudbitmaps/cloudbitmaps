@@ -243,18 +243,17 @@ The in-memory drivers need zero setup — ideal for a first look or a test:
 ```ts
 import {
   CloudRoaring,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
+  MemoryStorage,
   bulkLoadCrbmGeneration,
 } from '@cloudbitmaps/roaring';
 
-const storage = new MemoryStorageDriver();
-const registry = new MemoryRegistryDriver();
+// One object carries both halves: where the generations go, and where the pointer goes.
+const backend = new MemoryStorage();
 
 // A load is how data gets in: one immutable object, then the pointer moves to it.
-await bulkLoadCrbmGeneration(storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry });
+await bulkLoadCrbmGeneration(backend.storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry: backend.registry });
 
-const store = new CloudRoaring({ storage, registry });
+const store = new CloudRoaring({ storage: backend });
 const seg = store.segment('high-value-shoppers');
 
 await seg.has(1_234_567_890); // → true  (one chunk, from the cache after the first read)
@@ -280,13 +279,12 @@ the registry in one bucket; no other service):
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
-import { S3Client } from '@aws-sdk/client-s3';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
 
-const s3 = new S3Client({ region: 'us-east-1' });
+// Bucket stated once, for both the generations and the pointer. Builds its own client from the
+// ambient credential chain; pass `client`, or `endpoint` + `pathStyle` + `credentials`, when you need to.
 const store = new CloudRoaring({
-  storage: new S3StorageDriver({ client: s3, bucket: 'bitmaps' }), // raw driver — wrapped for you
-  registry: new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }),
+  storage: new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' }),
 });
 ```
 
@@ -307,13 +305,14 @@ interface if you would rather.
 
 ## The API at a glance
 
-**One config object** — pass raw drivers; the store wires them once (`storage` also accepts a pre-built
-`StorageChunkSource` for source-only backends or advanced reader options):
+**One config object, and one required key** — a backend carries both halves, so there is nothing else to wire
+(`storage` also accepts a raw `IStorageDriver` for a cleartext read-only store, or a pre-built
+`StorageChunkSource` for advanced reader options):
 
 ```ts
 new CloudRoaring({
-  storage,             // required
-  registry, keystore,  // optional (registry: current-gen pointer + wrapped keys + every lifecycle helper)
+  storage,   // required — S3Storage | GcsStorage | AzureBlobStorage | LocalFsStorage | MemoryStorage
+  keystore,  // optional (encryption at rest; the wrapped DEKs live in the backend's registry)
   cacheMaxChunks, cacheTtlMs, storageGenTtlMs, retry, metrics, budget, // optional tuning (resilience is on by default)
 });
 ```

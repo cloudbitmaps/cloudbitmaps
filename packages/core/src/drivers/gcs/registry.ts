@@ -18,7 +18,7 @@
  * `.crbm` *generation*.) Reads are strongly consistent, satisfying the registry's `strongRead` contract.
  *
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
- * - The principal needs `storage.objects.get`, `create`, `update` and `list` on the bucket. Without `list`
+ * - The principal needs `storage.storage.get`, `create`, `update` and `list` on the bucket. Without `list`
  *   the registry cannot enumerate, and a missing-object read may surface as `403` rather than `404`.
  * - **Do not apply an Object Lifecycle rule to the `registry/` prefix**, and do not enable a retention
  *   policy that blocks overwrite. `delete` tombstones rather than removing, for ABA-safety — see

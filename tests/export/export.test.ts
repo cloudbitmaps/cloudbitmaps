@@ -68,7 +68,12 @@ function freshStore(
 ): CloudRoaring {
   // `storageGenTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
   // reads one snapshot rather than drifting onto a generation published while it was streaming.
-  return new CloudRoaring({ storage, registry, keystore, retry: false, storageGenTtlMs: 0 });
+  return new CloudRoaring({
+    storage: { storage: storage, registry: registry },
+    keystore,
+    retry: false,
+    storageGenTtlMs: 0,
+  });
 }
 
 describe('store.exportSegments', () => {

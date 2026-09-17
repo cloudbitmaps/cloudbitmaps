@@ -10,6 +10,7 @@ import {
 } from '@/testing/conformance';
 import { AzureBlobStorageDriver } from '@/drivers/azure/storage';
 import { AzureBlobRegistryDriver } from '@/drivers/azure/registry';
+import { AzureBlobStorage } from '@/azure/index';
 import { isConditionalConflict } from '@/drivers/azure/azure-errors';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
@@ -234,5 +235,26 @@ describe('AzureBlobStorageDriver end-to-end through the engine (Azurite)', () =>
     const got: number[] = [];
     for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
     expect(got).toEqual([2, 3, 200_000]);
+  });
+});
+
+describe('AzureBlobStorage (Azurite) — the backend builds its own container client', () => {
+  it('loads and reads through one object, with both halves in the same container and prefix', async () => {
+    const backend = new AzureBlobStorage({
+      connectionString: CONN,
+      container: CONTAINER,
+      prefix: `backend/${n++}`,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    await bulkLoadCrbmGeneration(
+      backend.storage,
+      { segment: 'via-backend', generation: 0 },
+      [3, 4],
+      {
+        registry: backend.registry,
+      },
+    );
+    expect(await store.segment('via-backend').count()).toBe(2);
+    expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
   });
 });

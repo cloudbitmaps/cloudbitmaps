@@ -45,7 +45,11 @@ async function world(keystore?: IKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
   /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({
+      storage: { storage: w.storage, registry: w.registry },
+      keystore,
+      retry: false,
+    });
   return { ...w, reader };
 }
 

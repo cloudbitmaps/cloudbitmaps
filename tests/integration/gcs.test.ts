@@ -11,6 +11,7 @@ import {
 } from '@/testing/conformance';
 import { GcsStorageDriver } from '@/drivers/gcs/storage';
 import { GcsRegistryDriver } from '@/drivers/gcs/registry';
+import { GcsStorage } from '@/gcs/index';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
@@ -194,5 +195,27 @@ describe('GcsStorageDriver end-to-end through the engine (fake-gcs-server)', () 
     const got: number[] = [];
     for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
     expect(got).toEqual([2, 3, 200_000]);
+  });
+});
+
+describe('GcsStorage (fake-gcs-server) — the backend builds its own client', () => {
+  it('loads and reads through one object, with both halves in the same bucket and prefix', async () => {
+    const backend = new GcsStorage({
+      bucket: BUCKET,
+      prefix: `backend/${n++}`,
+      projectId: 'test',
+      apiEndpoint: ENDPOINT,
+    });
+    const store = new CloudRoaring({ storage: backend });
+    await bulkLoadCrbmGeneration(
+      backend.storage,
+      { segment: 'via-backend', generation: 0 },
+      [7, 8],
+      {
+        registry: backend.registry,
+      },
+    );
+    expect(await store.segment('via-backend').count()).toBe(2);
+    expect(await backend.registry.get({ segment: 'via-backend' })).not.toBeNull();
   });
 });

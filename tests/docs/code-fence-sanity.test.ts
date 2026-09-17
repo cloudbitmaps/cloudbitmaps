@@ -103,8 +103,61 @@ describe('documentation code samples', () => {
   // the removed key", it is "label it when you do": the line, or the one above it, must carry a `// before`
   // marker. That is a tightening rather than an exemption, since an unlabelled before/after block is exactly
   // as copy-pasteable, and exactly as broken, as an ordinary sample.
-  const isMarkedAsHistorical = (lines: string[], i: number): boolean =>
-    /\/\/\s*before\b/i.test(lines[i] ?? '') || /\/\/\s*before\b/i.test(lines[i - 1] ?? '');
+  // A line is historical when the NEAREST preceding marker is `// before`. A before/after block writes the
+  // marker once at the top of each half, so scanning the whole prefix is too permissive — it would excuse the
+  // *after* half as well, which is the half that must be correct. Checking only the previous line is too
+  // strict, because the marker sits above the whole block. The nearest marker is the one that applies.
+  const isMarkedAsHistorical = (lines: string[], i: number): boolean => {
+    for (let k = i; k >= 0; k--) {
+      const line = lines[k] ?? '';
+      if (/\/\/\s*after\b/i.test(line)) return false;
+      if (/\/\/\s*before\b/i.test(line)) return true;
+    }
+    return false;
+  };
+
+  // `registry` is a special case: it is gone from `CloudRoaringOptions`, but it is still a perfectly good
+  // option on `bulkLoadCrbmGeneration` and the lifecycle free functions. Listing it above would flag every
+  // correct load example, so the check is scoped to the one literal it was removed from — which means
+  // brace-matching, because `new CloudRoaring({ … })` spans lines and nests.
+  it('no sample passes `registry` to CloudRoaring, which no longer takes it', () => {
+    const offenders: string[] = [];
+    for (const fence of allFences) {
+      const code = fence.code;
+      for (const m of code.matchAll(/new CloudRoaring\(\{/g)) {
+        const open = (m.index ?? 0) + m[0].length - 1;
+        let depth = 0;
+        let end = open;
+        for (; end < code.length; end++) {
+          const ch = code[end];
+          if (ch === '{' || ch === '(' || ch === '[') depth++;
+          else if (ch === '}' || ch === ')' || ch === ']') {
+            depth--;
+            if (depth === 0) break;
+          }
+        }
+        const body = code.slice(open + 1, end);
+        const line = fence.line + code.slice(0, open).split('\n').length;
+        if (isMarkedAsHistorical(code.split('\n'), code.slice(0, open).split('\n').length - 1))
+          continue;
+        // Top-level `registry` only — a nested `{ registry: … }` belongs to some other call's options.
+        let d = 0;
+        for (const part of body.split('\n')) {
+          if (d === 0 && /(^|[{,\s])registry\s*[:,]/.test(part.replace(/\/\/.*$/, ''))) {
+            offenders.push(
+              `${fence.file}:${line} — passes \`registry\` to CloudRoaring; a backend carries it`,
+            );
+            break;
+          }
+          for (const ch of part) {
+            if (ch === '{' || ch === '(' || ch === '[') d++;
+            else if (ch === '}' || ch === ')' || ch === ']') d--;
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 
   it('names no option key that was removed, unless the sample marks it `// before`', () => {
     const offenders: string[] = [];
