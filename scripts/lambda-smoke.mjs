@@ -26,17 +26,18 @@ async function exercise(label, m) {
   // Data enters a loaded store only as a published generation, so the round-trip IS the load: encode the ids
   // into one immutable `.crbm`, publish it, then read it back. The two ids sit in different 16-bit chunks, so
   // chunk routing and the native bitmap both run rather than a single-container no-op.
-  const storage = new m.MemoryStorageDriver();
-  const registry = new m.MemoryRegistryDriver({ now: () => 0 });
+  // A BACKEND, which is what the docs tell users to build. This wired a raw driver plus a `registry` option,
+  // and that option stopped existing when the backend class landed — so the pointer path it meant to exercise
+  // had been silently dead here ever since, while the round-trip kept passing because a store with one
+  // generation list-scans to the same answer. Plain ESM run inside a container: no compiler was going to say.
+  const backend = new m.MemoryStorage({ now: () => 0 });
   await m.bulkLoadCrbmGeneration(
-    storage,
+    backend.storage,
     { segment: 'lambda-smoke', generation: 0 },
     [42, 70_000],
-    {
-      registry,
-    },
+    { registry: backend.registry },
   );
-  const seg = new m.CloudRoaring({ storage, registry }).segment('lambda-smoke');
+  const seg = new m.CloudRoaring({ storage: backend }).segment('lambda-smoke');
   const ok =
     (await seg.has(42)) &&
     (await seg.has(70_000)) &&
