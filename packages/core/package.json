@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/core",
   "version": "0.9.0",
-  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: a hot RAM cache over write-once .crbm generations in object storage, chunk-skipping intersection, the load-and-publish write path, generation GC, erasure by rewrite, encryption-at-rest, and every storage driver.",
+  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: a RAM cache over write-once .crbm generations in object storage, chunk-skipping intersection, the load-and-publish write path, generation GC, erasure by rewrite, encryption-at-rest, and every storage driver.",
   "keywords": [
     "roaring",
     "bitmap",

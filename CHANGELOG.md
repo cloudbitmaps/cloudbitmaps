@@ -125,6 +125,13 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   Driver **subpaths are unchanged** (`/s3`, `/gcs`, `/azure`), and so is every wire-visible string: object
   keys, the `.crbm` format, the registry row and its OCC token. Nothing in your bucket moves.
 
+  **The other tier is now the `cache`, not the `HOT` cache** — documentation and the site only; no identifier,
+  option or event name changes, because none of them ever said `hot` (the knobs were already `cacheMaxChunks`
+  and `cacheTtlMs`). `HOT` and `COLD` were a matched pair that explained each other; once `COLD` became
+  `STORAGE`, `HOT` was a temperature with nothing opposite it. **Cache** and **storage** are the pair a reader
+  resolves without being told: one is discardable, the other is the truth. `hot path`, `hot loop` and
+  `hot chunks/partitions` keep their own meaning — those are about what executes often, not about a tier.
+
   **One on-disk path does change, and only for the `export-segments` CLI.** It reads a local-filesystem store
   from `<CR_EXPORT_ROOT>/storage` now, not `<CR_EXPORT_ROOT>/cold`. Rename that directory before running it —
   the objects inside are untouched.

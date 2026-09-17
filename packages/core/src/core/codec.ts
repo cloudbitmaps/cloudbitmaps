@@ -12,7 +12,7 @@
  * **Homogeneity contract:** a single store uses a single codec, so every {@link CodecBitmap} an operation sees
  * was produced by the same {@link CodecInterface}. The binary set ops ({@link CodecBitmap.orInPlace} etc.) may
  * therefore assume `other` is the same concrete type and are not required to interoperate across codecs.
- * (Corollary: a decoded-chunk HOT cache is codec-specific — never share one `cache` across engines built with
+ * (Corollary: a decoded-chunk cache is codec-specific — never share one `cache` across engines built with
  * different codecs, or a cached bitmap from codec A could reach codec B's in-place op. The `CloudRoaring` facade
  * mints the cache per store, so this cannot arise in normal use.)
  *
@@ -45,7 +45,7 @@ export interface CodecBitmap {
   /** Cardinality. */
   readonly size: number;
   readonly isEmpty: boolean;
-  /** A deep copy — mutating the clone must not touch the original (the HOT cache relies on this). */
+  /** A deep copy — mutating the clone must not touch the original (the cache relies on this). */
   clone(): CodecBitmap;
   /** In-place union `this = this ∪ other`. `other` is from the same codec (see the homogeneity contract). */
   orInPlace(other: CodecBitmap): void;

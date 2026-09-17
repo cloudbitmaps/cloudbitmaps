@@ -1,5 +1,5 @@
 /**
- * SegmentEngine — the read side of the loaded store: id routing, the chunk-skipping combines, and the HOT cache
+ * SegmentEngine — the read side of the loaded store: id routing, the chunk-skipping combines, and the cache
  * of decoded Storage chunks, over the {@link StorageChunkSource} port.
  *
  * **Read-only by design.** Every write in this library is a new immutable generation — `bulkLoadCrbmGeneration`,
@@ -29,7 +29,7 @@ const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
 
 export interface EngineDeps {
   readonly storage: StorageChunkSource;
-  /** Optional HOT cache of decoded (immutable) Storage chunks. */
+  /** Optional cache of decoded (immutable) Storage chunks. */
   readonly cache?: BoundedLru<string, CodecBitmap>;
   readonly maxBitmapBytes?: number;
   /**
@@ -99,7 +99,7 @@ export class SegmentEngine {
     this.metricsOn = this.metrics !== NOOP_METRICS;
   }
 
-  /** Membership: one chunk lookup — the HOT cache, else one Storage fetch of that chunk. */
+  /** Membership: one chunk lookup — the cache, else one Storage fetch of that chunk. */
   async has(seg: SegmentRef, id: number): Promise<boolean> {
     const { chunkKey, remainder } = splitId(id);
     const chunk = await this.storageChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
@@ -358,7 +358,7 @@ export class SegmentEngine {
    * Operand chunks are fetched **in parallel** (the spec's parallel byte-range reads).
    *
    * The accumulator is a **clone** of the first operand's chunk, and that clone is load-bearing: every other
-   * bitmap here is the cached, shared Storage instance and must never be mutated, or the HOT cache is poisoned for
+   * bitmap here is the cached, shared Storage instance and must never be mutated, or the cache is poisoned for
    * every later reader. The remaining operands and the excludes are only *read* by the in-place ops, so they are
    * used as-is — one clone per key, not one per operand.
    */
@@ -533,7 +533,7 @@ export class SegmentEngine {
 
   /**
    * Decode a Storage chunk. `gen` is the segment's current generation, resolved **once per op** by the caller (not
-   * per chunk — that would put a registry re-resolve on every chunk of a count/intersect). The HOT cache is
+   * per chunk — that would put a registry re-resolve on every chunk of a count/intersect). The cache is
    * keyed by it, so a load that advances the generation misses the cache and re-reads the new bytes instead of
    * serving a stale decoded chunk (an erased id can't resurrect from a cached superseded chunk). `gen === null`
    * ⇒ the source reports no current generation ⇒ no storage bytes for any chunk, so skip the fetch entirely.

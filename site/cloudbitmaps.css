@@ -30,7 +30,7 @@
   --cb-cyan: #19c5f4; /* links, live figures, "this is the number" */
 
   /* Tier ramp — semantics, not brand. Only ever labels a tier, never a product or a vendor. */
-  --cb-hot: #e8834a;
+  --cb-cache: #e8834a;
   --cb-warm: #d7b25a;
   --cb-storage: #19c5f4;
 
@@ -68,7 +68,7 @@
   --cb-signal: #0b4fcc;
   --cb-signal-fill: #0b4fcc;
   --cb-cyan: #0a6c90;
-  --cb-hot: #a94d18; /* 4.98:1 on --cb-surface-2 */
+  --cb-cache: #a94d18; /* 4.98:1 on --cb-surface-2 */
   --cb-warm: #8a6a12;
   --cb-storage: #0a6c90;
 
@@ -675,8 +675,8 @@ section > .lede {
   border: 1px solid currentColor;
 }
 
-.tier-chip.t-hot {
-  color: var(--cb-hot);
+.tier-chip.t-cache {
+  color: var(--cb-cache);
 }
 
 .tier-chip.t-gen {
@@ -1243,8 +1243,8 @@ section > .lede {
   text-transform: uppercase;
 }
 
-.trow.r-hot .tkey {
-  color: var(--cb-hot);
+.trow.r-cache .tkey {
+  color: var(--cb-cache);
 }
 
 .trow.r-gen .tkey {
@@ -1267,14 +1267,14 @@ section > .lede {
   background: var(--cb-rule);
 }
 
-/* Full strength, deliberately: at `opacity: .55` — tuned for the graphite ground — the hot fill measured
+/* Full strength, deliberately: at `opacity: .55` — tuned for the graphite ground — the cache fill measured
    2.84:1 in dark and all three fills 2.21-2.43:1 in light, under the 3:1 a meaningful graphic needs. */
 .tfill i.f {
   background: var(--cb-cyan);
 }
 
-.r-hot .tfill i.f {
-  background: var(--cb-hot);
+.r-cache .tfill i.f {
+  background: var(--cb-cache);
 }
 
 .r-gen .tfill i.f {
@@ -2542,7 +2542,7 @@ section > .lede {
    page contradict itself in the only place that matters. This shared the research
    chip's rule until the rename exposed it. */
 .status.is-counter {
-  color: var(--cb-hot);
+  color: var(--cb-cache);
 }
 
 /* ── retry policy, its own axis ───────────────────────────────────────────────
@@ -2551,7 +2551,7 @@ section > .lede {
    already went wrong once on this site: is-spec was doing double duty for two unrelated meanings, so restyling
    it for one silently restyled the other page. A shared hook between unrelated axes is a latent bug, not reuse.
 
-   is-never is deliberately NEUTRAL rather than hot. "Never retried" is the correct and intended behaviour for a
+   is-never is deliberately NEUTRAL rather than cache. "Never retried" is the correct and intended behaviour for a
    corruption or a shredded key — colouring it like a warning would tell the reader something is wrong when the
    library is doing exactly the right thing. */
 .status.is-auto {
@@ -3310,7 +3310,7 @@ section > .lede {
    about, and filling it in would make it look like any other member */
 .dgm-cells i.tomb {
   background: none;
-  border: 2px solid var(--cb-hot);
+  border: 2px solid var(--cb-cache);
 }
 
 /* That bit in the NEXT generation: cleared, where every neighbour was carried
@@ -3390,7 +3390,7 @@ section > .lede {
 
 .swatch.sw-tomb {
   background: none;
-  border: 2px solid var(--cb-hot);
+  border: 2px solid var(--cb-cache);
 }
 
 /* ── the publish: a generation flip ────────────────────────────────────────────── */

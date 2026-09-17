@@ -2,7 +2,7 @@
 
 Distributed, cloud-native Roaring Bitmaps. A segment is a set of **write-once `.crbm` generations** in object
 storage behind one registry pointer; each 16-bit Roaring chunk is addressable inside a generation, and reads are
-served from a **hot** RAM LRU over that immutable **storage** tier, wrapping `roaring-node`/CRoaring for the bit
+served from a bounded in-RAM **cache** over that immutable **storage** tier, wrapping `roaring-node`/CRoaring for the bit
 math. Data enters by **loading** a new generation, never by mutating a stored one. The crown jewel is
 **serverless chunk-skipping intersection**: `A ∩ B` fetches only the chunks that can possibly contribute.
 

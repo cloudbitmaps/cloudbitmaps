@@ -59,7 +59,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
     expect(await seg.has(42)).toBe(false);
   });
 
-  it('is consistent under the HOT cache: a store pins its generation, a fresh store sees the newer one', async () => {
+  it('is consistent under the cache: a store pins its generation, a fresh store sees the newer one', async () => {
     // Regression for the cache-staleness hazard: the engine caches decoded Storage chunks keyed by generation,
     // so the storage source MUST present an immutable (pinned) view for as long as its snapshot is pinned.
     const storage = new LocalFsStorageDriver(root);
@@ -71,7 +71,7 @@ describe('engine over LocalFs storage (.crbm)', () => {
     expect(await seg1.has(1)).toBe(true); // touches chunk 0 only
 
     // A newer generation adds id 70_000, which lives in a *different* chunk (chunkKey 1) that store1 has
-    // never read — so the engine's HOT cache cannot mask a pinning regression here.
+    // never read — so the engine's cache cannot mask a pinning regression here.
     await writeCrbmGeneration(storage, { segment: 'seg', generation: 2 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) },
       { chunkKey: 1, bitmap: SafeBitmap.fromValues([70_000 & 0xffff]) },

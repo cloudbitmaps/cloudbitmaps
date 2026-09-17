@@ -84,7 +84,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * Hard ceiling on how many segments' readers (each holding a fully-parsed `.crbm` index) are cached at once
    * (default 1024) — a memory bound for a long-running server. Past it, the least-recently-used
    * segment's reader is evicted; the next read of an evicted segment re-opens it (one cheap tail GET, since
-   * generations are immutable). Raise it for a big hot working set of small segments.
+   * generations are immutable). Raise it for a big cache working set of small segments.
    */
   readonly maxOpenSegments?: number;
   /**
@@ -156,7 +156,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * needs a clock). Within the TTL a segment's Storage bytes are treated as an immutable snapshot; when the TTL
    * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
    * opens the new generation — so a long-lived source observes new generations within the TTL rather than
-   * pinning one forever. The engine pairs this with a **generation-keyed** HOT cache so a bump never
+   * pinning one forever. The engine pairs this with a **generation-keyed** cache so a bump never
    * serves a stale decoded chunk. Without a clock or a registry the source pins the first generation for its
    * lifetime (the behaviour before the registry was wired in). A segment with no generation yet is not memoized, so it's re-checked until
    * one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmStorageChunkSourceOptions.maxOpenSegments}, default
@@ -297,7 +297,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * The segment's current generation number — the engine keys its HOT chunk cache by this so a generation bump
+   * The segment's current generation number — the engine keys its chunk cache by this so a generation bump
    * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
    *

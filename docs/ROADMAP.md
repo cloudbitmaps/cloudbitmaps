@@ -5,7 +5,7 @@ is computed upstream, loaded as an immutable `.crbm` **generation** into S3 (or 
 and read from anywhere — `has`, `count`, `iterate`, and the centerpiece, **chunk-skipping intersection**: an
 `A ∩ B` fetches only the 16-bit chunks that can possibly contribute, which is what makes a serverless read
 cheap. The set lives at object-store prices instead of RAM prices; a bounded in-process LRU keeps the chunks a
-process actually touches hot.
+process actually touches cache.
 
 This page is a high-level view of what works today, what's proven to what degree, and where it's headed.
 It's a living document, not a promise — see [the note at the bottom](#a-note-on-priorities).
@@ -88,7 +88,7 @@ dependencies** — arrives transitively and is never installed directly.
   generation today; the guard for that is [next](#on-the-way-to-10).
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
   with **zero payload reads**.
-- **Bounded memory, always.** A hard LRU ceiling on hot chunks, a byte-aware storage-reader cache, bounded fan-out
+- **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan — the DR consistency check, the retention sweep,
   the subject scans — refuses at its ceiling (`maxScanSegments`) instead of materialising the fleet.
@@ -188,7 +188,7 @@ envelope**:
 
 **Measured, not asserted — and measured on what.** The figures on the [benchmarks page](benchmarks.md) are the
 S3-side figures of the July 2026 calibration run: the cost of the object-store requests the engine actually
-issued, and the in-region latency of a `has()`. The read path they exercise — one chunk GET behind the hot
+issued, and the in-region latency of a `has()`. The read path they exercise — one chunk GET behind the cache
 cache — is unchanged, so they still describe a loaded-store read. The write-side figures of that run described
 the removed warm tier and are no longer quoted. What is **not** yet measured is the loaded store's own shape —
 load throughput, `intersect` and `*Into` latency, RSS under a soak — and those are owed before `1.0`; until they

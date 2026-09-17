@@ -157,7 +157,7 @@ describe('chunk-skipping intersection', () => {
     seed('b', [2, 3, 4]);
     const a = store.segment('a');
     const b = store.segment('b');
-    await collect(a.intersect([b])); // populates the HOT cache + runs andInPlace on fetched chunks
+    await collect(a.intersect([b])); // populates the cache + runs andInPlace on fetched chunks
     // Operands must be unchanged afterward, and a second intersect must give the same result —
     // proving the in-place AND never mutated a cached/shared Storage bitmap.
     expect(await collect(a.iterate())).toEqual([1, 2, 3]);

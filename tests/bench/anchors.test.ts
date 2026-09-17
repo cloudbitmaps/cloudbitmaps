@@ -118,7 +118,7 @@ describe('bench-as-test anchors', () => {
     const snap = metrics.snapshot();
 
     const reads = CHUNKS * IDS_PER_CHUNK;
-    // One GET per chunk; the other three reads of each chunk are served by the HOT cache.
+    // One GET per chunk; the other three reads of each chunk are served by the cache.
     expect(snap.storage.gets).toBe(CHUNKS);
     expect(snap.cache.hits).toBe(reads - CHUNKS);
     const observedHitRate = snap.cache.hits / (snap.cache.hits + snap.cache.misses);

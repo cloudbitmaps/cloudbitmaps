@@ -229,7 +229,7 @@
       <section>
         <h2>Two tiers, and the pointer that picks the generation</h2>
         <p class="lede">
-          A segment is not moved between tiers — it lives in the object store, and the hot tier is a cache in
+          A segment is not moved between tiers — it lives in the object store, and the cache tier is a cache in
           front of it. Only the pointer decides what a read sees.
         </p>
         <div class="tpanel">
@@ -248,7 +248,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="tier-chip t-hot">HOT · RAM</span></td>
+                  <td><span class="tier-chip t-cache">CACHE · RAM</span></td>
                   <td class="from">
                     A bounded LRU of decoded chunks in your own process, keyed by generation. Optional and
                     evictable — <strong>correctness never depends on it</strong>, only latency.
@@ -594,7 +594,7 @@
         <ul class="rowlist">
           <li>
             <span class="rl-mark">01</span>
-            <span class="rl-what">A miss in the hot cache is a trip to object storage</span>
+            <span class="rl-what">A miss in the cache is a trip to object storage</span>
             <span class="rl-fig">one ranged GET</span>
             <span class="rl-note">
               A membership check the LRU cannot answer costs exactly one ranged GET against your bucket —

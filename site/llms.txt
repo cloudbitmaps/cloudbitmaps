@@ -5,7 +5,7 @@
 > of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
 > `andNot`.
 
-CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a hot in-process LRU over a storage
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a cache in-process LRU over a storage
 tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
 current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
@@ -25,7 +25,7 @@ authoritative, a rerun is idempotent, and there is no partially-visible write. T
 remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 publishing their result as a new generation of the destination segment.
 
-Reads see one whole, checksum-verified generation: has (hot cache, else one ranged GET), count (exact, summed
+Reads see one whole, checksum-verified generation: has (cache, else one ranged GET), count (exact, summed
 from the .crbm index with zero payload reads), iterate, and intersect/union/andNot — the chunk-skipping
 composites, with `exclude` suppression folded into the same pass.
 
@@ -36,7 +36,7 @@ AWS SDK layer: $0.14 per million count()s and $5.88 per million segment publishe
 always-on Redis-HA line of $346/month standing, and $0.03/month for 1.2 GiB of segments at rest. That run
 kept the generation pointer in a NoSQL registry that no longer ships, so those figures are the object-store
 half rather than today's total; the pointer is now an object request that is not in them. One crossover
-is published: past 329.15 sustained reads a second, with every read missing the hot cache, metered GETs pass
+is published: past 329.15 sustained reads a second, with every read missing the cache, metered GETs pass
 the standing node — a warmer cache moves that line up.
 
 ## Coming from Redis bitmaps
@@ -83,8 +83,8 @@ ndjson, which is the exit path.
 
 ## When NOT to use it
 
-If you need a sub-millisecond p99 on a working set that fits a bounded hot cache, use Redis: a check that
-misses the hot cache costs a ranged GET against object storage, where an in-process RAM store costs a memory
+If you need a sub-millisecond p99 on a working set that fits a bounded cache, use Redis: a check that
+misses the cache costs a ranged GET against object storage, where an in-process RAM store costs a memory
 read. CloudBitmaps is for sets that are large, mostly read, and shouldn't cost $346/month to keep warm.
 In-region latency is not yet calibrated and no in-region figure is published.
 

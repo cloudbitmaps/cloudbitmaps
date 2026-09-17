@@ -174,7 +174,7 @@ process to stop. If you cannot quiesce, re-run the scan to confirm a reported te
 ## Readers pinned to a generation
 
 A store that has resolved a segment keeps serving that generation for up to `storageGenTtlMs` (default 2 s) before
-it re-reads the pointer, and decoded chunks sit in the hot LRU for as long as the cache keeps them. After a
+it re-reads the pointer, and decoded chunks sit in the cache for as long as the cache keeps them. After a
 restore or a manual `currentGen` roll, a long-lived process may therefore keep answering from the generation it
 resolved *before* the restore for that window. Two cases need more than waiting: a store built **without a
 clock**, or with **`storageGenTtlMs: 0`** ("pin forever"), holds its resolved generation for its own lifetime —

@@ -30,7 +30,7 @@ function recordingClock(): Clock & { sleeps: number[] } {
 }
 const zeroRng: Rng = { next: () => 0 };
 
-/** Storage source that counts physical reads, to prove the HOT cache is wired. */
+/** Storage source that counts physical reads, to prove the cache is wired. */
 class CountingStorage implements StorageChunkSource {
   getChunkCalls = 0;
   constructor(private readonly inner: MemoryStorageChunkSource) {}
@@ -43,7 +43,7 @@ class CountingStorage implements StorageChunkSource {
   }
 }
 
-describe('HOT cache (C6) — wired through the engine', () => {
+describe('cache (C6) — wired through the engine', () => {
   it('serves a cache hit, re-reads after TTL, and evicts past the ceiling', async () => {
     const inner = new MemoryStorageChunkSource();
     inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([1]).serialize());
@@ -73,7 +73,7 @@ describe('HOT cache (C6) — wired through the engine', () => {
     const clock = fakeClock();
     const { store, load } = await loadedStore({ s: [1, 2] }, { clock, storageGenTtlMs: 1 });
     const s = store.segment('s');
-    expect(await s.has(1)).toBe(true); // chunk 0 @ generation 0 is now hot
+    expect(await s.has(1)).toBe(true); // chunk 0 @ generation 0 is now cached
 
     await load('s', [2]); // generation 1: the same chunk key, id 1 gone
     clock.advance(1);
