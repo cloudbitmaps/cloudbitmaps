@@ -103,6 +103,44 @@ for await (const file of dts(dist)) {
   await writeFile(file, out);
 }
 
+// Every relative specifier in an emitted .d.ts needs an explicit `.js` extension.
+//
+// WHY. `tsc` emits `from './core/engine'`, and so does the alias rewrite above. Under
+// `moduleResolution: node16`/`nodenext` — the correct setting for a modern Node ESM consumer — that is
+// TS2834, "relative import paths need explicit file extensions". The failure is not loud: the near-universal
+// `skipLibCheck: true` suppresses the error, TypeScript then cannot resolve the module, and **every type
+// reached through one of those specifiers silently becomes `any`**. A consumer sees no diagnostic at all;
+// they just lose that whole type surface, including the compile-time half of guards that are supposed to
+// refuse a bad wiring. Measured on a packed install: 113 of 115 runtime exports were `any`, the survivors
+// being the few declared directly in an entry rather than re-exported.
+//
+// Verified before and after with a probe project resolving through the real exports map: `nodenext` accepted
+// `const leak: string = someStorageBackend` (i.e. `any`) before this, and rejects it after.
+//
+// `.js` and not `.d.ts`: a declaration file names the RUNTIME specifier, and TypeScript maps `./x.js` to
+// `./x.d.ts` itself. A directory specifier becomes `/index.js` for the same reason.
+//
+// The scanner is shared with the gate in `scripts/smoke.cjs` (see `scripts/dts-specifiers.cjs`) so the two
+// can never drift into fixing and checking different things. It skips comments, so a doc-comment example
+// showing a relative import is neither rewritten here nor flagged there.
+const { rewriteSpecifiers } = require('./dts-specifiers.cjs');
+let extended = 0;
+for await (const file of dts(dist)) {
+  const src = await readFile(file, 'utf8');
+  const { text, count } = rewriteSpecifiers(src, (spec) => {
+    const abs = path.resolve(path.dirname(file), spec);
+    if (existsSync(`${abs}.d.ts`)) return `${spec}.js`;
+    // `replace` because a trailing slash would otherwise double it (`./sub/` → `./sub//index.js`).
+    if (existsSync(path.join(abs, 'index.d.ts'))) return `${spec.replace(/\/$/, '')}/index.js`;
+    // Nothing to point at, so there is no right extension to add. Left as-is on purpose: the smoke gate
+    // fails the build on exactly this specifier, with the file and the specifier in the message, which is a
+    // better error than a guessed extension that resolves to nothing.
+    return null;
+  });
+  extended += count;
+  if (text !== src) await writeFile(file, text);
+}
+
 // Fuzz-only bundles — into the repo-root fuzz/build, never into dist/.
 const fuzzEntry =
   short === 'core'
@@ -121,5 +159,5 @@ if (fuzzEntry && existsSync(path.join(pkgDir, fuzzEntry))) {
 }
 
 console.log(
-  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm+cjs), declarations emitted (${rewritten} alias specifiers rewritten)`,
+  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm+cjs), declarations emitted (${rewritten} alias specifiers rewritten, ${extended} extensions added)`,
 );
