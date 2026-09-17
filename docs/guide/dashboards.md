@@ -134,7 +134,7 @@ append-only store (CloudWatch Logs, an S3 object-lock bucket, your SIEM), never 
 metrics. The sink adds the timestamp and actor (the library keeps its core free of ambient time/identity):
 
 ```ts
-import { bulkLoadCrbmGeneration, destroySegment } from '@cloudbitmaps/roaring';
+import { destroySegment } from '@cloudbitmaps/roaring';
 import type { IAuditSink } from '@cloudbitmaps/roaring';
 
 function siemAudit(actor: string): IAuditSink {
@@ -153,7 +153,7 @@ function siemAudit(actor: string): IAuditSink {
 const audit = siemAudit('batch-loader@svc');
 
 // Pass it to each lifecycle op (audit is not a store-constructor option — these are separate entry points):
-await bulkLoadCrbmGeneration(storage, { segment: 'users', generation: 0 }, ids, { registry, audit });
+await store.load({ segment: 'users' }, ids, { audit });
 await store.eraseSubject(subjectId, { namespace: 'eu', audit }); // GDPR Art. 17 — one segment.rewrite per segment
 await store.dropSegment({ segment: 'users' }, { confirmSegment: 'users', audit }); // retire + reclaim storage
 await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit }); // crypto-shred

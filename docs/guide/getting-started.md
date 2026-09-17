@@ -24,7 +24,7 @@
 
 | Capability | Status |
 |---|---|
-| **Load** a segment as an immutable generation from any id stream — array, generator, warehouse cursor (`bulkLoadCrbmGeneration`) | ✅ |
+| **Load** a segment as an immutable generation from any id stream — array, generator, warehouse cursor (`store.load`) | ✅ |
 | `has` / `count` / `iterate` — `count()` summed from the `.crbm` index with **zero payload reads** | ✅ |
 | **`intersect()`** — chunk-skipping set intersection, streamed; `union()` / `andNot()`; `exclude` folds suppression into the same pass | ✅ |
 | **`intersectInto` / `unionInto` / `andNotInto`** — materialize a result as a **new generation** of another segment | ✅ |
@@ -88,31 +88,19 @@ The full entry, with a runnable before/after, is in
 
 ## 1. The simplest thing: in-memory
 
-A `CloudRoaring` store is wired to a **storage** driver (where the `.crbm` generations live) — **the only required
-option** — and, for anything beyond a first look, a **registry** (the pointer that says which generation is
-current). A `segment` is one named bitmap. Data gets into a segment **by loading a generation**: you hand
-`bulkLoadCrbmGeneration` the ids, it writes one immutable object and publishes it. The in-memory drivers need no
-setup — ideal for tests and a first look:
+A `CloudRoaring` store is wired to one **backend** — the object that knows where the `.crbm` generations go and
+where the pointer that says which one is current goes. That is the only required option. A `segment` is one
+named bitmap, and data gets into it **by loading a generation**: `store.load(ref, ids)` writes one immutable
+object and moves the pointer to it. `MemoryStorage` needs no setup — ideal for tests and a first look:
 
 ```ts
-import {
-  CloudRoaring,
-  MemoryStorage,
-  bulkLoadCrbmGeneration,
-  nextGeneration,
-} from '@cloudbitmaps/roaring';
+import { CloudRoaring, MemoryStorage } from '@cloudbitmaps/roaring';
 
 // One object carries both halves — where the generations go, and where the pointer goes.
-const backend = new MemoryStorage();
-const store = new CloudRoaring({ storage: backend });
+const store = new CloudRoaring({ storage: new MemoryStorage() });
 
 // Load a generation: any sync or async iterable of ids — an array here, a warehouse cursor in §3.
-const ref = { segment: 'high-value-shoppers' };
-// A backend is also the deps object the free functions take, so it passes straight through.
-const generation = await nextGeneration(ref, backend); // → 0 on a brand-new segment
-await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation }, [5, 99_999, 1_234_567_890, 2_000_000_000], {
-  registry: backend.registry,
-});
+await store.load({ segment: 'high-value-shoppers' }, [5, 99_999, 1_234_567_890, 2_000_000_000]);
 
 // Read it.
 const vips = store.segment('high-value-shoppers');
@@ -139,24 +127,13 @@ Same API, but state lives on disk and survives a restart. Pass a `LocalFsStorage
 names one root and derives both halves from it, so you wire the location exactly once:
 
 ```ts
-import {
-  CloudRoaring,
-  LocalFsStorage,
-  bulkLoadCrbmGeneration,
-  nextGeneration,
-} from '@cloudbitmaps/roaring';
+import { CloudRoaring, LocalFsStorage } from '@cloudbitmaps/roaring';
 
 // One root: generations under `./.cloudbitmaps/storage`, pointers under `./.cloudbitmaps/registry`.
 const backend = new LocalFsStorage('./.cloudbitmaps');
 const store = new CloudRoaring({ storage: backend, cache: { maxChunks: 1024 } }); // optional cache ceiling
 
-const ref = { segment: 'active-this-week' };
-await bulkLoadCrbmGeneration(
-  backend.storage,
-  { ...ref, generation: await nextGeneration(ref, backend) },
-  activeUserIds,
-  { registry: backend.registry },
-);
+await store.load({ segment: 'active-this-week' }, activeUserIds);
 // ...a fresh process pointed at the same dirs reads the same generation — the object and the pointer are durable.
 ```
 
@@ -318,19 +295,17 @@ how you configure the client:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
-import { CloudRoaring, bulkLoadCrbmGeneration, nextGeneration } from '@cloudbitmaps/roaring';
+import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/roaring/s3';
 
 // Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
 // chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2.
 const backend = new S3Storage({ bucket: 'my-bitmaps', prefix: 'cloudroaring', region: 'us-east-1' });
 
-// Load a generation straight to S3, then read it through the engine:
-const ref = { segment: 'active-this-week' };
-await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation: await nextGeneration(ref, backend) }, ids, {
-  registry: backend.registry,
-});
 const store = new CloudRoaring({ storage: backend });
+
+// Load a generation straight to S3, then read it through the engine:
+await store.load({ segment: 'active-this-week' }, ids);
 await store.segment('active-this-week').count(); // read from the .crbm index on S3 — no payload GET
 ```
 
@@ -349,21 +324,15 @@ max — one storage scan per segment, cleartext only, and read-only. The **regis
 authoritative record (`currentGen`) read once, and it is what every write publishes through:
 
 ```ts
-import {
-  CloudRoaring,
-  bulkLoadCrbmGeneration,
-  LocalFsStorage,
-} from '@cloudbitmaps/roaring';
+import { CloudRoaring, LocalFsStorage } from '@cloudbitmaps/roaring';
 
 const backend = new LocalFsStorage('./.cloudbitmaps');
+const store = new CloudRoaring({ storage: backend });
 
-// Load a generation AND publish it to the registry in one call:
-await bulkLoadCrbmGeneration(backend.storage, { segment: 'active', generation: 0 }, [1, 2, 3], {
-  registry: backend.registry,
-});
+// Write the object AND move the pointer, in one call:
+await store.load({ segment: 'active' }, [1, 2, 3]);
 
 // The backend carries the pointer, so the store resolves currentGen with one read (no list-scan):
-const store = new CloudRoaring({ storage: backend });
 await store.segment('active').count(); // → 3, generation resolved from the registry
 ```
 
@@ -678,12 +647,7 @@ dependency**. Each segment gets its own random **DEK** that's wrapped under your
 the Storage chunks + index are AES-256-GCM-encrypted with the DEK, under an AAD bound to `(segment, generation)`.
 
 ```ts
-import {
-  CloudRoaring,
-  InProcessKeystore,
-  LocalFsStorage,
-  bulkLoadCrbmGeneration,
-} from '@cloudbitmaps/roaring';
+import { CloudRoaring, InProcessKeystore, LocalFsStorage } from '@cloudbitmaps/roaring';
 
 // Your KEK(s) — load from your secrets manager; keyId-aware so you can rotate without re-encrypting data.
 const keystore = new InProcessKeystore({
@@ -693,23 +657,22 @@ const keystore = new InProcessKeystore({
 });
 
 const backend = new LocalFsStorage('./.cloudroaring');
+// The keystore is wired once, on the store, and applies to both the load and the read.
+const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
 
 // Load encrypted (the DEK is minted + wrapped into the registry on the first publish; later loads reuse it):
-await bulkLoadCrbmGeneration(backend.storage, { segment: 'pii', generation: 0 }, ids, {
-  registry: backend.registry,
-  keystore,
-});
+await store.load({ segment: 'pii' }, ids);
 
 // Read encrypted — the backend carries the wrapped DEK in its registry; the store unwraps and decrypts transparently:
-const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
 await store.segment('pii').count(); // works; without the keystore this throws KeyUnavailableError
 ```
 
-Every later write to that segment reuses its DEK: a reload through `bulkLoadCrbmGeneration` (pass the keystore —
+Every later write to that segment reuses its DEK: a reload through `store.load` (on a store wired with the
+keystore —
 loading a cleartext generation onto an encrypted segment is refused with `KeyUnavailableError`, because that
 would let a later crypto-shred over-attest), an `*Into` verb on a store wired with the keystore, and the erasure
-rewrite. To enforce encryption everywhere, set `encryption: { required: true }` (on the store config, or as `requireEncryption: true` on
-`bulkLoadCrbmGeneration`, and on `eraseIdFromSegment`'s deps) — any cleartext write/read then throws.
+rewrite. To enforce encryption everywhere, set `encryption: { required: true }` on the store (or `requireEncryption: true`
+on the lower-level free functions' deps) — any cleartext write/read then throws.
 
 **A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
@@ -902,12 +865,12 @@ Unlike metrics, audit isn't a store-constructor option — the events fire from 
 so you pass `audit` to each:
 
 ```ts
-import { RecordingAuditSink, bulkLoadCrbmGeneration, destroySegment } from '@cloudbitmaps/roaring';
+import { RecordingAuditSink, destroySegment } from '@cloudbitmaps/roaring';
 
 const audit = new RecordingAuditSink(); // a ready-made in-memory recorder (or bring your own onEvent)
 
-// A generation is published (the segment is encrypted — a keystore is wired, see §9):
-await bulkLoadCrbmGeneration(storage, { segment: 'users', generation: 0 }, ids, { registry, keystore, audit });
+// A generation is published (the segment is encrypted — a keystore is wired on the store, see §9):
+await store.load({ segment: 'users' }, ids, { audit });
 // A subject erasure — a rewrite of the current generation without one id:
 await store.eraseSubject(userId, { namespace: 'eu', audit });
 // A GDPR crypto-shred — the key wrappings are dropped:
@@ -1065,9 +1028,7 @@ const bucket = (day: string) => store.segment(day, { namespace: 'active-daily' }
 
 // Load today's bucket — a generation, from wherever today's ids come from.
 const ref = { namespace: 'active-daily', segment: today };
-await bulkLoadCrbmGeneration(storage, { ...ref, generation: await nextGeneration(ref, { storage, registry }) }, idsSeenToday, {
-  registry,
-});
+await store.load(ref, idsSeenToday);
 
 // "Active in the last 7 days" — a union over the buckets you still keep.
 const [head, ...rest] = last7Days.map(bucket);
@@ -1218,9 +1179,7 @@ const DAY = 86_400_000;
 const ref = { namespace: 'active-daily', segment: today };
 
 await store.setRetention(ref, { expiresAt: Date.now() + 30 * DAY }); // before or after the load — either works
-await bulkLoadCrbmGeneration(storage, { ...ref, generation: await nextGeneration(ref, { storage, registry }) }, idsSeenToday, {
-  registry,
-});
+await store.load(ref, idsSeenToday);
 ```
 
 That is **one registry write, and nothing else happens.** Nothing is deleted, and no timer starts — the sweep
@@ -1525,7 +1484,7 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 | `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 
-There is no per-id write on a segment: data enters as a generation — `bulkLoadCrbmGeneration`
+There is no per-id write on a segment: data enters as a generation — `store.load`
 ([§3](#3-loading-a-segment)) or an `*Into` verb — and leaves the same way (`eraseSubject`, `dropSegment`).
 
 **What each combine has to read** — a property of the set operation, not of the implementation:

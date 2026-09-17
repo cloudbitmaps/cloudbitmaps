@@ -440,7 +440,7 @@
           <div class="pstage">
             <div class="pstage-label"><span>Your call</span></div>
             <div class="pstage-body">
-              <p class="pstage-code">bulkLoadCrbmGeneration(storage,&nbsp;ref,&nbsp;ids)</p>
+              <p class="pstage-code">store.load(ref,&nbsp;ids)</p>
               <ul class="ids">
                 <li><i class="pk b1"></i><span>75</span><em>&rarr; key 0x0000</em></li>
                 <li><i class="pk b4"></i><span>99_999</span><em>&rarr; key 0x0001</em></li>
@@ -603,18 +603,14 @@
                  own line, because the load call is what sets the panel's width: at 12.5px mono the
                  usable measure is ~72 characters and the three-id form ran to 82. -->
             <div class="code-head label"><span>segments.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> {
-  CloudRoaring, MemoryStorage,
-  bulkLoadCrbmGeneration,
-} <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> backend = <span class="k">new</span> MemoryStorage();
-<span class="k">const</span> ref = { segment: <span class="s">'bought-last-90d'</span>, generation: <span class="n">0</span> };
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
 
 <span class="c">// one write-once object, and then the pointer moves to it</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(backend.storage, ref, [<span class="n">75</span>, <span class="n">99_999</span>], { registry: backend.registry });
+<span class="k">await</span> store.load({ segment: <span class="s">'bought-last-90d'</span> }, [<span class="n">75</span>, <span class="n">99_999</span>]);
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: backend });
 <span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
 <span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
 <span class="c">// fetches only the chunks that can contribute</span>

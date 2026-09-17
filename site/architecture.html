@@ -281,7 +281,7 @@
           <div class="limit">
             <p class="label">Loading a generation</p>
             <p>
-              Data enters exactly one way: <span class="m">bulkLoadCrbmGeneration</span> streams a set of ids
+              Data enters exactly one way: <span class="m">store.load</span> streams a set of ids
               into one immutable object, then <span class="m">publishGeneration</span> advances the pointer.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. A publish costs
