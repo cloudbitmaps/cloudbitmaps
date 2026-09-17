@@ -234,18 +234,6 @@ export interface RegCaps {
 }
 
 /**
- * A backend, whole: the storage **and** the pointer, configured once.
- *
- * A store needs two things from a backend — somewhere to put immutable `.crbm` generations, and somewhere to
- * keep the pointer that says which generation is current. They were two constructor calls, each repeating the
- * bucket and the prefix, and **mismatching them is the classic first-run bug**: the registry points somewhere
- * the storage never land, so the store reads as *empty* rather than as *misconfigured*, which is the hardest
- * kind of wrong answer to debug. Stating the location once makes that unexpressible.
- *
- * Implementations live with their driver (`S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage`,
- * `MemoryStorage`). Both halves stay available on the object for anyone who needs to reach past the facade.
- */
-/**
  * Brand for {@link StorageBackend}.
  *
  * `Symbol.for` rather than a class check, for the same reason the error brands are — a driver subpath is a
@@ -268,10 +256,14 @@ const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-ba
  * nothing had ever been written. That is the exact silent-empty failure one-class-per-backend exists to
  * remove, and it was reachable in five lines.
  *
- * So a backend can only come from `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
- * `AzureBlobStorage` — each of which derives both halves from one bucket and one prefix, making the mismatch
- * unexpressible rather than merely discouraged. The halves stay readable as `.storage` / `.registry`, because
- * the free functions genuinely need them.
+ * So a backend comes from `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+ * `AzureBlobStorage` — each deriving both halves from one bucket and one prefix — or from
+ * {@link createBackend}, which is the same thing said on purpose. The halves stay readable as `.storage` /
+ * `.registry`, because the free functions genuinely need them.
+ *
+ * **What this stops is the accident, not a determined caller.** The brand is a registered symbol, so it can
+ * be written by hand; nothing here is a security boundary. It stops the two spellings people reach for
+ * without deciding to — an object literal, and a spread of a real backend.
  */
 export interface StorageBackend {
   /** Cross-bundle brand. Set by the backend classes; not part of the public surface. */
@@ -311,23 +303,52 @@ export function createBackend(halves: {
     typeof storage !== 'object' ||
     typeof storage.putImmutable !== 'function'
   ) {
-    throw new ValidationError('createBackend: `storage` must be an IStorageDriver');
+    throw new ValidationError(
+      'createBackend: `storage` must be an IStorageDriver (it has no `putImmutable`)',
+    );
   }
   if (
     registry === null ||
     typeof registry !== 'object' ||
     typeof registry.compareAndSwap !== 'function'
   ) {
-    throw new ValidationError('createBackend: `registry` must be an IRegistryDriver');
+    throw new ValidationError(
+      'createBackend: `registry` must be an IRegistryDriver (it has no `compareAndSwap`)',
+    );
   }
-  return { [STORAGE_BACKEND_BRAND]: true, storage, registry };
+  return brandAsBackend({ storage, registry });
 }
 
-/** The brand value a backend class sets. Package-internal — not exported from the package barrel. */
+/**
+ * Stamp the brand on a backend, **non-enumerably**.
+ *
+ * Non-enumerable is load-bearing, not tidiness. A class field (`readonly [BRAND] = true`) emits an
+ * *enumerable* own property, and spread and `Object.assign` copy exactly those — so
+ * `{ ...backend, registry: other.registry }` carried the brand and was accepted, reproducing the silent-empty
+ * bug this whole thing exists to close. That spelling is also the most idiomatic way a JS developer swaps one
+ * half, which means the audience `createBackend` was added for walked straight past it.
+ *
+ * This does not make the brand unforgeable — the symbol is registered, so anyone who wants it can write
+ * `Symbol.for('cloudbitmaps.storage-backend')`. That is deliberate effort equivalent to calling
+ * `createBackend`, and it is not what the check is for. The check is for the accident.
+ */
+/** The brand key, for the classes' type-only `declare` field. Package-internal. */
 export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRAND;
 
+export function brandAsBackend<T extends { storage: IStorageDriver; registry: IRegistryDriver }>(
+  target: T,
+): T & StorageBackend {
+  Object.defineProperty(target, STORAGE_BACKEND_BRAND, {
+    value: true,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  return target as T & StorageBackend;
+}
+
 /**
- * Is this a backend built by one of the backend classes?
+ * Is this a branded backend — from a backend class or from {@link createBackend}?
  *
  * Checks the brand, not the shape — see {@link StorageBackend} for why the shape alone is not enough.
  */

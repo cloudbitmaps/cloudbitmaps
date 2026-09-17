@@ -83,6 +83,28 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
     );
   }
   console.log(`  cross-bundle error predicates OK: ${label}`);
+
+  // Same boundary, second brand. A backend built in the /s3 bundle must be recognised by the store in the
+  // MAIN bundle — that is the whole reason the brand is a registered `Symbol.for` and not a class check or a
+  // module-local symbol. Nothing else pins it: switching it to plain `Symbol()` leaves lint, typecheck, the
+  // full 2200-test suite and this script's other checks green, while every CJS user of a driver subpath gets
+  // `storage must be a backend` for a backend they just constructed. ESM cannot see it — esbuild shares one
+  // chunk across ESM subpaths — so the CJS half of this check is the load-bearing one.
+  const s3Backend = new driverMod.S3Storage({ bucket: 'smoke', region: 'us-east-1' });
+  if (!coreMod.isStorageBackend(s3Backend)) {
+    throw new Error(
+      `${label}: a backend from the /s3 bundle is not recognised by core — cross-bundle brand broken`,
+    );
+  }
+  let backendErr;
+  try {
+    new coreMod.CloudRoaring({ storage: s3Backend });
+  } catch (e) {
+    backendErr = e;
+  }
+  if (backendErr !== undefined)
+    throw new Error(`${label}: the store rejected an /s3 backend: ${backendErr.message}`);
+  console.log(`  cross-bundle backend brand OK: ${label}`);
 }
 
 /*

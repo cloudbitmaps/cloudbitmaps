@@ -41,11 +41,12 @@ export {
 export { namespaceKeyPart, namespacePathPart } from './drivers/_shared/keys';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
-export { createBackend, isStorageBackend } from './core/ports';
 export { chunkRefKey, segmentKey } from './core/keys';
 
 // ---------------------------------------------------------------------------------------------------
 // The public surface (an application reaches these through its flavor package, which re-exports them).
+// `createBackend` is how a caller supplies a half of its own; `isStorageBackend` tests the brand.
+export { createBackend, isStorageBackend } from './core/ports';
 // ---------------------------------------------------------------------------------------------------
 export {
   MemoryStorageChunkSource,

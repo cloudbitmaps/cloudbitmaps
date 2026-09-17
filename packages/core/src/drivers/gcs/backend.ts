@@ -10,7 +10,7 @@
  */
 import { Storage as GcsClient } from '@google-cloud/storage';
 import { ValidationError } from '@/core/errors';
-import { STORAGE_BACKEND } from '@/core/ports';
+import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
@@ -38,8 +38,8 @@ export interface GcsStorageOptions {
 }
 
 export class GcsStorage implements StorageBackend {
-  /** Cross-bundle brand: only a real backend class carries it. */
-  readonly [STORAGE_BACKEND] = true as const;
+  /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
+  declare readonly [STORAGE_BACKEND]: true;
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */
@@ -68,5 +68,6 @@ export class GcsStorage implements StorageBackend {
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
     });
+    brandAsBackend(this);
   }
 }

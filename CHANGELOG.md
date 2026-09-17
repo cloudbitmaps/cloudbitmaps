@@ -17,23 +17,27 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **BREAKING — a `StorageBackend` can now only come from a backend class.** The port was structural, so any
+- **BREAKING — a `StorageBackend` must now be built, not assembled.** The port was structural, so any
   `{ storage, registry }` object satisfied it — and that shape is also the free functions' deps object, which
   made the wrong thing the easy thing. Concretely, this constructed happily and answered **`0`** for a segment
   holding three ids:
 
   ```ts
   const a = new MemoryStorage(), b = new MemoryStorage();
-  await a.load({ segment: 'v' }, [1, 2, 3]);
+  await new CloudRoaring({ storage: a }).load({ segment: 'v' }, [1, 2, 3]);
+
+  // …and then, with halves from two unrelated stores:
   new CloudRoaring({ storage: { storage: a.storage, registry: b.registry } });
-  //                            └─ data here ──┘   └─ pointer read from here ─┘
+  //                           ^^^^^^^^^ data      ^^^^^^^^^^ pointer, read from somewhere else
   ```
 
   Data in one place, pointer in another; the store reads the pointer, finds nothing, and answers empty — which
   is indistinguishable from "new segment". That is the exact silent-empty failure one-class-per-backend exists
   to remove, reachable in five lines of public API. Backends now carry a brand only the classes set, so the
-  store's boundary is closed: every backend it can receive came from one constructor with one bucket and one
-  prefix.
+  store's boundary is closed to the accident: the brand is stamped **non-enumerably**, so neither an object
+  literal nor `{ ...backend, registry: other }` carries it. It is not a security boundary — the symbol is
+  registered, so a determined caller can still write it — but that is deliberate effort equivalent to calling
+  `createBackend`, and the check exists for the accident.
 
 - **Added `createBackend({ storage, registry })`** — the deliberate door, for what a class cannot express: a
   driver wrapped for auditing, metrics, tenant scoping or client-side encryption; a registry in a database you

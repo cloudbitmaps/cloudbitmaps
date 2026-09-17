@@ -13,7 +13,7 @@
  * `.registry` for anyone wiring something the facade does not cover.
  */
 import { S3Client } from '@aws-sdk/client-s3';
-import { STORAGE_BACKEND } from '@/core/ports';
+import { brandAsBackend, STORAGE_BACKEND } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
 import { S3StorageDriver } from './storage';
 import { S3RegistryDriver } from './registry';
@@ -49,8 +49,8 @@ export interface S3StorageOptions {
 }
 
 export class S3Storage implements StorageBackend {
-  /** Cross-bundle brand: only a real backend class carries it. */
-  readonly [STORAGE_BACKEND] = true as const;
+  /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
+  declare readonly [STORAGE_BACKEND]: true;
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */
@@ -75,5 +75,6 @@ export class S3Storage implements StorageBackend {
       ...shared,
       ...(options.now === undefined ? {} : { now: options.now }),
     });
+    brandAsBackend(this);
   }
 }

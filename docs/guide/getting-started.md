@@ -70,7 +70,9 @@ you will find them the first time you run, not the first time something reads wr
    the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
    expressible. Every driver is still exported; if you genuinely want the halves apart —
    an instrumented driver, or a registry in a database you already run — say so with
-   `createBackend({ storage, registry })`. A plain object literal is refused.
+   `createBackend({ storage, registry })`. A plain object literal is refused. `createBackend` cannot verify
+   the two halves agree, so calling it is you taking that on — which is the difference between a decision and
+   the accident it replaces.
 2. **The flat tuning options became six groups** — `cache` · `encryption` · `retry` · `metrics` · `budget` ·
    `seams`:
 
@@ -350,7 +352,10 @@ tear the result. Without a registry the generation is pinned for the source's li
 per deployment:
 
 **You normally do not choose one** — a backend brings its own, in the same bucket as the generations. The
-table is here for the case where you are assembling the halves yourself:
+table is here for the case where you are assembling the halves yourself, which you do with
+`createBackend({ storage, registry })`; a plain `{ storage, registry }` object is refused. It cannot check
+that your two halves point at the same place — the driver interfaces expose no location — so calling it is
+you taking that on.
 
 | Backend | Import | Use for |
 | --- | --- | --- |

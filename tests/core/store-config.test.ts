@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  isStorageBackend,
   createBackend,
   MemoryStorage,
   CloudRoaring,
@@ -270,14 +271,92 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
 
     // The bug the brand exists for: halves from two UNRELATED stores. Before it, this constructed happily and
     // answered 0 for a segment holding 3 ids — data in one place, pointer read from another.
-    it('makes the mismatched-halves store unconstructible', async () => {
-      const a = new MemoryStorage();
-      const b = new MemoryStorage();
-      await bulkLoadCrbmGeneration(a.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
-        registry: a.registry,
+    //
+    // Three spellings, because the first version of this test asserted only the object literal — and the
+    // brand was an ENUMERABLE class field, so `{ ...backend, registry: other }` copied it and sailed through.
+    // Spread is the idiomatic way to vary an object in JS, so that was not an exotic bypass: it is the form
+    // the audience for `createBackend` would reach for first, and the test named "unconstructible" said
+    // nothing about it.
+    it.each(['literal', 'spread', 'Object.assign'])(
+      'makes the mismatched-halves store unconstructible — %s',
+      async (how) => {
+        const a = new MemoryStorage();
+        const b = new MemoryStorage();
+        await bulkLoadCrbmGeneration(a.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+          registry: a.registry,
+        });
+        const franken = (how === 'literal'
+          ? { storage: a.storage, registry: b.registry }
+          : how === 'spread'
+            ? { ...a, registry: b.registry }
+            : Object.assign({}, a, { registry: b.registry })) as unknown as MemoryStorage;
+        expect(() => new CloudRoaring({ storage: franken })).toThrow(/must be a backend/);
+      },
+    );
+
+    // The brand must not be copyable by the ordinary object operations.
+    it('the brand is not enumerable, so it cannot be spread off a real backend', () => {
+      const brand = Symbol.for('cloudbitmaps.storage-backend');
+      const backend = new MemoryStorage();
+      expect(Object.getOwnPropertyDescriptor(backend, brand)?.enumerable).toBe(false);
+      expect(isStorageBackend(backend)).toBe(true);
+      expect(isStorageBackend({ ...backend })).toBe(false);
+      expect(isStorageBackend(Object.assign({}, backend))).toBe(false);
+    });
+
+    // A driver that wraps another AND carries a registry used to be refused as ambiguous. Branding made it
+    // unambiguously a driver — which is right — but it then fell through to the BARE-driver path, where there
+    // is no pointer at all: generations resolve by list-scan, so the store serves the highest object in the
+    // bucket. A generation written but never published would be read as if it had been, silently, with the
+    // wrapper's own registry sitting unused.
+    it('refuses a driver that also carries a registry, rather than ignoring the pointer', async () => {
+      const backend = new MemoryStorage();
+      await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+        registry: backend.registry,
       });
-      const frankenstein = { storage: a.storage, registry: b.registry } as unknown as MemoryStorage;
-      expect(() => new CloudRoaring({ storage: frankenstein })).toThrow(/must be a backend/);
+      // A HIGHER generation written but never published — a list-scan would serve this one.
+      await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
+
+      const wrapper = {
+        capabilities: () => backend.storage.capabilities(),
+        putImmutable: (...a: unknown[]) =>
+          (backend.storage.putImmutable as (...x: unknown[]) => unknown)(...a),
+        getRange: (...a: unknown[]) =>
+          (backend.storage.getRange as (...x: unknown[]) => unknown)(...a),
+        getTail: (...a: unknown[]) =>
+          (backend.storage.getTail as (...x: unknown[]) => unknown)(...a),
+        delete: (...a: unknown[]) => (backend.storage.delete as (...x: unknown[]) => unknown)(...a),
+        list: (...a: unknown[]) => (backend.storage.list as (...x: unknown[]) => unknown)(...a),
+        storage: backend.storage,
+        registry: backend.registry,
+      } as unknown as IStorageDriver;
+
+      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/also carries a .registry/);
+      expect(() => new CloudRoaring({ storage: wrapper })).toThrow(/createBackend/);
+      // …and the named door works, resolving the PUBLISHED generation rather than the highest object.
+      const store = new CloudRoaring({
+        storage: createBackend({ storage: wrapper, registry: backend.registry }),
+      });
+      expect(await store.segment('s').count()).toBe(3);
+    });
+
+    // A near-miss half must say which half and what is missing, not lecture about buckets.
+    it('names the half that is not a driver', () => {
+      const backend = new MemoryStorage();
+      expect(
+        () => new CloudRoaring({ storage: { storage: {}, registry: backend.registry } as never }),
+      ).toThrow(/`storage` half is not an IStorageDriver/);
+      expect(
+        () => new CloudRoaring({ storage: { storage: backend.storage, registry: {} } as never }),
+      ).toThrow(/`registry` half is not an IRegistryDriver/);
+    });
+
+    // The wall must route the caller to the door, or it teaches "this library cannot do what I need".
+    it('the refusal names `createBackend`', () => {
+      const a = new MemoryStorage();
+      expect(
+        () => new CloudRoaring({ storage: { storage: a.storage, registry: a.registry } as never }),
+      ).toThrow(/createBackend/);
     });
 
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {

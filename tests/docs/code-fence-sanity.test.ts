@@ -256,7 +256,7 @@ describe('documentation code samples', () => {
         if (isMarkedAsHistorical(code.split('\n'), code.slice(0, open).split('\n').length - 1))
           continue;
         // Top-level `registry` only. Everything nested is blanked out FIRST, because a legitimate backend
-        // literal — `storage: { storage: driver, registry: myRegistry }` — carries a perfectly correct
+        // literal — `storage: createBackend({ storage: driver, registry: myRegistry })` — carries a perfectly correct
         // `registry` one level down, and on a single line a per-line depth counter still reads it as top
         // level. Blanking makes the depth question positional rather than line-ordered.
         const topLevelOnly = ((): string => {
