@@ -15,6 +15,29 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **Releases were blocked by a false positive in the secret scanner.** `scripts/leak-scan-tarballs.cjs` is a
+  hard step in the release workflow, and it exited 1 on the S3 backend's spread of an optional
+  `credentials` option — a property read, not a hardcoded secret. Nothing else noticed, because neither
+  scanner runs in the ordinary CI lane: `pnpm test` and all 14 checks were green while `main` could not be
+  released.
+
+  The rule already rejected a value that is a CALL (`crypto.randomUUID()` had tripped it once before); it now
+  also rejects one that reads a property — **in JavaScript and TypeScript files only**. That scoping is the
+  substance of the fix rather than a detail. The exemption's premise is "a bare `a.b` value is a reference,
+  not a literal", which holds only where that is an expression; applied everywhere it read `,` and `;` as
+  expression terminators when in shell, `.env`, `.ini`, `.toml`, SQL, CSV, YAML flow and ADO.NET connection
+  strings they separate values — and `)`/`}` occur in ordinary prose. An adversarial review found 24 real
+  secret shapes an unscoped version stopped catching, including the canonical `Password=…;` connection
+  string, an `export DB_PASSWORD=…;` in a deploy script, and a token pasted inside a markdown link. Scoping
+  costs nothing, because in a JS/TS file an unquoted `a.b` value cannot be a secret at all — it is either a
+  reference or a syntax error. Both directions are pinned in `tests/scripts/leak-scan.test.ts`.
+
+  The second finding — an `@` in a test's list of now-legal segment names — was fixed the other way, by
+  renaming the collision rather than touching the email rule.
+
+
 ### Changed
 
 - **BREAKING — the packages are ESM-only, and `engines` now requires Node >=22.12.** The CJS bundle is gone;

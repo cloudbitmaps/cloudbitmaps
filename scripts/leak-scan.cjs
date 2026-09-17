@@ -105,6 +105,12 @@ const MAX_BLOB_BYTES = 2 * 1024 * 1024;
 // rule as `pw@host.docker.internal`.
 const LOCAL_HOSTS = String.raw`localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal`;
 
+/**
+ * Files where an unquoted `ident.ident` value is a language expression rather than a possible secret. The
+ * property-read exemption in the `hardcoded secret literal` rule is scoped to these and nowhere else.
+ */
+const JS_LIKE = /\.[cm]?[jt]sx?$/i;
+
 const HARD = [
   { name: 'AWS access key id', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
   { name: 'AWS secret access key', re: /aws_secret_access_key\s*[=:]/i },
@@ -144,9 +150,51 @@ const HARD = [
   //      gate outright. A scanner that cries wolf gets bypassed, so a false positive here is not cosmetic.
   //   3. `(?!\d+\b)` — reject an all-numeric value, so widening (1) can't newly trip on `tokenExpiryNanos =
   //      1730000000000000000`. A real secret is essentially never pure digits.
+  //   4. `(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])`, IN JS/TS FILES ONLY — reject a value
+  //      that reads a property instead of stating a literal. Sibling of (2): that one catches
+  //      `crypto.randomUUID()`, this one catches the same thing without the call, which is what
+  //      `...(options.credentials === undefined ? {} : { credentials: options.credentials })` in the S3
+  //      backend is. `credentials` is the AWS SDK's own option name, so the collision cannot be renamed away
+  //      and the rule has to learn the difference. It failed the RELEASE workflow's tarball scan — a step no
+  //      other job runs, so nothing else noticed.
+  //
+  //      THE SCOPING IS THE WHOLE FIX, and the first attempt at this shipped without it. The exemption's
+  //      premise is "a bare `ident.ident` value is a reference, not a literal" — which is only true in a
+  //      language where that is an expression. Applied everywhere, the closer set `[),;}\]]` reads `,` and
+  //      `;` as expression terminators when in shell, Makefiles, Dockerfiles, `.env`, `.ini`, `.toml`, SQL,
+  //      CSV, YAML flow and ADO.NET connection strings they are VALUE SEPARATORS — and `)`/`}` appear in
+  //      ordinary prose. An adversarial review found 24 real secret shapes that this scanner caught before
+  //      and missed after, among them `Password=Hunter2.Winter.Season2024;` (the canonical way an ADO.NET
+  //      secret is written), `export DB_PASSWORD=a.b.c9;` in a deploy script, and a JWT pasted inside a
+  //      markdown link — the single most likely route by which a real credential reaches a public README.
+  //
+  //      Scoping it to JS/TS costs nothing, because there an unquoted `ident.ident` value cannot be a secret
+  //      at all: it is either a reference or a syntax error. Everywhere else the rule stays exactly as it
+  //      was. One `,` is not worth a class of missed credentials.
+  //
+  //      The exemption also applies ONLY TO AN UNQUOTED VALUE, which is why the JS/TS pattern spells the
+  //      quoted and unquoted cases out separately instead of sharing a `['"]?`. With the quote optional, the
+  //      lookahead was evaluated from the first character INSIDE the string, so a quoted literal whose
+  //      closing token happened to sit inside the quotes — `const t = "aaaaaaaa.bbbbbbbb};"` — was excused,
+  //      and backtracking could not rescue it. A quoted value is a literal by definition; only an unquoted
+  //      one can be a reference. (An unquoted secret in a COMMENT, `// API_KEY=<16 bare chars>`, is a real
+  //      leak shape and stays caught — which is also why requiring a quote outright would be wrong.)
+  //
+  //      Known and deliberately NOT exempted, because over-exempting is the direction that loses
+  //      credentials: a property read followed by something other than `) , ; } ]` — `?? fallback`, `as
+  //      string`, a TS `!`, a trailing operator, or a multi-line object member with no comma — is still
+  //      reported. That is a false positive, so the cost is a blocked release rather than a missed secret,
+  //      and it is the right way round. No shipped line hits one today.
   {
     name: 'hardcoded secret literal',
+    re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*(?:['"](?![A-Za-z_$][\w$.]*\s*\()(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}|(?![A-Za-z_$][\w$.]*\s*\()(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,})/i,
+    only: JS_LIKE,
+  },
+  {
+    // The same rule for every OTHER file type, WITHOUT the property-read exemption — see the note above.
+    name: 'hardcoded secret literal',
     re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*['"]?(?![A-Za-z_$][\w$.]*\s*\()(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}/i,
+    except: JS_LIKE,
   },
   { name: 'absolute local machine path', re: /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\// },
 ];
@@ -341,6 +389,10 @@ const extra = extraNeedles();
 
 for (const { file, line, text } of lines()) {
   for (const p of [...HARD, ...extra]) {
+    // A rule may be scoped to a file type. `only`/`except` exist for one reason: a language-shaped
+    // exemption is only valid in that language's files (see lookahead 4 above).
+    if (p.only !== undefined && !p.only.test(file)) continue;
+    if (p.except !== undefined && p.except.test(file)) continue;
     if (p.re.test(text)) {
       hard.push({
         p: p.name,

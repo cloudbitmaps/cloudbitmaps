@@ -73,6 +73,31 @@ describe('leak-scan', () => {
       expect(scan(`${line}\n`).status).toBe(0);
     });
 
+    // Defect 3, found by the ESM-only review: a value that READS A PROPERTY is not a literal. The S3
+    // backend's `...(options.credentials === undefined ? {} : { credentials: options.credentials })` was
+    // reported as a hardcoded secret and failed the RELEASE workflow's tarball scan — a step no other job
+    // runs, so `pnpm test` and 14 CI checks were green while releases were blocked. `credentials` is the AWS
+    // SDK's own option name, so this collision cannot be renamed away; the rule had to learn the difference.
+    // These four each go from flagged to clean purely because of the property-read lookahead — verified by
+    // removing it and watching them fail. (`config.applicationSecret;` and `fn(opts.apiKeyMaterial, …)` are
+    // NOT in this list: the older call-expression lookahead already excused them, so they would look like
+    // regression tests for this fix while pinning nothing.)
+    it.each([
+      'const c = { credentials: options.credentials };',
+      '...(options.credentials === undefined ? {} : { credentials: options.credentials }),',
+      'return { token: this.session.accessToken };',
+      'const p = { password: creds.databasePassword, port: 5432 };',
+    ])('a property read in a .ts file: %s', (line) => {
+      expect(scan(`${line}\n`).status).toBe(0);
+    });
+
+    it.each(['sample.mts', 'sample.cts', 'sample.js', 'sample.mjs', 'sample.jsx', 'sample.tsx'])(
+      'the same exemption applies in %s',
+      (filename) => {
+        expect(scan('const c = { credentials: options.credentials };\n', filename).status).toBe(0);
+      },
+    );
+
     // Guards the widening that fixed defect 2 — it must not newly trip on long numbers.
     it.each(['tokenExpiryNanos = 1730000000000000000', 'const tokenCount = 1234567890123456789;'])(
       'an all-numeric value: %s',
@@ -80,6 +105,43 @@ describe('leak-scan', () => {
         expect(scan(`${line}\n`).status).toBe(0);
       },
     );
+  });
+
+  // THE EXEMPTION IS SCOPED TO JS/TS, and this block is why. The first version of the property-read fix
+  // applied everywhere, and an adversarial review found 24 real secret shapes it stopped catching: outside a
+  // JS-like language the closer set `[),;}\]]` is wrong, because `,` and `;` SEPARATE VALUES in shell,
+  // Makefiles, Dockerfiles, .env, .ini, .toml, SQL, CSV and connection strings, while `)` and `}` turn up in
+  // ordinary prose. Each line below was caught before that fix, missed after it, and is caught again now.
+  describe('still flags an unquoted dotted secret outside JS/TS (the scoping of the exemption)', () => {
+    it.each([
+      // `Password=…;` is the canonical spelling of an ADO.NET connection-string secret; `;` is mandatory.
+      [
+        'an ADO.NET connection string',
+        'appsettings.json',
+        'Server=db;Password=Hunter2.Winter.Season2024;',
+      ],
+      ['a shell export', 'deploy.sh', 'export DB_PASSWORD=_secret_part.another_part.third_part9;'],
+      [
+        'a Dockerfile RUN',
+        'Dockerfile',
+        'RUN export DB_PASSWORD=Hunter2.Winter.SeasonTwentyFour; ./go.sh',
+      ],
+      ['a .env with a trailing comma', 'vars.env', 'API_TOKEN=Hunter2.Winter.SeasonTwentyFour,'],
+      ['an ini file', 'config.ini', 'password=Str0ng.Passw0rd.Value99;'],
+      ['a toml inline table', 'config.toml', 'creds = { password = Str0ng.Passw0rd.Value99 }'],
+      ['a SQL seed', 'seed.sql', 'INSERT INTO cfg VALUES (password=Hunter2.WinterSeasonFour);'],
+      // The most likely route by which a real credential reaches a public README.
+      [
+        'a token pasted in a markdown link',
+        'RUNBOOK.md',
+        'See [board](https://g.internal/d?api_key=eyJhbGciOiJIUzI1NiIsInR.eyJzdWIiOiIxMjMONDU2Nzg5.SflKxwRJSMeKKFQTjc)',
+      ],
+      ['a single dot is enough', 'prod.env', 'SECRET_KEY=Winter2024.ProductionKeyValue;'],
+    ])('%s (%s)', (_label, filename, line) => {
+      const { status, out } = scan(`${line}\n`, filename);
+      expect(status).toBe(1);
+      expect(out).toMatch(/hardcoded secret literal/);
+    });
   });
 
   describe('DOES flag real secrets', () => {
@@ -90,6 +152,32 @@ describe('leak-scan', () => {
       ['a suffixed env-var name', 'DJANGO_SECRET_KEY=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['another suffixed shape', 'MY_API_TOKEN_VALUE=aB3xY9zQ1mN7pL2kR5tV8w'],
       ['a passphrase', 'passphrase:"correct-horse-battery-staple-99"'],
+      // The boundary of defect 3's fix, from both sides. Narrowing a secret rule is the direction that
+      // blinds a scanner, so every shape the new lookahead could have swallowed is pinned here.
+      // A DOT is required, so a bare word is still a secret even though it is identifier-shaped:
+      ['a bare word ending a line', 'API_KEY=aB3xY9zQ1mN7pL2k'],
+      ['a bare word before a closing brace', '{api_key: aB3xY9zQ1mN7pL2k}'],
+      // A CLOSING TOKEN must follow, so a dotted value that merely ends the line is still a secret —
+      // an unquoted JWT in a .env is three identifier-shaped segments and must not be excused:
+      [
+        'an unquoted JWT at end of line',
+        'TOKEN=eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4',
+      ],
+      // Letter-leading second segment on purpose: with a digit there the identifier shape fails and the
+      // line would flag for a reason other than the missing closing token, isolating nothing.
+      ['a dotted value ending a line', 'secret=aB3xY9zQ1mN.bL2kR5tV8w'],
+      // Quoted always wins: a literal with dots is a literal, wherever it sits.
+      [
+        'a quoted dotted literal in an object',
+        'const o = { token: "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ" };',
+      ],
+      // The exemption must not reach INSIDE a string. With the quote optional it did: the lookahead ran from
+      // the first character of the literal, so a closing token WITHIN the quotes excused the whole value.
+      ['a quoted literal containing a closing token', 'const token = "aaaaaaaa.bbbbbbbb};";'],
+      [
+        'a quoted JWT ending in a paren',
+        'const token = "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ)";',
+      ],
     ])('%s', (_label, line) => {
       const { status, out } = scan(`${line}\n`);
       expect(status).toBe(1);
@@ -97,7 +185,7 @@ describe('leak-scan', () => {
     });
 
     it.each([
-      ['a GitHub token', 'const t = "ghp_16C7e42F292c6912E7710c838347Ae178B4a";'],
+      ['a GitHub token', 'const token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a";'],
       ['a private key block', '-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n'],
       ['credentials in a URL', 'const dsn = "postgres://user:hunter2@db.internal:5432/x";'],
       ['an absolute local path', '// see /Users/somebody/projects/thing/file.ts'],
