@@ -214,12 +214,22 @@ npm i @aws-sdk/client-s3       # only if you use the S3 tier
 ```
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
-> unaffected, and so is bundling — the package bundles to CommonJS output fine if that is what you emit.
+> unaffected, and so is bundling — verified with esbuild, webpack, rollup and Vite, emitting CommonJS as well
+> as ESM.
 >
 > A CommonJS codebase can load it too: `require('@cloudbitmaps/roaring')` works through Node's `require(esm)`,
-> which is exactly why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). **If you are on
-> TypeScript**, a `.ts` file in a CommonJS package needs `"module": "nodenext"` — `node16` does not know about
-> `require(esm)` and will report `TS1479` on the import. `nodenext` is the right setting for Node 22 anyway.
+> which is why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you will also
+> see an `ExperimentalWarning` about loading ES modules from `require()`; it is gone by Node 24.
+>
+> Two things to know before you upgrade:
+>
+> - **A runner with its own CommonJS loader does not get `require(esm)`.** In practice this means **Jest**:
+>   with its default configuration, `require('@cloudbitmaps/roaring')` in a test fails with
+>   `Must use import to load ES Module`. Use Jest's ESM support (`--experimental-vm-modules`), or `import`
+>   the package instead of requiring it.
+> - **On TypeScript**, a `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`.
+>   `node16` and `node18` do not know about `require(esm)` and report `TS1479` on the import. A project on
+>   `moduleResolution: bundler` is unaffected.
 
 **You install one package.** `@cloudbitmaps/roaring` is the *flavor* — the roaring codec + the `CloudRoaring`
 facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds every storage driver.

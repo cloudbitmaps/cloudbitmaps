@@ -34,10 +34,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   — and `import` is unaffected, as is bundling: esbuild bundles the package to **both** ESM and CommonJS
   output, so a bundler targeting CJS consumes it fine.
 
-  **What breaks at runtime:** a CommonJS consumer on Node 22.0–22.11, where `require()` of an ES module
-  throws `ERR_REQUIRE_ESM`. That is the whole of the *runtime* blast radius, and it is why the floor gained a
-  minor rather than staying `>=22`: measured, 22.11.0 throws, 22.12.0 loads, and AWS Lambda's `nodejs22.x`
-  runs 22.23 — well clear, and the release is proved against that image on every CI run.
+  **What breaks at runtime**, in two groups:
+
+  1. **A CommonJS consumer using Node's own `require`, on Node 22.0–22.11** — `require()` of an ES module
+     throws `ERR_REQUIRE_ESM` there. This is why the floor gained a minor rather than staying `>=22`:
+     measured, 22.11.0 throws, 22.12.0 loads, and AWS Lambda's `nodejs22.x` runs 22.23 — well clear, and the
+     release is proved against that image on every CI run. On 22.12 exactly, `require()` also prints an
+     `ExperimentalWarning` about loading ES modules; it is gone by Node 24.
+  2. **Any host that implements its own CommonJS loader, on any Node version.** Node's `require(esm)` does
+     not reach those. The one that will actually bite people is **Jest** with its default configuration:
+     `jest-runtime` has its own loader, so a test that `require()`s this package now fails with
+     `Must use import to load ES Module`. Measured on Jest 30 — it passed against the previous dual build
+     and fails against this one, same project, same Node. The remedy is Jest's ESM support
+     (`--experimental-vm-modules`) or importing rather than requiring. Legacy `main`-field-only bundlers are
+     the same class.
 
   **One type-level caveat, which this release does not introduce and does not fix:** a *TypeScript* CommonJS
   consumer on `module: node16` gets `TS1479` on a static import and needs `nodenext` (which understands
@@ -46,12 +56,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   What changes is the remedy rather than the symptom: it used to be a packaging gap that a `.d.cts` tree
   would have closed, and it is now simply correct, because there is no CommonJS entry left to describe.
 
-  Two things get *better* rather than merely simpler. The self-contained CJS bundle was the only reason
-  `instanceof` failed across a driver subpath — the ESM subpaths share a chunk with the main entry, so within
-  one installed copy the error classes are now the same objects. (The `Symbol.for` predicates are still the
-  right thing to catch with: they also hold when two copies of the package are in play, which `instanceof`
-  never will.) And the SDK-free gate got stronger: it used to lean on the CJS bundle inlining lazily-imported
-  modules, and now walks the main entry's transitive closure directly, through `import()` as well as `from`.
+  One thing gets *better* rather than merely simpler, for CommonJS consumers specifically. The
+  self-contained CJS bundle was the only reason `instanceof` failed across a driver subpath, so a CJS
+  consumer who caught a driver-thrown error with `instanceof` was silently missing it; that is fixed. ESM
+  consumers already had it working — the ESM output of this build is byte-identical to the previous one, so
+  nothing changed for them. (The `Symbol.for` predicates remain the right thing to catch with either way:
+  they also hold when two copies of the package are in play, which `instanceof` never will.)
+
+  The SDK-free gate was rewritten but **not** widened: it used to read the CJS bundle, which with no code
+  splitting inlined the entry's whole transitive closure, and it now walks that closure directly. Measured by
+  sourcemap, both cover the same 48 source modules. The gain is that the check no longer depends on a second
+  bundle format existing.
 
   The floor is now **exercised**, not just declared: a CI job pins `node-version: 22.12` and runs the smoke
   test, which `require()`s every entry through the published exports map. Every other job says `22`, which

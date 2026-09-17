@@ -113,8 +113,8 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
  * The eslint rule that enforces "the main entry stays SDK-free" reads STATIC imports. It cannot see
  * `await import('@cloudbitmaps/core/s3')` (proven: eslint exits 0 on exactly that), and nothing else in the
  * gate reads `dist/` at all. That gap is not hypothetical: a `connect(url)` feature that resolved a driver
- * from a runtime string put `require("@aws-sdk/client-s3")` into `dist/index.cjs` — the entry every consumer
- * loads — and shipped ~88 KB of driver code to people who never touch S3, while three documents went on
+ * from a runtime string put `require("@aws-sdk/client-s3")` into what was then the CJS entry every consumer
+ * loaded — and shipped ~88 KB of driver code to people who never touch S3, while three documents went on
  * saying the entry was SDK-free. A full green local gate and 13 CI jobs passed over it. Measured against
  * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
  * never called the feature: a bundler resolves specifiers before it tree-shakes.
@@ -170,10 +170,15 @@ function assertEntrySdkFree(pkgDir) {
   // static `from`.
   //
   // This used to read `index.cjs` plus the chunks `index.js` imported statically — one level, static only —
-  // and the CJS bundle was what covered the rest, because it had no code splitting and therefore inlined a
-  // lazily-imported module instead of emitting a chunk for it. Dropping the CJS bundle removed that
-  // incidental cover, so the walk has to earn it directly. The closure is strictly stronger than what CJS
-  // gave: it reaches a lazy chunk, a chunk imported only by another chunk, and any nesting of the two.
+  // and the CJS bundle covered everything past that level, because with no code splitting it inlined the
+  // entry's whole transitive closure into one file. Dropping it removed that cover, so the walk has to
+  // reproduce the set directly.
+  //
+  // It reproduces it and does not exceed it: comparing the modules named in the sourcemaps, the old pair
+  // covered 48 source modules and this walk covers the same set. The point is not more coverage — it is the
+  // same coverage that no longer depends on a second bundle format existing, and that keeps holding if a
+  // lazy `import()` or a chunk-imported-by-chunk ever appears. Neither does today: there is not one dynamic
+  // import in either package's source, which is why both entries report 2 reachable modules.
   //
   // It also stays correctly SCOPED. A driver-only chunk is not reachable from `index.js` — verified: each
   // package emits one chunk shared by the three driver subpaths and never imported by the main entry — so

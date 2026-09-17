@@ -123,8 +123,10 @@ export {
   TimeoutError,
   KeyUnavailableError,
   BudgetExceededError,
-  // Bundle-safe predicates — prefer these over `instanceof` when catching errors that cross the core↔driver
-  // (`./s3` / `./gcs` / `./azure`) boundary, where a per-bundle class copy makes `instanceof` unreliable in CJS.
+  // Copy-safe predicates — prefer these over `instanceof` when catching errors that cross the core↔driver
+  // (`./s3` / `./gcs` / `./azure`) boundary. One installed copy shares the class object, but a second copy
+  // (version skew, or a bundler duplicating the shared chunk) gives each its own, and `instanceof` then
+  // silently stops matching.
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,

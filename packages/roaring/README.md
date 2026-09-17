@@ -1,5 +1,12 @@
 # @cloudbitmaps/roaring
 
+> **ESM-only, Node ≥ 22.12.** This package ships as ES modules; there is no CommonJS bundle.
+> `require()` works on Node 22.12+ through `require(esm)`, but a runner with its own CommonJS loader
+> (notably Jest in its default configuration) does not get that and needs `import` instead. On TypeScript,
+> a CommonJS project needs `"module": "nodenext"` or `"node20"`. See the
+> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
+
+
 **Distributed, cloud-native Roaring Bitmaps.** Query and intersect billion-scale integer sets straight out of
 object storage — a bounded RAM cache over immutable `.crbm` objects in your own bucket — at a fraction of an
 always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`, `andNot`.

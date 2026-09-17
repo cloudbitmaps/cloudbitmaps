@@ -5,12 +5,17 @@
  */
 
 /**
- * Registry-symbol brands. The package ships as multiple bundles — the core entry and the `./s3` / `./gcs` / `./azure`
- * subpaths — and the builder inlines `core/errors` into each. A driver in a subpath bundle therefore throws a
- * *different* class object than the one the core engine/retry code would `instanceof`-check, so `instanceof`
- * silently returns false across that boundary in the published CJS package (defeating transient retry and the
- * publish path's conflict handling). These `Symbol.for` brands are identity-stable across bundles/realms; classify
- * errors with the exported predicates below (never `instanceof`) anywhere an error may cross the boundary.
+ * Registry-symbol brands, so an error stays classifiable when the class object is not shared.
+ *
+ * Within one installed copy it IS shared: the `./s3` / `./gcs` / `./azure` subpaths import these classes from
+ * the same emitted chunk as the main entry, so `instanceof` holds. What breaks it is a *second copy* of the
+ * package — a version skew an installer could not dedupe, or a bundler emitting the shared chunk twice —
+ * after which a driver throws a different class object than the engine/retry code would check, and
+ * `instanceof` silently returns false. Silently is the problem: a `catch` that stops matching just falls
+ * through, defeating transient retry and the publish path's conflict handling with no error of its own.
+ *
+ * `Symbol.for` is identity-stable across copies, bundles and realms, so classify errors with the exported
+ * predicates below (never `instanceof`) anywhere an error may cross that boundary.
  */
 const ERROR_BRAND: unique symbol = Symbol.for('cloud-roaring.error');
 const TRANSIENT_BRAND: unique symbol = Symbol.for('cloud-roaring.error.transient');
