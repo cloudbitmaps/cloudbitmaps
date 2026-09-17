@@ -52,6 +52,15 @@ jobs:
       - run: pnpm build
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
+      # Both secret scanners, HERE and not only in the release workflow.
+      #
+      # Until now `release.yml` was their only caller, and the cost of that was exact: a false positive in the
+      # tarball scan made `main` unreleasable while every check on this page stayed green, and nobody found out
+      # until release day. Running them on each PR turns that into a red check next to the commit that caused
+      # it. Together they take about a second, and `pnpm build` has already run, so the tarball scan is nearly
+      # free — the tracked-tree scan alone would not have caught it, because the finding was in built output.
+      - run: node scripts/leak-scan.cjs
+      - run: node scripts/leak-scan-tarballs.cjs
 
   dependency-audit:
     name: dependency audit (prod, high)

@@ -171,9 +171,23 @@ const HARD = [
   //      Scoping it to JS/TS costs nothing, because there an unquoted `ident.ident` value cannot be a secret
   //      at all: it is either a reference or a syntax error. Everywhere else the rule stays exactly as it
   //      was. One `,` is not worth a class of missed credentials.
+  //
+  //      The exemption also applies ONLY TO AN UNQUOTED VALUE, which is why the JS/TS pattern spells the
+  //      quoted and unquoted cases out separately instead of sharing a `['"]?`. With the quote optional, the
+  //      lookahead was evaluated from the first character INSIDE the string, so a quoted literal whose
+  //      closing token happened to sit inside the quotes — `const t = "aaaaaaaa.bbbbbbbb};"` — was excused,
+  //      and backtracking could not rescue it. A quoted value is a literal by definition; only an unquoted
+  //      one can be a reference. (An unquoted secret in a COMMENT, `// API_KEY=<16 bare chars>`, is a real
+  //      leak shape and stays caught — which is also why requiring a quote outright would be wrong.)
+  //
+  //      Known and deliberately NOT exempted, because over-exempting is the direction that loses
+  //      credentials: a property read followed by something other than `) , ; } ]` — `?? fallback`, `as
+  //      string`, a TS `!`, a trailing operator, or a multi-line object member with no comma — is still
+  //      reported. That is a false positive, so the cost is a blocked release rather than a missed secret,
+  //      and it is the right way round. No shipped line hits one today.
   {
     name: 'hardcoded secret literal',
-    re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*['"]?(?![A-Za-z_$][\w$.]*\s*\()(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}/i,
+    re: /(?:api[_-]?key|secret|password|passwd|passphrase|token|credential)s?[A-Za-z0-9_]*\s*[=:]\s*(?:['"](?![A-Za-z_$][\w$.]*\s*\()(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,}|(?![A-Za-z_$][\w$.]*\s*\()(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])(?!\d+\b)(?!.*(?:process\.env|\$\{|<|xxx|placeholder|your[_-]|example|redacted|changeme|\.\.\.))[A-Za-z0-9/+_=.-]{16,})/i,
     only: JS_LIKE,
   },
   {

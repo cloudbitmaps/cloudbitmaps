@@ -163,11 +163,20 @@ describe('leak-scan', () => {
         'an unquoted JWT at end of line',
         'TOKEN=eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4',
       ],
-      ['a dotted value ending a line', 'secret=aB3xY9zQ1mN.7pL2kR5tV8w'],
+      // Letter-leading second segment on purpose: with a digit there the identifier shape fails and the
+      // line would flag for a reason other than the missing closing token, isolating nothing.
+      ['a dotted value ending a line', 'secret=aB3xY9zQ1mN.bL2kR5tV8w'],
       // Quoted always wins: a literal with dots is a literal, wherever it sits.
       [
         'a quoted dotted literal in an object',
         'const o = { token: "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ" };',
+      ],
+      // The exemption must not reach INSIDE a string. With the quote optional it did: the lookahead ran from
+      // the first character of the literal, so a closing token WITHIN the quotes excused the whole value.
+      ['a quoted literal containing a closing token', 'const token = "aaaaaaaa.bbbbbbbb};";'],
+      [
+        'a quoted JWT ending in a paren',
+        'const token = "eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJ)";',
       ],
     ])('%s', (_label, line) => {
       const { status, out } = scan(`${line}\n`);
@@ -176,7 +185,7 @@ describe('leak-scan', () => {
     });
 
     it.each([
-      ['a GitHub token', 'const t = "ghp_16C7e42F292c6912E7710c838347Ae178B4a";'],
+      ['a GitHub token', 'const token = "ghp_16C7e42F292c6912E7710c838347Ae178B4a";'],
       ['a private key block', '-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n'],
       ['credentials in a URL', 'const dsn = "postgres://user:hunter2@db.internal:5432/x";'],
       ['an absolute local path', '// see /Users/somebody/projects/thing/file.ts'],
