@@ -15,6 +15,72 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the packages are ESM-only, and `engines` now requires Node >=22.12.** The CJS bundle is gone;
+  `dist/` ships one ES module per entry and the exports map offers a single `default` condition.
+
+  It was never honest packaging. The map declared one `"types"` for both conditions while the package is
+  `"type": "module"`, so a CommonJS consumer was handed an *ESM* declaration file to describe a CJS runtime —
+  `attw` calls it "masquerading as ESM", `publint` warns that "the types only work when dynamically importing
+  the package, even though the package exports CJS". The two honest options were to build a real `.d.cts`
+  tree or to stop shipping CJS. Shipping CJS bought little: Node has loaded ESM from `require()` since 22.12,
+  so a CommonJS codebase keeps working —
+
+  ```js
+  const { CloudRoaring } = require('@cloudbitmaps/roaring'); // still works, via require(esm)
+  ```
+
+  — and `import` is unaffected, as is bundling: esbuild bundles the package to **both** ESM and CommonJS
+  output, so a bundler targeting CJS consumes it fine.
+
+  **What breaks at runtime**, in two groups:
+
+  1. **A CommonJS consumer using Node's own `require`, on Node 22.0–22.11** — `require()` of an ES module
+     throws `ERR_REQUIRE_ESM` there. This is why the floor gained a minor rather than staying `>=22`:
+     measured, 22.11.0 throws, 22.12.0 loads, and AWS Lambda's `nodejs22.x` runs 22.23 — well clear, and the
+     release is proved against that image on every CI run. On 22.12 exactly, `require()` also prints an
+     `ExperimentalWarning` about loading ES modules; it is gone by Node 24.
+  2. **Any host that implements its own CommonJS loader, on any Node version.** Node's `require(esm)` does
+     not reach those. Two are worth naming because people will actually meet them, and both were measured
+     A/B — passing against the previous dual build, failing against this one, same project, same Node:
+     - **Jest** in its default configuration: `jest-runtime` has its own loader, so a test that `require()`s
+       this package fails with `Must use import to load ES Module`. Remedy: Jest's ESM support
+       (`--experimental-vm-modules`), or importing rather than requiring.
+     - **Yarn PnP** (`nodeLinker: pnp`): its runtime installs its own `require` and throws
+       `ERR_REQUIRE_ESM` — and unlike the Node-version case, this one does not go away on Node 24. Remedy:
+       `import`, or `nodeLinker: node-modules`.
+
+     Legacy `main`-field-only bundlers are the same class. Everything with a real ESM path is fine: esbuild,
+     webpack, rollup, Vite, ts-node, tsx, Bun and Deno were all verified, emitting CommonJS as well as ESM.
+
+  **One type-level caveat, which this release does not introduce and does not fix:** a *TypeScript* CommonJS
+  consumer on `module: node16` gets `TS1479` on a static import and needs `nodenext` (which understands
+  `require(esm)`) or a dynamic `import()`. That error fired identically before this change — verified against
+  a build that still had the CJS bundle — because the exports map has always offered a single ESM `"types"`.
+  What changes is the remedy rather than the symptom: it used to be a packaging gap that a `.d.cts` tree
+  would have closed, and it is now simply correct, because there is no CommonJS entry left to describe.
+
+  One thing gets *better* rather than merely simpler, for CommonJS consumers specifically. The
+  self-contained CJS bundle was the only reason `instanceof` failed **between the main entry and a driver
+  subpath of the same package**, so a CJS consumer who caught a driver-thrown error that way was silently
+  missing it; that is fixed. ESM consumers already had it working — the ESM output of this build is
+  byte-identical to the previous one, so nothing changed for them. Note this does **not** extend to
+  `@cloudbitmaps/core` vs `@cloudbitmaps/roaring`: the flavor package bundles its own copy of core, so
+  `instanceof` across the two never matches, on any install. That is unchanged, now documented in the API
+  reference, and asserted by the smoke test. (The `Symbol.for` predicates remain the right thing to catch with either way:
+  they also hold when two copies of the package are in play, which `instanceof` never will.)
+
+  The SDK-free gate was rewritten but **not** widened: it used to read the CJS bundle, which with no code
+  splitting inlined the entry's whole transitive closure, and it now walks that closure directly. Measured by
+  sourcemap, both cover the same 48 source modules. The gain is that the check no longer depends on a second
+  bundle format existing.
+
+  The floor is now **exercised**, not just declared: a CI job pins `node-version: 22.12` and runs the smoke
+  test, which `require()`s every entry through the published exports map. Every other job says `22`, which
+  resolves to the latest 22.x — eleven minors above the floor — so until now nothing had ever run the version
+  `engines` promises.
+
 ### Fixed
 
 - **Published types now resolve under `node16`/`nodenext`.** The emitted `.d.ts` files named their relative

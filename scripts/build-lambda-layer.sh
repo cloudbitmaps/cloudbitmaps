@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a ready-to-attach AWS Lambda **layer** for CloudRoaring (Phase 8 — the "prebuilt Lambda layer" ceiling
-# item). The layer bundles the library + its runtime deps with the native `roaring` addon **compiled for the
+# Build a ready-to-attach AWS Lambda **layer** for CloudRoaring. The layer bundles the library + its runtime deps with the native `roaring` addon **compiled for the
 # Amazon Linux 2023 Lambda runtime**, so a function can `import '@cloudbitmaps/roaring'` with zero build step at deploy.
 #
 # A Node Lambda layer is a zip whose contents live under `nodejs/node_modules/…` (that path is prepended to

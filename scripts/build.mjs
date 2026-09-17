@@ -3,14 +3,18 @@
  * emits declarations with tsc, and rewrites the `@/…` self-alias in the emitted .d.ts to relative paths.
  *
  * This replaced tsup. What it reproduces, on purpose:
- *   - one ESM (`.js`, code-split into shared chunks) + one CJS (`.cjs`, self-contained) bundle per entry —
- *     the main entry and each cloud subpath barrel — with sourcemaps, node platform, ES2022;
+ *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — the main entry and each cloud subpath
+ *     barrel — with sourcemaps, node platform, ES2022. ESM ONLY: the package is `"type": "module"` and the
+ *     exports map offers a single `default` condition, so `require()` resolves to the same file and Node's
+ *     `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a second self-contained CJS
+ *     bundle bought nothing: it duplicated every module, which is why `instanceof` used to fail across a
+ *     driver subpath, and it forced the types to describe an ESM file while the runtime served CJS;
  *   - every bare import left EXTERNAL (`packages: 'external'`): dependencies, optional peers and node builtins
  *     resolve at runtime from the consumer's node_modules, so the main entry never pulls a cloud SDK in;
  *   - one `.d.ts` tree under dist/ mirroring src/ (the exports map already points at `dist/<entry>/index.d.ts`);
  *   - the ESM-only `export-segments` bin with its `#!` line preserved (esbuild keeps an entry's hashbang);
  *   - the fuzz-only bundles into the git-ignored repo-root `fuzz/build/`, never into dist/.
- * `node scripts/smoke.cjs` (ESM + CJS import of every entry, the bin, cross-bundle error identity) is the
+ * `node scripts/smoke.cjs` (ESM import + `require()` of every entry, the bin, cross-bundle error identity) is the
  * check that the output still behaves.
  */
 import { build } from 'esbuild';
@@ -54,14 +58,6 @@ await build({
   splitting: true,
   chunkNames: 'chunk-[hash]',
 });
-await build({
-  ...common,
-  entryPoints: entries,
-  format: 'cjs',
-  outdir: dist,
-  outExtension: { '.js': '.cjs' },
-});
-
 if (existsSync(path.join(pkgDir, 'src', 'bin', 'export-segments.ts'))) {
   await build({
     ...common,
@@ -159,5 +155,5 @@ if (fuzzEntry && existsSync(path.join(pkgDir, fuzzEntry))) {
 }
 
 console.log(
-  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm+cjs), declarations emitted (${rewritten} alias specifiers rewritten, ${extended} extensions added)`,
+  `build ${pkg.name}: ${Object.keys(entries).length} entries (esm), declarations emitted (${rewritten} alias specifiers rewritten, ${extended} extensions added)`,
 );

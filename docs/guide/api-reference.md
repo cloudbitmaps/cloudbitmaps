@@ -460,9 +460,20 @@ Two things worth knowing:
 
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
 `isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
-errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`): those subpaths are
-separate bundles, so a driver-thrown error is not `instanceof` the class object from the core entry in CJS. The
-predicates match a `Symbol.for` brand + the runtime `name`, so they hold across bundles.
+errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`).
+
+Inside one package `instanceof` holds: `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure` subpaths share
+a chunk, so the error classes there are the same objects.
+
+**Across the two packages it does not, on an ordinary install.** `@cloudbitmaps/roaring` is built with its own
+copy of `@cloudbitmaps/core` bundled in, so `core.ValidationError` and `roaring.ValidationError` are different
+class objects even when your lockfile has exactly one version of each. Catch an error thrown by a roaring
+driver with `instanceof core.ValidationError` and it will not match — no skew, no duplicate install, nothing
+you can fix by deduping. The same applies if a version skew or a bundler really does give you two copies.
+
+The failure is silent, which is what makes it worth a rule: a `catch` that stops matching just falls through.
+The predicates match a `Symbol.for` brand plus the runtime `name`, so they hold in every one of these cases —
+verified on each build by the smoke test.
 
 ---
 

@@ -26,7 +26,7 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   of bug the source-graph tests structurally cannot see.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
-**no manual setup** (Node ≥22, which the manifests enforce — `.nvmrc` pins 22 — and pnpm 9; Docker only for
+**no manual setup** (Node ≥22.12, which the manifests enforce — `.nvmrc` pins the major, 22 — and pnpm 9; Docker only for
 `test:integration`).
 Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover both packages.
 

@@ -1,5 +1,12 @@
 # @cloudbitmaps/core
 
+> **ESM-only, Node ≥ 22.12.** This package ships as ES modules; there is no CommonJS bundle.
+> `require()` works on Node 22.12+ through `require(esm)`, but a runner with its own CommonJS loader
+> (notably Jest in its default configuration) does not get that and needs `import` instead. On TypeScript,
+> a CommonJS project needs `"module": "nodenext"` or `"node20"`. See the
+> [repository README](https://github.com/cloudbitmaps/cloudbitmaps#install--entry-points) for the details.
+
+
 The **codec-agnostic cloud engine** behind the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family:
 a bounded RAM cache over immutable `.crbm` objects in STORAGE, serverless chunk-skipping intersection, the segment
 registry, the write-once load-and-publish write path, generation GC, encryption-at-rest + crypto-shred, subject

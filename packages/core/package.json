@@ -37,32 +37,27 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "sideEffects": false,
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
+  "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "default": "./dist/index.js"
     },
     "./s3": {
       "types": "./dist/s3/index.d.ts",
-      "import": "./dist/s3/index.js",
-      "require": "./dist/s3/index.cjs"
+      "default": "./dist/s3/index.js"
     },
     "./gcs": {
       "types": "./dist/gcs/index.d.ts",
-      "import": "./dist/gcs/index.js",
-      "require": "./dist/gcs/index.cjs"
+      "default": "./dist/gcs/index.js"
     },
     "./azure": {
       "types": "./dist/azure/index.d.ts",
-      "import": "./dist/azure/index.js",
-      "require": "./dist/azure/index.cjs"
+      "default": "./dist/azure/index.js"
     }
   },
   "files": [

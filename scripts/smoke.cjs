@@ -19,6 +19,7 @@ const { pathToFileURL } = require('node:url');
 // users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
+const CORE = '@cloudbitmaps/core';
 const SUBPATHS = ['', '/s3', '/gcs', '/azure'];
 
 // The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
@@ -55,20 +56,32 @@ async function exerciseCore(label, m) {
 }
 
 /*
- * Cross-bundle error identity. A driver subpath (`/s3`, `/gcs`, `/azure`) is a SEPARATE bundle with
- * its OWN copy of the core error classes, so `instanceof` against the core entry's class fails in CJS — which
- * silently defeated transient-retry and publish-race handling. The brand-based predicates must still
- * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
- * where the whole test suite — one source graph — could not see it). Trigger: the S3 registry driver
- * validates its `prefix` synchronously in the constructor and throws a ValidationError from its own bundle.
+ * Cross-COPY error and backend identity — the reason the brands are registered `Symbol.for`s.
  *
- * **Only the CJS leg can actually fail.** esbuild's ESM output code-splits, so `dist/index.js` and
- * `dist/s3/index.js` import ONE shared copy of `core/errors` and `instanceof` works there by construction —
- * the ESM call is a cheap consistency check, not the guard. CJS is where each bundle gets its own copy of the
- * class and where the bug lived. Both are run so that a future build change which stops sharing the ESM chunk
- * is covered without anyone having to remember to add it.
+ * When two copies of the error classes are in play, a driver throws a *different* class object than the code
+ * catching it would `instanceof`-check, and the check silently stops matching — defeating transient-retry
+ * and publish-race handling with no error of its own. The brand-based predicates must classify the error
+ * anyway. This asserts that against the BUILT packages, where the whole test suite — one source graph —
+ * cannot see it. Trigger: the S3 registry driver validates its `prefix` synchronously in the constructor and
+ * throws a ValidationError from its own copy.
+ *
+ * WHICH BOUNDARY IS LOAD-BEARING changed when the packages went ESM-only, and the previous answer here is
+ * why this comment is worth reading. It used to say the CJS leg was the only one that could fail, because
+ * each CJS bundle carried its own class copy while the ESM subpaths shared a chunk. There is no CJS bundle
+ * now: `require()` resolves to the same ESM files through `require(esm)`, so BOTH legs load one shared chunk
+ * and neither can observe a mismatch. Run as-was, this check had become vacuous — replacing every
+ * `Symbol.for(…)` with `Symbol(…)` in the built chunk left it green.
+ *
+ * The boundary that still exists is between the two PACKAGES. `@cloudbitmaps/roaring` and
+ * `@cloudbitmaps/core` are bundled separately and each carries its own copy of the error classes, so
+ * `instanceof` across them is genuinely false (asserted below, so this rationale cannot quietly rot) while
+ * the predicates hold. That is also a real user path: the docs say importing `@cloudbitmaps/core/s3` is
+ * equivalent to the roaring subpath, and a consumer who mixes the two gets exactly this.
+ *
+ * The same-package legs are kept as cheap consistency checks, so a future build change that stops sharing
+ * the ESM chunk is covered without anyone remembering to add it.
  */
-function exerciseCrossBundleErrors(label, coreMod, driverMod) {
+function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;
   try {
     new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
@@ -84,21 +97,19 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
   }
   console.log(`  cross-bundle error predicates OK: ${label}`);
 
-  // Same boundary, second brand. A backend built in the /s3 bundle must be recognised by the store in the
-  // MAIN bundle — that is the whole reason the brand is a registered `Symbol.for` and not a class check or a
-  // module-local symbol. Nothing else pins it: switching it to plain `Symbol()` leaves lint, typecheck, the
-  // full 2200-test suite and this script's other checks green, while every CJS user of a driver subpath gets
-  // `storage must be a backend` for a backend they just constructed. ESM cannot see it — esbuild shares one
-  // chunk across ESM subpaths — so the CJS half of this check is the load-bearing one.
+  // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
+  // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
+  // Nothing else pins it: switching it to a plain `Symbol()` leaves lint, typecheck and the full suite green
+  // while every user of a driver subpath gets `storage must be a backend` for a backend they just built.
   const s3Backend = new driverMod.S3Storage({ bucket: 'smoke', region: 'us-east-1' });
   if (!coreMod.isStorageBackend(s3Backend)) {
     throw new Error(
-      `${label}: a backend from the /s3 bundle is not recognised by core — cross-bundle brand broken`,
+      `${label}: a backend from the /s3 bundle is not recognised — cross-copy brand broken`,
     );
   }
   let backendErr;
   try {
-    new coreMod.CloudRoaring({ storage: s3Backend });
+    new storeMod.CloudRoaring({ storage: s3Backend });
   } catch (e) {
     backendErr = e;
   }
@@ -107,27 +118,49 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
   console.log(`  cross-bundle backend brand OK: ${label}`);
 }
 
+/**
+ * Prove the two packages really are separate copies, so the cross-package leg above is not quietly testing
+ * one bundle against itself. If a future build ever merges them, `instanceof` starts succeeding here and
+ * this fails loudly rather than leaving the brand check to pass for the wrong reason.
+ */
+function assertPackagesAreSeparateCopies(coreMod, driverMod) {
+  let caught;
+  try {
+    new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
+  } catch (e) {
+    caught = e;
+  }
+  if (caught instanceof coreMod.ValidationError) {
+    throw new Error(
+      'the core and roaring packages now share one copy of the error classes, so the cross-package brand ' +
+        'check no longer crosses anything — point it at a boundary that still exists, or drop it.',
+    );
+  }
+  console.log(
+    '  core and roaring are separate copies (instanceof across them is false, as designed)',
+  );
+}
+
 /*
  * Hard invariant 7, checked against the BUILT files — because that is the only place it is true or false.
  *
  * The eslint rule that enforces "the main entry stays SDK-free" reads STATIC imports. It cannot see
  * `await import('@cloudbitmaps/core/s3')` (proven: eslint exits 0 on exactly that), and nothing else in the
  * gate reads `dist/` at all. That gap is not hypothetical: a `connect(url)` feature that resolved a driver
- * from a runtime string put `require("@aws-sdk/client-s3")` into `dist/index.cjs` — the entry every consumer
- * loads — and shipped ~88 KB of driver code to people who never touch S3, while three documents went on
+ * from a runtime string put `require("@aws-sdk/client-s3")` into what was then the CJS entry every consumer
+ * loaded — and shipped ~88 KB of driver code to people who never touch S3, while three documents went on
  * saying the entry was SDK-free. A full green local gate and 13 CI jobs passed over it. Measured against
  * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
  * never called the feature: a bundler resolves specifiers before it tree-shakes.
  *
- * WHAT IS CHECKED. The CJS entry, the ESM entry, the chunks the ESM entry imports statically, and the
- * published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
+ * WHAT IS CHECKED. The ESM entry, every module reachable from it (transitively, lazy `import()` included),
+ * and the published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
  * `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a hard `Cannot find module` for any
  * consumer building with `skipLibCheck: false` who did not install the optional peer.
  *
- * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read.
- * A lazily-imported chunk is not walked either — though note the CJS bundle has no code splitting, so it
- * inlines a lazy import anyway and catches it there; the ESM walk is insurance for the day CJS goes away,
- * which is why it asserts it actually found chunks rather than silently walking none.
+ * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read, and
+ * neither is the chunk only they share — unreachable from the main entry, which is the whole point.
+ * The walk asserts it actually reached a chunk rather than silently covering none.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
@@ -163,25 +196,60 @@ function declarationFiles(dist, { includeDrivers = false } = {}) {
 }
 
 function assertEntrySdkFree(pkgDir) {
-  const { readFileSync, existsSync } = require('node:fs');
+  const { readFileSync, existsSync, statSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
-  const esm = read('index.js');
-  const staticChunks = [...esm.matchAll(/from\s*["'](\.\/chunk-[^"']+)["']/g)].map((m) =>
-    m[1].replace('./', ''),
-  );
-  // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal above.
-  // Rename it there and this walk would quietly cover nothing, so make that loud instead.
-  if (staticChunks.length === 0) {
+  // Everything the main entry can reach, followed TRANSITIVELY and through lazy `import()` as well as
+  // static `from`.
+  //
+  // This used to read `index.cjs` plus the chunks `index.js` imported statically — one level, static only —
+  // and the CJS bundle covered everything past that level, because with no code splitting it inlined the
+  // entry's whole transitive closure into one file. Dropping it removed that cover, so the walk has to
+  // reproduce the set directly.
+  //
+  // It reproduces it and does not exceed it: comparing the modules named in the sourcemaps, the old pair
+  // covered 48 source modules and this walk covers the same set. The point is not more coverage — it is the
+  // same coverage that no longer depends on a second bundle format existing, and that keeps holding if a
+  // lazy `import()` or a chunk-imported-by-chunk ever appears. Neither does today: there is not one dynamic
+  // import in either package's source, which is why both entries report 2 reachable modules.
+  //
+  // It also stays correctly SCOPED. A driver-only chunk is not reachable from `index.js` — verified: each
+  // package emits one chunk shared by the three driver subpaths and never imported by the main entry — so
+  // it is not walked, which is right, since naming an SDK is exactly what a driver is for.
+  const reachable = (entry) => {
+    const seen = new Set();
+    const queue = [entry];
+    while (queue.length > 0) {
+      const rel = queue.shift();
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      for (const spec of allSpecifiers(read(rel))) {
+        const next = path.normalize(path.join(path.dirname(rel), spec));
+        // Stay inside dist/, and only follow real files. Without the first check a stray `../package.json`
+        // would be read and reported as a leak, naming the SDKs in `peerDependencies` — an accusation about
+        // a file that is not even shipped. Without the second, a directory specifier passes `existsSync`
+        // and then throws EISDIR out of `readFileSync`, which names no gate and no cause.
+        if (next.startsWith('..')) continue;
+        if (!statSync(path.join(dist, next), { throwIfNoEntry: false })?.isFile()) continue;
+        queue.push(next);
+      }
+    }
+    return [...seen];
+  };
+  const entryGraph = reachable('index.js');
+
+  // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
+  // Rename it there and this walk would quietly cover less, so make that loud instead.
+  if (!entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
-      `@cloudbitmaps/${pkgDir}: dist/index.js imports no ./chunk-* file, so the chunk walk covers nothing. ` +
+      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file, so the chunk walk covers nothing. ` +
         `Either the build stopped splitting, or \`chunkNames\` in scripts/build.mjs no longer emits ` +
         `\`chunk-\` — update the pattern here to match.`,
     );
   }
 
-  for (const file of ['index.cjs', 'index.js', ...staticChunks, ...declarationFiles(dist)]) {
+  for (const file of [...entryGraph, ...declarationFiles(dist)]) {
     const hits = findSdkSpecifiers(read(file));
     if (hits.length > 0) {
       throw new Error(
@@ -196,7 +264,7 @@ function assertEntrySdkFree(pkgDir) {
   }
   console.log(
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
-      `(cjs, esm, ${staticChunks.length} static chunk(s), ${declarationFiles(dist).length} .d.ts)`,
+      `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
   );
 
   // Every relative specifier in an emitted .d.ts must carry an explicit extension, and must resolve.
@@ -274,8 +342,18 @@ async function main() {
   await exerciseCore('esm', await import(PKG));
   await exerciseCore('cjs', require(PKG));
 
+  // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
   exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/s3'));
   exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/s3'));
+  // The leg that can actually fail: two separately bundled packages, each with its own class copy.
+  assertPackagesAreSeparateCopies(require(CORE), require(PKG + '/s3'));
+  exerciseCrossBundleErrors('cross-package', require(CORE), require(PKG + '/s3'), require(PKG));
+  exerciseCrossBundleErrors(
+    'cross-package (core driver → roaring store)',
+    require(CORE),
+    require(CORE + '/s3'),
+    require(PKG),
+  );
   for (const pkgDir of require('node:fs')
     .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
     .filter((e) => e.isDirectory())

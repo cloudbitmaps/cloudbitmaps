@@ -213,6 +213,28 @@ npm i @cloudbitmaps/roaring    # the engine + in-memory & local drivers (one thi
 npm i @aws-sdk/client-s3       # only if you use the S3 tier
 ```
 
+> **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
+> unaffected, and so is bundling — verified with esbuild, webpack, rollup and Vite, emitting CommonJS as well
+> as ESM.
+>
+> A CommonJS codebase can load it too: `require('@cloudbitmaps/roaring')` works through Node's `require(esm)`,
+> which is why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you will also
+> see an `ExperimentalWarning` about loading ES modules from `require()`; it is gone by Node 24.
+>
+> Two things to know before you upgrade:
+>
+> - **A loader that is not Node's own does not get `require(esm)`**, on any Node version. Two you are likely
+>   to meet:
+>   - **Jest**, in its default configuration — `require('@cloudbitmaps/roaring')` in a test fails with
+>     `Must use import to load ES Module`. Use Jest's ESM support (`--experimental-vm-modules`), or `import`
+>     the package instead of requiring it.
+>   - **Yarn PnP** (`nodeLinker: pnp`) — its runtime implements `require` itself and throws
+>     `ERR_REQUIRE_ESM`. Unlike the Node-version case this does not go away on Node 24; `import` the package,
+>     or use `nodeLinker: node-modules`.
+> - **On TypeScript**, a `.ts` file in a CommonJS package needs `"module": "nodenext"` or `"node20"`.
+>   `node16` and `node18` do not know about `require(esm)` and report `TS1479` on the import. A project on
+>   `moduleResolution: bundler` is unaffected.
+
 **You install one package.** `@cloudbitmaps/roaring` is the *flavor* — the roaring codec + the `CloudRoaring`
 facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds every storage driver.
 Core arrives **transitively** — you never install it, and the subpaths below re-export its drivers so
@@ -576,8 +598,9 @@ dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring`
 
 ## Building & contributing
 
-A fresh clone passes the full gate with no manual setup. You need **Node ≥ 20** (`.nvmrc` pins 22) and
-**pnpm 9**; Docker is needed only for the integration lane.
+A fresh clone passes the full gate with no manual setup. You need **Node ≥ 22.12** (`.nvmrc` pins the major,
+22, which resolves to a release well past the floor) and **pnpm 9**; Docker is needed only for the integration
+lane.
 
 ```bash
 pnpm install

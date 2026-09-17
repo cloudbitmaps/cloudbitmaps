@@ -1,5 +1,5 @@
 {
-  "//": "@cloudbitmaps/roaring — the roaring codec + CloudRoaring facade. `@cloudbitmaps/core` is a real dependency, so it is resolved (and left EXTERNAL by the bundler) through the workspace symlink in node_modules; the `paths` entries below point at core's source so this package typechecks without needing core built first.",
+  "//": "@cloudbitmaps/roaring — the roaring codec + CloudRoaring facade. `@cloudbitmaps/core` is a real dependency and stays one in the manifest and the emitted .d.ts, but it is NOT external in the JS bundle: the `paths` entries below resolve it to core's source so this package typechecks without core being built first, and esbuild applies `paths` before it decides what to externalise, so core is inlined. That is why an error thrown by a roaring driver is not `instanceof` the class `@cloudbitmaps/core` exports — the two packages carry separate copies — and why the cross-package identity checks use the `Symbol.for` brands instead. `scripts/smoke.cjs` asserts both halves of that.",
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "paths": {

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Hard RSS ceiling gate (Phase 8 — the definitive memory bound the soak's leak-*watch* can't prove;
-# residual #1 / gap #12).
+# Hard RSS ceiling gate — the definitive memory bound the soak's leak-*watch* cannot prove.
 #
 # The soak bench proves *no creep* (post-GC heap stays flat); it does NOT prove a hard *peak-RSS* ceiling —
 # and RSS includes the `roaring` addon's **off-heap native** memory, which a JS heap sample can't see. This
