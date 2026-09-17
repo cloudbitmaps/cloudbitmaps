@@ -78,16 +78,25 @@ describe('leak-scan', () => {
     // reported as a hardcoded secret and failed the RELEASE workflow's tarball scan — a step no other job
     // runs, so `pnpm test` and 14 CI checks were green while releases were blocked. `credentials` is the AWS
     // SDK's own option name, so this collision cannot be renamed away; the rule had to learn the difference.
+    // These four each go from flagged to clean purely because of the property-read lookahead — verified by
+    // removing it and watching them fail. (`config.applicationSecret;` and `fn(opts.apiKeyMaterial, …)` are
+    // NOT in this list: the older call-expression lookahead already excused them, so they would look like
+    // regression tests for this fix while pinning nothing.)
     it.each([
       'const c = { credentials: options.credentials };',
       '...(options.credentials === undefined ? {} : { credentials: options.credentials }),',
-      'const s = config.applicationSecret;',
       'return { token: this.session.accessToken };',
-      'fn(opts.apiKeyMaterial, other);',
       'const p = { password: creds.databasePassword, port: 5432 };',
-    ])('a property read: %s', (line) => {
+    ])('a property read in a .ts file: %s', (line) => {
       expect(scan(`${line}\n`).status).toBe(0);
     });
+
+    it.each(['sample.mts', 'sample.cts', 'sample.js', 'sample.mjs', 'sample.jsx', 'sample.tsx'])(
+      'the same exemption applies in %s',
+      (filename) => {
+        expect(scan('const c = { credentials: options.credentials };\n', filename).status).toBe(0);
+      },
+    );
 
     // Guards the widening that fixed defect 2 — it must not newly trip on long numbers.
     it.each(['tokenExpiryNanos = 1730000000000000000', 'const tokenCount = 1234567890123456789;'])(
@@ -96,6 +105,43 @@ describe('leak-scan', () => {
         expect(scan(`${line}\n`).status).toBe(0);
       },
     );
+  });
+
+  // THE EXEMPTION IS SCOPED TO JS/TS, and this block is why. The first version of the property-read fix
+  // applied everywhere, and an adversarial review found 24 real secret shapes it stopped catching: outside a
+  // JS-like language the closer set `[),;}\]]` is wrong, because `,` and `;` SEPARATE VALUES in shell,
+  // Makefiles, Dockerfiles, .env, .ini, .toml, SQL, CSV and connection strings, while `)` and `}` turn up in
+  // ordinary prose. Each line below was caught before that fix, missed after it, and is caught again now.
+  describe('still flags an unquoted dotted secret outside JS/TS (the scoping of the exemption)', () => {
+    it.each([
+      // `Password=…;` is the canonical spelling of an ADO.NET connection-string secret; `;` is mandatory.
+      [
+        'an ADO.NET connection string',
+        'appsettings.json',
+        'Server=db;Password=Hunter2.Winter.Season2024;',
+      ],
+      ['a shell export', 'deploy.sh', 'export DB_PASSWORD=_secret_part.another_part.third_part9;'],
+      [
+        'a Dockerfile RUN',
+        'Dockerfile',
+        'RUN export DB_PASSWORD=Hunter2.Winter.SeasonTwentyFour; ./go.sh',
+      ],
+      ['a .env with a trailing comma', 'vars.env', 'API_TOKEN=Hunter2.Winter.SeasonTwentyFour,'],
+      ['an ini file', 'config.ini', 'password=Str0ng.Passw0rd.Value99;'],
+      ['a toml inline table', 'config.toml', 'creds = { password = Str0ng.Passw0rd.Value99 }'],
+      ['a SQL seed', 'seed.sql', 'INSERT INTO cfg VALUES (password=Hunter2.WinterSeasonFour);'],
+      // The most likely route by which a real credential reaches a public README.
+      [
+        'a token pasted in a markdown link',
+        'RUNBOOK.md',
+        'See [board](https://g.internal/d?api_key=eyJhbGciOiJIUzI1NiIsInR.eyJzdWIiOiIxMjMONDU2Nzg5.SflKxwRJSMeKKFQTjc)',
+      ],
+      ['a single dot is enough', 'prod.env', 'SECRET_KEY=Winter2024.ProductionKeyValue;'],
+    ])('%s (%s)', (_label, filename, line) => {
+      const { status, out } = scan(`${line}\n`, filename);
+      expect(status).toBe(1);
+      expect(out).toMatch(/hardcoded secret literal/);
+    });
   });
 
   describe('DOES flag real secrets', () => {
