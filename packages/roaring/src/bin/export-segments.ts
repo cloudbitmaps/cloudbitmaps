@@ -179,14 +179,26 @@ export async function main(
  * shell shims that exec the real path, so the repo's own package manager hid it while npm and yarn-classic
  * users got silence.
  *
- * `realpathSync` can throw (a deleted entry, a permission error, `node --eval` where argv[1] is absent), and
- * none of those mean "run the CLI", so they resolve to false.
+ * BOTH comparisons are kept, because `--preserve-symlinks-main` inverts which one holds. That flag tells
+ * Node not to resolve the main entry, so `import.meta.url` becomes the symlink path while `realpathSync`
+ * still returns the real one — the same mismatch, the other way round, and the same silent exit-0 no-op.
+ * Some monorepo and bundler setups put it in `NODE_OPTIONS` globally. The literal comparison is the original
+ * condition, which was only ever too NARROW: it matches when this module IS the unresolved entry, so adding
+ * it back as a disjunct widens without creating a way to run on import.
+ *
+ * `realpathSync` can throw, and none of those cases mean "run the CLI", so they resolve to false. The one
+ * that genuinely reaches the catch is `node -` (a script on stdin), where `argv[1]` is the literal string
+ * `"-"` and resolving it raises `ENOENT`. (Under `node --eval` there is no `argv[1]` at all, so the early
+ * return above handles that one — this comment used to cite it, which was wrong.)
  */
 function invokedAsCli(): boolean {
   const entry = process.argv[1];
   if (entry === undefined) return false;
   try {
-    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+    return (
+      import.meta.url === pathToFileURL(entry).href ||
+      import.meta.url === pathToFileURL(realpathSync(entry)).href
+    );
   } catch {
     return false;
   }

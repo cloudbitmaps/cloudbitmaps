@@ -338,35 +338,52 @@ function assertEntrySdkFree(pkgDir) {
  * for some unrelated reason, and the message alone would not distinguish running from printing usage.
  */
 function assertBinRunsThroughSymlink(bin, binPath) {
-  const { mkdtempSync, symlinkSync, rmSync } = require('node:fs');
+  const { symlinkSync, rmSync } = require('node:fs');
   const { spawnSync } = require('node:child_process');
-  const dir = mkdtempSync(path.join(require('node:os').tmpdir(), 'cbm-bin-'));
+  // The link goes NEXT TO the real file, not in a temp dir. Under `--preserve-symlinks-main` Node resolves
+  // the module's own imports relative to the LINK, so a link anywhere else cannot find `roaring` or
+  // `@cloudbitmaps/core` and dies with ERR_MODULE_NOT_FOUND before the run-guard is ever consulted — which
+  // looks like a failure but tests nothing. `dist/` is generated and gitignored, so writing here is safe.
+  const link = path.join(path.dirname(binPath), `.smoke-${bin}-link`);
+  rmSync(link, { force: true });
   try {
-    const link = path.join(dir, bin);
-    symlinkSync(binPath, link);
-    const viaLink = spawnSync(process.execPath, [link], { encoding: 'utf8' });
-    const direct = spawnSync(process.execPath, [binPath], { encoding: 'utf8' });
+    symlinkSync(path.basename(binPath), link);
+    const run = (args) => spawnSync(process.execPath, args, { encoding: 'utf8' });
     const out = (r) => `${r.stdout ?? ''}${r.stderr ?? ''}`;
-    if (viaLink.status === 0 || !/required/i.test(out(viaLink))) {
-      throw new Error(
-        `bin/${bin} did nothing when run through a symlink (exit ${viaLink.status}) — the run-guard ` +
-          `compares process.argv[1] against import.meta.url, and Node resolves only the latter through ` +
-          `symlinks. That is the path npx and every npm script use.\n` +
-          `  via symlink: ${JSON.stringify(out(viaLink).trim().slice(0, 120))}\n` +
-          `  direct     : ${JSON.stringify(out(direct).trim().slice(0, 120))}`,
-      );
-    }
-    if (viaLink.status !== direct.status) {
-      throw new Error(
-        `bin/${bin} behaves differently through a symlink (${viaLink.status}) than directly ` +
-          `(${direct.status}); they must be identical.`,
-      );
+    const direct = run([binPath]);
+    // Both invocations a real install produces. `--preserve-symlinks-main` is the second because it INVERTS
+    // which comparison in the run-guard holds — it stops Node resolving the main entry, so the guard has to
+    // accept the unresolved path too. Some monorepo and bundler setups set it in NODE_OPTIONS globally.
+    for (const [how, viaLink] of [
+      ['a symlink', run([link])],
+      ['a symlink under --preserve-symlinks-main', run(['--preserve-symlinks-main', link])],
+    ]) {
+      assertRanLikeDirect(bin, how, viaLink, direct, out);
     }
     console.log(
-      `  cli runs through a symlink: bin/${bin} (exit ${viaLink.status}, same as direct)`,
+      `  cli runs through a symlink (plain + --preserve-symlinks-main): bin/${bin} (exit ${direct.status})`,
     );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(link, { force: true });
+  }
+}
+
+function assertRanLikeDirect(bin, how, viaLink, direct, out) {
+  const side = `  via ${how}: ${JSON.stringify(out(viaLink).trim().slice(0, 140))}\n  direct: ${JSON.stringify(out(direct).trim().slice(0, 140))}`;
+  if (viaLink.status === 0 || !/CR_EXPORT_ROOT/.test(out(viaLink))) {
+    throw new Error(
+      `bin/${bin} did not run when invoked through ${how} (exit ${viaLink.status}). The run-guard decides ` +
+        `whether this module is the CLI by comparing process.argv[1] with import.meta.url; Node resolves ` +
+        `symlinks in one of them and not the other, and which one depends on --preserve-symlinks-main. ` +
+        `That is the path npx and every npm script use, so a mismatch means the command silently does ` +
+        `nothing.\n${side}`,
+    );
+  }
+  if (viaLink.status !== direct.status || out(viaLink) !== out(direct)) {
+    throw new Error(
+      `bin/${bin} behaves differently through ${how} (exit ${viaLink.status}) than directly ` +
+        `(exit ${direct.status}); they must be identical.\n${side}`,
+    );
   }
 }
 
