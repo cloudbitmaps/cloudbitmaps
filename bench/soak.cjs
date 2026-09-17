@@ -57,8 +57,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const {
   CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
+  LocalFsStorage,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
   nextGeneration,
@@ -125,33 +124,29 @@ function randIds(rand) {
   for (let k = 0; k < IDS_PER_SEG; k++) ids.push(randId(rand));
   return ids;
 }
-function openDrivers(dir) {
-  return {
-    storage: new LocalFsStorageDriver(dir),
-    registry: new LocalFsRegistryDriver(dir, { now: () => Date.now() }),
-  };
+// One backend, which is what the library tells users to build: it derives both halves from a single root,
+// so the parent and the forked reader child cannot disagree about where anything lives.
+function openBackend(dir) {
+  return new LocalFsStorage(dir, { now: () => Date.now() });
 }
 
 /** Seed a LocalFs fleet: one generation per segment, published through the registry. */
 async function seedFleet(dir) {
-  const { storage, registry } = openDrivers(dir);
+  const backend = openBackend(dir);
+  const { storage, registry } = backend;
   const rand = rng(SEED);
   for (let i = 0; i < SEGMENTS; i++) {
     await bulkLoadCrbmGeneration(storage, { segment: segName(i), generation: 1 }, randIds(rand), {
       registry,
     });
   }
-  return { storage, registry };
+  return { backend, storage, registry };
 }
 
 // ── the reader-only child: open the post-soak fleet, read across all of it, report isolated heap+RSS ──
 async function readerChild() {
-  const { storage, registry } = openDrivers(process.env.SOAK_DIR);
-  // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
-  const store = new CloudRoaring({
-    storage: { storage, registry },
-    cache: { readerMax: CAP },
-  });
+  const backend = openBackend(process.env.SOAK_DIR);
+  const store = new CloudRoaring({ storage: backend, cache: { readerMax: CAP } });
   const rand = rng(SEED);
   // Two full passes so a bounded cache cycles eviction (each segment re-opened after eviction). Each segment is
   // both counted (index-only) AND has()-probed — has() DECODES a chunk bitmap into the bounded cache, so
@@ -192,12 +187,8 @@ async function readerChild() {
 async function soak() {
   const dir = mkTmp();
   try {
-    const { storage, registry } = await seedFleet(dir);
-    // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
-    const store = new CloudRoaring({
-      storage: { storage, registry },
-      cache: { readerMax: CAP },
-    });
+    const { backend, storage, registry } = await seedFleet(dir);
+    const store = new CloudRoaring({ storage: backend, cache: { readerMax: CAP } });
     const deps = { storage, registry };
     const rand = rng(SEED ^ 0x9e3779b9);
 

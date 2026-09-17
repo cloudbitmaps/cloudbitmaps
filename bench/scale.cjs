@@ -60,10 +60,8 @@ const { execFileSync } = require('node:child_process');
 const {
   bulkLoadCrbmGeneration,
   CrbmStorageChunkSource,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  MemoryStorageDriver,
-  MemoryRegistryDriver,
+  LocalFsStorage,
+  MemoryStorage,
   CloudRoaring,
   CountingMetricsSink,
   drainRegistry,
@@ -117,8 +115,8 @@ function rmTmp(dir) {
 async function measureFleet(n) {
   const dir = mkTmp(`fleet${n}`);
   try {
-    const storage = new LocalFsStorageDriver(dir);
-    const registry = new LocalFsRegistryDriver(dir, { now: () => Date.now() });
+    const backend = new LocalFsStorage(dir, { now: () => Date.now() });
+    const { storage, registry } = backend;
     const ids = segmentIds();
 
     // M4 — load throughput (build the fleet on disk: one immutable .crbm generation + one registry row per
@@ -192,8 +190,8 @@ async function measureIntersect() {
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
   const sharedChunks = Math.max(1, Math.round(CHUNKS * OVERLAP));
 
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver({ now: () => 0 });
+  const backend = new MemoryStorage({ now: () => 0 });
+  const { storage, registry } = backend;
   // Segment A: chunks [0, CHUNKS). Segment B: `sharedChunks` chunks shared with A, the rest disjoint (offset
   // past A's range) — so exactly `sharedChunks` chunk keys align, and intersect must fetch only those.
   const idsA = [];
@@ -208,7 +206,7 @@ async function measureIntersect() {
 
   const metrics = new CountingMetricsSink();
   // The two halves ARE a StorageBackend — the port is structural, so an object literal satisfies it.
-  const client = new CloudRoaring({ storage: { storage, registry }, metrics });
+  const client = new CloudRoaring({ storage: backend, metrics });
   metrics.reset();
   let resultCount = 0;
   const run = await ms(async () => {
