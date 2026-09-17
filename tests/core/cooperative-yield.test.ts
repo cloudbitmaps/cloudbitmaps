@@ -108,10 +108,28 @@ describe('SystemClock.yieldNow', () => {
 
   it('does not wait for a timer, so periodic yielding stays cheap', async () => {
     // `setTimeout(1)` also yields, and costs ~1 ms of dead wall-clock each time — measured at +10% over a 1M-id
-    // load for no extra relief. 200 yields therefore have to come in far under the ~200 ms that would imply.
+    // load for no extra relief.
+    //
+    // Compared against a timer rather than against an absolute budget. This assertion used to be
+    // "200 yields in under 100 ms", which is a wall-clock oracle: on a loaded box it measured 118 ms and
+    // failed, and because it fails for reasons unrelated to what it names, it produced a FALSE KILL during a
+    // mutation run — a mutant elsewhere was recorded as caught when this test was what broke. A relative
+    // comparison is robust to load, because load inflates both sides.
     const clock = new SystemClock();
-    const started = Date.now();
-    for (let i = 0; i < 200; i++) await clock.yieldNow();
-    expect(Date.now() - started).toBeLessThan(100);
+    const N = 100;
+
+    const yieldStart = Date.now();
+    for (let i = 0; i < N; i++) await clock.yieldNow();
+    const yieldMs = Date.now() - yieldStart;
+
+    const timerStart = Date.now();
+    for (let i = 0; i < N; i++) await new Promise((r) => setTimeout(r, 1));
+    const timerMs = Date.now() - timerStart;
+
+    // A timer costs at least ~1 ms per iteration; `yieldNow` costs a loop turn. Half is a generous margin —
+    // the real ratio is an order of magnitude — and it cannot be met by anything that waits on a timer.
+    expect(yieldMs, `yieldNow ${yieldMs}ms vs setTimeout(1) ${timerMs}ms over ${N}`).toBeLessThan(
+      timerMs / 2,
+    );
   });
 });

@@ -43,7 +43,13 @@ const SEG: SegmentRef = { namespace: 'active-daily', segment: '2026-08-01' };
 const CONFIRM = { confirmSegment: SEG.segment };
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   const deps: DropDeps = { storage: w.storage, registry: w.registry };
   return { ...w, deps };
 }
@@ -244,14 +250,14 @@ describe('dropSegment', () => {
   });
 
   it('is only eventually empty to a reader that had already cached the segment', async () => {
-    // The docs said "afterwards the segment reads as empty", full stop. False for up to `storageGenTtlMs`
+    // The docs said "afterwards the segment reads as empty", full stop. False for up to `cache.genTtlMs`
     // (default 2s): a resolved generation is cached and decoded chunks sit in the cache, so a store that
     // touched the segment BEFORE the drop keeps answering from cache. The original tests all passed only because
     // none of them read first — the blind spot was in the fixture, not the assertion.
     //
     // Asserted as a bound rather than a timing: a FRESH store over the same drivers must see empty at once,
     // which pins the cause on caching rather than on the drop having failed. (The fixture passes no clock, so
-    // this store pins its snapshot for its lifetime — the documented `storageGenTtlMs: 0` case.)
+    // this store pins its snapshot for its lifetime — the documented `cache.genTtlMs: 0` case.)
     const w = await world();
     await seed(w, [1, 2, 3]);
     await expect(handle(w).has(1)).resolves.toBe(true); // warms the snapshot + LRU

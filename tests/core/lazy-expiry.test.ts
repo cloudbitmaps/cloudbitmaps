@@ -17,7 +17,9 @@ const T0 = 1_754_000_000_000;
 function harness(segments: Record<string, number[]> = {}, start = T0) {
   let t = start;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const { store, storage } = seededStore(segments, { clock });
+  const { store, storage } = seededStore(segments, {
+    seams: { clock },
+  });
   return { store, storage, advance: (ms: number) => (t += ms) };
 }
 

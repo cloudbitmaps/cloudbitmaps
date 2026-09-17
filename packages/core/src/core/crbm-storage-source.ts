@@ -328,7 +328,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * an erasure that deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement —
    * leaves the pointer's answer unchanged from this source's point of view while making the snapshot wrong.
    * Until this is called the source keeps serving that snapshot with no backend read at all, so nothing on the
-   * storage side can close the window; with `storageGenTtlMs: 0` or no clock it never closes.
+   * storage side can close the window; with `cache.genTtlMs: 0` or no clock it never closes.
    */
   invalidate(ref: SegmentRef): void {
     const key = segmentKey(ref);
@@ -370,7 +370,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   async pinGeneration(ref: SegmentRef): Promise<{ generation: number; version: string } | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
-    // of a pin, and the memo is allowed to be up to `storageGenTtlMs` behind — or, on a store with no clock,
+    // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no clock,
     // arbitrarily far behind, since it never refreshes at all. Pinning through it made every pin on such a
     // store return the first generation that store had ever read.
     const target = await this.resolveTarget(ref);

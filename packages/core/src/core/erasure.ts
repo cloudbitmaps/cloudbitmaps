@@ -261,9 +261,9 @@ export interface DropResult {
  * resolved generation is cached and decoded chunks sit in the cache, so an in-flight reader can answer from
  * cache for a window. A fresh store, or any reader that had not touched the segment, sees empty at once.
  *
- * That window is bounded by `storageGenTtlMs` (default 2 s) **only for a reader whose storage source has both a clock
+ * That window is bounded by `cache.genTtlMs` (default 2 s) **only for a reader whose storage source has both a clock
  * and a registry and a positive TTL** — expiry needs all three. A source built without a clock, or with
- * `storageGenTtlMs: 0` (documented as "pin forever"), holds its resolved snapshot for its own lifetime; because a
+ * `cache.genTtlMs: 0` (documented as "pin forever"), holds its resolved snapshot for its own lifetime; because a
  * cache-LRU hit never reaches Storage, such a reader can answer `true` for a dropped segment **indefinitely** and must
  * be restarted. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
  * than loudly — it cuts both ways.

@@ -37,7 +37,14 @@ describe('cheap count', () => {
   it('a reload changes the count — still with zero payload reads', async () => {
     const clock = fakeClock();
     const metrics = new CountingMetricsSink();
-    const { store, load } = await loadedStore({ s: IDS }, { metrics, clock, storageGenTtlMs: 1 });
+    const { store, load } = await loadedStore(
+      { s: IDS },
+      {
+        metrics,
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
+    );
     const seg = store.segment('s');
     expect(await seg.count()).toBe(6);
 

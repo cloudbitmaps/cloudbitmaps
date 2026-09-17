@@ -71,7 +71,10 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       keystore,
     });
 
-    const store = new CloudRoaring({ storage: { storage: storage, registry: registry }, keystore });
+    const store = new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      encryption: { keystore },
+    });
     expect(await store.segment('s').count()).toBe(3); // decrypts the .crbm index
     expect(await store.segment('s').has(2)).toBe(true); // decrypts a chunk payload (getChunk)
   });
@@ -99,7 +102,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     // dropped when wrapping, count() would return 3 instead.
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      requireEncryption: true,
+      encryption: { required: true },
     });
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
@@ -110,10 +113,20 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     it('rejects keystore/requireEncryption paired with a pre-built StorageChunkSource', () => {
       const source = (): MemoryStorageChunkSource => new MemoryStorageChunkSource();
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-      expect(() => new CloudRoaring({ storage: source(), keystore })).toThrow(ValidationError);
-      expect(() => new CloudRoaring({ storage: source(), requireEncryption: true })).toThrow(
-        ValidationError,
-      );
+      expect(
+        () =>
+          new CloudRoaring({
+            storage: source(),
+            encryption: { keystore },
+          }),
+      ).toThrow(ValidationError);
+      expect(
+        () =>
+          new CloudRoaring({
+            storage: source(),
+            encryption: { required: true },
+          }),
+      ).toThrow(ValidationError);
     });
 
     it('allows requireEncryption:false with a pre-built source (the no-op default)', () => {
@@ -122,21 +135,29 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
         () =>
           new CloudRoaring({
             storage: new MemoryStorageChunkSource(),
-            requireEncryption: false,
+            encryption: { required: false },
           }),
       ).not.toThrow();
     });
 
     it('rejects a keystore on a raw driver with no registry (nowhere to store the wrapped DEK)', () => {
       const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
-      expect(() => new CloudRoaring({ storage: new MemoryStorageDriver(), keystore })).toThrow(
-        CapabilityError,
-      );
+      expect(
+        () =>
+          new CloudRoaring({
+            storage: new MemoryStorageDriver(),
+            encryption: { keystore },
+          }),
+      ).toThrow(CapabilityError);
     });
 
     it('rejects requireEncryption on a raw driver with no registry (encryption can’t be enforced)', () => {
       expect(
-        () => new CloudRoaring({ storage: new MemoryStorageDriver(), requireEncryption: true }),
+        () =>
+          new CloudRoaring({
+            storage: new MemoryStorageDriver(),
+            encryption: { required: true },
+          }),
       ).toThrow(CapabilityError);
     });
 

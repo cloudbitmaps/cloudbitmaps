@@ -33,14 +33,20 @@ const SEG: SegmentRef = { segment: 's' };
 const key32 = (): Uint8Array => randomBytes(32);
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      keystore,
       retry: false,
+      encryption: { keystore },
     });
   return { ...w, deps, reader };
 }

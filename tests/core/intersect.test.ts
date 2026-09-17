@@ -207,7 +207,10 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: [1, 2, 3], b: [2, 3, 4], dest: [999, 70_000] },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const dest = store.segment('dest');
     expect(await collect(dest.iterate())).toEqual([999, 70_000]); // dest's own generation 0, readable first
@@ -216,7 +219,7 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     expect(result.generation).toBe(1);
     expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(1);
 
-    clock.advance(1); // the reader's generation snapshot refreshes after storageGenTtlMs
+    clock.advance(1); // the reader's generation snapshot refreshes after cache.genTtlMs
     expect(await collect(dest.iterate())).toEqual([2, 3]); // 999 / 70_000 are gone: nothing was merged
     expect(await dest.has(999)).toBe(false);
     expect(await dest.count()).toBe(2);

@@ -127,7 +127,7 @@ describe('a combine refuses an operand that names a segment which does not exist
 
     const store = new CloudRoaring({
       storage: { storage: real, registry: counting },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     const audience = store.segment('active-30d', { namespace: 'audiences' });
     const optout = store.segment('global-opt-out', { namespace: 'suppression' });

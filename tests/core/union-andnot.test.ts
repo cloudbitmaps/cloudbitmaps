@@ -281,7 +281,10 @@ describe('*Into — each op materializes a NEW GENERATION of its destination', (
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: spread([1]), b: spread([2]), dest: spread([9]) },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const dest = store.segment('dest');
     expect(await dest.count()).toBe(3); // its own generation 0
@@ -290,7 +293,7 @@ describe('*Into — each op materializes a NEW GENERATION of its destination', (
     expect(result.generation).toBe(1);
     expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(1);
 
-    clock.advance(1); // the reader's generation snapshot refreshes after storageGenTtlMs
+    clock.advance(1); // the reader's generation snapshot refreshes after cache.genTtlMs
     expect(await collect(dest.iterate())).toEqual(spread([1, 2])); // chunk 9 is gone — nothing was merged
     expect(await dest.count()).toBe(6);
   });

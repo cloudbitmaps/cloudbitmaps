@@ -51,8 +51,8 @@ describe('a re-created name is a different segment, not the same one', () => {
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      clock,
-      storageGenTtlMs: 10,
+      cache: { genTtlMs: 10 },
+      seams: { clock },
     });
     expect(await store.segment('s').has(1)).toBe(true); // warms the snapshot AND chunk 0
 
@@ -74,8 +74,8 @@ describe('a re-created name is a different segment, not the same one', () => {
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      clock,
-      storageGenTtlMs: 10,
+      cache: { genTtlMs: 10 },
+      seams: { clock },
     });
     expect(await store.segment('s').count()).toBe(3);
 
@@ -93,8 +93,8 @@ describe('a re-created name is a different segment, not the same one', () => {
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      clock,
-      storageGenTtlMs: 10,
+      cache: { genTtlMs: 10 },
+      seams: { clock },
     });
     expect(await store.segment('s').count()).toBe(3);
 

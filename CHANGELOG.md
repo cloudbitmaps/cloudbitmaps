@@ -15,7 +15,68 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the 14 flat constructor options become one required `storage` plus six groups.** Five of the
+  old keys were cache knobs distinguished only by a prefix (`cacheMaxChunks`, `cacheTtlMs`,
+  `storageGenTtlMs`, `storageReaderCacheMax`, `storageReaderCacheMaxBytes`), which is a naming convention
+  standing in for a structure. They are now `cache` · `encryption` · `retry` · `metrics` · `budget` · `seams`:
+
+  ```ts
+  // before
+  new CloudRoaring({
+    storage,
+    cacheMaxChunks: 512,
+    storageGenTtlMs: 0,
+    keystore,
+    requireEncryption: true,
+    clock,
+    onRetry,
+  });
+
+  // after
+  new CloudRoaring({
+    storage,
+    cache: { maxChunks: 512, genTtlMs: 0 },
+    encryption: { keystore, required: true },
+    retry: { onRetry },
+    seams: { clock },
+  });
+  ```
+
+  | before | after |
+  |---|---|
+  | `cacheMaxChunks` | `cache.maxChunks` |
+  | `cacheTtlMs` | `cache.ttlMs` |
+  | `storageGenTtlMs` | `cache.genTtlMs` |
+  | `storageReaderCacheMax` | `cache.readerMax` |
+  | `storageReaderCacheMaxBytes` | `cache.readerMaxBytes` |
+  | `keystore` | `encryption.keystore` |
+  | `requireEncryption` | `encryption.required` |
+  | `onRetry` | `retry.onRetry` |
+  | `clock` | `seams.clock` |
+  | `rng` | `seams.rng` |
+
+  **Every old spelling is refused with a `ValidationError` naming its new home, not ignored.** TypeScript
+  catches these at the call site for most callers, but not a plain-JS caller, a config that arrived as JSON, or
+  anything that reached the constructor through a spread or an `as` cast — and each of these knobs is one whose
+  absence is *silent*: a dropped `requireEncryption` reads cleartext when you demanded encryption, a dropped
+  `clock` makes a "deterministic" job non-deterministic, and a dropped `readerMaxBytes` restores a 64 MiB
+  ceiling someone had deliberately lowered for a small heap. None of those announces itself. (This is not
+  hypothetical — the guard caught a spread in this repo's own test suite that TypeScript had waved through,
+  along with a `keyId` key that has never been an option at all.)
+
+- **`retry` now takes a *partial* policy.** It was a whole `RetryPolicy`, so changing one field meant restating
+  all five, and `onRetry` was a sibling key that could not be given without one. `retry: { maxAttempts: 6 }`
+  and `retry: { onRetry }` are both legal now; anything omitted keeps its `DEFAULT_RETRY_POLICY` value.
+  `retry: false` is unchanged. A field that is **present with value `undefined`** — the shape you get from
+  `retry: { baseDelayMs: cfg.baseDelayMs }` when the config key is absent — also falls back to the default
+  rather than erasing it.
+
 ### Added
+
+- `CacheOptions`, `EncryptionOptions`, `RetryOptions` and `SeamOptions` are exported, so a caller can name the
+  shape of a group it builds separately.
 - **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
   Before this, GCS and Azure were storage-only: the registry that says which generation is current had to live
   in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes

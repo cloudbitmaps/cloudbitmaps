@@ -47,7 +47,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     ]);
   });
 
-  it('a pinned store (storageGenTtlMs: 0) converges too — it never would on the TTL', async () => {
+  it('a pinned store (cache.genTtlMs: 0) converges too — it never would on the TTL', async () => {
     // "Pin forever" is a documented setting. Without an explicit signal this window never closes at all.
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
@@ -55,7 +55,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true);
     await store.eraseSubject(4242, { namespace: 'ns' });
@@ -101,8 +101,8 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      keystore,
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
+      encryption: { keystore },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warms chunk 0 only
 
@@ -124,7 +124,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
 
@@ -141,7 +141,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     await store.retireExpired({ now: PAST + 1, dryRun: true });
@@ -157,7 +157,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(2);
@@ -193,7 +193,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
     await store.segment('seg', { namespace: 'ns' }).has(4242);
     const warmed = fetches;

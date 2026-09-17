@@ -66,13 +66,13 @@ function freshStore(
   storage: MemoryStorageDriver,
   keystore?: IKeystore,
 ): CloudRoaring {
-  // `storageGenTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
+  // `cache.genTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
   // reads one snapshot rather than drifting onto a generation published while it was streaming.
   return new CloudRoaring({
     storage: { storage: storage, registry: registry },
-    keystore,
     retry: false,
-    storageGenTtlMs: 0,
+    cache: { genTtlMs: 0 },
+    encryption: { keystore },
   });
 }
 

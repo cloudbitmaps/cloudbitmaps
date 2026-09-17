@@ -67,7 +67,7 @@ every **registered** segment the id is in, it rewrites the current generation wi
 rewrite, and deletes the generation that held the bit — so the bit is physically gone from the bucket on
 return, for idle and archival segments as much as busy ones. There is no logical-then-physical gap and no
 scheduled step to wait for: an erasure *is* a new generation, the same shape as every other write in the library.
-It reuses the store's own drivers (so build the store with a raw storage driver + a registry). It returns an
+It reuses the store's own drivers (so build the store with a backend). It returns an
 **erasure ledger** — one entry per segment the id was found in, `{ segment, namespace?, erased, fromGeneration,
 generation, note? }` — as your proof of deletion; persist it or route it to your audit sink, which also receives
 one `segment.rewrite { fromGeneration, generation }` event per rewrite when you pass `audit` — an id erased out
@@ -113,10 +113,10 @@ no bus, and no connection between two stores that happen to point at the same bu
 |---|---|
 | storage | on return — the generation holding it is deleted, the DEK is destroyed |
 | the store that performed the call | on return — it invalidates what it cached |
-| another store, with a clock and a registry | within `storageGenTtlMs` (default 2 s), when its snapshot re-resolves |
-| another store with **no clock**, or `storageGenTtlMs: 0` | **never**, until something tells it |
+| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
 
-That last row is the one to design around. `storageGenTtlMs: 0` means "pin forever" and is a legitimate setting for
+That last row is the one to design around. `cache: { genTtlMs: 0 }` means "pin forever" and is a legitimate setting for
 a read-only replica of immutable data — but a segment pinned that way does not observe a shred at all. If a
 compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
 process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is

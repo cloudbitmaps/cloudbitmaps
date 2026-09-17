@@ -60,6 +60,32 @@
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
 > registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
+## Upgrading from 0.9.x?
+
+Two constructor changes, both of which **throw with a message naming the fix** rather than being ignored — so
+you will find them the first time you run, not the first time something reads wrong.
+
+1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
+   `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
+   the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
+   expressible. Every driver is still exported, and `{ storage, registry }` as an object literal *is* a
+   `StorageBackend` if you genuinely want the halves apart.
+2. **The flat tuning options became six groups** — `cache` · `encryption` · `retry` · `metrics` · `budget` ·
+   `seams`:
+
+   | before | after |
+   |---|---|
+   | `cacheMaxChunks` · `cacheTtlMs` · `storageGenTtlMs` · `storageReaderCacheMax` · `storageReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
+   | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
+   | `onRetry` | `retry.onRetry` |
+   | `clock` · `rng` | `seams.clock` · `seams.rng` |
+
+   `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
+   default instead of requiring all five.
+
+The full entry, with a runnable before/after, is in
+[`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
+
 ## 1. The simplest thing: in-memory
 
 A `CloudRoaring` store is wired to a **storage** driver (where the `.crbm` generations live) — **the only required
@@ -122,7 +148,7 @@ import {
 
 // One root: generations under `./.cloudbitmaps/storage`, pointers under `./.cloudbitmaps/registry`.
 const backend = new LocalFsStorage('./.cloudbitmaps');
-const store = new CloudRoaring({ storage: backend, cacheMaxChunks: 1024 }); // optional cache ceiling
+const store = new CloudRoaring({ storage: backend, cache: { maxChunks: 1024 } }); // optional cache ceiling
 
 const ref = { segment: 'active-this-week' };
 await bulkLoadCrbmGeneration(
@@ -342,7 +368,7 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 ```
 
 **Read staleness after a publish is bounded.** With a registry wired, a long-running store re-resolves each
-segment's current generation on a short TTL (`storageGenTtlMs`, default **2000 ms**), so reads are **bounded
+segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
 registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
@@ -457,10 +483,13 @@ Tune it, or turn it off, per store:
 ```ts
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
-  // Tune the policy (these are the defaults):
-  retry: { maxAttempts: 4, baseDelayMs: 50, maxDelayMs: 2_000, backoffFactor: 2, jitter: 'full' },
+  // Tune the policy — it is a PARTIAL, so name only what you are changing. Everything else keeps its
+  // default, and `onRetry` now lives in the same group rather than as a sibling key.
   // …or `retry: false` to disable our wrappers entirely (e.g. your client already retries).
-  onRetry: ({ attempt, delayMs, err }) => log.warn({ attempt, delayMs }, 'retrying transient fault'),
+  retry: {
+    maxAttempts: 6,
+    onRetry: ({ attempt, delayMs }) => log.warn({ attempt, delayMs }, 'retrying transient fault'),
+  },
 });
 ```
 
@@ -585,7 +614,7 @@ Who calls it today:
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
 **Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
-generation within `storageGenTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
+generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
 stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
 consistent. A **long** call is the one shape where the generation can move underneath you — a resolved snapshot
 is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
@@ -608,10 +637,10 @@ that answers empty instead of throwing is a segment with no generation left to s
 crypto-shredded, where reading empty is the documented outcome.
 
 **The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every
-`storageGenTtlMs`, so at most `ceil(storageGenTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
+`cache.genTtlMs`, so at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
 read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
 `intersect` does not need a sixty-second window. The exception is a source that never re-resolves — no clock
-injected, no registry, or `storageGenTtlMs: 0` ("pin forever") — which holds one generation for its whole
+injected, no registry, or `cache: { genTtlMs: 0 }` ("pin forever") — which holds one generation for its whole
 lifetime; there no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
@@ -622,7 +651,7 @@ Which gives:
 | your situation | `keep` |
 |---|---|
 | anything on a normal TTL — the common case | **`1`**, the default |
-| publishes landing faster than `storageGenTtlMs` (a tight loader, or a raised TTL) | cover them: `ceil(storageGenTtlMs ÷ gap between publishes)` |
+| publishes landing faster than `cache.genTtlMs` (a tight loader, or a raised TTL) | cover them: `ceil(genTtlMs ÷ gap between publishes)` |
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
 | a long job that must see **one** instant, not merely succeed | none of the above — see below |
 
@@ -649,8 +678,12 @@ dependency**. Each segment gets its own random **DEK** that's wrapped under your
 the Storage chunks + index are AES-256-GCM-encrypted with the DEK, under an AAD bound to `(segment, generation)`.
 
 ```ts
-import { CloudRoaring, InProcessKeystore, bulkLoadCrbmGeneration } from '@cloudbitmaps/roaring';
-import { LocalFsStorageDriver, LocalFsRegistryDriver } from '@cloudbitmaps/roaring';
+import {
+  CloudRoaring,
+  InProcessKeystore,
+  LocalFsStorage,
+  bulkLoadCrbmGeneration,
+} from '@cloudbitmaps/roaring';
 
 // Your KEK(s) — load from your secrets manager; keyId-aware so you can rotate without re-encrypting data.
 const keystore = new InProcessKeystore({
@@ -668,19 +701,19 @@ await bulkLoadCrbmGeneration(backend.storage, { segment: 'pii', generation: 0 },
 });
 
 // Read encrypted — the backend carries the wrapped DEK in its registry; the store unwraps and decrypts transparently:
-const store = new CloudRoaring({ storage: backend, keystore });
+const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
 await store.segment('pii').count(); // works; without the keystore this throws KeyUnavailableError
 ```
 
 Every later write to that segment reuses its DEK: a reload through `bulkLoadCrbmGeneration` (pass the keystore —
 loading a cleartext generation onto an encrypted segment is refused with `KeyUnavailableError`, because that
 would let a later crypto-shred over-attest), an `*Into` verb on a store wired with the keystore, and the erasure
-rewrite. To enforce encryption everywhere, set `requireEncryption: true` (on the store config, on
+rewrite. To enforce encryption everywhere, set `encryption: { required: true }` (on the store config, or as `requireEncryption: true` on
 `bulkLoadCrbmGeneration`, and on `eraseIdFromSegment`'s deps) — any cleartext write/read then throws.
 
 **A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
-with `requireEncryption: true` it is refused with a `ValidationError` rather than silently downgraded. The reason
+with `encryption: { required: true }` it is refused with a `ValidationError` rather than silently downgraded. The reason
 is that one segment cannot be half-encrypted — a reader pinned to a superseded cleartext generation would find
 bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
 while the older cleartext objects stay readable from any of them. The same rule from the other side: publishing
@@ -986,10 +1019,10 @@ answer it for you: there is no daemon and no bus, only stores that happen to poi
 |---|---|
 | storage | on return — the generation holding it is deleted |
 | the store that performed the erasure | on return |
-| another store, with a clock and a registry | within `storageGenTtlMs` (default 2 s) |
-| another store with **no clock**, or `storageGenTtlMs: 0` | **never**, until something tells it |
+| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
+| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
 
-`storageGenTtlMs: 0` means "pin forever" and is a reasonable setting for a read-only replica of immutable data —
+`cache: { genTtlMs: 0 }` means "pin forever" and is a reasonable setting for a read-only replica of immutable data —
 but a segment pinned that way never observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
 fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
 `destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them holds the
@@ -1157,8 +1190,8 @@ Two limits worth knowing before you automate it:
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
   `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
   tombstone (below), or use a fresh dated name — which is the pattern anyway.
-- **"Reads as empty" needs a clock.** The `storageGenTtlMs` bound applies to a reader whose storage source has a
-  clock, a registry, *and* a positive TTL. Built without a clock, or with `storageGenTtlMs: 0` ("pin forever"), a
+- **"Reads as empty" needs a clock.** The `cache.genTtlMs` bound applies to a reader whose storage source has a
+  clock, a registry, *and* a positive TTL. Built without a clock, or with `cache: { genTtlMs: 0 }` ("pin forever"), a
   reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely —
   restart it.
 
@@ -1334,7 +1367,7 @@ because deleting the row is what makes the name writable again:
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
-`0` would have to mean "purge immediately" here while `storageGenTtlMs: 0` in this same library means "pin forever",
+`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "pin forever",
 and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 
 ## 14. Export / eject your data
@@ -1397,7 +1430,7 @@ also exits non-zero when it's non-empty).
 
 Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
 disappeared — export to a **fresh directory** for a clean dump. For a *current* dump, run against a freshly-built
-store (a long-lived store may be up to `storageGenTtlMs` behind a publish — the CLI builds a fresh store per run);
+store (a long-lived store may be up to `cache.genTtlMs` behind a publish — the CLI builds a fresh store per run);
 for a *consistent* dump across segments, pause your loads or export from a quiet window. This is also a building
 block for a **data-portability** response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's "Your data stays
 yours".
@@ -1680,14 +1713,14 @@ They are separate on purpose, and it is worth knowing which one you just hit.
 | | `budget` | the memory ceilings |
 | --- | --- | --- |
 | bounds | **cost** — backend requests a single op may fan out into | **memory** — what a process holds resident, whatever the segments' size |
-| knobs | `budget: { maxRequests }`; `false` disables it | `cacheMaxChunks` (decoded cached chunks, default 1024) · `storageReaderCacheMax` / `storageReaderCacheMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap — **`budget: false` lifts none of them** |
+| knobs | `budget: { maxRequests }`; `false` disables it | `cache.maxChunks` (decoded cached chunks, default 1024) · `cache.readerMax` / `cache.readerMaxBytes` (open `.crbm` indices, default 1024 / 64 MiB) · the combines' `concurrency` window · the per-chunk decode cap — **`budget: false` lifts none of them** |
 | covers | `count` · `iterate` · the combines · `subjectReport` · `eraseSubject` | every read, on every backend |
 
 Why not one control? Because `intersect`'s budget is a *product* — surviving keys × operands — while its memory is
 the *window*: `concurrency × operands × chunk`, independent of segment size. A request budget cannot express a
 memory bound, and `budget: false` is a reasonable choice ("I know my fan-out") that must not silently also mean
 "unbounded RAM". A wide segment's parsed index can be several MB, which is why the reader cache is bounded by
-bytes as well as by count — lower `storageReaderCacheMaxBytes` for a memory-tight deployment (a 128 MB Lambda) that
+bytes as well as by count — lower `cache.readerMaxBytes` for a memory-tight deployment (a 128 MB Lambda) that
 reads across many wide segments.
 
 **Neither limits how many ids a segment can hold.** A segment holds up to the full 32-bit id space — ~4.29

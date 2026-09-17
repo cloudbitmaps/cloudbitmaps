@@ -117,7 +117,7 @@ export interface RetireExpiredOptions {
    * `destroyed` row as an attestation.
    *
    * Two knobs rather than one `number | 'never'`, deliberately: `0` would have had to mean "purge immediately"
-   * here while `storageGenTtlMs: 0` in this same library means "pin forever", and one option whose zero is the
+   * here while `cache.genTtlMs: 0` in this same library means "pin forever", and one option whose zero is the
    * opposite of another's is a reading hazard for whoever tunes both.
    */
   readonly purgeTombstones?: boolean;

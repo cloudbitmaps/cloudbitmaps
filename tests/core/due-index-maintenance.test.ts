@@ -23,7 +23,12 @@ const SEG: SegmentRef = { namespace: 'active', segment: 'd-2026-08-05' };
 async function harness() {
   let t = T0;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const w = await loadedStore({}, { clock });
+  const w = await loadedStore(
+    {},
+    {
+      seams: { clock },
+    },
+  );
   return { ...w, clock, advance: (ms: number) => (t += ms) };
 }
 

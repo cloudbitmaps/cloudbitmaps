@@ -35,7 +35,7 @@ async function world(opts: { keystore?: InProcessKeystore } = {}) {
   await bulkLoadCrbmGeneration(storage, { ...OTHER, generation: 0 }, [2, 3, 4], { registry });
   const store = new CloudRoaring({
     storage: { storage: storage, registry: registry },
-    keystore: opts.keystore,
+    encryption: { keystore: opts.keystore },
   });
   return { storage, registry, store };
 }
@@ -133,7 +133,7 @@ describe('pin holds one segment at one generation', () => {
     // A ceiling far below the number of pins we are about to hold.
     const store = new CloudRoaring({
       storage: { storage: storage, registry: registry },
-      storageReaderCacheMax: 2,
+      cache: { readerMax: 2 },
     });
     const pins = [];
     for (let i = 0; i < 12; i++) pins.push(await store.segment(`s${i}`).pin());

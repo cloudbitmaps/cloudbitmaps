@@ -21,7 +21,12 @@ const T0 = 1_754_000_000_000;
 async function harness() {
   let t = T0;
   const clock = { now: () => t, sleep: () => Promise.resolve() };
-  const w = await loadedStore({}, { clock });
+  const w = await loadedStore(
+    {},
+    {
+      seams: { clock },
+    },
+  );
   return { ...w, advance: (ms: number) => (t += ms) };
 }
 
