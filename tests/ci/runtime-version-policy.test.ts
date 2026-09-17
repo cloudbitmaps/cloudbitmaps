@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -134,16 +134,29 @@ describe('runtime version policy is consistent across all three declarations', (
     // `>=22.12` makes `node-version: 22.11` a below-floor pin that looks identical to a good one, so the
     // comparison has to be version-aware — and prefix-aware, since a bare `22` resolves to the latest 22.x
     // and is therefore fine.
-    const raw = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8');
-    const pinned = findPinnedNodeVersions(raw);
+    // EVERY workflow, not just ci.yml. `release.yml` and `fuzz-nightly.yml` carry their own pins, and a
+    // below-floor pin in the release workflow is the worst place for one — that is the job that builds the
+    // tarballs consumers install.
+    const workflows = readdirSync(join(ROOT, '.github/workflows')).filter((f) =>
+      /\.ya?ml$/.test(f),
+    );
+    expect(workflows.length, 'no workflows found — has the directory moved?').toBeGreaterThan(0);
+    const pinned = workflows.flatMap((f) =>
+      findPinnedNodeVersions(readFileSync(join(ROOT, '.github/workflows', f), 'utf8')).map(
+        (hit) => ({
+          ...hit,
+          file: f,
+        }),
+      ),
+    );
     expect(
       pinned.length,
       'no literal node-version pins found — has the syntax changed?',
     ).toBeGreaterThan(0);
-    for (const p of pinned) {
+    for (const hit of pinned) {
       expect(
-        satisfiesFloor(p.version, FLOOR),
-        `"${p.raw}" pins a Node below the ${FLOOR} floor`,
+        satisfiesFloor(hit.version, FLOOR),
+        `${hit.file}: "${hit.raw}" pins a Node below the ${FLOOR} floor`,
       ).toBe(true);
     }
   });

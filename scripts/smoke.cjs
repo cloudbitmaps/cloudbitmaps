@@ -19,6 +19,7 @@ const { pathToFileURL } = require('node:url');
 // users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
+const CORE = '@cloudbitmaps/core';
 const SUBPATHS = ['', '/s3', '/gcs', '/azure'];
 
 // The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
@@ -55,20 +56,32 @@ async function exerciseCore(label, m) {
 }
 
 /*
- * Cross-bundle error identity. A driver subpath (`/s3`, `/gcs`, `/azure`) is a SEPARATE bundle with
- * its OWN copy of the core error classes, so `instanceof` against the core entry's class fails in CJS — which
- * silently defeated transient-retry and publish-race handling. The brand-based predicates must still
- * classify a driver-bundle error. This asserts exactly that against the BUILT bundles (where the bug lived and
- * where the whole test suite — one source graph — could not see it). Trigger: the S3 registry driver
- * validates its `prefix` synchronously in the constructor and throws a ValidationError from its own bundle.
+ * Cross-COPY error and backend identity — the reason the brands are registered `Symbol.for`s.
  *
- * **Only the CJS leg can actually fail.** esbuild's ESM output code-splits, so `dist/index.js` and
- * `dist/s3/index.js` import ONE shared copy of `core/errors` and `instanceof` works there by construction —
- * the ESM call is a cheap consistency check, not the guard. CJS is where each bundle gets its own copy of the
- * class and where the bug lived. Both are run so that a future build change which stops sharing the ESM chunk
- * is covered without anyone having to remember to add it.
+ * When two copies of the error classes are in play, a driver throws a *different* class object than the code
+ * catching it would `instanceof`-check, and the check silently stops matching — defeating transient-retry
+ * and publish-race handling with no error of its own. The brand-based predicates must classify the error
+ * anyway. This asserts that against the BUILT packages, where the whole test suite — one source graph —
+ * cannot see it. Trigger: the S3 registry driver validates its `prefix` synchronously in the constructor and
+ * throws a ValidationError from its own copy.
+ *
+ * WHICH BOUNDARY IS LOAD-BEARING changed when the packages went ESM-only, and the previous answer here is
+ * why this comment is worth reading. It used to say the CJS leg was the only one that could fail, because
+ * each CJS bundle carried its own class copy while the ESM subpaths shared a chunk. There is no CJS bundle
+ * now: `require()` resolves to the same ESM files through `require(esm)`, so BOTH legs load one shared chunk
+ * and neither can observe a mismatch. Run as-was, this check had become vacuous — replacing every
+ * `Symbol.for(…)` with `Symbol(…)` in the built chunk left it green.
+ *
+ * The boundary that still exists is between the two PACKAGES. `@cloudbitmaps/roaring` and
+ * `@cloudbitmaps/core` are bundled separately and each carries its own copy of the error classes, so
+ * `instanceof` across them is genuinely false (asserted below, so this rationale cannot quietly rot) while
+ * the predicates hold. That is also a real user path: the docs say importing `@cloudbitmaps/core/s3` is
+ * equivalent to the roaring subpath, and a consumer who mixes the two gets exactly this.
+ *
+ * The same-package legs are kept as cheap consistency checks, so a future build change that stops sharing
+ * the ESM chunk is covered without anyone remembering to add it.
  */
-function exerciseCrossBundleErrors(label, coreMod, driverMod) {
+function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;
   try {
     new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
@@ -84,27 +97,48 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod) {
   }
   console.log(`  cross-bundle error predicates OK: ${label}`);
 
-  // Same boundary, second brand. A backend built in the /s3 bundle must be recognised by the store in the
-  // MAIN bundle — that is the whole reason the brand is a registered `Symbol.for` and not a class check or a
-  // module-local symbol. Nothing else pins it: switching it to plain `Symbol()` leaves lint, typecheck, the
-  // full 2200-test suite and this script's other checks green, while every CJS user of a driver subpath gets
-  // `storage must be a backend` for a backend they just constructed. ESM cannot see it — esbuild shares one
-  // chunk across ESM subpaths — so the CJS half of this check is the load-bearing one.
+  // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
+  // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
+  // Nothing else pins it: switching it to a plain `Symbol()` leaves lint, typecheck and the full suite green
+  // while every user of a driver subpath gets `storage must be a backend` for a backend they just built.
   const s3Backend = new driverMod.S3Storage({ bucket: 'smoke', region: 'us-east-1' });
   if (!coreMod.isStorageBackend(s3Backend)) {
     throw new Error(
-      `${label}: a backend from the /s3 bundle is not recognised by core — cross-bundle brand broken`,
+      `${label}: a backend from the /s3 bundle is not recognised — cross-copy brand broken`,
     );
   }
   let backendErr;
   try {
-    new coreMod.CloudRoaring({ storage: s3Backend });
+    new storeMod.CloudRoaring({ storage: s3Backend });
   } catch (e) {
     backendErr = e;
   }
   if (backendErr !== undefined)
     throw new Error(`${label}: the store rejected an /s3 backend: ${backendErr.message}`);
   console.log(`  cross-bundle backend brand OK: ${label}`);
+}
+
+/**
+ * Prove the two packages really are separate copies, so the cross-package leg above is not quietly testing
+ * one bundle against itself. If a future build ever merges them, `instanceof` starts succeeding here and
+ * this fails loudly rather than leaving the brand check to pass for the wrong reason.
+ */
+function assertPackagesAreSeparateCopies(coreMod, driverMod) {
+  let caught;
+  try {
+    new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
+  } catch (e) {
+    caught = e;
+  }
+  if (caught instanceof coreMod.ValidationError) {
+    throw new Error(
+      'the core and roaring packages now share one copy of the error classes, so the cross-package brand ' +
+        'check no longer crosses anything — point it at a boundary that still exists, or drop it.',
+    );
+  }
+  console.log(
+    '  core and roaring are separate copies (instanceof across them is false, as designed)',
+  );
 }
 
 /*
@@ -308,8 +342,18 @@ async function main() {
   await exerciseCore('esm', await import(PKG));
   await exerciseCore('cjs', require(PKG));
 
+  // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
   exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/s3'));
   exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/s3'));
+  // The leg that can actually fail: two separately bundled packages, each with its own class copy.
+  assertPackagesAreSeparateCopies(require(CORE), require(PKG + '/s3'));
+  exerciseCrossBundleErrors('cross-package', require(CORE), require(PKG + '/s3'), require(PKG));
+  exerciseCrossBundleErrors(
+    'cross-package (core driver → roaring store)',
+    require(CORE),
+    require(CORE + '/s3'),
+    require(PKG),
+  );
   for (const pkgDir of require('node:fs')
     .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
     .filter((e) => e.isDirectory())
