@@ -8,6 +8,9 @@ import {
   bulkLoadCrbmGeneration,
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
+import { MemoryStorageChunkSource, SafeBitmap } from '@/index';
+import { TransientError } from '@/core/errors';
+import type { ChunkRef, Clock, SegmentRef as Ref, StorageChunkSource } from '@/index';
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 
@@ -168,5 +171,89 @@ describe('an option that moved into a group is refused, not ignored', () => {
           seams: { rng: { next: () => 0.5 } },
         }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * A partial policy is the whole point of the `retry` group — and it is also what put this hazard in reach.
+ *
+ * `{ ...DEFAULT_RETRY_POLICY, ...overrides }` lets a key that is PRESENT WITH VALUE `undefined` overwrite the
+ * default instead of falling back to it. `exactOptionalPropertyTypes` is off in this repo, so
+ * `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent — the ordinary
+ * shape for a value read from env or JSON. The delays became `NaN`; `SystemClock.sleep` then takes the
+ * `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms. Bounded jittered backoff silently becomes a
+ * ~1 ms hot retry loop: the read still succeeds, the retry metric still emits, and the thundering-herd and
+ * denial-of-wallet protection is gone with nothing to see. Every one of these was a compile error before the
+ * policy became a `Partial`.
+ */
+describe('a partial retry policy fills from the default, even for an explicit undefined', () => {
+  const recordingClock = (): Clock & { sleeps: number[] } => {
+    const sleeps: number[] = [];
+    return {
+      now: () => 0,
+      sleep: (ms: number) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+      sleeps,
+    };
+  };
+
+  class FlakyOnce implements StorageChunkSource {
+    private fails = 0;
+    constructor(
+      private readonly inner: MemoryStorageChunkSource,
+      private readonly failTimes: number,
+    ) {}
+    getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
+      if (this.fails < this.failTimes) {
+        this.fails += 1;
+        return Promise.reject(new TransientError('injected blip'));
+      }
+      return this.inner.getChunk(ref);
+    }
+    listChunkKeys(ref: Ref): Promise<number[]> {
+      return this.inner.listChunkKeys(ref);
+    }
+  }
+
+  const sleepsFor = async (retry: Record<string, unknown>): Promise<number[]> => {
+    const inner = new MemoryStorageChunkSource();
+    inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([42]).serialize());
+    const clock = recordingClock();
+    const store = new CloudRoaring({
+      storage: new FlakyOnce(inner, 2),
+      retry: retry as { maxAttempts?: number },
+      // `next: () => 1` under full jitter makes the wait exactly the computed delay, so the schedule is exact.
+      seams: { clock, rng: { next: () => 1 } },
+    });
+    expect(await store.segment('s').has(42)).toBe(true);
+    return clock.sleeps;
+  };
+
+  it('an empty partial is exactly the default schedule', async () => {
+    expect(await sleepsFor({})).toEqual([50, 100]);
+  });
+
+  it('one override keeps the other four defaults', async () => {
+    expect(await sleepsFor({ baseDelayMs: 7 })).toEqual([7, 14]);
+  });
+
+  // The regression. Each of these produced NaN delays — a ~1 ms hot loop — under a plain spread.
+  it.each(['baseDelayMs', 'maxDelayMs', 'backoffFactor', 'maxAttempts', 'jitter'])(
+    'an explicitly-undefined `%s` falls back to the default rather than erasing it',
+    async (field) => {
+      expect(await sleepsFor({ [field]: undefined })).toEqual([50, 100]);
+    },
+  );
+});
+
+describe('a nullish options bag is a typed error, not a TypeError', () => {
+  // The constructor reads `options.seams?.clock` before anything validates the bag, so without this guard
+  // `new CloudRoaring(null)` threw a raw `TypeError: Cannot read properties of null (reading 'seams')`.
+  it.each([null, undefined, 42, 'storage'])('rejects %p with a ValidationError', (bad) => {
+    expect(() => new CloudRoaring(bad as unknown as { storage: MemoryStorage })).toThrow(
+      ValidationError,
+    );
   });
 });

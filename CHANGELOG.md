@@ -69,7 +69,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 - **`retry` now takes a *partial* policy.** It was a whole `RetryPolicy`, so changing one field meant restating
   all five, and `onRetry` was a sibling key that could not be given without one. `retry: { maxAttempts: 6 }`
   and `retry: { onRetry }` are both legal now; anything omitted keeps its `DEFAULT_RETRY_POLICY` value.
-  `retry: false` is unchanged.
+  `retry: false` is unchanged. A field that is **present with value `undefined`** — the shape you get from
+  `retry: { baseDelayMs: cfg.baseDelayMs }` when the config key is absent — also falls back to the default
+  rather than erasing it.
 
 ### Added
 

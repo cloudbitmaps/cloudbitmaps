@@ -579,7 +579,14 @@ export class CloudRoaring {
    * for why each of these is unsafe to drop rather than merely untidy.
    */
   private static rejectMovedOptions(options: CloudRoaringOptions): void {
-    if (options === null || typeof options !== 'object') return; // resolveStorageSource reports this better
+    // A nullish or non-object bag never reaches `resolveStorageSource` — the constructor reads
+    // `options.seams?.clock` first and would throw a raw TypeError. Report it here, typed, instead.
+    if (options === null || options === undefined || typeof options !== 'object') {
+      throw new ValidationError(
+        'CloudRoaring needs an options object with a `storage` key — got ' +
+          (options === null ? 'null' : typeof options),
+      );
+    }
     const bag = options as unknown as Record<string, unknown>;
     const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
     if (moved.length === 0) return;
@@ -613,8 +620,23 @@ export class CloudRoaring {
     if (options.retry !== false) {
       // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five. The grouped form
       // takes a partial and fills the rest from the default — `{ onRetry }` alone is now a legal, useful value.
-      const { onRetry: userOnRetry, ...policyOverrides } = options.retry ?? {};
-      const policy: RetryPolicy = { ...DEFAULT_RETRY_POLICY, ...policyOverrides };
+      //
+      // Field by field with `??`, NOT `{ ...DEFAULT, ...overrides }`. A spread lets a key that is *present with
+      // value `undefined`* overwrite the default instead of falling back to it, and `exactOptionalPropertyTypes`
+      // is off, so `retry: { baseDelayMs: cfg.baseDelayMs }` typechecks clean when `cfg.baseDelayMs` is absent —
+      // the ordinary shape for a value read from env or JSON. The result was `NaN` delays; `SystemClock.sleep`
+      // takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms, so bounded jittered backoff
+      // silently became a ~1 ms hot retry loop with the read still succeeding and the retry metric still
+      // emitting. That is the thundering-herd and denial-of-wallet protection gone with nothing to see.
+      // Making the policy a `Partial` is what put this in reach: every one of these was a compile error before.
+      const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
+      const policy: RetryPolicy = {
+        maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
+        baseDelayMs: ov.baseDelayMs ?? DEFAULT_RETRY_POLICY.baseDelayMs,
+        maxDelayMs: ov.maxDelayMs ?? DEFAULT_RETRY_POLICY.maxDelayMs,
+        backoffFactor: ov.backoffFactor ?? DEFAULT_RETRY_POLICY.backoffFactor,
+        jitter: ov.jitter ?? DEFAULT_RETRY_POLICY.jitter,
+      };
       const retryOpts: RetryingOptions = {
         clock,
         rng,
