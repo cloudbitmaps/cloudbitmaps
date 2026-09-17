@@ -232,7 +232,7 @@
           </div>
           <!-- This table argued adaptivity and, until 0.6.0, offered nothing to check it against. Worse, the
                "and run" in the row above was not true of the shipped codec: roaring's run form is never
-               selected automatically, it takes an explicit pass, and the library was not making it — so cold
+               selected automatically, it takes an explicit pass, and the library was not making it — so storage
                objects only ever held arrays and bitsets. `pnpm bench:encoding` was written to substantiate the
                claim and instead found that, which is the better outcome. The figures below are that
                benchmark's, gated against bench/encoding-results.json.
@@ -611,18 +611,18 @@
           </div>
           <div class="install">
             <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
-            <pre><code><span class="k">import</span> { CloudRoaring, MemoryColdDriver, MemoryRegistryDriver,
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver,
   bulkLoadCrbmGeneration } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
-<span class="k">const</span> cold = <span class="k">new</span> MemoryColdDriver();
+<span class="k">const</span> storage = <span class="k">new</span> MemoryStorageDriver();
 <span class="k">const</span> registry = <span class="k">new</span> MemoryRegistryDriver();
 
 <span class="c">// the whole set, as one immutable generation</span>
-<span class="k">await</span> bulkLoadCrbmGeneration(cold,
+<span class="k">await</span> bulkLoadCrbmGeneration(storage,
   { segment: <span class="s">'high-value-shoppers'</span>, generation: <span class="n">0</span> },
   [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>], { registry });
 
-<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ cold, registry });
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage, registry });
 <span class="k">await</span> store.segment(<span class="s">'high-value-shoppers'</span>).has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span></code></pre>
             <p class="link-row"><a href="../usage.html">Every driver and its peer deps →</a></p>
           </div>

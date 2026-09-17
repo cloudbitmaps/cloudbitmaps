@@ -2,18 +2,18 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
-import { coldObjectPath, segmentsDir } from '@/drivers/localfs/paths';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
+import { storageObjectPath, segmentsDir } from '@/drivers/localfs/paths';
 import type { BlobSink } from '@/core/blob';
 import type { GenKey } from '@/core/ports';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 
 let root: string;
-let driver: LocalFsColdDriver;
+let driver: LocalFsStorageDriver;
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'crbm-cold-'));
-  driver = new LocalFsColdDriver(root);
+  root = await mkdtemp(join(tmpdir(), 'crbm-storage-'));
+  driver = new LocalFsStorageDriver(root);
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
@@ -26,7 +26,7 @@ const writeBytes =
     for (const p of parts) await sink.write(p);
   };
 
-describe('LocalFsColdDriver', () => {
+describe('LocalFsStorageDriver', () => {
   it('advertises range-read capability', () => {
     expect(driver.capabilities().rangeRead).toBe(true);
   });
@@ -133,7 +133,7 @@ describe('LocalFsColdDriver', () => {
   it('refuses to follow a symlink at the object path', async () => {
     const secret = join(root, 'secret.bin');
     await writeFile(secret, 'topsecret');
-    const target = coldObjectPath(root, KEY);
+    const target = storageObjectPath(root, KEY);
     await mkdir(dirname(target), { recursive: true });
     await symlink(secret, target);
     await expect(driver.getRange(KEY, 0, 1)).rejects.toBeInstanceOf(NotFoundError);

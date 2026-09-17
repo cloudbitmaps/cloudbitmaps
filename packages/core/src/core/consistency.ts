@@ -1,13 +1,13 @@
 /**
  * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`) and the immutable `.crbm`
- * generations can be restored **independently**, so a failover can recover the registry *ahead of* the cold
+ * generations can be restored **independently**, so a failover can recover the registry *ahead of* the storage
  * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
  * than it sounds even now that both usually live in one bucket: a restore scoped to a prefix, or replayed
  * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
- * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Cold is intentionally
- * gone/unreadable, not a torn restore. A segment whose Cold/registry can't be read this pass is recorded in
+ * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
+ * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). Each segment is checked against its **authoritative live pointer** — one
  * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which can be
  * eventually-consistent (an unindexed Scan) and lag a recent in-place pointer advance: trusting it would both
@@ -20,7 +20,7 @@
 import { mapWithConcurrency } from './concurrency';
 import { ValidationError } from './errors';
 import { DEFAULT_MAX_SCAN_SEGMENTS, drainRegistry } from './registry-scan';
-import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
+import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 
 /** Default in-flight fan-out for the consistency scan — bounded, no thundering herd. */
 /**
@@ -42,13 +42,13 @@ const DEFAULT_CHECK_CONCURRENCY = 8;
 export interface ConsistencyIssue {
   readonly segment: string;
   readonly namespace?: string;
-  /** The registry's `currentGen` for the segment — the generation whose `.crbm` is missing from Cold. */
+  /** The registry's `currentGen` for the segment — the generation whose `.crbm` is missing from Storage. */
   readonly currentGen: number;
-  /** The only issue class today: `currentGen` references a Cold generation that is not present (torn restore). */
-  readonly issue: 'missing-cold-generation';
+  /** The only issue class today: `currentGen` references a Storage generation that is not present (torn restore). */
+  readonly issue: 'missing-storage-generation';
 }
 
-/** A segment that could not be checked this pass (Cold/registry read fault) — not proof of a torn restore. */
+/** A segment that could not be checked this pass (Storage/registry read fault) — not proof of a torn restore. */
 export interface ConsistencyErrorEntry {
   readonly segment: string;
   readonly namespace?: string;
@@ -70,9 +70,9 @@ export interface ConsistencyReport {
 }
 
 /** Collect the set of generations the object store currently lists for a segment. */
-async function generationsPresent(cold: IColdDriver, ref: SegmentRef): Promise<Set<number>> {
+async function generationsPresent(storage: IStorageDriver, ref: SegmentRef): Promise<Set<number>> {
   const present = new Set<number>();
-  for await (const key of cold.list(ref)) present.add(key.generation);
+  for await (const key of storage.list(ref)) present.add(key.generation);
   return present;
 }
 
@@ -82,13 +82,13 @@ type Outcome =
   | { readonly kind: 'error'; readonly error: ConsistencyErrorEntry };
 
 /**
- * Verify every registered segment's `currentGen` `.crbm` actually exists in Cold. Enumerates the registry
+ * Verify every registered segment's `currentGen` `.crbm` actually exists in Storage. Enumerates the registry
  * (optionally one namespace) and, for each non-`destroyed` segment, checks the object store lists that
  * generation. Returns the torn segments in `inconsistent` (empty ⇒ coherent) and any unreadable segments in
  * `errored`.
  */
 export async function runConsistencyCheck(
-  deps: { readonly cold: IColdDriver; readonly registry: IRegistryDriver },
+  deps: { readonly storage: IStorageDriver; readonly registry: IRegistryDriver },
   options: { namespace?: string; concurrency?: number; maxScanSegments?: number } = {},
 ): Promise<ConsistencyReport> {
   const concurrency = options.concurrency ?? DEFAULT_CHECK_CONCURRENCY;
@@ -105,7 +105,7 @@ export async function runConsistencyCheck(
     op: 'checkConsistency',
   });
   const results = await mapWithConcurrency(recs, concurrency, async (rec): Promise<Outcome> => {
-    if (rec.status === 'destroyed') return { kind: 'ok' }; // Cold intentionally gone — not a torn restore
+    if (rec.status === 'destroyed') return { kind: 'ok' }; // Storage intentionally gone — not a torn restore
     const ref: SegmentRef = { segment: rec.segment, namespace: rec.namespace };
     try {
       // Resolve the AUTHORITATIVE live pointer (strong read) — not the drained `rec.currentGen`, which the
@@ -113,12 +113,12 @@ export async function runConsistencyCheck(
       // enumerate + skip destroyed segments.
       const live = await deps.registry.get(ref);
       if (!live || live.status === 'destroyed') return { kind: 'ok' }; // vanished/shredded — no live pointer
-      // A row with no Cold generation is *deliberately* Cold-less — a retention policy recorded before the first
+      // A row with no Storage generation is *deliberately* Storage-less — a retention policy recorded before the first
       // load, given a row so the segment is enumerable at all. There is no generation that ought to exist, so nothing can be missing. Reporting it
-      // would make `missing-cold-generation` fire on the healthy steady state of every such segment, which is the
+      // would make `missing-storage-generation` fire on the healthy steady state of every such segment, which is the
       // opposite of what a DR triage needs: the one real signal drowned in expected noise.
       if (live.currentGen === null) return { kind: 'ok' };
-      const present = await generationsPresent(deps.cold, ref);
+      const present = await generationsPresent(deps.storage, ref);
       if (present.has(live.currentGen)) return { kind: 'ok' };
       return {
         kind: 'issue',
@@ -126,7 +126,7 @@ export async function runConsistencyCheck(
           segment: rec.segment,
           namespace: rec.namespace,
           currentGen: live.currentGen,
-          issue: 'missing-cold-generation',
+          issue: 'missing-storage-generation',
         },
       };
     } catch (error) {

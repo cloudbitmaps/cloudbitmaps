@@ -1,11 +1,11 @@
 import {
   CloudRoaring,
   CountingMetricsSink,
-  MemoryColdChunkSource,
+  MemoryStorageChunkSource,
   TransientError,
   ValidationError,
 } from '@/index';
-import type { ChunkRef, Clock, ColdChunkSource, Rng, SegmentRef } from '@/index';
+import type { ChunkRef, Clock, StorageChunkSource, Rng, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
 import { joinId } from '@/core/bit-route';
@@ -15,11 +15,11 @@ import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loade
 const instantClock: Clock = { now: () => 0, sleep: () => Promise.resolve() };
 const zeroRng: Rng = { next: () => 0 };
 
-/** A cold source that delegates to an in-memory one but fails its first `transientOnGet` payload reads. */
-class FaultyCold implements ColdChunkSource {
+/** A storage source that delegates to an in-memory one but fails its first `transientOnGet` payload reads. */
+class FaultyStorage implements StorageChunkSource {
   private gets = 0;
   constructor(
-    private readonly inner: MemoryColdChunkSource,
+    private readonly inner: MemoryStorageChunkSource,
     private readonly transientOnGet: number,
   ) {}
   async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -38,7 +38,7 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(await store.segment('users').has(5)).toBe(true);
   });
 
-  it('has() emits cache miss + cold.get + op:has on the first read, a cache hit on the second', async () => {
+  it('has() emits cache miss + storage.get + op:has on the first read, a cache hit on the second', async () => {
     const counter = new CountingMetricsSink();
     const { store } = seededStore({ users: [5] }, { metrics: counter });
     const s = store.segment('users');
@@ -46,14 +46,14 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(await s.has(5)).toBe(true);
     let snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 1 });
-    expect(snap.cold.gets).toBe(1);
-    expect(snap.cold.bytes).toBeGreaterThan(0);
+    expect(snap.storage.gets).toBe(1);
+    expect(snap.storage.bytes).toBeGreaterThan(0);
     expect(snap.ops.has.count).toBe(1);
 
     expect(await s.has(5)).toBe(true);
     snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 1, misses: 1 });
-    expect(snap.cold.gets).toBe(1); // served from cache — no new cold read
+    expect(snap.storage.gets).toBe(1); // served from cache — no new storage read
     expect(snap.ops.has.count).toBe(2);
   });
 
@@ -63,22 +63,22 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(await store.segment('s').count()).toBe(3);
     let snap = counter.snapshot();
     expect(snap.ops.count.count).toBe(1);
-    expect(snap.cold.gets).toBe(0); // summed from the .crbm index
+    expect(snap.storage.gets).toBe(0); // summed from the .crbm index
 
     const fallback = new CountingMetricsSink();
     const seeded = seededStore({ s: [1, 70_000, 140_000] }, { metrics: fallback });
     expect(await seeded.store.segment('s').count()).toBe(3);
     snap = fallback.snapshot();
     expect(snap.ops.count.count).toBe(1);
-    expect(snap.cold.gets).toBe(3); // no index on the in-memory source → one fetch per chunk
+    expect(snap.storage.gets).toBe(3); // no index on the in-memory source → one fetch per chunk
   });
 
   it('intersect emits fetched vs skipped chunk counts (the chunk-skipping saving)', async () => {
     const counter = new CountingMetricsSink();
-    const { store, cold } = seededStore({}, { metrics: counter });
+    const { store, storage } = seededStore({}, { metrics: counter });
     // segment a: chunk keys {0, 1, 2}; segment b: {1, 3}. Shared: {1}. Distinct across both: {0,1,2,3}.
-    seedSegment(cold, 'a', [joinId(0, 1), joinId(1, 7), joinId(2, 1)]);
-    seedSegment(cold, 'b', [joinId(1, 7), joinId(3, 1)]);
+    seedSegment(storage, 'a', [joinId(0, 1), joinId(1, 7), joinId(2, 1)]);
+    seedSegment(storage, 'b', [joinId(1, 7), joinId(3, 1)]);
 
     const out = await collect(store.segment('a').intersect([store.segment('b')]));
 
@@ -89,12 +89,12 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(out).toEqual([65_543]); // chunk 1, remainder 7 → 65536 + 7
   });
 
-  it('emits a transient retry when a cold read throws TransientError, then serves the read', async () => {
+  it('emits a transient retry when a storage read throws TransientError, then serves the read', async () => {
     const counter = new CountingMetricsSink();
-    const inner = new MemoryColdChunkSource();
+    const inner = new MemoryStorageChunkSource();
     seedSegment(inner, 'users', [5]);
     const store = new CloudRoaring({
-      cold: new FaultyCold(inner, 1),
+      storage: new FaultyStorage(inner, 1),
       metrics: counter,
       clock: instantClock,
       rng: zeroRng,
@@ -102,7 +102,7 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(await store.segment('users').has(5)).toBe(true);
     const snap = counter.snapshot();
     expect(snap.retries.transient).toBe(1);
-    expect(snap.cold.gets).toBe(1); // the retry happens inside the one GET the engine observes
+    expect(snap.storage.gets).toBe(1); // the retry happens inside the one GET the engine observes
   });
 
   it('a throwing metrics sink never breaks a read', async () => {
@@ -143,15 +143,15 @@ describe('metrics emission (via CloudRoaring)', () => {
     expect(ops.has.count).toBe(0);
   });
 
-  it('no cache configured → cold.get still emitted, no cache events (direct engine)', async () => {
+  it('no cache configured → storage.get still emitted, no cache events (direct engine)', async () => {
     const counter = new CountingMetricsSink();
-    const cold = new MemoryColdChunkSource();
-    seedSegment(cold, 'users', [5]);
+    const storage = new MemoryStorageChunkSource();
+    seedSegment(storage, 'users', [5]);
     // No `cache` in EngineDeps → the cache branch is skipped entirely.
-    const engine = new SegmentEngine({ codec: roaringCodec, cold, metrics: counter });
+    const engine = new SegmentEngine({ codec: roaringCodec, storage, metrics: counter });
     expect(await engine.has({ segment: 'users' }, 5)).toBe(true);
     const snap = counter.snapshot();
     expect(snap.cache).toEqual({ hits: 0, misses: 0 }); // no spurious cache events without a cache
-    expect(snap.cold.gets).toBe(1);
+    expect(snap.storage.gets).toBe(1);
   });
 });

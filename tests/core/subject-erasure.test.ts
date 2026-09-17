@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
   destroySegment,
 } from '@/index';
-import type { BlobSink, GenKey, IColdDriver, IKeystore, SegmentRef } from '@/index';
+import type { BlobSink, GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
   BudgetExceededError,
@@ -35,10 +35,10 @@ const k = (): Uint8Array => randomBytes(32);
 async function world(keystore?: IKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
   // A FRESH store for every post-erase read: the fixture passes no clock, so a store pins a segment's resolved
-  // generation (and its hot chunks) for its lifetime — the documented `coldGenTtlMs: 0` caveat. A reader that
+  // generation (and its hot chunks) for its lifetime — the documented `storageGenTtlMs: 0` caveat. A reader that
   // touched the segment before the erase would keep answering from that snapshot.
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
   const seed = (segment: string, ids: number[], namespace = NS) =>
     w.load({ namespace, segment }, ids);
   return { ...w, reader, seed };
@@ -47,21 +47,21 @@ async function world(keystore?: IKeystore) {
 const members = (store: CloudRoaring, segment: string, namespace = NS): Promise<number[]> =>
   collect(store.segment(segment, { namespace }).iterate());
 
-async function generations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
-  for await (const key of cold.list(ref)) gens.push(key.generation);
+  for await (const key of storage.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
 }
 
-/** Wrap a raw Cold driver so `getTail` (what opening a generation reads first) rejects for one segment. */
-function poisonColdReadOf(base: IColdDriver, segment: string): IColdDriver {
+/** Wrap a raw Storage driver so `getTail` (what opening a generation reads first) rejects for one segment. */
+function poisonStorageReadOf(base: IStorageDriver, segment: string): IStorageDriver {
   return {
     capabilities: () => base.capabilities(),
     putImmutable: (key, wr) => base.putImmutable(key, wr),
     getRange: (key, o, l) => base.getRange(key, o, l),
     getTail: (key, m) =>
       key.segment === segment
-        ? Promise.reject(new Error('poison cold read'))
+        ? Promise.reject(new Error('poison storage read'))
         : base.getTail(key, m),
     delete: (key) => base.delete(key),
     list: (r) => base.list(r),
@@ -134,7 +134,7 @@ describe('subjectReport', () => {
     ).rejects.toBeInstanceOf(ValidationError);
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
-      cold: poisonColdReadOf(w.cold, 'a'), // raw cold → the facade wraps it; the registry resolves generations
+      storage: poisonStorageReadOf(w.storage, 'a'), // raw storage → the facade wraps it; the registry resolves generations
       registry: w.registry,
       retry: false,
     });
@@ -198,8 +198,8 @@ describe('eraseSubject', () => {
     expect(await store.segment('c', { namespace: NS }).count()).toBe(1);
 
     // The bucket: the generation that held the bit is physically gone on return; only the rewrite remains.
-    expect(await generations(w.cold, { namespace: NS, segment: 'a' })).toEqual([1]);
-    expect(await generations(w.cold, { namespace: NS, segment: 'c' })).toEqual([1]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'a' })).toEqual([1]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'c' })).toEqual([1]);
     expect((await w.registry.get({ namespace: NS, segment: 'a' }))!.currentGen).toBe(1);
   });
 
@@ -212,7 +212,7 @@ describe('eraseSubject', () => {
     expect(res.erasedFrom.map((e) => e.segment)).toEqual(['a']);
     // 'b' was never rewritten → still at generation 0, with its original object.
     expect((await w.registry.get({ segment: 'b', namespace: NS }))!.currentGen).toBe(0);
-    expect(await generations(w.cold, { namespace: NS, segment: 'b' })).toEqual([0]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'b' })).toEqual([0]);
   });
 
   it('scopes to a namespace when given one', async () => {
@@ -294,9 +294,9 @@ describe('eraseSubject', () => {
     await w.seed('a', [1, 2, 3]);
     const ref: SegmentRef = { namespace: NS, segment: 'a' };
     let fired = false;
-    const cold = hook(w.cold, 'putImmutable', async (...args: never[]) => {
+    const storage = hook(w.storage, 'putImmutable', async (...args: never[]) => {
       const [key, write] = args as unknown as [GenKey, (sink: BlobSink) => Promise<void>];
-      const out = await w.cold.putImmutable(key, write);
+      const out = await w.storage.putImmutable(key, write);
       if (!fired && key.segment === 'a' && key.generation === 1) {
         fired = true;
         await w.load(ref, [1, 2, 3, 4]); // lands as gen 2 and is published while the rewrite is in flight
@@ -305,13 +305,14 @@ describe('eraseSubject', () => {
     });
     const audit = new RecordingAuditSink();
 
-    const res = await new CloudRoaring({ cold, registry: w.registry, retry: false }).eraseSubject(
-      1,
-      {
-        namespace: NS,
-        audit,
-      },
-    );
+    const res = await new CloudRoaring({
+      storage,
+      registry: w.registry,
+      retry: false,
+    }).eraseSubject(1, {
+      namespace: NS,
+      audit,
+    });
 
     expect(fired).toBe(true);
     expect(res.erasedFrom).toEqual([
@@ -341,14 +342,14 @@ describe('eraseSubject', () => {
       },
     ]);
     expect(await members(w.reader(), 'a')).toEqual([2, 3, 4]);
-    expect(await generations(w.cold, ref)).toEqual([3]);
+    expect(await generations(w.storage, ref)).toEqual([3]);
   });
 
   it('isolates a per-segment read fault — the ledger stays complete, the others are erased', async () => {
     const w = await world();
     for (const s of ['a', 'b', 'poison']) await w.seed(s, [1, 2]);
     const store = new CloudRoaring({
-      cold: poisonColdReadOf(w.cold, 'poison'), // bites when the rewrite opens `poison`'s generation
+      storage: poisonStorageReadOf(w.storage, 'poison'), // bites when the rewrite opens `poison`'s generation
       registry: w.registry,
       retry: false,
     });
@@ -364,32 +365,33 @@ describe('eraseSubject', () => {
       segment: 'poison',
       namespace: NS,
       erased: false,
-      note: 'error: poison cold read',
+      note: 'error: poison storage read',
     });
     // …and it still holds the id, which is what `erased: false` promises.
     expect(await members(w.reader(), 'poison')).toEqual([1, 2]);
     expect(await members(w.reader(), 'a')).toEqual([2]);
   });
 
-  it('isolates a cold WRITE fault too — nothing published, the id honestly still present', async () => {
+  it('isolates a storage WRITE fault too — nothing published, the id honestly still present', async () => {
     const w = await world();
     await w.seed('a', [1, 2, 3]);
     await w.seed('b', [1, 4]);
-    const cold = hook(w.cold, 'putImmutable', () =>
-      Promise.reject(new TransientError('injected cold-write fault')),
+    const storage = hook(w.storage, 'putImmutable', () =>
+      Promise.reject(new TransientError('injected storage-write fault')),
     );
 
-    const res = await new CloudRoaring({ cold, registry: w.registry, retry: false }).eraseSubject(
-      1,
-      {
-        allNamespaces: true,
-      },
-    );
+    const res = await new CloudRoaring({
+      storage,
+      registry: w.registry,
+      retry: false,
+    }).eraseSubject(1, {
+      allNamespaces: true,
+    });
 
     expect(res.erasedFrom).toHaveLength(2); // both member segments recorded, not lost to the first throw
     for (const e of res.erasedFrom) {
       expect(e.erased).toBe(false);
-      expect(e.note).toBe('error: injected cold-write fault');
+      expect(e.note).toBe('error: injected storage-write fault');
       expect(e.generation).toBeUndefined();
     }
     // The pointer never moved, so a fresh reader still sees the id — a failed erasure is not a partial one.
@@ -412,7 +414,7 @@ describe('eraseSubject', () => {
     expect((await w.registry.get(ref))!.wrappedDeks).toEqual(wrappedBefore); // same DEK, not re-minted
     expect(await members(w.reader(), 'enc')).toEqual([1, 3]);
     // The rewritten generation is genuinely encrypted: a store without the keystore cannot read it.
-    const noKeystore = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const noKeystore = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     await expect(members(noKeystore, 'enc')).rejects.toBeInstanceOf(KeyUnavailableError);
   });
 
@@ -420,7 +422,7 @@ describe('eraseSubject', () => {
     const w = await world();
     await w.seed('plain', [1, 2]);
     const strict = new CloudRoaring({
-      cold: w.cold,
+      storage: w.storage,
       registry: w.registry,
       requireEncryption: true,
       retry: false,
@@ -432,7 +434,7 @@ describe('eraseSubject', () => {
     expect(res.erasedFrom[0]).toMatchObject({ segment: 'plain', erased: false });
     expect(res.erasedFrom[0]!.note).toMatch(/^error: requireEncryption/);
     expect(await members(w.reader(), 'plain')).toEqual([1, 2]);
-    expect(await generations(w.cold, { namespace: NS, segment: 'plain' })).toEqual([0]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'plain' })).toEqual([0]);
   });
 
   it('is idempotent — a second run lists nothing and writes nothing', async () => {
@@ -445,45 +447,48 @@ describe('eraseSubject', () => {
 
     expect(again.erasedFrom).toEqual([]);
     expect(again.scannedSegments).toBe(2);
-    expect(await generations(w.cold, { namespace: NS, segment: 'a' })).toEqual([1]);
-    expect(await generations(w.cold, { namespace: NS, segment: 'b' })).toEqual([1]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'a' })).toEqual([1]);
+    expect(await generations(w.storage, { namespace: NS, segment: 'b' })).toEqual([1]);
     expect((await w.registry.get({ namespace: NS, segment: 'a' }))!.currentGen).toBe(1);
   });
 
   it('works with retry left ON (default) — the lifecycle helpers use the raw drivers', async () => {
     const w = await world();
     await w.seed('a', [1, 2, 3]);
-    const res = await new CloudRoaring({ cold: w.cold, registry: w.registry }).eraseSubject(1, {
-      allNamespaces: true,
-    });
+    const res = await new CloudRoaring({ storage: w.storage, registry: w.registry }).eraseSubject(
+      1,
+      {
+        allNamespaces: true,
+      },
+    );
     expect(res.erasedFrom[0]).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
     expect(await members(w.reader(), 'a')).toEqual([2, 3]);
   });
 });
 
-describe('lifecycle helpers require a raw cold driver + registry', () => {
-  it('throws UnsupportedError naming the op when the store was built with a pre-built ColdChunkSource', async () => {
-    const cold = new MemoryColdDriver();
+describe('lifecycle helpers require a raw storage driver + registry', () => {
+  it('throws UnsupportedError naming the op when the store was built with a pre-built StorageChunkSource', async () => {
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
-    // A pre-built-source store has no raw IColdDriver to write through (and can't carry a top-level registry).
+    await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
+    // A pre-built-source store has no raw IStorageDriver to write through (and can't carry a top-level registry).
     const store = new CloudRoaring({
-      cold: new CrbmColdChunkSource(cold, { registry }),
+      storage: new CrbmStorageChunkSource(storage, { registry }),
       retry: false,
     });
-    // eraseSubject fires the cold-driver guard; subjectReport (registry-only) fires the registry guard. Distinct
+    // eraseSubject fires the storage-driver guard; subjectReport (registry-only) fires the registry guard. Distinct
     // messages pin which clause fired, and each names the operation the caller actually invoked.
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toBeInstanceOf(
       UnsupportedError,
     );
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
-      /eraseSubject.*raw cold driver/,
+      /eraseSubject.*raw storage driver/,
     );
     await expect(store.subjectReport(1)).rejects.toThrow(/subjectReport.*registry/);
   });
 
   it('throws UnsupportedError when the store has no registry', async () => {
-    const store = new CloudRoaring({ cold: new MemoryColdDriver() });
+    const store = new CloudRoaring({ storage: new MemoryStorageDriver() });
     await expect(store.eraseSubject(1, { allNamespaces: true })).rejects.toThrow(
       /eraseSubject.*registry/,
     );

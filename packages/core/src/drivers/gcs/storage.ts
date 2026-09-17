@@ -1,5 +1,5 @@
 /**
- * `GcsColdDriver` — an {@link IColdDriver} over Google Cloud Storage.
+ * `GcsStorageDriver` — an {@link IStorageDriver} over Google Cloud Storage.
  *
  * Uses the official `@google-cloud/storage`, an **optional peer dependency** — only consumers of
  * `@cloudbitmaps/roaring/gcs` install it. The `Storage` client is **injected** (dependency injection): the driver owns
@@ -28,9 +28,9 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectName,
+  storageObjectName,
   normalizeGcsPrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
@@ -48,7 +48,7 @@ const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024 * 1024;
  */
 const DEFAULT_UPLOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
-export interface GcsColdDriverOptions {
+export interface GcsStorageDriverOptions {
   /** A constructed `@google-cloud/storage` `Storage` client (point `apiEndpoint` at fake-gcs-server locally). */
   readonly storage: Storage;
   /** Target bucket (must already exist). */
@@ -61,14 +61,14 @@ export interface GcsColdDriverOptions {
   readonly simpleUploadThresholdBytes?: number;
 }
 
-export class GcsColdDriver implements IColdDriver {
+export class GcsStorageDriver implements IStorageDriver {
   private readonly storage: Storage;
   private readonly bucket: string;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly threshold: number;
 
-  constructor(options: GcsColdDriverOptions) {
+  constructor(options: GcsStorageDriverOptions) {
     this.storage = options.storage;
     this.bucket = options.bucket;
     this.prefix = normalizeGcsPrefix(options.prefix);
@@ -76,7 +76,7 @@ export class GcsColdDriver implements IColdDriver {
     this.threshold = options.simpleUploadThresholdBytes ?? DEFAULT_UPLOAD_THRESHOLD_BYTES;
   }
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
   }
 
@@ -88,7 +88,7 @@ export class GcsColdDriver implements IColdDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = coldObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
     const sink = new GcsUploadSink(this.file(objectName), this.maxObjectBytes, this.threshold);
     try {
       await write(sink);
@@ -111,7 +111,7 @@ export class GcsColdDriver implements IColdDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // GCS `end` is inclusive.
       const [buf] = await this.file(objectName).download({
@@ -131,7 +131,7 @@ export class GcsColdDriver implements IColdDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // Two round-trips (metadata for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op hot
@@ -153,7 +153,7 @@ export class GcsColdDriver implements IColdDriver {
   async delete(key: GenKey): Promise<void> {
     // Idempotent: `ignoreNotFound` so a racing/retried GC sweep of an absent object is a no-op.
     try {
-      await this.file(coldObjectName(this.prefix, key)).delete({ ignoreNotFound: true });
+      await this.file(storageObjectName(this.prefix, key)).delete({ ignoreNotFound: true });
     } catch (err) {
       throw this.mapError(err);
     }

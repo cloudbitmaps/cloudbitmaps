@@ -1,5 +1,5 @@
-import { BudgetExceededError, CloudRoaring, MemoryColdChunkSource, type Clock } from '@/index';
-import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import { BudgetExceededError, CloudRoaring, MemoryStorageChunkSource, type Clock } from '@/index';
+import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { joinId, splitId } from '@/core/bit-route';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
@@ -20,10 +20,10 @@ import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 // Correctness is checked against `Set` oracles throughout, since these are set operations and the oracle is
 // trivially right.
 
-/** Counts the (segment, chunkKey) pairs actually fetched from cold, so chunk-skipping is observable. */
-class CountingCold implements ColdChunkSource {
+/** Counts the (segment, chunkKey) pairs actually fetched from storage, so chunk-skipping is observable. */
+class CountingStorage implements StorageChunkSource {
   fetched: string[] = [];
-  readonly inner = new MemoryColdChunkSource();
+  readonly inner = new MemoryStorageChunkSource();
   getChunk = (ref: ChunkRef): Promise<Uint8Array | null> => {
     this.fetched.push(`${ref.segment}#${ref.chunkKey}`);
     return this.inner.getChunk(ref);
@@ -36,13 +36,13 @@ class CountingCold implements ColdChunkSource {
 
 /** A store over a counting source; `seed` writes a segment's chunks exactly as a `.crbm` generation holds them. */
 function harness(): {
-  cold: CountingCold;
+  storage: CountingStorage;
   store: CloudRoaring;
   seed: (segment: string, ids: number[]) => void;
 } {
-  const cold = new CountingCold();
-  const store = new CloudRoaring({ cold });
-  return { cold, store, seed: (segment, ids) => void seedSegment(cold.inner, segment, ids) };
+  const storage = new CountingStorage();
+  const store = new CloudRoaring({ storage });
+  return { storage, store, seed: (segment, ids) => void seedSegment(storage.inner, segment, ids) };
 }
 
 function fakeClock(): Clock & { advance: (ms: number) => void } {
@@ -118,7 +118,7 @@ describe('union / andNot / intersect(exclude)', () => {
     // The property that actually belongs to the filter is the inverse shape: a **wide audience** against a
     // **narrow** suppression list. Every surviving key is visited, and at all but one of them `s` holds
     // nothing — so a fetch there is pure waste. That is the thing worth asserting.
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     const wide = Array.from({ length: 40 }, (_, i) => i + 1);
     seed('a', spread(wide));
     seed('b', spread(wide));
@@ -127,10 +127,10 @@ describe('union / andNot / intersect(exclude)', () => {
 
     await collect(a.intersect([b], { exclude: [s] }));
     // Positive control first: the counter is live and every surviving key really was visited.
-    expect(cold.fetchedFor('a')).toBe(40);
-    expect(cold.fetchedFor('b')).toBe(40);
+    expect(storage.fetchedFor('a')).toBe(40);
+    expect(storage.fetchedFor('b')).toBe(40);
     // The claim: `s` is touched at the one key it holds, not at all 40.
-    expect(cold.fetchedFor('s')).toBe(1);
+    expect(storage.fetchedFor('s')).toBe(1);
   });
 
   it('never lets an exclude introduce a key the includes do not have', async () => {
@@ -140,40 +140,40 @@ describe('union / andNot / intersect(exclude)', () => {
     // The RESULT cannot show this: under mode 'all' the `operands.every(...)` filter is a second independent
     // guard, and even a wrongly-admitted key returns null from an empty AND. Adding exclude keys to
     // `candidates` therefore leaves the ids unchanged and only costs money — so this asserts on FETCHES.
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     seed('a', spread([1]));
     seed('b', spread([1]));
     seed('s', spread([2, 3, 4])); // disjoint from the result entirely
     const [a, b, s] = [store.segment('a'), store.segment('b'), store.segment('s')];
 
     expect(await collect(a.intersect([b], { exclude: [s] }))).toEqual(spread([1]));
-    expect(cold.fetchedFor('a')).toBe(1); // positive control: the counter is live
-    expect(cold.fetchedFor('s')).toBe(0); // the claim: a disjoint suppression list is never touched
+    expect(storage.fetchedFor('a')).toBe(1); // positive control: the counter is live
+    expect(storage.fetchedFor('s')).toBe(0); // the claim: a disjoint suppression list is never touched
   });
 
   it('applies exclude on the UNION path too — the mode with no chunk-skipping', async () => {
     // `union` accepts `exclude` and nothing exercised it. It is also the mode where a wrongly-admitted exclude
     // key WOULD change the result, since 'any' has no second guard to catch it.
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     seed('a', spread([1, 2]));
     seed('b', spread([3]));
     seed('s', [...spread([2]), ...spread([9])]); // overlaps key 2; key 9 is in neither include
     const [a, b, s] = [store.segment('a'), store.segment('b'), store.segment('s')];
 
     expect(await collect(a.union([b], { exclude: [s] }))).toEqual(spread([1, 3]));
-    expect(cold.fetchedFor('s')).toBe(1); // only key 2 — never key 9, which no include holds
+    expect(storage.fetchedFor('s')).toBe(1); // only key 2 — never key 9, which no include holds
   });
 
   it('union reads every chunk of every operand — the cost model it publishes', async () => {
     // The file header calls this one of the two properties it exists to pin. Union cannot prune: an id in ANY
     // operand belongs to the result, so every operand is read at every key it holds.
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     seed('a', spread([1, 2, 3])); // 3 keys
     seed('b', spread([3, 4])); // 2 keys, overlapping on one
 
     await collect(store.segment('a').union([store.segment('b')]));
-    expect(cold.fetchedFor('a')).toBe(3);
-    expect(cold.fetchedFor('b')).toBe(2);
+    expect(storage.fetchedFor('a')).toBe(3);
+    expect(storage.fetchedFor('b')).toBe(2);
   });
 
   it('union is budgeted like intersect, so a wide one is refused rather than billed', async () => {
@@ -281,7 +281,7 @@ describe('*Into — each op materializes a NEW GENERATION of its destination', (
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: spread([1]), b: spread([2]), dest: spread([9]) },
-      { clock, coldGenTtlMs: 1 },
+      { clock, storageGenTtlMs: 1 },
     );
     const dest = store.segment('dest');
     expect(await dest.count()).toBe(3); // its own generation 0
@@ -290,7 +290,7 @@ describe('*Into — each op materializes a NEW GENERATION of its destination', (
     expect(result.generation).toBe(1);
     expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(1);
 
-    clock.advance(1); // the reader's generation snapshot refreshes after coldGenTtlMs
+    clock.advance(1); // the reader's generation snapshot refreshes after storageGenTtlMs
     expect(await collect(dest.iterate())).toEqual(spread([1, 2])); // chunk 9 is gone — nothing was merged
     expect(await dest.count()).toBe(6);
   });

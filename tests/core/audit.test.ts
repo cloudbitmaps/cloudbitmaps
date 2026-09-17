@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
-  MemoryColdDriver,
+  CrbmStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   NOOP_AUDIT,
   RecordingAuditSink,
@@ -30,17 +30,17 @@ const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
 function world(keystore?: IKeystore) {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   // Wide enough for every emitter here: `{ registry }` is all the crypto-shred paths need, and the erasure
   // rewrite additionally reads/writes objects. The codec is pre-bound by the facade's `eraseIdFromSegment`.
-  const deps = { cold, registry, keystore };
+  const deps = { storage, registry, keystore };
   const store = (): CloudRoaring =>
     new CloudRoaring({
-      cold: new CrbmColdChunkSource(cold, { registry, keystore }),
+      storage: new CrbmStorageChunkSource(storage, { registry, keystore }),
       retry: false,
     });
-  return { cold, registry, deps, store };
+  return { storage, registry, deps, store };
 }
 
 const THROWS: IAuditSinkLike = {
@@ -108,7 +108,7 @@ describe('audit: segment.publish (bulk-load)', () => {
     const w = world();
     const audit = new RecordingAuditSink();
     await bulkLoadCrbmGeneration(
-      w.cold,
+      w.storage,
       { namespace: 'ns', segment: 's', generation: 3 },
       [1, 2, 3],
       { registry: w.registry, audit },
@@ -121,19 +121,23 @@ describe('audit: segment.publish (bulk-load)', () => {
   it('emits nothing without a registry (there is no published "current generation")', async () => {
     const w = world();
     const audit = new RecordingAuditSink();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], { audit });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], { audit });
     expect(audit.snapshot()).toEqual([]);
   });
 
   it('does NOT emit when a forward-only publish no-ops (a generation below the current one)', async () => {
     const w = world();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], { registry: w.registry });
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 5 }, [2], { registry: w.registry });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {
+      registry: w.registry,
+    });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [2], {
+      registry: w.registry,
+    });
     expect((await w.registry.get(SEG))!.currentGen).toBe(5);
     const audit = new RecordingAuditSink();
 
     // Writes a fresh gen-3 object, but currentGen (5) never regresses → gen 3 does not become current.
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 3 }, [3], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 3 }, [3], {
       registry: w.registry,
       audit,
     });
@@ -143,7 +147,7 @@ describe('audit: segment.publish (bulk-load)', () => {
 
   it('a throwing audit sink never breaks the bulk-load', async () => {
     const w = world();
-    const res = await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    const res = await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
       audit: THROWS,
     });
@@ -160,7 +164,7 @@ describe('audit: segment.rewrite (subject erasure)', () => {
   it('emits rewrite once at the publish, carrying namespace + fromGeneration/generation', async () => {
     const w = world();
     await bulkLoadCrbmGeneration(
-      w.cold,
+      w.storage,
       { namespace: 'ns', segment: 's', generation: 0 },
       [1, 2, 3, 100_000],
       { registry: w.registry },
@@ -179,7 +183,7 @@ describe('audit: segment.rewrite (subject erasure)', () => {
     // The distinction the two kinds exist for: `segment.publish` means content arrived from outside, and a
     // dashboard that counted a rewrite as a publish would report data ingest that never happened.
     const w = world();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();
@@ -191,7 +195,7 @@ describe('audit: segment.rewrite (subject erasure)', () => {
 
   it('emits nothing when the id is not a member (nothing was rewritten)', async () => {
     const w = world();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();
@@ -204,7 +208,7 @@ describe('audit: segment.rewrite (subject erasure)', () => {
   it('emits nothing when the segment is a crypto-shred tombstone (already unreadable)', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
       keystore,
     });
@@ -218,7 +222,7 @@ describe('audit: segment.rewrite (subject erasure)', () => {
 
   it('a throwing audit sink never breaks the rewrite (the physical half still completes)', async () => {
     const w = world();
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
 
@@ -241,7 +245,7 @@ describe('audit: segment.erase / namespace.erase', () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
     await bulkLoadCrbmGeneration(
-      w.cold,
+      w.storage,
       { namespace: 'ns', segment: 's', generation: 0 },
       [1, 2, 3],
       { registry: w.registry, keystore },
@@ -259,7 +263,7 @@ describe('audit: segment.erase / namespace.erase', () => {
   it('does NOT emit on the idempotent already-destroyed call', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {
       registry: w.registry,
       keystore,
     });
@@ -274,7 +278,7 @@ describe('audit: segment.erase / namespace.erase', () => {
 
   it('does NOT emit when a cleartext segment is skipped (no key to shred)', async () => {
     const w = world(); // no keystore → cleartext
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();
@@ -284,9 +288,9 @@ describe('audit: segment.erase / namespace.erase', () => {
     expect(audit.snapshot()).toEqual([]);
   });
 
-  it('does NOT emit segment.erase for a cleartext tombstone (allowCleartext) — Cold bytes remain readable', async () => {
+  it('does NOT emit segment.erase for a cleartext tombstone (allowCleartext) — Storage bytes remain readable', async () => {
     const w = world(); // cleartext
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();
@@ -304,7 +308,7 @@ describe('audit: segment.erase / namespace.erase', () => {
   it('a throwing audit sink never breaks the erase', async () => {
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     const w = world(keystore);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1], {
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1], {
       registry: w.registry,
       keystore,
     });
@@ -318,7 +322,7 @@ describe('audit: segment.erase / namespace.erase', () => {
     const w = world(keystore);
     for (const seg of ['a', 'b']) {
       await bulkLoadCrbmGeneration(
-        w.cold,
+        w.storage,
         { namespace: 'ns', segment: seg, generation: 0 },
         [1, 2],
         { registry: w.registry, keystore },
@@ -348,7 +352,7 @@ describe('audit: segment.erase / namespace.erase', () => {
 
   it('eraseNamespace over an all-cleartext namespace shreds nothing and records the honest 0', async () => {
     const w = world(); // no keystore → segments are cleartext
-    await bulkLoadCrbmGeneration(w.cold, { namespace: 'ns', segment: 'a', generation: 0 }, [1], {
+    await bulkLoadCrbmGeneration(w.storage, { namespace: 'ns', segment: 'a', generation: 0 }, [1], {
       registry: w.registry,
     });
     const audit = new RecordingAuditSink();

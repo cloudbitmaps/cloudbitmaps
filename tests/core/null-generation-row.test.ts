@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  CrbmColdChunkSource,
+  CrbmStorageChunkSource,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
   nextGeneration,
@@ -10,11 +10,17 @@ import {
 } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { KeyUnavailableError } from '@/core/errors';
-import type { GovernanceMeta, IColdDriver, IKeystore, IRegistryDriver, SegmentRef } from '@/index';
+import type {
+  GovernanceMeta,
+  IStorageDriver,
+  IKeystore,
+  IRegistryDriver,
+  SegmentRef,
+} from '@/index';
 import { collect, loadedStore } from '../helpers/loaded';
 
 /**
- * `currentGen: null` — "this segment exists and has **no Cold generation yet**".
+ * `currentGen: null` — "this segment exists and has **no Storage generation yet**".
  *
  * A segment enters the library by having a generation **loaded** into it, and the publish that lands the first
  * generation is what creates its registry row. So between "a segment is intended" and "a segment has data" there
@@ -24,13 +30,13 @@ import { collect, loadedStore } from '../helpers/loaded';
  * That gap matters for exactly one caller: `setRetention`, which records a policy on a segment whose first load
  * has not happened yet (a daily bucket given a 30-day expiry the moment it is named). A policy on an
  * unenumerable segment would never be swept, so the policy write mints the row — and the obvious row,
- * `currentGen: 0` with no object behind it, is the forbidden `missing-cold-generation` state. Hence the third
- * pointer value: **`null`, "enumerable, and claiming no Cold data"**. `retention.ts` is the only writer that
+ * `currentGen: 0` with no object behind it, is the forbidden `missing-storage-generation` state. Hence the third
+ * pointer value: **`null`, "enumerable, and claiming no Storage data"**. `retention.ts` is the only writer that
  * mints one; that path is tested in `retention-policy.test.ts`.
  *
  * The bar this file holds the pointer to: **a null-gen row must be indistinguishable from no row on every read
  * path**, and every writer that reasons about generations (`publishGeneration`, `nextGeneration`,
- * `gcOrphanGenerations`, `runConsistencyCheck`) must read it as "no Cold data", never as generation 0.
+ * `gcOrphanGenerations`, `runConsistencyCheck`) must read it as "no Storage data", never as generation 0.
  */
 
 const SEG: SegmentRef = { segment: 's' };
@@ -39,17 +45,17 @@ async function world(keystore?: IKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
   /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
   return { ...w, reader };
 }
 
-async function coldGenerations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+async function storageGenerations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
-  for await (const key of cold.list(ref)) gens.push(key.generation);
+  for await (const key of storage.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
 }
 
-/** The row a pre-load `setRetention` leaves behind: a live segment that has never had a Cold generation. */
+/** The row a pre-load `setRetention` leaves behind: a live segment that has never had a Storage generation. */
 async function createNullGenRow(
   registry: IRegistryDriver,
   ref: SegmentRef = SEG,
@@ -58,7 +64,7 @@ async function createNullGenRow(
   await registry.create(ref, { currentGen: null, retention });
 }
 
-describe('a registry row with no Cold generation (currentGen: null)', () => {
+describe('a registry row with no Storage generation (currentGen: null)', () => {
   describe('read path — indistinguishable from having no row at all', () => {
     it('answers every read exactly like the same unloaded segment with no row', async () => {
       // Two worlds, nothing loaded in either. The only difference is that one carries a policy row.
@@ -72,15 +78,15 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
         expect(await s.count()).toBe(0);
         expect(await collect(s.iterate())).toEqual([]);
       }
-      // And the row is still Cold-less — a read must never publish a pointer as a side effect.
+      // And the row is still Storage-less — a read must never publish a pointer as a side effect.
       expect((await withRow.registry.get(SEG))!.currentGen).toBeNull();
     });
 
-    it('resolves no Cold generation, so `currentGeneration` reports null (not 0)', async () => {
+    it('resolves no Storage generation, so `currentGeneration` reports null (not 0)', async () => {
       const w = await world();
       await createNullGenRow(w.registry);
-      const cold = new CrbmColdChunkSource(w.cold, { registry: w.registry });
-      expect(await cold.currentGeneration(SEG)).toBeNull();
+      const storage = new CrbmStorageChunkSource(w.storage, { registry: w.registry });
+      expect(await storage.currentGeneration(SEG)).toBeNull();
     });
 
     it('intersects with a loaded segment from either side, resolving no phantom generation', async () => {
@@ -112,7 +118,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
 
     it('a `currentGen: 0` row with no object is the state this replaces — and it still fails loudly', async () => {
       // The control for the tests above: if `null` were "the same as 0" the two would behave alike. They do not —
-      // this is the `missing-cold-generation` breakage that made a naive row worse than no row. Note that it now
+      // this is the `missing-storage-generation` breakage that made a naive row worse than no row. Note that it now
       // fails the SAME way on every read verb: with no per-op delta in front of the generation, there is no verb
       // that can keep answering off a second source while its neighbour throws.
       const w = await world();
@@ -141,11 +147,11 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       expect(none).toEqual([]);
     });
 
-    it('is consistent, not torn: checkConsistency does not report missing-cold-generation', async () => {
+    it('is consistent, not torn: checkConsistency does not report missing-storage-generation', async () => {
       const w = await world();
       await createNullGenRow(w.registry);
 
-      const report = await runConsistencyCheck({ cold: w.cold, registry: w.registry });
+      const report = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
       expect(report).toEqual({ checked: 1, inconsistent: [], errored: [] });
     });
 
@@ -153,9 +159,9 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       // Without this, the assertion above could pass for the wrong reason (a scan that reports nothing ever).
       const w = await world();
       await w.registry.create(SEG, { currentGen: 4 });
-      const report = await runConsistencyCheck({ cold: w.cold, registry: w.registry });
+      const report = await runConsistencyCheck({ storage: w.storage, registry: w.registry });
       expect(report.inconsistent).toEqual([
-        { segment: 's', namespace: undefined, currentGen: 4, issue: 'missing-cold-generation' },
+        { segment: 's', namespace: undefined, currentGen: 4, issue: 'missing-storage-generation' },
       ]);
     });
   });
@@ -164,7 +170,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
     it('publishGeneration advances a null pointer instead of comparing against it', async () => {
       const w = await world();
       await createNullGenRow(w.registry, SEG, { expiresAt: 1 });
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3]); // no registry ⇒ unpublished
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3]); // no registry ⇒ unpublished
 
       expect(await publishGeneration(w.registry, { ...SEG, generation: 0 })).toBe(true);
       const rec = (await w.registry.get(SEG))!;
@@ -176,14 +182,14 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
     it('bulkLoadCrbmGeneration lands on a segment that already has a null-gen row', async () => {
       const w = await world();
       await createNullGenRow(w.registry);
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [7, 8, 9], {
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [7, 8, 9], {
         registry: w.registry,
       });
       expect((await w.registry.get(SEG))!.currentGen).toBe(0);
       expect(await collect(w.reader().segment('s').iterate())).toEqual([7, 8, 9]);
     });
 
-    it('numbering and GC both read the row as "no Cold data", not as generation 0', async () => {
+    it('numbering and GC both read the row as "no Storage data", not as generation 0', async () => {
       // The two helpers that do arithmetic on the pointer. `nextGeneration` must offer 0 (a null pointer is not
       // "generation 0 exists", so the first load is still 0), and GC must delete nothing — "below current"
       // selects nothing, and an object present here is indistinguishable from a load about to publish it.
@@ -192,9 +198,9 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       await createNullGenRow(w.registry);
       expect(await nextGeneration(SEG, w)).toBe(0);
 
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1]); // written, not yet published
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1]); // written, not yet published
       expect(await gcOrphanGenerations(SEG, w, { keep: 0 })).toEqual([]);
-      expect(await coldGenerations(w.cold, SEG)).toEqual([0]);
+      expect(await storageGenerations(w.storage, SEG)).toEqual([0]);
       expect(await nextGeneration(SEG, w)).toBe(1); // …and the object counts, so a retry skips past it
     });
 
@@ -206,7 +212,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const w = await world(keystore);
       await createNullGenRow(w.registry);
 
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [4, 5, 6], {
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [4, 5, 6], {
         registry: w.registry,
         keystore,
       });
@@ -226,7 +232,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const minted = await keystore.createDek();
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
 
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
         registry: w.registry,
         keystore,
       });
@@ -247,7 +253,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
 
       await expect(
-        bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3], {
+        bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
           registry: w.registry,
         }),
       ).rejects.toBeInstanceOf(KeyUnavailableError);
@@ -265,7 +271,7 @@ describe('a registry row with no Cold generation (currentGen: null)', () => {
       const w = await world();
       const minted = await keystore.createDek();
       await w.registry.create(SEG, { currentGen: null, wrappedDeks: minted.wrapped });
-      await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 0 }, [1, 2, 3]); // object only, unpublished
+      await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 0 }, [1, 2, 3]); // object only, unpublished
 
       expect(await publishGeneration(w.registry, { ...SEG, generation: 0 })).toBe(true);
       const rec = (await w.registry.get(SEG))!;

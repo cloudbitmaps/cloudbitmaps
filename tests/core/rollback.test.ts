@@ -7,7 +7,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 import {
   CloudRoaring,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
@@ -29,13 +29,13 @@ import { roaringCodec } from '@/roaring-codec';
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
 function world() {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
   return {
-    cold,
+    storage,
     registry,
-    deps: { cold, registry },
-    load: { cold, registry, codec: roaringCodec },
+    deps: { storage, registry },
+    load: { storage, registry, codec: roaringCodec },
   };
 }
 
@@ -68,13 +68,13 @@ describe('rollbackSegment', () => {
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 });
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
-    const store = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1);
 
     const r = await rollbackSegment(SEG, 0, w.deps);
     expect(r).toEqual({ fromGeneration: 1, generation: 0 });
 
-    const after = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const after = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await after.segment('s', { namespace: 'ns' }).count()).toBe(3);
   });
 
@@ -98,7 +98,7 @@ describe('rollbackSegment', () => {
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.load);
     // An orphan above the pointer, never published — exactly what a crashed loader leaves behind.
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 7 }, [], { codec: roaringCodec });
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 7 }, [], { codec: roaringCodec });
 
     await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toBeInstanceOf(ValidationError);
     await expect(rollbackSegment(SEG, 7, w.deps)).rejects.toThrow(/above the current pointer/);
@@ -127,7 +127,7 @@ describe('rollbackSegment', () => {
           const out = await inner.apply(w.registry, args);
           if (!fired) {
             fired = true;
-            await w.cold.delete({ ...SEG, generation: 0 });
+            await w.storage.delete({ ...SEG, generation: 0 });
           }
           return out;
         };
@@ -162,14 +162,14 @@ describe('rollbackSegment', () => {
   });
 
   it('refuses a crypto-shredded segment — every generation of it is unreadable', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    await loadSegment(SEG, [1], { cold, registry, codec: roaringCodec, keystore });
-    await loadSegment(SEG, [2], { cold, registry, codec: roaringCodec, keystore }, { keep: 9 });
+    await loadSegment(SEG, [1], { storage, registry, codec: roaringCodec, keystore });
+    await loadSegment(SEG, [2], { storage, registry, codec: roaringCodec, keystore }, { keep: 9 });
     await destroySegment(SEG, { registry }, { confirmSegment: 's' });
 
-    await expect(rollbackSegment(SEG, 0, { cold, registry })).rejects.toBeInstanceOf(
+    await expect(rollbackSegment(SEG, 0, { storage, registry })).rejects.toBeInstanceOf(
       ValidationError,
     );
   });
@@ -236,7 +236,7 @@ describe('rollback and the forward-only rule', () => {
 
     // A load lands between the rollback's row read and its compare-and-swap.
     let fired = false;
-    const racing = new Proxy(w.cold, {
+    const racing = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'list') return Reflect.get(t, p, rx) as unknown;
         return async function* (ref: SegmentRef) {
@@ -244,12 +244,12 @@ describe('rollback and the forward-only rule', () => {
             fired = true;
             await loadSegment(SEG, [42], w.load, { keep: 9 });
           }
-          yield* w.cold.list(ref);
+          yield* w.storage.list(ref);
         };
       },
-    }) as typeof w.cold;
+    }) as typeof w.storage;
 
-    await expect(rollbackSegment(SEG, 0, { ...w.deps, cold: racing })).rejects.toBeInstanceOf(
+    await expect(rollbackSegment(SEG, 0, { ...w.deps, storage: racing })).rejects.toBeInstanceOf(
       WriteConflictError,
     );
     expect(fired).toBe(true);
@@ -280,7 +280,7 @@ describe('rollback and erasure — a rollback must not resurrect an erased id', 
       NotFoundError,
     );
 
-    const store = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await store.segment('s', { namespace: 'ns' }).has(999)).toBe(false);
   });
 });
@@ -294,7 +294,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
     await loadSegment(SEG, [1, 2, 3], w.load, { keep: 9 });
     await loadSegment(SEG, [9], w.load, { keep: 9 });
 
-    const store = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(1); // warm the caches
     await store.rollback(SEG, 0);
     expect(await store.segment('s', { namespace: 'ns' }).count()).toBe(3); // same instance
@@ -303,7 +303,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
   it('store.generations reports what the bucket holds', async () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
-    const store = new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    const store = new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
     expect(await store.generations(SEG)).toEqual([
       { generation: 0, current: false },
       { generation: 1, current: true },
@@ -321,7 +321,7 @@ describe('rollback — the facade, and the validation the core owes', () => {
   it('says so when no generations remain at all', async () => {
     const w = world();
     for (const ids of [[1], [2]]) await loadSegment(SEG, ids, w.load, { keep: 9 });
-    for (const g of [0, 1]) await w.cold.delete({ ...SEG, generation: g });
+    for (const g of [0, 1]) await w.storage.delete({ ...SEG, generation: g });
     // Target 0 rather than the current generation: rolling to the one already current short-circuits as a
     // reported no-op before anything is looked up, which is correct — it changes nothing.
     await expect(rollbackSegment(SEG, 0, w.deps)).rejects.toThrow(/no generations remain/);

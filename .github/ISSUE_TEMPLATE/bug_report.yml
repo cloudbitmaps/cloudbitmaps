@@ -36,13 +36,13 @@ body:
     id: drivers
     attributes:
       label: Storage drivers in play
-      description: Which drivers were wired up — the cold object store, and the registry if you wired one. Pick every one involved.
+      description: Which drivers were wired up — the object store, and the registry if you wired one. Pick every one involved.
       multiple: true
       options:
-        - Cold — S3 / S3-compatible
-        - Cold — GCS
-        - Cold — Azure Blob
-        - Cold — local filesystem
+        - Storage — S3 / S3-compatible
+        - Storage — GCS
+        - Storage — Azure Blob
+        - Storage — local filesystem
         - Registry — S3
         - Registry — GCS
         - Registry — Azure Blob

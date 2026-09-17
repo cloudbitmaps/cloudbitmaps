@@ -1,15 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { loadSegment } from '@/core/load';
-import { openGenerationReader } from '@/core/crbm-cold-source';
+import { openGenerationReader } from '@/core/crbm-storage-source';
 import { ValidationError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import {
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
 } from '@/index';
-import type { IColdDriver, SegmentRef } from '@/index';
+import type { IStorageDriver, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 
 /**
@@ -25,19 +25,19 @@ import { roaringCodec } from '@/roaring-codec';
 const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 
 function world() {
-  const cold = new MemoryColdDriver();
+  const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  return { cold, registry, deps: { cold, registry, codec: roaringCodec } };
+  return { storage, registry, deps: { storage, registry, codec: roaringCodec } };
 }
 
-async function generations(cold: IColdDriver, ref: SegmentRef = SEG): Promise<number[]> {
+async function generations(storage: IStorageDriver, ref: SegmentRef = SEG): Promise<number[]> {
   const out: number[] = [];
-  for await (const k of cold.list(ref)) out.push(k.generation);
+  for await (const k of storage.list(ref)) out.push(k.generation);
   return out.sort((a, b) => a - b);
 }
 
-async function idsOf(cold: IColdDriver, generation: number): Promise<number[]> {
-  const reader = await openGenerationReader(cold, { ...SEG, generation }, undefined);
+async function idsOf(storage: IStorageDriver, generation: number): Promise<number[]> {
+  const reader = await openGenerationReader(storage, { ...SEG, generation }, undefined);
   const out: number[] = [];
   for (const chunkKey of reader.chunkKeys()) {
     const bytes = await reader.getChunk(chunkKey);
@@ -61,7 +61,7 @@ describe('loadSegment — the write path as one call', () => {
     // `keep: 0` — the superseded generation goes in the same call. Composed by hand this is the step that gets
     // left out, and the segment quietly keeps paying for every generation it ever had.
     expect(second.collected).toEqual([0]);
-    expect(await generations(w.cold)).toEqual([1]);
+    expect(await generations(w.storage)).toEqual([1]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
   });
 
@@ -69,7 +69,7 @@ describe('loadSegment — the write path as one call', () => {
     const w = world();
     await loadSegment(SEG, [1, 2, 3], w.deps);
     await loadSegment(SEG, [9], w.deps);
-    expect(await idsOf(w.cold, 1)).toEqual([9]);
+    expect(await idsOf(w.storage, 1)).toEqual([9]);
   });
 
   it('keeps the grace window by default', async () => {
@@ -79,7 +79,7 @@ describe('loadSegment — the write path as one call', () => {
     const third = await loadSegment(SEG, [3], w.deps);
     // default keep: 1 — generation 1 survives as the window, generation 0 goes.
     expect(third.collected).toEqual([0]);
-    expect(await generations(w.cold)).toEqual([1, 2]);
+    expect(await generations(w.storage)).toEqual([1, 2]);
   });
 });
 
@@ -93,10 +93,10 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
     expect(r.reason).toBe('empty');
     // The object it wrote is gone. It sat ABOVE currentGen, where collection never looks, so if the refusal did
     // not delete it nothing ever would — a leak that grows by one object per refused load, forever.
-    expect(await generations(w.cold)).toEqual([0]);
+    expect(await generations(w.storage)).toEqual([0]);
     // And the segment still holds what it held.
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
-    expect(await idsOf(w.cold, 0)).toEqual([1, 2, 3]);
+    expect(await idsOf(w.storage, 0)).toEqual([1, 2, 3]);
   });
 
   it('allows an empty FIRST load — there is nothing to wipe', async () => {
@@ -111,7 +111,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
     await loadSegment(SEG, [1, 2, 3], w.deps);
     const r = await loadSegment(SEG, [], w.deps, { allowEmpty: true });
     expect(r.published).toBe(true);
-    expect(await idsOf(w.cold, 1)).toEqual([]);
+    expect(await idsOf(w.storage, 1)).toEqual([]);
   });
 
   it('minCardinality refuses a load that is too small to be plausible', async () => {
@@ -119,7 +119,7 @@ describe('loadSegment — the guard, and what a refusal leaves behind', () => {
     await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps);
     const r = await loadSegment(SEG, [1, 2], w.deps, { guard: { minCardinality: 5 } });
     expect(r).toMatchObject({ published: false, reason: 'min-cardinality', cardinality: 2 });
-    expect(await generations(w.cold)).toEqual([0]);
+    expect(await generations(w.storage)).toEqual([0]);
   });
 
   it('minRetained refuses losing more of the segment than allowed, and permits growth', async () => {
@@ -230,15 +230,15 @@ describe('loadSegment — racing writers', () => {
 
     // A concurrent writer publishes a HIGHER generation while this load is between its write and its publish.
     let raced = false;
-    const racingCold = new Proxy(w.cold, {
+    const racingStorage = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'put' && p !== 'putImmutable') return Reflect.get(t, p, rx) as unknown;
         const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
         return async (...args: never[]) => {
-          const out = await inner.apply(w.cold, args);
+          const out = await inner.apply(w.storage, args);
           if (!raced) {
             raced = true;
-            await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 9 }, [99], {
+            await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 9 }, [99], {
               registry: w.registry,
               codec: roaringCodec,
             });
@@ -246,16 +246,16 @@ describe('loadSegment — racing writers', () => {
           return out;
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
-    const r = await loadSegment(SEG, [2], { ...w.deps, cold: racingCold }, { keep: 0 });
+    const r = await loadSegment(SEG, [2], { ...w.deps, storage: racingStorage }, { keep: 0 });
     expect(raced).toBe(true);
     expect(r).toMatchObject({ published: false, reason: 'superseded' });
     // The object is deliberately NOT deleted here: the row changed under this call, and a generation number
     // only identifies a generation within one incarnation. It is below the winner's pointer, so ordinary
     // generation collection takes it — no leak, and no risk of deleting something that is not ours.
     expect((await w.registry.get(SEG))!.currentGen).toBe(9);
-    expect(await generations(w.cold)).toContain(9);
+    expect(await generations(w.storage)).toContain(9);
   });
 
   it('refuses, and touches nothing, when the name is re-created underneath it', async () => {
@@ -270,17 +270,18 @@ describe('loadSegment — racing writers', () => {
     expect((await w.registry.get(SEG))!.currentGen).toBe(4); // this call will take generation 5
 
     let fired = false;
-    const racing = new Proxy(w.cold, {
+    const racing = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'putImmutable' && p !== 'put') return Reflect.get(t, p, rx) as unknown;
         const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
         return async (...args: never[]) => {
-          const out = await inner.apply(w.cold, args);
+          const out = await inner.apply(w.storage, args);
           if (fired) return out;
           fired = true;
           // Retire the segment and re-use the name, loading until the new incarnation's own pointer reaches 5 —
           // the very number this call is holding.
-          for (const g of await generations(w.cold)) await w.cold.delete({ ...SEG, generation: g });
+          for (const g of await generations(w.storage))
+            await w.storage.delete({ ...SEG, generation: g });
           await w.registry.delete(SEG);
           for (const ids of [[10], [11], [12], [13], [14], [15]]) {
             await loadSegment(SEG, ids, w.deps, { keep: 9 });
@@ -288,10 +289,10 @@ describe('loadSegment — racing writers', () => {
           return out;
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
     const before = (await w.registry.get(SEG))!;
-    const r = await loadSegment(SEG, [42], { ...w.deps, cold: racing }, {});
+    const r = await loadSegment(SEG, [42], { ...w.deps, storage: racing }, {});
     expect(fired).toBe(true);
     expect(before.currentGen).toBe(4);
 
@@ -299,9 +300,9 @@ describe('loadSegment — racing writers', () => {
     expect(row.currentGen).toBe(5); // the NEW incarnation's pointer, coincidentally the same number
     // 1. It must not have published its content into a segment it never read.
     expect(r.published).toBe(false);
-    expect(await idsOf(w.cold, 5)).toEqual([15]);
+    expect(await idsOf(w.storage, 5)).toEqual([15]);
     // 2. And it must not have deleted that live object on its way out.
-    expect(await generations(w.cold)).toContain(5);
+    expect(await generations(w.storage)).toContain(5);
   });
 });
 
@@ -313,7 +314,7 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
     // thousand ids, under DEFAULT options, because `before` had been read as "no row yet".
     const w = world();
     let raced = false;
-    const racing = new Proxy(w.cold, {
+    const racing = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'putImmutable' && p !== 'put') return Reflect.get(t, p, rx) as unknown;
         const inner = Reflect.get(t, p, rx) as (...a: never[]) => Promise<unknown>;
@@ -322,17 +323,17 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
             raced = true;
             await loadSegment(SEG, [1, 2, 3, 4, 5], w.deps); // the other loader wins
           }
-          return inner.apply(w.cold, args);
+          return inner.apply(w.storage, args);
         };
       },
-    }) as IColdDriver;
+    }) as IStorageDriver;
 
-    const r = await loadSegment(SEG, [], { ...w.deps, cold: racing }, {});
+    const r = await loadSegment(SEG, [], { ...w.deps, storage: racing }, {});
     expect(raced).toBe(true);
     expect(r.published).toBe(false);
     // The winner's content survives — which is the entire point.
     const row = (await w.registry.get(SEG))!;
-    expect(await idsOf(w.cold, row.currentGen!)).toEqual([1, 2, 3, 4, 5]);
+    expect(await idsOf(w.storage, row.currentGen!)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('an UNGUARDED load stays forward-only, so a concurrent publish does not make it refuse', async () => {
@@ -353,10 +354,10 @@ describe('loadSegment — encryption', () => {
     // learns which generation is current — so it derives it from the row. Without that, every encrypted
     // segment's SECOND load throws, and the only workaround is `allowEmpty: true`, which disables the wipe
     // guard: the sensitive segments would be exactly the ones left unprotected.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({ keys: { A: randomBytes(32) }, activeKeyId: 'A' });
-    const deps = { cold, registry, codec: roaringCodec, keystore, requireEncryption: true };
+    const deps = { storage, registry, codec: roaringCodec, keystore, requireEncryption: true };
 
     expect((await loadSegment(SEG, [1, 2, 3], deps)).published).toBe(true);
     expect((await loadSegment(SEG, [4, 5, 6], deps)).published).toBe(true);
@@ -379,6 +380,6 @@ describe('loadSegment — validation', () => {
     await expect(
       loadSegment(SEG, [1], w.deps, { guard: { minCardinality: -1 } }),
     ).rejects.toBeInstanceOf(ValidationError);
-    expect(await generations(w.cold)).toEqual([]);
+    expect(await generations(w.storage)).toEqual([]);
   });
 });

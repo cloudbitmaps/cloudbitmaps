@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { S3ColdDriver } from '@/drivers/s3/cold';
+import { S3StorageDriver } from '@/drivers/s3/storage';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/index';
 import type { S3Client } from '@aws-sdk/client-s3';
@@ -67,10 +67,10 @@ const writeBytes =
     for (const b of buffers) await sink.write(b);
   };
 
-describe('S3ColdDriver — streaming/multipart putImmutable', () => {
+describe('S3StorageDriver — streaming/multipart putImmutable', () => {
   it('small object → single conditional PutObject (no multipart), correct size + sha256', async () => {
     const s3 = fakeS3();
-    const driver = new S3ColdDriver({ client: s3.client, bucket: 'b' });
+    const driver = new S3StorageDriver({ client: s3.client, bucket: 'b' });
     const body = Buffer.from('a small .crbm object');
     const res = await driver.putImmutable(KEY, writeBytes(body));
 
@@ -82,7 +82,7 @@ describe('S3ColdDriver — streaming/multipart putImmutable', () => {
 
   it('large object → CreateMultipartUpload → UploadPart×N → conditional CompleteMultipartUpload', async () => {
     const s3 = fakeS3();
-    const driver = new S3ColdDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
+    const driver = new S3StorageDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
     const a = Buffer.alloc(FIVE_MB + 1, 7); // each write trips a part flush
     const b = Buffer.alloc(FIVE_MB + 1, 9);
     const c = Buffer.from('tail');
@@ -104,7 +104,7 @@ describe('S3ColdDriver — streaming/multipart putImmutable', () => {
   it('write-once on the multipart path: a conditional Complete failure → WriteConflictError + abort', async () => {
     const s3 = fakeS3();
     s3.objects.set('_default/segments/s.0.crbm', Buffer.from('already here')); // the generation already exists
-    const driver = new S3ColdDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
+    const driver = new S3StorageDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
     await expect(
       driver.putImmutable(KEY, writeBytes(Buffer.alloc(FIVE_MB + 1, 1))),
     ).rejects.toBeInstanceOf(WriteConflictError);
@@ -114,7 +114,7 @@ describe('S3ColdDriver — streaming/multipart putImmutable', () => {
 
   it('an error mid-upload aborts the in-flight multipart upload', async () => {
     const s3 = fakeS3();
-    const driver = new S3ColdDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
+    const driver = new S3StorageDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
     await expect(
       driver.putImmutable(KEY, async (sink) => {
         await sink.write(Buffer.alloc(FIVE_MB + 1, 1)); // starts the MPU + uploads a part
@@ -128,11 +128,11 @@ describe('S3ColdDriver — streaming/multipart putImmutable', () => {
   it('advertises an HONEST cap (≤ 10,000 parts) and fails over it with a typed ValidationError', async () => {
     const s3 = fakeS3();
     // Default cap is partBytes × 10,000 — reachable within S3's part limit, not an aspirational 5 TiB.
-    const driver = new S3ColdDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
+    const driver = new S3StorageDriver({ client: s3.client, bucket: 'b', partBytes: FIVE_MB });
     expect(driver.capabilities().maxObjectBytes).toBe(FIVE_MB * 10_000);
 
     // A tiny explicit cap → an over-cap write fails fast + typed (never an opaque late S3 error), MPU aborted.
-    const capped = new S3ColdDriver({ client: s3.client, bucket: 'b', maxObjectBytes: 100 });
+    const capped = new S3StorageDriver({ client: s3.client, bucket: 'b', maxObjectBytes: 100 });
     await expect(capped.putImmutable(KEY, writeBytes(Buffer.alloc(101, 1)))).rejects.toBeInstanceOf(
       ValidationError,
     );

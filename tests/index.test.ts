@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { CloudRoaring, MemoryColdChunkSource, ValidationError, VERSION } from '@/index';
+import { CloudRoaring, MemoryStorageChunkSource, ValidationError, VERSION } from '@/index';
 
 function store(): CloudRoaring {
-  return new CloudRoaring({ cold: new MemoryColdChunkSource() });
+  return new CloudRoaring({ storage: new MemoryStorageChunkSource() });
 }
 
 describe('public API', () => {

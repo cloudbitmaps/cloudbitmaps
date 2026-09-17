@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CloudRoaring,
-  LocalFsColdDriver,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
-  CrbmColdChunkSource,
+  CrbmStorageChunkSource,
   bulkLoadCrbmGeneration,
   writeCrbmGeneration,
 } from '@/index';
@@ -14,9 +14,9 @@ import { splitId } from '@/core/bit-route';
 import { collect } from './helpers/loaded';
 
 /**
- * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmColdChunkSource` →
- * `LocalFsColdDriver`, with the registry pointer on disk too. Exercises the whole persistent stack and proves
- * the engine is unchanged — it just has a persistent cold tier and a persistent pointer now.
+ * End-to-end: the engine reading a real on-disk `.crbm` generation through `CrbmStorageChunkSource` →
+ * `LocalFsStorageDriver`, with the registry pointer on disk too. Exercises the whole persistent stack and proves
+ * the engine is unchanged — it just has a persistent storage tier and a persistent pointer now.
  */
 let root: string;
 
@@ -29,8 +29,8 @@ afterEach(async () => {
 
 /** One `.crbm` generation on disk, written the pre-grouped way, read through a generation-pinning source. */
 async function loadedFsStore(ids: number[]): Promise<CloudRoaring> {
-  const cold = new LocalFsColdDriver(root);
-  // Group ids into per-chunk bitmaps and write one Cold generation.
+  const storage = new LocalFsStorageDriver(root);
+  // Group ids into per-chunk bitmaps and write one Storage generation.
   const byChunk = new Map<number, SafeBitmap>();
   for (const id of ids) {
     const { chunkKey, remainder } = splitId(id);
@@ -42,14 +42,14 @@ async function loadedFsStore(ids: number[]): Promise<CloudRoaring> {
     bitmap.add(remainder);
   }
   await writeCrbmGeneration(
-    cold,
+    storage,
     { segment: 'seg', generation: 1 },
     [...byChunk].map(([chunkKey, bitmap]) => ({ chunkKey, bitmap })),
   );
-  return new CloudRoaring({ cold: new CrbmColdChunkSource(cold) });
+  return new CloudRoaring({ storage: new CrbmStorageChunkSource(storage) });
 }
 
-describe('engine over LocalFs cold (.crbm)', () => {
+describe('engine over LocalFs storage (.crbm)', () => {
   it('reads a loaded segment across multiple chunks', async () => {
     const ids = [1, 2, 3, 70_000, 0xffff_ffff];
     const seg = (await loadedFsStore(ids)).segment('seg');
@@ -60,19 +60,19 @@ describe('engine over LocalFs cold (.crbm)', () => {
   });
 
   it('is consistent under the HOT cache: a store pins its generation, a fresh store sees the newer one', async () => {
-    // Regression for the cache-staleness hazard: the engine caches decoded Cold chunks keyed by generation,
-    // so the cold source MUST present an immutable (pinned) view for as long as its snapshot is pinned.
-    const cold = new LocalFsColdDriver(root);
-    await writeCrbmGeneration(cold, { segment: 'seg', generation: 1 }, [
+    // Regression for the cache-staleness hazard: the engine caches decoded Storage chunks keyed by generation,
+    // so the storage source MUST present an immutable (pinned) view for as long as its snapshot is pinned.
+    const storage = new LocalFsStorageDriver(root);
+    await writeCrbmGeneration(storage, { segment: 'seg', generation: 1 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) },
     ]);
-    const store1 = new CloudRoaring({ cold: new CrbmColdChunkSource(cold) });
+    const store1 = new CloudRoaring({ storage: new CrbmStorageChunkSource(storage) });
     const seg1 = store1.segment('seg');
     expect(await seg1.has(1)).toBe(true); // touches chunk 0 only
 
     // A newer generation adds id 70_000, which lives in a *different* chunk (chunkKey 1) that store1 has
     // never read — so the engine's HOT cache cannot mask a pinning regression here.
-    await writeCrbmGeneration(cold, { segment: 'seg', generation: 2 }, [
+    await writeCrbmGeneration(storage, { segment: 'seg', generation: 2 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) },
       { chunkKey: 1, bitmap: SafeBitmap.fromValues([70_000 & 0xffff]) },
     ]);
@@ -80,18 +80,18 @@ describe('engine over LocalFs cold (.crbm)', () => {
     // re-resolved to gen 2, this would wrongly be true → the assertion guards the pin.
     expect(await seg1.has(70_000)).toBe(false);
     // A fresh store reads gen 2 and sees it.
-    const seg2 = new CloudRoaring({ cold: new CrbmColdChunkSource(cold) }).segment('seg');
+    const seg2 = new CloudRoaring({ storage: new CrbmStorageChunkSource(storage) }).segment('seg');
     expect(await seg2.has(70_000)).toBe(true);
   });
 
-  it('a published generation persists across store instances (cold + registry both on disk)', async () => {
+  it('a published generation persists across store instances (storage + registry both on disk)', async () => {
     // The production wiring: raw driver + registry, so the store wraps its own `.crbm` source and resolves
     // `currentGen` from the on-disk pointer rather than a directory scan.
-    const cold = new LocalFsColdDriver(root);
+    const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
-    const fresh = (): CloudRoaring => new CloudRoaring({ cold, registry });
+    const fresh = (): CloudRoaring => new CloudRoaring({ storage, registry });
 
-    await bulkLoadCrbmGeneration(cold, { segment: 'seg', generation: 0 }, [1, 2, 3, 100], {
+    await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 0 }, [1, 2, 3, 100], {
       registry,
     });
 
@@ -103,15 +103,17 @@ describe('engine over LocalFs cold (.crbm)', () => {
   });
 
   it('a second load supersedes the first on disk — a fresh store reads only the new generation', async () => {
-    const cold = new LocalFsColdDriver(root);
+    const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
-    await bulkLoadCrbmGeneration(cold, { segment: 'seg', generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 0 }, [1, 2, 3], {
+      registry,
+    });
     // Generation 1 drops id 2 and adds id 70_000 (a different chunk, so no cached chunk can mask it).
-    await bulkLoadCrbmGeneration(cold, { segment: 'seg', generation: 1 }, [1, 3, 70_000], {
+    await bulkLoadCrbmGeneration(storage, { segment: 'seg', generation: 1 }, [1, 3, 70_000], {
       registry,
     });
 
-    const seg = new CloudRoaring({ cold, registry }).segment('seg');
+    const seg = new CloudRoaring({ storage, registry }).segment('seg');
     expect(await collect(seg.iterate())).toEqual([1, 3, 70_000]);
     expect(await seg.has(2)).toBe(false); // superseded, not merged: a load replaces the set
     expect(await seg.count()).toBe(3);

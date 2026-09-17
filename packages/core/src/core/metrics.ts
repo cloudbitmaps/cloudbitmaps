@@ -26,13 +26,13 @@ export type MetricOpName = 'has' | 'count' | 'intersectInto' | 'unionInto' | 'an
  */
 export type MetricEvent =
   | {
-      readonly kind: 'cold.get';
+      readonly kind: 'storage.get';
       readonly namespace?: string;
       readonly segment: string;
       /** Bytes returned (0 if the chunk was absent — a GET still happened). */
       readonly bytes: number;
       /**
-       * Elapsed wall time of the read — includes any transient-retry backoff on the cold call. From the
+       * Elapsed wall time of the read — includes any transient-retry backoff on the storage call. From the
        * injected clock, clamped to ≥ 0 (0 under the no-wait test clock).
        */
       readonly ms: number;
@@ -63,7 +63,7 @@ export type MetricEvent =
       /**
        * Distinct chunk **keys** selected to fetch — for `'intersect'`, those present in every operand.
        *
-       * **Keys, not requests.** The actual cold GETs are roughly `fetchedChunks × operands`, plus one per
+       * **Keys, not requests.** The actual storage GETs are roughly `fetchedChunks × operands`, plus one per
        * `exclude` that holds a given key, which is why this number is smaller than what the per-op budget
        * charges for the same call. The two are different units by design; if you are reconciling a bill, the
        * budget's accounting is the one that models requests.
@@ -111,7 +111,7 @@ export function safeMetrics(sink: IMetricsSink): IMetricsSink {
 
 /** Accumulated totals — the shape returned by {@link CountingMetricsSink.snapshot}. */
 export interface MetricsSnapshot {
-  readonly cold: { readonly gets: number; readonly bytes: number; readonly totalMs: number };
+  readonly storage: { readonly gets: number; readonly bytes: number; readonly totalMs: number };
   readonly cache: { readonly hits: number; readonly misses: number };
   readonly retries: { readonly transient: number };
   readonly intersect: {
@@ -138,7 +138,7 @@ const OP_NAMES: readonly MetricOpName[] = [
  * `reset()` zeroes the counters.
  */
 export class CountingMetricsSink implements IMetricsSink {
-  private cold = { gets: 0, bytes: 0, totalMs: 0 };
+  private storage = { gets: 0, bytes: 0, totalMs: 0 };
   private cache = { hits: 0, misses: 0 };
   private retries = { transient: 0 };
   private intersect = { calls: 0, fetchedChunks: 0, skippedChunks: 0 };
@@ -154,10 +154,10 @@ export class CountingMetricsSink implements IMetricsSink {
 
   onEvent(event: MetricEvent): void {
     switch (event.kind) {
-      case 'cold.get':
-        this.cold.gets += 1;
-        this.cold.bytes += event.bytes;
-        this.cold.totalMs += event.ms;
+      case 'storage.get':
+        this.storage.gets += 1;
+        this.storage.bytes += event.bytes;
+        this.storage.totalMs += event.ms;
         break;
       case 'cache':
         if (event.hit) this.cache.hits += 1;
@@ -190,7 +190,7 @@ export class CountingMetricsSink implements IMetricsSink {
     const ops = Object.create(null) as Record<MetricOpName, { count: number; totalMs: number }>;
     for (const name of OP_NAMES) ops[name] = { ...this.ops[name] };
     return {
-      cold: { ...this.cold },
+      storage: { ...this.storage },
       cache: { ...this.cache },
       retries: { ...this.retries },
       intersect: { ...this.intersect },
@@ -199,7 +199,7 @@ export class CountingMetricsSink implements IMetricsSink {
   }
 
   reset(): void {
-    this.cold = { gets: 0, bytes: 0, totalMs: 0 };
+    this.storage = { gets: 0, bytes: 0, totalMs: 0 };
     this.cache = { hits: 0, misses: 0 };
     this.retries = { transient: 0 };
     this.intersect = { calls: 0, fetchedChunks: 0, skippedChunks: 0 };

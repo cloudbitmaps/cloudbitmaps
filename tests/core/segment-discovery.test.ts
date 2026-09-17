@@ -1,4 +1,4 @@
-import { CloudRoaring, MemoryColdDriver, MemoryRegistryDriver } from '@/index';
+import { CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { UnsupportedError, ValidationError } from '@/core/errors';
 
@@ -10,7 +10,7 @@ import { UnsupportedError, ValidationError } from '@/core/errors';
 
 const store = (): CloudRoaring =>
   new CloudRoaring({
-    cold: new MemoryColdDriver(),
+    storage: new MemoryStorageDriver(),
     registry: new MemoryRegistryDriver(),
   });
 
@@ -84,7 +84,7 @@ describe('exists()', () => {
       delete: (r) => registry.delete(r),
       list: (ns?: string) => registry.list(ns),
     };
-    const s = new CloudRoaring({ cold: new MemoryColdDriver(), registry: counting });
+    const s = new CloudRoaring({ storage: new MemoryStorageDriver(), registry: counting });
 
     await expect(s.exists({ segment: '' })).rejects.toBeInstanceOf(ValidationError);
     expect(gets).toBe(0);
@@ -100,20 +100,20 @@ describe('exists()', () => {
 
   it('a torn restore still answers true — the pointer resolves, the object is gone', async () => {
     // The documented exception. `exists()` reports on the POINTER; a live pointer whose object was deleted is
-    // the forbidden `missing-cold-generation` state, where reads THROW rather than answer empty.
+    // the forbidden `missing-storage-generation` state, where reads THROW rather than answer empty.
     // `checkConsistency` is the call that looks for it, and the JSDoc says so rather than over-claiming.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const s = new CloudRoaring({ cold, registry });
+    const s = new CloudRoaring({ storage, registry });
     await s.load({ segment: 'torn' }, [1, 2]);
-    await cold.delete({ segment: 'torn', generation: 0 });
+    await storage.delete({ segment: 'torn', generation: 0 });
 
     expect(await s.exists({ segment: 'torn' })).toBe(true);
     await expect(s.segment('torn').count()).rejects.toThrow(/no such generation/);
   });
 
   it('needs a registry', async () => {
-    const s = new CloudRoaring({ cold: new MemoryColdDriver() });
+    const s = new CloudRoaring({ storage: new MemoryStorageDriver() });
     await expect(s.exists({ segment: 'x' })).rejects.toBeInstanceOf(UnsupportedError);
   });
 });
@@ -174,7 +174,7 @@ describe('segments()', () => {
         }
       },
     };
-    const s = new CloudRoaring({ cold: new MemoryColdDriver(), registry: counting });
+    const s = new CloudRoaring({ storage: new MemoryStorageDriver(), registry: counting });
     for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) await s.load({ segment: n }, [1]);
 
     pulled = 0;
@@ -224,7 +224,7 @@ describe('segments()', () => {
     // number, which is clock-dependent.
     const registry = new MemoryRegistryDriver();
     const s = new CloudRoaring({
-      cold: new MemoryColdDriver(),
+      storage: new MemoryStorageDriver(),
       registry,
     });
     await s.load({ segment: 'real' }, [1]);
@@ -248,7 +248,7 @@ describe('segments()', () => {
   });
 
   it('needs a registry', () => {
-    const s = new CloudRoaring({ cold: new MemoryColdDriver() });
+    const s = new CloudRoaring({ storage: new MemoryStorageDriver() });
     expect(() => s.segments()).toThrow(UnsupportedError);
   });
 });

@@ -1,13 +1,13 @@
 import {
   CloudRoaring,
   InProcessKeystore,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
 import { destroySegment } from '@/core/erasure';
 import { setSegmentRetention } from '@/core/retention';
-import type { IColdDriver, SegmentRef } from '@/index';
+import type { IStorageDriver, SegmentRef } from '@/index';
 
 /**
  * A store keeps two layers of derived state: a resolved snapshot per segment (an open reader, plus the DEK it
@@ -31,11 +31,11 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 
 describe('destructive verbs invalidate what this store derived from the segment', () => {
   it('the store that erases no longer serves the erased id', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ cold, registry });
+    const store = new CloudRoaring({ storage, registry });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warms the snapshot + chunk 0
 
     const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
@@ -47,24 +47,24 @@ describe('destructive verbs invalidate what this store derived from the segment'
     ]);
   });
 
-  it('a pinned store (coldGenTtlMs: 0) converges too — it never would on the TTL', async () => {
+  it('a pinned store (storageGenTtlMs: 0) converges too — it never would on the TTL', async () => {
     // "Pin forever" is a documented setting. Without an explicit signal this window never closes at all.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ cold, registry, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true);
     await store.eraseSubject(4242, { namespace: 'ns' });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(false);
   });
 
   it('Art. 15 and Art. 17 agree after an erasure, on the same store', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ cold, registry });
+    const store = new CloudRoaring({ storage, registry });
     expect((await store.subjectReport(4242, { namespace: 'ns' })).segments).toHaveLength(1);
 
     await store.eraseSubject(4242, { namespace: 'ns' });
@@ -72,11 +72,11 @@ describe('destructive verbs invalidate what this store derived from the segment'
   });
 
   it('the export (Art. 20) no longer carries the erased id', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
 
-    const store = new CloudRoaring({ cold, registry });
+    const store = new CloudRoaring({ storage, registry });
     await store.segment('seg', { namespace: 'ns' }).has(4242); // warm it
     await store.eraseSubject(4242, { namespace: 'ns' });
 
@@ -88,19 +88,19 @@ describe('destructive verbs invalidate what this store derived from the segment'
   it('`store.invalidate` closes a crypto-shred performed beside the store', async () => {
     // `destroySegment` is a free function over raw drivers, so the store cannot see it. Before the signal
     // existed, the retained reader kept DECRYPTING — including chunk 1, which it had never fetched.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const keystore = new InProcessKeystore({
       keys: { k1: new Uint8Array(32).fill(7) },
       activeKeyId: 'k1',
     });
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry, keystore });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry, keystore });
 
     const store = new CloudRoaring({
-      cold,
+      storage,
       registry,
       keystore,
-      coldGenTtlMs: 0,
+      storageGenTtlMs: 0,
     });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warms chunk 0 only
 
@@ -114,13 +114,13 @@ describe('destructive verbs invalidate what this store derived from the segment'
   });
 
   it('a retirement invalidates the segments it retired', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const PAST = Date.parse('2020-01-01T00:00:00Z');
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
-    const store = new CloudRoaring({ cold, registry, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
 
     await store.retireExpired({ now: PAST + 1 });
@@ -128,26 +128,26 @@ describe('destructive verbs invalidate what this store derived from the segment'
   });
 
   it('`dryRun` invalidates nothing, because it changes nothing', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const PAST = Date.parse('2020-01-01T00:00:00Z');
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
     await setSegmentRetention(REF, { registry }, { expiresAt: PAST });
 
-    const store = new CloudRoaring({ cold, registry, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     await store.retireExpired({ now: PAST + 1, dryRun: true });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
   });
 
   it('invalidating one segment does not disturb another', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const other: SegmentRef = { namespace: 'ns', segment: 'other' };
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, IDS, { registry });
-    await bulkLoadCrbmGeneration(cold, { ...other, generation: 0 }, [5, 6], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });
+    await bulkLoadCrbmGeneration(storage, { ...other, generation: 0 }, [5, 6], { registry });
 
-    const store = new CloudRoaring({ cold, registry, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
     expect(await store.segment('seg', { namespace: 'ns' }).count()).toBe(4);
     expect(await store.segment('other', { namespace: 'ns' }).count()).toBe(2);
 
@@ -162,13 +162,13 @@ describe('destructive verbs invalidate what this store derived from the segment'
     // still resolves to the SAME generation number under a different lineage — a retired name re-created,
     // where `nextGeneration` restarts at 0 and the key `(segment, chunk, 0)` collides. Nothing here can
     // exercise that until the reader compares lineage too, so pin the mechanism itself: after `invalidate`,
-    // the cache must be cold.
-    const real = new MemoryColdDriver();
+    // the cache must be storage.
+    const real = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(real, { ...REF, generation: 0 }, IDS, { registry });
 
     let fetches = 0;
-    const cold: IColdDriver = {
+    const storage: IStorageDriver = {
       capabilities: () => real.capabilities(),
       getTail: (k, m) => real.getTail(k, m),
       delete: (k) => real.delete(k),
@@ -180,7 +180,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
       },
     };
 
-    const store = new CloudRoaring({ cold, registry, coldGenTtlMs: 0 });
+    const store = new CloudRoaring({ storage, registry, storageGenTtlMs: 0 });
     await store.segment('seg', { namespace: 'ns' }).has(4242);
     const warmed = fetches;
     expect(warmed).toBeGreaterThan(0);
@@ -190,7 +190,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
 
     store.invalidate(REF);
 
-    await store.segment('seg', { namespace: 'ns' }).has(4242); // cache is cold: it must go back to storage
+    await store.segment('seg', { namespace: 'ns' }).has(4242); // cache is storage: it must go back to storage
     expect(fetches).toBeGreaterThan(warmed);
   });
 
@@ -200,9 +200,9 @@ describe('destructive verbs invalidate what this store derived from the segment'
     // generation that is no longer current, and the call is about to report the segment as an `error: …` entry
     // rather than throw. Run the invalidation on the way out, not on the happy path.
     const ref: SegmentRef = { namespace: 'ns', segment: 'seg' };
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...ref, generation: 0 }, [1, 4242], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...ref, generation: 0 }, [1, 4242], { registry });
 
     // Make the collect's own row read come back empty exactly once, after the publish — an ordinary
     // retirement purging the row mid-call does the same thing.
@@ -221,7 +221,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
       },
     });
 
-    const store = new CloudRoaring({ cold, registry: flaky as typeof registry, retry: false });
+    const store = new CloudRoaring({ storage, registry: flaky as typeof registry, retry: false });
     expect(await store.segment('seg', { namespace: 'ns' }).has(4242)).toBe(true); // warm the caches
     armed = true;
     const ledger = await store.eraseSubject(4242, { namespace: 'ns' });
@@ -235,9 +235,9 @@ describe('destructive verbs invalidate what this store derived from the segment'
   });
 
   it('invalidating a segment this store never read is a no-op, not an error', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const store = new CloudRoaring({ cold, registry });
+    const store = new CloudRoaring({ storage, registry });
     expect(() => store.invalidate({ namespace: 'ns', segment: 'never-seen' })).not.toThrow();
   });
 });

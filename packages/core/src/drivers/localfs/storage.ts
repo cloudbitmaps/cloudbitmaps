@@ -1,5 +1,5 @@
 /**
- * `LocalFsColdDriver` — a zero-cloud {@link IColdDriver} backed by the local filesystem.
+ * `LocalFsStorageDriver` — a zero-cloud {@link IStorageDriver} backed by the local filesystem.
  *
  * Generations are write-once immutable files. A new object is streamed to a temp file (with its content
  * hashed in-flight), `fsync`-ed, then published with an atomic `link` that fails if the destination
@@ -13,14 +13,14 @@ import { link, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { BlobSink } from '@/core/blob';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
-import { coldObjectPath, parseGeneration, segmentsDir } from './paths';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
+import { storageObjectPath, parseGeneration, segmentsDir } from './paths';
 import { O_NOFOLLOW, fsyncDir, isCode, mapFsError } from './fs-util';
 
-export class LocalFsColdDriver implements IColdDriver {
+export class LocalFsStorageDriver implements IStorageDriver {
   constructor(private readonly root: string) {}
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: Number.MAX_SAFE_INTEGER, conditionalPut: false };
   }
 
@@ -28,7 +28,7 @@ export class LocalFsColdDriver implements IColdDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const finalPath = coldObjectPath(this.root, key);
+    const finalPath = storageObjectPath(this.root, key);
     await mkdir(dirname(finalPath), { recursive: true });
 
     const tmpPath = `${finalPath}.${randomUUID()}.tmp`;
@@ -108,7 +108,7 @@ export class LocalFsColdDriver implements IColdDriver {
 
   async delete(key: GenKey): Promise<void> {
     // Idempotent: deleting an absent generation is a no-op (GC may race / retry).
-    await unlink(coldObjectPath(this.root, key)).catch((err) => {
+    await unlink(storageObjectPath(this.root, key)).catch((err) => {
       if (!isCode(err, 'ENOENT')) throw mapFsError(err);
     });
   }
@@ -132,7 +132,7 @@ export class LocalFsColdDriver implements IColdDriver {
 
   private async openRead(key: GenKey): Promise<Awaited<ReturnType<typeof open>>> {
     try {
-      return await open(coldObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
+      return await open(storageObjectPath(this.root, key), FS.O_RDONLY | O_NOFOLLOW);
     } catch (err) {
       if (isCode(err, 'ENOENT')) {
         throw new NotFoundError(`no such generation: ${key.segment}.${key.generation}`);

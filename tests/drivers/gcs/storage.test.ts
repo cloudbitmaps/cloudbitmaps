@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
-import { GcsColdDriver } from '@/drivers/gcs/cold';
+import { GcsStorageDriver } from '@/drivers/gcs/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
@@ -9,10 +9,10 @@ import type { GenKey } from '@/core/ports';
 // against fake-gcs-server — the same split the S3 driver uses.
 const fakeStorage = {} as unknown as Storage;
 
-describe('GcsColdDriver construction', () => {
+describe('GcsStorageDriver construction', () => {
   it('accepts a clean prefix (or none) and advertises conditional-put + range-read', () => {
     for (const prefix of [undefined, '', 'cloudroaring', 'a/b/c', '/leading/trailing/']) {
-      const driver = new GcsColdDriver({ storage: fakeStorage, bucket: 'b', prefix });
+      const driver = new GcsStorageDriver({ storage: fakeStorage, bucket: 'b', prefix });
       const caps = driver.capabilities();
       expect(caps.rangeRead).toBe(true);
       expect(caps.conditionalPut).toBe(true);
@@ -21,13 +21,17 @@ describe('GcsColdDriver construction', () => {
   });
 
   it('honors a custom maxObjectBytes', () => {
-    const driver = new GcsColdDriver({ storage: fakeStorage, bucket: 'b', maxObjectBytes: 1234 });
+    const driver = new GcsStorageDriver({
+      storage: fakeStorage,
+      bucket: 'b',
+      maxObjectBytes: 1234,
+    });
     expect(driver.capabilities().maxObjectBytes).toBe(1234);
   });
 
   it('rejects a prefix with `..` / `.` path segments (containment)', () => {
     for (const prefix of ['..', 'a/../b', './x', 'a/./b', '../escape']) {
-      expect(() => new GcsColdDriver({ storage: fakeStorage, bucket: 'b', prefix })).toThrow(
+      expect(() => new GcsStorageDriver({ storage: fakeStorage, bucket: 'b', prefix })).toThrow(
         ValidationError,
       );
     }
@@ -35,14 +39,14 @@ describe('GcsColdDriver construction', () => {
 
   it('rejects a prefix with control characters', () => {
     for (const prefix of ['a\tb', 'a\nb']) {
-      expect(() => new GcsColdDriver({ storage: fakeStorage, bucket: 'b', prefix })).toThrow(
+      expect(() => new GcsStorageDriver({ storage: fakeStorage, bucket: 'b', prefix })).toThrow(
         ValidationError,
       );
     }
   });
 
   it('validates the range arguments before any network call', async () => {
-    const driver = new GcsColdDriver({ storage: fakeStorage, bucket: 'b' });
+    const driver = new GcsStorageDriver({ storage: fakeStorage, bucket: 'b' });
     await expect(driver.getRange({ segment: 's', generation: 0 }, -1, 10)).rejects.toThrow(
       ValidationError,
     );
@@ -95,16 +99,16 @@ function fakeStream(err?: unknown): Writable {
 }
 
 const GEN: GenKey = { segment: 's', generation: 0 };
-const put = (driver: GcsColdDriver, bytes: Uint8Array) =>
+const put = (driver: GcsStorageDriver, bytes: Uint8Array) =>
   driver.putImmutable(GEN, async (sink) => {
     await sink.write(bytes);
   });
 const err = (code: number) => Object.assign(new Error(`http ${code}`), { code });
 
-describe('GcsColdDriver write-once (fake Storage, emulator-independent)', () => {
+describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () => {
   it('SIMPLE path: sends resumable:false + ifGenerationMatch:0, and succeeds', async () => {
     const rec: Recorder = { saveOpts: [], streamOpts: [] };
-    const driver = new GcsColdDriver({ storage: fakeStorageWith(rec, {}), bucket: 'b' });
+    const driver = new GcsStorageDriver({ storage: fakeStorageWith(rec, {}), bucket: 'b' });
     const res = await put(driver, new Uint8Array([1, 2, 3]));
     expect(res.size).toBe(3);
     expect(rec.saveOpts).toHaveLength(1);
@@ -117,7 +121,7 @@ describe('GcsColdDriver write-once (fake Storage, emulator-independent)', () => 
 
   it('SIMPLE path: a 412 → WriteConflictError; a 5xx → TransientError', async () => {
     const rec: Recorder = { saveOpts: [], streamOpts: [] };
-    const d412 = new GcsColdDriver({
+    const d412 = new GcsStorageDriver({
       storage: fakeStorageWith(rec, {
         saveThrow: () => Promise.reject(err(412)),
       }),
@@ -125,7 +129,7 @@ describe('GcsColdDriver write-once (fake Storage, emulator-independent)', () => 
     });
     await expect(put(d412, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
 
-    const d500 = new GcsColdDriver({
+    const d500 = new GcsStorageDriver({
       storage: fakeStorageWith(rec, {
         saveThrow: () => Promise.reject(err(500)),
       }),
@@ -136,7 +140,7 @@ describe('GcsColdDriver write-once (fake Storage, emulator-independent)', () => 
 
   it('RESUMABLE path (object > threshold): sends resumable:true + ifGenerationMatch:0, and commits', async () => {
     const rec: Recorder = { saveOpts: [], streamOpts: [] };
-    const driver = new GcsColdDriver({
+    const driver = new GcsStorageDriver({
       storage: fakeStorageWith(rec, { stream: () => fakeStream() }),
       bucket: 'b',
       simpleUploadThresholdBytes: 2, // force the resumable path
@@ -153,7 +157,7 @@ describe('GcsColdDriver write-once (fake Storage, emulator-independent)', () => 
 
   it('RESUMABLE path: a 412 on commit → WriteConflictError', async () => {
     const rec: Recorder = { saveOpts: [], streamOpts: [] };
-    const driver = new GcsColdDriver({
+    const driver = new GcsStorageDriver({
       storage: fakeStorageWith(rec, { stream: () => fakeStream(err(412)) }),
       bucket: 'b',
       simpleUploadThresholdBytes: 2,

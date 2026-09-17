@@ -1,7 +1,7 @@
 /**
  * `GcsRegistryDriver` — an {@link IRegistryDriver} over Google Cloud Storage.
  *
- * Lets a **GCS deployment run on one bucket alone** — cold `.crbm` generations and the registry in the same
+ * Lets a **GCS deployment run on one bucket alone** — storage `.crbm` generations and the registry in the same
  * place, with no second cloud involved. Before this existed, a GCS user had to point the registry at a
  * separate AWS-hosted table, which meant holding an AWS account purely to store the pointer that says which
  * generation is current.
@@ -111,7 +111,7 @@ class GcsStore implements ObjectRegistryStore {
         // session, and a registry row is a few hundred bytes — one round trip's worth of data carried over
         // two. It also costs the fence: fake-gcs-server does not enforce `ifGenerationMatch` on the
         // resumable path, so the whole integration lane would pass over a registry with no
-        // compare-and-swap at all. `GcsColdDriver` pins the same flag for the same reason.
+        // compare-and-swap at all. `GcsStorageDriver` pins the same flag for the same reason.
         resumable: false,
         preconditionOpts: {
           ifGenerationMatch: expect === 'absent' ? 0 : generationFence(expect.version, key),

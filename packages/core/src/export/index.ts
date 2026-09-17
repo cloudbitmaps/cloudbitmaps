@@ -20,7 +20,7 @@
  * so the registry is complete by construction; a segment loaded without a registry is not exportable here — wire
  * the registry the store was loaded with.
  *
- * **Per-segment fault isolation:** a segment that can't be read (a corrupt cold object, or an encrypted segment
+ * **Per-segment fault isolation:** a segment that can't be read (a corrupt storage object, or an encrypted segment
  * when the store has no keystore) is recorded in the manifest's {@link ExportManifest.failed} list and the export
  * **continues** — one bad segment never blocks the rest. Its partial output is aborted, so a truncated file never
  * masquerades as complete. Therefore "a manifest exists" means *the run finished*, not that every segment
@@ -85,7 +85,7 @@ export interface ExportedSegment {
 export interface ExportFailure {
   readonly segment: string;
   readonly namespace?: string;
-  /** Why it failed (an error message) — e.g. a corrupt cold object, or an encrypted segment with no keystore. */
+  /** Why it failed (an error message) — e.g. a corrupt storage object, or an encrypted segment with no keystore. */
   readonly error: string;
 }
 
@@ -125,7 +125,7 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  *
  * Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
  * disappeared — export to a fresh directory for a clean dump. For a *current* image, run against a
- * freshly-constructed store: a store's cold source re-resolves each segment's generation on a short TTL (or pins
+ * freshly-constructed store: a store's storage source re-resolves each segment's generation on a short TTL (or pins
  * it for its lifetime when built without a clock or registry), so a long-lived store may export a view one load
  * behind.
  */

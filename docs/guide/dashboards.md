@@ -22,7 +22,7 @@ The metrics sink pushes raw observations on the I/O path. There are five event k
 
 | `kind` | When | Payload |
 | --- | --- | --- |
-| `cold.get` | one object-store GET for a chunk | `bytes` (0 if the chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
+| `storage.get` | one object-store GET for a chunk | `bytes` (0 if the chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
 | `cache` | one hot-cache lookup | `hit` |
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
@@ -35,7 +35,7 @@ import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
 const meter = otel.getMeter('cloud-roaring');
-const coldBytes = meter.createCounter('cloudroaring.cold.bytes');
+const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
 const cacheHit = meter.createCounter('cloudroaring.cache.hits');
 const cacheMiss = meter.createCounter('cloudroaring.cache.misses');
 const retries = meter.createCounter('cloudroaring.retries');
@@ -44,13 +44,13 @@ const fetchedChunks = meter.createCounter('cloudroaring.intersect.fetched_chunks
 const opLatency = meter.createHistogram('cloudroaring.op.ms');
 
 const store = new CloudRoaring({
-  cold,
+  storage,
   registry,
   metrics: {
     onEvent(e) {
       switch (e.kind) {
-        case 'cold.get':
-          coldBytes.add(e.bytes);
+        case 'storage.get':
+          storageBytes.add(e.bytes);
           break;
         case 'cache':
           (e.hit ? cacheHit : cacheMiss).add(1);
@@ -73,7 +73,7 @@ const store = new CloudRoaring({
 });
 ```
 
-**Panels worth having:** cache hit rate (`hits / (hits + misses)` — the single biggest cost lever), cold bytes
+**Panels worth having:** cache hit rate (`hits / (hits + misses)` — the single biggest cost lever), storage bytes
 read/min, `has` / `count` p50/p99 latency, `*Into` latency on its own panel (each one writes a whole generation,
 so it lives on a different scale from a read), the chunk-skipping ratio
 (`skipped / (skipped + fetched)` per `op` — the number that says whether your intersections are actually cheap;
@@ -81,7 +81,7 @@ a plain `union` is expected to skip nothing), and retry rate (a rising `transien
 store is throttling).
 
 `CountingMetricsSink` (exported) tallies all five kinds into a `MetricsSnapshot` —
-`{ cold, cache, retries: { transient }, intersect, ops }` — which is enough for a test or a quick script.
+`{ storage, cache, retries: { transient }, intersect, ops }` — which is enough for a test or a quick script.
 
 > **Label caveat.** `segment` / `namespace` are *your* strings — unbounded-cardinality and possibly PII. Never
 > map them straight to metric labels; the `op` **name** is a safe fixed enum, segment names are not. A name
@@ -154,7 +154,7 @@ function siemAudit(actor: string): IAuditSink {
 const audit = siemAudit('batch-loader@svc');
 
 // Pass it to each lifecycle op (audit is not a store-constructor option — these are separate entry points):
-await bulkLoadCrbmGeneration(cold, { segment: 'users', generation: 0 }, ids, { registry, audit });
+await bulkLoadCrbmGeneration(storage, { segment: 'users', generation: 0 }, ids, { registry, audit });
 await store.eraseSubject(subjectId, { namespace: 'eu', audit }); // GDPR Art. 17 — one segment.rewrite per segment
 await store.dropSegment({ segment: 'users' }, { confirmSegment: 'users', audit }); // retire + reclaim storage
 await destroySegment({ segment: 'users' }, { registry }, { confirmSegment: 'users', audit }); // crypto-shred
@@ -189,10 +189,10 @@ them would make your dashboard over-attest.**
 |---|---|---|
 | `segment.erase` | The wrapped DEK(s) are gone, so the segment's at-rest bytes are unreadable **everywhere — backups, replicas, PITR snapshots, WORM included**. The only erasure claim that survives immutable storage | — |
 | `segment.rewrite` | A generation without the erased id is now current, derived from `fromGeneration`. With the ledger entry it came with, the object that held the bit is gone from the bucket | **Not** that every copy is gone. A noncurrent object version, a cross-region replica or a backup can still hold `fromGeneration` until its own lifecycle removes it — for a claim that survives those, the segment has to be encrypted and the receipt is `segment.erase` |
-| `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Cold generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
+| `segment.dispose` | The segment was tombstoned and its storage reclaimed (`generationsDeleted` Storage generations). Emitted by `dropSegment` — including **every retirement a `retireExpired` sweep performs**, since the sweep forwards its `audit` sink through. A retention-driven fleet will therefore emit these in batches on whatever schedule you gave the sweep | **Not** that the bytes are unreadable. A noncurrent object version, a cross-region replica or a PITR snapshot can still hold the cleartext. Also not that reclamation is *complete* — check `DropResult.generationsRemaining` |
 
 > **One gap worth knowing:** when a sweep later deletes a retired segment's tombstone **row** (registry
-> housekeeping — it happens only once the segment's Cold generations are provably gone), **no audit event is
+> housekeeping — it happens only once the segment's Storage generations are provably gone), **no audit event is
 > emitted.** The `segment.dispose` above is the receipt for the data; the row removal is not separately
 > attested. If your controls treat the presence of a `destroyed` row as the attestation, run the sweep with
 > `purgeTombstones: false` so the rows are kept.

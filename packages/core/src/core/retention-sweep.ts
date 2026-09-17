@@ -2,7 +2,7 @@
  * The retention **sweep** — the thing that acts on the policies `setSegmentRetention` records.
  *
  * `retireExpired` enumerates the registry, selects the segments whose `expiresAt` has passed, and retires each
- * one through {@link dropSegment}. It deliberately **delegates rather than reimplements**: the registry → Cold
+ * one through {@link dropSegment}. It deliberately **delegates rather than reimplements**: the registry → Storage
  * ordering, the re-sweep for an object a load was still writing, and the `generationsRemaining` report are all
  * load-bearing and already live there. A sweep that open-coded the deletions would be a second
  * implementation of the most dangerous ordering in the library.
@@ -28,7 +28,7 @@
  * gets a `destroyed` row, and one dead row per retired daily bucket — or per retired dedup wave — is exactly the
  * registry litter `dropSegment` already refuses to create for a row-less accumulator. Purging is narrow on
  * purpose: only a tombstone that still carries an **expired retention policy** (so it is attributably ours, never
- * a GDPR crypto-shred), only after a grace period, and only once Cold is provably empty for it —
+ * a GDPR crypto-shred), only after a grace period, and only once Storage is provably empty for it —
  * because deleting the row is what makes the name reusable and takes the segment out of reach of
  * `gcOrphanGenerations`.
  */
@@ -50,7 +50,7 @@ import {
 } from './due-index';
 import { segmentKey, shardOf } from './keys';
 import type { IRegistryDriver, RegistryRecord } from './ports';
-import type { GovernanceMeta, IColdDriver, SegmentRef } from './ports';
+import type { GovernanceMeta, IStorageDriver, SegmentRef } from './ports';
 
 /** Default cap on retirements per sweep — a bounded batch, so a policy mistake costs one batch, not the fleet. */
 export const DEFAULT_RETIRE_LIMIT = 100;
@@ -117,7 +117,7 @@ export interface RetireExpiredOptions {
    * `destroyed` row as an attestation.
    *
    * Two knobs rather than one `number | 'never'`, deliberately: `0` would have had to mean "purge immediately"
-   * here while `coldGenTtlMs: 0` in this same library means "pin forever", and one option whose zero is the
+   * here while `storageGenTtlMs: 0` in this same library means "pin forever", and one option whose zero is the
    * opposite of another's is a reading hazard for whoever tunes both.
    */
   readonly purgeTombstones?: boolean;
@@ -136,7 +136,7 @@ export type RetireEntry =
       readonly result: DropResult;
       /**
        * Present when the retirement **completed the destructive part and then faulted** — the tombstone is written
-       * and the segment reads empty, but something after that (the Cold sweep) threw. The storage may not be fully
+       * and the segment reads empty, but something after that (the Storage sweep) threw. The storage may not be fully
        * reclaimed; re-run. Reported as `retired` rather than `skipped` because the segment really is retired, and
        * saying otherwise is the one thing a caller cannot recover from.
        */
@@ -165,7 +165,7 @@ export type RetireEntry =
        * schema). Reported rather than ignored: reading as "never expires" on a segment someone believes is
        * expiring is the silence that costs a retention commitment.
        * `'limit'` — eligible, but this cycle's `limit` was already spent. Re-run to continue.
-       * `'tombstone-not-empty'` — a tombstone whose Cold generations are not gone even after a GC
+       * `'tombstone-not-empty'` — a tombstone whose Storage generations are not gone even after a GC
        * attempt, so its row is kept: the row is what keeps the segment reachable by `gcOrphanGenerations` and
        * refused by every writer. Several causes, all self-healing: the storage really could not be reclaimed,
        * the collection *declined* because the row changed underneath it (`WriteConflictError`, which this
@@ -349,8 +349,8 @@ export async function retireExpired(
   let tombstonesPurged = 0;
   let limited = false;
   // The budget is charged on ATTEMPT, not on success, and that distinction is the whole guard. `dropSegment`
-  // writes the tombstone BEFORE sweeping Cold, so a fault in the Cold phase is a segment that is
-  // already retired — counting only successes meant a partial cold outage marched through the entire fleet with
+  // writes the tombstone BEFORE sweeping Storage, so a fault in the Storage phase is a segment that is
+  // already retired — counting only successes meant a partial storage outage marched through the entire fleet with
   // the cap never engaging, reporting `retired: 0, limited: false` (a "completed sweep that retired nothing") while
   // every segment in the namespace was tombstoned. Reproduced by two independent reviews.
   let attempted = 0;
@@ -480,7 +480,7 @@ export async function retireExpired(
         // existed, so there is nothing a delete could resurrect: remove the row instead of bricking the name.
         //
         // **Both halves of the predicate are load-bearing.** `generationsDeleted: []` alone does NOT mean the
-        // segment was empty — it is equally what a segment whose every `cold.delete` threw produces, because
+        // segment was empty — it is equally what a segment whose every `storage.delete` threw produces, because
         // `dropSegment`'s sweep loop stops once a pass deletes nothing. Purging the row on that reading left
         // the expired objects readable and billed, and then unreachable by everything that could have
         // collected them: `gcOrphanGenerations` returns `[]` with no row to compare against, the next sweep
@@ -506,7 +506,7 @@ export async function retireExpired(
       if (after?.status === 'destroyed') {
         // Stamp it here too. Without this a retirement that faulted after the tombstone landed is a row no later
         // sweep can attribute to itself, so it is never auto-purged — exactly the litter the purge exists to
-        // prevent, and reachable from any transient Cold fault.
+        // prevent, and reachable from any transient Storage fault.
         await stampRetirement(deps.registry, ref, now).catch(() => undefined);
         retired += 1;
         entries.push({
@@ -578,7 +578,7 @@ async function stampRetirement(
 }
 
 /**
- * Whether a tombstoned segment's storage is provably gone — no Cold generations.
+ * Whether a tombstoned segment's storage is provably gone — no Storage generations.
  *
  * The check is about what deleting the row would break rather than about tidiness: `gcOrphanGenerations` reads
  * the registry row to decide what to collect and returns empty when there is none, so deleting the row while
@@ -590,10 +590,10 @@ async function stampRetirement(
  * (`gcOrphanGenerations` takes *every* generation of a destroyed row), and the next cycle purges the row.
  */
 async function isFullyReclaimed(
-  deps: { readonly cold: IColdDriver },
+  deps: { readonly storage: IStorageDriver },
   ref: SegmentRef,
 ): Promise<boolean> {
-  for await (const key of deps.cold.list(ref)) {
+  for await (const key of deps.storage.list(ref)) {
     void key;
     return false;
   }

@@ -113,7 +113,7 @@ function measure(ids) {
   const min = ids[0];
   const max = ids[ids.length - 1];
   if (max > U32_MAX) throw new Error(`shape exceeds u32 (${max})`);
-  // `optimize()` first, because that is what a cold write does — see writeCrbmGeneration. Measuring the
+  // `optimize()` first, because that is what a storage write does — see writeCrbmGeneration. Measuring the
   // un-optimized encoding would understate our own codec by up to 570x and describe bytes we do not store.
   const rb = roaringCodec.fromValues(ids);
   const roaringPlain = rb.serialize().length;

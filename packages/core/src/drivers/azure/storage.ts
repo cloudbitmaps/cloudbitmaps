@@ -1,5 +1,5 @@
 /**
- * `AzureBlobColdDriver` — an {@link IColdDriver} over Azure Blob Storage.
+ * `AzureBlobStorageDriver` — an {@link IStorageDriver} over Azure Blob Storage.
  *
  * Uses the official `@azure/storage-blob`, an **optional peer dependency** — only consumers of
  * `@cloudbitmaps/roaring/azure` install it. A `ContainerClient` is **injected** (dependency injection): the driver owns
@@ -31,9 +31,9 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectName,
+  storageObjectName,
   normalizeAzurePrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
@@ -53,7 +53,7 @@ const OCTET_STREAM = { blobContentType: 'application/octet-stream' } as const;
 /** Write-once precondition shared by both upload paths: create only if the blob is absent. */
 const IF_ABSENT = { conditions: { ifNoneMatch: '*' }, blobHTTPHeaders: OCTET_STREAM } as const;
 
-export interface AzureBlobColdDriverOptions {
+export interface AzureBlobStorageDriverOptions {
   /** A constructed `@azure/storage-blob` `ContainerClient`, scoped to an existing container (point it at
    * Azurite's connection string for local/integration use). */
   readonly containerClient: ContainerClient;
@@ -69,13 +69,13 @@ export interface AzureBlobColdDriverOptions {
   readonly blockBytes?: number;
 }
 
-export class AzureBlobColdDriver implements IColdDriver {
+export class AzureBlobStorageDriver implements IStorageDriver {
   private readonly container: ContainerClient;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly blockBytes: number;
 
-  constructor(options: AzureBlobColdDriverOptions) {
+  constructor(options: AzureBlobStorageDriverOptions) {
     this.container = options.containerClient;
     this.prefix = normalizeAzurePrefix(options.prefix);
     // Fail fast at the boundary: nullish-coalescing only guards `undefined`, so an explicit 0 / negative /
@@ -101,7 +101,7 @@ export class AzureBlobColdDriver implements IColdDriver {
     this.blockBytes = Math.max(requestedBlock, Math.ceil(this.maxObjectBytes / AZURE_MAX_BLOCKS));
   }
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
   }
 
@@ -113,7 +113,7 @@ export class AzureBlobColdDriver implements IColdDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectName = coldObjectName(this.prefix, key); // validates ref + generation
+    const objectName = storageObjectName(this.prefix, key); // validates ref + generation
     const sink = new AzureBlockBlobSink(
       this.blob(objectName),
       this.blockBytes,
@@ -145,7 +145,7 @@ export class AzureBlobColdDriver implements IColdDriver {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
     if (length === 0) return new Uint8Array(0);
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       const res = await this.blob(objectName).download(offset, length);
       const bytes = await collect(res.readableStreamBody);
@@ -163,7 +163,7 @@ export class AzureBlobColdDriver implements IColdDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectName = coldObjectName(this.prefix, key);
+    const objectName = storageObjectName(this.prefix, key);
     try {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op hot
@@ -185,7 +185,7 @@ export class AzureBlobColdDriver implements IColdDriver {
   async delete(key: GenKey): Promise<void> {
     // Idempotent: `deleteIfExists` is a no-op (no throw) on an absent blob, so a racing/retried GC sweep is safe.
     try {
-      await this.blob(coldObjectName(this.prefix, key)).deleteIfExists();
+      await this.blob(storageObjectName(this.prefix, key)).deleteIfExists();
     } catch (err) {
       throw this.mapError(err);
     }

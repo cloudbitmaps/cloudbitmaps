@@ -1,10 +1,10 @@
-import { CloudRoaring, MemoryColdChunkSource } from '@/index';
+import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
-import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 
 // The intersection window's MEMORY bound, proven on the real `intersect` path.
 //
-// engine.ts documents it precisely: "the Cold payload footprint is bounded by the window
+// engine.ts documents it precisely: "the Storage payload footprint is bounded by the window
 // (`concurrency × operands × chunk`), not by segment size — that's the Lambda-friendly property." That sentence
 // is the reason anyone would run this on Lambda at all, and until this file it was the one load-bearing claim in
 // the project with nothing asserting it.
@@ -25,16 +25,16 @@ import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
 // concurrent payload reads and fails with a number.
 
 /**
- * A cold source that tracks how many `getChunk` calls are in flight *simultaneously*, not just how many happen.
+ * A storage source that tracks how many `getChunk` calls are in flight *simultaneously*, not just how many happen.
  *
- * The delay is load-bearing rather than incidental. `MemoryColdChunkSource.getChunk` resolves on the next
+ * The delay is load-bearing rather than incidental. `MemoryStorageChunkSource.getChunk` resolves on the next
  * microtask, so without a real suspension point the window can drain almost as fast as it fills and `peak`
  * reads 1 or 2 — a test that would then "pass" against a completely unbounded implementation. Forcing every
  * fetch to park on a timer makes the window's true width observable, which is the difference between measuring
  * the bound and measuring the scheduler.
  */
-class ConcurrencyTrackingCold implements ColdChunkSource {
-  private readonly inner = new MemoryColdChunkSource();
+class ConcurrencyTrackingStorage implements StorageChunkSource {
+  private readonly inner = new MemoryStorageChunkSource();
   private inFlight = 0;
   peak = 0;
   calls = 0;
@@ -62,10 +62,10 @@ class ConcurrencyTrackingCold implements ColdChunkSource {
  * Seed two segments that share every one of `chunks` chunk keys, so the intersection has to fetch all of them
  * and the window is the only thing limiting how many are resident.
  */
-function seedOverlapping(cold: ConcurrencyTrackingCold, chunks: number): void {
+function seedOverlapping(storage: ConcurrencyTrackingStorage, chunks: number): void {
   for (let key = 0; key < chunks; key++) {
-    cold.seedChunk({ segment: 'a', chunkKey: key }, [1, 2, 3]);
-    cold.seedChunk({ segment: 'b', chunkKey: key }, [2, 3, 4]);
+    storage.seedChunk({ segment: 'a', chunkKey: key }, [1, 2, 3]);
+    storage.seedChunk({ segment: 'b', chunkKey: key }, [2, 3, 4]);
   }
 }
 
@@ -76,13 +76,13 @@ async function drain(it: AsyncIterable<number>): Promise<number> {
 }
 
 async function peakFor(chunks: number, concurrency?: number) {
-  const cold = new ConcurrencyTrackingCold();
-  const store = new CloudRoaring({ cold });
-  seedOverlapping(cold, chunks);
+  const storage = new ConcurrencyTrackingStorage();
+  const store = new CloudRoaring({ storage });
+  seedOverlapping(storage, chunks);
   const yielded = await drain(
     store.segment('a').intersect([store.segment('b')], concurrency ? { concurrency } : undefined),
   );
-  return { peak: cold.peak, calls: cold.calls, yielded };
+  return { peak: storage.peak, calls: storage.calls, yielded };
 }
 
 const OPERANDS = 2;
@@ -138,16 +138,17 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
   it('bounds the window across three operands too', async () => {
     // The ceiling is `concurrency × operands`, so it must move with operand count in the way documented —
     // a bound that only holds for the two-segment case would be a bound on the test, not the code.
-    const cold = new ConcurrencyTrackingCold();
-    const store = new CloudRoaring({ cold });
+    const storage = new ConcurrencyTrackingStorage();
+    const store = new CloudRoaring({ storage });
     for (let key = 0; key < 120; key++) {
-      for (const seg of ['a', 'b', 'c']) cold.seedChunk({ segment: seg, chunkKey: key }, [1, 2, 3]);
+      for (const seg of ['a', 'b', 'c'])
+        storage.seedChunk({ segment: seg, chunkKey: key }, [1, 2, 3]);
     }
     await drain(store.segment('a').intersect([store.segment('b'), store.segment('c')]));
 
-    expect(cold.peak).toBeLessThanOrEqual(DEFAULT_WINDOW * 3);
-    expect(cold.peak).toBeGreaterThan(3);
-    expect(cold.calls).toBe(120 * 3);
+    expect(storage.peak).toBeLessThanOrEqual(DEFAULT_WINDOW * 3);
+    expect(storage.peak).toBeGreaterThan(3);
+    expect(storage.calls).toBe(120 * 3);
   });
 
   it('bounds the window on andNot and union as well', async () => {
@@ -155,15 +156,17 @@ describe('intersection window is bounded (memory, not just fetch count)', () => 
     // suppression case (`andNot` against a large opt-out list) is precisely where an unbounded window would
     // hurt most in production.
     for (const op of ['andNot', 'union'] as const) {
-      const cold = new ConcurrencyTrackingCold();
-      const store = new CloudRoaring({ cold });
-      seedOverlapping(cold, 150);
+      const storage = new ConcurrencyTrackingStorage();
+      const store = new CloudRoaring({ storage });
+      seedOverlapping(storage, 150);
       const a = store.segment('a');
       const b = store.segment('b');
       await drain(op === 'andNot' ? a.andNot([b]) : a.union([b]));
 
-      expect(cold.peak, `${op} exceeded the window`).toBeLessThanOrEqual(DEFAULT_WINDOW * OPERANDS);
-      expect(cold.peak, `${op} never overlapped — the bound is vacuous`).toBeGreaterThan(1);
+      expect(storage.peak, `${op} exceeded the window`).toBeLessThanOrEqual(
+        DEFAULT_WINDOW * OPERANDS,
+      );
+      expect(storage.peak, `${op} never overlapped — the bound is vacuous`).toBeGreaterThan(1);
     }
   });
 });

@@ -1,18 +1,18 @@
 import fc from 'fast-check';
-import { CloudRoaring, MemoryColdChunkSource, type Clock } from '@/index';
+import { CloudRoaring, MemoryStorageChunkSource, type Clock } from '@/index';
 import { roaringCodec, SafeBitmap } from '@/roaring-codec';
 import { SegmentEngine } from '@/core/engine';
 import { joinId } from '@/core/bit-route';
 import { ValidationError } from '@/core/errors';
-import type { ChunkRef, ColdChunkSource, SegmentRef } from '@/core/ports';
+import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
 
 /**
- * A ColdChunkSource that records every getChunk call — to prove chunk-skipping (non-overlapping keys are never
+ * A StorageChunkSource that records every getChunk call — to prove chunk-skipping (non-overlapping keys are never
  * fetched). Delegates to an in-memory source; seed it through `inner`.
  */
-class CountingCold implements ColdChunkSource {
-  readonly inner = new MemoryColdChunkSource();
+class CountingStorage implements StorageChunkSource {
+  readonly inner = new MemoryStorageChunkSource();
   readonly fetched: string[] = [];
 
   async getChunk(ref: ChunkRef): Promise<Uint8Array | null> {
@@ -26,13 +26,13 @@ class CountingCold implements ColdChunkSource {
 
 /** A store over a counting source; `seed` writes a segment's chunks exactly as a `.crbm` generation holds them. */
 function harness(): {
-  cold: CountingCold;
+  storage: CountingStorage;
   store: CloudRoaring;
   seed: (segment: string, ids: number[]) => void;
 } {
-  const cold = new CountingCold();
-  const store = new CloudRoaring({ cold });
-  return { cold, store, seed: (segment, ids) => void seedSegment(cold.inner, segment, ids) };
+  const storage = new CountingStorage();
+  const store = new CloudRoaring({ storage });
+  return { storage, store, seed: (segment, ids) => void seedSegment(storage.inner, segment, ids) };
 }
 
 function fakeClock(): Clock & { advance: (ms: number) => void } {
@@ -60,7 +60,7 @@ describe('chunk-skipping intersection', () => {
   });
 
   it('NEVER fetches chunks for non-overlapping keys (the core saving)', async () => {
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     // Chunk keys: a = {0, 5, 12}; b = {0, 9, 12}; common = {0, 12}.
     seed('a', [joinId(0, 1), joinId(0, 2), joinId(5, 1), joinId(12, 7)]);
     seed('b', [joinId(0, 2), joinId(0, 3), joinId(9, 1), joinId(12, 8)]);
@@ -69,15 +69,15 @@ describe('chunk-skipping intersection', () => {
 
     // Exact fetched set: ONLY the common keys {0,12} of BOTH operands — no non-overlapping key (5/9) and
     // no operand×key over-fetch. Pinning the exact set (not just "no 5/9") is what makes this a real bar.
-    expect(new Set(cold.fetched)).toEqual(new Set(['/|a|0', '/|a|12', '/|b|0', '/|b|12']));
+    expect(new Set(storage.fetched)).toEqual(new Set(['/|a|0', '/|a|12', '/|b|0', '/|b|12']));
   });
 
   it('returns ∅ with zero payload fetches when no keys overlap', async () => {
-    const { cold, store, seed } = harness();
+    const { storage, store, seed } = harness();
     seed('a', [joinId(1, 1)]);
     seed('b', [joinId(2, 1)]);
     expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([]);
-    expect(cold.fetched).toEqual([]); // index maps aligned; no chunk bytes downloaded
+    expect(storage.fetched).toEqual([]); // index maps aligned; no chunk bytes downloaded
   });
 
   it('intersects three or more segments', async () => {
@@ -142,13 +142,13 @@ describe('chunk-skipping intersection', () => {
   // handled. Proving the chunk WAS fetched (index keys aligned) pins the empty-chunk short-circuit rather than
   // an accidental index-level skip.
   it('drops a common chunk whose payload is empty in one operand (fetched, then skipped)', async () => {
-    const { cold, store, seed } = harness();
-    cold.inner.seed({ segment: 'a', chunkKey: 3 }, SafeBitmap.fromValues([]).serialize()); // listed, empty
+    const { storage, store, seed } = harness();
+    storage.inner.seed({ segment: 'a', chunkKey: 3 }, SafeBitmap.fromValues([]).serialize()); // listed, empty
     seed('b', [joinId(3, 10)]); // b shares chunk key 3
     expect(await collect(store.segment('a').intersect([store.segment('b')]))).toEqual([]); // no phantom id
     // The common chunk WAS fetched on both operands (keys aligned) — the drop is the empty-payload
     // short-circuit, not index-level chunk-skipping.
-    expect(new Set(cold.fetched)).toEqual(new Set(['/|a|3', '/|b|3']));
+    expect(new Set(storage.fetched)).toEqual(new Set(['/|a|3', '/|b|3']));
   });
 
   it('does not mutate the operands / poison the cache (andInPlace safety)', async () => {
@@ -159,14 +159,17 @@ describe('chunk-skipping intersection', () => {
     const b = store.segment('b');
     await collect(a.intersect([b])); // populates the HOT cache + runs andInPlace on fetched chunks
     // Operands must be unchanged afterward, and a second intersect must give the same result —
-    // proving the in-place AND never mutated a cached/shared Cold bitmap.
+    // proving the in-place AND never mutated a cached/shared Storage bitmap.
     expect(await collect(a.iterate())).toEqual([1, 2, 3]);
     expect(await collect(b.iterate())).toEqual([2, 3, 4]);
     expect(await collect(a.intersect([b]))).toEqual([2, 3]);
   });
 
   it('rejects an empty operand list and a bad concurrency at the engine boundary', async () => {
-    const engine = new SegmentEngine({ codec: roaringCodec, cold: new MemoryColdChunkSource() });
+    const engine = new SegmentEngine({
+      codec: roaringCodec,
+      storage: new MemoryStorageChunkSource(),
+    });
     // The public Segment.intersect always includes `this`; exercise the engine guards directly.
     await expect(
       collect(engine.intersect([{ segment: 's' }, { segment: 't' }], { concurrency: NaN })),
@@ -204,7 +207,7 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: [1, 2, 3], b: [2, 3, 4], dest: [999, 70_000] },
-      { clock, coldGenTtlMs: 1 },
+      { clock, storageGenTtlMs: 1 },
     );
     const dest = store.segment('dest');
     expect(await collect(dest.iterate())).toEqual([999, 70_000]); // dest's own generation 0, readable first
@@ -213,7 +216,7 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     expect(result.generation).toBe(1);
     expect((await registry.get({ segment: 'dest' }))!.currentGen).toBe(1);
 
-    clock.advance(1); // the reader's generation snapshot refreshes after coldGenTtlMs
+    clock.advance(1); // the reader's generation snapshot refreshes after storageGenTtlMs
     expect(await collect(dest.iterate())).toEqual([2, 3]); // 999 / 70_000 are gone: nothing was merged
     expect(await dest.has(999)).toBe(false);
     expect(await dest.count()).toBe(2);

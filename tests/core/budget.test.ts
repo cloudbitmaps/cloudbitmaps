@@ -4,7 +4,7 @@ import { ValidationError } from '@/core/errors';
 import { collect, loadedStore, seededStore } from '../helpers/loaded';
 
 /**
- * The denial-of-wallet budget, in the units the loaded store actually bills: **cold chunk fetches**. `count` /
+ * The denial-of-wallet budget, in the units the loaded store actually bills: **storage chunk fetches**. `count` /
  * `iterate` charge one per chunk they must read; the combines charge one per surviving key per operand that
  * holds it; the admin scans (`subjectReport` / `eraseSubject`) charge one per segment enumerated. Every check
  * happens BEFORE the fan-out, so a runaway is refused rather than billed.
@@ -57,19 +57,19 @@ describe('per-op budget enforced by the store', () => {
     seededStore(segments, { budget: { maxRequests: 2 }, retry: false });
 
   it('iterate refuses a fan-out over the budget (before yielding)', async () => {
-    const { store } = tinyBudgetStore({ s: THREE_CHUNKS }); // 3 chunks ⇒ 3 cold fetches
+    const { store } = tinyBudgetStore({ s: THREE_CHUNKS }); // 3 chunks ⇒ 3 storage fetches
     await expect(collect(store.segment('s').iterate())).rejects.toThrow(BudgetExceededError);
   });
 
   it('count refuses a fan-out over the budget', async () => {
-    // This cold source carries no index, so `count` falls back to fetching every chunk — 3 > 2.
+    // This storage source carries no index, so `count` falls back to fetching every chunk — 3 > 2.
     const { store } = tinyBudgetStore({ s: THREE_CHUNKS });
     await expect(store.segment('s').count()).rejects.toThrow(BudgetExceededError);
   });
 
   it('intersect refuses when common-keys × operands exceeds the budget', async () => {
     const { store } = tinyBudgetStore({ a: THREE_CHUNKS, b: THREE_CHUNKS });
-    // 3 surviving keys × 2 operands = 6 cold fetches > 2.
+    // 3 surviving keys × 2 operands = 6 storage fetches > 2.
     await expect(collect(store.segment('a').intersect([store.segment('b')]))).rejects.toThrow(
       BudgetExceededError,
     );
@@ -116,16 +116,16 @@ describe('per-op budget enforced by the store', () => {
     ).rejects.toThrow(BudgetExceededError);
   });
 
-  it('refuses BEFORE any cold fetch (the check is before fan-out, so the runaway never spends)', async () => {
-    const { store, cold } = tinyBudgetStore({ s: THREE_CHUNKS });
-    const spy = vi.spyOn(cold, 'getChunk');
+  it('refuses BEFORE any storage fetch (the check is before fan-out, so the runaway never spends)', async () => {
+    const { store, storage } = tinyBudgetStore({ s: THREE_CHUNKS });
+    const spy = vi.spyOn(storage, 'getChunk');
     await expect(store.segment('s').count()).rejects.toThrow(BudgetExceededError);
     expect(spy).not.toHaveBeenCalled(); // proves the refusal happened before the fetch loop
   });
 
-  // Production stores wrap a raw IColdDriver in a CrbmColdChunkSource, which serves per-chunk cardinalities
+  // Production stores wrap a raw IStorageDriver in a CrbmStorageChunkSource, which serves per-chunk cardinalities
   // straight from the `.crbm` index — so `count` reads no payload at all and there is nothing to budget. The
-  // seeded MemoryColdChunkSource above only exercises the fallback path; these two cover the real path.
+  // seeded MemoryStorageChunkSource above only exercises the fallback path; these two cover the real path.
   it('count on a loaded generation charges nothing — the index answers, so no chunk is fetched', async () => {
     const { store } = await loadedStore(
       { s: FIVE_CHUNKS },
@@ -135,7 +135,7 @@ describe('per-op budget enforced by the store', () => {
     expect(await store.segment('s').count()).toBe(5);
   });
 
-  it('iterate over a loaded generation still charges one cold fetch per chunk', async () => {
+  it('iterate over a loaded generation still charges one storage fetch per chunk', async () => {
     const { store } = await loadedStore(
       { s: FIVE_CHUNKS },
       { budget: { maxRequests: 2 }, retry: false },

@@ -4,14 +4,14 @@
 // 404 against fake-gcs-server; apiEndpoint alone is the working config).
 import { Storage } from '@google-cloud/storage';
 import {
-  coldChunkSourceConformance,
+  storageChunkSourceConformance,
   registryConformance,
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
-import { GcsColdDriver } from '@/drivers/gcs/cold';
+import { GcsStorageDriver } from '@/drivers/gcs/storage';
 import { GcsRegistryDriver } from '@/drivers/gcs/registry';
-import { CrbmColdChunkSource, writeCrbmGeneration } from '@/core/crbm-cold-source';
+import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
@@ -70,17 +70,17 @@ registryConcurrency('GcsRegistryDriver (fake-gcs-server)', () => {
 });
 
 let n = 0;
-const freshDriver = (): GcsColdDriver =>
-  new GcsColdDriver({ storage, bucket: BUCKET, prefix: `conf/${n++}` });
+const freshDriver = (): GcsStorageDriver =>
+  new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `conf/${n++}` });
 
-// The GCS driver must pass the SAME cold-source contract as in-memory + LocalFs + S3.
-coldChunkSourceConformance('GcsColdDriver (fake-gcs-server)', async (chunks) => {
+// The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
+storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
   const driver = freshDriver();
   await writeCrbmGeneration(driver, { segment: CONFORMANCE_SEGMENT, generation: 1 }, chunks);
-  return new CrbmColdChunkSource(driver);
+  return new CrbmStorageChunkSource(driver);
 });
 
-describe('GcsColdDriver specifics (fake-gcs-server)', () => {
+describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
   const bm = (...v: number[]): SafeBitmap => SafeBitmap.fromValues(v);
   const gen = (generation: number): GenKey => ({ segment: 's', generation });
 
@@ -91,8 +91,8 @@ describe('GcsColdDriver specifics (fake-gcs-server)', () => {
       writeCrbmGeneration(driver, gen(1), [{ chunkKey: 0, bitmap: bm(9) }]),
     ).rejects.toBeInstanceOf(WriteConflictError);
     // The original is intact.
-    const cold = new CrbmColdChunkSource(driver);
-    const bytes = await cold.getChunk({ segment: 's', chunkKey: 0 });
+    const source = new CrbmStorageChunkSource(driver);
+    const bytes = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([1, 2, 3]);
   });
 
@@ -106,10 +106,10 @@ describe('GcsColdDriver specifics (fake-gcs-server)', () => {
   // fake-gcs-server does not honor `ifGenerationMatch: 0` on the resumable-upload *finalize* (empirically it
   // overwrites — unlike its simple-upload path, and unlike real GCS). Resumable write-once enforcement is
   // instead covered by (a) the driver-level mock test asserting the driver sends `resumable:true` +
-  // `ifGenerationMatch:0` and maps a 412-on-commit to WriteConflictError (tests/drivers/gcs/cold.test.ts), and
+  // `ifGenerationMatch:0` and maps a 412-on-commit to WriteConflictError (tests/drivers/gcs/storage.test.ts), and
   // (b) real GCS, which enforces the precondition. Asserting it here would test the emulator's gap, not ours.
   it('round-trips a generation written via the RESUMABLE (large-object) upload path', async () => {
-    const driver = new GcsColdDriver({
+    const driver = new GcsStorageDriver({
       storage,
       bucket: BUCKET,
       prefix: `resumable/${n++}`,
@@ -119,9 +119,9 @@ describe('GcsColdDriver specifics (fake-gcs-server)', () => {
       { chunkKey: 0, bitmap: bm(1, 2, 3) },
       { chunkKey: 7, bitmap: bm(500, 70_000) },
     ]);
-    const cold = new CrbmColdChunkSource(driver);
-    const c0 = await cold.getChunk({ segment: 's', chunkKey: 0 });
-    const c7 = await cold.getChunk({ segment: 's', chunkKey: 7 });
+    const source = new CrbmStorageChunkSource(driver);
+    const c0 = await source.getChunk({ segment: 's', chunkKey: 0 });
+    const c7 = await source.getChunk({ segment: 's', chunkKey: 7 });
     expect(SafeBitmap.safeDeserialize(c0!, 1 << 20).toArray()).toEqual([1, 2, 3]);
     expect(SafeBitmap.safeDeserialize(c7!, 1 << 20).toArray()).toEqual([500, 70_000]);
   });
@@ -175,16 +175,16 @@ describe('GcsColdDriver specifics (fake-gcs-server)', () => {
   });
 });
 
-describe('GcsColdDriver end-to-end through the engine (fake-gcs-server)', () => {
-  // Proves the driver works behind a real `CloudRoaring` store — not just the low-level cold-source contract:
+describe('GcsStorageDriver end-to-end through the engine (fake-gcs-server)', () => {
+  // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
   // bulk-load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
   it('bulk-load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
-    const driver = new GcsColdDriver({ storage, bucket: BUCKET, prefix: `e2e/${n++}` });
+    const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `e2e/${n++}` });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
 
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
     expect(await store.segment('a').count()).toBe(4);
 
     const iterated: number[] = [];

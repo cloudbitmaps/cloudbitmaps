@@ -1,7 +1,7 @@
 /**
  * `AzureBlobRegistryDriver` — an {@link IRegistryDriver} over Azure Blob Storage.
  *
- * Lets an **Azure deployment run on one container alone** — cold `.crbm` generations and the registry in the
+ * Lets an **Azure deployment run on one container alone** — storage `.crbm` generations and the registry in the
  * same place, with no second cloud involved. Before this existed, an Azure user had to point the registry at
  * a separate AWS-hosted table, which meant holding an AWS account purely to store the pointer that says which
  * generation is current.
@@ -11,10 +11,10 @@
  *
  * **The atomic swap is offloaded to Azure's blob conditions**: `ifNoneMatch: '*'` is create-only and
  * `ifMatch: <etag>` is compare-and-swap — the same pair S3 spells `If-None-Match: *` / `If-Match: <etag>`,
- * and the same pair the cold driver already uses for write-once generations. A lost race returns `409`
+ * and the same pair the storage driver already uses for write-once generations. A lost race returns `409`
  * (`BlobAlreadyExists`) or `412` → {@link WriteConflictError}. Reads are strongly consistent, satisfying the
  * registry's `strongRead` contract. The `ContainerClient` is **injected**, exactly like
- * {@link AzureBlobColdDriver} — it is already container-scoped, so there is no separate container option.
+ * {@link AzureBlobStorageDriver} — it is already container-scoped, so there is no separate container option.
  *
  * **Deployment requirements** (a policy that violates these silently corrupts the registry):
  * - The principal needs read, write and list on the container (`Storage Blob Data Contributor` covers it).

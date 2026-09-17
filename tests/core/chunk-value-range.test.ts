@@ -2,8 +2,8 @@ import { RoaringBitmap32, SerializationFormat } from 'roaring';
 import {
   CloudRoaring,
   IntegrityError,
-  MemoryColdChunkSource,
-  MemoryColdDriver,
+  MemoryStorageChunkSource,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   publishGeneration,
   writeCrbmGeneration,
@@ -23,7 +23,7 @@ import { collect } from '../helpers/loaded';
 // NOTE ON PLACEMENT. The first attempt put this check inside `SafeBitmap.safeDeserialize` and broke two tests
 // immediately: that is the codec's GENERAL entry point, also used for full-segment exports where u32 values
 // are entirely legitimate. The 16-bit rule belongs where a payload is interpreted AS A CHUNK — which, now that
-// there is one tier, means exactly one place: `SegmentEngine`'s cold-chunk decode (`assertChunkPayloadInRange`).
+// there is one tier, means exactly one place: `SegmentEngine`'s storage-chunk decode (`assertChunkPayloadInRange`).
 // The check moved with the tier; the reason it exists did not.
 const CAP = 1 << 20;
 
@@ -34,13 +34,13 @@ function forgeChunk(values: number[]): Uint8Array {
 
 /** A store whose segment `s` has one seeded chunk, at `chunkKey`, holding exactly `values`. */
 function storeWithChunk(chunkKey: number, values: number[]): CloudRoaring {
-  const cold = new MemoryColdChunkSource();
-  cold.seed({ segment: 's', chunkKey }, forgeChunk(values));
-  return new CloudRoaring({ cold });
+  const storage = new MemoryStorageChunkSource();
+  storage.seed({ segment: 's', chunkKey }, forgeChunk(values));
+  return new CloudRoaring({ storage });
 }
 
 describe('chunk payload value range', () => {
-  it('rejects a cold chunk holding a value past the remainder range, on every read path', async () => {
+  it('rejects a storage chunk holding a value past the remainder range, on every read path', async () => {
     const seg = storeWithChunk(3, [1, 2, 70_000]).segment('s');
     // Every verb that decodes a chunk must refuse it — a read that answered from one path and threw from
     // another is how a fabricated id used to reach a caller intermittently.
@@ -51,10 +51,10 @@ describe('chunk payload value range', () => {
   });
 
   it('refuses it inside a combine too, where the fabricated id would become a spurious match', async () => {
-    const cold = new MemoryColdChunkSource();
-    cold.seed({ segment: 'bad', chunkKey: 3 }, forgeChunk([1, 70_000]));
-    cold.seed({ segment: 'ok', chunkKey: 3 }, forgeChunk([1, 2]));
-    const store = new CloudRoaring({ cold });
+    const storage = new MemoryStorageChunkSource();
+    storage.seed({ segment: 'bad', chunkKey: 3 }, forgeChunk([1, 70_000]));
+    storage.seed({ segment: 'ok', chunkKey: 3 }, forgeChunk([1, 2]));
+    const store = new CloudRoaring({ storage });
     await expect(
       collect(store.segment('bad').intersect([store.segment('ok')])),
     ).rejects.toBeInstanceOf(IntegrityError);
@@ -74,15 +74,15 @@ describe('chunk payload value range', () => {
     // new object would carry the corruption, `verifyGeneration` (chunk keys + cardinality) would not see it, and
     // the call would report `erased: true` over a segment that still cannot be read. Refusing says the useful
     // thing instead — this segment is corrupt — and it costs one `maximum()` call per chunk.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const SEG = { segment: 's' };
-    await writeCrbmGeneration(cold, { ...SEG, generation: 0 }, [
+    await writeCrbmGeneration(storage, { ...SEG, generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 2]) }, // clean: the chunk holding the erased id
       { chunkKey: 1, bitmap: SafeBitmap.fromValues([70_000]) }, // corrupt: carried through by the rewrite
     ]);
     await publishGeneration(registry, { ...SEG, generation: 0 });
-    const deps = { cold, registry, codec: roaringCodec };
+    const deps = { storage, registry, codec: roaringCodec };
 
     await expect(eraseIdFromSegment(SEG, joinId(0, 1), deps)).rejects.toBeInstanceOf(
       IntegrityError,
@@ -94,16 +94,16 @@ describe('chunk payload value range', () => {
   it('checks the chunk it is about to rewrite, not only the ones it copies', async () => {
     // The other half: the target chunk is decoded in the main body rather than in the pass-through generator, so
     // it needs the same check — and it is the chunk most likely to be corrupt, since it is the one being edited.
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     const SEG = { segment: 's' };
-    await writeCrbmGeneration(cold, { ...SEG, generation: 0 }, [
+    await writeCrbmGeneration(storage, { ...SEG, generation: 0 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1, 70_000]) },
     ]);
     await publishGeneration(registry, { ...SEG, generation: 0 });
 
     await expect(
-      eraseIdFromSegment(SEG, joinId(0, 1), { cold, registry, codec: roaringCodec }),
+      eraseIdFromSegment(SEG, joinId(0, 1), { storage, registry, codec: roaringCodec }),
     ).rejects.toThrow(/70000/);
     expect((await registry.get(SEG))!.currentGen).toBe(0);
   });

@@ -29,10 +29,10 @@
   --cb-signal-fill: #0f62e8; /* the only fill allowed under a white label */
   --cb-cyan: #19c5f4; /* links, live figures, "this is the number" */
 
-  /* Tier ramp — semantics, not brand. Only ever labels a storage temperature. */
+  /* Tier ramp — semantics, not brand. Only ever labels a tier, never a product or a vendor. */
   --cb-hot: #e8834a;
   --cb-warm: #d7b25a;
-  --cb-cold: #19c5f4;
+  --cb-storage: #19c5f4;
 
   /* Bit ramp — the flow figure's payload squares, signal-blue through cyan. Non-text, but followable, so
      the light theme gets its own ramp rather than inheriting blues that vanish on white. */
@@ -70,7 +70,7 @@
   --cb-cyan: #0a6c90;
   --cb-hot: #a94d18; /* 4.98:1 on --cb-surface-2 */
   --cb-warm: #8a6a12;
-  --cb-cold: #0a6c90;
+  --cb-storage: #0a6c90;
 
   /* Same ramp, walked between this theme's --cb-signal (#0b4fcc) and --cb-cyan (#0a6c90). */
   --cb-bit-1: #0b4fcc;
@@ -683,8 +683,8 @@ section > .lede {
   color: var(--cb-warm);
 }
 
-.tier-chip.t-cold {
-  color: var(--cb-cold);
+.tier-chip.t-storage {
+  color: var(--cb-storage);
 }
 
 .tier p {
@@ -1251,8 +1251,8 @@ section > .lede {
   color: var(--cb-warm);
 }
 
-.trow.r-cold .tkey {
-  color: var(--cb-cold);
+.trow.r-storage .tkey {
+  color: var(--cb-storage);
 }
 
 .tfill {
@@ -1281,8 +1281,8 @@ section > .lede {
   background: var(--cb-warm);
 }
 
-.r-cold .tfill i.f {
-  background: var(--cb-cold);
+.r-storage .tfill i.f {
+  background: var(--cb-storage);
 }
 
 .tnote {
@@ -1306,8 +1306,8 @@ section > .lede {
   font-size: 9.5px;
   letter-spacing: 0.06em;
   padding: 3px 7px;
-  border: 1px solid var(--cb-cold);
-  color: var(--cb-cold);
+  border: 1px solid var(--cb-storage);
+  color: var(--cb-storage);
   animation: arrive-chip 16s ease-in-out infinite;
 }
 
@@ -2479,7 +2479,7 @@ section > .lede {
 
 /* Container cards reuse the tier grid — it is a three-up card grid, and a second
    one would be the same CSS under a different name. Only the chip's colour differs,
-   because a container is not a storage temperature. */
+   because a container is not a tier. */
 .tier-chip.t-c {
   color: var(--cb-cyan);
 }
@@ -3222,11 +3222,11 @@ section > .lede {
    These replace table rows. "the rewrite carries every other chunk through
    byte-for-byte and clears one bit" is a sentence a reader has to parse; three rows
    of cells where the marked id visibly stops being set in the next generation is a
-   thing they can just see. Same for a generation flip: "cold objects are never
+   thing they can just see. Same for a generation flip: "storage objects are never
    overwritten" is a claim, whereas watching gen 7 appear beside gen 6 and the
    pointer move is the mechanism.
 
-   The left figure was a delta tier punching a tombstone through a cold chunk until
+   The left figure was a delta tier punching a tombstone through a storage chunk until
    the warm tier was removed; the cells and their hues carry over because the shape
    of the claim did — one marked id, and a later row where it is absent — but the
    mechanism they illustrate is now a whole-generation rewrite.
@@ -3300,7 +3300,7 @@ section > .lede {
   border: 1px solid var(--cb-rule);
 }
 
-/* present in cold */
+/* present in storage */
 .dgm-cells i.set {
   background: var(--cb-muted);
   border-color: var(--cb-muted);

@@ -19,7 +19,7 @@ export interface SegmentInfo extends SegmentRef {
   /**
    * The generation the **pointer names** — not what a read would resolve. On a `destroyed` tombstone this is
    * still a number while reads answer empty, so read it together with {@link SegmentInfo.status} rather than
-   * alone. `null` means the row exists with no Cold generation yet.
+   * alone. `null` means the row exists with no Storage generation yet.
    */
   readonly currentGen: number | null;
   /**
@@ -43,7 +43,7 @@ export interface SegmentInfo extends SegmentRef {
  * the main reason this function is worth having.
  *
  * Two states answer `true` where a read still gives you nothing, and neither is this call's job to detect: a
- * **torn restore** (`missing-cold-generation` — a live pointer whose object was deleted) makes reads *throw*
+ * **torn restore** (`missing-storage-generation` — a live pointer whose object was deleted) makes reads *throw*
  * `NotFoundError` rather than answer empty, and `runConsistencyCheck` is the call that looks for it; and a
  * handle carrying an expired `expiresAt` reads as empty by a rule that lives on the handle, not on the row.
  *

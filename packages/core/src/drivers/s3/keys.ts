@@ -1,5 +1,5 @@
 /**
- * Logical-ref → S3 object-key mapping for {@link S3ColdDriver}.
+ * Logical-ref → S3 object-key mapping for {@link S3StorageDriver}.
  *
  * Pure string logic with no SDK dependency, so it's unit-testable without S3/MinIO. Mirrors the LocalFs
  * layout (`<namespace>/segments/<segment>.<gen>.crbm`) under an optional caller prefix, and re-validates
@@ -11,7 +11,7 @@ import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import type { GenKey, SegmentRef } from '@/core/ports';
 import { encodeNameForKey, namespaceKeyPart } from '../_shared/keys';
-// The cold and registry layouts sit under the SAME caller prefix, so they must normalize it identically —
+// The storage and registry layouts sit under the SAME caller prefix, so they must normalize it identically —
 // a second copy of this three-line function is how the two halves of one bucket drift apart.
 import { prefixPart } from '../_shared/object-registry-keys';
 
@@ -30,7 +30,7 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
 }
 
 /** The full S3 key of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
-export function coldObjectKey(prefix: string | undefined, key: GenKey): string {
+export function storageObjectKey(prefix: string | undefined, key: GenKey): string {
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
   }

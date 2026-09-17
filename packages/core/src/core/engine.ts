@@ -1,6 +1,6 @@
 /**
  * SegmentEngine — the read side of the loaded store: id routing, the chunk-skipping combines, and the HOT cache
- * of decoded Cold chunks, over the {@link ColdChunkSource} port.
+ * of decoded Storage chunks, over the {@link StorageChunkSource} port.
  *
  * **Read-only by design.** Every write in this library is a new immutable generation — `bulkLoadCrbmGeneration`,
  * the facade's `*Into` verbs, `eraseIdFromSegment` — published through the registry pointer. Nothing here mutates
@@ -18,18 +18,18 @@ import { chunkGenKey, chunkRefKey, segmentPrefix } from './keys';
 import type { BoundedLru } from './lru';
 import { NOOP_METRICS, safeMetrics } from './metrics';
 import type { IMetricsSink } from './metrics';
-import type { ChunkRef, ColdChunkSource, SegmentRef, SegmentSize } from './ports';
+import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from './ports';
 
 const DEFAULT_MAX_BITMAP_BYTES = 1 << 20; // 1 MiB per bitmap — generous; real chunks are far smaller
 /** Max overlapping-chunk intersections in flight — bounds memory + concurrent reads (invariant 6). */
 const DEFAULT_INTERSECT_CONCURRENCY = 8;
 
-/** A clock that always reads 0 — used when nothing is injected, so the `cold.get` latency metric reports 0 ms. */
+/** A clock that always reads 0 — used when nothing is injected, so the `storage.get` latency metric reports 0 ms. */
 const ZERO_CLOCK: Pick<Clock, 'now'> = { now: () => 0 };
 
 export interface EngineDeps {
-  readonly cold: ColdChunkSource;
-  /** Optional HOT cache of decoded (immutable) Cold chunks. */
+  readonly storage: StorageChunkSource;
+  /** Optional HOT cache of decoded (immutable) Storage chunks. */
   readonly cache?: BoundedLru<string, CodecBitmap>;
   readonly maxBitmapBytes?: number;
   /**
@@ -38,7 +38,7 @@ export interface EngineDeps {
    * injects it — `@cloudbitmaps/roaring` passes `roaringCodec` — so applications never see this.
    */
   readonly codec: CodecInterface;
-  /** Time source for the `cold.get` latency metric only; defaults to a clock that reads 0. */
+  /** Time source for the `storage.get` latency metric only; defaults to a clock that reads 0. */
   readonly clock?: Pick<Clock, 'now'>;
   /** Observability sink; defaults to a no-op. Assumed exception-safe (the facade wraps it). */
   readonly metrics?: IMetricsSink;
@@ -52,7 +52,7 @@ export interface EngineDeps {
 
 /** Options common to the chunk-aligned combines. */
 export interface CombineOptions {
-  /** Max chunk keys resolved concurrently — bounds the Cold footprint. A positive integer. */
+  /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
   readonly budget?: BudgetOption;
@@ -75,7 +75,7 @@ interface Operand {
 }
 
 export class SegmentEngine {
-  private readonly cold: ColdChunkSource;
+  private readonly storage: StorageChunkSource;
   private readonly cache: BoundedLru<string, CodecBitmap> | undefined;
   private readonly codec: CodecInterface;
   private readonly maxBitmapBytes: number;
@@ -86,7 +86,7 @@ export class SegmentEngine {
   private readonly budget: Budget | null;
 
   constructor(deps: EngineDeps) {
-    this.cold = deps.cold;
+    this.storage = deps.storage;
     this.cache = deps.cache;
     this.codec = deps.codec;
     this.maxBitmapBytes = deps.maxBitmapBytes ?? DEFAULT_MAX_BITMAP_BYTES;
@@ -99,20 +99,20 @@ export class SegmentEngine {
     this.metricsOn = this.metrics !== NOOP_METRICS;
   }
 
-  /** Membership: one chunk lookup — the HOT cache, else one Cold fetch of that chunk. */
+  /** Membership: one chunk lookup — the HOT cache, else one Storage fetch of that chunk. */
   async has(seg: SegmentRef, id: number): Promise<boolean> {
     const { chunkKey, remainder } = splitId(id);
-    const cold = await this.coldChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
-    return cold ? cold.has(remainder) : false;
+    const chunk = await this.storageChunk({ ...seg, chunkKey }, await this.cacheVersion(seg));
+    return chunk ? chunk.has(remainder) : false;
   }
 
   /**
-   * Cardinality. When the Cold source can serve per-chunk cardinality from its `.crbm` index (the `.crbm`
+   * Cardinality. When the Storage source can serve per-chunk cardinality from its `.crbm` index (the `.crbm`
    * source can), the count is summed from the index with **zero payload reads**. A source without that
    * capability (the in-memory source) falls back to fetching every chunk.
    */
   async count(seg: SegmentRef): Promise<number> {
-    const cardinalities = this.cold.cardinalities ? await this.cold.cardinalities(seg) : null;
+    const cardinalities = this.storage.cardinalities ? await this.storage.cardinalities(seg) : null;
     if (cardinalities) {
       let total = 0;
       for (const [k, n] of cardinalities) {
@@ -122,32 +122,32 @@ export class SegmentEngine {
       return total;
     }
     const chunkKeys = await this.chunkKeys(seg);
-    checkBudget(this.budget, chunkKeys.length, 'count'); // one cold fetch per chunk (before fan-out)
+    checkBudget(this.budget, chunkKeys.length, 'count'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
     let total = 0;
     for (const chunkKey of chunkKeys) {
-      total += (await this.coldChunk({ ...seg, chunkKey }, gen))?.size ?? 0;
+      total += (await this.storageChunk({ ...seg, chunkKey }, gen))?.size ?? 0;
     }
     return total;
   }
 
-  /** Whether the Cold source can measure segment size (for grounded cost); false ⇒ storage isn't grounded. */
-  get supportsColdSize(): boolean {
-    return typeof this.cold.sizeOf === 'function';
+  /** Whether the Storage source can measure segment size (for grounded cost); false ⇒ storage isn't grounded. */
+  get supportsStorageSize(): boolean {
+    return typeof this.storage.sizeOf === 'function';
   }
 
-  /** Grounded Cold size of a segment's current generation (cost reporting), or null if it has no generation. */
+  /** Grounded Storage size of a segment's current generation (cost reporting), or null if it has no generation. */
   segmentSize(seg: SegmentRef): Promise<SegmentSize | null> {
-    return this.cold.sizeOf ? this.cold.sizeOf(seg) : Promise.resolve(null);
+    return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);
   }
 
   /** Every id, ascending, one chunk at a time. */
   async *iterate(seg: SegmentRef): AsyncGenerator<number> {
     const chunkKeys = await this.chunkKeys(seg);
-    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one cold fetch per chunk (before fan-out)
+    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
     for (const chunkKey of chunkKeys) {
-      const chunk = await this.coldChunk({ ...seg, chunkKey }, gen);
+      const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
       if (chunk === null) continue;
       // Read straight off the (possibly cached) instance: iteration does not mutate it.
       for (const remainder of chunk) yield joinId(chunkKey, remainder);
@@ -167,17 +167,17 @@ export class SegmentEngine {
    * ---
    *
    * Chunk-skipping intersection. Aligns each segment's chunk-key set (read from the `.crbm` index, no payload),
-   * keeps only keys present in **all** operands (a key missing from any operand can't contribute → its Cold
+   * keeps only keys present in **all** operands (a key missing from any operand can't contribute → its Storage
    * chunks are never fetched — the core saving), then for each surviving key fetches the operands' chunks in
    * parallel and hands them to the codec for the AND, streaming results through a bounded in-flight window.
    *
-   * **Memory:** the Cold payload footprint is bounded by the window (`concurrency × operands × chunk`), not by
+   * **Memory:** the Storage payload footprint is bounded by the window (`concurrency × operands × chunk`), not by
    * segment size — that's the Lambda-friendly property.
    *
    * Generation-consistent within the call (normal case): each operand's current generation is resolved **once**
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
-   * hit: if it straddles a mid-call `coldGenTtlMs` boundary and a load has published, an operand's not-yet-read
+   * hit: if it straddles a mid-call `storageGenTtlMs` boundary and a load has published, an operand's not-yet-read
    * chunks may re-resolve forward to the newer generation (a generation hop within one long call) — the call
    * never crashes or returns a torn object, but may mix generations. A shorter call is unaffected **unless the
    * reader cache evicts an operand mid-call** (`maxOpenSegments`): the re-read re-resolves fresh (bypassing the
@@ -247,19 +247,19 @@ export class SegmentEngine {
     //
     // Generation resolution ordering: resolve `gen` AFTER the shape read (`listChunkKeys`). A non-empty shape
     // read means the source resolved and cached a non-null snapshot, so `gen` cannot then come back null while
-    // cold data is present, and `coldChunk` cannot skip every chunk on a stale null.
+    // storage data is present, and `storageChunk` cannot skip every chunk on a stale null.
     //
     // Honest note on how much this ordering now buys, because the comment used to claim more than it can and a
-    // future reader should not take an untested claim for a tested one. Against a `CrbmColdChunkSource` — the
+    // future reader should not take an untested claim for a tested one. Against a `CrbmStorageChunkSource` — the
     // only source with a generation to resolve — both reads go through the same resolved-reader memo, so the
     // pathological state (`keys` non-empty, `gen` null) does not arise and swapping the two is observably
     // identical. What made the reverse order genuinely lossy was the removed delta tier: the shape was a union
-    // of warm keys and cold keys, so a stale null cold generation dropped real data from a chunk the warm side
+    // of warm keys and storage keys, so a stale null storage generation dropped real data from a chunk the warm side
     // had put in the shape. The ordering is kept because it is the order that is correct for *any* source
     // satisfying the port — a custom source that resolves its shape and its generation independently can still
     // produce that state — not because a test can currently tell the difference.
     //
-    // Within a call shorter than `coldGenTtlMs` the two share one snapshot, so the read is
+    // Within a call shorter than `storageGenTtlMs` the two share one snapshot, so the read is
     // generation-consistent — absent cache-pressure eviction (see `intersect`).
     const extract = async (seg: SegmentRef): Promise<Operand> => {
       const keys = await this.chunkKeys(seg);
@@ -294,7 +294,7 @@ export class SegmentEngine {
     const common = candidates;
 
     // Denial-of-wallet budget (before the fan-out AND before we emit a "work done" metric): the heavy cost is
-    // one cold fetch per surviving key per operand — refuse up front if that would exceed the budget. Placed
+    // one storage fetch per surviving key per operand — refuse up front if that would exceed the budget. Placed
     // above the metric so a refused intersect doesn't report chunks it never fetched.
     //
     // Units are the chunk reads this will actually issue, counted per key: every include present at that key
@@ -330,7 +330,7 @@ export class SegmentEngine {
     }
 
     // ③–⑤ Surgical streaming AND through a bounded, order-preserving window: fetch+intersect at most
-    // `limit` keys concurrently, yield each key's ids before priming far ahead (bounded Cold footprint).
+    // `limit` keys concurrently, yield each key's ids before priming far ahead (bounded Storage footprint).
     // Each task resolves to a value (never rejects) so an error on one key can't leave the other in-flight
     // promises unhandled — we surface it, in key order, when its slot is drained.
     type Slot = { key: number; result: CodecBitmap | null; error?: unknown };
@@ -358,7 +358,7 @@ export class SegmentEngine {
    * Operand chunks are fetched **in parallel** (the spec's parallel byte-range reads).
    *
    * The accumulator is a **clone** of the first operand's chunk, and that clone is load-bearing: every other
-   * bitmap here is the cached, shared Cold instance and must never be mutated, or the HOT cache is poisoned for
+   * bitmap here is the cached, shared Storage instance and must never be mutated, or the HOT cache is poisoned for
    * every later reader. The remaining operands and the excludes are only *read* by the in-place ops, so they are
    * used as-is — one clone per key, not one per operand.
    */
@@ -373,7 +373,7 @@ export class SegmentEngine {
     const present = mode === 'all' ? operands : operands.filter((o) => o.keys.has(chunkKey));
     if (present.length === 0) return null;
     const chunks = await Promise.all(
-      present.map((op) => this.coldChunk({ ...op.seg, chunkKey }, op.gen)),
+      present.map((op) => this.storageChunk({ ...op.seg, chunkKey }, op.gen)),
     );
     // A key the index lists but the source cannot produce bytes for reads as empty — and under AND an empty
     // operand empties the result.
@@ -398,7 +398,7 @@ export class SegmentEngine {
     const relevant = excludes.filter((e) => e.keys.has(chunkKey));
     if (relevant.length > 0) {
       const cuts = await Promise.all(
-        relevant.map((e) => this.coldChunk({ ...e.seg, chunkKey }, e.gen)),
+        relevant.map((e) => this.storageChunk({ ...e.seg, chunkKey }, e.gen)),
       );
       for (const cut of cuts) {
         if (cut === null) continue;
@@ -411,7 +411,7 @@ export class SegmentEngine {
 
   /** The segment's chunk keys, ascending — a shape read off the index, no payload. Keys are untrusted (invariant 5). */
   private async chunkKeys(seg: SegmentRef): Promise<number[]> {
-    const keys = [...(await this.cold.listChunkKeys(seg))];
+    const keys = [...(await this.storage.listChunkKeys(seg))];
     for (const k of keys) this.assertChunkKeyInRange(k);
     return keys.sort((a, b) => a - b);
   }
@@ -473,11 +473,11 @@ export class SegmentEngine {
     allow: boolean | undefined,
     op: string,
   ): Promise<void> {
-    if (allow === true || this.cold.exists === undefined) return;
+    if (allow === true || this.storage.exists === undefined) return;
     const empty = resolved.filter((o) => o.keys.size === 0);
     if (empty.length === 0) return;
     const checked = await Promise.all(
-      empty.map(async (o) => ({ seg: o.seg, exists: await this.cold.exists!(o.seg) })),
+      empty.map(async (o) => ({ seg: o.seg, exists: await this.storage.exists!(o.seg) })),
     );
     const absent = checked.filter((c) => !c.exists).map((c) => c.seg);
     if (absent.length === 0) return;
@@ -493,7 +493,7 @@ export class SegmentEngine {
   }
 
   /**
-   * Drop every piece of state this engine derived from `ref`, and tell the Cold source to do the same.
+   * Drop every piece of state this engine derived from `ref`, and tell the Storage source to do the same.
    *
    * The decoded-chunk cache is keyed by generation, which handles a *publish* (the new generation misses) but
    * not a *destruction*: a segment that was erased from, dropped, shredded or retired has no newer generation
@@ -506,13 +506,13 @@ export class SegmentEngine {
   invalidate(ref: SegmentRef): void {
     const prefix = segmentPrefix(ref);
     this.cache?.deleteWhere((key) => key.startsWith(prefix));
-    this.cold.invalidate?.(ref);
+    this.storage.invalidate?.(ref);
   }
 
   /** The segment's current generation, resolved once per op (`undefined` ⇒ source can't report it). */
   private currentGen(seg: SegmentRef): Promise<number | null | undefined> {
-    return this.cold.currentGeneration
-      ? this.cold.currentGeneration(seg)
+    return this.storage.currentGeneration
+      ? this.storage.currentGeneration(seg)
       : Promise.resolve(undefined);
   }
 
@@ -527,22 +527,22 @@ export class SegmentEngine {
    * the number.
    */
   private async cacheVersion(seg: SegmentRef): Promise<string | number | null | undefined> {
-    if (this.cold.currentVersion) return this.cold.currentVersion(seg);
+    if (this.storage.currentVersion) return this.storage.currentVersion(seg);
     return this.currentGen(seg);
   }
 
   /**
-   * Decode a Cold chunk. `gen` is the segment's current generation, resolved **once per op** by the caller (not
+   * Decode a Storage chunk. `gen` is the segment's current generation, resolved **once per op** by the caller (not
    * per chunk — that would put a registry re-resolve on every chunk of a count/intersect). The HOT cache is
    * keyed by it, so a load that advances the generation misses the cache and re-reads the new bytes instead of
    * serving a stale decoded chunk (an erased id can't resurrect from a cached superseded chunk). `gen === null`
-   * ⇒ the source reports no current generation ⇒ no cold bytes for any chunk, so skip the fetch entirely.
+   * ⇒ the source reports no current generation ⇒ no storage bytes for any chunk, so skip the fetch entirely.
    * `gen === undefined` ⇒ the source can't report a generation (pins one for its lifetime) ⇒ the key stays
    * generation-free. Superseded-generation entries age out under the LRU ceiling — no active purge.
    *
    * The returned instance is **shared** (it may be the cached one): callers read it or clone it, never mutate it.
    */
-  private async coldChunk(
+  private async storageChunk(
     ref: ChunkRef,
     gen: string | number | null | undefined,
   ): Promise<CodecBitmap | null> {
@@ -557,10 +557,10 @@ export class SegmentEngine {
       if (this.metricsOn) this.metrics.onEvent({ kind: 'cache', hit: false });
     }
     const startedAt = this.metricsOn ? this.clock.now() : 0;
-    const bytes = await this.cold.getChunk(ref);
+    const bytes = await this.storage.getChunk(ref);
     if (this.metricsOn) {
       this.metrics.onEvent({
-        kind: 'cold.get',
+        kind: 'storage.get',
         namespace: ref.namespace,
         segment: ref.segment,
         bytes: bytes ? bytes.length : 0,

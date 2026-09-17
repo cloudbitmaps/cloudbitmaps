@@ -118,7 +118,7 @@ export class CrbmReader {
   }
 
   /**
-   * Estimated retained JS heap of this reader's parsed index — the weight the cold reader cache bounds on
+   * Estimated retained JS heap of this reader's parsed index — the weight the storage reader cache bounds on
    * (a wide segment's parsed index, not its payloads, dominates the reader's footprint). `entries.size` scales with the number
    * of resident chunks (≤ 65536), so this is `entries.size × {@link RETAINED_BYTES_PER_INDEX_ENTRY}`.
    */

@@ -50,7 +50,7 @@ export function chunkRefKey(ref: ChunkRef): string {
  * misses the cache instead of serving a stale superseded chunk, and the superseded entries age out under the
  * LRU ceiling (no active purge needed).
  *
- * `version` is whatever the Cold source reports as identifying the bytes a read will see — its
+ * `version` is whatever the Storage source reports as identifying the bytes a read will see — its
  * `currentVersion` where it has one, otherwise the bare generation number. **A generation number alone is not
  * an identity**: `nextGeneration` restarts at 0 once a registry row is purged and the bucket emptied, so a
  * retired-and-re-created name serves different data at the same `currentGen`, and a key built on the number

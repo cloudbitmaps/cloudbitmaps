@@ -1,7 +1,7 @@
 /**
  * `ObjectStoreRegistry` — an {@link IRegistryDriver} over any object store with conditional writes.
  *
- * Lets a **read-mostly deployment run on one bucket alone** — cold `.crbm` generations plus the registry in
+ * Lets a **read-mostly deployment run on one bucket alone** — storage `.crbm` generations plus the registry in
  * the same place, with no separate database. One tiny JSON object per segment at
  * `<prefix>registry/<ns>/<segment>.reg` holding the `{ deleted, record }` envelope (the same shape LocalFs
  * persists). The OCC token is a monotonic counter, advanced on every mutation and even across a `delete`
@@ -38,7 +38,7 @@
  *
  * That is the deliberate choice, and it is the *safer* one rather than the more convenient one. Skipping the
  * unreadable row would keep discovery running, but `list()` is what tells orphan generation collection which
- * segments exist: a row missing from the enumeration makes its cold `.crbm` generations look unreferenced,
+ * segments exist: a row missing from the enumeration makes its storage `.crbm` generations look unreferenced,
  * and the next GC pass would delete them. Silently skipping turns a parse error into data loss. Refusing to
  * enumerate keeps every sweep off a set it cannot vouch for (invariant 5 — bytes from the tier are
  * untrusted). **Recovery:** read the named object, and either restore a valid envelope or delete it; nothing

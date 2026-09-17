@@ -18,12 +18,12 @@
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import { NotFoundError, ValidationError } from './errors';
-import type { IColdDriver, IRegistryDriver, SegmentRef } from './ports';
+import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
 import { validateSegmentRef } from './validate';
 
 /** What the generation helpers need: the objects, and the pointer that says which one is current. */
 export interface GenerationListDeps {
-  readonly cold: IColdDriver;
+  readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
 }
 
@@ -52,7 +52,7 @@ export async function listGenerations(
   const record = await deps.registry.get(ref);
   const current = record?.currentGen ?? null;
   const seen = new Set<number>();
-  for await (const key of deps.cold.list(ref)) seen.add(key.generation);
+  for await (const key of deps.storage.list(ref)) seen.add(key.generation);
   return [...seen]
     .sort((a, b) => a - b)
     .map((generation) => ({ generation, current: generation === current }));
@@ -113,7 +113,7 @@ export async function rollbackSegment(
   // A first look, for the affordance rather than the safety: an operator who named a collected generation needs
   // to be told what IS available, and that is much nicer to produce before anything has moved.
   const present = new Set<number>();
-  for await (const key of deps.cold.list(ref)) present.add(key.generation);
+  for await (const key of deps.storage.list(ref)) present.add(key.generation);
   if (!present.has(toGeneration)) {
     const available = [...present].sort((a, b) => a - b);
     throw new NotFoundError(
@@ -157,7 +157,7 @@ export async function rollbackSegment(
   // the object went. Re-pointing can itself be raced, which is why it is fenced on the token the swap returned
   // and why failing to undo is reported rather than swallowed.
   let stillThere = false;
-  for await (const key of deps.cold.list(ref)) {
+  for await (const key of deps.storage.list(ref)) {
     if (key.generation === toGeneration) {
       stillThere = true;
       break;

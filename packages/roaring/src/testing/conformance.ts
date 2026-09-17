@@ -1,7 +1,7 @@
 /**
  * Shared driver conformance suite.
  *
- * A backend is only "supported" once it's green here. Every `ColdChunkSource` / `IRegistryDriver`
+ * A backend is only "supported" once it's green here. Every `StorageChunkSource` / `IRegistryDriver`
  * implementation — first-party (in-memory, LocalFs) and community — runs the **same** contract tests via
  * these factories, so substitutability is proven, not assumed. The factories use Vitest globals
  * (`describe`/`it`/`expect`); a driver author wires them into their own test file with a factory that
@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { SafeBitmap } from '../roaring-codec';
 import type {
   ChunkRef,
-  ColdChunkSource,
+  StorageChunkSource,
   IRegistryDriver,
   RegistryRecord,
   SegmentRef,
@@ -78,14 +78,16 @@ async function expectValidationReject(p: Promise<unknown>): Promise<void> {
 }
 
 /**
- * Contract tests for a {@link ColdChunkSource}. `makeSource` MUST build a fresh source seeded with the
- * given chunks (each an immutable Cold bitmap) and nothing else.
+ * Contract tests for a {@link StorageChunkSource}. `makeSource` MUST build a fresh source seeded with the
+ * given chunks (each an immutable Storage bitmap) and nothing else.
  */
-export function coldChunkSourceConformance(
+export function storageChunkSourceConformance(
   label: string,
-  makeSource: (chunks: Array<{ chunkKey: number; bitmap: SafeBitmap }>) => Promise<ColdChunkSource>,
+  makeSource: (
+    chunks: Array<{ chunkKey: number; bitmap: SafeBitmap }>,
+  ) => Promise<StorageChunkSource>,
 ): void {
-  describe(`ColdChunkSource conformance: ${label}`, () => {
+  describe(`StorageChunkSource conformance: ${label}`, () => {
     it('round-trips every chunk across container types, ascending keys', async () => {
       // Distinct bitmaps spanning array-container, single-value, dense (>4096 → bitmap container), and
       // the max chunk key — so a source that mixes payloads up between chunks fails here.
@@ -342,11 +344,11 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       await expectValidationReject(d.compareAndSwap(SEG, token, { currentGen: -5 }));
     });
 
-    // `currentGen: null` ("this segment exists and has no Cold generation yet") is a first-class stored
+    // `currentGen: null` ("this segment exists and has no Storage generation yet") is a first-class stored
     // value, not a missing field. It is what lets a retention policy be recorded ahead of the first load, so every driver must
     // round-trip it through create, CAS, get AND list. Serialization is where this breaks silently: a driver
     // that JSON-drops it, coerces it to 0, or (the subtle one) merges a patch with `patch.currentGen ?? prev`
-    // would leave the pointer at the old generation and read stale Cold data no one asked for.
+    // would leave the pointer at the old generation and read stale Storage data no one asked for.
     it('round-trips a null currentGen through create, list, and CAS in both directions', async () => {
       const d = makeDriver();
       const { token: t0 } = await d.create(SEG, { currentGen: null, retention: { expiresAt: 42 } });
@@ -390,7 +392,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
       expect(listed.map((r) => [r.segment, r.status])).toEqual([[SEG.segment, 'destroyed']]);
 
       // `{ currentGen: undefined }` type-checks without `exactOptionalPropertyTypes`, and it used to be a no-op
-      // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Cold data,
+      // (the merge was `??`). Under presence-based merging it would silently un-publish the segment's Storage data,
       // so it is refused rather than coerced. Omitting the key is how you leave the pointer alone.
       const live = makeDriver();
       const { token: t0 } = await live.create(SEG, { currentGen: 3 });
@@ -413,7 +415,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
 
     // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
     // wrote segment names into its key VERBATIM passed this whole suite. `NASTY_NAMES` is the list that
-    // catches that, and until now only the cold-source suite used it. The failure it guards against is
+    // catches that, and until now only the storage-source suite used it. The failure it guards against is
     // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
     // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
     it('round-trips names that need encoding, through create, get AND list', async () => {

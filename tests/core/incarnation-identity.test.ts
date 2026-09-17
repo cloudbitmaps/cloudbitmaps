@@ -1,6 +1,6 @@
 import {
   CloudRoaring,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
@@ -32,27 +32,27 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 
 /** Retire the segment completely (objects deleted, row purged) and re-load the same name. */
 async function reincarnate(
-  cold: MemoryColdDriver,
+  storage: MemoryStorageDriver,
   registry: MemoryRegistryDriver,
   ids: readonly number[],
 ): Promise<void> {
-  for await (const k of cold.list(REF)) await cold.delete(k);
+  for await (const k of storage.list(REF)) await storage.delete(k);
   await registry.delete(REF);
-  await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, ids, { registry });
+  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, ids, { registry });
 }
 
 describe('a re-created name is a different segment, not the same one', () => {
   it('a warm store stops serving the previous incarnation', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ cold, registry, clock, coldGenTtlMs: 10 });
+    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
     expect(await store.segment('s').has(1)).toBe(true); // warms the snapshot AND chunk 0
 
-    await reincarnate(cold, registry, [9]);
+    await reincarnate(storage, registry, [9]);
     t += 100; // past the TTL
 
     expect(await store.segment('s').has(1)).toBe(false); // the deleted incarnation's id
@@ -62,75 +62,75 @@ describe('a re-created name is a different segment, not the same one', () => {
   });
 
   it('the index-only path (count) sees it too — it reads the reader, not a chunk', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ cold, registry, clock, coldGenTtlMs: 10 });
+    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
     expect(await store.segment('s').count()).toBe(3);
 
-    await reincarnate(cold, registry, [9]);
+    await reincarnate(storage, registry, [9]);
     t += 100;
     expect(await store.segment('s').count()).toBe(1);
   });
 
   it('an ordinary publish still refreshes — the common case is unchanged', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const store = new CloudRoaring({ cold, registry, clock, coldGenTtlMs: 10 });
+    const store = new CloudRoaring({ storage, registry, clock, storageGenTtlMs: 10 });
     expect(await store.segment('s').count()).toBe(3);
 
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 1 }, [1, 2, 3, 4], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, [1, 2, 3, 4], { registry });
     t += 100;
     expect(await store.segment('s').count()).toBe(4);
   });
 
   it('a fresh store was always right — this was purely stale state', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
-    await reincarnate(cold, registry, [9]);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await reincarnate(storage, registry, [9]);
 
-    const fresh = new CloudRoaring({ cold, registry });
+    const fresh = new CloudRoaring({ storage, registry });
     expect(await fresh.segment('s').count()).toBe(1);
     expect(await fresh.segment('s').has(1)).toBe(false);
   });
 
   it('the version string separates incarnations at the same generation number', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const { CrbmColdChunkSource } = await import('@/index');
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    const { CrbmStorageChunkSource } = await import('@/index');
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
-    const source = new CrbmColdChunkSource(cold, { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
     const before = await source.currentVersion(REF);
     expect(await source.currentGeneration(REF)).toBe(0);
 
-    await reincarnate(cold, registry, [9]);
-    const after = await new CrbmColdChunkSource(cold, { registry }).currentVersion(REF);
+    await reincarnate(storage, registry, [9]);
+    const after = await new CrbmStorageChunkSource(storage, { registry }).currentVersion(REF);
     expect(await source.currentGeneration(REF)).toBe(0); // the NUMBER is identical…
     expect(after).not.toBe(before); // …the version is not
   });
 
   it('a registry-less source has no incarnation to confuse, and says so', async () => {
-    const cold = new MemoryColdDriver();
-    const { CrbmColdChunkSource } = await import('@/index');
-    await bulkLoadCrbmGeneration(cold, { ...REF, generation: 0 }, [1, 2, 3], {});
+    const storage = new MemoryStorageDriver();
+    const { CrbmStorageChunkSource } = await import('@/index');
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], {});
 
-    const source = new CrbmColdChunkSource(cold, {});
+    const source = new CrbmStorageChunkSource(storage, {});
     expect(await source.currentVersion(REF)).toBe('0'); // the generation alone
   });
 
   it('a segment with no generation has no version', async () => {
-    const cold = new MemoryColdDriver();
+    const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();
-    const { CrbmColdChunkSource } = await import('@/index');
-    expect(await new CrbmColdChunkSource(cold, { registry }).currentVersion(REF)).toBeNull();
+    const { CrbmStorageChunkSource } = await import('@/index');
+    expect(await new CrbmStorageChunkSource(storage, { registry }).currentVersion(REF)).toBeNull();
   });
 });

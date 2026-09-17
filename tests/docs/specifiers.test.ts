@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 //
 // It also, for a while, did not sweep the **source**, and the comment above used to claim it had. The warm-tier
 // removal proved otherwise: `packages/core/src/{s3,gcs,azure}/index.ts` each carried a runnable
-// ```import … from 'cloud-roaring/s3'``` in its header, and the three cold drivers named the old subpath in
+// ```import … from 'cloud-roaring/s3'``` in its header, and the three storage drivers named the old subpath in
 // theirs — nine specifiers this gate walked straight past, because it read only `.md` and `.html`. A doc-comment
 // is copy-pasted exactly like a README (an editor shows it on hover, and it ships in the `.d.ts`), so each
 // package's `src` tree is in scope now.

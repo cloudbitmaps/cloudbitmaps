@@ -2,13 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CrbmColdChunkSource,
-  LocalFsColdDriver,
+  CrbmStorageChunkSource,
+  LocalFsStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
-import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { segment: 's' };
 
@@ -20,7 +20,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
-const freshCold = (): LocalFsColdDriver => new LocalFsColdDriver(join(root, `d${n++}`));
+const freshStorage = (): LocalFsStorageDriver => new LocalFsStorageDriver(join(root, `d${n++}`));
 
 /**
  * A registry that answers "generation 0 is current" and, in the same breath, lets a publish + sweep land —
@@ -48,18 +48,20 @@ function sweepingRegistry(
   }) as unknown as IRegistryDriver;
 }
 
-describe('CrbmColdChunkSource heals a generation swept before the reader opens', () => {
+describe('CrbmStorageChunkSource heals a generation swept before the reader opens', () => {
   it('getChunk does not surface NotFoundError when the resolved generation is gone by open time', async () => {
-    const cold = freshCold();
+    const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
 
     const registry = sweepingRegistry(inner, async () => {
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 1 }, [1, 2, 3], { registry: inner });
-      await cold.delete({ ...SEG, generation: 0 });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: inner,
+      });
+      await storage.delete({ ...SEG, generation: 0 });
     });
 
-    const source = new CrbmColdChunkSource(cold, { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
     const healed = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(healed).not.toBeNull();
     // Not merely "it did not throw": the bytes must be generation 1's, which holds the extra id.
@@ -67,16 +69,18 @@ describe('CrbmColdChunkSource heals a generation swept before the reader opens',
   });
 
   it('currentGeneration does not surface NotFoundError in the same race', async () => {
-    const cold = freshCold();
+    const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
 
     const registry = sweepingRegistry(inner, async () => {
-      await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 1 }, [1, 2, 3], { registry: inner });
-      await cold.delete({ ...SEG, generation: 0 });
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: inner,
+      });
+      await storage.delete({ ...SEG, generation: 0 });
     });
 
-    const source = new CrbmColdChunkSource(cold, { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
     await expect(source.currentGeneration(SEG)).resolves.toBe(1);
   });
 });
@@ -87,18 +91,18 @@ describe('CrbmColdChunkSource heals a generation swept before the reader opens',
  * detail: the retry re-reads the **registry**, the shared throttle-prone resource, and an N-way `intersect`
  * pays it per operand. Nothing gated it — raising the bound to 1,000 left all 1,483 tests green.
  */
-function counting(cold: LocalFsColdDriver, registry: MemoryRegistryDriver) {
+function counting(storage: LocalFsStorageDriver, registry: MemoryRegistryDriver) {
   const calls = { regGet: 0, getTail: 0 };
-  const countedCold: IColdDriver = {
-    capabilities: () => cold.capabilities(),
+  const countedStorage: IStorageDriver = {
+    capabilities: () => storage.capabilities(),
     getTail: (k, m) => {
       calls.getTail++;
-      return cold.getTail(k, m);
+      return storage.getTail(k, m);
     },
-    getRange: (k, o, l) => cold.getRange(k, o, l),
-    delete: (k) => cold.delete(k),
-    list: (ref) => cold.list(ref),
-    putImmutable: (k, fn) => cold.putImmutable(k, fn),
+    getRange: (k, o, l) => storage.getRange(k, o, l),
+    delete: (k) => storage.delete(k),
+    list: (ref) => storage.list(ref),
+    putImmutable: (k, fn) => storage.putImmutable(k, fn),
   };
   const countedRegistry = new Proxy(registry, {
     get(target, prop, receiver) {
@@ -109,22 +113,22 @@ function counting(cold: LocalFsColdDriver, registry: MemoryRegistryDriver) {
       };
     },
   }) as unknown as IRegistryDriver;
-  return { calls, cold: countedCold, registry: countedRegistry };
+  return { calls, storage: countedStorage, registry: countedRegistry };
 }
 
-/** The pointer names a generation whose object is gone for good — the forbidden `missing-cold-generation` state. */
+/** The pointer names a generation whose object is gone for good — the forbidden `missing-storage-generation` state. */
 async function tornSegment(): Promise<ReturnType<typeof counting>> {
-  const cold = freshCold();
+  const storage = freshStorage();
   const registry = new MemoryRegistryDriver();
-  await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2], { registry });
-  await cold.delete({ ...SEG, generation: 0 });
-  return counting(cold, registry);
+  await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
+  await storage.delete({ ...SEG, generation: 0 });
+  return counting(storage, registry);
 }
 
 describe('the heal is bounded to exactly two resolve-and-open round trips', () => {
   it('getChunk against a permanently absent generation: two attempts, then propagate', async () => {
     const c = await tornSegment();
-    const source = new CrbmColdChunkSource(c.cold, { registry: c.registry });
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
     await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
       /no such generation/,
     );
@@ -133,7 +137,7 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
 
   it('currentGeneration against a permanently absent generation: two attempts, then propagate', async () => {
     const c = await tornSegment();
-    const source = new CrbmColdChunkSource(c.cold, { registry: c.registry });
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
     await expect(source.currentGeneration(SEG)).rejects.toThrow(/no such generation/);
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
@@ -141,9 +145,9 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
   it('an error that is NOT NotFound propagates on the first attempt, unretried', async () => {
     // The widened `try` now encloses the registry read and the reader open, so it could have swallowed faults
     // that have nothing to do with a swept generation. Only `NotFoundError` may be retried.
-    const cold = freshCold();
+    const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(cold, { ...SEG, generation: 0 }, [1, 2], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
     let regGet = 0;
     const faulting = new Proxy(registry, {
       get(target, prop, receiver) {
@@ -155,7 +159,7 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
       },
     }) as unknown as IRegistryDriver;
 
-    const source = new CrbmColdChunkSource(cold, { registry: faulting });
+    const source = new CrbmStorageChunkSource(storage, { registry: faulting });
     await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
       'registry unavailable',
     );

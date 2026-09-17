@@ -24,16 +24,16 @@ export function segmentsDir(root: string, ref: SegmentRef): string {
 }
 
 /** Absolute path of one `.crbm` generation object. */
-export function coldObjectPath(root: string, key: GenKey): string {
+export function storageObjectPath(root: string, key: GenKey): string {
   validateSegmentRef(key);
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
   }
-  return join(segmentsDir(root, key), coldObjectFilename(key.segment, key.generation));
+  return join(segmentsDir(root, key), storageObjectFilename(key.segment, key.generation));
 }
 
 /** Filename pattern for a segment's generations: `<segment>.<gen>.crbm`. */
-export function coldObjectFilename(segment: string, generation: number): string {
+export function storageObjectFilename(segment: string, generation: number): string {
   return `${encodeNameForPath(segment)}.${generation}.crbm`;
 }
 

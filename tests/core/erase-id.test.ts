@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { eraseIdFromSegment } from '@/core/erase-id';
 import { gcOrphanGenerations } from '@/core/generation-gc';
-import { openGenerationReader } from '@/core/crbm-cold-source';
+import { openGenerationReader } from '@/core/crbm-storage-source';
 import { KeyUnavailableError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { CloudRoaring, RecordingAuditSink, bulkLoadCrbmGeneration } from '@/index';
-import type { GenKey, IColdDriver, IKeystore, SegmentRef } from '@/index';
+import type { GenKey, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore } from '../helpers/loaded';
 
@@ -27,25 +27,25 @@ const k = (): Uint8Array => randomBytes(32);
 
 async function world(keystore?: IKeystore) {
   const w = await loadedStore({}, { keystore, retry: false });
-  const deps = { cold: w.cold, registry: w.registry, codec: roaringCodec, keystore };
+  const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime (no clock ⇒ TTL 0). */
   const reader = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, keystore, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, keystore, retry: false });
   /** A fresh store with NO keystore — what an encrypted segment must be unreadable through. */
   const keylessReader = (): CloudRoaring =>
-    new CloudRoaring({ cold: w.cold, registry: w.registry, retry: false });
+    new CloudRoaring({ storage: w.storage, registry: w.registry, retry: false });
   return { ...w, deps, reader, keylessReader };
 }
 
-async function generations(cold: IColdDriver, ref: SegmentRef): Promise<number[]> {
+async function generations(storage: IStorageDriver, ref: SegmentRef): Promise<number[]> {
   const gens: number[] = [];
-  for await (const key of cold.list(ref)) gens.push(key.generation);
+  for await (const key of storage.list(ref)) gens.push(key.generation);
   return gens.sort((a, b) => a - b);
 }
 
 /** Every chunk of one generation, keyed by chunk key, as the raw bytes stored in the `.crbm`. */
-async function chunksOf(cold: IColdDriver, key: GenKey): Promise<Map<number, Uint8Array>> {
-  const reader = await openGenerationReader(cold, key, undefined);
+async function chunksOf(storage: IStorageDriver, key: GenKey): Promise<Map<number, Uint8Array>> {
+  const reader = await openGenerationReader(storage, key, undefined);
   const out = new Map<number, Uint8Array>();
   for (const chunkKey of reader.chunkKeys()) out.set(chunkKey, (await reader.getChunk(chunkKey))!);
   return out;
@@ -121,7 +121,7 @@ describe('eraseIdFromSegment — the reasons nothing is rewritten', () => {
     await eraseIdFromSegment(SEG, 5, w.deps, { audit });
     await eraseIdFromSegment(SEG, 70_000, w.deps, { audit });
     await eraseIdFromSegment({ namespace: 'ns', segment: 'nope' }, 1, w.deps, { audit });
-    expect(await generations(w.cold, SEG)).toEqual([0]);
+    expect(await generations(w.storage, SEG)).toEqual([0]);
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
     expect(audit.snapshot()).toEqual([]);
   });
@@ -131,7 +131,7 @@ describe('eraseIdFromSegment — the rewrite', () => {
   it('writes the current generation without the id, publishes it, and collects the old one', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 3, 70_000, 200_000]); // chunks 0, 1 and 3
-    const before = await chunksOf(w.cold, { ...SEG, generation: 0 });
+    const before = await chunksOf(w.storage, { ...SEG, generation: 0 });
 
     const res = await eraseIdFromSegment(SEG, 2, w.deps);
 
@@ -145,9 +145,9 @@ describe('eraseIdFromSegment — the rewrite', () => {
     });
     expect((await w.registry.get(SEG))!.currentGen).toBe(1);
     // The physical half: the generation that held the bit is gone from the bucket when the call returns.
-    expect(await generations(w.cold, SEG)).toEqual([1]);
+    expect(await generations(w.storage, SEG)).toEqual([1]);
 
-    const after = await chunksOf(w.cold, { ...SEG, generation: 1 });
+    const after = await chunksOf(w.storage, { ...SEG, generation: 1 });
     expect([...after.keys()]).toEqual([...before.keys()]); // same chunk set — no chunk was emptied
     expect(decode(after.get(0)!)).toEqual([1, 3]); // the one chunk that changed
     // Every other chunk is carried through byte-for-byte: the rewrite re-encodes, but the same set encodes the
@@ -159,13 +159,13 @@ describe('eraseIdFromSegment — the rewrite', () => {
   it('drops a chunk the removal emptied — the new chunk set is the old minus that chunk', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 70_000]); // 70_000 is alone in chunk 1
-    const before = await chunksOf(w.cold, { ...SEG, generation: 0 });
+    const before = await chunksOf(w.storage, { ...SEG, generation: 0 });
     expect([...before.keys()]).toEqual([0, 1]);
 
     const res = await eraseIdFromSegment(SEG, 70_000, w.deps);
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 1 });
 
-    const after = await chunksOf(w.cold, { ...SEG, generation: 1 });
+    const after = await chunksOf(w.storage, { ...SEG, generation: 1 });
     expect([...after.keys()]).toEqual([0]); // empty chunks are never stored
     expect(after.get(0)).toEqual(before.get(0));
   });
@@ -175,7 +175,7 @@ describe('eraseIdFromSegment — the rewrite', () => {
     const ids = [5, 70_000, 200_000, 300_000, 460_000]; // chunks 0, 1, 3, 4, 7
     await w.load(SEG, ids);
     await eraseIdFromSegment(SEG, 200_000, w.deps); // empties chunk 3
-    const reader = await openGenerationReader(w.cold, { ...SEG, generation: 1 }, undefined);
+    const reader = await openGenerationReader(w.storage, { ...SEG, generation: 1 }, undefined);
     const keys = [...reader.chunkKeys()];
     expect(keys).toEqual([0, 1, 4, 7]);
     expect(keys).toEqual([...keys].sort((a, b) => a - b));
@@ -197,13 +197,13 @@ describe('eraseIdFromSegment — the rewrite', () => {
     // the orphan, and the `keep: 0` collection then takes every generation below the new pointer.
     const w = await world();
     await w.load(SEG, [1, 2]);
-    await bulkLoadCrbmGeneration(w.cold, { ...SEG, generation: 5 }, [9]); // no registry ⇒ never published
+    await bulkLoadCrbmGeneration(w.storage, { ...SEG, generation: 5 }, [9]); // no registry ⇒ never published
 
     const res = await eraseIdFromSegment(SEG, 1, w.deps);
 
     expect(res).toMatchObject({ erased: true, fromGeneration: 0, generation: 6 });
     expect([...res.collected].sort((a, b) => a - b)).toEqual([0, 5]);
-    expect(await generations(w.cold, SEG)).toEqual([6]);
+    expect(await generations(w.storage, SEG)).toEqual([6]);
     expect(await collect(w.reader().segment('s', { namespace: 'ns' }).iterate())).toEqual([2]);
   });
 
@@ -224,7 +224,7 @@ describe('eraseIdFromSegment — the rewrite', () => {
     await eraseIdFromSegment(SEG, 2, w.deps);
     const again = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(again).toMatchObject({ erased: false, reason: 'not-member', fromGeneration: 1 });
-    expect(await generations(w.cold, SEG)).toEqual([1]);
+    expect(await generations(w.storage, SEG)).toEqual([1]);
   });
 });
 
@@ -252,7 +252,7 @@ describe('eraseIdFromSegment — encryption', () => {
     await expect(
       eraseIdFromSegment(SEG, 2, { ...w.deps, keystore: undefined }),
     ).rejects.toBeInstanceOf(KeyUnavailableError);
-    expect(await generations(w.cold, SEG)).toEqual([0]); // nothing written
+    expect(await generations(w.storage, SEG)).toEqual([0]); // nothing written
     expect((await w.registry.get(SEG))!.currentGen).toBe(0);
   });
 
@@ -262,7 +262,7 @@ describe('eraseIdFromSegment — encryption', () => {
     await expect(
       eraseIdFromSegment(SEG, 2, { ...w.deps, requireEncryption: true }),
     ).rejects.toBeInstanceOf(ValidationError);
-    expect(await generations(w.cold, SEG)).toEqual([0]);
+    expect(await generations(w.storage, SEG)).toEqual([0]);
   });
 });
 
@@ -309,12 +309,12 @@ describe('eraseIdFromSegment — a collect that could not run is never a clean r
       },
     });
 
-    const bumpDuringList = new Proxy(w.cold, {
+    const bumpDuringList = new Proxy(w.storage, {
       get(target, prop, rx) {
         if (prop !== 'list') return Reflect.get(target, prop, rx) as unknown;
         return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
           let fired = false;
-          for await (const key of w.cold.list(ref)) {
+          for await (const key of w.storage.list(ref)) {
             yield key;
             if (!fired) {
               fired = true;
@@ -331,13 +331,13 @@ describe('eraseIdFromSegment — a collect that could not run is never a clean r
     await expect(
       eraseIdFromSegment(SEG, 42, {
         ...w.deps,
-        cold: bumpDuringList as typeof w.cold,
+        storage: bumpDuringList as typeof w.storage,
         registry: tombstoneOnPublish as typeof registry,
       }),
     ).rejects.toBeInstanceOf(WriteConflictError);
 
     // The proof the throw was warranted: the generations that hold the id are all still in the bucket.
-    expect(await generations(w.cold, SEG)).toEqual([0, 1, 2]);
+    expect(await generations(w.storage, SEG)).toEqual([0, 1, 2]);
   });
 });
 
@@ -352,23 +352,27 @@ describe('eraseIdFromSegment — the receipt check asserts the outcome, not who 
     await w.load(SEG, [1, 2, 3]);
 
     let fired = false;
-    const raced = new Proxy(w.cold, {
+    const raced = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'list') return Reflect.get(t, p, rx) as unknown;
         return async function* (ref: SegmentRef): AsyncIterable<GenKey> {
           if (!fired && (await w.registry.get(SEG))?.currentGen === 1) {
             fired = true;
-            await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 0 });
+            await gcOrphanGenerations(
+              SEG,
+              { storage: w.storage, registry: w.registry },
+              { keep: 0 },
+            );
           }
-          yield* w.cold.list(ref);
+          yield* w.storage.list(ref);
         };
       },
-    }) as typeof w.cold;
+    }) as typeof w.storage;
 
-    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, cold: raced });
+    const res = await eraseIdFromSegment(SEG, 2, { ...w.deps, storage: raced });
     expect(res.erased).toBe(true);
     expect(fired).toBe(true); // the race really happened
-    expect(await generations(w.cold, SEG)).toEqual([1]); // and the holder really is gone
+    expect(await generations(w.storage, SEG)).toEqual([1]); // and the holder really is gone
   });
 
   it('DOES throw when the holder generation is still in the bucket', async () => {
@@ -395,7 +399,7 @@ describe('eraseIdFromSegment — the receipt check asserts the outcome, not who 
     await expect(
       eraseIdFromSegment(SEG, 2, { ...w.deps, registry: flaky as typeof w.registry }),
     ).rejects.toBeInstanceOf(WriteConflictError);
-    expect(await generations(w.cold, SEG)).toContain(0); // the holder survived — hence the throw
+    expect(await generations(w.storage, SEG)).toContain(0); // the holder survived — hence the throw
   });
 });
 
@@ -403,24 +407,24 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
   // This matrix is documented in four places an operator is pointed at: this module's `collected` doc, the
   // ledger entry note, the API reference and both privacy documents. It has been written down wrongly twice —
   // once describing behaviour from before the superseded-generation search existed, once generalising the
-  // Cold-`delete`-fault outcome to a cause that does not share it. Prose cannot be trusted here, so the matrix
+  // Storage-`delete`-fault outcome to a cause that does not share it. Prose cannot be trusted here, so the matrix
   // is asserted: if one of these outcomes changes, the sentence that describes it has to change with it.
 
-  it('a Cold delete fault: the re-run erases and gives the receipt the failed call could not', async () => {
+  it('a Storage delete fault: the re-run erases and gives the receipt the failed call could not', async () => {
     const w = await world();
     await w.load(SEG, [1, 2, 3]);
     let broken = true;
-    const flaky = new Proxy(w.cold, {
+    const flaky = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
         return async (key: GenKey) => {
-          if (broken) throw new Error('cold delete fault');
-          return w.cold.delete(key);
+          if (broken) throw new Error('storage delete fault');
+          return w.storage.delete(key);
         };
       },
-    }) as typeof w.cold;
+    }) as typeof w.storage;
 
-    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold: flaky })).rejects.toThrow();
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, storage: flaky })).rejects.toThrow();
     broken = false;
     const rerun = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(rerun.erased).toBe(true);
@@ -436,25 +440,25 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     await w.load(SEG, [1, 2, 3]);
 
     let broken = true;
-    const flaky = new Proxy(w.cold, {
+    const flaky = new Proxy(w.storage, {
       get(t, p, rx) {
         if (p !== 'delete') return Reflect.get(t, p, rx) as unknown;
         return async (key: GenKey) => {
-          if (broken) throw new Error('cold delete fault');
-          return w.cold.delete(key);
+          if (broken) throw new Error('storage delete fault');
+          return w.storage.delete(key);
         };
       },
-    }) as typeof w.cold;
+    }) as typeof w.storage;
 
-    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, cold: flaky })).rejects.toThrow();
+    await expect(eraseIdFromSegment(SEG, 2, { ...w.deps, storage: flaky })).rejects.toThrow();
     broken = false;
     // The racing collector is the very call the guide tells operators to run.
-    await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 0 });
+    await gcOrphanGenerations(SEG, { storage: w.storage, registry: w.registry }, { keep: 0 });
 
     const rerun = await eraseIdFromSegment(SEG, 2, w.deps);
     expect(rerun.erased).toBe(false);
     expect(rerun.reason).toBe('not-member'); // the bit is gone, and no run says so
-    expect(await generations(w.cold, SEG)).toEqual([1]);
+    expect(await generations(w.storage, SEG)).toEqual([1]);
   });
 
   it('the registry row is gone: the fleet scan does not even reach the segment', async () => {
@@ -468,7 +472,7 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     const ledger = await w.reader().eraseSubject(2, { namespace: SEG.namespace });
     expect(ledger.erasedFrom).toEqual([]);
     expect(ledger.scannedSegments).toBe(0); // not scanned at all — not "scanned and found clean"
-    expect(await generations(w.cold, SEG)).toEqual([0]); // and the id is STILL in the bucket
+    expect(await generations(w.storage, SEG)).toEqual([0]); // and the id is STILL in the bucket
   });
 
   it('an ex-member erasure emits NO audit event and carries no generation', async () => {
@@ -478,7 +482,7 @@ describe('eraseIdFromSegment — what a re-run after a failed collect actually r
     const w = await world();
     await w.load(SEG, [1, 2, 3]); // gen 0 holds the id
     await w.load(SEG, [1, 3]); // gen 1 — a re-seed that dropped it; `keep: 1` retains gen 0
-    await gcOrphanGenerations(SEG, { cold: w.cold, registry: w.registry }, { keep: 1 });
+    await gcOrphanGenerations(SEG, { storage: w.storage, registry: w.registry }, { keep: 1 });
 
     const audit = new RecordingAuditSink();
     const res = await eraseIdFromSegment(SEG, 2, w.deps, { audit });

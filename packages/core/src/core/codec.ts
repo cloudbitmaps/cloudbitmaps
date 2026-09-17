@@ -68,7 +68,7 @@ export interface CodecBitmap {
    */
   maximum?(): number | undefined;
   /**
-   * Re-encode for size, in place, immediately before a **cold** write. Representation only — this must never
+   * Re-encode for size, in place, immediately before a **storage** write. Representation only — this must never
    * change membership, and `serialize()` afterwards must decode back to exactly the same set.
    *
    * **Optional, like {@link maximum}.** A codec whose encoding has no size decision to make (a plain bitset has

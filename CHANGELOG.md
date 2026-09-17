@@ -17,16 +17,17 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 - **`GcsRegistryDriver` and `AzureBlobRegistryDriver` — every object store can now host its own pointer.**
-  Before this, GCS and Azure were cold-only: the registry that says which generation is current had to live
+  Before this, GCS and Azure were storage-only: the registry that says which generation is current had to live
   in DynamoDB, so **a Google Cloud or Azure deployment needed an AWS account** to store a few hundred bytes
   per segment. Now one bucket, or one container, is the whole deployment.
 
   ```ts
-  import { GcsColdDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
+  import { GcsStorageDriver, GcsRegistryDriver } from '@cloudbitmaps/roaring/gcs';
 
+  const gcs = new Storage();
   const store = new CloudRoaring({
-    cold: new GcsColdDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
-    registry: new GcsRegistryDriver({ storage, bucket: 'bitmaps', prefix: 'cr' }),
+    storage: new GcsStorageDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
+    registry: new GcsRegistryDriver({ storage: gcs, bucket: 'bitmaps', prefix: 'cr' }),
   });
   ```
 
@@ -69,6 +70,71 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 
 ### Breaking
+- **`cold` is now `storage`, everywhere.** Every cloud vendor uses "cold storage" to mean *archival* —
+  Glacier, Coldline, Azure Archive — and ours is the opposite: the primary durable tier that every read
+  hits. The word actively misled anyone arriving from AWS or GCP documentation, and it had leaked into the
+  type names, the option keys, the metric events, the cost model and the docs. This is a **rename only** —
+  no behaviour, no key layout and no on-disk format changes, and the `.crbm` objects in your bucket are
+  untouched.
+
+  The option every store needs:
+
+  ```ts
+  // before
+  new CloudRoaring({ cold: new S3ColdDriver({ client, bucket }), registry });
+  // after
+  new CloudRoaring({ storage: new S3StorageDriver({ client, bucket }), registry });
+  ```
+
+  Types and classes — each is a pure rename, so a find-and-replace is the whole migration:
+
+  | before | after |
+  |---|---|
+  | `IColdDriver` | `IStorageDriver` |
+  | `ColdChunkSource` | `StorageChunkSource` |
+  | `ColdCaps` | `StorageCaps` |
+  | `MemoryColdDriver` | `MemoryStorageDriver` |
+  | `MemoryColdChunkSource` | `MemoryStorageChunkSource` |
+  | `LocalFsColdDriver` | `LocalFsStorageDriver` |
+  | `S3ColdDriver` | `S3StorageDriver` |
+  | `GcsColdDriver` | `GcsStorageDriver` |
+  | `AzureBlobColdDriver` | `AzureBlobStorageDriver` |
+  | `CrbmColdChunkSource` | `CrbmStorageChunkSource` |
+  | `PinnedColdChunkSource` | `PinnedStorageChunkSource` |
+  | `RetryingColdDriver` | `RetryingStorageDriver` |
+  | `RetryingColdChunkSource` | `RetryingStorageChunkSource` |
+
+  …and the matching `…Options` types (`S3ColdDriverOptions` → `S3StorageDriverOptions`, and so on).
+
+  Option keys: `cold` → `storage`, `coldGenTtlMs` → `storageGenTtlMs`, `coldReaderCacheMax` →
+  `storageReaderCacheMax`, `coldReaderCacheMaxBytes` → `storageReaderCacheMaxBytes`.
+
+  **Two renames reach past the type system**, so a find-and-replace over your source will not catch them:
+
+  - **The metrics event `kind` is now `'storage.get'`**, not `'cold.get'`. A sink that switches on the kind
+    string compiles fine and silently stops counting reads. The `CountingMetricsSink` snapshot key moved
+    with it (`snapshot().cold` → `snapshot().storage`).
+  - **The cost model's pricing key is now `pricing.storage`**, not `pricing.cold`, and `coldBytes` is
+    `storageBytes`. A hand-built pricing object keeps its old shape at runtime and silently prices at the
+    defaults.
+  - **`checkConsistency()` reports `issue: 'missing-storage-generation'`**, not `'missing-cold-generation'`.
+    TypeScript callers get a compile error, but a plain-JS caller — and every alert rule, dashboard filter and
+    runbook automation keyed to that string — keeps matching nothing, which reads exactly like "no torn
+    restores found".
+
+  Driver **subpaths are unchanged** (`/s3`, `/gcs`, `/azure`), and so is every wire-visible string: object
+  keys, the `.crbm` format, the registry row and its OCC token. Nothing in your bucket moves.
+
+  **One on-disk path does change, and only for the `export-segments` CLI.** It reads a local-filesystem store
+  from `<CR_EXPORT_ROOT>/storage` now, not `<CR_EXPORT_ROOT>/cold`. Rename that directory before running it —
+  the objects inside are untouched.
+
+  The CLI **refuses to run** when it finds the old layout. Without that check it would not fail silently, but
+  it would fail with the wrong diagnosis: every segment lands in the manifest's `failed[]` with
+  `no such generation: <segment>.<gen>`, which is the signature of a **torn restore**. The runbook's answers
+  to that signal include rolling `currentGen` back — destructive, and aimed at a store that was never
+  damaged, by someone already reaching for the escape hatch because something has gone wrong.
+
 - **The DynamoDB registry is removed** — `DynamoDbRegistryDriver`, the `@cloudbitmaps/roaring/dynamodb` and
   `@cloudbitmaps/core/dynamodb` subpaths, and the `@aws-sdk/client-dynamodb` optional peer dependency are all
   gone. **Storage backends go from five to four**, and the library no longer has a non-object-store driver of
@@ -292,7 +358,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 - **`segment.pin()` — hold a segment at the generation current right now.** An ordinary handle re-resolves on
-  `coldGenTtlMs`, so a publish part-way through an export, a reconciliation or a send means its second half
+  `storageGenTtlMs`, so a publish part-way through an export, a reconciliation or a send means its second half
   describes a different instant than its first — every chunk whole and verified, but the answer covering two
   moments with nothing in the result saying so. A pinned handle does not move. **Only that segment is pinned**:
   `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query
@@ -366,7 +432,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   `has(9) === false` for one the live segment really held, with `count()` reporting the old cardinality —
   silently, with no error. For a name that had been dropped or crypto-shredded that is an erased id reappearing.
   Both layers now key on the row's OCC token alongside the generation, which the port contract already
-  guarantees is never reused across incarnations. `ColdChunkSource` gains an optional `currentVersion(ref)`;
+  guarantees is never reused across incarnations. `StorageChunkSource` gains an optional `currentVersion(ref)`;
   a source that omits it falls back to the generation alone, exactly as before. Note that putting the
   incarnation in the *object key* would not have fixed this — a new incarnation still starts at generation 0, so
   the cache key collides either way; the identity has to reach the cache.
@@ -382,7 +448,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   before the first load) is still accepted, because somebody created it deliberately. Pass
   `allowAbsentOperands: true` to combine against a name that may not exist yet. Costs nothing on a normal
   combine: existence is consulted only for an operand that resolved to zero chunks, so a segment with data is
-  never checked. `ColdChunkSource` gains an optional `exists(ref)`; a source that cannot answer it skips the
+  never checked. `StorageChunkSource` gains an optional `exists(ref)`; a source that cannot answer it skips the
   check rather than guessing.
 
 ### Fixed
@@ -403,7 +469,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ### Added
 - **`store.invalidate(ref)` — tell a store to forget what it cached about a segment.** Needed when something
   destroys or retires a segment through a path the store cannot see: `destroySegment` / `eraseNamespace` are
-  free functions over raw drivers, and another process's erasure is invisible to this one. `ColdChunkSource`
+  free functions over raw drivers, and another process's erasure is invisible to this one. `StorageChunkSource`
   gains an optional `invalidate(ref)` to match, so a third-party source can participate.
 
 ### Fixed
@@ -416,7 +482,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   bucket policy, lifecycle rule or object deletion could close the window — and `iterate()` returned a set
   mixing a deleted generation with the live one. `subjectReport` (Art. 15) and `exportSegments` (Art. 20) read
   through the same cache, so two compliance APIs on one object disagreed about the same subject. With
-  `coldGenTtlMs: 0` ("pin forever", a documented setting) none of it ever converged. `eraseSubject`,
+  `storageGenTtlMs: 0` ("pin forever", a documented setting) none of it ever converged. `eraseSubject`,
   `dropSegment` and `retireExpired` now invalidate what they touch, and `store.invalidate` covers the rest.
 - **A crypto-shred performed beside a store no longer leaves it able to decrypt.** `destroySegment` deletes the
   wrapped DEK from the registry, but a store that had already opened the segment holds the **unwrapped** key
@@ -424,7 +490,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   (verified: an id in a cold chunk, read and decrypted after `cryptoShredded: true` was returned). Calling
   `store.invalidate(ref)` after an out-of-store shred drops the reader and the key with it. **Fleet note:** a
   shred on one box still invalidates nothing on the others — each store bounds its own staleness by
-  `coldGenTtlMs`, and one built with no clock or `coldGenTtlMs: 0` never converges without an explicit signal.
+  `storageGenTtlMs`, and one built with no clock or `storageGenTtlMs: 0` never converges without an explicit signal.
 - **Expired data is no longer stranded when its deletes fail.** `retireExpired` purged the registry row whenever
   `dropSegment` reported `generationsDeleted: []`, reading that as "the segment was empty". It is equally what a
   segment whose every `cold.delete` threw produces — a 403, a bucket policy, a throttle — because the sweep loop
@@ -495,7 +561,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 ### Changed
 - **`keep` is documented as the cost/latency trade it is, and a time floor on collection is refused.** The
   guide gains [*Sizing `keep`*](docs/guide/getting-started.md#sizing-keep): a missed window is a re-read rather
-  than a failure; the exposure window is `coldGenTtlMs`, not the length of your call, so at the 2 s default one
+  than a failure; the exposure window is `storageGenTtlMs`, not the length of your call, so at the 2 s default one
   retained generation covers any realistic publish cadence; and each retained generation is a whole billed copy
   of the segment, so `keep: 3` over 40 GB holds 160 GB. It also states what `keep` cannot do: a long call can
   re-resolve forward across a publish and describe two instants, and because that hop comes from
@@ -832,7 +898,7 @@ test that fails without its fix, verified by re-introducing the bug (`tests/core
   suppression properties were comparing `[]` against `[]` almost every run. Operands are now subsets of one
   shared universe that includes the boundary ids explicitly (92 of 200 overlap, 114 touch a boundary, 28 are
   fully suppressed), and the generator's **reach is itself asserted**, so it cannot silently go degenerate again.
-- **The TTL-boundary coalescing test is restored.** `CrbmColdChunkSource` installs its in-flight refresh
+- **The TTL-boundary coalescing test is restored.** `CrbmStorageChunkSource` installs its in-flight refresh
   synchronously so a burst of readers past the TTL shares one registry read; its only test went with
   `live-invalidation.test.ts`, and nothing else in the suite counted registry reads, so awaiting before
   installing the promise would have been invisible.
@@ -1105,7 +1171,7 @@ manual point-in-time recovery, that was never a documented guarantee and it is n
 - **`store.dropSegment(ref, { confirmSegment, dryRun? })` — retire a segment and actually reclaim its storage.**
   Tombstones the registry row, deletes the Warm rows, deletes the Cold generations. Works on a cleartext
   segment, and on an encrypted one it *also* discards the DEK, so it is a strict superset of crypto-shred there.
-  Afterwards the segment **reads as empty** rather than erroring — within `coldGenTtlMs` for a reader that has a
+  Afterwards the segment **reads as empty** rather than erroring — within `storageGenTtlMs` for a reader that has a
   clock. `DropResult.generationsRemaining` is the field to check: non-empty means the storage was *not* fully
   reclaimed and the drop should be re-run.
 
@@ -2198,7 +2264,7 @@ provenance. Everything below is the work that got it here.
   **What you install changes name, not shape:** `npm i @cloudbitmaps/roaring` (plus only the backend SDK(s) you
   use); `@cloudbitmaps/core` arrives **transitively** and is never installed directly. Every import keeps its
   form — `import { CloudRoaring } from '@cloudbitmaps/roaring'`,
-  `import { S3ColdDriver } from '@cloudbitmaps/roaring/s3'` — because the flavor re-exports core wholesale and
+  `import { S3StorageDriver } from '@cloudbitmaps/roaring/s3'` — because the flavor re-exports core wholesale and
   mirrors each driver subpath.
   - **`@cloudbitmaps/core`** — the codec-agnostic engine: `SegmentEngine` + the `CodecInterface` seam, **all**
     storage drivers (each on its own subpath, SDKs as optional peers), the `.crbm` format, crash-safe compaction,
@@ -2369,7 +2435,7 @@ provenance. Everything below is the work that got it here.
   against a real Postgres (new docker-compose service + integration lane). **First non-AWS warm
   tier — "use the datastore you already run."**
 
-- **Azure Blob cold driver (`cloud-roaring/azure`).** `AzureBlobColdDriver` — an `IColdDriver` over
+- **Azure Blob cold driver (`cloud-roaring/azure`).** `AzureBlobStorageDriver` — an `IStorageDriver` over
   Azure Blob Storage via the official `@azure/storage-blob` (an **optional peer dependency**; the core install
   stays SDK-free). A container-scoped `ContainerClient` is injected. Generations are **write-once** immutable
   blobs — the conditional `ifNoneMatch: '*'` makes publish atomic (a second write is a `WriteConflictError`,
@@ -2381,7 +2447,7 @@ provenance. Everything below is the work that got it here.
   GCS cold drivers against the Azurite emulator (new docker-compose service + integration lane).
   **Completes the object-store story on all three major clouds: AWS (S3) + GCP (GCS) + Azure (Blob).**
 
-- **GCS cold driver (`cloud-roaring/gcs`).** `GcsColdDriver` — an `IColdDriver` over Google Cloud
+- **GCS cold driver (`cloud-roaring/gcs`).** `GcsStorageDriver` — an `IStorageDriver` over Google Cloud
   Storage via the official `@google-cloud/storage` (an **optional peer dependency**; the core install stays
   SDK-free). The `Storage` client is injected. Generations are **write-once** immutable objects — a resumable
   upload with `ifGenerationMatch: 0` makes publish atomic (a second write is a `WriteConflictError`, never a
@@ -2394,7 +2460,7 @@ provenance. Everything below is the work that got it here.
 - **Byte-aware cold-reader cache bound + native-memory soak proof; production-readiness verdict → READY within a validated envelope.**
   A fresh 6-lens adversarial re-audit of production readiness (verified against the *current code*) found the
   fixes solid — docs-vs-code honesty **resolved**, correctness clean — with two gaps in the *memory-bound proof*,
-  now closed: (1) the cold-reader cache is bounded by aggregate parsed-index **bytes** (new `coldReaderCacheMaxBytes`,
+  now closed: (1) the cold-reader cache is bounded by aggregate parsed-index **bytes** (new `storageReaderCacheMaxBytes`,
   default 64 MiB), not just open-segment **count**, so a working set of unusually *wide* segments can't pin
   gigabytes of indices while the count looks in-bounds; (2) the soak endurance harness now
   watches the roaring addon's **off-heap native memory** (`getRoaringUsedMemory()`) for creep alongside JS heap —
@@ -2702,10 +2768,10 @@ provenance. Everything below is the work that got it here.
   for backward-compatibility with existing rows. **Deferred (documented):** an O(dirty) enumeration seam
   (`Select:COUNT` / GSI / projection) + resumable cursor, lease heartbeat/renewal, and lease-aware publishing.
 - **Bounded the cold-reader cache — no more unbounded index growth.**
-  `CrbmColdChunkSource` held opened `.crbm` readers (each carrying a fully-parsed index) in an **unbounded** map,
+  `CrbmStorageChunkSource` held opened `.crbm` readers (each carrying a fully-parsed index) in an **unbounded** map,
   so a long-running server that read across many segments grew its footprint with *every distinct segment ever
   read* (tens of GB / OOM at 100K+ segments). The reader cache is now a `BoundedLru` capped by a new
-  `coldReaderCacheMax` option (default **1024** segments): past the ceiling the least-recently-used segment's
+  `storageReaderCacheMax` option (default **1024** segments): past the ceiling the least-recently-used segment's
   reader is evicted, and re-reading it later re-opens it in one cheap tail GET (generations are immutable). The
   currentGen TTL is unchanged (orthogonal). Steady-state memory is now bounded by the working set, capped
   at the ceiling.
@@ -2714,9 +2780,9 @@ provenance. Everything below is the work that got it here.
   - **Stale reads after compaction.** A long-lived reader (a Topology-B app server) pinned a segment's
     generation for its lifetime, so after a separate daemon compacted it served the prior generation
     indefinitely — a folded add read `false`, and an **erased id resurrected to `true`**. The cold source now
-    re-resolves `currentGen` on a short TTL (`coldGenTtlMs`, default 2000 ms; lazy — checked on read, no timer)
+    re-resolves `currentGen` on a short TTL (`storageGenTtlMs`, default 2000 ms; lazy — checked on read, no timer)
     and the HOT cache is **generation-keyed**, so a reader converges to the new generation within the TTL. Reads
-    are now **bounded eventually-consistent** — up to `coldGenTtlMs` of staleness after a compaction, then they
+    are now **bounded eventually-consistent** — up to `storageGenTtlMs` of staleness after a compaction, then they
     converge; the hot path stays I/O-free within the window. Needs a `registry` (else the source pins as before,
     which suits single-process/local use).
   - **Compaction RECONCILE vs a concurrent publish.** A `publishGeneration` / `bulkLoadCrbmGeneration`
@@ -2764,11 +2830,11 @@ provenance. Everything below is the work that got it here.
   ledger) and validates `owner` before writing any tombstone.
 
 - **Simpler wiring — one config shape (`cold` / `warm` / `registry` / `keystore`)**: the `CloudRoaring`
-  constructor now accepts a **raw `IColdDriver`** as `cold` (`S3ColdDriver`, `LocalFsColdDriver`,
-  `MemoryColdDriver`, …) and assembles the `.crbm` cold source for you, with `registry` / `keystore` /
+  constructor now accepts a **raw `IStorageDriver`** as `cold` (`S3StorageDriver`, `LocalFsStorageDriver`,
+  `MemoryStorageDriver`, …) and assembles the `.crbm` cold source for you, with `registry` / `keystore` /
   `requireEncryption` lifted to the same config object — so each driver is named **once** instead of being
-  threaded through a hand-built `new CrbmColdChunkSource(cold, { registry, keystore })` wrapper. Passing an
-  already-built `ColdChunkSource` still works unchanged (for a source-only backend like `MemoryColdChunkSource`,
+  threaded through a hand-built `new CrbmStorageChunkSource(cold, { registry, keystore })` wrapper. Passing an
+  already-built `StorageChunkSource` still works unchanged (for a source-only backend like `MemoryStorageChunkSource`,
   or a source you configured with advanced reader options like `tailBytes`/size caps), so no capability is lost.
   Fail-fast guards reject `registry`/`keystore`/`requireEncryption` paired with a pre-built source (configure
   them on the source), a keystore without a registry, and a `cold` that is nullish, ambiguous, or neither a
@@ -2826,7 +2892,7 @@ provenance. Everything below is the work that got it here.
   for warm-delta-free chunks — **zero payload reads or deserializes** — and merges only the chunks with
   pending Warm deltas. A fully-compacted (Topology-A steady-state) segment counts for free; this is now a
   build-breaking CI anchor (`count()` → 0 payload reads). Adds an optional `cardinalities()` to
-  `ColdChunkSource` (the in-memory source omits it and falls back to fetch-and-merge — same answer, just not
+  `StorageChunkSource` (the in-memory source omits it and falls back to fetch-and-merge — same answer, just not
   free); `has` / `iterate` / intersection are unchanged.
 
 - **benchmark-as-test + published crossover chart**: the verified economics are now
@@ -2851,7 +2917,7 @@ provenance. Everything below is the work that got it here.
   the verified ~26 writes/s + ~329 reads/s), and `assumptions` (the grounded flag + the model's
   simplifications). Malformed inputs — workload rates, segment sizes, and pricing rates — are rejected
   fail-fast with `ValidationError` (a report is never silently `NaN`). Adds an optional `sizeOf()` to
-  `ColdChunkSource` for grounded size from the index. New
+  `StorageChunkSource` for grounded size from the index. New
   exports: `estimateCost`, `DEFAULT_PRICING`, `AWS_US_EAST_1_ONDEMAND`, and the `PricingProfile` /
   `CostReport` / `Workload` / `SegmentSizing` / `EstimateInput` / `Topology` / `SegmentSize` types. Deferred:
   whole-store aggregation + live-metrics-derived request cost.
@@ -2891,7 +2957,7 @@ provenance. Everything below is the work that got it here.
   needs no data re-encryption (keyId-aware), and a DEK can be wrapped under an offline **recovery KEK** so losing
   the active KEK isn't fatal. Encryption is **store-level opt-in** (pass a keystore) with an optional
   `requireEncryption` guard; lose every KEK and a segment's at-rest data is gone by design (rebuild it from
-  source). Threads through `bulkLoadCrbmGeneration`, `CrbmColdChunkSource`, and the compaction daemon (which
+  source). Threads through `bulkLoadCrbmGeneration`, `CrbmStorageChunkSource`, and the compaction daemon (which
   reuses a segment's DEK across generations). New exports: `InProcessKeystore`, `NodeAead`, `destroySegment`,
   `eraseNamespace`, `aadFor`, `KeyUnavailableError`, and the `Aead`/`IKeystore`/`WrappedDek` types
 .
@@ -2910,14 +2976,14 @@ provenance. Everything below is the work that got it here.
   mid-read (re-resolve to the current generation rather than fail — **no torn read**). Discovery
   (`findCompactable` / `runCompactionCycle`) scans the registry and drains Warm per segment (O(total warm)/cycle); the write path stays uncoupled from the registry. Ships the **`compact-segments` CLI** (`once` for Lambda/cron, `loop` for
   K8s/ECS) over the local-filesystem backend; cloud users call `runCompactionCycle` from their own handler.
-  Also adds an in-memory `MemoryColdDriver`. (Crypto-shred-driven erase arrives with encryption-at-rest.)
+  Also adds an in-memory `MemoryStorageDriver`. (Crypto-shred-driven erase arrives with encryption-at-rest.)
 
 - **segment registry**: an `IRegistryDriver` — the authoritative per-segment record holding the
   current generation (`currentGen`), discovery index, status, and a reserved wrapped-DEK slot — in three
   backends (`MemoryRegistryDriver`, `LocalFsRegistryDriver`, and `DynamoDbRegistryDriver` at the
   `cloud-roaring/dynamodb` subpath, co-located with warm rows in the single table). Reads can now resolve the
   current generation through the registry instead of a per-read **list-scan** of every generation: pass a
-  `registry` to `CrbmColdChunkSource` (`new CrbmColdChunkSource(cold, { registry })`) — **optional**, with the
+  `registry` to `CrbmStorageChunkSource` (`new CrbmStorageChunkSource(cold, { registry })`) — **optional**, with the
   list-scan kept as the fallback when absent. `bulkLoadCrbmGeneration(..., { registry })` publishes the new
   generation, and `publishGeneration(registry, key)` is the standalone, forward-only publish primitive. OCC,
   ABA-safety, and discovery all pass a shared `registryConformance` suite (vs in-memory, LocalFs, and
@@ -2933,7 +2999,7 @@ provenance. Everything below is the work that got it here.
   (the OCC token detects a phantom-success; cold writes stay write-once), and the deterministic simulator now
   injects transient faults and proves effective-set equivalence holds under them. New public surface:
   `TransientError`/`TimeoutError`, `withRetry`, `RetryPolicy`, `DEFAULT_RETRY_POLICY`, and the
-  `RetryingWarmDriver`/`RetryingColdChunkSource`/`RetryingColdDriver` decorators (driver authors can wrap
+  `RetryingWarmDriver`/`RetryingStorageChunkSource`/`RetryingStorageDriver` decorators (driver authors can wrap
   their own). **Configure a request timeout on your injected S3/DynamoDB client** — timeouts are retried as
   transient (see the [getting-started guide](docs/guide/getting-started.md) §reliability).
 
@@ -2945,11 +3011,11 @@ provenance. Everything below is the work that got it here.
   `DynamoDBClient` (`new DynamoDbWarmDriver({ client, tableName })`). Passes the same warm-driver conformance
   suite as the in-memory and local-filesystem tiers.
 
-- **S3 cold driver**: `S3ColdDriver`
+- **S3 cold driver**: `S3StorageDriver`
   for S3-compatible object storage (AWS S3 / MinIO), exposed at the **`cloud-roaring/s3`** subpath. Built on
   `@aws-sdk/client-s3` as an **optional peer dependency** — the core package's only runtime dependency stays
   `roaring`; you install the AWS SDK only if you use S3. Inject your own `S3Client`
-  (`new S3ColdDriver({ client, bucket, prefix? })`); write-once via conditional `If-None-Match:*`. Passes the
+  (`new S3StorageDriver({ client, bucket, prefix? })`); write-once via conditional `If-None-Match:*`. Passes the
   same cold-driver conformance suite as the in-memory and local-filesystem tiers.
 
 - **bulk-load**:
@@ -2977,8 +3043,8 @@ provenance. Everything below is the work that got it here.
 - **Warm tier**: a persistent
   `LocalFsWarmDriver` with filesystem optimistic concurrency (monotonic counter token, ABA-safe tombstones,
   per-row lossless CAS chain). Engine writes survive a restart.
-- **Cold tier**: `IColdDriver` +
-  `LocalFsColdDriver` (write-once via atomic `link`, symlink-hardened) + `CrbmColdChunkSource` bridging
+- **Cold tier**: `IStorageDriver` +
+  `LocalFsStorageDriver` (write-once via atomic `link`, symlink-hardened) + `CrbmStorageChunkSource` bridging
   `.crbm` generations to the engine (generation-pinned). The engine now reads a persistent Cold tier.
 - **`.crbm` archive codec**: a streaming
   writer + speculative-tail-read reader for the on-disk Cold format — delta+varint footer index, per-chunk
@@ -2991,7 +3057,7 @@ provenance. Everything below is the work that got it here.
 - **Foundations**: repo scaffold
   (TypeScript strict, ESLint/Prettier, Vitest, CI, Husky, docker-compose), the 7 design specs, and the
   reserved npm name.
-- **Public API exports:** `CloudRoaring`, `Segment`, the in-memory + LocalFs drivers, `CrbmColdChunkSource`,
+- **Public API exports:** `CloudRoaring`, `Segment`, the in-memory + LocalFs drivers, `CrbmStorageChunkSource`,
   `writeCrbmGeneration`, `SafeBitmap`, the `.crbm` codec + blob seam, and the typed error classes.
 
 <!-- The section above is the 0.1.0 release; new work goes under [Unreleased] at the top. -->

@@ -1,4 +1,4 @@
-import { coldObjectFilename, parseGeneration } from '@/drivers/localfs/paths';
+import { storageObjectFilename, parseGeneration } from '@/drivers/localfs/paths';
 
 describe('parseGeneration', () => {
   it('parses the canonical <segment>.<gen>.crbm filename', () => {
@@ -21,9 +21,9 @@ describe('parseGeneration', () => {
     expect(parseGeneration('s', `s.${'9'.repeat(20)}.crbm`)).toBeNull(); // past safe-integer range
   });
 
-  it('round-trips with coldObjectFilename for canonical generations', () => {
+  it('round-trips with storageObjectFilename for canonical generations', () => {
     for (const gen of [0, 1, 7, 65_535, 1_000_000]) {
-      expect(parseGeneration('seg', coldObjectFilename('seg', gen))).toBe(gen);
+      expect(parseGeneration('seg', storageObjectFilename('seg', gen))).toBe(gen);
     }
   });
 });

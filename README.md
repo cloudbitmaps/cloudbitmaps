@@ -19,7 +19,7 @@
 > boundary, and mutation testing of the highest-risk core modules. What's proven to what degree — and
 > what isn't — is set out in the [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt).
 > **Works today:** the loaded store over **in-memory** and **local-filesystem** storage, with every cloud driver
-> on its own `@cloudbitmaps/roaring/<backend>` subpath — **cold** object storage on **S3-compatible** (`/s3`),
+> on its own `@cloudbitmaps/roaring/<backend>` subpath — **object storage** on **S3-compatible** (`/s3`),
 > **GCS** (`/gcs`), and **Azure Blob** (`/azure`); a **segment registry** on each of those same three clouds
 > (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `bulkLoadCrbmGeneration` (write one immutable
 > generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
@@ -31,7 +31,7 @@
 > generation rewrite** (the bit is physically gone from the bucket when the call returns) · `dropSegment`,
 > retention policies and a `retireExpired` sweep you schedule · **encryption-at-rest** (opt-in AES-256-GCM,
 > bring-your-own-key, **no required cloud dependency**) with **crypto-shred** erasure · an optional
-> **observability metrics sink** (`IMetricsSink` — cold/cache/retry/intersect/op events, no-op by default, no
+> **observability metrics sink** (`IMetricsSink` — storage/cache/retry/intersect/op events, no-op by default, no
 > telemetry dependency) · a **cost estimator** (`estimateCost` planning + grounded `costReport` from real
 > segment sizes, with a pluggable pricing profile and an honest win/lose verdict) · and an optional **audit
 > sink** (`IAuditSink` — publish / rewrite / dispose / crypto-shred events for an append-only audit log or SIEM,
@@ -66,12 +66,12 @@ segments into this and the library breaks, am I stuck?* Short answer — **no** 
   filesystem — accounts and stores you own. CloudBitmaps never sees or holds it (you're the data controller;
   see [`PRIVACY.md`](PRIVACY.md)). If the project vanished tomorrow, nothing is deleted or held hostage — the
   objects are still in your bucket.
-- **The durable tier is an open, standard format.** Cold `.crbm` objects are a **documented container**
+- **The durable tier is an open, standard format.** Storage `.crbm` objects are a **documented container**
   (format spec — a footer index + CRC32C, nothing proprietary) wrapping
   **standard portable RoaringBitmap serialization** — the exact bytes every roaring library (Java, Go, Python,
   C++, Rust, C#) already reads. "Get my data out" = read the index, hand each chunk payload to any roaring
   library. The escape hatch is the format itself.
-- **Immutable + versioned + checksummed — a bug can't quietly eat your data.** Cold objects are write-once and
+- **Immutable + versioned + checksummed — a bug can't quietly eat your data.** Storage objects are write-once and
   generation-numbered; the registry's `currentGen` pointer is the only thing that makes one "live." The worst a
   bad load can do is write a *new* bad generation — the previous one is intact, and you roll the pointer
   back. Every chunk, index and footer carries a **CRC32C that is verified before the bytes reach the
@@ -107,7 +107,7 @@ remainder** (the bottom half). Each chunk is itself a small Roaring bitmap holdi
 This is the unit of storage and transfer — you never read a whole segment to test one ID, and a load groups
 its ids by chunk first (10,000 IDs spanning 12 chunks become **12 chunks in one object**, not 10,000 writes).
 
-**Two storage tiers and one pointer, behind pluggable drivers.** The engine is storage-agnostic — it talks to
+**Two tiers and one pointer, behind pluggable drivers.** The engine is storage-agnostic — it talks to
 driver *interfaces*, never a specific cloud SDK — so the same code runs on local files, AWS, GCP, Azure, or
 MinIO:
 
@@ -115,14 +115,14 @@ MinIO:
   load(ids) ─► group by chunk ─► write ONE immutable .crbm object ─► publish the pointer
                                    (segment.<gen>.crbm, write-once)     (registry CAS, forward-only)
 
-  has(id)   ─► HOT? (RAM + bounded LRU) ─► COLD (single-chunk byte-range read)
+  has(id)   ─► HOT? (RAM + bounded LRU) ─► STORAGE (single-chunk byte-range read)
   count()   ─► the object's footer index (0 payload reads)
   intersect(A,B) ─► align chunk indexes ─► fetch only the chunks present in BOTH ─► stream IDs
 ```
 
 - **Hot** — a bounded in-RAM LRU of decoded chunks, keyed by generation (a hard memory ceiling; performance
   only, never truth). A new generation misses the cache rather than serving stale bytes.
-- **Cold** — the durable base: immutable, generation-keyed `.crbm` archive objects in object storage (S3,
+- **Storage** — the durable base: immutable, generation-keyed `.crbm` archive objects in object storage (S3,
   etc.), with a footer index that makes `count()` and single-chunk reads cheap.
 - **The registry** — one small row per segment saying which generation is current (plus its wrapped data key
   and its retention policy). It is the only thing a write mutates, and it moves by compare-and-swap.
@@ -152,7 +152,7 @@ generations. `dropSegment` retires a whole segment (tombstone, then sweep the ob
 same for everything whose retention policy has passed. Superseded generations are collected by
 `gcOrphanGenerations`, which never touches the current one.
 
-**Encrypted at rest, with real erasure.** Turn on encryption by passing a **keystore** — the cold `.crbm`
+**Encrypted at rest, with real erasure.** Turn on encryption by passing a **keystore** — the storage `.crbm`
 objects (payloads *and* index) are **AES-256-GCM**-encrypted, so a leaked bucket reveals neither ids nor
 cardinality. It's **bring-your-own-key with no required cloud dependency**: you supply 32-byte keys; a
 per-segment data key is wrapped under yours and kept in the registry (KMS/Vault adapters can drop in later via
@@ -162,7 +162,7 @@ reaching every copy. Rotate keys without re-encrypting data, and wrap under an o
 lost key isn't fatal.
 
 **Resilient by default — a blip never loses data.** Cloud storage throttles, returns 5xx, and drops
-connections; CloudBitmaps treats that as normal. Every cold call automatically **retries transient faults**
+connections; CloudBitmaps treats that as normal. Every storage call automatically **retries transient faults**
 (throttle / 5xx / dropped connection / request timeout) with bounded exponential backoff + full jitter — on by
 default, tunable, or `retry: false` to defer to your client's own retry. Retries are **safe by construction**:
 generations are write-once, so a timed-out-but-committed object write is detected as a conflict rather than
@@ -173,7 +173,7 @@ retried as transient); see the [getting-started guide](docs/guide/getting-starte
 
 ## What it costs — measured on real AWS
 
-Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real S3 cold
+Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real S3 storage
 driver — and a registry driver that no longer ships — against a real AWS account in `us-east-1`: 20 segments,
 20 segment publishes, 2,000 reads. The two figures a loaded store actually pays are:
 
@@ -222,9 +222,9 @@ prefer). `core` itself has **zero runtime dependencies**.
 | Import | Gives you | Peer dep |
 |---|---|---|
 | `@cloudbitmaps/roaring` | `CloudRoaring` + all in-memory/local drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | — (pulls `roaring` + `@cloudbitmaps/core`) |
-| `@cloudbitmaps/roaring/s3` | `S3ColdDriver`, `S3RegistryDriver` | `@aws-sdk/client-s3` |
-| `@cloudbitmaps/roaring/gcs` | `GcsColdDriver`, `GcsRegistryDriver` | `@google-cloud/storage` |
-| `@cloudbitmaps/roaring/azure` | `AzureBlobColdDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob` |
+| `@cloudbitmaps/roaring/s3` | `S3StorageDriver`, `S3RegistryDriver` | `@aws-sdk/client-s3` |
+| `@cloudbitmaps/roaring/gcs` | `GcsStorageDriver`, `GcsRegistryDriver` | `@google-cloud/storage` |
+| `@cloudbitmaps/roaring/azure` | `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob` |
 | `export-segments` (CLI bin) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
 The cloud SDKs are **optional peer dependencies** — the main entry never imports a cloud SDK (CI-enforced), so
@@ -243,18 +243,18 @@ The in-memory drivers need zero setup — ideal for a first look or a test:
 ```ts
 import {
   CloudRoaring,
-  MemoryColdDriver,
+  MemoryStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
 } from '@cloudbitmaps/roaring';
 
-const cold = new MemoryColdDriver();
+const storage = new MemoryStorageDriver();
 const registry = new MemoryRegistryDriver();
 
 // A load is how data gets in: one immutable object, then the pointer moves to it.
-await bulkLoadCrbmGeneration(cold, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry });
+await bulkLoadCrbmGeneration(storage, { segment: 'high-value-shoppers', generation: 0 }, [5, 99_999, 1_234_567_890, 2_000_000_000], { registry });
 
-const store = new CloudRoaring({ cold, registry });
+const store = new CloudRoaring({ storage, registry });
 const seg = store.segment('high-value-shoppers');
 
 await seg.has(1_234_567_890); // → true  (one chunk, from the hot cache after the first read)
@@ -270,22 +270,22 @@ for await (const id of seg.intersect([store.segment('eu-residents')], { exclude:
 }
 ```
 
-Swap the in-memory drivers for the local-filesystem ones (`LocalFsColdDriver` + `LocalFsRegistryDriver`, passed
-straight in — the store wraps the cold driver in its `.crbm` reader for you) and the same code persists to disk
+Swap the in-memory drivers for the local-filesystem ones (`LocalFsStorageDriver` + `LocalFsRegistryDriver`, passed
+straight in — the store wraps the storage driver in its `.crbm` reader for you) and the same code persists to disk
 and survives a restart — see the **[getting-started guide](docs/guide/getting-started.md)** for that and the
 full operation reference.
 
-For the cloud, you pass **raw drivers** and wire each once — e.g. everything on **S3 alone** (cold objects and
+For the cloud, you pass **raw drivers** and wire each once — e.g. everything on **S3 alone** (storage objects and
 the registry in one bucket; no other service):
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
+import { S3StorageDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 import { S3Client } from '@aws-sdk/client-s3';
 
 const s3 = new S3Client({ region: 'us-east-1' });
 const store = new CloudRoaring({
-  cold: new S3ColdDriver({ client: s3, bucket: 'bitmaps' }), // raw driver — wrapped for you
+  storage: new S3StorageDriver({ client: s3, bucket: 'bitmaps' }), // raw driver — wrapped for you
   registry: new S3RegistryDriver({ client: s3, bucket: 'bitmaps' }),
 });
 ```
@@ -297,24 +297,24 @@ code runs on any mix:
 
 | Seam | in-memory | local filesystem | cloud |
 |---|---|---|---|
-| **Cold** (the durable base) | `MemoryColdDriver` · `MemoryColdChunkSource` | `LocalFsColdDriver` | `S3ColdDriver` · `GcsColdDriver` · `AzureBlobColdDriver` |
+| **Storage** (the durable base) | `MemoryStorageDriver` · `MemoryStorageChunkSource` | `LocalFsStorageDriver` | `S3StorageDriver` · `GcsStorageDriver` · `AzureBlobStorageDriver` |
 | **Registry** (current-gen pointer) | `MemoryRegistryDriver` | `LocalFsRegistryDriver` | `S3RegistryDriver` · `GcsRegistryDriver` · `AzureBlobRegistryDriver` |
 | **Keystore** (optional encryption) | `InProcessKeystore` (BYOK) | ← same | ← same (KMS/Vault adapters are a future package) |
 
-Mix freely: cold objects and the registry in **one bucket** is the whole deployment, on any of the three
+Mix freely: storage objects and the registry in **one bucket** is the whole deployment, on any of the three
 clouds. Put the registry somewhere else entirely — a database you already run — behind the `IRegistryDriver`
 interface if you would rather.
 
 ## The API at a glance
 
-**One config object** — pass raw drivers; the store wires them once (`cold` also accepts a pre-built
-`ColdChunkSource` for source-only backends or advanced reader options):
+**One config object** — pass raw drivers; the store wires them once (`storage` also accepts a pre-built
+`StorageChunkSource` for source-only backends or advanced reader options):
 
 ```ts
 new CloudRoaring({
-  cold,                // required
+  storage,             // required
   registry, keystore,  // optional (registry: current-gen pointer + wrapped keys + every lifecycle helper)
-  cacheMaxChunks, cacheTtlMs, coldGenTtlMs, retry, metrics, budget, // optional tuning (resilience is on by default)
+  cacheMaxChunks, cacheTtlMs, storageGenTtlMs, retry, metrics, budget, // optional tuning (resilience is on by default)
 });
 ```
 
@@ -329,11 +329,11 @@ new CloudRoaring({
 | `intersectInto(dest, …)` · `unionInto(dest, …)` · `andNotInto(dest, …)` | materialise the result as a **new generation of `dest`** (write-once, published forward-only) and report what was written |
 | `costReport({ workload, pricing })` | grounded cost from the segment's real `.crbm` size |
 
-**Store admin** (reuse the store's own drivers; need a raw cold driver + registry):
+**Store admin** (reuse the store's own drivers; need a raw storage driver + registry):
 
 | Method | Does |
 |---|---|
-| `store.dropSegment(ref, { confirmSegment, dryRun? })` | retire a segment and reclaim its storage — tombstone, then every Cold generation. `dryRun` previews |
+| `store.dropSegment(ref, { confirmSegment, dryRun? })` | retire a segment and reclaim its storage — tombstone, then every Storage generation. `dryRun` previews |
 | `store.setRetention(ref, { expiresAt })` · `getRetention` · `clearRetention` | record **when a segment becomes eligible for retirement** (an absolute instant you set — per segment, never per id) |
 | `store.retireExpired({ namespace?, limit?, dryRun? })` | the **retention sweep**: retire everything whose expiry has passed, through `dropSegment`. A call you schedule, not a daemon — bounded, previewable, returns a per-segment ledger |
 | `store.eraseSubject(id, { namespace })` | GDPR Art. 17 — rewrite every segment holding the id without it, so the bit is **physically gone** on return, and hand back an erasure ledger |
@@ -384,10 +384,10 @@ One call, three input shapes, and it bills **per object, not per id**:
 
 ```ts
 // From memory, from a Set, or straight off a cursor — the ids never all sit in RAM as JS numbers.
-await bulkLoadCrbmGeneration(cold, { segment: 'audience', generation }, athenaCursor(), { registry });
+await bulkLoadCrbmGeneration(storage, { segment: 'audience', generation }, athenaCursor(), { registry });
 ```
 
-`generation` is the number after the highest the registry and the bucket know — `nextGeneration(ref, { cold, registry })`
+`generation` is the number after the highest the registry and the bucket know — `nextGeneration(ref, { storage, registry })`
 computes it. Peak memory is the segment's compressed size (~2 MB for a million ids), not the id list: ids are
 folded into per-chunk bitmaps as they arrive and the object streams out in 8 MiB parts. Re-running after a crash
 is safe — a crash before the publish leaves the previous generation authoritative — and two loaders racing the
@@ -440,7 +440,7 @@ Built in phases, each shipped behind tests and an adversarial review:
 
 - **M1 — local end-to-end** *(complete)*: the core engine + `.crbm` format + local-filesystem drivers +
   a shared driver conformance suite + a deterministic, seed-replayable concurrency simulator. No cloud needed.
-- **M2 — Topology-A (the showcase)** *(complete)*: the S3 cold driver, bulk load, and the chunk-skipping
+- **M2 — Topology-A (the showcase)** *(complete)*: the S3 storage driver, bulk load, and the chunk-skipping
   intersection engine — the first shippable, the centerpiece.
 - **M3 — durability & compliance** *(complete)*: the segment registry, forward-only publishing, and
   **encryption-at-rest + crypto-shred**. (A live write tier shipped in this milestone too and has since been
@@ -461,7 +461,7 @@ against an emulator, so they are **withdrawn rather than counted**, and the load
 owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
 scale/tenancy deferrals are tracked openly). **Additional storage drivers**: **GCS + Azure
-Blob cold drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that
+Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that
 shipped alongside them in `0.9.x` was removed ahead of `1.0` as the library re-centres on write-once
 generations (see the `CHANGELOG`). Security and supply-chain hardening is in place: npm build
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a

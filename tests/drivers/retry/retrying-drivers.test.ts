@@ -1,15 +1,15 @@
 import {
-  RetryingColdChunkSource,
-  RetryingColdDriver,
+  RetryingStorageChunkSource,
+  RetryingStorageDriver,
   RetryingRegistryDriver,
 } from '@/drivers/retry/retrying-drivers';
 import type { RetryingOptions } from '@/drivers/retry/retrying-drivers';
 import { TransientError, WriteConflictError } from '@/core/errors';
 import type {
   ChunkRef,
-  ColdChunkSource,
+  StorageChunkSource,
   GenKey,
-  IColdDriver,
+  IStorageDriver,
   IRegistryDriver,
   RegistryRecord,
   SegmentRef,
@@ -44,13 +44,13 @@ function flaky<T>(fails: number, err: unknown, value: T): () => Promise<T> {
   return () => (++n <= fails ? Promise.reject(err) : Promise.resolve(value));
 }
 
-describe('RetryingColdChunkSource', () => {
+describe('RetryingStorageChunkSource', () => {
   it('retries a transient getChunk', async () => {
     const clock = recordingClock();
     const bytes = Uint8Array.of(9);
     const getChunk = flaky(1, new TransientError('blip'), bytes);
-    const inner = { getChunk: () => getChunk() } as unknown as ColdChunkSource;
-    const d = new RetryingColdChunkSource(inner, opts(clock));
+    const inner = { getChunk: () => getChunk() } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, opts(clock));
     expect(await d.getChunk(ref)).toBe(bytes);
     expect(clock.sleeps).toHaveLength(1);
   });
@@ -63,8 +63,8 @@ describe('RetryingColdChunkSource', () => {
         calls++;
         return Promise.resolve(null);
       },
-    } as unknown as ColdChunkSource;
-    const d = new RetryingColdChunkSource(inner, opts(clock));
+    } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, opts(clock));
     expect(await d.getChunk(ref)).toBeNull();
     expect(calls).toBe(1);
     expect(clock.sleeps).toEqual([]);
@@ -73,14 +73,14 @@ describe('RetryingColdChunkSource', () => {
   it('retries a transient listChunkKeys', async () => {
     const clock = recordingClock();
     const keys = flaky(1, new TransientError('blip'), [1, 2, 3]);
-    const inner = { listChunkKeys: () => keys() } as unknown as ColdChunkSource;
-    const d = new RetryingColdChunkSource(inner, opts(clock));
+    const inner = { listChunkKeys: () => keys() } as unknown as StorageChunkSource;
+    const d = new RetryingStorageChunkSource(inner, opts(clock));
     expect(await d.listChunkKeys(seg)).toEqual([1, 2, 3]);
     expect(clock.sleeps).toHaveLength(1);
   });
 });
 
-describe('RetryingColdDriver', () => {
+describe('RetryingStorageDriver', () => {
   it('retries a transient getRange and leaves capabilities() un-wrapped', async () => {
     const clock = recordingClock();
     const bytes = Uint8Array.of(1, 2, 3);
@@ -89,8 +89,8 @@ describe('RetryingColdDriver', () => {
     const inner = {
       capabilities: () => caps,
       getRange: () => getRange(),
-    } as unknown as IColdDriver;
-    const d = new RetryingColdDriver(inner, opts(clock));
+    } as unknown as IStorageDriver;
+    const d = new RetryingStorageDriver(inner, opts(clock));
     expect(d.capabilities()).toBe(caps);
     const key: GenKey = { segment: 's', generation: 0 };
     expect(await d.getRange(key, 0, 3)).toBe(bytes);
@@ -105,8 +105,8 @@ describe('RetryingColdDriver', () => {
         calls++;
         return Promise.reject(new WriteConflictError('exists'));
       },
-    } as unknown as IColdDriver;
-    const d = new RetryingColdDriver(inner, opts(clock));
+    } as unknown as IStorageDriver;
+    const d = new RetryingStorageDriver(inner, opts(clock));
     const key: GenKey = { segment: 's', generation: 0 };
     await expect(d.putImmutable(key, async () => {})).rejects.toBeInstanceOf(WriteConflictError);
     expect(calls).toBe(1);
@@ -119,7 +119,7 @@ describe('RetryingColdDriver', () => {
       { segment: 's', generation: 0 },
       { segment: 's', generation: 1 },
     ];
-    const inner: Pick<IColdDriver, 'list'> = {
+    const inner: Pick<IStorageDriver, 'list'> = {
       async *list() {
         attempts++;
         if (attempts === 1) {
@@ -129,7 +129,7 @@ describe('RetryingColdDriver', () => {
         yield* gens;
       },
     };
-    const d = new RetryingColdDriver(inner as IColdDriver, opts(clock));
+    const d = new RetryingStorageDriver(inner as IStorageDriver, opts(clock));
     const out: number[] = [];
     for await (const g of d.list(seg)) out.push(g.generation);
     expect(out).toEqual([0, 1]); // no duplicate gen-0 despite the first attempt yielding it before faulting

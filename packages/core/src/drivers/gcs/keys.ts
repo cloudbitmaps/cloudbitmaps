@@ -1,15 +1,15 @@
 /**
- * Logical-ref → GCS object-name mapping for {@link GcsColdDriver}.
+ * Logical-ref → GCS object-name mapping for {@link GcsStorageDriver}.
  *
  * Pure string logic, no SDK dependency — unit-testable without GCS or an emulator. Uses the **same
- * backend-agnostic `.crbm` object-name scheme** as the S3 + LocalFs cold drivers
- * (`<prefix><ns>/segments/<segment>.<gen>.crbm`), so a segment reads identically whichever cold backend holds
+ * backend-agnostic `.crbm` object-name scheme** as the S3 + LocalFs storage drivers
+ * (`<prefix><ns>/segments/<segment>.<gen>.crbm`), so a segment reads identically whichever storage backend holds
  * it. The default (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
  * caller's `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  *
- * NOTE (DRY): this mirrors the pure cold-key builders in `drivers/s3/keys.ts`. They are deliberately **not**
+ * NOTE (DRY): this mirrors the pure storage-key builders in `drivers/s3/keys.ts`. They are deliberately **not**
  * shared across driver folders today — a driver must stay self-contained so it lifts cleanly into its own
- * package if a driver ever ships separately. At that point the shared cold-key scheme would be promoted
+ * package if a driver ever ships separately. At that point the shared storage-key scheme would be promoted
  * into a driver-kit imported by every driver package, which is the right home for it; until then a
  * self-contained copy beats a cross-driver import.
  */
@@ -59,7 +59,7 @@ export function segmentObjectPrefix(prefix: string | undefined, ref: SegmentRef)
 }
 
 /** The full GCS object name of one `.crbm` generation: `<segmentPrefix><gen>.crbm`. */
-export function coldObjectName(prefix: string | undefined, key: GenKey): string {
+export function storageObjectName(prefix: string | undefined, key: GenKey): string {
   if (!Number.isInteger(key.generation) || key.generation < 0) {
     throw new ValidationError(`generation must be a non-negative integer; got ${key.generation}`);
   }

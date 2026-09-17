@@ -1,7 +1,7 @@
 /**
  * `S3RegistryDriver` — an {@link IRegistryDriver} over S3-compatible object storage.
  *
- * Lets a **read-mostly deployment run on S3 alone** — cold `.crbm` generations + the registry in one bucket,
+ * Lets a **read-mostly deployment run on S3 alone** — storage `.crbm` generations + the registry in one bucket,
  * no separate database. The protocol (an ABA-safe OCC counter, tombstoning delete, the bounded retry, the key layout)
  * lives once in {@link ObjectStoreRegistry}; this file is only the three I/O calls S3 makes, so the S3, GCS
  * and Azure registries cannot drift from one another.
@@ -10,7 +10,7 @@
  * create-only and `If-Match: <etag>` for compare-and-swap, so a concurrent writer between our read and our
  * PUT loses with a `412` → {@link WriteConflictError}. Reads are strongly consistent (S3, since 2020),
  * satisfying the registry's `strongRead` contract. The client is **injected**, exactly like
- * {@link S3ColdDriver}.
+ * {@link S3StorageDriver}.
  *
  * **Deployment requirements** (a backend/policy that violates these silently corrupts the registry):
  * - The backend **must honor `If-Match`** (AWS S3; recent MinIO). One that returns ETags but ignores the

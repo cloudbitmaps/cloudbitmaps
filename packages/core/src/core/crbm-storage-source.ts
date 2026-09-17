@@ -1,8 +1,8 @@
 /**
- * Bridges the `.crbm` archive format to the engine's Cold seam (decision 4).
+ * Bridges the `.crbm` archive format to the engine's Storage seam (decision 4).
  *
- * `CrbmColdChunkSource` implements the {@link ColdChunkSource} the engine reads through, over an
- * {@link IColdDriver}: it resolves a segment's current generation, opens its {@link CrbmReader} once, and serves
+ * `CrbmStorageChunkSource` implements the {@link StorageChunkSource} the engine reads through, over an
+ * {@link IStorageDriver}: it resolves a segment's current generation, opens its {@link CrbmReader} once, and serves
  * per-chunk payloads. `writeCrbmGeneration` / `writeCrbmGenerationStream` are the write primitives (a generation
  * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the load path over them, and
  * `publishGeneration` is the forward-only pointer advance every write ends with.
@@ -29,9 +29,9 @@ import type { CrbmCrypto, IKeystore, WrappedDek } from './crypto';
 import { validateChunkRef, validateSegmentRef } from './validate';
 import type {
   ChunkRef,
-  ColdChunkSource,
+  StorageChunkSource,
   GenKey,
-  IColdDriver,
+  IStorageDriver,
   IRegistryDriver,
   SegmentRef,
   SegmentSize,
@@ -43,7 +43,7 @@ import { CrbmWriter } from './crbm/writer';
 import type { CodecBitmap, CodecInterface } from './codec';
 import { requireCodec } from './codec';
 
-export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
+export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   /**
    * Optional {@link IRegistryDriver}. When provided, the current generation is resolved via the registry's
    * authoritative `currentGen` (one cheap strong read) instead of a `list` scan of every generation — the
@@ -100,7 +100,7 @@ export interface CrbmColdChunkSourceOptions extends CrbmReaderOptions {
 }
 
 /** Adapt one `(driver, key)` pair to the codec's `BlobReader` seam. */
-function coldBlobReader(driver: IColdDriver, key: GenKey): BlobReader {
+function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
   return {
     getRange(offset, length) {
       return driver.getRange(key, offset, length);
@@ -150,16 +150,16 @@ const DEFAULT_MAX_OPEN_SEGMENTS = 1024;
 /** Default aggregate ceiling (bytes) on resident parsed indices in the reader cache — the steady-state byte bound. */
 const DEFAULT_MAX_OPEN_INDEX_BYTES = 64 * 1024 * 1024;
 
-export class CrbmColdChunkSource implements ColdChunkSource {
+export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
-   * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmColdChunkSourceOptions.currentGenTtlMs},
-   * needs a clock). Within the TTL a segment's Cold bytes are treated as an immutable snapshot; when the TTL
+   * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmStorageChunkSourceOptions.currentGenTtlMs},
+   * needs a clock). Within the TTL a segment's Storage bytes are treated as an immutable snapshot; when the TTL
    * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
    * opens the new generation — so a long-lived source observes new generations within the TTL rather than
    * pinning one forever. The engine pairs this with a **generation-keyed** HOT cache so a bump never
    * serves a stale decoded chunk. Without a clock or a registry the source pins the first generation for its
    * lifetime (the behaviour before the registry was wired in). A segment with no generation yet is not memoized, so it's re-checked until
-   * one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmColdChunkSourceOptions.maxOpenSegments}, default
+   * one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmStorageChunkSourceOptions.maxOpenSegments}, default
    * 1024): past the ceiling the least-recently-used segment's reader (and its parsed index) is evicted — the
    * steady-state memory bound; re-opening an evicted segment is one cheap tail GET.
    */
@@ -172,11 +172,11 @@ export class CrbmColdChunkSource implements ColdChunkSource {
   private readonly currentGenTtlMs: number;
 
   constructor(
-    private readonly driver: IColdDriver,
-    options: CrbmColdChunkSourceOptions = {},
+    private readonly driver: IStorageDriver,
+    options: CrbmStorageChunkSourceOptions = {},
   ) {
     if (!driver.capabilities().rangeRead) {
-      throw new CapabilityError('Cold driver must support range reads (rangeRead)');
+      throw new CapabilityError('Storage driver must support range reads (rangeRead)');
     }
     const {
       registry,
@@ -194,7 +194,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       );
     }
     if (requireEncryption === true && registry === undefined) {
-      // Without a registry the source can't see wrapped DEKs or `destroyed` tombstones (it list-scans cold),
+      // Without a registry the source can't see wrapped DEKs or `destroyed` tombstones (it list-scans storage),
       // so encryption can't be enforced or even observed here — fail fast rather than mislead.
       throw new CapabilityError('requireEncryption needs a registry');
     }
@@ -286,7 +286,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
 
   private expired(installedAtMs: number): boolean {
     // Refresh needs a clock (the TTL) AND a registry (the *cheap* `currentGen` read the design assumes —
-    // without one, re-resolution is a full cold `list`-scan, and a registry-less setup is single-process
+    // without one, re-resolution is a full storage `list`-scan, and a registry-less setup is single-process
     // local, not the shared bucket that separate loaders publish into). Otherwise: pin for the lifetime.
     return (
       this.clock !== undefined &&
@@ -328,7 +328,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    * an erasure that deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement —
    * leaves the pointer's answer unchanged from this source's point of view while making the snapshot wrong.
    * Until this is called the source keeps serving that snapshot with no backend read at all, so nothing on the
-   * storage side can close the window; with `coldGenTtlMs: 0` or no clock it never closes.
+   * storage side can close the window; with `storageGenTtlMs: 0` or no clock it never closes.
    */
   invalidate(ref: SegmentRef): void {
     const key = segmentKey(ref);
@@ -370,7 +370,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    */
   async pinGeneration(ref: SegmentRef): Promise<{ generation: number; version: string } | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
-    // of a pin, and the memo is allowed to be up to `coldGenTtlMs` behind — or, on a store with no clock,
+    // of a pin, and the memo is allowed to be up to `storageGenTtlMs` behind — or, on a store with no clock,
     // arbitrarily far behind, since it never refreshes at all. Pinning through it made every pin on such a
     // store return the first generation that store had ever read.
     const target = await this.resolveTarget(ref);
@@ -487,7 +487,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
       generation: target.generation,
     };
     const crypto = await this.cryptoForRead(ref, target.generation, target.wrappedDeks);
-    return CrbmReader.open(coldBlobReader(this.driver, genKey), {
+    return CrbmReader.open(storageBlobReader(this.driver, genKey), {
       ...this.readerOptions,
       crypto,
       lineage: target.lineage,
@@ -503,12 +503,12 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     if (this.registry !== undefined) {
       const record = await this.registry.get(ref);
       if (record === null) return null;
-      // A crypto-shredded segment reads as empty — its DEK is gone, so its Cold bytes are unrecoverable.
+      // A crypto-shredded segment reads as empty — its DEK is gone, so its Storage bytes are unrecoverable.
       if (record.status === 'destroyed') return null;
-      // A row with no Cold generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools
+      // A row with no Storage generation yet (minted by `setSegmentRetention` ahead of the first load, so admin tools
       // can see the segment) resolves exactly like a segment with NO row: every read answers empty. Returning
       // `null` here rather than a generation is the whole reason such a row is safe to create — the alternative,
-      // pointing at a generation that does not exist, is the `missing-cold-generation` state.
+      // pointing at a generation that does not exist, is the `missing-storage-generation` state.
       if (record.currentGen === null) return null;
       return {
         generation: record.currentGen,
@@ -539,7 +539,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
     }
     if (this.keystore === undefined) {
       throw new KeyUnavailableError(
-        `segment "${ref.segment}" is encrypted but this CrbmColdChunkSource has no keystore`,
+        `segment "${ref.segment}" is encrypted but this CrbmStorageChunkSource has no keystore`,
       );
     }
     const aead = await this.keystore.openDek(wrappedDeks);
@@ -576,7 +576,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
 
   /**
    * Run `read` against the pinned snapshot, healing the torn-read window generation GC can open: if the
-   * generation we resolved was superseded *and* swept (the grace window elapsed), the Cold driver throws
+   * generation we resolved was superseded *and* swept (the grace window elapsed), the Storage driver throws
    * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
    * a monotonic move forward — within one incarnation of the row. A name that was retired and re-created is a
@@ -591,13 +591,13 @@ export class CrbmColdChunkSource implements ColdChunkSource {
    *
    * A *second* NotFound is pathological (GC outrunning resolution) and propagates rather than fabricating an
    * absent answer — never return a wrong result. `ifGone` is returned when the segment has no committed
-   * generation to serve: cold is empty, or the row was dropped or crypto-shredded, in which case reading empty
+   * generation to serve: storage is empty, or the row was dropped or crypto-shredded, in which case reading empty
    * is the documented outcome rather than a failure.
    *
    * **Bounded to exactly two resolve-and-open round trips.** That is a cost contract, not a detail: the retry
    * now re-reads the *registry*, so an unbounded one would hammer the shared, throttle-prone resource in a
    * tight loop on a segment whose pointer names an object that is permanently absent — and an N-way
-   * `intersect` would do it N times. Gated in `tests/core/cold-source-heal-open.test.ts` by counting calls.
+   * `intersect` would do it N times. Gated in `tests/core/storage-source-heal-open.test.ts` by counting calls.
    */
   private async withFreshSnapshot<T>(
     ref: SegmentRef,
@@ -628,7 +628,7 @@ export class CrbmColdChunkSource implements ColdChunkSource {
  * (the caller builds it from the segment's DEK + a `(segment, generation)`-bound {@link aadFor}).
  */
 export function writeCrbmGeneration(
-  driver: IColdDriver,
+  driver: IStorageDriver,
   key: GenKey,
   chunks: Iterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
@@ -642,7 +642,7 @@ export function writeCrbmGeneration(
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for (const { chunkKey, bitmap } of sorted) {
       if (bitmap.isEmpty) continue;
-      // Run-encode before serializing. Cold generations are immutable and read many times, so the one-off cost
+      // Run-encode before serializing. Storage generations are immutable and read many times, so the one-off cost
       // here buys every later read a smaller fetch — see CodecBitmap.optimize for the measured factors.
       bitmap.optimize?.();
       await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
@@ -666,13 +666,13 @@ export interface StreamWriteResult {
 /**
  * Streaming variant of {@link writeCrbmGeneration} for a **constant-memory** rewrite (the erasure rewrite, a
  * sorted load): consumes an **already-ascending** async stream of `{ chunkKey, bitmap }`, feeding each to the
- * codec and freeing it, instead of materializing the whole generation. Paired with a streaming cold sink (S3
+ * codec and freeing it, instead of materializing the whole generation. Paired with a streaming storage sink (S3
  * multipart / LocalFs temp file), peak memory is ~one chunk + one part. Returns a tally so the caller can verify
  * the re-opened object without re-iterating the (now-consumed) stream. Input **must** be ascending by `chunkKey`
  * — the codec rejects an out-of-order chunk; empty bitmaps are skipped.
  */
 export async function writeCrbmGenerationStream(
-  driver: IColdDriver,
+  driver: IStorageDriver,
   key: GenKey,
   chunks: AsyncIterable<{ chunkKey: number; bitmap: CodecBitmap }>,
   options: { crypto?: CrbmCrypto; clock?: Yielder } = {},
@@ -687,7 +687,7 @@ export async function writeCrbmGenerationStream(
     const writer = new CrbmWriter(sink, { generation: key.generation, crypto: options.crypto });
     for await (const { chunkKey, bitmap } of chunks) {
       if (bitmap.isEmpty) continue;
-      bitmap.optimize?.(); // same cold-write rationale as the non-streaming writer above
+      bitmap.optimize?.(); // same storage-write rationale as the non-streaming writer above
       await writer.addChunk(chunkKey, bitmap.serialize(), bitmap.size);
       chunkKeys.push(chunkKey);
       cardinality += bitmap.size;
@@ -704,7 +704,7 @@ export async function writeCrbmGenerationStream(
  * generation the authoritative latest (so registry-aware readers see it). **Forward-only and idempotent:**
  * if the registry has no row it creates one; if it's already at/ahead of `key.generation` it's a no-op (an
  * out-of-order/duplicate publish never regresses the pointer); otherwise it advances via compare-and-swap,
- * retrying a few times under contention. Separated from the Cold write so callers can publish atomically
+ * retrying a few times under contention. Separated from the Storage write so callers can publish atomically
  * after the immutable object is durable (write-then-publish).
  *
  * **Throws** rather than returning, in two cases, because each would otherwise create a state no reader can
@@ -779,7 +779,7 @@ export async function publishGeneration(
             `being written — refusing to publish it; the written object is unreadable. Use a new segment.`,
         );
       } else if (record.currentGen === null) {
-        // The row exists with no Cold generation yet (a retention policy recorded ahead of the first load). There
+        // The row exists with no Storage generation yet (a retention policy recorded ahead of the first load). There
         // is no pointer to regress past, so this publish advances it — and carries the wrapped
         // DEK(s) exactly like a first publish onto no row, since no generation is encrypted under the row's
         // current wrappings (there is no generation at all).
@@ -840,7 +840,7 @@ export async function publishGeneration(
 
 /** What a bulk-load wrote — the driver's `{ size, sha256 }` plus a summary of the built generation. */
 export interface BulkLoadResult {
-  /** Bytes written to the Cold object. */
+  /** Bytes written to the Storage object. */
   readonly size: number;
   /** The driver's content hash of the object. */
   readonly sha256: string;
@@ -889,11 +889,11 @@ export interface BulkLoadResult {
  *
  * Writes a fresh full snapshot of a segment. The caller picks the generation number in `key` — `nextGeneration`
  * computes the right one from the registry and the bucket — and re-using an existing generation throws
- * {@link WriteConflictError} (write-once). Without a registry a `ColdChunkSource` serves the **highest**
+ * {@link WriteConflictError} (write-once). Without a registry a `StorageChunkSource` serves the **highest**
  * generation present, so a too-high number silently shadows real data; with one, `publishGeneration` decides.
  */
 export async function bulkLoadCrbmGeneration(
-  driver: IColdDriver,
+  driver: IStorageDriver,
   key: GenKey,
   ids: Iterable<number> | AsyncIterable<number>,
   options: {
@@ -1120,17 +1120,17 @@ export async function bulkLoadCrbmGeneration(
 }
 
 /**
- * Open a {@link CrbmReader} on one generation over the cold driver's range/tail reads (decrypting if `crypto`).
+ * Open a {@link CrbmReader} on one generation over the storage driver's range/tail reads (decrypting if `crypto`).
  * The reader the write paths use to re-read what they wrote, and the erasure rewrite uses to stream the old
- * generation; the engine's read path goes through {@link CrbmColdChunkSource} instead, which caches these.
+ * generation; the engine's read path goes through {@link CrbmStorageChunkSource} instead, which caches these.
  */
 export function openGenerationReader(
-  cold: IColdDriver,
+  storage: IStorageDriver,
   key: GenKey,
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
 ): Promise<CrbmReader> {
-  return CrbmReader.open(coldBlobReader(cold, key), { ...options, crypto });
+  return CrbmReader.open(storageBlobReader(storage, key), { ...options, crypto });
 }
 
 /**
@@ -1141,13 +1141,13 @@ export function openGenerationReader(
  * Throws {@link IntegrityError}: the object is on disk but must not be published.
  */
 export async function verifyGeneration(
-  cold: IColdDriver,
+  storage: IStorageDriver,
   key: GenKey,
   expected: { readonly chunkKeys: readonly number[]; readonly cardinality: number },
   crypto: CrbmCrypto | undefined,
 ): Promise<void> {
   const expectedKeys = [...expected.chunkKeys].sort((a, b) => a - b);
-  const reader = await openGenerationReader(cold, key, crypto);
+  const reader = await openGenerationReader(storage, key, crypto);
   const actualKeys = [...reader.chunkKeys()].sort((a, b) => a - b);
   const keysMatch =
     actualKeys.length === expectedKeys.length && actualKeys.every((k, i) => k === expectedKeys[i]);

@@ -23,12 +23,12 @@ const MAX_GOVERNANCE_BYTES = 64 * 1024;
 const MAX_WRAPPED_DEKS = 8;
 const MAX_WRAPPED_DEK_BYTES = 4 * 1024;
 
-/** `null` is legal and meaningful: the segment has no Cold generation yet (see `RegistryRecord.currentGen`). */
+/** `null` is legal and meaningful: the segment has no Storage generation yet (see `RegistryRecord.currentGen`). */
 function validateGeneration(gen: number | null): void {
   if (gen === null) return;
   if (!Number.isInteger(gen) || gen < 0) {
     throw new ValidationError(
-      `currentGen must be a non-negative integer or null (no Cold generation yet); got ${gen}`,
+      `currentGen must be a non-negative integer or null (no Storage generation yet); got ${gen}`,
     );
   }
 }
@@ -39,7 +39,7 @@ function validateGeneration(gen: number | null): void {
  * prevent: before `currentGen` was nullable, that patch was a **no-op** (the merge used `??`), so
  * `{ currentGen: maybeUndefined }` — which `strict` alone permits, since `exactOptionalPropertyTypes` is off —
  * left the pointer alone. Under presence-based merging the same call would silently *un-publish* a live segment:
- * every Cold generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer
+ * every Storage generation goes invisible, and `gcOrphanGenerations` then refuses to collect the objects (no pointer
  * ⇒ nothing to compare against), so they are stranded and billed forever. Fail fast at the boundary instead.
  */
 function validatePatchGeneration(patch: RegistryPatch): void {
@@ -50,8 +50,8 @@ function validatePatchGeneration(patch: RegistryPatch): void {
   if (patch.currentGen === undefined) {
     throw new ValidationError(
       `currentGen was present in the patch but undefined. Pass \`null\` to clear the pointer (the segment has no ` +
-        `Cold generation), or omit the key to leave it unchanged — an undefined value is refused because it used ` +
-        `to be a no-op and would now un-publish the segment's Cold data.`,
+        `Storage generation), or omit the key to leave it unchanged — an undefined value is refused because it used ` +
+        `to be a no-op and would now un-publish the segment's Storage data.`,
     );
   }
   validateGeneration(patch.currentGen);
@@ -316,7 +316,7 @@ export function applyRegistryPatch(
     namespace: prev.namespace,
     segment: prev.segment,
     // `'currentGen' in patch`, NOT `patch.currentGen ?? prev.currentGen`. `null` is a legal, meaningful value
-    // here (no Cold generation yet), and `??` treats it as absent — so the nullish form would silently ignore a
+    // here (no Storage generation yet), and `??` treats it as absent — so the nullish form would silently ignore a
     // patch that clears the pointer and leave the old generation in place. The same reason `wrappedDeks` and
     // `keyId` below use presence: any field whose null is a *value* cannot be merged with `??`.
     currentGen: 'currentGen' in patch ? (patch.currentGen ?? null) : prev.currentGen,

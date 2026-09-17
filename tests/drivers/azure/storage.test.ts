@@ -1,5 +1,8 @@
 import type { ContainerClient } from '@azure/storage-blob';
-import { AzureBlobColdDriver, type AzureBlobColdDriverOptions } from '@/drivers/azure/cold';
+import {
+  AzureBlobStorageDriver,
+  type AzureBlobStorageDriverOptions,
+} from '@/drivers/azure/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
@@ -8,10 +11,10 @@ import type { GenKey } from '@/core/ports';
 // against Azurite — the same split the S3 + GCS drivers use.
 const fakeContainer = {} as unknown as ContainerClient;
 
-describe('AzureBlobColdDriver construction', () => {
+describe('AzureBlobStorageDriver construction', () => {
   it('accepts a clean prefix (or none) and advertises conditional-put + range-read', () => {
     for (const prefix of [undefined, '', 'cloudroaring', 'a/b/c', '/leading/trailing/']) {
-      const driver = new AzureBlobColdDriver({ containerClient: fakeContainer, prefix });
+      const driver = new AzureBlobStorageDriver({ containerClient: fakeContainer, prefix });
       const caps = driver.capabilities();
       expect(caps.rangeRead).toBe(true);
       expect(caps.conditionalPut).toBe(true);
@@ -20,7 +23,7 @@ describe('AzureBlobColdDriver construction', () => {
   });
 
   it('honors a custom maxObjectBytes', () => {
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainer,
       maxObjectBytes: 1234,
     });
@@ -30,17 +33,17 @@ describe('AzureBlobColdDriver construction', () => {
   it('rejects a non-positive / non-integer maxObjectBytes or blockBytes (fail-fast)', () => {
     for (const bad of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
       expect(
-        () => new AzureBlobColdDriver({ containerClient: fakeContainer, maxObjectBytes: bad }),
+        () => new AzureBlobStorageDriver({ containerClient: fakeContainer, maxObjectBytes: bad }),
       ).toThrow(ValidationError);
       expect(
-        () => new AzureBlobColdDriver({ containerClient: fakeContainer, blockBytes: bad }),
+        () => new AzureBlobStorageDriver({ containerClient: fakeContainer, blockBytes: bad }),
       ).toThrow(ValidationError);
     }
   });
 
   it('rejects a prefix with `..` / `.` path segments (containment)', () => {
     for (const prefix of ['..', 'a/../b', './x', 'a/./b', '../escape']) {
-      expect(() => new AzureBlobColdDriver({ containerClient: fakeContainer, prefix })).toThrow(
+      expect(() => new AzureBlobStorageDriver({ containerClient: fakeContainer, prefix })).toThrow(
         ValidationError,
       );
     }
@@ -48,14 +51,14 @@ describe('AzureBlobColdDriver construction', () => {
 
   it('rejects a prefix with control characters', () => {
     for (const prefix of ['a\tb', 'a\nb']) {
-      expect(() => new AzureBlobColdDriver({ containerClient: fakeContainer, prefix })).toThrow(
+      expect(() => new AzureBlobStorageDriver({ containerClient: fakeContainer, prefix })).toThrow(
         ValidationError,
       );
     }
   });
 
   it('validates the range arguments before any network call', async () => {
-    const driver = new AzureBlobColdDriver({ containerClient: fakeContainer });
+    const driver = new AzureBlobStorageDriver({ containerClient: fakeContainer });
     await expect(driver.getRange({ segment: 's', generation: 0 }, -1, 10)).rejects.toThrow(
       ValidationError,
     );
@@ -100,17 +103,17 @@ function fakeContainerWith(rec: Recorder, ctl: Record<string, unknown>): Contain
 }
 
 const GEN: GenKey = { segment: 's', generation: 0 };
-const put = (driver: AzureBlobColdDriver, bytes: Uint8Array) =>
+const put = (driver: AzureBlobStorageDriver, bytes: Uint8Array) =>
   driver.putImmutable(GEN, async (sink) => {
     await sink.write(bytes);
   });
 const restErr = (statusCode: number, code: string) =>
   Object.assign(new Error(`http ${statusCode}`), { statusCode, code });
 
-describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-independent)', () => {
+describe('AzureBlobStorageDriver write-once (fake ContainerClient, emulator-independent)', () => {
   it('SMALL object → single upload: sends ifNoneMatch:"*" and succeeds', async () => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const driver = new AzureBlobColdDriver({ containerClient: fakeContainerWith(rec, {}) });
+    const driver = new AzureBlobStorageDriver({ containerClient: fakeContainerWith(rec, {}) });
     const res = await put(driver, new Uint8Array([1, 2, 3]));
     expect(res.size).toBe(3);
     expect(rec.uploadOpts).toHaveLength(1);
@@ -121,14 +124,14 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
 
   it('SMALL object: a 409 → WriteConflictError; a 5xx → TransientError', async () => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const d409 = new AzureBlobColdDriver({
+    const d409 = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {
         uploadThrow: () => Promise.reject(restErr(409, 'BlobAlreadyExists')),
       }),
     });
     await expect(put(d409, new Uint8Array([1]))).rejects.toBeInstanceOf(WriteConflictError);
 
-    const d500 = new AzureBlobColdDriver({
+    const d500 = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {
         uploadThrow: () => Promise.reject(restErr(500, 'InternalError')),
       }),
@@ -138,7 +141,7 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
 
   it('LARGE object (> blockBytes) → staged commit: stages blocks + sends ifNoneMatch:"*" on commit', async () => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {}),
       blockBytes: 2, // force the staged path
       maxObjectBytes: 1024,
@@ -153,7 +156,7 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
 
   it('LARGE object: a 409 on commit → WriteConflictError', async () => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {
         commitThrow: () => Promise.reject(restErr(409, 'BlobAlreadyExists')),
       }),
@@ -167,7 +170,7 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
 
   it('enforces maxObjectBytes with a typed ValidationError before finishing', async () => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {}),
       maxObjectBytes: 4,
     });
@@ -182,10 +185,10 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
   // 1-byte writes and returns how many blocks that produced — the flush threshold is directly observable as
   // (blocks during write) + (1 trailing flush in finish).
   const countBlocksForTenBytes = async (
-    opts: Partial<AzureBlobColdDriverOptions>,
+    opts: Partial<AzureBlobStorageDriverOptions>,
   ): Promise<number> => {
     const rec: Recorder = { uploadOpts: [], commitOpts: [], stagedBlocks: 0 };
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainerWith(rec, {}),
       ...opts,
     });
@@ -200,7 +203,7 @@ describe('AzureBlobColdDriver write-once (fake ContainerClient, emulator-indepen
     // maxObjectBytes=100001 is NON-exact over 50000: ceil(2.00002)=3 (grown), floor would be 2. A 3-byte
     // threshold stages 4 blocks (3+3+3 + trailing 1); a 2-byte one (floor bug) would stage 5; ungrown
     // blockBytes=1 would stage 10. Asserting 4 pins ceil() AND that the grow happens at all.
-    const driver = new AzureBlobColdDriver({
+    const driver = new AzureBlobStorageDriver({
       containerClient: fakeContainer,
       blockBytes: 1,
       maxObjectBytes: 100_001,

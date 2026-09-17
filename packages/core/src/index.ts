@@ -46,23 +46,27 @@ export { chunkRefKey, segmentKey } from './core/keys';
 // ---------------------------------------------------------------------------------------------------
 // The public surface (an application reaches these through its flavor package, which re-exports them).
 // ---------------------------------------------------------------------------------------------------
-export { MemoryColdChunkSource, MemoryColdDriver, MemoryRegistryDriver } from './drivers/memory';
+export {
+  MemoryStorageChunkSource,
+  MemoryStorageDriver,
+  MemoryRegistryDriver,
+} from './drivers/memory';
 export type { MemoryRegistryDriverOptions } from './drivers/memory';
-export { LocalFsColdDriver } from './drivers/localfs/cold';
+export { LocalFsStorageDriver } from './drivers/localfs/storage';
 export { LocalFsRegistryDriver } from './drivers/localfs/registry';
 export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
 // The loaded store's write path: build one immutable generation from ids (bulk-load), or from pre-grouped
 // bitmaps, then make it current (publish). Every write in the library is one of these.
 export {
-  CrbmColdChunkSource,
+  CrbmStorageChunkSource,
   writeCrbmGeneration,
   bulkLoadCrbmGeneration,
   publishGeneration,
-} from './core/crbm-cold-source';
-export type { BulkLoadResult, CrbmColdChunkSourceOptions } from './core/crbm-cold-source';
+} from './core/crbm-storage-source';
+export type { BulkLoadResult, CrbmStorageChunkSourceOptions } from './core/crbm-storage-source';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
-export { PinnedColdChunkSource } from './core/pinned-cold-source';
-export type { PinnedAt } from './core/pinned-cold-source';
+export { PinnedStorageChunkSource } from './core/pinned-storage-source';
+export type { PinnedAt } from './core/pinned-storage-source';
 // Generation bookkeeping: the next generation number for a segment, and collection of superseded generations.
 // Nothing here schedules itself — the retention sweep and the erasure rewrite call `gcOrphanGenerations`; a
 // caller writing generations by hand collects on its own cadence.
@@ -85,9 +89,9 @@ export type { EraseIdDeps, EraseIdResult } from './core/erase-id';
 export type { CodecInterface, CodecBitmap } from './core/codec';
 export type { Clock, Rng } from './core/determinism';
 export type {
-  ColdChunkSource,
-  IColdDriver,
-  ColdCaps,
+  StorageChunkSource,
+  IStorageDriver,
+  StorageCaps,
   ChunkRef,
   SegmentRef,
   GenKey,
@@ -130,7 +134,7 @@ export { aadFor } from './core/crypto';
 export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
 
-// Crypto-shred erasure: delete a segment's key → its encrypted Cold bytes are unrecoverable. `dropSegment` is
+// Crypto-shred erasure: delete a segment's key → its encrypted Storage bytes are unrecoverable. `dropSegment` is
 // the operational sibling: it deletes the objects, so it works on cleartext and actually reclaims the storage —
 // where crypto-shred makes bytes unreadable but leaves them billed.
 export { destroySegment, dropSegment, eraseNamespace } from './core/erasure';
@@ -153,7 +157,7 @@ export {
 export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/retention';
 
 // The retention sweep: retire every segment whose policy expired, by delegating to `dropSegment` (the registry →
-// Cold ordering is load-bearing and lives there). A call, never a daemon — the operator owns the heartbeat that
+// Storage ordering is load-bearing and lives there). A call, never a daemon — the operator owns the heartbeat that
 // runs it.
 export {
   retireExpired,
@@ -196,7 +200,7 @@ export type {
 export { DEFAULT_BUDGET } from './core/budget';
 export type { Budget, BudgetOption } from './core/budget';
 
-// Cross-tier DR consistency check: `store.checkConsistency()` (or the free function over your own cold +
+// Cross-tier DR consistency check: `store.checkConsistency()` (or the free function over your own storage +
 // registry drivers) detects a torn restore where `currentGen` points at a `.crbm` that isn't present.
 export { runConsistencyCheck } from './core/consistency';
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './core/consistency';
@@ -225,13 +229,13 @@ export type {
 export { withRetry, isTransient, DEFAULT_RETRY_POLICY } from './core/retry';
 export type { RetryPolicy, RetryDeps } from './core/retry';
 export {
-  RetryingColdChunkSource,
-  RetryingColdDriver,
+  RetryingStorageChunkSource,
+  RetryingStorageDriver,
   RetryingRegistryDriver,
 } from './drivers/retry/retrying-drivers';
 export type { RetryingOptions } from './drivers/retry/retrying-drivers';
 
-// `.crbm` archive format — the on-disk Cold layout. Exposed for driver authors and tooling.
+// `.crbm` archive format — the on-disk Storage layout. Exposed for driver authors and tooling.
 export { CrbmWriter } from './core/crbm/writer';
 export type { CrbmWriterOptions } from './core/crbm/writer';
 export { CrbmReader } from './core/crbm/reader';
@@ -240,7 +244,7 @@ export { BufferSink, BufferReader } from './core/blob';
 export type { BlobReader, BlobSink } from './core/blob';
 
 // Observability: the injected metrics seam + a no-op default + a counting sink. Emit typed events
-// (cold/cache/retry/intersect/op) to your stack; see the getting-started "Observability" section.
+// (storage/cache/retry/intersect/op) to your stack; see the getting-started "Observability" section.
 export { NOOP_METRICS, CountingMetricsSink } from './core/metrics';
 export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from './core/metrics';
 

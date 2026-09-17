@@ -22,18 +22,18 @@ import {
   bulkLoadCrbmGeneration,
   openGenerationReader,
   publishGeneration,
-} from './crbm-cold-source';
+} from './crbm-storage-source';
 import type { Clock } from './determinism';
 import { aadFor } from './crypto';
 import type { CrbmCrypto, IKeystore } from './crypto';
 import { KeyUnavailableError, ValidationError, isWriteConflictError } from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
-import type { IColdDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
+import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateSegmentRef } from './validate';
 
 /** What {@link loadSegment} needs: the objects, the pointer, the codec, and key material if encrypted. */
 export interface LoadDeps {
-  readonly cold: IColdDriver;
+  readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   readonly codec?: CodecInterface;
   readonly keystore?: IKeystore;
@@ -137,7 +137,7 @@ async function currentCardinality(
     const aead = await deps.keystore.openDek(wrapped);
     crypto = { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
   }
-  const reader = await openGenerationReader(deps.cold, { ...ref, generation }, crypto);
+  const reader = await openGenerationReader(deps.storage, { ...ref, generation }, crypto);
   let total = 0;
   for (const n of reader.cardinalities().values()) total += n;
   return total;
@@ -199,7 +199,7 @@ export async function loadSegment(
   // result so the deferred publish can store it.
   let written;
   try {
-    written = await bulkLoadCrbmGeneration(deps.cold, key, ids, {
+    written = await bulkLoadCrbmGeneration(deps.storage, key, ids, {
       registry: deps.registry,
       publish: false,
       keystore: deps.keystore,
@@ -233,11 +233,11 @@ export async function loadSegment(
     // A generation number identifies a generation within one incarnation of a row, and nothing more (invariant
     // 1). If the row was purged and the name re-created while this load was in flight, `nextGeneration` restarts
     // from 0 and the number this call is holding can name the NEW incarnation's live object. Deleting it would
-    // put an active row over a missing generation — the forbidden `missing-cold-generation` state, produced by
+    // put an active row over a missing generation — the forbidden `missing-storage-generation` state, produced by
     // the one code path whose whole purpose is to prevent data loss. Leaving an orphan behind is strictly the
     // better failure: it costs storage until something collects it, rather than costing a live segment.
     const now = await deps.registry.get(ref);
-    if (now === null || now.token === fromToken) await deps.cold.delete(key);
+    if (now === null || now.token === fromToken) await deps.storage.delete(key);
     audit.onEvent({
       kind: 'segment.load-refused',
       segment: ref.segment,

@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { LocalFsRegistryDriver } from '@/drivers/localfs/registry';
 import type { BlobSink } from '@/core/blob';
 
@@ -11,7 +11,7 @@ import type { BlobSink } from '@/core/blob';
 // the write succeeds and `readdir` never lists the result. Every place that turns a name into a path has to
 // encode it, and "every place" is the hard part: the first pass at this encoded the LocalFs drivers and
 // missed the eject sink in another package entirely, and a reviewer demonstrated that adding a new temp-file
-// path inside the cold driver would pass the entire suite.
+// path inside the storage driver would pass the entire suite.
 //
 // So this asserts on the ARTIFACT, not the code: drive the driver surface with colon names, then walk the
 // whole tree and require that NO entry anywhere contains a colon — data files, registry rows, directories,
@@ -51,7 +51,7 @@ const bytes =
 
 describe('localfs: no colon reaches the filesystem, from any code path', () => {
   it('nothing under the storage root is named with a colon after a full exercise', async () => {
-    const cold = new LocalFsColdDriver(root);
+    const storage = new LocalFsStorageDriver(root);
     const registry = new LocalFsRegistryDriver(root);
     const ref = { segment: SEG, namespace: NS };
 
@@ -60,7 +60,7 @@ describe('localfs: no colon reaches the filesystem, from any code path', () => {
     // path is exactly the kind of site a later refactor adds. The sink callback runs while the handle is
     // open, which is the one moment the file is on disk.
     const duringWrite: string[] = [];
-    await cold.putImmutable({ ...ref, generation: 0 }, async (sink) => {
+    await storage.putImmutable({ ...ref, generation: 0 }, async (sink) => {
       duringWrite.push(...(await entriesUnder(root)));
       await sink.write(new Uint8Array([1, 2, 3, 4]));
     });
@@ -68,11 +68,11 @@ describe('localfs: no colon reaches the filesystem, from any code path', () => {
     expect(duringWrite.filter((e) => e.includes(':'))).toEqual([]);
 
     // Every other verb that could plausibly build a path, including the ones with no colon test of their own.
-    await cold.putImmutable({ ...ref, generation: 1 }, bytes(new Uint8Array([5, 6, 7, 8])));
-    await cold.getRange({ ...ref, generation: 0 }, 0, 2);
-    await cold.getTail({ ...ref, generation: 0 }, 2);
-    for await (const _k of cold.list(ref)) void _k;
-    await cold.delete({ ...ref, generation: 1 });
+    await storage.putImmutable({ ...ref, generation: 1 }, bytes(new Uint8Array([5, 6, 7, 8])));
+    await storage.getRange({ ...ref, generation: 0 }, 0, 2);
+    await storage.getTail({ ...ref, generation: 0 }, 2);
+    for await (const _k of storage.list(ref)) void _k;
+    await storage.delete({ ...ref, generation: 1 });
 
     const { token } = await registry.create(ref, { currentGen: 0 });
     await registry.get(ref);

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CloudRoaring, MemoryColdChunkSource } from '@/index';
+import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
 
 /**
  * The **published** README of the flavor package must not lag the API it ships.
@@ -46,7 +46,7 @@ function publicMethods(target: object): string[] {
  * header is about.
  */
 function mappableMethods(): string[] {
-  const store = new CloudRoaring({ cold: new MemoryColdChunkSource() });
+  const store = new CloudRoaring({ storage: new MemoryStorageChunkSource() });
   return [...new Set([...publicMethods(store.segment('probe')), ...publicMethods(store)])];
 }
 

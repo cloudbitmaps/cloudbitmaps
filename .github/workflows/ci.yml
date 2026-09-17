@@ -126,7 +126,7 @@ jobs:
     name: hard RSS ceiling (cgroup --memory)
     # The DEFINITIVE peak-RSS bound the soak's leak-watch can't prove (the production-readiness review's top residual):
     # runs a sustained read+combine+re-load workload under a hard cgroup `--memory` limit (swap off) and
-    # fails if it's OOM-killed (exit 137) — i.e. if any memory bound (HOT LRU / cold-reader cache / intersection
+    # fails if it's OOM-killed (exit 137) — i.e. if any memory bound (HOT LRU / storage-reader cache / intersection
     # window) regressed to unbounded. Includes the roaring addon's off-heap native memory, which a JS-heap
     # sample can't.
     #

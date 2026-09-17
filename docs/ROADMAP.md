@@ -33,7 +33,7 @@ fuzzing of the untrusted-`.crbm` boundary, and mutation testing of the highest-r
 **Where it is headed (September 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
 loaded as immutable generations, then read and chunk-skipping-intersected from anywhere — one bucket, one
 registry row per segment, no background process. The **live tier** — per-call `add`/`remove` over a warm NoSQL
-store, the compaction that folded those deltas into cold, and the partition leases that scheduled it — has left
+store, the compaction that folded those deltas into storage, and the partition leases that scheduled it — has left
 this line in two steps. The first removed the lifecycle engine and the five non-AWS warm drivers; the second
 removed the warm tier as a whole: the DynamoDB warm driver, compaction, the write verbs, and the write side
 of the cost model. All of it is archived intact at the git tag `archive/live-warm-tier`, and `0.9.x` stays on
@@ -53,7 +53,7 @@ Where each piece sits today:
 | No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
 | `exists()` + `segments()` | **shipped** — the registry always knew which segments existed; nothing exposed it, so the answer had to be inferred from `count()` (which cannot tell *never loaded* from *loaded and empty*) or a bucket listing, and the fallback was keeping a hand-maintained list of names beside the store. `exists()` is one point read; `segments()` streams the registry's own enumeration, namespace-scoped, admin-path |
 | Extending the load guard to the `*Into` verbs | **next** — a materialisation still publishes directly, so a combine that comes out empty still replaces `dest` with an empty generation |
-| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `coldGenTtlMs` |
+| A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `storageGenTtlMs` |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
 
@@ -61,7 +61,7 @@ Current install and publish status lives in the [README](../README.md) — this 
 restate it, so the two can't drift. You install **one codec flavor** plus only the backend SDKs you use:
 
 ```bash
-npm i @cloudbitmaps/roaring @aws-sdk/client-s3                            # roaring on AWS: one bucket, cold + registry
+npm i @cloudbitmaps/roaring @aws-sdk/client-s3                            # roaring on AWS: one bucket, storage + registry
 ```
 
 `@cloudbitmaps/core` — the codec-agnostic engine and every storage driver, with **zero runtime
@@ -88,7 +88,7 @@ dependencies** — arrives transitively and is never installed directly.
   generation today; the guard for that is [next](#on-the-way-to-10).
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
   with **zero payload reads**.
-- **Bounded memory, always.** A hard LRU ceiling on hot chunks, a byte-aware cold-reader cache, bounded fan-out
+- **Bounded memory, always.** A hard LRU ceiling on hot chunks, a byte-aware storage-reader cache, bounded fan-out
   on every admin path, and a default-on per-operation **request budget** that fails with `BudgetExceededError`
   rather than quietly running up a bill. Every registry scan — the DR consistency check, the retention sweep,
   the subject scans — refuses at its ceiling (`maxScanSegments`) instead of materialising the fleet.
@@ -118,7 +118,7 @@ dependencies** — arrives transitively and is never installed directly.
 - **Crypto-shred erasure** — `destroySegment` / `eraseNamespace` discard the DEK for immediate, verifiable
   destruction that survives immutable backups and WORM.
 - **Segment disposal** — `store.dropSegment` retires a segment and *reclaims its storage*: tombstone first, then
-  every Cold generation, so a failure part-way leaves orphaned bytes and never a wrong answer. Works on
+  every Storage generation, so a failure part-way leaves orphaned bytes and never a wrong answer. Works on
   cleartext (crypto-shred needs a key); on an encrypted segment it does both. `dryRun` previews. This is the
   retention **primitive**, and it exists so the ordering cannot be got wrong by a caller — record an `expiresAt`
   and `retireExpired` (below) drives it for you.
@@ -148,7 +148,7 @@ dependencies** — arrives transitively and is never installed directly.
 - **An exit path.** `exportSegments` and the `export-segments` CLI dump every segment to portable
   `roaring` / `ndjson` that is readable **without** this library, with per-segment fault isolation. If the
   project vanished tomorrow, nothing of yours is locked up.
-- **Disaster recovery** — `checkConsistency` detects a torn restore or a missing cold generation, exercised
+- **Disaster recovery** — `checkConsistency` detects a torn restore or a missing storage generation, exercised
   end-to-end as a gated drill against the [DR runbook](guide/disaster-recovery.md).
 - **Serverless-ready** — a hard cgroup-RSS ceiling in CI, an AWS Lambda / Amazon Linux 2023 deployability
   smoke test, and a prebuilt Lambda layer builder.
@@ -160,12 +160,12 @@ faithful emulator) — an implementation isn't "done" until it passes.
 
 | Store | Backends |
 | --- | --- |
-| **Cold** (immutable objects) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
+| **Storage** (immutable objects) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
 | **Registry** (generation pointer, discovery, wrapped keys) | S3 · Google Cloud Storage · Azure Blob Storage · local filesystem · in-memory |
 
 Two things worth knowing before you pick:
 
-- **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: cold
+- **Every cloud backend can host the registry itself**, so a deployment needs exactly one cloud account: storage
   generations and the pointer live in the same bucket or container. Each native registry rides its own store's
   conditional-write primitive — S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure
   `If-None-Match`/`If-Match` — so the compare-and-swap is enforced by the service, not by the client. To keep
@@ -182,7 +182,7 @@ envelope**:
 | --- | --- | --- |
 | **Workload** | read-mostly over loaded generations; loads as a batch job (a cron, a pipeline step, a Lambda on a schedule) | anything that needs per-call mutation — there is no write verb; micro-batch into a load |
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
-| **Backends** | S3 cold — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob cold: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
+| **Backends** | S3 storage — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob storage: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
 | **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency** beyond the one `has()` run; and every loaded-store figure listed as owed below |
 
@@ -261,7 +261,7 @@ move it up.
   bulk load that never buffers the distinct set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
   format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet,
-  new in 0.6.0: cold generations now contain **run containers**, which they never did before. Runs are part of
+  new in 0.6.0: storage generations now contain **run containers**, which they never did before. Runs are part of
   the standard portable Roaring format, but a bitmap that has any announces itself with a different header
   cookie (`SERIAL_COOKIE` rather than `SERIAL_COOKIE_NO_RUNCONTAINER`). Every maintained Roaring
   implementation reads both; a hand-rolled or cut-down reader may only have been tested against the cookie our
@@ -273,7 +273,7 @@ move it up.
   work — the benchmarks, `load()`, the docs pass — and it ships only if the measured decode throughput is
   acceptable against the native addon on the shapes the benchmarks cover. Research, not a commitment.
 - **Membership from an edge runtime — explicitly *not* supported today, and being explored.** A Cloudflare
-  Worker answering "is id N in segment S?" against a cold generation in R2 is two ranged reads and a decode,
+  Worker answering "is id N in segment S?" against a storage generation in R2 is two ranged reads and a decode,
   which is the access pattern this format was designed for. What stops it is not the engine: `core/` imports no
   `node:*` builtin and has zero runtime dependencies, so the seam already loads in a V8 isolate. It is the
   **codec** — `roaring` is a native C++ addon, and no isolate can load one under any compatibility flag. So the

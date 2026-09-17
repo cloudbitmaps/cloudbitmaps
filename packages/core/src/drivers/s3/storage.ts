@@ -1,5 +1,5 @@
 /**
- * `S3ColdDriver` — an {@link IColdDriver} over S3-compatible object storage.
+ * `S3StorageDriver` — an {@link IStorageDriver} over S3-compatible object storage.
  *
  * Works with AWS S3 and any compatible backend (MinIO, etc.) via the official `@aws-sdk/client-s3`, which
  * is an **optional peer dependency** — only consumers of `@cloudbitmaps/roaring/s3` install it. The client is
@@ -40,9 +40,9 @@ import {
   isValidationError,
   isWriteConflictError,
 } from '@/core/errors';
-import type { ColdCaps, GenKey, IColdDriver, SegmentRef } from '@/core/ports';
+import type { StorageCaps, GenKey, IStorageDriver, SegmentRef } from '@/core/ports';
 import {
-  coldObjectKey,
+  storageObjectKey,
   normalizeS3Prefix,
   parseGenerationFromKey,
   segmentObjectPrefix,
@@ -61,7 +61,7 @@ const S3_PART_BYTES = 8 * 1024 * 1024;
 /** S3 hard limit: a multipart upload has at most 10,000 parts. This × the part size is the real object ceiling. */
 const S3_MAX_PARTS = 10_000;
 
-export interface S3ColdDriverOptions {
+export interface S3StorageDriverOptions {
   /** A constructed S3 client (point its `endpoint` at MinIO for local/integration use). */
   readonly client: S3Client;
   /** Target bucket (must already exist). */
@@ -78,14 +78,14 @@ export interface S3ColdDriverOptions {
   readonly partBytes?: number;
 }
 
-export class S3ColdDriver implements IColdDriver {
+export class S3StorageDriver implements IStorageDriver {
   private readonly client: S3Client;
   private readonly bucket: string;
   private readonly prefix: string | undefined;
   private readonly maxObjectBytes: number;
   private readonly partBytes: number;
 
-  constructor(options: S3ColdDriverOptions) {
+  constructor(options: S3StorageDriverOptions) {
     this.client = options.client;
     this.bucket = options.bucket;
     this.prefix = normalizeS3Prefix(options.prefix);
@@ -96,7 +96,7 @@ export class S3ColdDriver implements IColdDriver {
     this.partBytes = Math.max(requestedPart, Math.ceil(this.maxObjectBytes / S3_MAX_PARTS));
   }
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return { rangeRead: true, maxObjectBytes: this.maxObjectBytes, conditionalPut: true };
   }
 
@@ -104,7 +104,7 @@ export class S3ColdDriver implements IColdDriver {
     key: GenKey,
     write: (sink: BlobSink) => Promise<void>,
   ): Promise<{ size: number; sha256: string }> {
-    const objectKey = coldObjectKey(this.prefix, key); // validates ref + generation
+    const objectKey = storageObjectKey(this.prefix, key); // validates ref + generation
     const sink = new S3MultipartSink(
       this.client,
       this.bucket,
@@ -135,7 +135,7 @@ export class S3ColdDriver implements IColdDriver {
     if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0) {
       throw new ValidationError(`invalid range offset=${offset} length=${length}`);
     }
-    const objectKey = coldObjectKey(this.prefix, key);
+    const objectKey = storageObjectKey(this.prefix, key);
     if (length === 0) return new Uint8Array(0);
     try {
       const res = await this.client.send(
@@ -159,7 +159,7 @@ export class S3ColdDriver implements IColdDriver {
   }
 
   async getTail(key: GenKey, maxBytes: number): Promise<{ bytes: Uint8Array; size: number }> {
-    const objectKey = coldObjectKey(this.prefix, key);
+    const objectKey = storageObjectKey(this.prefix, key);
     if (maxBytes <= 0) {
       // No tail bytes wanted — just resolve the size via a HEAD.
       try {
@@ -200,7 +200,7 @@ export class S3ColdDriver implements IColdDriver {
     // Idempotent: S3 DeleteObject succeeds even if the key is absent (GC may race / retry).
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: coldObjectKey(this.prefix, key) }),
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: storageObjectKey(this.prefix, key) }),
       );
     } catch (err) {
       throw this.mapError(err);

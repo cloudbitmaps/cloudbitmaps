@@ -2,7 +2,7 @@
  * The registry object layout, shared by every object-store registry (S3, GCS, Azure Blob).
  *
  * One tiny JSON object per segment at `<prefix>registry/<ns>/<segment>.reg`, **registry-first** — separate
- * from the namespace-first cold layout (`<prefix><ns>/segments/…`) — so discovery is a single list over
+ * from the namespace-first storage layout (`<prefix><ns>/segments/…`) — so discovery is a single list over
  * `registry/` for all namespaces, or `registry/<ns>/` for one, never entangled with the `.crbm` payloads.
  *
  * It lives here rather than in a driver because all three object stores encode names the same way

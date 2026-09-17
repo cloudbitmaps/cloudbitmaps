@@ -10,7 +10,7 @@ catches a torn restore before it bites.
 
 - [The stores you must protect](#the-stores-you-must-protect)
 - [Why coordination matters (the torn restore)](#why-coordination-matters-the-torn-restore)
-- [The hard requirement: registry at-or-before cold](#the-hard-requirement-registry-at-or-before-cold)
+- [The hard requirement: registry at-or-before storage](#the-hard-requirement-registry-at-or-before-storage)
 - [RPO / RTO](#rpo--rto)
 - [Backup checklist](#backup-checklist)
 - [Restore procedure](#restore-procedure)
@@ -20,7 +20,7 @@ catches a torn restore before it bites.
 - [`checkConsistency()` — verify before you serve traffic](#checkconsistency--verify-before-you-serve-traffic)
 - [Encryption & DR](#encryption--dr)
 - [What is *not* recoverable (and why that's correct)](#what-is-not-recoverable-and-why-thats-correct)
-- [Deferred: self-healing rebuild from cold](#deferred-self-healing-rebuild-from-cold)
+- [Deferred: self-healing rebuild from storage](#deferred-self-healing-rebuild-from-storage)
 
 ## The stores you must protect
 
@@ -28,18 +28,18 @@ A running CloudBitmaps is up to three independent, separately-backed-up systems:
 
 ```text
   ┌─────────────────┐   generation-keyed, immutable .crbm objects (segment.<gen>.crbm).
-  │  COLD (objects) │   Every write is a new object; nothing is overwritten in place.
+  │  STORAGE        │   Every write is a new object; nothing is overwritten in place.
   └─────────────────┘   Largest ⇒ usually dominates your RTO.
-  ┌─────────────────┐   per-segment row: which cold generation is current (currentGen),
+  ┌─────────────────┐   per-segment row: which storage generation is current (currentGen),
   │  REGISTRY       │   plus wrapped keys and retention metadata. Small, but the linchpin:
-  └─────────────────┘   it names which cold object each read trusts.
+  └─────────────────┘   it names which storage object each read trusts.
   ┌─────────────────┐   the wrapping keys (only if encryption-at-rest is on).
-  │  KEYSTORE       │   Lose it and encrypted cold bytes are unrecoverable — by design.
+  │  KEYSTORE       │   Lose it and encrypted storage bytes are unrecoverable — by design.
   └─────────────────┘
 ```
 
 There is no mutable tier. Data enters only as a **new generation** — a bulk load, an `*Into` materialisation,
-a subject-erasure rewrite — written to cold first and then made current by advancing the registry pointer
+a subject-erasure rewrite — written to storage first and then made current by advancing the registry pointer
 forward-only. So the freshest state of a segment is always *one object plus one pointer*, and the two live in
 different stores.
 
@@ -53,41 +53,41 @@ case is a **registry that is ahead of the object store**:
 
 ```text
   09:00  a load publishes segment "S" generation 42:
-           1. PUT  cold/S.42.crbm                 (object store; written, then verified)
+           1. PUT  storage/S.42.crbm              (object store; written, then verified)
            2. SET  registry[S].currentGen = 42    (registry; forward-only CAS)
 
   A backup taken between step 1 and step 2, or a restore where the registry
   snapshot is NEWER than the object-store snapshot, yields:
 
-     registry[S].currentGen = 42   ──points at──▶   cold/S.42.crbm   ❌ NOT RESTORED
+     registry[S].currentGen = 42   ──points at──▶   storage/S.42.crbm   ❌ NOT RESTORED
 
   Every read of S now tries to open a .crbm that isn't there. The restore
   "succeeded" (no errors at restore time) but S is broken until you notice.
 ```
 
-This is the exact failure `checkConsistency()` detects (issue `missing-cold-generation`). The reverse — the
-registry *behind* the object store (its `currentGen` names an older generation that still exists in cold) — is
-**safe**: cold generations are immutable, so an older one is still a correct, if stale, view. You lose the
+This is the exact failure `checkConsistency()` detects (issue `missing-storage-generation`). The reverse — the
+registry *behind* the object store (its `currentGen` names an older generation that still exists in storage) — is
+**safe**: storage generations are immutable, so an older one is still a correct, if stale, view. You lose the
 loads published after the registry's point, not correctness.
 
-## The hard requirement: registry at-or-before cold
+## The hard requirement: registry at-or-before storage
 
 > **Restore the registry to a point at or before the object-store restore point — never ahead.**
 
-That single rule prevents the torn restore. It holds because cold generations are immutable and write-once:
+That single rule prevents the torn restore. It holds because storage generations are immutable and write-once:
 every `currentGen` the registry named at time *T* referred to a `.crbm` that was already durable by *T* (the
-object is written and verified before the pointer moves), so a cold snapshot taken at *T* or later contains it.
+object is written and verified before the pointer moves), so a storage snapshot taken at *T* or later contains it.
 To make the rule achievable you need **object versioning covering the `registry/` prefix**, and a restore
-that is coordinated with cold — which is easier than it used to be, since both now live in the same bucket
+that is coordinated with storage — which is easier than it used to be, since both now live in the same bucket
 and share one version history:
 
-- **Object store (cold):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
-  generations mean you rarely need to roll cold back at all.
+- **Storage (the object store):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
+  generations mean you rarely need to roll storage back at all.
 - **Registry:** enable **versioning** on the bucket or container holding the `registry/` prefix — this is a
   **requirement, not a nice-to-have**, because it's the only way to pick a registry restore point that lines up
-  at-or-before your cold point. The registry lives in the object store, so this is usually the same setting you
-  just enabled for cold; confirm it covers the `registry/` prefix too.
-- Pick a **single target timestamp** for both, then restore the registry to that timestamp and cold to that
+  at-or-before your storage point. The registry lives in the object store, so this is usually the same setting you
+  just enabled for storage; confirm it covers the `registry/` prefix too.
+- Pick a **single target timestamp** for both, then restore the registry to that timestamp and storage to that
   timestamp **or later**.
 
 ## RPO / RTO
@@ -96,10 +96,10 @@ CloudBitmaps imposes no fixed RPO/RTO — they fall out of how you back the stor
 
 | | Driven by | Guidance |
 |---|---|---|
-| **RPO** (data you can lose) | the **registry's** backup lag. A load is durable the moment its pointer advance is, and a registry restored to *T* forgets every load published after *T* — their objects may still sit in cold, above the restored pointer, but no read sees them (see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct)). | Object versioning captures one version per row write, so your RPO is the gap between the last pointer advance and your restore point — not a fixed interval. Cold objects are versioned and write-once, so they are rarely the thing you lose. |
-| **RTO** (time to recover) | restoring the **largest** store — almost always **cold** — plus the `checkConsistency()` sweep | Object-store restore dominates; the consistency check is `O(registered segments)` at bounded concurrency and is cheap next to it. Budget RTO ≈ cold-restore time + a consistency sweep. |
+| **RPO** (data you can lose) | the **registry's** backup lag. A load is durable the moment its pointer advance is, and a registry restored to *T* forgets every load published after *T* — their objects may still sit in storage, above the restored pointer, but no read sees them (see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct)). | Object versioning captures one version per row write, so your RPO is the gap between the last pointer advance and your restore point — not a fixed interval. Storage objects are versioned and write-once, so they are rarely the thing you lose. |
+| **RTO** (time to recover) | restoring the **largest** store — almost always **storage** — plus the `checkConsistency()` sweep | Object-store restore dominates; the consistency check is `O(registered segments)` at bounded concurrency and is cheap next to it. Budget RTO ≈ storage-restore time + a consistency sweep. |
 
-The practical takeaway: **the registry sets your RPO, cold sets your RTO.** Version both — one bucket
+The practical takeaway: **the registry sets your RPO, storage sets your RTO.** Version both — one bucket
 setting now covers them — and remember that the registry's version history is the thing that bounds how much
 you can lose.
 
@@ -114,7 +114,7 @@ you can lose.
       whose process is gone — that is the case this rule exists for. Incomplete parts are **billed and invisible**:
       they do not appear in an object listing, so nothing but your bill reveals them.
 - [ ] **Registry**: object versioning on, covering the `registry/` prefix — **required** to hit an
-      at-or-before-cold restore point, and the store that sets your RPO.
+      at-or-before-storage restore point, and the store that sets your RPO.
 - [ ] **Keystore**: backed up and restorable **independently** of the data stores, with its own access controls
       (a data-store leak must not also leak keys). Losing it is unrecoverable.
 - [ ] A written target: which timestamp/snapshot IDs constitute a coordinated restore point.
@@ -128,14 +128,14 @@ Which mechanism to enable depends on the backends you deployed:
 | Registry | S3 | versioning | one version per row write — this is what sets your RPO |
 | Registry | GCS | object versioning | one version per row write |
 | Registry | Azure Blob | blob versioning + soft-delete | one version per row write |
-| Cold | S3 | versioning (+ optional Object Lock) | immutable generations (write-once) |
-| Cold | GCS | object versioning | immutable generations (write-once) |
-| Cold | Azure Blob | blob versioning + soft-delete | immutable generations (write-once) |
+| Storage | S3 | versioning (+ optional Object Lock) | immutable generations (write-once) |
+| Storage | GCS | object versioning | immutable generations (write-once) |
+| Storage | Azure Blob | blob versioning + soft-delete | immutable generations (write-once) |
 
-All three cold backends store **write-once, immutable generations**, so the coherent restore point is
-backend-agnostic: it is always **the registry at-or-before cold** (the invariant above). Every object store
+All three storage backends store **write-once, immutable generations**, so the coherent restore point is
+backend-agnostic: it is always **the registry at-or-before storage** (the invariant above). Every object store
 hosts the registry too, so a single-cloud deployment backs up one account: turn on versioning and the registry
-rows are recoverable exactly like cold objects, from the same snapshot, at the same timestamp — which is what
+rows are recoverable exactly like storage objects, from the same snapshot, at the same timestamp — which is what
 makes the coordinated restore point easy to hit rather than something you have to line up across two services.
 
 ## Restore procedure
@@ -143,8 +143,8 @@ makes the coordinated restore point easy to hit rather than something you have t
 1. **Pick one target timestamp** `T` from your coordinated backups.
 2. **Quiesce writers** for the affected segments (below) — loads, `*Into` materialisations, `eraseSubject`, the
    retention sweep.
-3. **Restore cold** to `T` (or later — cold being ahead is safe).
-4. **Restore the registry** to `T` (or earlier — never later than cold). There is **no single
+3. **Restore storage** to `T` (or later — storage being ahead is safe).
+4. **Restore the registry** to `T` (or earlier — never later than storage). There is **no single
    restore-to-timestamp operation on an object store**, so this is a sweep, not a button: for every object
    under the `registry/` prefix, find the newest version whose timestamp is at-or-before `T` and copy it back
    to current. Script it — and note that a row created after `T` has no such version, so it should be deleted
@@ -173,11 +173,11 @@ process to stop. If you cannot quiesce, re-run the scan to confirm a reported te
 
 ## Readers pinned to a generation
 
-A store that has resolved a segment keeps serving that generation for up to `coldGenTtlMs` (default 2 s) before
+A store that has resolved a segment keeps serving that generation for up to `storageGenTtlMs` (default 2 s) before
 it re-reads the pointer, and decoded chunks sit in the hot LRU for as long as the cache keeps them. After a
 restore or a manual `currentGen` roll, a long-lived process may therefore keep answering from the generation it
 resolved *before* the restore for that window. Two cases need more than waiting: a store built **without a
-clock**, or with **`coldGenTtlMs: 0`** ("pin forever"), holds its resolved generation for its own lifetime —
+clock**, or with **`storageGenTtlMs: 0`** ("pin forever"), holds its resolved generation for its own lifetime —
 restart those readers as part of the procedure. A reader pinned to a generation that has since been **deleted**
 (an `eraseSubject` collects its predecessor on return) re-resolves on its next read; that is the documented cost
 of physical deletion on return, not a fault.
@@ -251,7 +251,7 @@ Deciding which is which is the part that needs a person:
 Once you have established a row was an interrupted *retirement*, pick by whether the name must come back:
 
 **(a) Let the sweep finish its job — the default.** Write the stamp the crash prevented. The next
-`retireExpired` then treats the row as its own, waits out the grace window, verifies cold is actually empty,
+`retireExpired` then treats the row as its own, waits out the grace window, verifies storage is actually empty,
 collects any orphan generations itself, and deletes the row:
 
 ```ts
@@ -266,17 +266,17 @@ if (rec?.status === 'destroyed' && rec.retention?.retiredBySweepAt === undefined
 Use the *original* retirement time if you have it from your logs rather than `Date.now()`; the value only
 controls when the grace window elapses.
 
-**(b) Return the name to service now.** Delete the row — but **only** after confirming cold holds nothing for
-it. That precondition is not bureaucracy: deleting the row while cold objects remain strands them permanently
+**(b) Return the name to service now.** Delete the row — but **only** after confirming storage holds nothing for
+it. That precondition is not bureaucracy: deleting the row while storage objects remain strands them permanently
 (`gcOrphanGenerations` reads the row to decide what to collect, and returns nothing when there is none).
 
 ```ts
-for await (const k of cold.list(ref)) throw new Error(`cold not empty: generation ${k.generation}`);
+for await (const k of storage.list(ref)) throw new Error(`storage not empty: generation ${k.generation}`);
 await registry.delete(ref);
 ```
 
-If cold is non-empty, re-run `dropSegment(ref, { confirmSegment: ref.segment })` first (it is idempotent and
-re-sweeps cold, so it is how a residual in `generationsRemaining` is collected), then prefer **(a)** and let the
+If storage is non-empty, re-run `dropSegment(ref, { confirmSegment: ref.segment })` first (it is idempotent and
+re-sweeps storage, so it is how a residual in `generationsRemaining` is collected), then prefer **(a)** and let the
 sweep reclaim it.
 
 ### Prevent
@@ -301,16 +301,16 @@ deferral, not a shipped feature. Until it lands, this section is the procedure.
 ## `checkConsistency()` — verify before you serve traffic
 
 The store exposes a post-restore health check that verifies **every registered segment's `currentGen` `.crbm`
-actually exists in cold storage**:
+actually exists in storage**:
 
 ```ts
 const report = await store.checkConsistency();
-// { checked: 1284, inconsistent: [], errored: [] }   ← healthy: every currentGen resolves to a real cold object
+// { checked: 1284, inconsistent: [], errored: [] }   ← healthy: every currentGen resolves to a real storage object
 
 if (report.inconsistent.length > 0) {
   for (const i of report.inconsistent) {
-    // { segment, namespace?, currentGen, issue: 'missing-cold-generation' }
-    console.error(`torn: ${i.namespace ?? '_default'}/${i.segment} → gen ${i.currentGen} missing from cold`);
+    // { segment, namespace?, currentGen, issue: 'missing-storage-generation' }
+    console.error(`torn: ${i.namespace ?? '_default'}/${i.segment} → gen ${i.currentGen} missing from storage`);
   }
   process.exit(1); // do not serve traffic
 }
@@ -320,14 +320,14 @@ if (report.errored.length > 0) {
 }
 ```
 
-- It needs a **raw cold driver + a `registry`** (the same requirement as every lifecycle helper); a store built
-  around a pre-wrapped `ColdChunkSource` throws `UnsupportedError` — run it from an admin/ops store wired with
-  the raw drivers. The standalone `runConsistencyCheck({ cold, registry })` is available for out-of-process ops
+- It needs a **raw storage driver + a `registry`** (the same requirement as every lifecycle helper); a store built
+  around a pre-wrapped `StorageChunkSource` throws `UnsupportedError` — run it from an admin/ops store wired with
+  the raw drivers. The standalone `runConsistencyCheck({ storage, registry })` is available for out-of-process ops
   tooling.
 - It fans out at a bounded `concurrency` (default 8; pass `{ concurrency }`), and can be scoped to one
   `{ namespace }`. Like every fleet-wide scan it refuses past `maxScanSegments` rather than materialising a
   fleet it cannot hold.
-- **Fault-isolated + race-safe.** A segment whose Cold/registry can't be read this pass lands in `errored` and
+- **Fault-isolated + race-safe.** A segment whose Storage/registry can't be read this pass lands in `errored` and
   the scan continues (a partial/transient object store mid-restore is exactly when you run this) — treat an
   errored segment as *unknown*, not coherent, and re-run once the store is fully up. And each segment is checked
   against its authoritative **live** registry pointer (a strong per-segment read), not the enumeration snapshot,
@@ -335,25 +335,25 @@ if (report.errored.length > 0) {
   followed by a GC of the superseded generation — or an `eraseSubject`, which collects its predecessor
   immediately — landing in the tiny per-segment read gap can still yield a transient false positive: run the
   scan quiesced, per the procedure above, or re-run to confirm any reported tear.)
-- **Detection is driver-agnostic.** It relies only on `IColdDriver.list()` + `IRegistryDriver.get()`, so it
-  covers **any** cold backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
+- **Detection is driver-agnostic.** It relies only on `IStorageDriver.list()` + `IRegistryDriver.get()`, so it
+  covers **any** storage backend (S3 / GCS / Azure Blob) with **any** registry backend — nothing about the check is
   backend-specific. What it verifies is **presence**: that each segment's `currentGen` `.crbm` object
-  *exists* in cold. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
+  *exists* in storage. It therefore catches the torn / dangling-`currentGen` restore, but **not**:
   - **byte corruption inside a present object** — the trust boundary catches that on read, failing closed with
     `IntegrityError` (the per-chunk CRC), which is what the read spot-check in the procedure is for;
-  - **a pointer that is valid but older than you intended** — a registry restored earlier than cold is stale,
+  - **a pointer that is valid but older than you intended** — a registry restored earlier than storage is stale,
     not torn, and reads it as a correct older view;
   - **objects above the pointer** — loads that published after the registry's restore point. Harmless to reads
     and invisible to them; see [what is not recoverable](#what-is-not-recoverable-and-why-thats-correct).
-- **A segment with no Cold generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
-  *this segment exists and has no Cold data yet* — a row minted by `setRetention` ahead of the first load, so the
+- **A segment with no Storage generation is healthy, not torn.** A registry row whose `currentGen` is `null` says
+  *this segment exists and has no Storage data yet* — a row minted by `setRetention` ahead of the first load, so the
   policy is recorded before the data. There is no generation that ought to exist, so nothing can be missing, and
-  the scan reports it as consistent. (Reporting it would be worse than useless here: `missing-cold-generation`
+  the scan reports it as consistent. (Reporting it would be worse than useless here: `missing-storage-generation`
   would fire on the healthy steady state of every such segment and bury the one signal a triage is looking for.)
 - It is also worth running **periodically** (not just after a restore) as a cheap tripwire for backup/restore
   drift or an operator mistake — an object-store lifecycle rule that expired a current generation shows up here.
 
-**Resolving a `missing-cold-generation`:** either (a) restore the missing cold generation from a later
+**Resolving a `missing-storage-generation`:** either (a) restore the missing storage generation from a later
 object-store snapshot that contains it, or (b) roll the registry's `currentGen` for that segment **back** to a
 generation that does exist — accepting the loss of the loads after that point, but restoring correctness. Then
 re-run `checkConsistency()`.
@@ -381,12 +381,12 @@ reversible, and it is audited as `segment.rollback` because no other record of a
 
 ## This runbook is exercised, not just written
 
-`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` cold
+`pnpm dr-drill` (`tests/dr-drill.test.ts`) runs this procedure end-to-end against the on-disk `LocalFs` storage
 and registry drivers — it seeds a fleet, takes a coordinated backup, then injects each failure and verifies the
 resolution:
 
-- **Torn restore** (registry recovered ahead of cold) and a **lost `.crbm`** are detected as
-  `missing-cold-generation`, then cleared by rolling `currentGen` back (a) or restoring the object from backup (b).
+- **Torn restore** (registry recovered ahead of storage) and a **lost `.crbm`** are detected as
+  `missing-storage-generation`, then cleared by rolling `currentGen` back (a) or restoring the object from backup (b).
 - **Byte corruption inside a present `.crbm`** is the one case `checkConsistency()` **cannot** see — it verifies
   the generation is *present*, not its bytes. The drill confirms the sweep stays clean **and** that a read fails
   closed with `IntegrityError` (the per-chunk CRC), so the corruption surfaces at the trust boundary, not as a
@@ -395,12 +395,12 @@ resolution:
 ## Encryption & DR
 
 If encryption-at-rest is on (see the encryption section of [getting-started](getting-started.md)), the
-**keystore is a first-class DR asset**: a `.crbm` cannot be decrypted from cold storage alone (the footer holds
+**keystore is a first-class DR asset**: a `.crbm` cannot be decrypted from storage alone (the footer holds
 only an opaque `key_id`; the wrapping key lives in the keystore, and the wrapped per-segment DEKs live in the
 registry row). So:
 
 - Back up and restore the keystore alongside the data stores, but keep its access path **separate** — the whole
-  point of app-level encryption is that a cold-bucket leak doesn't hand over plaintext, and a shared backup that
+  point of app-level encryption is that a storage-bucket leak doesn't hand over plaintext, and a shared backup that
   co-locates keys with ciphertext undoes that.
 - After restore, confirm the keys referenced by restored segments are present. A missing key is unrecoverable
   ciphertext, not a torn restore — `checkConsistency()` verifies the *object* exists, not that you can decrypt it.
@@ -416,7 +416,7 @@ registry row). So:
   is the same fact as the next bullet seen from the other side, and it is why `PRIVACY.md` says a rewrite does
   not reach backups: if your erasure posture must survive a restore, the segment has to be encrypted and the
   erasure a crypto-shred.
-- **Loads published after the registry's restore point.** Their objects may still exist in cold, *above* the
+- **Loads published after the registry's restore point.** Their objects may still exist in storage, *above* the
   restored pointer. Reads never see them (the pointer is authoritative), `nextGeneration` skips past them, and
   `gcOrphanGenerations` never touches a generation at or above `currentGen` — so they sit there, billed, until
   you act. The safe recovery is to **re-run the load from your source**: it writes the next generation and
@@ -424,13 +424,13 @@ registry row). So:
   crashed mid-write can leave a partial object above the pointer, and `publishGeneration` will point at it if
   asked.
 
-## Deferred: self-healing rebuild from cold
+## Deferred: self-healing rebuild from storage
 
-A future capability — rebuilding a **lost** registry purely from surviving cold objects — is **not** shipped.
+A future capability — rebuilding a **lost** registry purely from surviving storage objects — is **not** shipped.
 Today the registry is authoritative and must be restored from its own version history (hence the versioning requirement above).
-Making cold objects self-describing enough to rebuild the registry (and to decrypt without the original keystore)
+Making storage objects self-describing enough to rebuild the registry (and to decrypt without the original keystore)
 requires a `.crbm` **format change** — carrying a KEK-wrapped DEK in the footer — which the current fully-packed
 104-byte footer has no room for, and which changes the crypto-shred model (shredding would then have to delete the
-cold objects too, not just the key). It's a planned additive evolution into the `.crbm` format's reserved-for-future space, and a known
+storage objects too, not just the key). It's a planned additive evolution into the `.crbm` format's reserved-for-future space, and a known
 deferral rather than an oversight; until it lands, **back up the registry and keystore** — they are not
-reconstructable from cold alone.
+reconstructable from storage alone.

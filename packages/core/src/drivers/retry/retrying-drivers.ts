@@ -8,7 +8,7 @@
  * these decorators decide *whether and when* to retry.
  *
  * **Streaming methods buffer**, deliberately: a partially-consumed async iterator cannot be resumed mid-stream
- * (it would re-yield earlier items), so `RetryingColdDriver.list` and `RetryingRegistryDriver.list` collect the
+ * (it would re-yield earlier items), so `RetryingStorageDriver.list` and `RetryingRegistryDriver.list` collect the
  * whole enumeration inside `withRetry` and re-run it from the start on a fault. Both are discovery scans over a
  * generation or namespace listing, where the result set is small and whole-scan retry is worth the memory.
  *
@@ -23,10 +23,10 @@ import { withRetry, isTransient, DEFAULT_RETRY_POLICY } from '../../core/retry';
 import type { RetryPolicy } from '../../core/retry';
 import type {
   ChunkRef,
-  ColdCaps,
-  ColdChunkSource,
+  StorageCaps,
+  StorageChunkSource,
   GenKey,
-  IColdDriver,
+  IStorageDriver,
   IRegistryDriver,
   NewRegistryRecord,
   RegCaps,
@@ -70,9 +70,9 @@ function toRetry(opts: RetryingOptions): {
   };
 }
 
-/** Wrap a cold chunk source so its reads retry transient faults. */
-export class RetryingColdChunkSource implements ColdChunkSource {
-  private readonly inner: ColdChunkSource;
+/** Wrap a storage chunk source so its reads retry transient faults. */
+export class RetryingStorageChunkSource implements StorageChunkSource {
+  private readonly inner: StorageChunkSource;
   private readonly policy: RetryPolicy;
   private readonly deps: ReturnType<typeof toRetry>['deps'];
   /** Present only when the inner source supports it — so capability detection stays honest. */
@@ -83,7 +83,7 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
   readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
 
-  constructor(inner: ColdChunkSource, opts: RetryingOptions) {
+  constructor(inner: StorageChunkSource, opts: RetryingOptions) {
     this.inner = inner;
     const r = toRetry(opts);
     this.policy = r.policy;
@@ -132,20 +132,20 @@ export class RetryingColdChunkSource implements ColdChunkSource {
   }
 }
 
-/** Wrap a cold driver so its byte operations retry transient faults. */
-export class RetryingColdDriver implements IColdDriver {
-  private readonly inner: IColdDriver;
+/** Wrap a storage driver so its byte operations retry transient faults. */
+export class RetryingStorageDriver implements IStorageDriver {
+  private readonly inner: IStorageDriver;
   private readonly policy: RetryPolicy;
   private readonly deps: ReturnType<typeof toRetry>['deps'];
 
-  constructor(inner: IColdDriver, opts: RetryingOptions) {
+  constructor(inner: IStorageDriver, opts: RetryingOptions) {
     this.inner = inner;
     const r = toRetry(opts);
     this.policy = r.policy;
     this.deps = r.deps;
   }
 
-  capabilities(): ColdCaps {
+  capabilities(): StorageCaps {
     return this.inner.capabilities(); // pure, local — no retry
   }
 

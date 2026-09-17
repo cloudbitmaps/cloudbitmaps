@@ -20,22 +20,22 @@
  * **export to a fresh directory** for a clean dump. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
- * ~10-line script that builds an `S3ColdDriver` + an `S3RegistryDriver` + a `CloudRoaring`, and calls
+ * ~10-line script that builds an `S3StorageDriver` + an `S3RegistryDriver` + a `CloudRoaring`, and calls
  * `store.exportSegments(sink, { format })` with your own sink — the binary stays SDK-free.
  *
  * Config is read from the environment (12-factor-friendly):
- *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding cold/ registry/
+ *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding storage/ registry/
  *   CR_EXPORT_OUT        (required) — the output directory for the dump
  *   CR_EXPORT_FORMAT     roaring | ndjson                (default: roaring)
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   CloudRoaring,
-  LocalFsColdDriver,
+  LocalFsStorageDriver,
   LocalFsRegistryDriver,
   encodeNameForPath,
   namespacePathPart,
@@ -50,6 +50,38 @@ export interface ExportConfig {
 }
 
 /** Parse + validate config from an environment map. Throws a clear `Error` on misconfiguration. */
+/**
+ * The generations directory under the export root, refusing the one case that would otherwise mislead.
+ *
+ * This directory was called `cold/` before the tier was renamed to `storage`, so a store written by an older
+ * version has its generations somewhere this tool no longer looks. It does not fail silently — every segment
+ * lands in the manifest's `failed[]` and the process exits non-zero — but it fails with **the wrong
+ * diagnosis**, which is worse here than a vague one: each entry reads `no such generation: <segment>.<gen>`,
+ * the exact signature of the `missing-storage-generation` torn-restore state. The DR runbook's documented
+ * answers to that signal are "restore from backup" and "roll `currentGen` back", the second of which is
+ * destructive — and it would be applied to a store that was never damaged, by someone already reaching for
+ * the escape hatch because something has gone wrong.
+ *
+ * So: use `storage/`, and if it is absent while `cold/` is present, stop before any of that and say exactly
+ * what to rename.
+ */
+async function storageDir(root: string): Promise<string> {
+  const storage = join(root, 'storage');
+  const exists = async (p: string): Promise<boolean> =>
+    access(p).then(
+      () => true,
+      () => false,
+    );
+  if (!(await exists(storage)) && (await exists(join(root, 'cold')))) {
+    throw new Error(
+      `${root} holds a "cold/" directory but no "storage/" — this store was written before the tier was ` +
+        `renamed. Rename it (\`mv ${join(root, 'cold')} ${storage}\`) and re-run; the objects inside are ` +
+        `unchanged.`,
+    );
+  }
+  return storage;
+}
+
 export function parseConfig(env: Record<string, string | undefined>): ExportConfig {
   const root = env.CR_EXPORT_ROOT;
   if (root === undefined || root === '') {
@@ -133,7 +165,7 @@ export async function main(
   const config = parseConfig(env);
   const registry = new LocalFsRegistryDriver(join(config.root, 'registry'));
   const store = new CloudRoaring({
-    cold: new LocalFsColdDriver(join(config.root, 'cold')),
+    storage: new LocalFsStorageDriver(await storageDir(config.root)),
     registry,
   });
 

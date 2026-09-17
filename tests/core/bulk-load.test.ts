@@ -2,28 +2,28 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fc from 'fast-check';
-import { CrbmColdChunkSource } from '@/core/crbm-cold-source';
+import { CrbmStorageChunkSource } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { bulkLoadCrbmGeneration } from '@/index';
-import { LocalFsColdDriver } from '@/drivers/localfs/cold';
+import { LocalFsStorageDriver } from '@/drivers/localfs/storage';
 import { CloudRoaring } from '@/index';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import { joinId } from '@/core/bit-route';
 
 let root: string;
-let driver: LocalFsColdDriver;
+let driver: LocalFsStorageDriver;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'crbm-bulk-'));
-  driver = new LocalFsColdDriver(root);
+  driver = new LocalFsStorageDriver(root);
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-/** Read the whole set back through the engine over the bulk-loaded Cold generation. */
+/** Read the whole set back through the engine over the bulk-loaded Storage generation. */
 async function readBack(segment = 's'): Promise<number[]> {
-  const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
+  const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
   const out: number[] = [];
   for await (const id of store.segment(segment).iterate()) out.push(id);
   return out;
@@ -88,8 +88,8 @@ describe('bulkLoadCrbmGeneration', () => {
   it('writes a valid empty generation for an empty source', async () => {
     const res = await bulkLoadCrbmGeneration(driver, { segment: 's', generation: 1 }, []);
     expect(res).toMatchObject({ chunkCount: 0, cardinality: 0 });
-    const cold = new CrbmColdChunkSource(driver);
-    expect(await cold.listChunkKeys({ segment: 's' })).toEqual([]);
+    const storage = new CrbmStorageChunkSource(driver);
+    expect(await storage.listChunkKeys({ segment: 's' })).toEqual([]);
     expect(await readBack()).toEqual([]);
   });
 
@@ -100,7 +100,7 @@ describe('bulkLoadCrbmGeneration', () => {
       ).rejects.toBeInstanceOf(ValidationError);
     }
     // Nothing was committed — the segment has no generation.
-    expect(await new CrbmColdChunkSource(driver).listChunkKeys({ segment: 's' })).toEqual([]);
+    expect(await new CrbmStorageChunkSource(driver).listChunkKeys({ segment: 's' })).toEqual([]);
   });
 
   it('round-trips the distinct set for any id stream (property)', async () => {
@@ -113,12 +113,12 @@ describe('bulkLoadCrbmGeneration', () => {
       fc.asyncProperty(fc.array(ID, { maxLength: 200 }), async (ids) => {
         const r = await mkdtemp(join(tmpdir(), 'crbm-bulk-prop-'));
         try {
-          const d = new LocalFsColdDriver(r);
+          const d = new LocalFsStorageDriver(r);
           const res = await bulkLoadCrbmGeneration(d, { segment: 's', generation: 1 }, ids);
           const want = [...new Set(ids)].sort((a, b) => a - b);
           expect(res.cardinality).toBe(want.length);
 
-          const store = new CloudRoaring({ cold: new CrbmColdChunkSource(d) });
+          const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(d) });
           const got: number[] = [];
           for await (const id of store.segment('s').iterate()) got.push(id);
           expect(got).toEqual(want);
@@ -133,7 +133,7 @@ describe('bulkLoadCrbmGeneration', () => {
   it('the loaded generation participates in intersection (the seed → query path)', async () => {
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
-    const store = new CloudRoaring({ cold: new CrbmColdChunkSource(driver) });
+    const store = new CloudRoaring({ storage: new CrbmStorageChunkSource(driver) });
     const got: number[] = [];
     for await (const id of store.segment('a').intersect([store.segment('b')])) got.push(id);
     expect(got).toEqual([2, 3, 200_000]);
