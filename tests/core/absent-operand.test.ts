@@ -1,4 +1,6 @@
 import {
+  createBackend,
+  MemoryStorage,
   CloudRoaring,
   MemoryStorageDriver,
   MemoryRegistryDriver,
@@ -26,11 +28,11 @@ async function collect(it: AsyncIterable<number>): Promise<number[]> {
 }
 
 async function world() {
-  const storage = new MemoryStorageDriver();
-  const registry = new MemoryRegistryDriver();
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
   await bulkLoadCrbmGeneration(storage, { ...AUDIENCE, generation: 0 }, [1, 2, 3, 4], { registry });
   await bulkLoadCrbmGeneration(storage, { ...OPTOUT, generation: 0 }, [2, 3], { registry });
-  const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
+  const store = new CloudRoaring({ storage: backend });
   return {
     storage,
     registry,
@@ -126,7 +128,7 @@ describe('a combine refuses an operand that names a segment which does not exist
     }) as unknown as MemoryRegistryDriver;
 
     const store = new CloudRoaring({
-      storage: { storage: real, registry: counting },
+      storage: createBackend({ storage: real, registry: counting }),
       cache: { genTtlMs: 0 },
     });
     const audience = store.segment('active-30d', { namespace: 'audiences' });

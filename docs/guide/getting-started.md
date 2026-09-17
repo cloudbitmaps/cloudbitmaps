@@ -68,8 +68,9 @@ you will find them the first time you run, not the first time something reads wr
 1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
    `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
    the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
-   expressible. Every driver is still exported, and `{ storage, registry }` as an object literal *is* a
-   `StorageBackend` if you genuinely want the halves apart.
+   expressible. Every driver is still exported; if you genuinely want the halves apart —
+   an instrumented driver, or a registry in a database you already run — say so with
+   `createBackend({ storage, registry })`. A plain object literal is refused.
 2. **The flat tuning options became six groups** — `cache` · `encryption` · `retry` · `metrics` · `budget` ·
    `seams`:
 

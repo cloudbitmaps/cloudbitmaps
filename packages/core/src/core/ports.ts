@@ -8,6 +8,7 @@
  * tokens; they never understand roaring or the `.crbm` layout.
  */
 
+import { ValidationError } from './errors';
 import type { BlobSink } from './blob';
 import type { WrappedDek } from './crypto';
 
@@ -244,11 +245,98 @@ export interface RegCaps {
  * Implementations live with their driver (`S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage`,
  * `MemoryStorage`). Both halves stay available on the object for anyone who needs to reach past the facade.
  */
+/**
+ * Brand for {@link StorageBackend}.
+ *
+ * `Symbol.for` rather than a class check, for the same reason the error brands are — a driver subpath is a
+ * separate bundle, so `instanceof` against a class object silently returns false across that boundary. A
+ * registered symbol is identity-stable across bundles and realms.
+ *
+ * The string says `cloudbitmaps` while the error brands still say `cloud-roaring`: those are locked, because
+ * changing one would break error identity against already-published bundles. A new brand has no such
+ * constraint, so it uses the current name.
+ */
+const STORAGE_BACKEND_BRAND: unique symbol = Symbol.for('cloudbitmaps.storage-backend');
+
+/**
+ * Where a store keeps everything: the generations, and the pointer saying which one is current.
+ *
+ * **Branded on purpose.** The two fields alone are not enough to qualify, and that is the whole point. This
+ * shape is also {@link LoadDeps}/{@link GenerationDeps}, so before the brand any `{ storage, registry }`
+ * object literal satisfied it — including one assembling halves from two *unrelated* stores, which the store
+ * accepted and then answered **empty** for a segment that holds data, because it read a pointer from a place
+ * nothing had ever been written. That is the exact silent-empty failure one-class-per-backend exists to
+ * remove, and it was reachable in five lines.
+ *
+ * So a backend can only come from `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage` or
+ * `AzureBlobStorage` — each of which derives both halves from one bucket and one prefix, making the mismatch
+ * unexpressible rather than merely discouraged. The halves stay readable as `.storage` / `.registry`, because
+ * the free functions genuinely need them.
+ */
 export interface StorageBackend {
+  /** Cross-bundle brand. Set by the backend classes; not part of the public surface. */
+  readonly [STORAGE_BACKEND_BRAND]: true;
   /** Where the immutable `.crbm` generations live. */
   readonly storage: IStorageDriver;
   /** Where the `currentGen` pointer, the discovery index and the wrapped DEKs live. */
   readonly registry: IRegistryDriver;
+}
+
+/**
+ * Build a backend from two halves you supply yourself.
+ *
+ * **Reach for a backend class first** — `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage`,
+ * `AzureBlobStorage`. Each derives both halves from one bucket and one prefix, so they cannot disagree, and
+ * that is the whole reason the classes exist.
+ *
+ * This is the door for the cases a class cannot express, and they are real: a driver wrapped for auditing,
+ * metrics, tenant scoping or client-side encryption; a registry in a database you already run; a
+ * fault-injecting double in a test. What it is NOT is a shortcut — naming it is the point. The plain
+ * `{ storage, registry }` literal is refused precisely because it let the two halves come from unrelated
+ * places by accident, and answer **empty** rather than fail.
+ *
+ * It cannot check that the halves agree: `IStorageDriver` and `IRegistryDriver` do not expose a location, so
+ * nothing here can compare one. Calling this is you taking that on.
+ */
+export function createBackend(halves: {
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
+}): StorageBackend {
+  if (halves === null || typeof halves !== 'object') {
+    throw new ValidationError('createBackend needs `{ storage, registry }`');
+  }
+  const { storage, registry } = halves;
+  if (
+    storage === null ||
+    typeof storage !== 'object' ||
+    typeof storage.putImmutable !== 'function'
+  ) {
+    throw new ValidationError('createBackend: `storage` must be an IStorageDriver');
+  }
+  if (
+    registry === null ||
+    typeof registry !== 'object' ||
+    typeof registry.compareAndSwap !== 'function'
+  ) {
+    throw new ValidationError('createBackend: `registry` must be an IRegistryDriver');
+  }
+  return { [STORAGE_BACKEND_BRAND]: true, storage, registry };
+}
+
+/** The brand value a backend class sets. Package-internal — not exported from the package barrel. */
+export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRAND;
+
+/**
+ * Is this a backend built by one of the backend classes?
+ *
+ * Checks the brand, not the shape — see {@link StorageBackend} for why the shape alone is not enough.
+ */
+export function isStorageBackend(value: unknown): value is StorageBackend {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[STORAGE_BACKEND_BRAND] === true
+  );
 }
 
 /**

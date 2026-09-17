@@ -73,7 +73,7 @@ async function world(keystore?: InProcessKeystore) {
   // `cache.genTtlMs: 0` caveat. Wiring only; no hot-path cost.
   const store = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { keystore },
     });

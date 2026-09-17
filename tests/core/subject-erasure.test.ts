@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import {
+  createBackend,
+  MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
   MemoryStorageDriver,
-  MemoryRegistryDriver,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
   destroySegment,
@@ -45,7 +46,7 @@ async function world(keystore?: IKeystore) {
   // touched the segment before the erase would keep answering from that snapshot.
   const reader = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { keystore },
     });
@@ -145,7 +146,10 @@ describe('subjectReport', () => {
     // A segment whose read faults must make the report THROW — never silently omit a (possible) member.
     const store = new CloudRoaring({
       // raw objects behind a poisoned read, paired with the real registry that resolves generations
-      storage: { storage: poisonStorageReadOf(w.storage, 'a'), registry: w.registry },
+      storage: createBackend({
+        storage: poisonStorageReadOf(w.storage, 'a'),
+        registry: w.registry,
+      }),
       retry: false,
     });
     await expect(store.subjectReport(1, { namespace: NS })).rejects.toThrow(/poison/);
@@ -316,7 +320,7 @@ describe('eraseSubject', () => {
     const audit = new RecordingAuditSink();
 
     const res = await new CloudRoaring({
-      storage: { storage: storage, registry: w.registry },
+      storage: createBackend({ storage: storage, registry: w.registry }),
       retry: false,
     }).eraseSubject(1, {
       namespace: NS,
@@ -359,7 +363,10 @@ describe('eraseSubject', () => {
     for (const s of ['a', 'b', 'poison']) await w.seed(s, [1, 2]);
     const store = new CloudRoaring({
       // bites when the rewrite opens `poison`'s generation
-      storage: { storage: poisonStorageReadOf(w.storage, 'poison'), registry: w.registry },
+      storage: createBackend({
+        storage: poisonStorageReadOf(w.storage, 'poison'),
+        registry: w.registry,
+      }),
       retry: false,
     });
 
@@ -390,7 +397,7 @@ describe('eraseSubject', () => {
     );
 
     const res = await new CloudRoaring({
-      storage: { storage: storage, registry: w.registry },
+      storage: createBackend({ storage: storage, registry: w.registry }),
       retry: false,
     }).eraseSubject(1, {
       allNamespaces: true,
@@ -423,7 +430,7 @@ describe('eraseSubject', () => {
     expect(await members(w.reader(), 'enc')).toEqual([1, 3]);
     // The rewritten generation is genuinely encrypted: a store without the keystore cannot read it.
     const noKeystore = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     await expect(members(noKeystore, 'enc')).rejects.toBeInstanceOf(KeyUnavailableError);
@@ -433,7 +440,7 @@ describe('eraseSubject', () => {
     const w = await world();
     await w.seed('plain', [1, 2]);
     const strict = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { required: true },
     });
@@ -466,7 +473,7 @@ describe('eraseSubject', () => {
     const w = await world();
     await w.seed('a', [1, 2, 3]);
     const res = await new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
     }).eraseSubject(1, {
       allNamespaces: true,
     });
@@ -477,8 +484,8 @@ describe('eraseSubject', () => {
 
 describe('lifecycle helpers require a backend', () => {
   it('throws UnsupportedError naming the op when the store was built with a pre-built StorageChunkSource', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'a', generation: 0 }, [1, 2, 3], { registry });
     // A pre-built-source store has no raw IStorageDriver to write through (and can't carry a top-level registry).
     const store = new CloudRoaring({

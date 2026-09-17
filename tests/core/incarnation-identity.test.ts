@@ -1,4 +1,5 @@
 import {
+  MemoryStorage,
   CloudRoaring,
   MemoryStorageDriver,
   MemoryRegistryDriver,
@@ -43,14 +44,14 @@ async function reincarnate(
 
 describe('a re-created name is a different segment, not the same one', () => {
   it('a warm store stops serving the previous incarnation', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       cache: { genTtlMs: 10 },
       seams: { clock },
     });
@@ -66,14 +67,14 @@ describe('a re-created name is a different segment, not the same one', () => {
   });
 
   it('the index-only path (count) sees it too — it reads the reader, not a chunk', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       cache: { genTtlMs: 10 },
       seams: { clock },
     });
@@ -85,14 +86,14 @@ describe('a re-created name is a different segment, not the same one', () => {
   });
 
   it('an ordinary publish still refreshes — the common case is unchanged', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     let t = 0;
     const clock = { now: () => t, sleep: async () => {} };
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       cache: { genTtlMs: 10 },
       seams: { clock },
     });
@@ -104,19 +105,19 @@ describe('a re-created name is a different segment, not the same one', () => {
   });
 
   it('a fresh store was always right — this was purely stale state', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
     await reincarnate(storage, registry, [9]);
 
-    const fresh = new CloudRoaring({ storage: { storage: storage, registry: registry } });
+    const fresh = new CloudRoaring({ storage: backend });
     expect(await fresh.segment('s').count()).toBe(1);
     expect(await fresh.segment('s').has(1)).toBe(false);
   });
 
   it('the version string separates incarnations at the same generation number', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const { CrbmStorageChunkSource } = await import('@/index');
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
 
@@ -140,8 +141,8 @@ describe('a re-created name is a different segment, not the same one', () => {
   });
 
   it('a segment with no generation has no version', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const { CrbmStorageChunkSource } = await import('@/index');
     expect(await new CrbmStorageChunkSource(storage, { registry }).currentVersion(REF)).toBeNull();
   });

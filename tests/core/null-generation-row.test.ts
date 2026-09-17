@@ -52,7 +52,7 @@ async function world(keystore?: IKeystore) {
   /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { keystore },
     });

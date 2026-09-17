@@ -2,6 +2,7 @@ import { cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  createBackend,
   CloudRoaring,
   IntegrityError,
   LocalFsStorageDriver,
@@ -48,7 +49,7 @@ function stores(root: string) {
   const storage = new LocalFsStorageDriver(root);
   const registry = new LocalFsRegistryDriver(root, { now: () => Date.now() });
   const store = new CloudRoaring({
-    storage: { storage: storage, registry: registry },
+    storage: createBackend({ storage, registry }),
     retry: false,
   });
   return { storage, registry, store };

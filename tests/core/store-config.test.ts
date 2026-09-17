@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
+  createBackend,
+  MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
   MemoryStorageChunkSource,
@@ -21,8 +23,8 @@ const k = (): Uint8Array => randomBytes(32);
 
 describe('CloudRoaring constructor — one config shape (storage: raw driver | source)', () => {
   it('wraps a raw IStorageDriver and pins the registry currentGen (not the max on disk)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     // gen 0 published to the registry…
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
     // …and a HIGHER gen 1 written but NOT published. A list-scan would resolve gen 1 (→ 5); the registry pins 0.
@@ -30,7 +32,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
 
     // The point of PR A: pass the RAW driver + registry — no manual CrbmStorageChunkSource wrap. If `registry`
     // were dropped when wrapping, this would read the max gen (5) instead of the pinned gen 0 (3).
-    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } });
+    const store = new CloudRoaring({ storage: backend });
     expect(await store.segment('s').count()).toBe(3);
     expect(await store.segment('s').has(2)).toBe(true); // forces a payload getChunk through the wrapped source
     expect(await store.segment('s').has(5)).toBe(false); // 5 lives only in the unpublished gen 1
@@ -54,8 +56,8 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
   });
 
   it('accepts a CrbmStorageChunkSource you configured yourself (advanced reader options)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [7, 8], { registry });
     const source = new CrbmStorageChunkSource(storage, { registry, tailBytes: 4096 });
     const store = new CloudRoaring({ storage: source });
@@ -63,8 +65,8 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
   });
 
   it('reads an encrypted segment given a raw driver + registry + keystore (index AND payload)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], {
       registry,
@@ -72,7 +74,7 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
     });
 
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       encryption: { keystore },
     });
     expect(await store.segment('s').count()).toBe(3); // decrypts the .crbm index
@@ -80,28 +82,28 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
   });
 
   it('throws reading an encrypted segment when the keystore is missing', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     const keystore = new InProcessKeystore({ keys: { k1: k() }, activeKeyId: 'k1' });
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], {
       registry,
       keystore,
     });
 
-    const store = new CloudRoaring({ storage: { storage: storage, registry: registry } }); // no keystore
+    const store = new CloudRoaring({ storage: backend }); // no keystore
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
   });
 
   it('threads requireEncryption through the wrap — a cleartext read is refused', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     // A CLEARTEXT generation (no keystore) published to the registry.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
 
     // requireEncryption:true must reach the wrapped source; reading cleartext then throws. If the flag were
     // dropped when wrapping, count() would return 3 instead.
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       encryption: { required: true },
     });
     await expect(store.segment('s').count()).rejects.toThrow(KeyUnavailableError);
@@ -174,28 +176,20 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
       }
     });
 
-    // A driver that WRAPS another driver is the natural thing to build for auditing, metrics, tenant scoping
-    // or client-side encryption — and now that the tier is called storage, the natural name for the field it
-    // wraps is `storage`. Add a registry alongside it and the object satisfies the StorageBackend duck-test
-    // and the IStorageDriver one at the same time. Dispatching on the backend shape first read straight
-    // through to the halves: the wrapper's own methods never ran, every answer still looked right, and no
-    // diagnostic was produced anywhere. Nothing here needs a cast — the union accepts it and `tsc` is clean,
-    // which is why this could only ever be caught at runtime.
-    it('rejects a driver that is ALSO shaped like a backend, rather than reading through it', async () => {
+    // A driver that WRAPS another driver — for auditing, metrics, tenant scoping, client-side encryption —
+    // is the natural thing to build, and now that the tier is called storage the natural name for the field it
+    // wraps is `storage`. Before the brand that made it indistinguishable from a backend, so the store read
+    // straight THROUGH it to the halves and the wrapper's own methods never ran: the layer silently removed,
+    // every answer still correct-looking. The brand settles it — an unbranded object is not a backend, so a
+    // wrapper is unambiguously a driver and actually gets used.
+    it('uses a driver that wraps another, rather than reading through it', async () => {
       const inner = new MemoryStorageDriver();
-      const registry = new MemoryRegistryDriver();
-      await bulkLoadCrbmGeneration(inner, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
+      await bulkLoadCrbmGeneration(inner, { ...SEG, generation: 0 }, [1, 2, 3]);
 
       const calls: string[] = [];
       class AuditingStorageDriver implements IStorageDriver {
-        constructor(
-          readonly storage: IStorageDriver,
-          readonly registry: MemoryRegistryDriver,
-        ) {}
-        capabilities: IStorageDriver['capabilities'] = () => {
-          calls.push('capabilities');
-          return this.storage.capabilities();
-        };
+        constructor(readonly storage: IStorageDriver) {}
+        capabilities: IStorageDriver['capabilities'] = () => this.storage.capabilities();
         putImmutable: IStorageDriver['putImmutable'] = (...a) => {
           calls.push('putImmutable');
           return this.storage.putImmutable(...a);
@@ -208,37 +202,82 @@ describe('CloudRoaring constructor — one config shape (storage: raw driver | s
           calls.push('getTail');
           return this.storage.getTail(...a);
         };
-        delete: IStorageDriver['delete'] = (...a) => {
-          calls.push('delete');
-          return this.storage.delete(...a);
-        };
+        delete: IStorageDriver['delete'] = (...a) => this.storage.delete(...a);
         list: IStorageDriver['list'] = (...a) => {
           calls.push('list');
           return this.storage.list(...a);
         };
       }
 
-      const audited = new AuditingStorageDriver(inner, registry);
-      expect(() => new CloudRoaring({ storage: audited })).toThrow(ValidationError);
-      expect(() => new CloudRoaring({ storage: audited })).toThrow(/ambiguous/i);
-      // The point of the guard: before it, this construction succeeded, answered 3, and never once called
-      // the wrapper. A silently-removed audit layer is the "right answer, wrong path" failure it exists to stop.
-      expect(calls).toEqual([]);
+      const store = new CloudRoaring({ storage: new AuditingStorageDriver(inner) });
+      expect(await store.segment('s').count()).toBe(3);
+      // The point: the wrapper is on the read path, not bypassed.
+      expect(calls.length).toBeGreaterThan(0);
     });
 
-    // A hand-rolled backend that is one method short used to get the same generic three-way list as a typo,
-    // which says nothing about what is actually wrong with it.
+    // …and to keep a registry alongside an instrumented half, you say so.
+    it('`createBackend` is how an instrumented half keeps its registry', async () => {
+      const backend = new MemoryStorage();
+      await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+        registry: backend.registry,
+      });
+      let tails = 0;
+      const counted: IStorageDriver = {
+        capabilities: () => backend.storage.capabilities(),
+        putImmutable: (...a) => backend.storage.putImmutable(...a),
+        getRange: (...a) => backend.storage.getRange(...a),
+        getTail: (...a) => {
+          tails += 1;
+          return backend.storage.getTail(...a);
+        },
+        delete: (...a) => backend.storage.delete(...a),
+        list: (...a) => backend.storage.list(...a),
+      };
+      const store = new CloudRoaring({
+        storage: createBackend({ storage: counted, registry: backend.registry }),
+      });
+      expect(await store.segment('s').count()).toBe(3);
+      expect(tails).toBeGreaterThan(0);
+    });
+
+    // A half-built backend is now caught where it is built, by `createBackend`, rather than at the store.
     it('names which half of a near-miss backend failed its check', () => {
-      const halfBuilt = {
+      expect(() =>
+        createBackend({
+          storage: new MemoryStorageDriver(),
+          registry: {} as unknown as MemoryRegistryDriver, // no compareAndSwap
+        }),
+      ).toThrow(/registry.*IRegistryDriver/);
+      expect(() =>
+        createBackend({
+          storage: {} as unknown as IStorageDriver,
+          registry: new MemoryRegistryDriver(),
+        }),
+      ).toThrow(/storage.*IStorageDriver/);
+    });
+
+    // …and an unbranded object with both halves is refused by the STORE, pointing at the classes rather than
+    // telling the caller to add a field. The lesson is not "your literal is one property short".
+    it('refuses a hand-assembled `{ storage, registry }` and names the backend classes', () => {
+      const literal = {
         storage: new MemoryStorageDriver(),
-        registry: {} as unknown as MemoryRegistryDriver, // no compareAndSwap
-      };
-      expect(() => new CloudRoaring({ storage: halfBuilt })).toThrow(/registry.*compareAndSwap/);
-      const noPut = {
-        storage: {} as unknown as IStorageDriver,
         registry: new MemoryRegistryDriver(),
-      };
-      expect(() => new CloudRoaring({ storage: noPut })).toThrow(/storage.*putImmutable/);
+      } as unknown as MemoryStorage;
+      expect(() => new CloudRoaring({ storage: literal })).toThrow(ValidationError);
+      expect(() => new CloudRoaring({ storage: literal })).toThrow(/must be a backend/);
+      expect(() => new CloudRoaring({ storage: literal })).toThrow(/MemoryStorage/);
+    });
+
+    // The bug the brand exists for: halves from two UNRELATED stores. Before it, this constructed happily and
+    // answered 0 for a segment holding 3 ids — data in one place, pointer read from another.
+    it('makes the mismatched-halves store unconstructible', async () => {
+      const a = new MemoryStorage();
+      const b = new MemoryStorage();
+      await bulkLoadCrbmGeneration(a.storage, { ...SEG, generation: 0 }, [1, 2, 3], {
+        registry: a.registry,
+      });
+      const frankenstein = { storage: a.storage, registry: b.registry } as unknown as MemoryStorage;
+      expect(() => new CloudRoaring({ storage: frankenstein })).toThrow(/must be a backend/);
     });
 
     it('rejects an ambiguous `storage` exposing both getChunk and putImmutable', () => {

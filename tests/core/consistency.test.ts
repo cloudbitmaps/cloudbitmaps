@@ -1,4 +1,5 @@
 import {
+  MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
   MemoryStorageDriver,
@@ -18,8 +19,8 @@ async function tearRestore(registry: MemoryRegistryDriver, ref: SegmentRef): Pro
 
 describe('runConsistencyCheck — a torn restore across the registry and the object store', () => {
   it('reports a coherent store as fully consistent', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     for (const s of ['a', 'b']) {
       await bulkLoadCrbmGeneration(storage, { segment: s, generation: 0 }, [1, 2], { registry });
     }
@@ -28,8 +29,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('detects a segment whose currentGen `.crbm` is missing (registry recovered ahead of Storage)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'ok', generation: 0 }, [1], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'torn', generation: 0 }, [1], { registry });
     await tearRestore(registry, { segment: 'torn' }); // currentGen → 1, but Storage only has gen 0
@@ -42,8 +43,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('skips a destroyed (crypto-shredded) segment — its Storage is intentionally gone', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'dead', generation: 0 }, [1], { registry });
     const rec = (await registry.get({ segment: 'dead' }))!;
     await registry.compareAndSwap({ segment: 'dead' }, rec.token, {
@@ -57,8 +58,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('scopes the scan to one namespace', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'x', namespace: 'a', generation: 0 }, [1], {
       registry,
     });
@@ -73,8 +74,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('isolates a per-segment read fault into errored[] (never aborts the scan)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'ok', generation: 0 }, [1], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 'bad', generation: 0 }, [1], { registry });
     const realList = storage.list.bind(storage);
@@ -93,8 +94,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('checks the LIVE pointer, not the enumeration snapshot (no false torn on a stale/lagging list)', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 's', generation: 0 }, [1], { registry });
     await bulkLoadCrbmGeneration(storage, { segment: 's', generation: 1 }, [1], { registry }); // a second load
     await storage.delete({ segment: 's', generation: 0 }); // GC reclaims the superseded gen — live is gen 1 only
@@ -112,8 +113,8 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
   });
 
   it('rejects a bad concurrency before scanning', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await expect(runConsistencyCheck({ storage, registry }, { concurrency: 0 })).rejects.toThrow(
       /concurrency/,
     );
@@ -122,12 +123,12 @@ describe('runConsistencyCheck — a torn restore across the registry and the obj
 
 describe('store.checkConsistency (facade)', () => {
   it('surfaces a torn restore through the store method', async () => {
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 's', generation: 0 }, [1], { registry });
     await tearRestore(registry, { segment: 's' });
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: backend,
       retry: false,
     });
     const report = await store.checkConsistency();

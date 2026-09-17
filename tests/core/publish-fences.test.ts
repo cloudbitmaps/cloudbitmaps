@@ -3,7 +3,12 @@ import { eraseIdFromSegment } from '@/core/erase-id';
 import { publishGeneration } from '@/core/crbm-storage-source';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 import { InProcessKeystore } from '@/drivers/crypto';
-import { CloudRoaring, MemoryStorageChunkSource, bulkLoadCrbmGeneration } from '@/index';
+import {
+  createBackend,
+  CloudRoaring,
+  MemoryStorageChunkSource,
+  bulkLoadCrbmGeneration,
+} from '@/index';
 import type { ChunkRef, IStorageDriver, IKeystore, SegmentRef } from '@/index';
 import { roaringCodec } from '@/roaring-codec';
 import { collect, loadedStore, seedSegment } from '../helpers/loaded';
@@ -44,7 +49,7 @@ async function world(keystore?: IKeystore) {
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
       encryption: { keystore },
     });
@@ -247,7 +252,7 @@ describe("a segment's encryption posture is decided at its first generation", ()
     expect(await collect(w.reader().segment('s').iterate())).toEqual([1, 2, 3, 4]);
     // Readable WITHOUT the keystore too — the proof that nothing was encrypted under a stranded key.
     const keyless = new CloudRoaring({
-      storage: { storage: w.storage, registry: w.registry },
+      storage: w.backend,
       retry: false,
     });
     expect(await keyless.segment('s').count()).toBe(4);
@@ -362,7 +367,7 @@ describe('a materialisation reports whether it actually landed', () => {
       },
     };
     const store = new CloudRoaring({
-      storage: { storage: storage, registry: w.registry },
+      storage: createBackend({ storage: storage, registry: w.registry }),
       retry: false,
     });
 

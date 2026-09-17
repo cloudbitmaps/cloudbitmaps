@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  createBackend,
   CloudRoaring,
   CrbmStorageChunkSource,
   DEFAULT_RETIRE_LIMIT,
@@ -51,7 +52,7 @@ function world() {
   const clock = { now: () => T0, sleep: (): Promise<void> => Promise.resolve() };
   const store = (): CloudRoaring =>
     new CloudRoaring({
-      storage: { storage: storage, registry: registry },
+      storage: createBackend({ storage, registry }),
       retry: false,
       seams: { clock },
     });

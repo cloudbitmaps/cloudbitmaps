@@ -10,6 +10,7 @@
  */
 import { Storage as GcsClient } from '@google-cloud/storage';
 import { ValidationError } from '@/core/errors';
+import { STORAGE_BACKEND } from '@/core/ports';
 import type { IRegistryDriver, IStorageDriver, StorageBackend } from '@/core/ports';
 import { GcsStorageDriver } from './storage';
 import { GcsRegistryDriver } from './registry';
@@ -37,6 +38,8 @@ export interface GcsStorageOptions {
 }
 
 export class GcsStorage implements StorageBackend {
+  /** Cross-bundle brand: only a real backend class carries it. */
+  readonly [STORAGE_BACKEND] = true as const;
   readonly storage: IStorageDriver;
   readonly registry: IRegistryDriver;
   /** The client both halves share — built here unless one was supplied. */

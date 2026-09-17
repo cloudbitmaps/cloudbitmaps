@@ -29,6 +29,7 @@ import {
   CrbmStorageChunkSource,
   DEFAULT_BUDGET,
   DEFAULT_RETRY_POLICY,
+  isStorageBackend,
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
@@ -428,43 +429,44 @@ function resolveStorageSource(
   const asBackend = storage as Partial<StorageBackend>;
   const isObject = (v: unknown): v is Record<string, unknown> =>
     v !== null && typeof v === 'object';
-  const storageHalfOk =
-    isObject(asBackend.storage) && typeof asBackend.storage.putImmutable === 'function';
-  const registryHalfOk =
-    isObject(asBackend.registry) && typeof asBackend.registry.compareAndSwap === 'function';
-  const hasBothHalves = storageHalfOk && registryHalfOk;
-
   const hasGetChunk = typeof (storage as Partial<StorageChunkSource>).getChunk === 'function';
   const hasPutImmutable = typeof (storage as Partial<IStorageDriver>).putImmutable === 'function';
 
-  // A decorator is the reason this is checked BEFORE the backend branch. An `IStorageDriver` wrapper that
-  // keeps the thing it wraps on `.storage` — the natural field name now that the tier is called storage — and
-  // a registry on `.registry` satisfies the backend duck-test at the same time as the driver one. Dispatching
-  // on the backend shape alone would read straight through to the halves, and the wrapper's own
-  // `putImmutable`/`getRange`/`getTail` would never run: an audit, metrics, tenant-scoping or client-side
-  // encryption layer silently removed, every answer still correct-looking. That is the exact failure this
-  // whole `StorageBackend` shape exists to rule out, so it is refused rather than guessed at.
-  if (hasBothHalves && (hasGetChunk || hasPutImmutable)) {
+  // The BRAND decides, not the shape. `{ storage, registry }` is also the shape of the free functions' deps
+  // object, so before the brand any literal satisfied it — including one holding halves from two unrelated
+  // stores, which the store accepted and then answered empty for a segment that holds data.
+  const isBackend = isStorageBackend(storage);
+
+  // A branded backend that ALSO quacks like a driver or a source is genuinely ambiguous. Unreachable for the
+  // five classes, kept because the alternative to refusing is guessing.
+  if (isBackend && (hasGetChunk || hasPutImmutable)) {
     throw new ValidationError(
-      '`storage` looks like BOTH a StorageBackend (it has `.storage` and `.registry`) and a ' +
-        `${hasGetChunk ? 'StorageChunkSource (it has `getChunk`)' : 'IStorageDriver (it has `putImmutable`)'}` +
-        ' — ambiguous. If this is a driver that wraps another, rename its inner field so it is not `.storage`, ' +
-        'and pass `{ storage: <your wrapper>, registry }` to use it as a backend.',
+      '`storage` is a StorageBackend that also exposes ' +
+        `${hasGetChunk ? '`getChunk`' : '`putImmutable`'} — ambiguous. A backend must not also be a driver ` +
+        'or a source; pass whichever one you mean.',
     );
   }
 
-  // Both halves are present but one fails its duck-test — say which, rather than repeating the generic list.
-  if (!hasBothHalves && isObject(asBackend.storage) && isObject(asBackend.registry)) {
-    const bad = !storageHalfOk
-      ? '`storage` half is missing `putImmutable`'
-      : '`registry` half is missing `compareAndSwap`';
+  // Shaped like a backend but unbranded: a hand-assembled literal. Name the classes rather than the shape,
+  // because "add the missing field" is the wrong lesson — the point is that a backend derives BOTH halves
+  // from one bucket and one prefix, which is what makes a mismatch between them unexpressible.
+  if (
+    !isBackend &&
+    !hasGetChunk &&
+    !hasPutImmutable &&
+    isObject(asBackend.storage) &&
+    isObject(asBackend.registry)
+  ) {
     throw new ValidationError(
-      `\`storage\` looks like a StorageBackend but its ${bad} — pass a backend such as S3Storage, GcsStorage, ` +
-        'AzureBlobStorage, LocalFsStorage or MemoryStorage, or an object with both halves fully implemented',
+      '`storage` must be a backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ' +
+        'MemoryStorage. An object with `.storage` and `.registry` is not one: a backend builds both halves ' +
+        'from a single bucket and prefix, so they cannot disagree, and hand-assembling them re-opens exactly ' +
+        'that mismatch — a store whose pointer and generations live in different places reads as empty ' +
+        'rather than failing.',
     );
   }
 
-  if (hasBothHalves) {
+  if (isBackend) {
     const backend = storage as StorageBackend;
     return {
       source: new CrbmStorageChunkSource(backend.storage, {

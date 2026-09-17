@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  createBackend,
   CloudRoaring,
   CountingMetricsSink,
   MemoryStorage,
@@ -127,7 +128,7 @@ describe('grouped options reach the thing they configure', () => {
       list: (...a) => backend.storage.list(...a),
     };
     const store = new CloudRoaring({
-      storage: { storage: counting, registry: backend.registry },
+      storage: createBackend({ storage: counting, registry: backend.registry }),
       cache,
     });
     for (let i = 0; i < 4; i++) {

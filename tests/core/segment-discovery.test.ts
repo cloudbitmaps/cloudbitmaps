@@ -1,4 +1,10 @@
-import { CloudRoaring, MemoryStorageDriver, MemoryRegistryDriver } from '@/index';
+import {
+  createBackend,
+  MemoryStorage,
+  CloudRoaring,
+  MemoryStorageDriver,
+  MemoryRegistryDriver,
+} from '@/index';
 import type { IRegistryDriver } from '@/core/ports';
 import { UnsupportedError, ValidationError } from '@/core/errors';
 
@@ -10,7 +16,7 @@ import { UnsupportedError, ValidationError } from '@/core/errors';
 
 const store = (): CloudRoaring =>
   new CloudRoaring({
-    storage: { storage: new MemoryStorageDriver(), registry: new MemoryRegistryDriver() },
+    storage: new MemoryStorage(),
   });
 
 const drain = async <T>(it: AsyncIterable<T>): Promise<T[]> => {
@@ -84,7 +90,7 @@ describe('exists()', () => {
       list: (ns?: string) => registry.list(ns),
     };
     const s = new CloudRoaring({
-      storage: { storage: new MemoryStorageDriver(), registry: counting },
+      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
 
     await expect(s.exists({ segment: '' })).rejects.toBeInstanceOf(ValidationError);
@@ -103,9 +109,9 @@ describe('exists()', () => {
     // The documented exception. `exists()` reports on the POINTER; a live pointer whose object was deleted is
     // the forbidden `missing-storage-generation` state, where reads THROW rather than answer empty.
     // `checkConsistency` is the call that looks for it, and the JSDoc says so rather than over-claiming.
-    const storage = new MemoryStorageDriver();
-    const registry = new MemoryRegistryDriver();
-    const s = new CloudRoaring({ storage: { storage: storage, registry: registry } });
+    const backend = new MemoryStorage();
+    const { storage } = backend;
+    const s = new CloudRoaring({ storage: backend });
     await s.load({ segment: 'torn' }, [1, 2]);
     await storage.delete({ segment: 'torn', generation: 0 });
 
@@ -176,7 +182,7 @@ describe('segments()', () => {
       },
     };
     const s = new CloudRoaring({
-      storage: { storage: new MemoryStorageDriver(), registry: counting },
+      storage: createBackend({ storage: new MemoryStorageDriver(), registry: counting }),
     });
     for (const n of ['a', 'b', 'c', 'd', 'e', 'f']) await s.load({ segment: n }, [1]);
 
@@ -227,7 +233,7 @@ describe('segments()', () => {
     // number, which is clock-dependent.
     const registry = new MemoryRegistryDriver();
     const s = new CloudRoaring({
-      storage: { storage: new MemoryStorageDriver(), registry: registry },
+      storage: createBackend({ storage: new MemoryStorageDriver(), registry: registry }),
     });
     await s.load({ segment: 'real' }, [1]);
     await s.setRetention({ segment: 'real' }, { expiresAt: Date.now() + 86_400_000 });

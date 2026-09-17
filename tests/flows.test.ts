@@ -1,12 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  CloudRoaring,
-  LocalFsStorageDriver,
-  LocalFsRegistryDriver,
-  RecordingAuditSink,
-} from '@/index';
+import { LocalFsStorage, CloudRoaring, RecordingAuditSink } from '@/index';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { randomBytes } from 'node:crypto';
 
@@ -28,7 +23,7 @@ afterEach(async () => {
 
 const store = (opts: { keystore?: InProcessKeystore } = {}): CloudRoaring =>
   new CloudRoaring({
-    storage: { storage: new LocalFsStorageDriver(root), registry: new LocalFsRegistryDriver(root) },
+    storage: new LocalFsStorage(root),
     retry: false,
     ...(opts.keystore === undefined ? {} : { encryption: { keystore: opts.keystore } }),
   });
