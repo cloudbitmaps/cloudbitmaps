@@ -53,6 +53,11 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   never will.) And the SDK-free gate got stronger: it used to lean on the CJS bundle inlining lazily-imported
   modules, and now walks the main entry's transitive closure directly, through `import()` as well as `from`.
 
+  The floor is now **exercised**, not just declared: a CI job pins `node-version: 22.12` and runs the smoke
+  test, which `require()`s every entry through the published exports map. Every other job says `22`, which
+  resolves to the latest 22.x — eleven minors above the floor — so until now nothing had ever run the version
+  `engines` promises.
+
 ### Fixed
 
 - **Published types now resolve under `node16`/`nodenext`.** The emitted `.d.ts` files named their relative

@@ -162,7 +162,7 @@ function declarationFiles(dist, { includeDrivers = false } = {}) {
 }
 
 function assertEntrySdkFree(pkgDir) {
-  const { readFileSync, existsSync } = require('node:fs');
+  const { readFileSync, existsSync, statSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
@@ -187,7 +187,13 @@ function assertEntrySdkFree(pkgDir) {
       seen.add(rel);
       for (const spec of allSpecifiers(read(rel))) {
         const next = path.normalize(path.join(path.dirname(rel), spec));
-        if (existsSync(path.join(dist, next))) queue.push(next);
+        // Stay inside dist/, and only follow real files. Without the first check a stray `../package.json`
+        // would be read and reported as a leak, naming the SDKs in `peerDependencies` — an accusation about
+        // a file that is not even shipped. Without the second, a directory specifier passes `existsSync`
+        // and then throws EISDIR out of `readFileSync`, which names no gate and no cause.
+        if (next.startsWith('..')) continue;
+        if (!statSync(path.join(dist, next), { throwIfNoEntry: false })?.isFile()) continue;
+        queue.push(next);
       }
     }
     return [...seen];
