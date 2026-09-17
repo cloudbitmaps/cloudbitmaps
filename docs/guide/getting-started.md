@@ -20,6 +20,60 @@
 > **[API Reference](api-reference.md)** — it's kept in sync with the code by CI. This guide is the narrated
 > walkthrough of that same surface.
 
+## The whole surface, in three steps
+
+```
+  ┌─ STEP 1 ── pick a backend ────────────────────────────────────────────┐
+  │  MemoryStorage()          LocalFsStorage(root)                        │
+  │  S3Storage({ bucket, prefix })   GcsStorage(…)   AzureBlobStorage(…)  │
+  │                                                                       │
+  │  One object. It derives BOTH halves — where the generations go, and   │
+  │  where the pointer that says which one is current goes — from one     │
+  │  bucket and one prefix.                                               │
+  └───────────────────────────────────────────────────────────────────────┘
+                                    │
+  ┌─ STEP 2 ── build a store ─────────────────────────────────────────────┐
+  │  new CloudRoaring({                                                   │
+  │    storage,                          ← the ONLY required option       │
+  │    cache?, encryption?, retry?, metrics?, budget?, seams?             │
+  │  })                                                                   │
+  └───────────────────────────────────────────────────────────────────────┘
+                                    │
+  ┌─ STEP 3 ── call verbs ────────────────────────────────────────────────┐
+  │                                                                       │
+  │  on the STORE                      on a SEGMENT                       │
+  │  ─────────────                     ──────────────                     │
+  │  load(ref, ids)      ← the write   has(id)      count()   iterate()   │
+  │  segment(name, opts)               intersect()  union()   andNot()    │
+  │  exists()  segments()              intersectInto() unionInto()        │
+  │  generations() rollback()          andNotInto()                       │
+  │  dropSegment() retireExpired()     pin()        ← one fixed instant   │
+  │  setRetention() getRetention()     costReport()                       │
+  │  clearRetention()                                                     │
+  │  eraseSubject() subjectReport()    ← GDPR Art. 17 / Art. 15           │
+  │  checkConsistency() exportSegments()                                  │
+  └───────────────────────────────────────────────────────────────────────┘
+```
+
+```ts
+import { CloudRoaring } from '@cloudbitmaps/roaring';
+import { S3Storage } from '@cloudbitmaps/roaring/s3';
+
+const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
+
+const r = await store.load({ segment: 'vips' }, idsFromWarehouse());
+if (!r.published) logger.warn({ reason: r.reason, had: r.cardinalityBefore });
+
+for await (const id of store.segment('vips').intersect([store.segment('engaged')])) {
+  /* the audience */
+}
+```
+
+**You never name a registry, a generation number or a driver.** They exist and are exported, but a store, a
+backend and the verbs above are the whole surface — everything below here is detail.
+
+The rest of this guide walks each step in turn.
+
 ## What works today
 
 | Capability | Status |
