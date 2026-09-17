@@ -47,7 +47,7 @@ describe('destructive verbs invalidate what this store derived from the segment'
     ]);
   });
 
-  it('a pinned store (storageGenTtlMs: 0) converges too — it never would on the TTL', async () => {
+  it('a pinned store (cache.genTtlMs: 0) converges too — it never would on the TTL', async () => {
     // "Pin forever" is a documented setting. Without an explicit signal this window never closes at all.
     const storage = new MemoryStorageDriver();
     const registry = new MemoryRegistryDriver();

@@ -23,7 +23,7 @@ const k = (): Uint8Array => randomBytes(32);
  * next generation) and the erasure rewrite's deps.
  *
  * `store(ks)` opens a *fresh* reader each call, which is deliberate: a store pins the generation it resolved
- * (`storageGenTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
+ * (`cache.genTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
  * since — the honest model of a different reader, with no clock to advance.
  */
 function world(keystore?: IKeystore) {

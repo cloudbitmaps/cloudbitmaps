@@ -10,7 +10,13 @@ import {
 import { InProcessKeystore } from '@/drivers/crypto';
 import { MemoryStorageChunkSource, SafeBitmap } from '@/index';
 import { TransientError } from '@/core/errors';
-import type { ChunkRef, Clock, SegmentRef as Ref, StorageChunkSource } from '@/index';
+import type {
+  ChunkRef,
+  Clock,
+  IStorageDriver,
+  SegmentRef as Ref,
+  StorageChunkSource,
+} from '@/index';
 import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 
@@ -89,6 +95,61 @@ describe('grouped options reach the thing they configure', () => {
     expect(metrics.snapshot().cache.misses).toBe(6);
   });
 
+  // `reader-cache.test.ts` covers these bounds thoroughly — but it constructs `CrbmStorageChunkSource`
+  // DIRECTLY, so it cannot see whether the facade passes the caller's value through. Both mutants survived
+  // the whole suite. That matters more than it looks: `MOVED_OPTIONS`' own comment names this exact failure
+  // as the reason the guard exists ("a dropped readerMaxBytes restores a 64 MiB ceiling someone had
+  // deliberately lowered for a small heap") — the guard protected the OLD spelling while nothing protected
+  // the new one.
+  //
+  // The effect: one reader, two segments, read alternately. At a ceiling of 1 each read evicts the other's
+  // reader and must re-open it with a fresh tail GET; at the default both stay open.
+  // Re-opening an evicted reader costs a TAIL read, not a chunk GET, so count at the driver rather than
+  // through the metrics sink (which counts chunk gets and is identical either way — my first version of this
+  // test asserted on that and could not tell the two ceilings apart).
+  const alternatingTailReads = async (cache: Record<string, number>): Promise<number> => {
+    const backend = new MemoryStorage();
+    for (const seg of ['a', 'b']) {
+      await bulkLoadCrbmGeneration(backend.storage, { segment: seg, generation: 0 }, [1], {
+        registry: backend.registry,
+      });
+    }
+    let tails = 0;
+    const counting: IStorageDriver = {
+      capabilities: () => backend.storage.capabilities(),
+      putImmutable: (...a) => backend.storage.putImmutable(...a),
+      getRange: (...a) => backend.storage.getRange(...a),
+      getTail: (...a) => {
+        tails += 1;
+        return backend.storage.getTail(...a);
+      },
+      delete: (...a) => backend.storage.delete(...a),
+      list: (...a) => backend.storage.list(...a),
+    };
+    const store = new CloudRoaring({
+      storage: { storage: counting, registry: backend.registry },
+      cache,
+    });
+    for (let i = 0; i < 4; i++) {
+      await store.segment('a').has(1);
+      await store.segment('b').has(1);
+    }
+    return tails;
+  };
+
+  it('`cache.readerMax` bounds how many `.crbm` readers stay open', async () => {
+    const bounded = await alternatingTailReads({ readerMax: 1 });
+    const roomy = await alternatingTailReads({ readerMax: 64 });
+    expect(bounded).toBeGreaterThan(roomy);
+  });
+
+  it('`cache.readerMaxBytes` bounds the same thing by parsed-index bytes', async () => {
+    // One byte cannot hold any parsed index, so every open evicts the previous reader.
+    const bounded = await alternatingTailReads({ readerMaxBytes: 1 });
+    const roomy = await alternatingTailReads({ readerMaxBytes: 64 * 1024 * 1024 });
+    expect(bounded).toBeGreaterThan(roomy);
+  });
+
   it('`metrics` and `budget` still apply, ungrouped', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...SEG, generation: 0 }, [1], {
@@ -101,7 +162,10 @@ describe('grouped options reach the thing they configure', () => {
       for await (const _id of store.segment('s').intersect([store.segment('s')]));
     };
     await expect(drain()).rejects.toThrow(BudgetExceededError);
-    expect(metrics.snapshot().storage.gets).toBeGreaterThanOrEqual(0);
+    // A plain read, so the sink has something to have recorded. `>= 0` would pass against a store that
+    // ignored `metrics` entirely, since a fresh sink snapshots 0.
+    await store.segment('s').has(1);
+    expect(metrics.snapshot().storage.gets).toBeGreaterThan(0);
   });
 
   // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five — and `onRetry` was a
@@ -136,11 +200,12 @@ describe('an option that moved into a group is refused, not ignored', () => {
     ['storageGenTtlMs', 0, 'cache.genTtlMs'],
     ['storageReaderCacheMax', 8, 'cache.readerMax'],
     ['storageReaderCacheMaxBytes', 1024, 'cache.readerMaxBytes'],
+    ['keystore', {}, 'encryption.keystore'],
     ['requireEncryption', true, 'encryption.required'],
     ['onRetry', () => {}, 'retry.onRetry'],
     ['rng', { next: () => 0.5 }, 'seams.rng'],
     ['registry', new MemoryRegistryDriver(), 'backend'],
-    ['cold', new MemoryStorageDriver(), 'storage'],
+    ['cold', new MemoryStorageDriver(), '`cold` → `storage`'],
   ])('rejects `%s` and names where it went', (key, value, expected) => {
     expect(() => build({ [key]: value })).toThrow(ValidationError);
     expect(() => build({ [key]: value })).toThrow(new RegExp(expected.replace('.', '\\.')));
@@ -237,6 +302,39 @@ describe('a partial retry policy fills from the default, even for an explicit un
 
   it('one override keeps the other four defaults', async () => {
     expect(await sleepsFor({ baseDelayMs: 7 })).toEqual([7, 14]);
+  });
+
+  // Each of the next two exists because the assertion above CANNOT see the field it names. `[7, 14]` is
+  // 7 × 2, and 2 is the default `backoffFactor` — so a store that ignored the caller's factor produces the
+  // same schedule. Likewise no test here ever reached the `maxDelayMs` cap, so the cap was never
+  // load-bearing. Both overrides survived being forced back to their defaults until these landed.
+  it('a non-default `backoffFactor` actually shapes the curve', async () => {
+    // Default factor 2 would give [10, 20]; only a factor of 3 gives 30.
+    expect(await sleepsFor({ baseDelayMs: 10, backoffFactor: 3 })).toEqual([10, 30]);
+  });
+
+  // Same blind spot, third field: the fixture fails twice and the default allows four attempts, so every
+  // schedule above succeeds whatever `maxAttempts` says. It is only observable where it is load-bearing —
+  // a budget too small for the faults.
+  it('`maxAttempts` actually bounds the attempts', async () => {
+    const build = (retry: Record<string, unknown>, failTimes: number): CloudRoaring => {
+      const inner = new MemoryStorageChunkSource();
+      inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([42]).serialize());
+      return new CloudRoaring({
+        storage: new FlakyOnce(inner, failTimes),
+        retry: retry as { maxAttempts?: number },
+        seams: { clock: recordingClock(), rng: { next: () => 1 } },
+      });
+    };
+    // Three faults: the default (4 attempts = 1 try + 3 retries) rides them out…
+    expect(await build({}, 3).segment('s').has(42)).toBe(true);
+    // …and a budget of 2 gives up, surfacing the fault instead of silently retrying past the caller's limit.
+    await expect(build({ maxAttempts: 2 }, 3).segment('s').has(42)).rejects.toThrow(TransientError);
+  });
+
+  it('`maxDelayMs` actually caps the growth', async () => {
+    // Second delay wants 200; the cap holds it at 150. The default cap (2000) would let 200 through.
+    expect(await sleepsFor({ baseDelayMs: 100, maxDelayMs: 150 })).toEqual([100, 150]);
   });
 
   // The regression. Each of these produced NaN delays — a ~1 ms hot loop — under a plain spread.

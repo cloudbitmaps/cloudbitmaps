@@ -70,7 +70,7 @@ async function world(keystore?: InProcessKeystore) {
   );
   // A FRESH store per read (`w.store()` is a factory, not the fixture's single instance): the fixture passes no
   // clock, so a store pins each segment's resolved generation for its own lifetime — the documented
-  // `storageGenTtlMs: 0` caveat. Wiring only; no hot-path cost.
+  // `cache.genTtlMs: 0` caveat. Wiring only; no hot-path cost.
   const store = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },

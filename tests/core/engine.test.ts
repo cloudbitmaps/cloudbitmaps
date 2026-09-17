@@ -1,7 +1,7 @@
 import { CloudRoaring, IntegrityError, type Clock, type StorageChunkSource } from '@/index';
 import { collect, loadedStore, seedSegment, seededStore } from '../helpers/loaded';
 
-/** A controllable clock, so the store's generation refresh (`storageGenTtlMs`) is driven by the test, not wall time. */
+/** A controllable clock, so the store's generation refresh (`cache.genTtlMs`) is driven by the test, not wall time. */
 function fakeClock(): Clock & { advance: (ms: number) => void } {
   let t = 0;
   return { now: () => t, sleep: () => Promise.resolve(), advance: (ms) => (t += ms) };
@@ -28,7 +28,7 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
 
   it('a reload REPLACES the set — readers see the new generation, and only it', async () => {
     // There is no add/remove: the only way ids leave a segment is a generation that does not hold them. A
-    // reader re-resolves the current generation after `storageGenTtlMs`, driven here by the injected clock.
+    // reader re-resolves the current generation after `cache.genTtlMs`, driven here by the injected clock.
     const clock = fakeClock();
     const { store, load, registry } = await loadedStore(
       { users: [1, 2, 70_000, 70_001] },
