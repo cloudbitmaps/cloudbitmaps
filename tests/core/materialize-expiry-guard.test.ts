@@ -37,7 +37,10 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: [1, 2, 3], b: [2, 3, 4], dest: [9] },
-      { clock, storageGenTtlMs: 0 },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
     );
     clock.set(PAST + 1); // b's deadline has passed
     const a = store.segment('a');
@@ -57,7 +60,10 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: [1, 2], b: [2], dest: [9] },
-      { clock, storageGenTtlMs: 0 },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
     );
     clock.set(PAST + 1);
     const expiredSource = store.segment('a', { expiresAt: PAST });
@@ -69,7 +75,13 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
 
   it('refuses when the DESTINATION handle has expired — a contradiction worth surfacing', async () => {
     const clock = fakeClock();
-    const { store } = await loadedStore({ a: [1, 2], b: [2] }, { clock, storageGenTtlMs: 0 });
+    const { store } = await loadedStore(
+      { a: [1, 2], b: [2] },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
+    );
     clock.set(PAST + 1);
     const dest = store.segment('dest', { expiresAt: PAST });
     await expect(store.segment('a').intersectInto(dest, [store.segment('b')])).rejects.toThrow(
@@ -81,7 +93,10 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
     const clock = fakeClock();
     const { store } = await loadedStore(
       { a: [1, 2, 3], b: [1, 2, 3], suppress: [2] },
-      { clock, storageGenTtlMs: 0 },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
     );
     clock.set(PAST + 1);
     await expect(
@@ -95,7 +110,10 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
     const clock = fakeClock();
     const { store } = await loadedStore(
       { a: [1], b: [2], dest: [9] },
-      { clock, storageGenTtlMs: 0 },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
     );
     clock.set(PAST + 1);
     const dest = store.segment('dest');
@@ -106,7 +124,13 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
 
   it('names EVERY expired handle in one message, deduplicated, and namespace-qualified', async () => {
     const clock = fakeClock();
-    const { store, load } = await loadedStore({ b: [1], dest: [9] }, { clock, storageGenTtlMs: 0 });
+    const { store, load } = await loadedStore(
+      { b: [1], dest: [9] },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
+    );
     await load({ namespace: 'acme', segment: 'c' }, [1]); // a namespaced operand, to prove the qualification
     clock.set(PAST + 1);
     // `b` twice — the operand list and the exclude list both carry it — and once is enough in the message.
@@ -126,7 +150,13 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
 
   it('does NOT refuse when nothing has expired, or once the deadline is in the future again', async () => {
     const clock = fakeClock();
-    const { store } = await loadedStore({ a: [1, 2, 3], b: [2, 3] }, { clock, storageGenTtlMs: 0 });
+    const { store } = await loadedStore(
+      { a: [1, 2, 3], b: [2, 3] },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
+    );
     const result = await store
       .segment('a')
       .intersectInto(store.segment('dest'), [store.segment('b', { expiresAt: FUTURE })]);
@@ -136,7 +166,13 @@ describe('the *Into verbs refuse an expired handle instead of publishing over th
 
   it('leaves the READ verbs alone — an expired operand still degrades to empty, silently and cheaply', async () => {
     const clock = fakeClock();
-    const { store } = await loadedStore({ a: [1, 2, 3], b: [2, 3] }, { clock, storageGenTtlMs: 0 });
+    const { store } = await loadedStore(
+      { a: [1, 2, 3], b: [2, 3] },
+      {
+        cache: { genTtlMs: 0 },
+        seams: { clock },
+      },
+    );
     clock.set(PAST + 1);
     const a = store.segment('a');
     const expiredB = store.segment('b', { expiresAt: PAST });

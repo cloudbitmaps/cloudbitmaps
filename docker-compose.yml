@@ -1,3 +1,9 @@
+# Pinned so every git worktree shares ONE set of emulators. Compose otherwise derives the project name
+# from the directory, so a second worktree gets its own project — `down -v` there wipes nothing, while
+# the first project's containers keep the ports and their data. The tests then read a dirty store and
+# fail with `generation already exists (write-once)`, which reads exactly like a real regression.
+name: cloud-roaring
+
 # Local integration backends — no real AWS needed.
 # Usage: `docker compose up -d` then `pnpm test:integration`.
 #

@@ -43,7 +43,13 @@ const SEG: SegmentRef = { namespace: 'active-daily', segment: '2026-08-01' };
 const CONFIRM = { confirmSegment: SEG.segment };
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   const deps: DropDeps = { storage: w.storage, registry: w.registry };
   return { ...w, deps };
 }

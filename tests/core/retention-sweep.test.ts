@@ -50,7 +50,11 @@ function world() {
   const dropDeps: DropDeps = { registry, storage };
   const clock = { now: () => T0, sleep: (): Promise<void> => Promise.resolve() };
   const store = (): CloudRoaring =>
-    new CloudRoaring({ storage: { storage: storage, registry: registry }, retry: false, clock });
+    new CloudRoaring({
+      storage: { storage: storage, registry: registry },
+      retry: false,
+      seams: { clock },
+    });
   /**
    * Put `ids` in a segment the only way anything can: load them as its next generation and publish. A fresh
    * `store()` per read, because a store pins each segment's resolved generation (the clock here never advances).

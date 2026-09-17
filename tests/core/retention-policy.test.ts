@@ -61,15 +61,21 @@ const DAY = 86_400_000;
 const FUTURE = MIN_EXPIRES_AT_MS + 500 * DAY;
 
 async function world(keystore?: InProcessKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   // A FRESH store per read (`w.store()` is a factory, not the fixture's single instance): the fixture passes no
   // clock, so a store pins each segment's resolved generation for its own lifetime — the documented
   // `storageGenTtlMs: 0` caveat. Wiring only; no hot-path cost.
   const store = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      keystore,
       retry: false,
+      encryption: { keystore },
     });
   return { ...w, store };
 }

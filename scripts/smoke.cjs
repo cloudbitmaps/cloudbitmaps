@@ -36,12 +36,20 @@ async function exerciseCore(label, m) {
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  const storage = new m.MemoryStorageDriver();
-  const registry = new m.MemoryRegistryDriver({ now: () => 0 });
-  await m.bulkLoadCrbmGeneration(storage, { segment: 'smoke', generation: 0 }, [42, 70_000], {
-    registry,
-  });
-  const seg = new m.CloudRoaring({ storage, registry }).segment('smoke');
+  // A BACKEND, which is what the docs tell users to build. This previously wired a raw driver plus a
+  // `registry` option — and that option stopped existing when the backend class landed, so the pointer path
+  // it meant to exercise had been silently dead here ever since: a store with one generation list-scans to
+  // the same answer, so the round-trip kept passing. This file is plain CJS, so no compiler was going to say.
+  const backend = new m.MemoryStorage({ now: () => 0 });
+  await m.bulkLoadCrbmGeneration(
+    backend.storage,
+    { segment: 'smoke', generation: 0 },
+    [42, 70_000],
+    {
+      registry: backend.registry,
+    },
+  );
+  const seg = new m.CloudRoaring({ storage: backend }).segment('smoke');
   const ok = (await seg.has(42)) && (await seg.has(70_000)) && (await seg.count()) === 2;
   if (!ok) throw new Error(`${label}: load/read round-trip returned a wrong result`);
 }

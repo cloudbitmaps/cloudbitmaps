@@ -26,14 +26,20 @@ const SEG: SegmentRef = { namespace: 'ns', segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
   /** A FRESH store: the fixture pins a segment's generation for the store's lifetime (no clock ⇒ TTL 0). */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      keystore,
       retry: false,
+      encryption: { keystore },
     });
   /** A fresh store with NO keystore — what an encrypted segment must be unreadable through. */
   const keylessReader = (): CloudRoaring =>

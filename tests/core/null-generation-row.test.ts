@@ -42,13 +42,19 @@ import { collect, loadedStore } from '../helpers/loaded';
 const SEG: SegmentRef = { segment: 's' };
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      keystore,
       retry: false,
+      encryption: { keystore },
     });
   return { ...w, reader };
 }

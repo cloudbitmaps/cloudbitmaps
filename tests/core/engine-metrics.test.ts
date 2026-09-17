@@ -96,8 +96,7 @@ describe('metrics emission (via CloudRoaring)', () => {
     const store = new CloudRoaring({
       storage: new FaultyStorage(inner, 1),
       metrics: counter,
-      clock: instantClock,
-      rng: zeroRng,
+      seams: { clock: instantClock, rng: zeroRng },
     });
     expect(await store.segment('users').has(5)).toBe(true);
     const snap = counter.snapshot();

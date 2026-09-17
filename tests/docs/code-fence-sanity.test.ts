@@ -175,6 +175,20 @@ describe('documentation code samples', () => {
     'coldGenTtlMs',
     'coldReaderCacheMax',
     'coldReaderCacheMaxBytes',
+    // The 15 flat options became six groups. Each of these is now a member of a group, and a sample still
+    // passing the flat spelling is not merely out of date: the store REFUSES it, so the sample throws on its
+    // first line. They are listed here rather than left to review because the previous regrouping-adjacent
+    // change shipped three broken samples.
+    'cacheMaxChunks',
+    'cacheTtlMs',
+    'storageGenTtlMs',
+    'storageReaderCacheMax',
+    'storageReaderCacheMaxBytes',
+    'requireEncryption',
+    // `onRetry`, `keystore`, `clock` and `rng` are deliberately NOT listed: each still exists as a key, just
+    // one level down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several are also
+    // valid on the free-function deps objects. Listing them made this gate fire on the correct new spelling.
+    // Only spellings that vanished outright belong here.
   ] as const;
 
   // A migration note has to show the old spelling — that is its whole job. So the rule is not "never write

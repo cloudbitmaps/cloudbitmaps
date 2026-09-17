@@ -19,7 +19,7 @@ import {
   bulkLoadCrbmGeneration,
   splitId,
 } from '@/index';
-import type { BulkLoadResult, CloudRoaringOptions, IKeystore, SegmentRef } from '@/index';
+import type { BulkLoadResult, CloudRoaringOptions, SegmentRef } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 
 /** Normalise a segment name or ref to a ref. */
@@ -85,18 +85,19 @@ export interface LoadedStore {
  *
  * So, to observe a re-load, do one of these deliberately:
  *   · construct a **second** store over the same `storage` + `registry` (the honest model of a different reader), or
- *   · pass `{ clock, storageGenTtlMs: 1 }` and advance the clock, which exercises the refresh path itself.
+ *   · pass `{ seams: { clock }, cache: { genTtlMs: 1 } }` and advance the clock, which exercises the refresh path itself.
  */
 export async function loadedStore(
   segments: Record<string, Iterable<number>> = {},
-  options: Omit<CloudRoaringOptions, 'storage'> & { keystore?: IKeystore } = {},
+  options: Omit<CloudRoaringOptions, 'storage'> = {},
 ): Promise<LoadedStore> {
   const storage = new MemoryStorageDriver();
   const registry = new MemoryRegistryDriver();
-  const pinned = options.clock === undefined && options.storageGenTtlMs === undefined;
+  const pinned = options.seams?.clock === undefined && options.cache?.genTtlMs === undefined;
   const store = new CloudRoaring({
-    ...(pinned ? { storageGenTtlMs: 0 } : {}),
     ...options,
+    // Pin the generation unless the caller is deliberately exercising the refresh path.
+    ...(pinned ? { cache: { ...options.cache, genTtlMs: 0 } } : {}),
     storage: { storage: storage, registry: registry },
   });
   const load: LoadedStore['load'] = async (seg, ids) => {
@@ -107,8 +108,8 @@ export async function loadedStore(
       if (key.generation > generation) generation = key.generation;
     return bulkLoadCrbmGeneration(storage, { ...ref, generation: generation + 1 }, ids, {
       registry,
-      keystore: options.keystore,
-      requireEncryption: options.requireEncryption,
+      keystore: options.encryption?.keystore,
+      requireEncryption: options.encryption?.required,
     });
   };
   for (const [name, ids] of Object.entries(segments)) await load(name, ids);

@@ -167,7 +167,7 @@ npm audit signatures</code></pre>
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
   storage: backend,
-  cacheMaxChunks: <span class="n">512</span>,   <span class="c">// optional bounded LRU</span>
+  cache: { maxChunks: <span class="n">512</span> },   <span class="c">// optional bounded LRU</span>
 });
 
 <span class="c">// …every line below here is unchanged</span></code></pre>
@@ -548,7 +548,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             <li>
               <span class="rl-mark">02</span>
               <span class="rl-what">Bound the cache to what your runtime can hold</span>
-              <span class="rl-fig is-live">cacheMaxChunks</span>
+              <span class="rl-fig is-live">cache.maxChunks</span>
               <span class="rl-note">
                 An LRU with a hard ceiling — 1,024 decoded chunks by default — and the ceiling is yours to
                 choose. Correctness does not depend on it either way.

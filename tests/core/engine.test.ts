@@ -32,7 +32,10 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
     const clock = fakeClock();
     const { store, load, registry } = await loadedStore(
       { users: [1, 2, 70_000, 70_001] },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const s = store.segment('users');
     expect(await collect(s.iterate())).toEqual([1, 2, 70_000, 70_001]);
@@ -51,7 +54,10 @@ describe('SegmentEngine (via CloudRoaring) — reads over loaded segments', () =
     const clock = fakeClock();
     const { store, load, registry } = await loadedStore(
       { users: [42] },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const s = store.segment('users');
     expect(await s.has(42)).toBe(true);

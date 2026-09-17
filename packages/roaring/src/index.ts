@@ -28,6 +28,7 @@ import {
   segmentKey,
   CrbmStorageChunkSource,
   DEFAULT_BUDGET,
+  DEFAULT_RETRY_POLICY,
   NOOP_METRICS,
   RetryingStorageChunkSource,
   SegmentEngine,
@@ -164,67 +165,35 @@ export interface CloudRoaringOptions {
    * - an already-built {@link StorageChunkSource}, used as-is, for advanced reader options.
    */
   readonly storage: StorageBackend | IStorageDriver | StorageChunkSource;
-  readonly keystore?: IKeystore;
+
   /**
-   * Refuse to touch a **cleartext** segment — a guard against silently reading, or writing, data that should be
-   * encrypted. Needs a `registry`; applied only when `storage` is a raw driver. Off by default (encryption is opt-in).
-   *
-   * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both carry
-   * it into their write path, so on a cleartext segment a materialisation throws and an erasure records
-   * `note: 'error: requireEncryption: …'` in its ledger rather than erasing. And since a segment's encryption is
-   * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
-   * into a new encrypted segment and drop the old one.
+   * Memory and staleness bounds for the read path. Every key is optional and every default is already sane;
+   * reach for these when a deployment's shape differs from "a long-running server with room to breathe".
    */
-  readonly requireEncryption?: boolean;
-  /** Injected for deterministic tests; defaults to a system clock. */
-  readonly clock?: Clock;
-  /** Injected for deterministic tests; defaults to `Math.random`-backed. Drives transient-retry jitter. */
-  readonly rng?: Rng;
-  /** cache ceiling (decoded Storage chunks). */
-  readonly cacheMaxChunks?: number;
-  /** Optional TTL on cached chunks (ms). */
-  readonly cacheTtlMs?: number;
+  readonly cache?: CacheOptions;
+
   /**
-   * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
-   * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when `storage`
-   * is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. A store wired with
-   * a bare `IStorageDriver` has no registry at all and pins the generation for the source's lifetime. Lazy — no timer; ≤ one registry read per segment per window,
-   * opening a new reader only when the generation actually advanced.
+   * Encryption at rest. Omit it entirely for a cleartext store — encryption is opt-in, and a segment's
+   * encryption is decided at its **first** generation.
    */
-  readonly storageGenTtlMs?: number;
+  readonly encryption?: EncryptionOptions;
+
   /**
-   * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
-   * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
-   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
-   * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
-   * `StorageChunkSource` manages its own reader cache.
+   * Resilience: by default every storage read retries **transient** faults (throttling, 5xx, dropped
+   * connections) with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}). Pass a partial
+   * policy to tune it — anything you leave out keeps its default — or `false` to disable the transient-retry
+   * wrapper entirely (e.g. if your injected client already retries). Deterministic errors
+   * (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried by this layer.
    */
-  readonly storageReaderCacheMax?: number;
-  /**
-   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
-   * of the memory bound, complementing the `storageReaderCacheMax` *count* bound. A wide/dense segment's parsed
-   * index can be several MB, so a count-only bound could let the open readers pin ~GBs and blow a small heap
-   * (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint would
-   * exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight deployments
-   * that read across wide segments. Applies only when `storage` is a raw driver.
-   */
-  readonly storageReaderCacheMaxBytes?: number;
-  /**
-   * Resilience: by default every storage read retries **transient** faults (throttling, 5xx, dropped connections)
-   * with bounded, jittered exponential backoff (see {@link DEFAULT_RETRY_POLICY}). Pass a {@link RetryPolicy} to
-   * tune it, or `false` to disable the transient-retry wrapper entirely (e.g. if your injected client already
-   * retries). Deterministic errors (`ValidationError`/`IntegrityError`/`WriteConflictError`/…) are never retried
-   * by this layer.
-   */
-  readonly retry?: RetryPolicy | false;
-  /** Observability: called before each transient-retry backoff wait. */
-  readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
+  readonly retry?: RetryOptions | false;
+
   /**
    * Observability sink: receives typed metric events (storage GET/bytes, cache hit/miss, retries, intersection
    * efficiency, op latency). Defaults to a no-op — emission is skipped entirely when unused (near-zero
    * overhead). Any exception the sink throws is swallowed — metrics can never break a read.
    */
   readonly metrics?: IMetricsSink;
+
   /**
    * Per-op **denial-of-wallet** budget: the max backend requests a single
    * `count`/`iterate`/`intersect`/`union`/`andNot`/`subjectReport`/`eraseSubject` may fan out into before it's
@@ -235,6 +204,86 @@ export interface CloudRoaringOptions {
    * separately size-capped, so bounding requests transitively bounds bytes.
    */
   readonly budget?: BudgetOption;
+
+  /**
+   * Determinism seams, for tests and replayable jobs. Production stores leave this out and get a system clock
+   * and a `Math.random`-backed source.
+   */
+  readonly seams?: SeamOptions;
+}
+
+/** {@link CloudRoaringOptions.cache} — the memory and staleness bounds. */
+export interface CacheOptions {
+  /** Ceiling on decoded Storage chunks held in RAM (default {@link DEFAULT_CACHE_MAX_CHUNKS}). */
+  readonly maxChunks?: number;
+  /** Optional TTL on cached chunks (ms). Omit to keep a chunk until it is evicted by the count bound. */
+  readonly ttlMs?: number;
+  /**
+   * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
+   * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when
+   * `storage` is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. A store
+   * wired with a bare `IStorageDriver` has no registry at all and pins the generation for the source's
+   * lifetime. Lazy — no timer; ≤ one registry read per segment per window, opening a new reader only when the
+   * generation actually advanced.
+   */
+  readonly genTtlMs?: number;
+  /**
+   * Ceiling on how many segments' `.crbm` readers (each holding a parsed index) the store keeps open at once
+   * (default 1024) — the steady-state memory bound for a long-running server that reads across many segments.
+   * Past it the least-recently-used segment's reader is evicted; re-opening it later is one cheap tail GET.
+   * Applies whenever the store builds its own read path — a backend or a bare `IStorageDriver`. A pre-built
+   * `StorageChunkSource` manages its own reader cache.
+   */
+  readonly readerMax?: number;
+  /**
+   * Aggregate byte ceiling on the parsed `.crbm` indices the open readers hold (default 64 MiB) — the byte half
+   * of the memory bound, complementing the {@link CacheOptions.readerMax} *count* bound. A wide/dense segment's
+   * parsed index can be several MB, so a count-only bound could let the open readers pin ~GBs and blow a small
+   * heap (e.g. a 128 MB Lambda); this evicts the least-recently-used reader once the summed index footprint
+   * would exceed the ceiling — whichever of the count/byte bounds binds first. Lower it for memory-tight
+   * deployments that read across wide segments. Applies whenever the store builds its own read path.
+   */
+  readonly readerMaxBytes?: number;
+}
+
+/** {@link CloudRoaringOptions.encryption} — encryption at rest and crypto-shred. */
+export interface EncryptionOptions {
+  /**
+   * The keystore that mints and unwraps per-segment DEKs. Needs a **backend**: the wrapped DEK lives in the
+   * registry, so there is nowhere to put it on a store wired with a bare driver, and that is refused at
+   * construction rather than at the first read.
+   */
+  readonly keystore?: IKeystore;
+  /**
+   * Refuse to touch a **cleartext** segment — a guard against silently reading, or writing, data that should be
+   * encrypted. Needs a backend, for the same reason as {@link EncryptionOptions.keystore}. Off by default.
+   *
+   * It refuses **writes** as well as reads, which is easy to miss: the `*Into` verbs and `eraseSubject` both
+   * carry it into their write path, so on a cleartext segment a materialisation throws and an erasure records
+   * `note: 'error: requireEncryption: …'` in its ledger rather than erasing. And since a segment's encryption is
+   * decided at its **first** generation, this cannot be switched on for a segment that already has one — load
+   * into a new encrypted segment and drop the old one.
+   */
+  readonly required?: boolean;
+}
+
+/**
+ * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
+ *
+ * Partial on purpose: the flat form this replaces took a **whole** `RetryPolicy`, so tuning one field meant
+ * restating all five. Anything omitted here keeps its {@link DEFAULT_RETRY_POLICY} value.
+ */
+export interface RetryOptions extends Partial<RetryPolicy> {
+  /** Observability: called before each transient-retry backoff wait. */
+  readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
+}
+
+/** {@link CloudRoaringOptions.seams} — injected for deterministic tests and replayable jobs. */
+export interface SeamOptions {
+  /** Defaults to a system clock. */
+  readonly clock?: Clock;
+  /** Defaults to `Math.random`-backed. Drives transient-retry jitter. */
+  readonly rng?: Rng;
 }
 
 export interface SegmentOptions {
@@ -420,12 +469,12 @@ function resolveStorageSource(
     return {
       source: new CrbmStorageChunkSource(backend.storage, {
         registry: backend.registry,
-        keystore: options.keystore,
-        requireEncryption: options.requireEncryption,
+        keystore: options.encryption?.keystore,
+        requireEncryption: options.encryption?.required,
         clock,
-        currentGenTtlMs: options.storageGenTtlMs,
-        maxOpenSegments: options.storageReaderCacheMax,
-        maxOpenIndexBytes: options.storageReaderCacheMaxBytes,
+        currentGenTtlMs: options.cache?.genTtlMs,
+        maxOpenSegments: options.cache?.readerMax,
+        maxOpenIndexBytes: options.cache?.readerMaxBytes,
       }),
       driver: backend.storage,
       registry: backend.registry,
@@ -445,7 +494,7 @@ function resolveStorageSource(
   if (hasGetChunk) {
     // Already a StorageChunkSource — used as-is. `keystore`/`requireEncryption` only apply when the store
     // builds the source itself; with a pre-built source they are inert, so reject them rather than mislead.
-    if (options.keystore !== undefined || options.requireEncryption === true) {
+    if (options.encryption?.keystore !== undefined || options.encryption?.required === true) {
       throw new ValidationError(
         'keystore/requireEncryption apply only when the store builds its own read path; configure them on ' +
           'the StorageChunkSource you passed instead',
@@ -457,12 +506,12 @@ function resolveStorageSource(
   const driver = storage as IStorageDriver;
   return {
     source: new CrbmStorageChunkSource(driver, {
-      keystore: options.keystore,
-      requireEncryption: options.requireEncryption,
+      keystore: options.encryption?.keystore,
+      requireEncryption: options.encryption?.required,
       clock,
-      currentGenTtlMs: options.storageGenTtlMs,
-      maxOpenSegments: options.storageReaderCacheMax,
-      maxOpenIndexBytes: options.storageReaderCacheMaxBytes,
+      currentGenTtlMs: options.cache?.genTtlMs,
+      maxOpenSegments: options.cache?.readerMax,
+      maxOpenIndexBytes: options.cache?.readerMaxBytes,
     }),
     driver,
     registry: undefined,
@@ -478,6 +527,34 @@ interface LifecycleDeps {
   readonly keystore?: IKeystore;
   readonly requireEncryption?: boolean;
 }
+
+/**
+ * Options that moved into a group, and where each one went.
+ *
+ * TypeScript rejects these at the call site, which covers most callers. It does not cover a plain-JS caller, a
+ * config object that arrived as JSON, or anything that reached the constructor through an `as` cast — and for
+ * this particular set, being ignored is worse than being rejected, because **every one of them is a knob whose
+ * absence is silent and wrong**: a dropped `requireEncryption` reads cleartext when the caller demanded
+ * encryption, a dropped `clock` makes a "deterministic" job non-deterministic, and a dropped
+ * `storageReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
+ * None of those announces itself; each looks like the store simply working.
+ */
+const MOVED_OPTIONS: ReadonlyArray<readonly [string, string]> = [
+  ['cacheMaxChunks', 'cache.maxChunks'],
+  ['cacheTtlMs', 'cache.ttlMs'],
+  ['storageGenTtlMs', 'cache.genTtlMs'],
+  ['storageReaderCacheMax', 'cache.readerMax'],
+  ['storageReaderCacheMaxBytes', 'cache.readerMaxBytes'],
+  ['keystore', 'encryption.keystore'],
+  ['requireEncryption', 'encryption.required'],
+  ['onRetry', 'retry.onRetry'],
+  ['clock', 'seams.clock'],
+  ['rng', 'seams.rng'],
+  // Removed a release earlier, and still worth naming: a caller upgrading across both changes at once meets
+  // this one first, and "unknown option" would send them looking in the wrong place.
+  ['registry', 'the backend passed as `storage` (S3Storage, GcsStorage, …), which carries it'],
+  ['cold', 'storage'],
+];
 
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
@@ -495,14 +572,36 @@ export class CloudRoaring {
   /** Resolved store-level per-op budget (null = disabled); the admin scans use it, with a per-op override. */
   private readonly budget: Budget | null;
 
+  /**
+   * Refuse an option that moved into a group, naming where it went.
+   *
+   * Silently ignoring one would be the exact failure this release exists to remove — see {@link MOVED_OPTIONS}
+   * for why each of these is unsafe to drop rather than merely untidy.
+   */
+  private static rejectMovedOptions(options: CloudRoaringOptions): void {
+    if (options === null || typeof options !== 'object') return; // resolveStorageSource reports this better
+    const bag = options as unknown as Record<string, unknown>;
+    const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
+    if (moved.length === 0) return;
+    const list = moved
+      .map(([from, to]) => `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`)
+      .join(', ');
+    throw new ValidationError(
+      `CloudRoaring option${moved.length > 1 ? 's' : ''} moved into a group: ${list}. ` +
+        'Options are now one required `storage` plus the optional groups `cache`, `encryption`, `retry`, ' +
+        '`metrics`, `budget` and `seams`.',
+    );
+  }
+
   constructor(options: CloudRoaringOptions) {
-    const clock = options.clock ?? new SystemClock();
-    const rng = options.rng ?? new SystemRng();
+    CloudRoaring.rejectMovedOptions(options);
+    const clock = options.seams?.clock ?? new SystemClock();
+    const rng = options.seams?.rng ?? new SystemRng();
     // Wrap the user sink so a throwing/buggy sink can never break I/O (observability is best-effort).
     const metrics = safeMetrics(options.metrics ?? NOOP_METRICS);
     const cache = new BoundedLru<string, CodecBitmap>({
-      maxEntries: options.cacheMaxChunks ?? DEFAULT_CACHE_MAX_CHUNKS,
-      ttlMs: options.cacheTtlMs,
+      maxEntries: options.cache?.maxChunks ?? DEFAULT_CACHE_MAX_CHUNKS,
+      ttlMs: options.cache?.ttlMs,
       clock,
     });
     // Resolve the Storage seam to a StorageChunkSource: a raw IStorageDriver is wrapped into the `.crbm` storage source
@@ -512,10 +611,14 @@ export class CloudRoaring {
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
     if (options.retry !== false) {
+      // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five. The grouped form
+      // takes a partial and fills the rest from the default — `{ onRetry }` alone is now a legal, useful value.
+      const { onRetry: userOnRetry, ...policyOverrides } = options.retry ?? {};
+      const policy: RetryPolicy = { ...DEFAULT_RETRY_POLICY, ...policyOverrides };
       const retryOpts: RetryingOptions = {
         clock,
         rng,
-        policy: options.retry,
+        policy,
         // Bridge transient-fault retries into the metrics stream, then call the user's own hook.
         onRetry: (info) => {
           metrics.onEvent({
@@ -524,7 +627,7 @@ export class CloudRoaring {
             attempt: info.attempt,
             delayMs: info.delayMs,
           });
-          options.onRetry?.(info);
+          userOnRetry?.(info);
         },
       };
       storage = new RetryingStorageChunkSource(storage, retryOpts);
@@ -552,8 +655,8 @@ export class CloudRoaring {
     // a one-shot admin op surfaces a transient fault to the caller rather than retrying under the hood.
     this.storageDriver = resolved.driver;
     this.registry = resolved.registry;
-    this.keystore = options.keystore;
-    this.requireEncryption = options.requireEncryption ?? false;
+    this.keystore = options.encryption?.keystore;
+    this.requireEncryption = options.encryption?.required ?? false;
   }
 
   /**

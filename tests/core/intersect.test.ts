@@ -207,7 +207,10 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: [1, 2, 3], b: [2, 3, 4], dest: [999, 70_000] },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const dest = store.segment('dest');
     expect(await collect(dest.iterate())).toEqual([999, 70_000]); // dest's own generation 0, readable first

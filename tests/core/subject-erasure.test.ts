@@ -33,15 +33,21 @@ const NS = 'ns';
 const k = (): Uint8Array => randomBytes(32);
 
 async function world(keystore?: IKeystore) {
-  const w = await loadedStore({}, { keystore, retry: false });
+  const w = await loadedStore(
+    {},
+    {
+      retry: false,
+      encryption: { keystore },
+    },
+  );
   // A FRESH store for every post-erase read: the fixture passes no clock, so a store pins a segment's resolved
   // generation (and its cached chunks) for its lifetime — the documented `storageGenTtlMs: 0` caveat. A reader that
   // touched the segment before the erase would keep answering from that snapshot.
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      keystore,
       retry: false,
+      encryption: { keystore },
     });
   const seed = (segment: string, ids: number[], namespace = NS) =>
     w.load({ namespace, segment }, ids);
@@ -428,8 +434,8 @@ describe('eraseSubject', () => {
     await w.seed('plain', [1, 2]);
     const strict = new CloudRoaring({
       storage: { storage: w.storage, registry: w.registry },
-      requireEncryption: true,
       retry: false,
+      encryption: { required: true },
     });
 
     const res = await strict.eraseSubject(1, { namespace: NS });

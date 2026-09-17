@@ -81,8 +81,8 @@ than for the objects, a decorator around one half, a backend of your own:
 
 Pass a **raw** `IStorageDriver` as `storage` and the store builds the `.crbm` reader (`CrbmStorageChunkSource`) over it with
 **no registry** — generations then resolve by list-scan, so the store is **cleartext and read-only**; or pass a pre-built `StorageChunkSource` (`MemoryStorageChunkSource`, or a
-`CrbmStorageChunkSource` you configured yourself) and it is used as-is — the top-level `registry` / `keystore` /
-`requireEncryption` are then rejected as a wiring mistake (configure them on the source). A store built on a
+`CrbmStorageChunkSource` you configured yourself) and it is used as-is — a top-level `encryption` group is
+then rejected as a wiring mistake (configure it on the source). A store built on a
 pre-built source is **read-only**: the `*Into` verbs and the lifecycle helpers need the raw driver and throw
 `UnsupportedError`.
 
@@ -124,7 +124,7 @@ resolve. Branch on it if two writers can target one segment; the orphan is colle
 | `seg.has(id)` → `Promise<boolean>` | membership: the cache, else **one** ranged GET of that id's chunk |
 | `seg.count()` → `Promise<number>` | exact cardinality, summed from the `.crbm` index — **zero payload reads** on a loaded segment |
 | `seg.iterate()` → `AsyncIterable<number>` | stream all ids, ascending, one chunk at a time |
-| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle — so a long export, reconciliation or send describes **one instant** instead of whichever generations happened to be current as it ran. An ordinary handle re-resolves on `storageGenTtlMs`; a pinned one does not. Only *this* segment is pinned: `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query — and a pinned handle used as an operand is still read at its pin, never live. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath you, and a pinned read deliberately does *not* heal forward (silently serving a different generation is what a pin exists to prevent), so it fails instead — size `keep` past your longest pinned job. The pinned reader lives in the same bounded LRU as every other, so a pin costs a generation number, not a retained index. A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops reading when the shred lands: the row's `status` is re-checked every time the pinned reader opens. Needs the `.crbm` storage source (`UnsupportedError` otherwise) |
+| `seg.pin()` → `Promise<Segment>` | **hold this segment at the generation current right now**, for the life of the returned handle — so a long export, reconciliation or send describes **one instant** instead of whichever generations happened to be current as it ran. An ordinary handle re-resolves on `cache.genTtlMs`; a pinned one does not. Only *this* segment is pinned: `snap.intersect([other])` reads `snap` at its pin and `other` live, so pin each segment to hold a whole query — and a pinned handle used as an operand is still read at its pin, never live. **A hold, not a lease**: nothing stops `gcOrphanGenerations` deleting the generation underneath you, and a pinned read deliberately does *not* heal forward (silently serving a different generation is what a pin exists to prevent), so it fails instead — size `keep` past your longest pinned job. The pinned reader lives in the same bounded LRU as every other, so a pin costs a generation number, not a retained index. A segment with no current generation pins nothing and reads empty. A pin taken before a crypto-shred stops reading when the shred lands: the row's `status` is re-checked every time the pinned reader opens. Needs the `.crbm` storage source (`UnsupportedError` otherwise) |
 | `seg.intersect([other, …], { concurrency?, budget?, exclude? })` → `AsyncIterable<number>` | **the crown jewel** — chunk-skipping intersection, streamed. `exclude` subtracts suppression segments **in the same pass** |
 | `seg.union([other, …], { concurrency?, budget?, exclude? })` → `AsyncIterable<number>` | `this ∪ others`, streamed. The one composite with **no chunk-skipping** — every chunk of every operand is read |
 | `seg.andNot([sup, …], { concurrency?, budget? })` → `AsyncIterable<number>` | `this \ (sup…)`. Reads all of `this`, but each exclude **only where it overlaps** |
@@ -151,7 +151,7 @@ All three are charged against the same per-op budget, so a wide union is refused
 
 **Read consistency.** Every read op resolves the segment's current generation **once** and reads every chunk from
 that generation. With a `registry` wired, a long-lived store re-resolves the pointer on a short TTL
-(`storageGenTtlMs`, default 2000 ms), so after a load publishes, a reader may serve the previous generation for at most
+(`cache.genTtlMs`, default 2000 ms), so after a load publishes, a reader may serve the previous generation for at most
 that long, then converges; the cache is keyed by generation, so a new generation is never served from stale
 decoded chunks.
 
@@ -170,7 +170,7 @@ decoded chunks.
 | `store.segments({ namespace? })` → `AsyncIterable<SegmentInfo>` | every segment the registry holds, **streamed**, optionally scoped to one namespace — so you do not keep your own list of segment names beside the store, which is a second source of truth that drifts from this one the first time a load fails halfway. **An admin/discovery call, not a request-path one:** this is the registry's own enumeration — a paged LIST over the `registry/` prefix — so cost grows with the fleet rather than with what you are looking for. Scoping to a namespace narrows that LIST prefix, so it really is the difference between reading one tenant and reading all of them. Stopping the iteration stops the scan, **except** behind a driver that buffers to retry the `list` as a unit, which `RetryingRegistryDriver` does. Yields `destroyed` tombstones and rows whose `currentGen` is `null`, because a filtered enumeration that looks complete is worse than an honest one — filter yourself, or ask `store.exists` the narrower question. Internal bookkeeping rows are the one exclusion, and only on an unscoped scan. Needs a registry |
 | `store.generations(ref)` → `GenerationEntry[]` | every generation still in the bucket, ascending, with the current one marked — what the bucket **holds**, not what the segment has ever been, since collection deletes superseded objects. The set `store.rollback` can choose from. One `list` call; it does not open the objects. Needs a backend |
 | `store.rollback(ref, toGeneration, { audit? })` → `RollbackResult` | **move the pointer back** to a generation still in the bucket — the one write in the library that is not forward-only, and the only one no automatic path performs. Forward-only is right for a *writer* (a load whose ids came from upstream loses nothing by being out-raced, and regressing would let a slow loader silently undo a fast one) and wrong for an *operator* who has looked at the segment and knows which generation they want. Refuses rather than guesses: a generation not in the bucket throws `NotFoundError` **naming what is available**, a crypto-shredded segment throws `ValidationError` (every generation of it is unreadable), and rolling to the generation already current is a reported no-op. **Deletes nothing** — the generations above the new pointer stay, which is what makes the rollback itself reversible; they are then above `currentGen` where collection never looks, so they remain until a later load raises the pointer past them. Fenced on the row it read, so a concurrent load is refused (`WriteConflictError` — re-read and retry) rather than undone. A target *above* the pointer needs `{ allowForward: true }`: that is where objects live which were never published, such as a load that wrote its object and died before the publish. Audited as `segment.rollback`, because every other pointer move can be reconstructed from "a load happened" and this one cannot. Needs a backend |
-| `store.dropSegment(ref, { confirmSegment, dryRun?, audit? })` → `DropResult` | **retire a segment and reclaim its storage** — registry tombstone first, then every Storage generation (swept up to three passes; **check `generationsRemaining`** — non-empty means bytes survived and the drop should be re-run). Branch on `dropped`; `reason` is `'already'` if it was already a tombstone (a re-drop still re-sweeps Storage), `'absent'` only when **nothing existed** — the one worth alerting on. On an encrypted segment it also drops the DEK (`cryptoShredded: true`). `dryRun` previews `wouldDelete` / `wouldCryptoShred` without touching anything. Reads become empty within `storageGenTtlMs` for a reader that has a clock and a registry. Needs a backend |
+| `store.dropSegment(ref, { confirmSegment, dryRun?, audit? })` → `DropResult` | **retire a segment and reclaim its storage** — registry tombstone first, then every Storage generation (swept up to three passes; **check `generationsRemaining`** — non-empty means bytes survived and the drop should be re-run). Branch on `dropped`; `reason` is `'already'` if it was already a tombstone (a re-drop still re-sweeps Storage), `'absent'` only when **nothing existed** — the one worth alerting on. On an encrypted segment it also drops the DEK (`cryptoShredded: true`). `dryRun` previews `wouldDelete` / `wouldCryptoShred` without touching anything. Reads become empty within `cache.genTtlMs` for a reader that has a clock and a registry. Needs a backend |
 | `store.setRetention(ref, { expiresAt })` → `SetRetentionResult` | **record when this segment becomes eligible for retirement** — one registry write, nothing deleted, nothing scheduled. `expiresAt` is an absolute epoch-**ms you compute** (a duration the library derived would be anchored to `updatedAt`/`currentGen`, both of which every load rewrites, so a busy segment would never expire). Works **before the first load**: it mints the registry row (`createdRow: true`) with `currentGen: null` — no Storage generation — so the segment is enumerable by the sweep and the first publish lands on that row. `indexed` says whether the due-index pointer was written (false is a degradation: the fleet scan still retires it). Rejects a value below `MIN_EXPIRES_AT_MS` (almost certainly epoch *seconds*) and refuses a crypto-shredded segment |
 | `store.getRetention(ref)` → `RetentionPolicy \| null \| 'invalid'` | the stored policy; `null` for none, `'invalid'` for a present-but-unusable `expiresAt` (a hand-edited row, a restore) so a malformed policy is visible rather than reading as "never expires" |
 | `store.clearRetention(ref)` → `boolean` | cancel the expiry; returns whether one was actually removed. A separate verb from setting one on purpose — "never expire" as a magic value passed to the setter is how a typo becomes a deletion |
@@ -239,11 +239,23 @@ The option / result types the public methods above reference — you import thes
 `EraseSubjectResult` · `MaterializeResult` (`{ generation, cardinality, chunkCount, size }` — what an `*Into` verb
 wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurrent?, wrappedDeks? }` — `becameCurrent` is absent with no `registry`, and `false` means the object is durable but a concurrent writer published a higher generation first, so the load did not take effect)
 
-`CloudRoaringOptions`, in full: `storage` (required) · `keystore?` · `requireEncryption?` · `clock?` ·
-`rng?` · `cacheMaxChunks?` (cache-cache ceiling, default 1024 decoded chunks) · `cacheTtlMs?` · `storageGenTtlMs?`
-(default 2000 — the bound on read staleness after a publish; needs a registry) · `storageReaderCacheMax?` (open
-`.crbm` readers, default 1024) · `storageReaderCacheMaxBytes?` (their parsed indices, default 64 MiB) · `retry?`
-(`RetryPolicy` or `false`) · `onRetry?` · `metrics?` · `budget?` (`{ maxRequests }` or `false`).
+`CloudRoaringOptions`, in full — **one required key plus six optional groups**:
+
+| key | type | what it holds |
+|---|---|---|
+| `storage` **(required)** | `StorageBackend \| IStorageDriver \| StorageChunkSource` | where everything lives |
+| `cache?` | `CacheOptions` | `maxChunks?` (decoded chunks held in RAM, default 1024) · `ttlMs?` · `genTtlMs?` (default 2000 — the bound on read staleness after a publish; needs a backend) · `readerMax?` (open `.crbm` readers, default 1024) · `readerMaxBytes?` (their parsed indices, default 64 MiB) |
+| `encryption?` | `EncryptionOptions` | `keystore?` · `required?` — both need a backend, since the wrapped DEK lives in the registry |
+| `retry?` | `RetryOptions \| false` | a **partial** `RetryPolicy` (anything omitted keeps its `DEFAULT_RETRY_POLICY` value) plus `onRetry?`; `false` disables the transient-retry wrapper |
+| `metrics?` | `IMetricsSink` | typed metric events; defaults to a no-op |
+| `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
+| `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |
+
+**The flat spellings are refused, not ignored.** `cacheMaxChunks`, `cacheTtlMs`, `storageGenTtlMs`,
+`storageReaderCacheMax`, `storageReaderCacheMaxBytes`, `keystore`, `requireEncryption`, `onRetry`, `clock` and
+`rng` each throw a `ValidationError` naming the group they moved into. Every one of them is a knob whose
+absence is silent — a dropped `requireEncryption` reads cleartext, a dropped `clock` makes a deterministic job
+non-deterministic — so being ignored would be worse than being rejected.
 
 ### Generation bookkeeping & erasure
 
@@ -470,7 +482,8 @@ Every export, by entry point. This section is the completeness anchor the sync t
 
 ### `@cloudbitmaps/roaring` — types
 
-`CloudRoaringOptions` · `SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
+`CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
+`SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
 `EraseSubjectResult` · `MaterializeResult` · `BaseCombineOptions` · `CombineOptions` · `EngineCombineOptions` ·
 `BulkLoadResult` · `LoadDeps` · `LoadOptions` · `LoadGuard` · `LoadResult` · `LoadRefusal` · `GenerationListDeps` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `CrbmStorageChunkSourceOptions` · `GenerationDeps` · `EraseIdDeps` · `EraseIdResult` ·
 `MemoryStorageOptions` · `LocalFsStorageOptions` · `MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` ·

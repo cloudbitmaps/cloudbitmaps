@@ -71,7 +71,7 @@ describe('transient-retry backoff liveness (the default clock keeps a pending re
         storage,
         // Fixed jitter ⇒ a deterministic non-zero backoff delay, so a real timer is always created. The clock is
         // left as the default SystemClock on purpose — that is the code under test.
-        rng: { next: () => 0.5 },
+        seams: { rng: { next: () => 0.5 } },
       });
 
       // The awaited read survives the blink AND returns the right answer (no swallowed fault).

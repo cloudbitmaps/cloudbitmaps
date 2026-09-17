@@ -34,7 +34,7 @@ function world(keystore?: IKeystore) {
     new CloudRoaring({
       storage: new CrbmStorageChunkSource(storage, { registry, keystore: ks }),
       retry: false,
-      storageGenTtlMs: 0,
+      cache: { genTtlMs: 0 },
     });
   const load = async (ids: number[], ref: SegmentRef = SEG, ks = keystore): Promise<number> => {
     const generation = await nextGeneration(ref, { storage, registry });

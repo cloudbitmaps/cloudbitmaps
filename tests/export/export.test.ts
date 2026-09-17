@@ -70,9 +70,9 @@ function freshStore(
   // reads one snapshot rather than drifting onto a generation published while it was streaming.
   return new CloudRoaring({
     storage: { storage: storage, registry: registry },
-    keystore,
     retry: false,
-    storageGenTtlMs: 0,
+    cache: { genTtlMs: 0 },
+    encryption: { keystore },
   });
 }
 

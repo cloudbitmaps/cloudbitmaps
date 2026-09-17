@@ -50,7 +50,11 @@ describe('cache (C6) — wired through the engine', () => {
     inner.seed({ segment: 's', chunkKey: 1 }, SafeBitmap.fromValues([0]).serialize()); // id 65536
     const storage = new CountingStorage(inner);
     const clock = fakeClock();
-    const s = new CloudRoaring({ storage, clock, cacheTtlMs: 100, cacheMaxChunks: 1 }).segment('s');
+    const s = new CloudRoaring({
+      storage,
+      cache: { ttlMs: 100, maxChunks: 1 },
+      seams: { clock },
+    }).segment('s');
 
     await s.has(1);
     expect(storage.getChunkCalls).toBe(1);
@@ -71,7 +75,13 @@ describe('cache (C6) — wired through the engine', () => {
     // cache keyed by chunk alone would keep answering `true` — the id would "resurrect" from a superseded
     // chunk, which is exactly what an erasure must never allow.
     const clock = fakeClock();
-    const { store, load } = await loadedStore({ s: [1, 2] }, { clock, storageGenTtlMs: 1 });
+    const { store, load } = await loadedStore(
+      { s: [1, 2] },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
+    );
     const s = store.segment('s');
     expect(await s.has(1)).toBe(true); // chunk 0 @ generation 0 is now cached
 
@@ -108,11 +118,16 @@ describe('transient-retry resilience (wired by default)', () => {
     seedSegment(inner, 's', [42]);
     const attempts: number[] = [];
     const s = new CloudRoaring({
-      storage: new FlakyStorage(inner, 2), // two transient faults, then the bytes arrive
-      clock,
-      rng: zeroRng,
-      retry: { maxAttempts: 4, baseDelayMs: 5, maxDelayMs: 200, backoffFactor: 2, jitter: 'none' },
-      onRetry: (info) => attempts.push(info.attempt),
+      storage: new FlakyStorage(inner, 2),
+      retry: {
+        maxAttempts: 4,
+        baseDelayMs: 5,
+        maxDelayMs: 200,
+        backoffFactor: 2,
+        jitter: 'none',
+        onRetry: (info) => attempts.push(info.attempt),
+      },
+      seams: { clock, rng: zeroRng },
     }).segment('s');
 
     expect(await s.has(42)).toBe(true);
@@ -128,9 +143,8 @@ describe('transient-retry resilience (wired by default)', () => {
     seedSegment(inner, 's', [42]);
     const s = new CloudRoaring({
       storage: new FlakyStorage(inner, 99),
-      clock,
-      rng: zeroRng,
       retry: { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 4, backoffFactor: 2, jitter: 'none' },
+      seams: { clock, rng: zeroRng },
     }).segment('s');
     await expect(s.has(42)).rejects.toBeInstanceOf(TransientError);
     expect(clock.sleeps).toEqual([1, 2]); // two backoffs for three attempts
@@ -142,8 +156,8 @@ describe('transient-retry resilience (wired by default)', () => {
     seedSegment(inner, 's', [42]);
     const s = new CloudRoaring({
       storage: new FlakyStorage(inner, 1),
-      clock,
       retry: false,
+      seams: { clock },
     }).segment('s');
     await expect(s.has(42)).rejects.toBeInstanceOf(TransientError);
     expect(clock.sleeps).toEqual([]);

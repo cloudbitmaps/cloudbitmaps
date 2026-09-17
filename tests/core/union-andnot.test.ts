@@ -281,7 +281,10 @@ describe('*Into — each op materializes a NEW GENERATION of its destination', (
     const clock = fakeClock();
     const { store, registry } = await loadedStore(
       { a: spread([1]), b: spread([2]), dest: spread([9]) },
-      { clock, storageGenTtlMs: 1 },
+      {
+        cache: { genTtlMs: 1 },
+        seams: { clock },
+      },
     );
     const dest = store.segment('dest');
     expect(await dest.count()).toBe(3); // its own generation 0
