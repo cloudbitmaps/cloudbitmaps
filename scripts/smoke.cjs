@@ -323,6 +323,53 @@ function assertEntrySdkFree(pkgDir) {
   );
 }
 
+/**
+ * The bin must still run when it is reached through a SYMLINK, because that is how it is always reached.
+ *
+ * Every normal install puts a symlink at `node_modules/.bin/<name>`, and `npx` and every npm script invoke
+ * that path. Node resolves a module's `import.meta.url` through symlinks but leaves `process.argv[1]` as
+ * typed, so a run-guard comparing the two disagreed with itself and the CLI exited 0 having done nothing.
+ * Nothing caught it: the guard is module-level, so no unit test reaches it; importing the module (the check
+ * above) deliberately must NOT run it; and pnpm writes shell shims that exec the real path, so this repo's
+ * own package manager hid the failure while npm and yarn-classic users got silence.
+ *
+ * Invoked with no configuration, so the CLI's own required-variable error is the signal that it ran at all.
+ * Both halves are asserted: a non-zero exit AND the message. Exit code alone would pass if the process died
+ * for some unrelated reason, and the message alone would not distinguish running from printing usage.
+ */
+function assertBinRunsThroughSymlink(bin, binPath) {
+  const { mkdtempSync, symlinkSync, rmSync } = require('node:fs');
+  const { spawnSync } = require('node:child_process');
+  const dir = mkdtempSync(path.join(require('node:os').tmpdir(), 'cbm-bin-'));
+  try {
+    const link = path.join(dir, bin);
+    symlinkSync(binPath, link);
+    const viaLink = spawnSync(process.execPath, [link], { encoding: 'utf8' });
+    const direct = spawnSync(process.execPath, [binPath], { encoding: 'utf8' });
+    const out = (r) => `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    if (viaLink.status === 0 || !/required/i.test(out(viaLink))) {
+      throw new Error(
+        `bin/${bin} did nothing when run through a symlink (exit ${viaLink.status}) — the run-guard ` +
+          `compares process.argv[1] against import.meta.url, and Node resolves only the latter through ` +
+          `symlinks. That is the path npx and every npm script use.\n` +
+          `  via symlink: ${JSON.stringify(out(viaLink).trim().slice(0, 120))}\n` +
+          `  direct     : ${JSON.stringify(out(direct).trim().slice(0, 120))}`,
+      );
+    }
+    if (viaLink.status !== direct.status) {
+      throw new Error(
+        `bin/${bin} behaves differently through a symlink (${viaLink.status}) than directly ` +
+          `(${direct.status}); they must be identical.`,
+      );
+    }
+    console.log(
+      `  cli runs through a symlink: bin/${bin} (exit ${viaLink.status}, same as direct)`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   for (const sub of SUBPATHS) {
     await import(PKG + sub); // ESM `import` condition — the path that used to crash under Node ESM
@@ -332,11 +379,10 @@ async function main() {
   // The bin is built by scripts/build.mjs into dist/bin (its own bundle) and isn't in `exports`,
   // so load it by path. Safe: its run-guard only invokes main() when executed as the CLI, not on import.
   for (const bin of ['export-segments']) {
-    await import(
-      pathToFileURL(path.join(__dirname, '..', 'packages', 'roaring', 'dist', 'bin', `${bin}.js`))
-        .href
-    );
+    const binPath = path.join(__dirname, '..', 'packages', 'roaring', 'dist', 'bin', `${bin}.js`);
+    await import(pathToFileURL(binPath).href);
     console.log(`  esm import OK: bin/${bin}.js`);
+    assertBinRunsThroughSymlink(bin, binPath);
   }
 
   await exerciseCore('esm', await import(PKG));

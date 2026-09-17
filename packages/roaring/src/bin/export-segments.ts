@@ -30,6 +30,7 @@
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
  */
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -165,9 +166,33 @@ export async function main(
   return manifest;
 }
 
-// Run only when invoked directly (not when imported by tests). Compared as URLs: `process.argv[1]` is a path and
-// `import.meta.url` is a `file:` URL, so a string compare would never match.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Was this module executed as the CLI, rather than imported?
+ *
+ * Compared as URLs because `process.argv[1]` is a path and `import.meta.url` is a `file:` URL, so a string
+ * compare would never match — and through `realpathSync`, which is the part that was missing.
+ *
+ * Node resolves a module's `import.meta.url` through symlinks but leaves `process.argv[1]` exactly as it was
+ * typed. Every normal installation puts a SYMLINK at `node_modules/.bin/export-segments`, and that is the
+ * path `npx` and every npm script invoke, so the two sides disagreed and the guard was false: the CLI exited
+ * 0 having done nothing at all. Running the real file worked, which is why it looked fine here — pnpm writes
+ * shell shims that exec the real path, so the repo's own package manager hid it while npm and yarn-classic
+ * users got silence.
+ *
+ * `realpathSync` can throw (a deleted entry, a permission error, `node --eval` where argv[1] is absent), and
+ * none of those mean "run the CLI", so they resolve to false.
+ */
+function invokedAsCli(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   main()
     .then((manifest) => {
       if (manifest.failed.length > 0) {

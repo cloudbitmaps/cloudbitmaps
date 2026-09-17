@@ -17,6 +17,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Fixed
 
+- **`export-segments` did nothing when run as a command.** The CLI's run-guard compared `process.argv[1]`
+  against `import.meta.url`, and Node resolves only the second through symlinks. Every install puts a symlink
+  at `node_modules/.bin/export-segments`, which is the path `npx` and every npm script invoke — so the guard
+  was false and the process exited **0 having exported nothing**. Running the file by its real path worked,
+  which is how it went unnoticed; pnpm writes shell shims that exec the real path, so this repo's own package
+  manager hid it while npm and yarn-classic users got silence. The guard now compares real paths, and
+  `pnpm smoke` runs the built CLI through a symlink and fails if it does not behave exactly as a direct run
+  does. Since this is the documented way out of the format, a silent no-op was the worst possible failure.
+
+
+### Fixed
+
 - **Releases were blocked by a false positive in the secret scanner.** `scripts/leak-scan-tarballs.cjs` is a
   hard step in the release workflow, and it exited 1 on the S3 backend's spread of an optional
   `credentials` option — a property read, not a hardcoded secret. Nothing else noticed, because neither
