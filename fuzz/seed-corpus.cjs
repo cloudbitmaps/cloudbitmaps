@@ -10,10 +10,15 @@
  *   node fuzz/seed-corpus.cjs crbm-reader   # seed one target
  *
  * Needs a build first (`pnpm build`) — it drives the public writer/serializer from dist/.
+ *
+ * It builds each archive through `writeCrbmGeneration` into an in-memory driver and reads the object back,
+ * rather than driving the `.crbm` writer class directly. That class is not public — and this is the better
+ * seed anyway, because the bytes then come off exactly the code path that writes a real generation, so a
+ * corpus entry cannot drift from the format the library actually emits.
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { SafeBitmap, CrbmWriter, BufferSink } = require('@cloudbitmaps/roaring');
+const { SafeBitmap, writeCrbmGeneration, MemoryStorageDriver } = require('@cloudbitmaps/roaring');
 
 const CORPUS = path.join(__dirname, 'corpus');
 
@@ -61,14 +66,17 @@ function seedSafeDeserialize() {
 }
 
 async function validCrbm(chunks, generation) {
-  const sink = new BufferSink();
-  const writer = new CrbmWriter(sink, { generation });
-  for (const { key, vals } of chunks) {
-    const payload = SafeBitmap.fromValues(vals).serialize();
-    await writer.addChunk(key, payload, vals.length);
-  }
-  await writer.finish();
-  return sink.bytes();
+  const driver = new MemoryStorageDriver();
+  const key = { segment: 'seed', generation };
+  const { size } = await writeCrbmGeneration(
+    driver,
+    key,
+    chunks.map(({ key: chunkKey, vals }) => ({
+      chunkKey,
+      bitmap: SafeBitmap.fromValues(vals),
+    })),
+  );
+  return driver.getRange(key, 0, size);
 }
 
 async function seedCrbmReader() {

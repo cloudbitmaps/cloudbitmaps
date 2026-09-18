@@ -189,27 +189,27 @@ A lost race still throws `WriteConflictError` — unchanged.
 
 ## 6. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **110 exports to 80**. It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **110 exports to 82**. It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 
-**Most people are unaffected.** You install `@cloudbitmaps/roaring` and a storage package; core arrives
-transitively and is not something you import directly. This matters only if you reached into it.
+**Most people are unaffected** — but check, because it is not only direct core imports.
+`@cloudbitmaps/roaring` re-exports core wholesale, so a name removed from core disappears from the flavor
+too. If you import any of the names below **from `@cloudbitmaps/roaring`**, that import is affected just as
+much as one from `@cloudbitmaps/core`.
 
-Fourteen names were public in `0.9.x`:
+Twelve names were public in `0.9.x`:
 
 | gone | what to do instead |
 |---|---|
 | `isTransient` | **use `isTransientError`** — see below, this is the only one worth a thought |
 | `NOOP_AUDIT` | omit the `audit` option; that is what "no audit sink" already means |
-| `drainRegistry` · `validateMaxScanSegments` | `listSegments()` — the supported enumeration, already bounded. For a pass you write yourself, `excludingReservedRows` is still exported and is the part you must not skip |
+| `drainRegistry` · `validateMaxScanSegments` | compose the two exported halves: `collectWithinBudget(excludingReservedRows(registry.list(ns)), budget, op)`. **`listSegments()` is not a drop-in** — it streams, so the bound is yours, and it yields `SegmentInfo`, which carries no `retention`. `excludingReservedRows` is the part you must not skip |
 | `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` | the values are in the [API reference](docs/guide/api-reference.md); pass your own to `maxScanSegments` / `limit` / `tombstoneGraceMs` rather than reading ours |
 | `CrbmWriter` · `CrbmWriterOptions` | none. Building a `.crbm` is the library's job; `CrbmReader` is still exported for tooling that inspects one |
 | `chunkRefKey` | none. `segmentKey` is still exported |
-| `aadFor` | none. If you implement `Aead`, the associated data is **passed to you** — you never construct it |
 | `joinId` | none. `splitId` is still exported, because it range-checks an id on the way |
-| `checkBudget` | none. Pass a `budget` and the library enforces it |
-| `BufferSink` | implement `BlobSink`; it is two methods |
+| `BufferSink` | implement `BlobSink` — it is one method, `write(bytes)` |
 
 ### The one that needs a decision: `isTransient`
 
@@ -227,10 +227,9 @@ If you passed `RetryDeps.isRetryable` or `RetryingOptions.isRetryable`, nothing 
 `isTransientError`, which is the same predicate it always called.
 
 > [!NOTE]
-> **The three driver packages each export their own `isTransient`**, and those are untouched. They classify
-> *SDK* errors (an S3 `SlowDown`, a 503) before the library has wrapped them, which is a different job from
-> core's, which classifies errors this library already threw. If your import came from `@cloudbitmaps/s3`,
-> `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob`, leave it alone.
+> Each driver package defines its own internal `isTransient` for *SDK* errors (an S3 `SlowDown`, a 503) —
+> a different job from core's, which classifies errors this library already threw. **None of them exports it**,
+> so there is no import of that name from `@cloudbitmaps/s3`, `/gcs` or `/azure-blob` to migrate.
 
 **Why now rather than later.** `0.10.0` already breaks your import paths, so this costs one more entry in this
 guide instead of a second breaking release. And re-exporting a name is additive, never breaking — so the bias

@@ -85,7 +85,7 @@ export interface RetireExpiredOptions {
    *
    * - `'fleet'` (default) — drain `registry.list()` and filter. Cost tracks the **fleet**, every cycle, even
    *   when nothing expires. Complete by construction: it cannot miss a policy.
-   * - `'index'` — read only the due buckets of the {@link dueBucket due index}. Cost tracks **what is
+   * - `'index'` — read only the due buckets of the due index. Cost tracks **what is
    *   expiring**. Each candidate's live row is still re-read before anything is decided, so a stale pointer
    *   costs one read and retires nothing.
    *
@@ -104,8 +104,8 @@ export interface RetireExpiredOptions {
   /** Total shards the fleet is split into. Required with {@link shards}; ignored without it. */
   readonly totalShards?: number;
   /**
-   * How many **past** buckets an `'index'` scan reads besides the current one (default
-   * 7 days). A sweep that did not run — scaled to zero, a failed deploy, a paused
+   * How many **past** buckets an `'index'` scan reads besides the current one (default 7, one per day).
+   * A sweep that did not run — scaled to zero, a failed deploy, a paused
    * schedule — leaves its buckets behind, and this is how far back a later cycle reaches for them. Bounded so a
    * long outage costs a bounded number of list calls per cycle rather than one per day since the epoch;
    * anything older is the `'fleet'` repair pass's job.

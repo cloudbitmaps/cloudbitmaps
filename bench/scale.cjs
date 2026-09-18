@@ -13,9 +13,9 @@
  *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
  *                                   OFF-HEAP native memory (the read/intersect path with decoded bitmaps) is
  *                                   proved bounded over time by the soak (`getRoaringUsedMemory()`).
- *   M2  Fleet-scan cost             time the one bounded drain of `registry.list()` (`drainRegistry`, what every
- *                                   fleet-wide admin pass — `checkConsistency`, `retireExpired`, `eraseSubject` —
- *                                   pays before it does any work) across fleet sizes: the honest O(total)
+ *   M2  Fleet-scan cost             time the one bounded drain of `registry.list()` — what every
+ *                                   fleet-wide admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`)
+ *                                   pays before it does any work across fleet sizes: the honest O(total)
  *                                   registry-enumeration floor a deferred cursor would bound. No read
  *                                   verb calls it: `has`, `count`, `iterate` and `intersect` address one segment
  *                                   each and never enumerate.
@@ -64,9 +64,15 @@ const {
   MemoryStorage,
   CloudRoaring,
   CountingMetricsSink,
-  drainRegistry,
-  DEFAULT_MAX_SCAN_SEGMENTS,
+  collectWithinBudget,
+  excludingReservedRows,
 } = require('@cloudbitmaps/roaring');
+
+// The library's own default scan ceiling. It used to arrive as `DEFAULT_MAX_SCAN_SEGMENTS`; curating core's
+// public surface made that constant internal, so the bench states the number it is measuring against rather
+// than reaching for a name it no longer has. If core's default moves, this is a deliberate bench parameter
+// and not a silent disagreement.
+const SCAN_CEILING = 250_000;
 
 const ROOT = path.resolve(__dirname, '..');
 const CAP = int(process.env.SCALE_CAP, 1024);
@@ -150,16 +156,20 @@ async function measureFleet(n) {
     const heapRetainedMiB = process.memoryUsage().heapUsed / 1024 / 1024;
     const rssAfterGcMiB = rssMiB();
 
-    // M2 — fleet-scan cost. Time `drainRegistry`, the one bounded drain of `registry.list()` that every
-    // fleet-wide admin pass runs first (`checkConsistency`, `retireExpired`, `eraseSubject`). This isolates the
-    // O(total) registry-enumeration floor — the irreducible per-cycle cost a deferred cursor would bound;
-    // a quiescent fleet still pays it, which is exactly the concern. No read verb enumerates, so nothing on the
-    // hot path pays this.
+    // M2 — fleet-scan cost. Time the one bounded drain of `registry.list()` that every fleet-wide admin pass
+    // runs first (`checkConsistency`, `retireExpired`, `eraseSubject`). This isolates the O(total)
+    // registry-enumeration floor — the irreducible per-cycle cost a deferred cursor would bound; a quiescent
+    // fleet still pays it, which is exactly the concern. No read verb enumerates, so nothing on the hot path
+    // pays this.
+    //
+    // Spelled with the two exported primitives the library composes for this — skip the reserved bookkeeping
+    // rows, then collect under a ceiling — which is the same shape a caller writing their own admin pass uses.
     const disc = await ms(() =>
-      drainRegistry(registry, {
-        maxScanSegments: DEFAULT_MAX_SCAN_SEGMENTS,
-        op: 'bench:scale discovery',
-      }),
+      collectWithinBudget(
+        excludingReservedRows(registry.list()),
+        { maxRequests: SCAN_CEILING },
+        'bench:scale discovery',
+      ),
     );
     // Rows the sweep would then act on — those carrying a retention deadline. 0 on a fleet with no policies,
     // which is what makes this a clean read of the enumeration floor rather than of the work it finds.

@@ -194,7 +194,7 @@ decoded chunks.
 | `store.setRetention(ref, { expiresAt })` → `SetRetentionResult` | **record when this segment becomes eligible for retirement** — one registry write, nothing deleted, nothing scheduled. `expiresAt` is an absolute epoch-**ms you compute** (a duration the library derived would be anchored to `updatedAt`/`currentGen`, both of which every load rewrites, so a busy segment would never expire). Works **before the first load**: it mints the registry row (`createdRow: true`) with `currentGen: null` — no Storage generation — so the segment is enumerable by the sweep and the first publish lands on that row. `indexed` says whether the due-index pointer was written (false is a degradation: the fleet scan still retires it). Rejects a value below `MIN_EXPIRES_AT_MS` (almost certainly epoch *seconds*) and refuses a crypto-shredded segment |
 | `store.getRetention(ref)` → `RetentionPolicy \| null \| 'invalid'` | the stored policy; `null` for none, `'invalid'` for a present-but-unusable `expiresAt` (a hand-edited row, a restore) so a malformed policy is visible rather than reading as "never expires" |
 | `store.clearRetention(ref)` → `boolean` | cancel the expiry; returns whether one was actually removed. A separate verb from setting one on purpose — "never expire" as a magic value passed to the setter is how a typo becomes a deletion |
-| `store.retireExpired({ namespace?, now?, limit?, dryRun?, scan?, lookbackBuckets?, shards?, totalShards?, maxScanSegments?, purgeTombstones?, tombstoneGraceMs?, audit? })` → `RetireExpiredResult` | **the retention sweep** — retire every segment whose `expiresAt` has passed, each through `dropSegment` (one implementation of the registry → Storage ordering, not two). **A call, not a daemon**: you schedule it (EventBridge, CronJob, cron, a queue job). Returns a per-segment ledger; a per-segment *fault* is an `entries` row rather than a throw, though a bad argument throws `ValidationError` and a fleet past `maxScanSegments` throws `BudgetExceededError`. `limit` (default 100) caps **attempts**, so a partial outage cannot march through the fleet; `limited: true` means more are eligible, re-run. `dryRun` is the real preview (`confirmSegment` is vacuous in a loop) and reports `wouldRetire`, leaving `retired` at 0. **`scan: 'index'`** reads only the due buckets of the due index — cost tracks what is *expiring*, not the fleet — re-reading each live row before acting; it is the **fast half of a pair**, so run the default `'fleet'` periodically as the repair pass (`lookbackBuckets`, default 7, is how many past days a fast scan also reads). `shards` / `totalShards` give each replica a disjoint slice by a stable hash of the segment key. Also deletes the tombstone rows **it stamped itself**, after `tombstoneGraceMs` (default 24 h) and only once Storage is provably empty (collecting a straggler generation first); a `destroyed` row it did not create — a GDPR crypto-shred — is never touched. Needs a backend |
+| `store.retireExpired({ namespace?, now?, limit?, dryRun?, scan?, lookbackBuckets?, shards?, totalShards?, maxScanSegments?, purgeTombstones?, tombstoneGraceMs?, audit? })` → `RetireExpiredResult` | **the retention sweep** — retire every segment whose `expiresAt` has passed, each through `dropSegment` (one implementation of the registry → Storage ordering, not two). **A call, not a daemon**: you schedule it (EventBridge, CronJob, cron, a queue job). Returns a per-segment ledger; a per-segment *fault* is an `entries` row rather than a throw, though a bad argument throws `ValidationError` and a fleet past `maxScanSegments` (default 250,000) throws `BudgetExceededError`. `limit` (default 100) caps **attempts**, so a partial outage cannot march through the fleet; `limited: true` means more are eligible, re-run. `dryRun` is the real preview (`confirmSegment` is vacuous in a loop) and reports `wouldRetire`, leaving `retired` at 0. **`scan: 'index'`** reads only the due buckets of the due index — cost tracks what is *expiring*, not the fleet — re-reading each live row before acting; it is the **fast half of a pair**, so run the default `'fleet'` periodically as the repair pass (`lookbackBuckets`, default 7, is how many past days a fast scan also reads). `shards` / `totalShards` give each replica a disjoint slice by a stable hash of the segment key. Also deletes the tombstone rows **it stamped itself**, after `tombstoneGraceMs` (default 24 h) and only once Storage is provably empty (collecting a straggler generation first); a `destroyed` row it did not create — a GDPR crypto-shred — is never touched. Needs a backend |
 | `store.checkConsistency({ namespace?, concurrency? })` → `ConsistencyReport` | DR: verify every segment's `currentGen` `.crbm` is present (catch a torn cross-store restore). Needs a backend |
 | `store.exportSegments(sink, { format?, namespace?, ndjsonBatchBytes? })` → `ExportManifest` | eject every registered segment's current generation to portable `roaring`/`ndjson` through your sink. Needs a registry |
 | `CloudRoaring.estimateCost(input)` → `CostReport` | **static** — plan costs with no instance/data (sizing, what-if) |
@@ -337,7 +337,7 @@ chunk payload bytes differ. A future `@cloudbitmaps/bitset` writes the same form
 | `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`) |
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `writeCrbmGeneration` · `publishGeneration` | lower-level load: write a generation from `SafeBitmap`s / advance the pointer |
-| `BufferReader` · `BlobSink` · `BlobReader` | the in-memory byte reader + the sink/reader interfaces a range read is written through |
+| `BufferReader` · `BlobSink` · `BlobReader` | the in-memory `BlobReader` you hand to `CrbmReader.open`, plus the two interfaces themselves: `BlobSink` takes bytes (one method, `write`), `BlobReader` serves them (`getRange`, `getTail`) |
 | `SafeBitmap` | size-capped wrapper over `RoaringBitmap32` (the roaring codec's `CodecBitmap`) |
 
 ### Bitmap-codec seam
@@ -368,7 +368,7 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 | `runExport` | the eject/export driver (**needs a `codec` for the `roaring` format**; the flavor binds it) |
 | `splitId` | an id → its `(chunkKey, remainder)` bit routing, and a range check on the way: it throws `ValidationError` for anything that is not a u32, which is how a bad id fails fast |
 | `mapWithConcurrency` | the bounded, order-preserving fan-out primitive (admin scans, the Storage sweep) |
-| `resolveBudget` / `resolvePerOpBudget` | the denial-of-wallet budget plumbing: normalize a `BudgetOption` into a `Budget`, and pick the one that applies to a given op |
+| `resolveBudget` / `resolvePerOpBudget` / `checkBudget` | the denial-of-wallet budget plumbing: normalize a `BudgetOption` into a `Budget`, pick the one that applies to a given op, and enforce it against a **computed** unit count. `collectWithinBudget` is the streaming form; `checkBudget` is the O(1) one, and its `>` threshold is what makes a budget of N admit exactly N units |
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
@@ -487,7 +487,7 @@ therefore:
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. The library derives the associated data itself and binds each chunk/index to `(segment, generation)`, so an `Aead` implementation receives the AAD rather than constructing it |
+| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. An **`Aead` implementation is handed** the associated data and never builds it. A **`CrbmCrypto` caller does** — it is the `{ aead, aadFor }` pair that `CrbmReader.open` and `writeCrbmGeneration` take, so tooling reading or writing an *encrypted* archive builds one with `aadFor(ref, generation, scope)`, which binds each chunk and the index to `(segment, generation)` |
 | `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 | `DropDeps` | `EraseDeps` plus `storage` — `dropSegment` deletes the objects, so it needs the storage driver |
 
@@ -572,9 +572,9 @@ or `segmentKey` from core will find each one there.
 `LocalFsStorageDriver` · `LocalFsRegistryDriver` · `bulkLoadCrbmGeneration` · `writeCrbmGeneration` ·
 `publishGeneration` · `CrbmStorageChunkSource` · `nextGeneration` · `gcOrphanGenerations` · `loadSegment` ·
 `listGenerations` · `rollbackSegment` · `segmentExists` · `listSegments` · `eraseIdFromSegment` ·
-`destroySegment` · `dropSegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `SafeBitmap` ·
+`destroySegment` · `dropSegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` · `SafeBitmap` ·
 `roaringCodec` · `withRetry` · `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` ·
-`runExport` · `splitId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` ·
+`runExport` · `splitId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` ·
 `collectWithinBudget` · `validateSegmentRef` · `segmentKey` · `encodeNameForPath` · `namespacePathPart` ·
 `setSegmentRetention` · `getSegmentRetention` · `readRetentionPolicy` · `clearSegmentRetention` ·
 `MIN_EXPIRES_AT_MS` ·
@@ -663,8 +663,12 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 - The **sync test** ([`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts))
   derives its entry list from every package's own `exports` map — so each package and each subpath it declares
   is covered, with no list to maintain — and asserts each
-  exported name appears (backtick-wrapped) somewhere on this page — so **adding an export without documenting it
-  breaks CI**. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
+  exported name appears (backtick-wrapped) in the **"Complete export index"** section — so **adding an export
+  without documenting it breaks CI**. It runs in **both** directions: a name listed in that index that nothing
+  exports any more also fails, so a removed export cannot leave a stale entry behind. Two limits worth knowing
+  rather than over-trusting: both directions are scoped to that one section, so the descriptive tables earlier
+  on this page are guarded by neither; and the reverse direction only reads names joined by `·`, which is how
+  every list in that section is written. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
   keeping every export explicit; the one allowed exception is the flavor's main barrel re-exporting core's,
   because core's barrel is parsed too.
 - When you add/rename/remove a public export: update the relevant section **and** the

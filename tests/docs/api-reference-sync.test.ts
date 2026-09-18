@@ -5,8 +5,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 // index", so a new export cannot merge undocumented. Reverse: every identifier-shaped name in that index is
 // really exported, so a *removed* export cannot leave a stale entry behind.
 //
-// The reverse half was added when curating core's main entry from 110 exports to 79 produced 32 stale entries
-// in one change. Until then this guard was one-way by design and the comment here said to "prune those in
+// The reverse half was added when curating core's main entry from 110 exports produced 29 stale entries in
+// one change. Until then this guard was one-way by design and the comment here said to "prune those in
 // review" — which is to say the doc's accuracy rested on someone noticing, on exactly the change where there
 // was the most to notice. A reader cannot tell a stale entry from a real one; it reads as API that exists.
 // DERIVED from the workspace, not written down. Every package's `exports` map names its public entries, and

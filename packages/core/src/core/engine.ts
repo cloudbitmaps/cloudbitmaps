@@ -418,7 +418,7 @@ export class SegmentEngine {
 
   /**
    * Tier-derived keys are untrusted (invariant 5) — fail fast on a corrupt/out-of-range key rather than
-   * letting it flow into `joinId` and produce a bogus id.
+   * letting it flow into the id-routing step and produce a bogus id.
    */
   private assertChunkKeyInRange(k: number): void {
     if (!Number.isInteger(k) || k < 0 || k >= CHUNK_COUNT) {
@@ -432,7 +432,7 @@ export class SegmentEngine {
    *
    * Nothing upstream establishes that. The byte cap bounds *size*, and CRC/AEAD prove the bytes are the bytes
    * that were written — which anyone able to write the bucket satisfies trivially. A value `>= 65536` would then
-   * reach `joinId`, which masks it (`remainder & 0xffff`) and emits a **fabricated id belonging to a different
+   * reach the id-routing step, which masks it (`remainder & 0xffff`) and emits a **fabricated id belonging to a different
    * chunk's id space**: indistinguishable from real data, inflating `count()` and creating spurious `intersect`
    * matches.
    *
