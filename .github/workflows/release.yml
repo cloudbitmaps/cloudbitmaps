@@ -116,6 +116,7 @@ jobs:
           # run exactly once on a path that does not exist. Guard the count explicitly instead of relying on
           # what a `require()` of a nonexistent file happens to do.
           shopt -s nullglob
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
           pkgs=(packages/*/package.json)
           if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
             echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
@@ -141,6 +142,7 @@ jobs:
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
         run: |
           shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
           pkgs=(packages/*/package.json)
           if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
             echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
@@ -201,7 +203,7 @@ jobs:
             # in a list, where `set -e` is suppressed.
             probe_rc=0
             probe_err="$(npm view "$NAME" version 2>&1 >/dev/null)" || probe_rc=$?
-            if [ "$probe_rc" -ne 0 ] && ! printf '%s' "$probe_err" | grep -qiE 'E?404|not found'; then
+            if [ "$probe_rc" -ne 0 ] && ! printf '%s' "$probe_err" | grep -qiE 'code E404|404 Not Found|is not in th'; then
               echo "::error::could not reach the registry to check $NAME — refusing to release rather than guess. $probe_err"
               fail=1
             elif [ "$probe_rc" -ne 0 ]; then
@@ -213,7 +215,7 @@ jobs:
               if [ "$ver_rc" -eq 0 ]; then
                 echo "::error::$NAME@$VER is already on the registry. pnpm would SKIP it and exit 0, so this run would report success while publishing nothing for it. Bump the version."
                 fail=1
-              elif ! printf '%s' "$ver_err" | grep -qiE 'E?404|not found'; then
+              elif ! printf '%s' "$ver_err" | grep -qiE 'code E404|404 Not Found|is not in th'; then
                 echo "::error::could not reach the registry to check $NAME@$VER — refusing to release rather than guess. $ver_err"
                 fail=1
               fi

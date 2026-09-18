@@ -37,8 +37,10 @@ describe('the error brands are GLOBALLY REGISTERED symbols', () => {
     ['cloud-roaring.error.transient', new TransientError('x')],
   ])('%s is on the thrown error and resolves through the global registry', (key, err) => {
     const global = Symbol.for(key);
-    // `Symbol.keyFor` returns undefined for an unregistered symbol — this is the assertion that a plain
-    // `Symbol('cloud-roaring.error')` would fail.
+    // `Symbol.keyFor(global) === key` is TAUTOLOGICAL — `global` was just created here by `Symbol.for`, so
+    // it says nothing about errors.ts. It is kept only to document what "registered" means. The assertion
+    // that actually bites is the next one: the thrown error must carry a property under the symbol looked
+    // up from the GLOBAL registry, which a module-local `Symbol('cloud-roaring.error')` never would.
     expect(Symbol.keyFor(global)).toBe(key);
     expect((err as unknown as Record<symbol, unknown>)[global]).toBe(true);
   });

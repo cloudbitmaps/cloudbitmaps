@@ -39,8 +39,15 @@ const DRIVER_PACKAGES = (() => {
   const { readdirSync, readFileSync, existsSync } = require('node:fs');
   const dir = path.join(__dirname, '..', 'packages');
   const CLOUD_SDK = /^(?:@aws-sdk\/|aws-sdk$|@google-cloud\/|@azure\/)/;
+  // `core` can NEVER be a driver package, whatever its manifest says. This list decides who is EXEMPT from
+  // `assertEntrySdkFree`, so a derivation able to classify core would let core exempt itself from the check
+  // enforcing "the main entry stays SDK-free" — hard invariant 7. An innocuous `@aws-sdk/types` or
+  // `@azure/core-*` utility is enough to trigger it, and the check would then stop running rather than
+  // fail. eslint still catches a direct import in source, but only smoke walks the BUILT entry graph.
+  const NEVER_A_DRIVER = new Set(['core']);
   const found = readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && existsSync(path.join(dir, e.name, 'package.json')))
+    .filter((e) => !NEVER_A_DRIVER.has(e.name))
     .filter((e) => {
       const m = JSON.parse(readFileSync(path.join(dir, e.name, 'package.json'), 'utf8'));
       return Object.keys(m.dependencies ?? {}).some((d) => CLOUD_SDK.test(d));

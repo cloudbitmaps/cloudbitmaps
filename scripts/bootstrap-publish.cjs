@@ -306,16 +306,23 @@ function restoreManifests() {
     }
   }
 }
-// `process.on('exit')` does NOT run when node is killed by a signal, and the publish below is the long
-// interactive 2FA step with inherited stdio — exactly where an operator presses Ctrl-C, which the shell
-// delivers to the whole foreground process group. Without these the rewritten version stays on disk: a
-// phantom bump one `git commit -a` away from being committed and shipped as the real tag.
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => {
-    restoreManifests();
-    process.kill(process.pid, sig); // re-raise so the exit status still reports the signal
-  });
-}
+// DELIBERATELY NO SIGINT/SIGTERM HANDLERS. An earlier version of this file registered them, reasoning that
+// `process.on('exit')` does not run when node is killed by a signal. Measured, that "fix" was strictly worse
+// than nothing on all three counts:
+//
+//   1. It never ran. This script is synchronous, so while `execFileSync` holds the thread libuv never polls
+//      the signal self-pipe and the queued callback is simply dropped.
+//   2. Registering a listener REPLACES node's default die-on-signal. So a `kill -TERM` mid-publish was
+//      swallowed: the publish ran to completion and the process exited 0. On a step whose whole point is
+//      that it cannot be undone, that turns "stop now" into "ignored" — an operator who realises mid-run
+//      that they are publishing the wrong thing could no longer stop it. Verified: 143 without the
+//      handlers, 0 with them.
+//   3. Had it ever fired, `process.kill(process.pid, sig)` re-enters the still-registered listener and
+//      spins at 100% CPU.
+//
+// What actually restores the manifests is the `catch`/`finally` below, and it covers the case that matters:
+// a real terminal Ctrl-C is SIGINT to the whole process GROUP, so `pnpm` dies, `execFileSync` throws, and
+// the catch runs synchronously. Verified end to end with a process-group interrupt.
 process.on('exit', restoreManifests);
 try {
   if (effectiveVersion !== version) {

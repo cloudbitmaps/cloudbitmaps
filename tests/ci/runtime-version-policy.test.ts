@@ -67,8 +67,8 @@ const MANIFESTS = [
 const readJson = (rel: string) =>
   JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as { engines?: { node?: string } };
 
-describe('runtime version policy is consistent across all three declarations', () => {
-  it.each(MANIFESTS)('%s declares the floor as >=%s', (rel) => {
+describe('runtime version policy is consistent across every declaration', () => {
+  it.each(MANIFESTS)(`%s declares the floor as >=${FLOOR}`, (rel) => {
     const engines = readJson(rel).engines;
     expect(engines?.node, `${rel} declares no engines.node`).toBeDefined();
     expect(engines?.node).toBe(`>=${FLOOR}`);
@@ -111,6 +111,8 @@ describe('runtime version policy is consistent across all three declarations', (
       'CONTRIBUTING.md',
       'SECURITY.md',
       'docs/guide/getting-started.md',
+      // States the floor three times and is the first page an upgrading user reads.
+      'MIGRATING.md',
       // Every package README, derived: these are npm landing pages, and the three newest are exactly when
       // a wrong floor is cheapest to write and least likely to be noticed.
       ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
