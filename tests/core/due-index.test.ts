@@ -19,7 +19,7 @@ import {
   dueNamespace,
   encodeDueName,
   isDueIndexRow,
-} from '@/index';
+} from '@/core/due-index';
 import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/index';
 

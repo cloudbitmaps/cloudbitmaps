@@ -1,15 +1,16 @@
 # Migrating to 0.10.0
 
-`0.10.0` is a breaking release with **five** changes. The first four fail loudly — an unresolved import, a
+`0.10.0` is a breaking release with **six** changes. Four of them fail loudly — an unresolved import, a
 refused constructor, or a module that will not load. The fifth changes a default, so it is the one that needs
-you to look at your call sites rather than wait for an error. Work down the list; most upgrades are the first
-two and take a few minutes.
+you to look at your call sites rather than wait for an error. The sixth is a list of removed exports, and it
+fails loudly too. Work down the list; most upgrades are the first two and take a few minutes.
 
 1. [The cloud drivers are their own packages](#1-the-cloud-drivers-are-their-own-packages)
 2. [ESM only, Node ≥ 22.12](#2-esm-only-node--2212)
 3. [A storage backend must be built, not assembled](#3-a-storage-backend-must-be-built-not-assembled)
 4. [The flat options became six groups](#4-the-flat-options-became-six-groups)
 5. [The `*Into` verbs can now refuse](#5-the-into-verbs-can-now-refuse)
+6. [Core exports only what it supports](#6-core-exports-only-what-it-supports)
 
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
@@ -185,6 +186,55 @@ fields is unaffected; a deep equality check on the whole object is not. `cardina
 bound needed the read — with `allowEmpty: true` and no `guard.minRetained`, nothing reads it.
 
 A lost race still throws `WriteConflictError` — unchanged.
+
+## 6. Core exports only what it supports
+
+`@cloudbitmaps/core`'s main entry went from **110 exports to 80**. It had accumulated the internals of
+whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
+reachable. Every name below still exists and still works inside the library — it is no longer importable.
+
+**Most people are unaffected.** You install `@cloudbitmaps/roaring` and a storage package; core arrives
+transitively and is not something you import directly. This matters only if you reached into it.
+
+Fourteen names were public in `0.9.x`:
+
+| gone | what to do instead |
+|---|---|
+| `isTransient` | **use `isTransientError`** — see below, this is the only one worth a thought |
+| `NOOP_AUDIT` | omit the `audit` option; that is what "no audit sink" already means |
+| `drainRegistry` · `validateMaxScanSegments` | `listSegments()` — the supported enumeration, already bounded. For a pass you write yourself, `excludingReservedRows` is still exported and is the part you must not skip |
+| `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` | the values are in the [API reference](docs/guide/api-reference.md); pass your own to `maxScanSegments` / `limit` / `tombstoneGraceMs` rather than reading ours |
+| `CrbmWriter` · `CrbmWriterOptions` | none. Building a `.crbm` is the library's job; `CrbmReader` is still exported for tooling that inspects one |
+| `chunkRefKey` | none. `segmentKey` is still exported |
+| `aadFor` | none. If you implement `Aead`, the associated data is **passed to you** — you never construct it |
+| `joinId` | none. `splitId` is still exported, because it range-checks an id on the way |
+| `checkBudget` | none. Pass a `budget` and the library enforces it |
+| `BufferSink` | implement `BlobSink`; it is two methods |
+
+### The one that needs a decision: `isTransient`
+
+It was `return isTransientError(err)` — the same check, with a plain `boolean` where its twin has a type
+predicate. Swap the name:
+
+```diff
+- import { isTransient } from '@cloudbitmaps/core';
+- if (isTransient(err)) retry();
++ import { isTransientError } from '@cloudbitmaps/roaring';
++ if (isTransientError(err)) retry();   // also narrows `err` to TransientError
+```
+
+If you passed `RetryDeps.isRetryable` or `RetryingOptions.isRetryable`, nothing changes — the default is now
+`isTransientError`, which is the same predicate it always called.
+
+> [!NOTE]
+> **The three driver packages each export their own `isTransient`**, and those are untouched. They classify
+> *SDK* errors (an S3 `SlowDown`, a 503) before the library has wrapped them, which is a different job from
+> core's, which classifies errors this library already threw. If your import came from `@cloudbitmaps/s3`,
+> `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob`, leave it alone.
+
+**Why now rather than later.** `0.10.0` already breaks your import paths, so this costs one more entry in this
+guide instead of a second breaking release. And re-exporting a name is additive, never breaking — so the bias
+is to cut now and restore deliberately, with docs and tests, if a real use case turns up.
 
 ## `instanceof` now holds across packages
 

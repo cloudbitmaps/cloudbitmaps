@@ -6,14 +6,9 @@
  * being safe to add a second index at all.
  */
 import { describe, expect, it } from 'vitest';
-import {
-  MemoryRegistryDriver,
-  drainRegistry,
-  dueBucket,
-  dueIndexRef,
-  dueNamespace,
-  type SegmentRef,
-} from '@/index';
+import { MemoryRegistryDriver, type SegmentRef } from '@/index';
+import { drainRegistry } from '@/core/registry-scan';
+import { dueBucket, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { loadedStore } from '../helpers/loaded';
 
 const DAY = 86_400_000;

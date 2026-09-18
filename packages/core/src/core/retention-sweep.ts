@@ -72,13 +72,13 @@ export interface RetireExpiredOptions {
    * caller, never from the platform — `store.retireExpired()` fills it in from the store's clock.
    */
   readonly now: number;
-  /** Maximum segments to retire in this cycle (default {@link DEFAULT_RETIRE_LIMIT}). */
+  /** Maximum segments to retire in this cycle (default 100). */
   readonly limit?: number;
   /** Report what would be retired and change nothing. */
   readonly dryRun?: boolean;
   /** Forwarded to each `dropSegment`, so every retirement lands in the audit trail as `segment.dispose`. */
   readonly audit?: IAuditSink;
-  /** Ceiling on rows enumerated (default `DEFAULT_MAX_SCAN_SEGMENTS`, 250,000); exceeding it throws. */
+  /** Ceiling on rows enumerated (default 250,000); exceeding it throws. */
   readonly maxScanSegments?: number;
   /**
    * **Where the candidates come from.**
@@ -105,7 +105,7 @@ export interface RetireExpiredOptions {
   readonly totalShards?: number;
   /**
    * How many **past** buckets an `'index'` scan reads besides the current one (default
-   * {@link DEFAULT_LOOKBACK_BUCKETS}). A sweep that did not run — scaled to zero, a failed deploy, a paused
+   * 7 days). A sweep that did not run — scaled to zero, a failed deploy, a paused
    * schedule — leaves its buckets behind, and this is how far back a later cycle reaches for them. Bounded so a
    * long outage costs a bounded number of list calls per cycle rather than one per day since the epoch;
    * anything older is the `'fleet'` repair pass's job.

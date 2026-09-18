@@ -82,7 +82,7 @@ export class SegmentEngine {
   private readonly clock: Pick<Clock, 'now'>;
   private readonly metrics: IMetricsSink;
   private readonly metricsOn: boolean;
-  /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. See {@link checkBudget}. */
+  /** Resolved per-op budget (null = disabled); undefined deps ⇒ the generous default. */
   private readonly budget: Budget | null;
 
   constructor(deps: EngineDeps) {

@@ -116,7 +116,7 @@ export type AuditEvent =
 /** The `kind` discriminant of an {@link AuditEvent}. */
 export type AuditEventKind = AuditEvent['kind'];
 
-/** Sink for {@link AuditEvent}s. Injected via the lifecycle options; the default is {@link NOOP_AUDIT}. */
+/** Sink for {@link AuditEvent}s. Injected via the lifecycle options; omit it and nothing is recorded. */
 export interface IAuditSink {
   onEvent(event: AuditEvent): void;
 }

@@ -16,10 +16,11 @@
  *
  * What is **not** retried here: {@link WriteConflictError} (OCC — the publish loop owns that; a blind replay
  * would re-apply against a stale token), and every deterministic error
- * (`ValidationError`/`IntegrityError`/`NotFoundError`/…). Default classifier: {@link isTransient}.
+ * (`ValidationError`/`IntegrityError`/`NotFoundError`/…). Default classifier: {@link isTransientError}.
  */
 import type { Clock, Rng } from '../../core/determinism';
-import { withRetry, isTransient, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { withRetry, DEFAULT_RETRY_POLICY } from '../../core/retry';
+import { isTransientError } from '../../core/errors';
 import type { RetryPolicy } from '../../core/retry';
 import type {
   ChunkRef,
@@ -43,7 +44,7 @@ export interface RetryingOptions {
   readonly rng: Rng;
   /** Defaults to {@link DEFAULT_RETRY_POLICY}. */
   readonly policy?: RetryPolicy;
-  /** Override which errors are retryable. Default: {@link isTransient} (any `TransientError`). */
+  /** Override which errors are retryable. Default: {@link isTransientError} (any `TransientError`). */
   readonly isRetryable?: (err: unknown) => boolean;
   /** Observability hook fired before each backoff wait. */
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
@@ -64,7 +65,7 @@ function toRetry(opts: RetryingOptions): {
     deps: {
       clock: opts.clock,
       rng: opts.rng,
-      isRetryable: opts.isRetryable ?? isTransient,
+      isRetryable: opts.isRetryable ?? isTransientError,
       onRetry: opts.onRetry,
     },
   };

@@ -57,11 +57,6 @@ export interface RetryDeps {
   readonly onRetry?: (info: { attempt: number; delayMs: number; err: unknown }) => void;
 }
 
-/** Default classifier: retry transient infrastructure faults only. */
-export function isTransient(err: unknown): boolean {
-  return isTransientError(err);
-}
-
 /**
  * Backoff delay (ms) for the retry that follows a given 1-based attempt, before jitter is applied. Exposed
  * for tests. `attempt` 1 ⇒ `baseDelayMs`, 2 ⇒ `base·factor`, … capped at `maxDelayMs`.
@@ -87,7 +82,7 @@ export async function withRetry<T>(
   policy: RetryPolicy,
   deps: RetryDeps,
 ): Promise<T> {
-  const retryable = deps.isRetryable ?? isTransient;
+  const retryable = deps.isRetryable ?? isTransientError;
   // `Math.max(1, x)` guards 0 and negatives but NOT NaN — `Math.max(1, NaN)` is NaN, and `1 <= NaN` is false,
   // so the loop below would never execute: `op()` never called, and the function rejects with the literal
   // `undefined` from `lastErr`. Every write would silently no-op without touching the backend, and callers

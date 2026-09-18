@@ -26,22 +26,24 @@ export { BoundedLru } from './core/lru';
 export { safeMetrics } from './core/metrics';
 export { groundedReport } from './core/cost';
 export { runExport } from './export';
-export { splitId, joinId } from './core/bit-route';
+// `splitId` only: the flavor uses it to fail fast on a non-u32 id. `joinId` is the inverse and has no
+// caller outside core, so it stays internal rather than shipping as half-documented public API.
+export { splitId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
-export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
+export { resolveBudget, resolvePerOpBudget, collectWithinBudget } from './core/budget';
+// Also in `driver-kit` (a driver validates at its own boundary); here because the flavor calls it on every
+// ref an application hands in.
 export { validateSegmentRef } from './core/validate';
 export { segmentExists, listSegments } from './core/discover';
 export type { SegmentInfo } from './core/discover';
-export {
-  encodeNameForKey,
-  decodeNameFromKey,
-  encodeNameForPath,
-  decodeNameFromPath,
-} from './core/name-codec';
-export { namespaceKeyPart, namespacePathPart } from './drivers/_shared/keys';
+// The PATH half only — `export-segments` builds filesystem paths with it. The KEY half
+// (`encodeNameForKey`, `namespaceKeyPart`) is a driver concern and lives in `@cloudbitmaps/core/driver-kit`;
+// the two decoders have no caller in or out of this repo.
+export { encodeNameForPath } from './core/name-codec';
+export { namespacePathPart } from './drivers/_shared/keys';
 // Driver-kit: the token shape a registry driver needs, and the key helpers the conformance fakes use.
 export type { Token } from './core/ports';
-export { chunkRefKey, segmentKey } from './core/keys';
+export { segmentKey } from './core/keys';
 
 // ---------------------------------------------------------------------------------------------------
 // The public surface (an application reaches these through its flavor package, which re-exports them).
@@ -142,7 +144,6 @@ export {
 // implementation (`node:crypto`, outside core). KMS/Vault adapters are future optional packages against
 // `IKeystore`. See the getting-started "Encryption" section for key-management guidance.
 export type { Aead, AeadSealed, IKeystore, WrappedDek, CrbmCrypto } from './core/crypto';
-export { aadFor } from './core/crypto';
 export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
 
@@ -156,9 +157,13 @@ export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/eras
 // duration the library derived would be anchored to `updatedAt`/`currentGen`, which every load republishes, so a
 // busy segment would never expire. Nothing here runs on a timer; the sweep is a separate call the operator
 // schedules (see the getting-started "Retention" section for where to run it).
-// `readRetentionPolicy` is exported because a caller running their own `list()` sweep needs to parse a policy out
-// of a row they already hold. `validateRetentionPolicy` deliberately is NOT: `setRetention` validates on the way
-// in, so nothing outside needs the raw validator, and public surface is the hardest kind of decision to reverse.
+// `getSegmentRetention(ref)` reads ONE segment's policy and costs a registry read. `readRetentionPolicy(meta)`
+// is the pure parser for a caller who already holds rows — a fleet-wide sweep over `registry.list()`, where
+// per-segment reads would turn one listing into N+1 round trips. It stays exported because `RegistryRecord`
+// and its `retention: GovernanceMeta` field are both public, so without it a caller can reach the metadata and
+// has nothing supported to parse it with; hand-rolling that parse is how a single malformed row takes down a
+// whole sweep, which is the case its three-way `null | 'invalid' | policy` answer exists to prevent.
+// `validateRetentionPolicy` deliberately is NOT exported: `setSegmentRetention` validates on the way in.
 export {
   setSegmentRetention,
   clearSegmentRetention,
@@ -171,37 +176,18 @@ export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/
 // The retention sweep: retire every segment whose policy expired, by delegating to `dropSegment` (the registry →
 // Storage ordering is load-bearing and lives there). A call, never a daemon — the operator owns the heartbeat that
 // runs it.
-export {
-  retireExpired,
-  DEFAULT_RETIRE_LIMIT,
-  DEFAULT_TOMBSTONE_GRACE_MS,
-  DEFAULT_LOOKBACK_BUCKETS,
-} from './core/retention-sweep';
-// The one bounded drain of `registry.list()`, shared by the consistency scan and the retention sweep — exported
-// because a caller writing their own fleet-wide admin pass needs the same ceiling rather than a third copy.
-export {
-  drainRegistry,
-  validateMaxScanSegments,
-  isReservedRow,
-  excludingReservedRows,
-} from './core/registry-scan';
+export { retireExpired } from './core/retention-sweep';
+// `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
+// registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
+// caller that forgets to skip them reports phantom segments. The bounded drain itself (`drainRegistry`) and
+// its ceiling validator stay internal; `listSegments` is the supported way to enumerate.
+export { excludingReservedRows } from './core/registry-scan';
 
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
 // with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
-export {
-  dueBucket,
-  dueBucketsAt,
-  dueNamespace,
-  dueIndexRef,
-  encodeDueName,
-  decodeDueName,
-  canIndex,
-  isDueIndexRow,
-  DUE_NAMESPACE_PREFIX,
-  DUE_BUCKET_MS,
-  MAX_NAME_LENGTH,
-} from './core/due-index';
+// Nothing here is exported: a caller never builds a bucket name or a synthetic row, and `retireExpired`
+// consults the index for them. `excludingReservedRows` above is the one piece an outside caller needs.
 export type {
   RetireExpiredOptions,
   RetireExpiredResult,
@@ -215,7 +201,6 @@ export type { Budget, BudgetOption } from './core/budget';
 // Cross-tier DR consistency check: `store.checkConsistency()` (or the free function over your own storage +
 // registry drivers) detects a torn restore where `currentGen` points at a `.crbm` that isn't present.
 export { runConsistencyCheck } from './core/consistency';
-export { DEFAULT_MAX_SCAN_SEGMENTS } from './core/consistency';
 export type {
   ConsistencyReport,
   ConsistencyIssue,
@@ -238,7 +223,7 @@ export type {
 
 // Resilience: the retry primitive + decorators + policy. `CloudRoaring` wires these by default; they're exported
 // so driver authors / advanced callers can wrap their own drivers or tune the policy.
-export { withRetry, isTransient, DEFAULT_RETRY_POLICY } from './core/retry';
+export { withRetry, DEFAULT_RETRY_POLICY } from './core/retry';
 export type { RetryPolicy, RetryDeps } from './core/retry';
 export {
   RetryingStorageChunkSource,
@@ -248,11 +233,11 @@ export {
 export type { RetryingOptions } from './drivers/retry/retrying-drivers';
 
 // `.crbm` archive format — the on-disk Storage layout. Exposed for driver authors and tooling.
-export { CrbmWriter } from './core/crbm/writer';
-export type { CrbmWriterOptions } from './core/crbm/writer';
+// The READER only. Tooling inspects a `.crbm`; building one is this library's job, and `CrbmWriter` has no
+// caller outside core — an offline archive builder would be a deliberate, documented export, not a leak.
 export { CrbmReader } from './core/crbm/reader';
 export type { CrbmReaderOptions } from './core/crbm/reader';
-export { BufferSink, BufferReader } from './core/blob';
+export { BufferReader } from './core/blob';
 export type { BlobReader, BlobSink } from './core/blob';
 
 // Observability: the injected metrics seam + a no-op default + a counting sink. Emit typed events
@@ -274,5 +259,5 @@ export type {
 // Audit trail: a separate injected seam for security/compliance state changes (publish/rewrite/erase/dispose) —
 // distinct from metrics. Pass `audit` to the bulk-load/erasure APIs; see the dashboards guide. Exception-safe; the
 // default records nothing.
-export { NOOP_AUDIT, RecordingAuditSink } from './core/audit';
+export { RecordingAuditSink } from './core/audit';
 export type { IAuditSink, AuditEvent, AuditEventKind } from './core/audit';
