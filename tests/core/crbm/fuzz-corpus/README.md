@@ -1,4 +1,4 @@
-# Fuzz crash-reproducer corpus (T3 regression guard)
+# Fuzz crash-reproducer corpus
 
 Committed reproducers for bugs found by the coverage-guided fuzz campaign (`pnpm fuzz:*`,
 [`fuzz/README.md`](../../../../fuzz/README.md)). [`../fuzz-corpus.test.ts`](../fuzz-corpus.test.ts) replays

@@ -33,8 +33,8 @@ echo "build-lambda-layer: build + pack"
 pnpm build >/dev/null
 # Pack the codec and the engine (pnpm rewrites `workspace:^` to a concrete version, so these are
 # publish-shaped) into a REPO-LOCAL dir — Docker Desktop shares /Users, not /var/folders — then place them
-# into the layer's node_modules by hand, since the pinned `@cloudbitmaps/core` version is not
-# registry-resolvable pre-launch. The three driver packages are deliberately NOT in the layer: a layer exists
+# into the layer's node_modules by hand, since the `@cloudbitmaps/core` version pinned in THIS tree is
+# generally not on the registry yet. The three driver packages are deliberately NOT in the layer: a layer exists
 # to hold the expensive native `roaring` addon, and which storage a function talks to is the function's own
 # choice — bundling all three would put every cloud SDK into every deployment, the exact cost the split removed.
 PACKDIR="$ROOT/.pack-tmp"

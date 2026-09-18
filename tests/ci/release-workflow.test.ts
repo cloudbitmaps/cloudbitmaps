@@ -143,11 +143,32 @@ describe('release workflow shape', () => {
       'node scripts/audit.cjs',
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',
+      'Refuse to publish an unbootstrapped name or a version already on the registry',
     ]) {
       const i = names.indexOf(precondition);
       expect(i, `"${precondition}" is missing from the publish job`).toBeGreaterThan(-1);
       expect(i, `"${precondition}" must run before Publish (real)`).toBeLessThan(iReal);
     }
+  });
+
+  it('probes the registry before publishing, for both partial-release shapes', () => {
+    // Both failures produce a PARTIAL release of a lockstep family, and neither shows up in the log: a name
+    // with no Trusted Publisher cannot be published by this tokenless workflow at all (it would publish the
+    // packages that DO exist, then fail), and a version already on the registry is SKIPPED by pnpm with
+    // exit 0, so the run goes green having published nothing for that package. Both are read-only probes,
+    // so they belong ahead of the irreversible step rather than in a runbook.
+    const step = job('publish').steps.find(
+      (s) =>
+        s.name === 'Refuse to publish an unbootstrapped name or a version already on the registry',
+    );
+    expect(step, 'the registry precondition is missing').toBeDefined();
+    // Two different checks; asserting only one would let the other be deleted silently.
+    expect(step?.run).toMatch(/npm view "\$NAME" version/);
+    expect(step?.run).toMatch(/npm view "\$NAME@\$VER" version/);
+    // It must cover the dispatch path too — that is the one the tag guard is documented as skipping.
+    const cond = String((step as unknown as { if?: string }).if ?? '');
+    expect(cond).toContain("github.event_name == 'push'");
+    expect(cond).toContain('!inputs.dryRun');
   });
 
   it('audits dependencies on the release commit, not just on a green main', () => {
@@ -190,6 +211,7 @@ describe('release workflow shape', () => {
     for (const name of [
       'Verify tag matches every package version',
       'Refuse to "publish" a still-private package',
+      'Refuse to publish an unbootstrapped name or a version already on the registry',
     ]) {
       const run = job('publish').steps.find((s) => s.name === name)?.run ?? '';
       expect(run, `${name} must set nullglob`).toContain('shopt -s nullglob');

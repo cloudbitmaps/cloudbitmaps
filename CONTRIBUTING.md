@@ -23,14 +23,15 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   `core-no-node-builtins`, the **runtime**-agnostic one too.
 - `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
   the entry list is derived from each manifest, so a declared entry that does not load fails the build — and
-  cross-checks the `Symbol.for`-branded error and backend predicates ACROSS PACKAGES, which is where they
-  matter: `instanceof` does not hold between `@cloudbitmaps/core` and a flavor, because each carries its own
-  copy of the classes. That is the class of bug the source-graph tests structurally cannot see.
+  cross-checks the `Symbol.for`-branded error and backend predicates ACROSS PACKAGES, and asserts the five
+  built packages really do share **one** copy of core — every package leaves `@cloudbitmaps/core` external,
+  so `instanceof` holds across them and a regression to a bundled copy would break it silently. Both halves
+  are the class of bug the source-graph tests structurally cannot see.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, which the manifests enforce — `.nvmrc` pins the major, 22 — and pnpm 9; Docker only for
 `test:integration`).
-Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover both packages.
+Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
 
 ## Repo layout (a pnpm workspace of five packages)
 
@@ -45,15 +46,16 @@ The `@cloudbitmaps` family split makes this repo a workspace
 | `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | benchmarks, fuzz targets, gate scripts, the static site, and the docs trees below |
 
-A user installs **one flavor** (`@cloudbitmaps/roaring`); core arrives transitively and is never installed
-directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor package, if the main entry
-reaches a cloud SDK, or if `core/` reaches a driver impl.
+A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
+(`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
+directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor or a driver package, if
+any main entry outside a driver package reaches a cloud SDK, or if `core/` reaches a driver impl.
 
 `core/` is also **runtime**-agnostic: `lint:arch` fails on any `node:*` import under `packages/core/src/core`, so
 the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and
 I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver ports — which is what makes that
-enforceable rather than aspirational. **Anything needing a builtin belongs in a driver under `src/drivers`**,
-where all of them live today.
+enforceable rather than aspirational. **Anything needing a builtin belongs in a driver** — either one of the
+driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
 
 ## Dependency policy
 

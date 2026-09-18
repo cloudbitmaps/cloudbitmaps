@@ -15,9 +15,10 @@ export default defineConfig({
     passWithNoTests: false,
   },
   resolve: {
-    // The test suite lives at the repo root and drives BOTH packages (many tests are white-box across the
-    // facade + core internals), so `@/…` is mapped onto the workspace here — which is why the family split
-    // needed no churn in 100+ test files. Order matters: the two exact matches win over the `@/*` catch-all.
+    // The test suite lives at the repo root and drives all five packages (many tests are white-box across
+    // the facade + core internals), so `@/…` is mapped onto the workspace here — which is why the family
+    // split needed no churn in 100+ test files. Order matters: the exact matches win over the `@/*`
+    // catch-all, so a new package's alias goes ABOVE it.
     //   @/index          → the roaring facade (the package entry the tests mean)
     //   @/roaring-codec  → the roaring codec (was `@/core/bitmap` before the split)
     //   @/*              → @cloudbitmaps/core internals

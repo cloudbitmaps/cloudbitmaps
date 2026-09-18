@@ -210,7 +210,7 @@ and an explicit list of what the run does *not* establish:
 
 ```bash
 npm i @cloudbitmaps/roaring    # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
-npm i @cloudbitmaps/s3         # the storage you actually have — or /gcs, or /azure-blob
+npm i @cloudbitmaps/s3         # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
@@ -583,16 +583,18 @@ keeping a list beside it, a **snapshot handle** so a long export or reconciliati
 than whichever generations were current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs. The repo is a
-pnpm workspace of `@cloudbitmaps/core` (the codec-agnostic engine + every driver, zero runtime
-dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring` facade, and the
-`export-segments` CLI). You install one flavor; core arrives transitively.
+The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
+storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic
+engine, the `.crbm` format, the driver ports, and the SDK-free memory and local-filesystem drivers — zero
+runtime dependencies), the **codec** axis `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring`
+facade, and the `export-segments` CLI), and the **storage** axis `@cloudbitmaps/s3` · `/gcs` · `/azure-blob`,
+one package per service. You install one of each axis; core arrives as their dependency.
 
 ## Documentation
 
-- **Usage walkthrough** — how you actually use it, end to end: the mental model,
-  local → cloud wiring, the operations, the real flows (load, match, campaign targeting, retention,
-  encryption), and where cost + observability fit.
+- **[Usage walkthrough](https://cloudbitmaps.pages.dev/usage.html)** — how you actually use it, end to end:
+  the mental model, local → cloud wiring, the operations, the real flows (load, match, campaign targeting,
+  retention, encryption), and where cost + observability fit.
 - **[Getting started](docs/guide/getting-started.md)** — the exhaustive, per-tier reference with every signature.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.

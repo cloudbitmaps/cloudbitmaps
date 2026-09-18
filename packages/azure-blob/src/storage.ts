@@ -11,8 +11,9 @@
  *
  * Generations are write-once immutable blobs: the conditional **`ifNoneMatch: '*'`** ("create only if it does
  * not exist") makes the publish atomic — a second write to the same blob fails with 409 `BlobAlreadyExists` →
- * {@link WriteConflictError}, never a silent overwrite (C13), the Azure analogue of S3's `If-None-Match: *`,
- * GCS's `ifGenerationMatch: 0`, and LocalFs's atomic `link`. **Empirically verified against Azurite** that the
+ * {@link WriteConflictError}, never a silent overwrite (hard invariant 2: storage objects are immutable and
+ * never overwritten in place), the Azure analogue of S3's `If-None-Match: *`, GCS's `ifGenerationMatch: 0`,
+ * and LocalFs's atomic `link`. **Empirically verified against Azurite** that the
  * precondition is enforced on BOTH upload paths below. **Writes stream in constant memory**:
  * a small blob is a single conditional `upload`; a larger one is **staged as blocks** (each `stageBlock`
  * flushes and frees ~one block) finished with a conditional `commitBlockList`, so a load's write footprint

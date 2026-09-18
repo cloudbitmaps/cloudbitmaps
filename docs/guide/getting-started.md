@@ -8,9 +8,9 @@
 > and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
 > crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
-> **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the
-> *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
-> the `CloudRoaring` facade. The storage you use is a second package — `@cloudbitmaps/s3`,
+> **Two packages to install: a codec and a storage.** Every import below is the real specifier. The codec is
+> `@cloudbitmaps/roaring`, the *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
+> the `CloudRoaring` facade. The storage you use is the second package — `@cloudbitmaps/s3`,
 > `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob` — which depends on its cloud SDK for real, so installing
 > it is the whole step. Both depend on **`@cloudbitmaps/core`**, the codec-agnostic engine, which arrives
 > **transitively**: you never install or name it.
@@ -470,7 +470,8 @@ const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudroaring' })
 const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
 ```
 
-> **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
+> **Checklist.** `@google-cloud/storage` is a real dependency of `@cloudbitmaps/gcs`, not a peer — installing
+> the package installs it. Generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
 > Note the two senses of the word in that snippet: the drivers' own `storage` option takes the **GCS client**
 > (`@google-cloud/storage` names its client class `Storage`), which is why it is built as `gcs` above — while
@@ -491,7 +492,8 @@ const backend = new AzureBlobStorage({
 const store = new CloudRoaring({ storage: backend }); // one container is the whole deployment
 ```
 
-> **Checklist.** Peer `@azure/storage-blob`; inject a container-scoped `ContainerClient`; generations are
+> **Checklist.** `@azure/storage-blob` is a real dependency of `@cloudbitmaps/azure-blob`, not a peer.
+> Inject a container-scoped `ContainerClient`; generations are
 > write-once via `If-None-Match: '*'`, and the registry swaps the pointer with `If-Match: <etag>`.
 
 Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the

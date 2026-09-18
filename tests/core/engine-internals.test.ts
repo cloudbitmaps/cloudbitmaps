@@ -43,7 +43,7 @@ class CountingStorage implements StorageChunkSource {
   }
 }
 
-describe('cache (C6) — wired through the engine', () => {
+describe('the bounded cache — wired through the engine', () => {
   it('serves a cache hit, re-reads after TTL, and evicts past the ceiling', async () => {
     const inner = new MemoryStorageChunkSource();
     inner.seed({ segment: 's', chunkKey: 0 }, SafeBitmap.fromValues([1]).serialize());

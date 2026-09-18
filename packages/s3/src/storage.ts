@@ -8,7 +8,8 @@
  *
  * Generations are write-once immutable objects: a conditional `PutObject` with `If-None-Match: *` makes the
  * publish atomic — a second write to the same key fails with `WriteConflictError`, never a silent overwrite
- * (C13), the cloud analogue of the LocalFs atomic `link`. **This requires a backend that honors
+ * (hard invariant 2: storage objects are immutable and never overwritten in place), the cloud analogue of
+ * the LocalFs atomic `link`. **This requires a backend that honors
  * `If-None-Match: *`** (AWS S3 — GA Aug 2024; recent MinIO): a backend that silently ignored the
  * precondition would break write-once immutability. **Writes stream:** the object is uploaded in
  * constant memory — a small object is a single conditional `PutObject`; a large one is a **multipart upload**

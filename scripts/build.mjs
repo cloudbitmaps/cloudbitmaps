@@ -3,14 +3,18 @@
  * emits declarations with tsc, and rewrites the `@/…` self-alias in the emitted .d.ts to relative paths.
  *
  * This replaced tsup. What it reproduces, on purpose:
- *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — the main entry and each cloud subpath
- *     barrel — with sourcemaps, node platform, ES2022. ESM ONLY: the package is `"type": "module"` and the
- *     exports map offers a single `default` condition, so `require()` resolves to the same file and Node's
- *     `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a second self-contained CJS
- *     bundle bought nothing: it duplicated every module, which is why `instanceof` used to fail across a
- *     driver subpath, and it forced the types to describe an ESM file while the runtime served CJS;
- *   - every bare import left EXTERNAL (`packages: 'external'`): dependencies, optional peers and node builtins
- *     resolve at runtime from the consumer's node_modules, so the main entry never pulls a cloud SDK in;
+ *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — every entry the package's own
+ *     `exports` map declares — with sourcemaps, node platform, ES2022. ESM ONLY: the package is
+ *     `"type": "module"` and the exports map offers a single `default` condition, so `require()` resolves to
+ *     the same file and Node's `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a
+ *     second self-contained CJS bundle bought nothing: it duplicated every module, and it forced the types
+ *     to describe an ESM file while the runtime served CJS;
+ *   - every bare import left EXTERNAL (`packages: 'external'` plus `@cloudbitmaps/*`): dependencies, the
+ *     other workspace packages and node builtins all resolve at runtime from the consumer's node_modules.
+ *     That is what keeps a cloud SDK out of a main entry, and what gives the whole install ONE copy of
+ *     `@cloudbitmaps/core` — so the error classes are the same objects and `instanceof` holds across
+ *     packages. esbuild applies tsconfig `paths` BEFORE `packages: 'external'`, which is why the
+ *     `@cloudbitmaps/*` entry has to be spelled out rather than left to the flag;
  *   - one `.d.ts` tree under dist/ mirroring src/ (the exports map already points at `dist/<entry>/index.d.ts`);
  *   - the ESM-only `export-segments` bin with its `#!` line preserved (esbuild keeps an entry's hashbang);
  *   - the fuzz-only bundles into the git-ignored repo-root `fuzz/build/`, never into dist/.

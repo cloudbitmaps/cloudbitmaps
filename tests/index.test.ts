@@ -74,7 +74,7 @@ describe('public API', () => {
     expect(store()).not.toHaveProperty('compact');
   });
 
-  it('rejects names that could traverse or inject (S2)', () => {
+  it('rejects names that could traverse or inject', () => {
     const cr = store();
     for (const bad of ['', 'a'.repeat(257)]) {
       expect(() => cr.segment(bad)).toThrow(ValidationError);

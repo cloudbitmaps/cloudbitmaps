@@ -6,7 +6,7 @@ grown one capability per phase (so it never describes vapor).
 - [**Getting started**](getting-started.md) — install status, the in-memory quick start, the persistent
   local-filesystem setup, loading a generation, and the operation reference.
 - [**API reference**](api-reference.md) — the complete callable surface, every export with its shape, kept in
-  sync with the barrels by CI.
+  sync by CI with each package's own `exports` map.
 - [**Dashboards**](dashboards.md) — wiring the metrics + audit sinks into your observability stack.
 - [**Disaster recovery**](disaster-recovery.md) — what to back up, the coordinated-restore procedure, RPO/RTO,
   and the `checkConsistency()` torn-restore check.

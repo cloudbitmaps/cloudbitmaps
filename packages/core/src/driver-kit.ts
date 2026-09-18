@@ -33,8 +33,13 @@ export type {
 } from './core/ports';
 export { brandAsBackend, STORAGE_BACKEND } from './core/ports';
 
-// The typed errors a driver must throw, and the predicates that classify one across package copies.
-// (`instanceof` does not hold between two packages — each carries its own copy of these classes.)
+// The typed errors a driver must throw, and the predicates that classify one.
+//
+// In an ordinary install `instanceof` holds: every package here leaves `@cloudbitmaps/core` external, so one
+// copy of these classes is shared. Throw and catch them normally. The predicates matter where that stops
+// being true — a bundler that inlines core into two outputs, two major versions side by side in one tree, a
+// worker or vm realm — because each is `Symbol.for`-branded and so identifies the error by brand rather than
+// by prototype identity. Prefer them in library code that cannot see how it will be bundled.
 export {
   IntegrityError,
   isNotFoundError,
@@ -62,8 +67,9 @@ export type { ObjectRegistryStore, ObjectRow } from './drivers/_shared/object-re
 // Key construction: how a segment name and namespace become an object key, how a prefix is normalized, and
 // where a registry row lives. The layout has exactly one definition here — two drivers disagreeing about a
 // row's key would be a silent cross-driver incompatibility on the same bucket — and all three reach it
-// through `ObjectStoreRegistry`. The S3 driver additionally re-exports the four `registry*` helpers for its
-// own callers; the other two do not, so this is one definition rather than three re-exports of it.
+// through `ObjectStoreRegistry`. `@cloudbitmaps/s3` also re-exports the four `registry*` helpers from its
+// own internal key module, for the call sites and tests that already name them there; that re-export is not
+// on its public surface, so this stays one definition rather than becoming a second one.
 export { encodeNameForKey, namespaceKeyPart } from './drivers/_shared/keys';
 export {
   normalizeObjectPrefix,

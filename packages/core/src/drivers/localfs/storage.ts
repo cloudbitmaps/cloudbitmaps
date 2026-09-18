@@ -3,8 +3,8 @@
  *
  * Generations are write-once immutable files. A new object is streamed to a temp file (with its content
  * hashed in-flight), `fsync`-ed, then published with an atomic `link` that fails if the destination
- * already exists — so a generation can never be silently overwritten, and a crash leaves only an orphan
- * temp file, never a torn object (C13). Drivers do filesystem I/O and may use `node:crypto`; only `core/`
+ * already exists — so a generation can never be silently overwritten (hard invariant 2), and a crash
+ * leaves only an orphan temp file, never a torn object. Drivers do filesystem I/O and may use `node:crypto`; only `core/`
  * is bound by the determinism lint.
  */
 import { constants as FS } from 'node:fs';

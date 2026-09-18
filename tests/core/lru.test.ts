@@ -27,7 +27,7 @@ describe('BoundedLru', () => {
     expect(lru.get('c')).toBe(3);
   });
 
-  it('expires entries past their TTL (C6)', () => {
+  it('expires entries past their TTL', () => {
     const clock = fakeClock();
     const lru = new BoundedLru<string, number>({ maxEntries: 10, ttlMs: 100, clock });
     lru.set('x', 42);

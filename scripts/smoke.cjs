@@ -6,18 +6,18 @@
  * Guards the `roaring` CJS→ESM interop: `roaring` is a CommonJS native addon, and a *named* ESM import of
  * it crashes Node's ESM loader (its static lexer can't see the CJS exports). We load the package **by name**
  * — so the package.json `exports` map and its `import`/`require` conditions are exercised too, not just the
- * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every subpath, then run the
- * roaring-backed load/read path. The roaring interop is exercised specifically by the main `.` entry (only it
- * pulls in the SafeBitmap); the `/s3` + `/gcs` + `/azure` entries additionally guard the exports map and their
- * AWS-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
+ * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every entry of every package, then run
+ * the roaring-backed load/read path. The roaring interop is exercised specifically by the flavor's main `.`
+ * entry (only it pulls in the SafeBitmap); the three driver packages additionally guard their own exports
+ * maps and their cloud-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
  * too. Any regression fails the build. Run via `pnpm smoke` (builds first) or `node scripts/smoke.cjs`.
  */
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-// Self-reference by name → resolves through the package `exports` map. This is the FLAVOR package (what
-// users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
-// two-package graph end to end, not just one bundle.
+// Self-reference by name → resolves through the package `exports` map. `PKG` is the flavor and `S3` one of
+// the driver packages a user installs beside it; naming them separately is what lets the checks below cross
+// a real package boundary rather than staying inside one bundle.
 const PKG = '@cloudbitmaps/roaring';
 const CORE = '@cloudbitmaps/core';
 const S3 = '@cloudbitmaps/s3';
@@ -210,14 +210,19 @@ async function exerciseCore(label, m) {
  * and neither can observe a mismatch. Run as-was, this check had become vacuous — replacing every
  * `Symbol.for(…)` with `Symbol(…)` in the built chunk left it green.
  *
- * The boundary that still exists is between the two PACKAGES. `@cloudbitmaps/roaring` and
- * `@cloudbitmaps/core` are bundled separately and each carries its own copy of the error classes, so
- * `instanceof` across them is genuinely false (asserted below, so this rationale cannot quietly rot) while
- * the predicates hold. That is also a real user path: the docs say importing `@cloudbitmaps/core/s3` is
- * equivalent to the roaring subpath, and a consumer who mixes the two gets exactly this.
+ * Nor is the PACKAGE boundary load-bearing any more, and this comment previously claimed it was — it said
+ * each package carried its own copy of the error classes, which stopped being true the moment the build
+ * started marking `@cloudbitmaps/*` external. `assertPackagesShareOneCopy` now asserts the opposite: one
+ * copy of core across all five packages, so `instanceof` holds and the identity the predicates defend is
+ * the one a normal install already has.
  *
- * The same-package legs are kept as cheap consistency checks, so a future build change that stops sharing
- * the ESM chunk is covered without anyone remembering to add it.
+ * So what these checks pin is the BRAND itself, not any particular boundary. Every `Symbol.for` here is a
+ * registered symbol precisely so it survives the cases a build cannot see — a consumer's bundler inlining
+ * core twice, two majors resolved side by side, a worker or vm realm. None of those can be reproduced here,
+ * so what is asserted is that the brand is registered and the predicates read it: switching a
+ * `Symbol.for(…)` to a plain `Symbol(…)` in the built chunk must turn this red. Keep both legs running for
+ * the same reason — a future build change that stops sharing the ESM chunk is then covered without anyone
+ * remembering to add it.
  */
 function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;
@@ -238,7 +243,7 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
   // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
   // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
   // Nothing else pins it: switching it to a plain `Symbol()` leaves lint, typecheck and the full suite green
-  // while every user of a driver subpath gets `storage must be a backend` for a backend they just built.
+  // while every user of a driver package gets `storage must be a backend` for a backend they just built.
   const s3Backend = new driverMod.S3Storage({ bucket: 'smoke', region: 'us-east-1' });
   if (!coreMod.isStorageBackend(s3Backend)) {
     throw new Error(
@@ -307,22 +312,23 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
  * never called the feature: a bundler resolves specifiers before it tree-shakes.
  *
- * WHAT IS CHECKED. The ESM entry, every module reachable from it (transitively, lazy `import()` included),
- * and the published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
- * `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a hard `Cannot find module` for any
- * consumer building with `skipLibCheck: false` who did not install the optional peer.
+ * WHAT IS CHECKED. For `@cloudbitmaps/core` and `@cloudbitmaps/roaring`: the ESM entry, every module
+ * reachable from it (transitively, lazy `import()` included), and the published `.d.ts` tree. A type-only
+ * `import('@aws-sdk/client-s3')` in `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a
+ * hard `Cannot find module` for any consumer building with `skipLibCheck: false`.
  *
- * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read, and
- * neither is the chunk only they share — unreachable from the main entry, which is the whole point.
- * The walk asserts it actually reached a chunk rather than silently covering none.
+ * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary
+ * used to be a directory inside core and is now a package name, which is why this is a list of packages to
+ * skip rather than a path prefix to avoid — and why core is now SDK-free unconditionally rather than
+ * SDK-free outside three directories.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
 
 /**
- * Every `.d.ts` under `dist/`, as a path relative to `dist`. `includeDrivers` distinguishes the two
- * callers: the SDK sweep must skip the driver trees (naming an SDK is exactly what they are for), while
- * the specifier sweep covers them too — a driver subpath is published with the same resolution rules.
+ * Every `.d.ts` under `dist/`, as a path relative to `dist`. Both sweeps take the whole tree; which
+ * PACKAGES each one runs over is decided by the caller, since the SDK sweep skips the driver packages while
+ * the specifier sweep covers all five.
  */
 function declarationFiles(dist) {
   const { readdirSync } = require('node:fs');
@@ -357,9 +363,9 @@ function assertEntrySdkFree(pkgDir) {
   // lazy `import()` or a chunk-imported-by-chunk ever appears. Neither does today: there is not one dynamic
   // import in either package's source, which is why both entries report 2 reachable modules.
   //
-  // It also stays correctly SCOPED. A driver-only chunk is not reachable from `index.js` — verified: each
-  // package emits one chunk shared by the three driver subpaths and never imported by the main entry — so
-  // it is not walked, which is right, since naming an SDK is exactly what a driver is for.
+  // Scoping is now a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which
+  // this walk never enters, so there is no longer a driver-only chunk inside core or the flavor for it to
+  // have to avoid.
   const reachable = (entry) => {
     const seen = new Set();
     const queue = [entry];

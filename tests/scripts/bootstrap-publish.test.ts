@@ -32,6 +32,11 @@ const VERSION = '0.1.0-rc.0';
 interface Shims {
   /** stdout for `npm view <pkg> versions --json`. Exit 1 (a 404) means "name is free". */
   npmViewVersionsExitCode?: number;
+  /** Package dirs to create, and the version they carry. Defaults to core + roaring at `VERSION`. */
+  packages?: readonly string[];
+  version?: string;
+  /** Names the registry ALREADY has — the rest are treated as free. Overrides the blanket exit code. */
+  existing?: readonly string[];
   /** stdout for `npm view <pkg> dist-tags --json`. */
   distTags?: Record<string, string>;
   /** How many `view dist-tags` calls 404 before the package shows up, simulating read-replica lag. */
@@ -46,19 +51,21 @@ interface Shims {
 function runScript(
   argv: string[],
   shims: Shims = {},
-): { status: number; out: string; calls: string } {
+): { status: number; out: string; calls: string; manifests: Record<string, string> } {
   const dir = mkdtempSync(join(tmpdir(), 'bootstrap-publish-test-'));
   try {
     // The script resolves ROOT from its own location, so a copy in <dir>/scripts/ treats <dir> as the repo.
     mkdirSync(join(dir, 'scripts'), { recursive: true });
     copyFileSync(SCRIPT, join(dir, 'scripts', 'bootstrap-publish.cjs'));
 
-    for (const name of ['core', 'roaring']) {
+    const version = shims.version ?? VERSION;
+    const pkgDirs = shims.packages ?? ['core', 'roaring'];
+    for (const name of pkgDirs) {
       mkdirSync(join(dir, 'packages', name), { recursive: true });
       writeFileSync(
         join(dir, 'packages', name, 'package.json'),
         JSON.stringify(
-          { name: `@cloudbitmaps/${name}`, version: VERSION, publishConfig: { access: 'public' } },
+          { name: `@cloudbitmaps/${name}`, version, publishConfig: { access: 'public' } },
           null,
           2,
         ),
@@ -78,7 +85,10 @@ function runScript(
     shim('gh', `echo '{"visibility":"PUBLIC","nameWithOwner":"cloudbitmaps/cloudbitmaps"}'`);
 
     const viewExit = shims.npmViewVersionsExitCode ?? 1;
-    const tags = JSON.stringify(shims.distTags ?? { rc: VERSION });
+    // Per-name existence, so a MIXED family (two published, three brand new) can be exercised — which is the
+    // case that matters now that packages get added to an already-published family.
+    const existsCase = (shims.existing ?? []).map((n) => `      ${n}) exit 0;;`).join('\n');
+    const tags = JSON.stringify(shims.distTags ?? { rc: version });
     // Simulates the read replica lagging behind the write: the first N `view dist-tags` calls 404 before the
     // package appears, which is what really happens and what used to be reported as a failed publish.
     const lag = shims.distTagsLagCalls ?? 0;
@@ -90,7 +100,11 @@ function runScript(
         '  whoami) echo tester; exit 0;;',
         '  view)',
         '    case "$3" in',
-        `      versions) exit ${viewExit};;`,
+        '      versions)',
+        '        case "$2" in',
+        existsCase,
+        `        esac`,
+        `        exit ${viewExit};;`,
         '      dist-tags)',
         `        n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${counter}"`,
         `        if [ "$n" -le ${lag} ]; then exit 1; fi`,
@@ -100,9 +114,20 @@ function runScript(
         'exit 0',
       ].join('\n'),
     );
-    // Records what it was asked to do, so a test can assert on the real argv rather than the printed plan.
+    // Records what it was asked to do, so a test can assert on the real argv rather than the printed plan —
+    // and, on a publish, the version the manifests carried AT THAT MOMENT, which is the only way to see the
+    // temporary rewrite from outside.
     const callLog = join(dir, 'pnpm-calls.log');
-    shim('pnpm', `echo "pnpm $*" >> "${callLog}"\nexit 0`);
+    shim(
+      'pnpm',
+      [
+        `echo "pnpm $*" >> "${callLog}"`,
+        'case "$*" in',
+        `  *publish*) grep '"version"' ${join(dir, 'packages')}/*/package.json | sed -e 's|${join(dir, 'packages')}/||' -e 's|/package.json:| |' -e 's/^/  at-publish /' >> "${callLog}";;`,
+        'esac',
+        'exit 0',
+      ].join('\n'),
+    );
     const readCalls = () => {
       try {
         return readFileSync(callLog, 'utf8');
@@ -110,6 +135,11 @@ function runScript(
         return '';
       }
     };
+    // Read before the temp dir is removed, so a test can prove the manifests were put back.
+    const readManifests = (): Record<string, string> =>
+      Object.fromEntries(
+        pkgDirs.map((n) => [n, readFileSync(join(dir, 'packages', n, 'package.json'), 'utf8')]),
+      );
 
     try {
       const out = execFileSync(
@@ -127,13 +157,14 @@ function runScript(
           },
         },
       );
-      return { status: 0, out, calls: readCalls() };
+      return { status: 0, out, calls: readCalls(), manifests: readManifests() };
     } catch (err) {
       const e = err as { status?: number; stdout?: string; stderr?: string };
       return {
         status: e.status ?? 1,
         out: `${e.stdout ?? ''}${e.stderr ?? ''}`,
         calls: readCalls(),
+        manifests: readManifests(),
       };
     }
   } finally {
@@ -155,7 +186,7 @@ describe('bootstrap-publish', () => {
     const { out, calls } = runScript(['--confirm']);
     // Derived from the version (0.1.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
     // is not semver-aware.
-    expect(out).toMatch(/dist-tag: rc/);
+    expect(out).toMatch(/dist-tag:\s+rc/);
     expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
     // Assert the argv actually handed to pnpm, not just the plan the script printed — the printed line and
     // the executed command are two different things, and only one of them reaches the registry.
@@ -196,10 +227,63 @@ describe('bootstrap-publish', () => {
     expect(status).toBe(1);
   });
 
-  it('refuses when a package name already exists on the registry', () => {
+  it('refuses when EVERY name already exists — there is nothing to bootstrap', () => {
     const { status, out } = runScript([], { npmViewVersionsExitCode: 0 });
-    expect(out).toMatch(/already exists on the registry/);
+    expect(out).toMatch(/every package already exists on the registry/);
+    expect(out).toMatch(/tag vX\.Y\.Z/);
     expect(status).toBe(1);
+  });
+
+  it('publishes ONLY the names the registry lacks, and skips the ones it has', () => {
+    // The case the earlier version of this script could not express, and the reason it was rewritten: the
+    // storage split added three packages to a family whose other two were already on npm. Refusing outright
+    // (the old behaviour) left no guarded way to create them, and tagging without creating them first would
+    // have published core and then failed on the first name with no Trusted Publisher — an immutable,
+    // partial release of a family that ships in lockstep.
+    const { status, out, calls } = runScript(['--confirm'], {
+      packages: ['core', 'roaring', 's3', 'gcs', 'azure-blob'],
+      existing: ['@cloudbitmaps/core', '@cloudbitmaps/roaring'],
+    });
+    expect(status).toBe(0);
+    expect(out).toMatch(/@cloudbitmaps\/core already on the registry — skipping/);
+    expect(out).toMatch(/@cloudbitmaps\/roaring already on the registry — skipping/);
+    // The argv actually handed to pnpm, not the printed plan: each missing name is filtered in explicitly,
+    // so an already-published name cannot be republished by hand even if the probe above were wrong.
+    const publish = calls.split('\n').find((l) => l.includes('publish')) ?? '';
+    expect(publish).toMatch(/--filter @cloudbitmaps\/s3\b/);
+    expect(publish).toMatch(/--filter @cloudbitmaps\/gcs\b/);
+    expect(publish).toMatch(/--filter @cloudbitmaps\/azure-blob\b/);
+    expect(publish).not.toMatch(/--filter @cloudbitmaps\/core\b/);
+    expect(publish).not.toMatch(/--filter @cloudbitmaps\/roaring\b/);
+    expect(publish).not.toMatch(/\.\/packages\/\*\*/);
+    expect(out).toMatch(/done — 3 name\(s\) created/);
+    // The operator must be told the names are not usable by the pipeline until each has a Trusted Publisher.
+    expect(out).toMatch(/Trusted\n?\s*Publisher/);
+  });
+
+  it('creates a name at a THROWAWAY prerelease, never the family version, and restores the manifests', () => {
+    // Publishing the real version by hand would be unattested AND would make `pnpm publish` silently skip
+    // that name on the real tag (it is already on the registry, exit 0) — so the pipeline would report
+    // success having published nothing for it.
+    const { status, out, calls, manifests } = runScript(['--confirm'], {
+      packages: ['core', 's3'],
+      version: '0.10.0',
+      existing: ['@cloudbitmaps/core'],
+      distTags: { rc: '0.10.0-rc.0' },
+    });
+    expect(status).toBe(0);
+    expect(out).toMatch(/publishing as:\s+0\.10\.0-rc\.0/);
+    expect(out).toMatch(/dist-tag:\s+rc/);
+    // What the manifest actually said at the moment pnpm was invoked — the printed plan proves nothing here,
+    // because neither npm nor pnpm can publish a version other than the one on disk.
+    // The name being CREATED carries the throwaway…
+    expect(calls).toMatch(/at-publish s3 +"version": "0\.10\.0-rc\.0"/);
+    // …and the one being skipped is left alone, so the rewrite is scoped to what is actually published.
+    expect(calls).toMatch(/at-publish core +"version": "0\.10\.0"/);
+    expect(calls).not.toMatch(/at-publish s3 +"version": "0\.10\.0"/);
+    // …and it is put back, so the bootstrap leaves no version bump nobody made.
+    expect(manifests.s3).toMatch(/"version": "0\.10\.0"/);
+    expect(manifests.core).toMatch(/"version": "0\.10\.0"/);
   });
 
   it('publishes nothing without --confirm', () => {

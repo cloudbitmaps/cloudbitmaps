@@ -3,7 +3,8 @@
  *
  * Pure string logic with no SDK dependency, so it's unit-testable without S3/MinIO. Mirrors the LocalFs
  * layout (`<namespace>/segments/<segment>.<gen>.crbm`) under an optional caller prefix, and re-validates
- * names at the boundary (defense in depth, even though the engine already validates — S2). The default
+ * names at the boundary — defense in depth, because a driver can be constructed and driven directly rather
+ * than through the engine that would otherwise have validated for it. The default
  * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a caller's
  * `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  */

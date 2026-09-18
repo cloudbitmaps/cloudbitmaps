@@ -108,7 +108,7 @@
 
           <aside class="install">
             <div class="install-head label"><span>Install &amp; verify</span><span>OIDC + SLSA</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
 <span class="c"># the tarball came from the commit it claims</span>
 npm audit signatures</code></pre>
@@ -457,9 +457,9 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
               <thead>
                 <tr>
                   <th>Backend</th>
-                  <th>Subpath</th>
+                  <th>Package</th>
                   <th>Roles</th>
-                  <th>Peer dependency</th>
+                  <th>Cloud SDK (a real dependency)</th>
                 </tr>
               </thead>
               <tbody>
@@ -473,7 +473,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
                   <td>Google Cloud Storage</td>
                   <td><span class="m">@cloudbitmaps/gcs</span></td>
                   <td class="from">storage · registry</td>
-                  <td class="num">@google-cloud/storage ^7</td>
+                  <td class="num">@google-cloud/storage ^7 || ^8</td>
                 </tr>
                 <tr>
                   <td>Azure Blob</td>

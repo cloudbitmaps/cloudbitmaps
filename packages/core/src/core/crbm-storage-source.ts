@@ -1,5 +1,5 @@
 /**
- * Bridges the `.crbm` archive format to the engine's Storage seam (decision 4).
+ * Bridges the `.crbm` archive format to the engine's Storage seam.
  *
  * `CrbmStorageChunkSource` implements the {@link StorageChunkSource} the engine reads through, over an
  * {@link IStorageDriver}: it resolves a segment's current generation, opens its {@link CrbmReader} once, and serves

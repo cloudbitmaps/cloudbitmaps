@@ -7,21 +7,13 @@
  * it. The default (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
  * caller's `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  *
- * NOTE (DRY): this mirrors the pure storage-key builders in `drivers/s3/keys.ts` + `drivers/gcs/keys.ts`. They
- * are deliberately **not** shared across driver folders today — a driver must stay self-contained so it lifts
- * cleanly into its own package if a driver ever ships separately. At that point the shared storage-key scheme
- * would be promoted into a driver-kit imported by every driver package, which is the right home for it;
- * until then a self-contained copy beats a cross-driver import.
+ * The storage-key layout is shared, not copied: `prefixPart` and the name encoders come from
+ * `@cloudbitmaps/core/driver-kit`, so a segment written by one driver reads identically under another. Two
+ * drivers disagreeing about how a name becomes a key would be a silent cross-driver incompatibility on the
+ * same bucket, which is exactly the kind of thing a local copy drifts into.
  */
 
 const SUFFIX = '.crbm';
-
-/** Normalize an optional caller prefix to either `''` or `trimmed/` (no leading/trailing slashes). */
-function prefixPart(prefix: string | undefined): string {
-  if (prefix === undefined) return '';
-  const trimmed = prefix.replace(/^\/+|\/+$/g, '');
-  return trimmed === '' ? '' : `${trimmed}/`;
-}
 
 /**
  * Validate the caller-supplied blob-name prefix (trusted config, but a real containment boundary): reject
@@ -32,6 +24,7 @@ import {
   ValidationError,
   encodeNameForKey,
   namespaceKeyPart,
+  prefixPart,
   validateSegmentRef,
 } from '@cloudbitmaps/core/driver-kit';
 import type { GenKey, SegmentRef } from '@cloudbitmaps/core/driver-kit';

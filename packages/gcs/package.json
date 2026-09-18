@@ -18,7 +18,8 @@
   "author": "Sharvil Kadam",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git",
+    "directory": "packages/gcs"
   },
   "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
   "bugs": {
@@ -55,7 +56,6 @@
     "@google-cloud/storage": "^7 || ^8"
   },
   "devDependencies": {
-    "@google-cloud/storage": "^8.1.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
   }

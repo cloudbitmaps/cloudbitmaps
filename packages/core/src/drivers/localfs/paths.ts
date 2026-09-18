@@ -1,8 +1,9 @@
 /**
- * Logical-ref → filesystem-path mapping for the LocalFs drivers (decision 6).
+ * Logical-ref → filesystem-path mapping for the LocalFs drivers.
  *
- * Names are re-validated here at the driver boundary — defense in depth, even though the engine already
- * validates (S2) — so a driver is safe against traversal/injection even if driven directly. The default
+ * Names are re-validated here at the driver boundary — defense in depth, because a driver can be
+ * constructed and driven directly rather than through the engine that would otherwise have validated for
+ * it, and a path built from an unvalidated name is a traversal or injection. The default
  * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a
  * caller's `_default` encodes to `%5Fdefault` while this sentinel is emitted literally.
  */

@@ -17,7 +17,7 @@ is published without editing it.
 - [What the automation does](#what-the-automation-does)
 - [Why tokenless](#why-tokenless)
 - [One-time setup](#one-time-setup)
-- [First publish (bootstrap)](#first-publish-bootstrap)
+- [Bootstrapping a name](#bootstrapping-a-name)
 - [Manual / break-glass release](#manual--break-glass-release)
 - [Troubleshooting](#troubleshooting)
 
@@ -46,8 +46,16 @@ A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order
   advisory published after `main` went green makes the same tree newly vulnerable.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
 - **Refuses a still-private package.** `pnpm publish` *silently skips* a package with `"private": true` and
-  exits 0, so before launch a real publish attempt would otherwise produce a fully green run that published
-  nothing at all. The workflow fails loudly instead. Clearing `private` is what makes the release commit real.
+  exits 0, so a real publish attempt would otherwise produce a fully green run that published nothing. No
+  package carries `private` today — only the workspace ROOT manifest does, and that is never published — so
+  this guards against it being re-introduced rather than being a launch step still to clear.
+- **Refuses a name the registry does not have, and a version it already does.** Both produce a *partial*
+  release of a family that ships in lockstep, and neither is visible in the log. A brand-new package name has
+  no Trusted Publisher and this pipeline is tokenless, so `pnpm -r publish` would publish the packages that
+  do exist — immutably — and then fail on the new one. And a version already on the registry is *skipped*
+  by pnpm with exit 0, so a re-run reports success having published nothing for that package. Two read-only
+  registry probes catch both before anything irreversible happens. **Adding a package to the family means
+  bootstrapping its name first** — see [Bootstrapping a name](#bootstrapping-a-name).
 - **Refuses to publish without release notes** — `scripts/changelog-section.cjs` must find a non-empty section
   for the tag. The notes are *used* later, by the `github-release` job; they are *checked* here, before the
   publish, because that is the last moment a missing section is still a two-line edit rather than a permanent
@@ -109,10 +117,10 @@ so the hardening below is part of first-publishing one, not an afterthought:
   `release`, action `npm publish`.
 
 > **Bootstrap: the package must exist before you can bind a publisher to it.** A Trusted Publisher is a
-> per-package setting, so there is nothing to configure until the name is on the registry. The sibling projects
-> (`onadiet`, `babystack`) both hit this and both solved it the same way: **publish the first version manually
-> with interactive 2FA, then bind the publishers, then every release after that is automated.** See
-> [First publish](#first-publish-bootstrap) — it is a one-time step, not a permanent token.
+> per-package setting, so there is nothing to configure until the name is on the registry: **publish the
+> first version manually with interactive 2FA, then bind the publisher, then every release after that is
+> automated.** This is not only a launch step — it applies to **every package ever added to the family**.
+> See [Bootstrapping a name](#bootstrapping-a-name).
 
 **GitHub:**
 
@@ -121,17 +129,30 @@ so the hardening below is part of first-publishing one, not an afterthought:
 - `main` **branch-protected**: PRs required, force-pushes and deletions blocked.
 - Account 2FA.
 
-## First publish (bootstrap)
+## Bootstrapping a name
 
-**One time only, and only because a Trusted Publisher cannot be bound to a package that does not exist yet.**
+**Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
+that does not exist yet.** This ran at launch for `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, and it
+runs again **every time a package is added to the family** — the storage split added `@cloudbitmaps/s3`,
+`/gcs` and `/azure-blob` to a workspace whose other two packages were already on npm.
+
+> [!WARNING]
+> **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against
+> a per-package Trusted Publisher, which a brand-new name does not have. `pnpm -r publish` walks the
+> workspace topologically and stops at the first failure, so tagging with an unbootstrapped name in the tree
+> publishes `@cloudbitmaps/core` at the new version — immutably, outside a 72-hour window — and then dies
+> before the flagship. The family ships in lockstep; that leaves one package of five on the registry with no
+> way back. `release.yml` now refuses the tag rather than starting, but the refusal is a backstop for this
+> procedure, not a replacement for it.
 
 A manual publish carries **no provenance attestation** — provenance attests to a *workflow* identity, and a
-laptop has none. Left there, the **launch artifact** would be the single unattested tarball, which sits badly
-against a project whose supply-chain story is the point. So the bootstrap uses a **throwaway prerelease** to
-create the names, and the real `0.1.0` still ships through the gated, attested pipeline.
+laptop has none. So the bootstrap creates the name at a **throwaway prerelease** and the real version still
+ships through the gated, attested pipeline. `pnpm release:bootstrap` derives that prerelease from the family
+version (`0.10.0` → `0.10.0-rc.0`), publishes under `--tag rc`, and puts the manifests back afterwards.
 
-The cost is one prerelease sitting on the registry forever, and a short window where it is what `npm i`
-resolves — see the note below.
+That indirection is not fastidiousness. Publishing the real version by hand would burn it: `pnpm publish`
+**silently skips** a version already on the registry and exits 0, so the pipeline would then skip that
+package on the real tag and report a green release having published nothing for it.
 
 > [!IMPORTANT]
 > **`--tag rc` is not optional, and it is also not sufficient.** `npm publish` defaults `--tag` to `latest`
@@ -142,20 +163,18 @@ resolves — see the note below.
 > Passing `--tag rc` states the intent and is what the automation asserts. But a registry may *also* point
 > `latest` at a first publish regardless — verified against a real registry, where it does — and there is no
 > undo: npm refuses to remove the `latest` tag. So the honest position is that the prerelease may briefly be
-> what a plain `npm i @cloudbitmaps/roaring` serves, and **the fix is to finish the remaining steps promptly**,
-> because the real `0.1.0` claims `latest` and the window closes. `pnpm release:bootstrap` reports which of the
-> two happened rather than guessing.
+> what a plain `npm i <name>` serves, and **the fix is to finish the remaining steps promptly**, because the
+> real version claims `latest` and the window closes. `pnpm release:bootstrap` reports which of the two
+> happened rather than guessing.
 
 **The sequence** (each step gates the next — this order is not incidental):
 
 1. **Repo public first.** The GitHub repo must exist and be public before publishing, so the packages'
-   `repository`/`homepage` links resolve and provenance has a public source to attest to.
-2. **Cut the prerelease commit** — set EVERY package to `0.1.0-rc.0` and remove `"private": true` from each
-   (that flag is the accidental-publish guard; clearing it is what makes any publish real). Miss one and
-   `pnpm publish` skips it silently with exit 0, so the name it was meant to create never exists — and a
-   Trusted Publisher cannot be bound to a name that does not exist, which is the whole reason for this step.
-3. **Publish it manually**, with interactive 2FA. Use the guarded helper rather than typing this by hand — it
-   verifies every precondition below *before* the irreversible step, and requires `--confirm`:
+   `repository`/`homepage` links resolve and provenance has a public source to attest to. (Done, at launch.)
+2. **Land the new package on `main`**, with its version matching the rest of the family. Nothing to clear:
+   packages carry no `private` flag.
+3. **Create the names**, with interactive 2FA. The helper publishes **only the names the registry lacks** and
+   skips the ones it has, so it is safe to run against a family that is already published:
 
    ```sh
    npm login                            # interactive 2FA — npm's own auth, not something pnpm wraps
@@ -163,26 +182,18 @@ resolves — see the note below.
    pnpm release:bootstrap --confirm
    ```
 
-   Equivalent by hand, if you'd rather:
-
-   ```sh
-   pnpm install --frozen-lockfile
-   pnpm build
-   pnpm -r --filter './packages/**' publish --access public --tag rc
-   ```
-
-   All five names now exist on the registry, with **no `latest` tag**. These tarballs are unattested, by
-   design — nobody installs them. Confirm all five exist before moving on, with
+   It reports each name it created, and verifies the dist-tag landed. Confirm with
    `npm access get status <name>` rather than `npm view` — `npm view` reads a replica that lags for minutes
-   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way. A package
-   left `private` produces no error during the publish at all, only a name that never appears.
-4. **Do the [one-time setup](#one-time-setup)** — now that the packages exist, bind a Trusted Publisher to each
-   and set publishing access to *require 2FA and disallow tokens*. From here a token publish is impossible.
-5. **Create the GitHub `release` environment** with yourself as required reviewer.
-6. **Ship the real release**: bump both to `0.1.0`, commit, `git tag v0.1.0 && git push origin v0.1.0`. The
-   workflow runs the full gate, pauses for your approval, and publishes **tokenlessly with provenance**.
+   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way.
+4. **Bind a Trusted Publisher to each new name** and set its publishing access to *require 2FA and disallow
+   tokens* — the [one-time setup](#one-time-setup), per package. **Until this is done the tokenless pipeline
+   still cannot publish that name**, so creating the name is only half the job.
+5. **Create the GitHub `release` environment** with yourself as required reviewer. (Done, at launch.)
+6. **Ship the real release** by tag — the normal [TL;DR](#tldr--cutting-a-release) flow. The workflow runs the
+   full gate, re-probes the registry, pauses for your approval, and publishes **tokenlessly with provenance**.
 
-After step 6 the manual path is never used again except as [break-glass](#manual--break-glass-release).
+Outside this procedure the manual path is never used, except as
+[break-glass](#manual--break-glass-release).
 
 ## Manual / break-glass release
 
@@ -203,13 +214,15 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 
 | Symptom | Cause |
 | --- | --- |
-| `tag v0.1.0 does not match <pkg> version …` | The two package versions and the tag disagree. Fix the manifests, delete and re-push the tag. |
-| `… still has "private": true` | Expected before launch. The release commit that clears `private` is what makes a publish real. |
+| `tag vX.Y.Z does not match <pkg> version …` | A package version and the tag disagree. Every package releases in lockstep, so all five must equal the tag. Fix the manifests, delete and re-push the tag. |
+| `… still has "private": true` | Someone added `private` to a package manifest. Only the workspace root is private; every package under `packages/` publishes. |
 | Publish rejected: token not permitted | Something re-introduced token auth. The packages disallow tokens; the workflow must authenticate via OIDC. |
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
 | `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and made every manual publish impossible. |
-| `bootstrap-publish: … already exists on the registry` | Working as intended — the bootstrap is one-time. Ship the version by tag through the pipeline instead. |
+| `bootstrap-publish: every package already exists on the registry` | Working as intended — there is nothing to create. Ship the version by tag through the pipeline instead. |
+| `<pkg> does not exist on the registry` during a release | A package was added to the workspace without bootstrapping its name. The tokenless pipeline cannot create a name. Run `pnpm release:bootstrap`, bind the Trusted Publisher, then re-tag. The guard fired *before* anything was published, which is the point. |
+| `<pkg>@<version> is already on the registry` during a release | That version was published before — most likely by hand. pnpm would skip it silently and the run would go green having published nothing for it. Bump the version. |
 | A publish logs `PUT 200` but `npm view` 404s for minutes | npm ACKs on the write path and serves reads from a replica that lags — **measured at ~7 minutes** for a brand-new package. The publish succeeded. Confirm with `npm access get status <pkg>`, which reads the authoritative API; `npm view --prefer-online` only defeats npm's *local* cache, not the replica. The bootstrap waits this out rather than reporting a failure. |

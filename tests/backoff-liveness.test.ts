@@ -3,7 +3,8 @@ import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { seedSegment } from './helpers/loaded';
 
 /**
- * Regression for the backoff *premature-exit* bug (found by the T4 cache-row contention stress).
+ * Regression for the backoff *premature-exit* bug, found by a stress test that drove many writers at one
+ * contended registry row.
  *
  * The default clock's `sleep` used to `unref()` its backoff timer. Because that `sleep` only ever backs a
  * caller-awaited, bounded retry, an unref'd timer let a short-lived process — CLI, Lambda, a bare script —

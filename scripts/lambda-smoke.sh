@@ -34,9 +34,10 @@ echo "lambda-smoke: build + pack the codec and the engine"
 pnpm build >/dev/null
 # Pack each package separately. `pnpm pack` rewrites the `workspace:^` dependency to a concrete version, so the
 # tarballs are what a publish would ship. They are placed into the container's node_modules BY HAND rather than
-# `npm install`-ed, because the flavor's pinned `@cloudbitmaps/core` version is not resolvable from any
-# registry pre-launch — manual placement keeps the check registry-free while still exercising the REAL packed
-# artifacts + the `exports` maps.
+# `npm install`-ed, because the version of `@cloudbitmaps/core` that the flavor pins here is the one in THIS
+# tree, which is generally not on the registry yet — that is the whole point of testing before publishing.
+# Manual placement keeps the check registry-free while still exercising the REAL packed artifacts and the
+# `exports` maps.
 #
 # Codec + engine only. What this proves is that the NATIVE `roaring` addon compiles and loads on the Lambda
 # runtime; the driver packages are plain JS over a cloud SDK with nothing platform-specific to establish, and

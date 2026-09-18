@@ -30,7 +30,7 @@ describe('SafeBitmap', () => {
     expect(a.toArray()).toEqual([1, 3]);
   });
 
-  it('rejects deserializing input over the size cap (S1)', () => {
+  it('rejects deserializing input over the size cap (hard invariant 5: tier bytes are untrusted)', () => {
     const bytes = SafeBitmap.fromValues([1, 2, 3]).serialize();
     expect(() => SafeBitmap.safeDeserialize(bytes, bytes.length - 1)).toThrow(IntegrityError);
   });

@@ -59,7 +59,7 @@ async function readChain(bytes: Uint8Array): Promise<void> {
   }
 }
 
-describe('fuzz crash-reproducer replay (T3 regression corpus)', () => {
+describe('fuzz crash-reproducer replay (the committed regression corpus)', () => {
   const deser = reproducers('safe-deserialize');
   const crbm = reproducers('crbm-reader');
   const index = reproducers('crbm-index');

@@ -141,12 +141,13 @@
             </p>
             <!-- "How do I get it" was answered five sections down, in the closing install panel. For a library
                  that is the first question, so the command moves up here as one line. It stays ONE line on
-                 purpose: the peer-dependency half of the story ("plus only the backends you actually use")
-                 belongs with the closing panel, and repeating it here would make the hero a second install
-                 section rather than a pointer to one. -->
+                 purpose: the rest of the story (the other two storage packages, and that each brings its own
+                 SDK) belongs with the closing panel, and repeating it here would make the hero a second
+                 install section rather than a pointer to one. The command must stay COMPLETE though — an
+                 earlier version showed only the codec, which does not get you a bucket. -->
             <p class="hero-install">
-              <code>npm i @cloudbitmaps/roaring</code>
-              <span class="label">One flavor · memory drivers need no setup</span>
+              <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
+              <span class="label">A codec and a storage · memory drivers need no setup</span>
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="usage.html">See the quickstart →</a>
@@ -760,11 +761,12 @@
       <section>
         <div class="close-grid">
           <div class="close-copy">
-            <h2>One flavor, one bucket.</h2>
+            <h2>A codec, a storage, one bucket.</h2>
             <p class="lede" style="margin: 0">
-              Install one flavor and the backend SDKs you already use. The memory drivers need nothing at all
-              — the <span class="m">segments.ts</span> sample above runs as-is, so you can see the shape
-              before you point it at a bucket.
+              Install the codec you want and the storage you have — each storage package brings its own cloud
+              SDK, so nothing is an optional peer and no install carries an SDK you never use. The memory
+              drivers need nothing at all — the <span class="m">segments.ts</span> sample above runs as-is, so
+              you can see the shape before you point it at a bucket.
             </p>
             <div class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>

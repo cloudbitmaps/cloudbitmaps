@@ -22,7 +22,8 @@
   "author": "Sharvil Kadam",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git",
+    "directory": "packages/s3"
   },
   "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
   "bugs": {
@@ -59,7 +60,6 @@
     "@aws-sdk/client-s3": ">=3.645.0 <4"
   },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.1132.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
   }

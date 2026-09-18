@@ -62,6 +62,37 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Fixed
 
+- **A release cut with a new package in the tree would have published part of the family, immutably.** The
+  publish pipeline is tokenless — it authenticates by OIDC against a **Trusted Publisher**, which is a
+  per-package npm setting that cannot be bound to a name that has never been published. `pnpm -r publish`
+  walks the workspace topologically and stops at the first failure, so tagging with `@cloudbitmaps/s3`,
+  `/gcs` and `/azure-blob` brand new would have published `@cloudbitmaps/core` at the new version and then
+  died — leaving one package of five on the registry, outside the 72-hour unpublish window, with the
+  flagship never published at all. `release.yml` now probes the registry before anything irreversible
+  happens and refuses two shapes: a name that does not exist, and a version that already does. The second is
+  its own trap — `pnpm publish` **skips** a version already on the registry and exits **0**, so a re-run
+  reports a fully green release having published nothing for that package.
+
+- **`pnpm release:bootstrap` could not create a name in a family that was already published.** It modelled
+  exactly one situation, "first publish of everything", and refused outright if *any* name existed — so the
+  one guarded path for creating a package name was unusable in precisely the case that needs it. It now
+  publishes only the names the registry lacks and skips the rest, and it creates each one at a **throwaway
+  prerelease** derived from the family version (`0.10.0` → `0.10.0-rc.0`) rather than burning the real one,
+  restoring the manifests afterwards. Burning the real version would have been the worse failure: a hand
+  publish carries no provenance attestation, *and* the pipeline would then silently skip that package on the
+  tag.
+
+- **Bare internal citations shipped in published `.d.ts` files.** A short letter-and-digit id in a
+  parenthetical resolves to nothing a reader can reach, which is worse than saying less — it implies
+  checkable evidence and then withholds it. Twenty-two were in the tree and four were in shipped declaration
+  files, where they reach users on hover in an editor. The gate that exists to catch this only matched a
+  citation introduced by a naming word, which a bare id by definition does not carry. It now also matches
+  the *frames* such an id is written in — standing alone inside a parenthesis, closing one after a dash,
+  opening one before a noun, or sitting between a determiner and a noun — while exempting the handful of
+  product names that share the shape. Those exemptions are listed **by name, never by pattern**: an earlier
+  draft exempted a whole letter prefix to cover one JavaScript engine and silently excused three real
+  citations along with it. Every hit was replaced by the substance it stood for rather than deleted.
+
 - **`export-segments` did nothing when run as a command.** The CLI's run-guard compared `process.argv[1]`
   against `import.meta.url`, and Node resolves only the second through symlinks. Every install puts a symlink
   at `node_modules/.bin/export-segments`, which is the path `npx` and every npm script invoke — so the guard
@@ -3062,7 +3093,7 @@ provenance. Everything below is the work that got it here.
   `isNotFoundError` · `isIntegrityError` · `isValidationError`** (prefer these over `instanceof` when catching
   errors from a cloud driver) — replacing every cross-boundary `instanceof` in `core/`. Guarded by unit tests +
   a built-bundle cross-check in `scripts/smoke.cjs`. Verified end-to-end against LocalStack.
-- **OCC-backoff premature process exit — silently dropped contended writes (found while developing the T4 hot-row stress).**
+- **OCC-backoff premature process exit — silently dropped contended writes (found while developing the hot-row contention stress).**
   The default clock's `sleep` **unref'd** its backoff timer. Because that `sleep` only ever backs a
   caller-awaited, bounded retry (the engine's OCC read-modify-write and the driver `withRetry` loop), the
   timer was the sole thing holding a short-lived process open during a retry. Under contention on a hot chunk,
@@ -3071,7 +3102,7 @@ provenance. Everything below is the work that got it here.
   nor threw. This struck exactly the serverless target (Lambda/CLI/short-lived scripts) the library is built
   for. Fix: the default clock now uses a **ref'd** timer; a pending backoff keeps the loop alive until the
   awaited, bounded retry resolves. Guarded by a regression test (`tests/backoff-liveness.test.ts`); the
-  bare-process end-to-end contention scenario that first exposed it lands with the T4 stress PR. No hot-path or
+  bare-process end-to-end contention scenario that first exposed it lands with the contention-stress PR. No hot-path or
   steady-state cost (retries are bounded).
 - **Read-path cost & admin latency.**
   Four cost/latency gaps from the readiness audit, kept lean (two heavier sub-items deferred — see below):
@@ -3209,7 +3240,7 @@ provenance. Everything below is the work that got it here.
   for GDPR Art. 15 / 17. `subjectReport(id, registry)` returns which **registered** segments an id is a member
   of; `eraseSubject(id, compaction, { owner })` writes a logical `remove` **and force-compacts** each affected
   segment on the spot — so the bit is physically gone from Cold on return, even for idle/archival segments
-  organic compaction would never touch (the P13 fix) — and returns an **erasure ledger** (per-segment proof of
+  organic compaction would never touch — and returns an **erasure ledger** (per-segment proof of
   deletion; return-value only, route it to your audit sink). Both scan registered segments (`O(registered
   segments)`, admin-only) — **no `id→segments` reverse index**, so nothing taxes the hot path. If a daemon
   holds a live lease, that segment's purge is deferred honestly (`physicallyPurged:false`); logical removal

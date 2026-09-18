@@ -105,15 +105,6 @@ importers:
 
   packages/core:
     devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
-        version: 3.1132.0
-      '@azure/storage-blob':
-        specifier: ^12
-        version: 12.33.0
-      '@google-cloud/storage':
-        specifier: ^8.1.0
-        version: 8.1.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -146,15 +137,6 @@ importers:
         specifier: 2.7.0
         version: 2.7.0
     devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
-        version: 3.1132.0
-      '@azure/storage-blob':
-        specifier: ^12
-        version: 12.33.0
-      '@google-cloud/storage':
-        specifier: ^8.1.0
-        version: 8.1.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

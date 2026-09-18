@@ -57,7 +57,7 @@ export type { MemoryRegistryDriverOptions } from './drivers/memory';
 export { LocalFsStorageDriver } from './drivers/localfs/storage';
 export { LocalFsRegistryDriver } from './drivers/localfs/registry';
 // The two SDK-free backends: each states its location once, so the objects and the pointer cannot be
-// mismatched. Their cloud siblings live on the driver subpaths, where the SDK does.
+// mismatched. Their cloud siblings ship in their own packages, where the SDK does.
 export { LocalFsStorage, MemoryStorage } from './drivers/backends';
 export type { LocalFsStorageOptions, MemoryStorageOptions } from './drivers/backends';
 export type { LocalFsRegistryDriverOptions } from './drivers/localfs/registry';
