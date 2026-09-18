@@ -577,7 +577,7 @@ const optedOut = store.segment('global-opt-out');
 const res = await shoppers.intersectInto(store.segment('campaign-targets'), [active], {
   exclude: [optedOut],
 });
-res; // { generation, cardinality, chunkCount, size } — what was written
+res; // { generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size, collected }
 ```
 
 > **An operand that names a segment which does not exist is refused.** `store.segment('global-opt-out')` and
@@ -597,10 +597,27 @@ Three properties, all consequences of "a write is a load":
 - **Readers of the destination see the old generation or the new one, never a partial.** The result streams into
   one immutable object under a bounded memory window (`concurrency × operands × chunk`), and the pointer moves
   only once the object is durable.
-- **It deletes nothing.** The destination's previous generation stays in the bucket until you collect it — see
-  [§8](#8-generation-bookkeeping-what-a-load-leaves-behind).
+- **It deletes nothing**, unlike `load()`. The destination's previous generations stay in the bucket until you
+  collect them — see [§8](#8-generation-bookkeeping-what-a-load-leaves-behind) — so a `rollback` target is
+  still there afterwards. Pass `keep` to collect on the way through.
+- **An empty or implausible result is refused, not published.** A combine that comes out empty over a
+  **non-empty** destination leaves `dest` alone and reports it:
 
-An empty result publishes an empty generation. The verbs need the store built with a **backend** (they publish through its registry) and throw
+  ```ts
+  const res = await audience.intersectInto(dest, [eligible]);
+  if (!res.published) {
+    // res.reason: 'empty' | 'min-cardinality' | 'min-retained'
+    // res.cardinalityBefore: what dest still holds
+  }
+  ```
+
+  An empty result into a destination that was never loaded still publishes — there is nothing to protect.
+  Pass `allowEmpty: true` when emptying `dest` is the point, and `guard: { minCardinality, minRetained }` for
+  the same plausibility bounds `load()` takes, judged against what `dest` held. A refusal is **reported, not
+  thrown**; a lost race still throws `WriteConflictError`. A refused call also emits `segment.load-refused` to
+  `audit` — a materialisation is a load, so it reports as one.
+
+The verbs need the store built with a **backend** (they publish through its registry) and throw
 `UnsupportedError` otherwise. To suppress the result of an
 intersection, pass `exclude` to `intersectInto` rather than materializing a temp segment and then `andNotInto` —
 the suppression folds into the same chunk-aligned pass and each exclude is read only where the intersection

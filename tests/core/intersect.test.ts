@@ -231,7 +231,9 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
     expect(await dest.count()).toBe(2);
   });
 
-  it('an empty result publishes an empty generation (the destination reads as empty)', async () => {
+  it('an empty result still publishes into a destination that never existed', async () => {
+    // The guard protects what `dest` HELD. A destination with no current generation has nothing to lose, so
+    // the write goes through — this is the boundary of the refusal, not an exception to it.
     const { store, registry } = await loadedStore({ a: [1, 2], b: [70_000] });
     const result = await store
       .segment('a')

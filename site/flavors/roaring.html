@@ -342,7 +342,9 @@
                   <td class="from">
                     The destination form, which is the only form Redis has. The result becomes a
                     <strong>new generation</strong> of <span class="m">dest</span> — superseded, not
-                    added to — published forward-only, and you get back what it wrote.
+                    added to — published forward-only, and you get back what it wrote. A combine
+                    that comes out <strong>empty is refused</strong>, not published over a non-empty
+                    destination, so a mistyped operand cannot wipe it.
                     <span class="call">unionInto</span> and <span class="call">andNotInto</span> are
                     the same for OR and DIFF.
                   </td>

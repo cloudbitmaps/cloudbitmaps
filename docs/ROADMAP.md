@@ -86,8 +86,10 @@ is a dependency of both and is never installed directly. The storage drivers are
   suppression side only where it overlaps, and `union` can prune nothing at all — all three budgeted alike.
 - **Materialised results.** `intersectInto` / `unionInto` / `andNotInto` write the result as a **new generation
   of a destination segment** — the destination is superseded, not appended to — and return
-  `MaterializeResult { generation, cardinality, chunkCount, size }`. An empty result publishes an empty
-  generation today; the guard for that is [next](#on-the-way-to-10).
+  `MaterializeResult { generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size,
+  collected }`. An empty or implausible result over a non-empty destination is **refused** rather than
+  published, with `allowEmpty` / `guard` to override — the same guard `load()` takes. Unlike `load()` it
+  collects nothing by default, so a `rollback` target survives the materialisation.
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
   with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
@@ -216,10 +218,10 @@ between here and there:
    multipart), `intersect` / `*Into` latency by operand count and chunk overlap, and an RSS soak over a long
    read/load mix. Until they exist, the measured numbers on the benchmarks page are the S3-side figures of the
    July 2026 calibration run, and this page says so wherever it quotes one.
-3. **The empty-load guard and `load()` — next.** A first-class `load()` on the store with `allowEmpty` (an empty
+3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
-   refused load. It covers the `*Into` verbs too, which today publish an empty generation when a combine comes
-   out empty.
+   refused load. It covers the `*Into` verbs too: a combine that comes out empty over a non-empty destination
+   is refused rather than published.
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. Generation

@@ -73,7 +73,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Fixed
 
-- **An empty combine silently replaced the destination.** `intersectInto` / `unionInto` / `andNotInto` wrote
+- **BREAKING — an empty combine silently replaced the destination.** `intersectInto` / `unionInto` / `andNotInto` wrote
   and published in one step, so a combine that came out empty — a typo'd operand, an `exclude` that swallowed
   everything, an operand that had not loaded yet — published an empty generation over `dest` and reported a
   fresh generation number. That is indistinguishable from a correct run, and it was reachable without passing

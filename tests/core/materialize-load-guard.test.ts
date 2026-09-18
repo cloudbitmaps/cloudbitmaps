@@ -110,6 +110,69 @@ describe('the *Into verbs refuse an implausible result instead of publishing it'
     expect(await store.segment('dest').count()).toBe(1);
   });
 
+  it('COLLECTS NOTHING by default — a materialisation is not a retention decision', async () => {
+    // Routing through `loadSegment` nearly changed this silently. `load()` keeps a grace window of 1 and
+    // deletes the rest; a materialisation has never collected, and the guide promises "It deletes nothing".
+    // Inheriting the collection would have deleted the generations an operator's recovery story depends on —
+    // `rollbackSegment` refuses a collected target — as a side effect of adding a guard whose whole purpose
+    // is preventing data loss. Nothing else covered `collected` on an `*Into`, which is how it slipped past a
+    // green suite.
+    const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3] });
+    const dest = { segment: 'dest' };
+    await store.load(dest, [10]);
+    await store.load(dest, [11]);
+    const gens = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for await (const k of storage.list(dest)) out.push(k.generation);
+      return out.sort((x, y) => x - y);
+    };
+    const before = await gens();
+
+    const res = await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]);
+
+    expect(res.published).toBe(true);
+    expect(res.collected).toEqual([]);
+    // Every generation that existed before is still there, plus the new one.
+    expect(await gens()).toEqual([...before, res.generation]);
+  });
+
+  it('collects when the caller asks for it, and only then', async () => {
+    const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3] });
+    const dest = { segment: 'dest' };
+    await store.load(dest, [10]);
+    await store.load(dest, [11]);
+
+    const res = await store
+      .segment('a')
+      .intersectInto(store.segment('dest'), [store.segment('b')], { keep: 0 });
+
+    expect(res.published).toBe(true);
+    expect(res.collected.length).toBeGreaterThan(0);
+    const left: number[] = [];
+    for await (const k of storage.list(dest)) left.push(k.generation);
+    expect(left).toEqual([res.generation]); // keep: 0 leaves only the new current generation
+  });
+
+  it('still REPAIRS a destination whose current object is missing', async () => {
+    // `missing-storage-generation`: the row names a generation whose object is gone — a partial drop, a
+    // bucket lifecycle rule, a registry restored without its bucket. Writing over it is the repair, and it
+    // is what this path did before the guard reached it.
+    //
+    // The guard nearly broke that: its "before" read opens the current generation's object, which throws
+    // when the object is absent. A segment would then be unreadable AND unrepairable — the opposite of what
+    // a guard is for — with `allowEmpty: true` as the accidental workaround, i.e. the one option that also
+    // disables the protection.
+    const { store, storage } = await loadedStore({ a: [1, 2, 3], b: [2, 3], dest: [9] });
+    const current = await storage.list({ segment: 'dest' })[Symbol.asyncIterator]().next();
+    await storage.delete(current.value as { segment: string; generation: number });
+
+    const res = await store.segment('a').intersectInto(store.segment('dest'), [store.segment('b')]);
+
+    expect(res.published).toBe(true);
+    expect(res.cardinalityBefore).toBeNull(); // nothing was there to protect
+    expect(await collect(store.segment('dest').iterate())).toEqual([2, 3]);
+  });
+
   it('a refused materialisation leaves no generation above the destination pointer', async () => {
     // The object is written before the guard judges it, so a refusal has to reclaim it. Otherwise every
     // refused combine leaks an object that collection never looks at (it sits ABOVE `currentGen`).

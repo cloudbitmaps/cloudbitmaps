@@ -26,7 +26,12 @@ import {
 import type { Clock } from './determinism';
 import { aadFor } from './crypto';
 import type { CrbmCrypto, IKeystore } from './crypto';
-import { KeyUnavailableError, ValidationError, isWriteConflictError } from './errors';
+import {
+  KeyUnavailableError,
+  ValidationError,
+  isNotFoundError,
+  isWriteConflictError,
+} from './errors';
 import { gcOrphanGenerations, nextGeneration } from './generation-gc';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef, Token } from './ports';
 import { validateSegmentRef } from './validate';
@@ -137,7 +142,21 @@ async function currentCardinality(
     const aead = await deps.keystore.openDek(wrapped);
     crypto = { aead, aadFor: (scope) => aadFor(ref, generation, scope) };
   }
-  const reader = await openGenerationReader(deps.storage, { ...ref, generation }, crypto);
+  let reader;
+  try {
+    reader = await openGenerationReader(deps.storage, { ...ref, generation }, crypto);
+  } catch (err) {
+    // The row names a generation whose OBJECT is gone — the `missing-storage-generation` state a consistency
+    // check reports, produced by a partial `dropSegment`, a bucket lifecycle rule, or a restore that brought
+    // the registry back without the bucket.
+    //
+    // `null`, not a throw. The guard exists to protect ids that are still there, and these are already gone:
+    // refusing to write would leave the segment unreadable AND unrepairable, which is the opposite of what a
+    // guard is for. Writing over it is precisely the repair, and it is what this path did before the guard
+    // reached it. A caller who wants to be told instead can run `checkConsistency()`, whose job that is.
+    if (!isNotFoundError(err)) throw err;
+    return null;
+  }
   let total = 0;
   for (const n of reader.cardinalities().values()) total += n;
   return total;
@@ -288,6 +307,14 @@ export async function loadSegment(
     wrappedDeks: written.wrappedDeks,
     ...(fromToken === undefined ? {} : { expectToken: fromToken }),
     ...(needsBefore && fromGeneration !== undefined ? { expectFrom: fromGeneration } : {}),
+    // The third case, and the one the two fences above structurally cannot cover: the guard judged a segment
+    // that had NO ROW. Both `expectFrom` and `expectToken` compare against a value read from a row, so with no
+    // row both are omitted and the publish becomes a bare forward-only advance — which lands over anything
+    // that appeared in between. `before` was `null`, so the empty and `minRetained` bounds had nothing to
+    // judge and passed vacuously. Verified: an empty generation published over a thousand ids that a
+    // concurrent writer had created meanwhile, reporting success. A guarded write therefore has to fence on
+    // the ABSENCE it relied on, exactly as it fences on the pointer it relied on.
+    ...(needsBefore && row === null ? { expectAbsent: true } : {}),
   });
   if (!published) return refuse('superseded');
 

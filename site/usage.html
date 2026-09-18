@@ -333,10 +333,12 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 <span class="k">const</span> target = seg(<span class="s">'eu-vips'</span>);
 
 <span class="c">// Suppression folds into the same pass, and the result</span>
-<span class="c">// becomes a new generation of `target`.</span>
-<span class="k">const</span> { generation, cardinality } = <span class="k">await</span> vips.intersectInto(
+<span class="c">// becomes a new generation of `target` — unless it comes</span>
+<span class="c">// out empty, which is refused rather than wiping it.</span>
+<span class="k">const</span> res = <span class="k">await</span> vips.intersectInto(
   target, [eu], { exclude: [optedOut] },
-);</code></pre>
+);
+<span class="k">if</span> (!res.published) console.warn(res.reason); <span class="c">// 'empty'</span></code></pre>
           </div>
         </div>
       </section>

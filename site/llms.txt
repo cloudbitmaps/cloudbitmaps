@@ -35,7 +35,10 @@ is the only thing `storage` accepts; a hand-written `{ storage, registry }` obje
 of your own — an instrumented driver, a registry elsewhere — use `createBackend({ storage, registry })`. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
 authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
 remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
-publishing their result as a new generation of the destination segment.
+publishing their result as a new generation of the destination segment — and check the result is plausible
+the same way `load` does: an empty or implausible combine over a non-empty destination is refused
+(`published: false` + `reason`) rather than wiping it, with `allowEmpty`/`guard` to override. Unlike `load`
+they collect nothing, so a rollback target survives a materialisation.
 
 Reads see one whole, checksum-verified generation: has (cache, else one ranged GET), count (exact, summed
 from the .crbm index with zero payload reads), iterate, and intersect/union/andNot — the chunk-skipping
