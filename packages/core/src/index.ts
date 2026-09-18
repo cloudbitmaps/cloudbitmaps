@@ -123,10 +123,13 @@ export {
   TimeoutError,
   KeyUnavailableError,
   BudgetExceededError,
-  // Copy-safe predicates — prefer these over `instanceof` whenever an error may have been thrown by another
-  // package's bundle. Within one package the class object is shared, but `@cloudbitmaps/roaring` bundles its
-  // own copy of core, so `instanceof` across the two fails on an ordinary install — as it does with a real
-  // second copy from a version skew or a duplicating bundler. It fails silently, by simply not matching.
+  // Copy-safe predicates. On an ordinary install `instanceof` holds everywhere — every package in the family
+  // is published with `@cloudbitmaps/core` left external, so one copy of these classes is shared and you can
+  // catch them however you normally would. Prefer these where that stops being true and nothing here can
+  // control it: a consumer's bundler inlining core into two outputs, two majors resolved side by side, or an
+  // error crossing a worker or vm realm. Each matches a `Symbol.for` brand, which is the same symbol in every
+  // copy and every realm where a class object is not. The `instanceof` failure is silent — it simply stops
+  // matching — which is why library code that cannot see how it will be bundled should reach for these.
   isCloudRoaringError,
   isWriteConflictError,
   isTransientError,

@@ -10,9 +10,11 @@
  */
 export { CrbmReader, parseIndex } from '../core/crbm/reader';
 export { BufferReader } from '../core/blob';
-// Export the BRAND PREDICATE, not just the class: the harness is two bundles (core internals here, the codec in
-// the flavor's `fuzz-codec.js`), so each has its own copy of the error classes and `instanceof` across them is
-// false — the cross-bundle identity trap. `isCloudRoaringError` matches a `Symbol.for` brand and
-// is therefore copy-independent; fuzz targets MUST use it to classify a typed rejection.
+// Export the BRAND PREDICATE, not just the class. The harness is two bundles and they do NOT agree on the
+// class object: this one is built from core's own source, so it INLINES the error classes, while the flavor's
+// `fuzz-codec.js` imports them from `@cloudbitmaps/core` as an external. So `instanceof` across the two is
+// false even though it holds for an ordinary consumer of the published packages — this harness is exactly the
+// bundling shape the predicates exist for. `isCloudRoaringError` matches a `Symbol.for` brand and is
+// therefore copy-independent; fuzz targets MUST use it to classify a typed rejection.
 export { CloudRoaringError, isCloudRoaringError } from '../core/errors';
 export { DEFAULT_MAX_PAYLOAD_BYTES } from '../core/crbm/format';
