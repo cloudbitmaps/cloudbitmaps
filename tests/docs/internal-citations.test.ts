@@ -151,11 +151,21 @@ describe('no pointer the public cannot reach', () => {
     const hits: string[] = [];
     src.split('\n').forEach((line, i) => {
       for (const [kind, re] of CITATIONS) {
-        const m = re.exec(line);
-        if (!m) continue;
-        const id = new RegExp(BARE_ID).exec(m[0])?.[0];
-        if (id !== undefined && PRODUCT_IDS.test(id)) continue;
-        hits.push(`${rel}:${i + 1}  ${kind} "${m[0]}"  —  ${line.trim().slice(0, 100)}`);
+        // EVERY match on the line, and the product exemption applied PER MATCHED ID.
+        //
+        // The first version did `re.exec(line)` and `continue`d the whole pattern when that one match's id
+        // was a product name. So `the S3 bucket is read before the C13 cache row` passed: `S3` is exempt,
+        // `continue` abandoned the line, and `C13` was never looked at. Since `S3` alone appears ~337 times
+        // in this repo, "a line that mentions S3 AND carries a citation" is the common case, not a
+        // contrived one — the exemption was hiding exactly the hits the gate exists to find.
+        for (const m of line.matchAll(new RegExp(re.source, `${re.flags.replace('g', '')}g`))) {
+          // EVERY id in the match must be a product for the match to be excused. A match can carry more
+          // than one — `(I2, V4, V5)` is a list, and so is `(S3, C13)`, where reading only the first id
+          // would excuse the citation sitting behind a product name.
+          const ids = [...m[0].matchAll(new RegExp(BARE_ID, 'g'))].map((x) => x[0]);
+          if (ids.length > 0 && ids.every((x) => PRODUCT_IDS.test(x))) continue;
+          hits.push(`${rel}:${i + 1}  ${kind} "${m[0]}"  —  ${line.trim().slice(0, 100)}`);
+        }
       }
     });
     expect(hits).toEqual([]);

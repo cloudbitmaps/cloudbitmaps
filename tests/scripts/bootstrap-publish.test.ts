@@ -30,8 +30,17 @@ const SCRIPT = join(ROOT, 'scripts', 'bootstrap-publish.cjs');
 const VERSION = '0.1.0-rc.0';
 
 interface Shims {
-  /** stdout for `npm view <pkg> versions --json`. Exit 1 (a 404) means "name is free". */
+  /**
+   * How `npm view <pkg> versions --json` fails for a name the registry does not have. The script now
+   * distinguishes a 404 from every other failure, so the shim has to emit a REALISTIC one: the old shim
+   * just exited 1 with no output, which is indistinguishable from a network error and encoded the very
+   * bug this distinction fixes.
+   */
   npmViewVersionsExitCode?: number;
+  /** Emit this on stderr instead of an E404, to simulate a transient registry failure. */
+  npmViewStderr?: string;
+  /** Write the manifests without a space after the colon, so the version rewrite cannot match. */
+  compactManifests?: boolean;
   /** Package dirs to create, and the version they carry. Defaults to core + roaring at `VERSION`. */
   packages?: readonly string[];
   version?: string;
@@ -64,11 +73,17 @@ function runScript(
       mkdirSync(join(dir, 'packages', name), { recursive: true });
       writeFileSync(
         join(dir, 'packages', name, 'package.json'),
-        JSON.stringify(
-          { name: `@cloudbitmaps/${name}`, version, publishConfig: { access: 'public' } },
-          null,
-          2,
-        ),
+        shims.compactManifests
+          ? JSON.stringify({
+              name: `@cloudbitmaps/${name}`,
+              version,
+              publishConfig: { access: 'public' },
+            })
+          : JSON.stringify(
+              { name: `@cloudbitmaps/${name}`, version, publishConfig: { access: 'public' } },
+              null,
+              2,
+            ),
       );
     }
 
@@ -85,6 +100,10 @@ function runScript(
     shim('gh', `echo '{"visibility":"PUBLIC","nameWithOwner":"cloudbitmaps/cloudbitmaps"}'`);
 
     const viewExit = shims.npmViewVersionsExitCode ?? 1;
+    // npm's real wording for a name that is not on the registry.
+    const viewStderr =
+      shims.npmViewStderr ??
+      'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/x';
     // Per-name existence, so a MIXED family (two published, three brand new) can be exercised — which is the
     // case that matters now that packages get added to an already-published family.
     const existsCase = (shims.existing ?? []).map((n) => `      ${n}) exit 0;;`).join('\n');
@@ -104,6 +123,7 @@ function runScript(
         '        case "$2" in',
         existsCase,
         `        esac`,
+        `        echo "${viewStderr}" >&2`,
         `        exit ${viewExit};;`,
         '      dist-tags)',
         `        n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${counter}"`,
@@ -284,6 +304,37 @@ describe('bootstrap-publish', () => {
     // …and it is put back, so the bootstrap leaves no version bump nobody made.
     expect(manifests.s3).toMatch(/"version": "0\.10\.0"/);
     expect(manifests.core).toMatch(/"version": "0\.10\.0"/);
+  });
+
+  it('REFUSES when the registry probe fails for any reason other than a 404', () => {
+    // The script hand-publishes the names it believes are missing. Treating a 500 / rate limit / timeout /
+    // auth failure as "missing" therefore publishes an unattested prerelease OVER packages that are already
+    // live — irreversibly. The old shim exited 1 with no output, which is exactly what a network error
+    // looks like, so the suite encoded the bug as the intended behaviour.
+    const { status, out } = runScript(['--confirm'], {
+      npmViewStderr:
+        'npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed',
+    });
+    expect(status).toBe(1);
+    expect(out).toMatch(/could not determine whether @cloudbitmaps\/core exists/);
+    expect(out).toMatch(/Refusing to guess/);
+    // And nothing was sent.
+    expect(out).not.toMatch(/bootstrap-publish: done/);
+  });
+
+  it('REFUSES when the version literal is not where the rewrite expects it', () => {
+    // `String.replace` is a silent no-op on a miss, which would hand pnpm the family's REAL version —
+    // published by hand (so unattested) and then skipped by the pipeline on the tag because the registry
+    // already has it. The guard has to fire BEFORE anything irreversible.
+    const { status, out, calls } = runScript(['--confirm'], {
+      packages: ['s3'],
+      version: '0.10.0',
+      compactManifests: true,
+    });
+    expect(status).toBe(1);
+    expect(out).toMatch(/could not rewrite the version in packages\/s3\/package.json/);
+    expect(out).toMatch(/Nothing was published/);
+    expect(calls).not.toMatch(/publish/);
   });
 
   it('publishes nothing without --confirm', () => {

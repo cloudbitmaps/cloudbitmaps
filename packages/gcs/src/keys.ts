@@ -13,13 +13,6 @@
  * same bucket, which is exactly the kind of thing a local copy drifts into.
  */
 
-const SUFFIX = '.crbm';
-
-/**
- * Validate the caller-supplied key prefix (trusted config, but a real containment boundary): reject control
- * characters and `.`/`..` path segments so a prefix can't traverse out of its intended space. Returns it
- * unchanged (the key builders normalize slashes).
- */
 import {
   ValidationError,
   encodeNameForKey,
@@ -28,6 +21,14 @@ import {
   validateSegmentRef,
 } from '@cloudbitmaps/core/driver-kit';
 import type { GenKey, SegmentRef } from '@cloudbitmaps/core/driver-kit';
+
+const SUFFIX = '.crbm';
+
+/**
+ * Validate the caller-supplied key prefix (trusted config, but a real containment boundary): reject control
+ * characters and `.`/`..` path segments so a prefix can't traverse out of its intended space. Returns it
+ * unchanged (the key builders normalize slashes).
+ */
 export function normalizeGcsPrefix(prefix: string | undefined): string | undefined {
   if (prefix === undefined) return undefined;
   for (const ch of prefix) {

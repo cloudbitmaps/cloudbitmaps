@@ -16,9 +16,15 @@ AWS S3 — and every S3-compatible service: Cloudflare R2, MinIO, Ceph, Wasabi, 
 npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 ```
 
-Two packages: the **codec** you want and the **storage** you have. `@aws-sdk/client-s3` (`>=3.645.0`) is a real dependency of
+Two packages: the **codec** you want and the **storage** you have. `@aws-sdk/client-s3` (`>=3.645.0 <4`) is a real dependency of
 this package, so installing it is the whole step — there is no optional peer to remember. `@cloudbitmaps/core` is one
 too, so the engine lands in your tree without you installing it — you never name it yourself.
+
+> **The `>=3.645.0` floor is a correctness floor, not a preference.** Below it the SDK does not model the
+> conditional write this library's write-once guarantee is built on: measured against MinIO, **3.640.0
+> silently overwrites** an existing object instead of refusing, which loses a published generation without
+> an error; 3.641.0 rejects correctly. If you pin `@aws-sdk/client-s3` yourself, raise the pin to at least
+> `3.645.0` — an older pin will fail to resolve against this package rather than quietly downgrading you.
 
 ## Use
 

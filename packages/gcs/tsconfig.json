@@ -11,7 +11,7 @@
       // which pulls core's 26 `@/…`-importing files into this program. `paths` REPLACES the inherited map
       // rather than merging with it, so without this line those imports resolve against nothing: 70 ×
       // TS2307, plus 2 × TS7006 where a failed resolution degraded a parameter to `any`. Nothing under
-      // packages/roaring/src imports `@/…` (zero files), so there is no ambiguity today — but if that
+      // packages/gcs/src imports `@/…` (zero files), so there is no ambiguity today — but if that
       // changed, `@/` here would silently mean core's src.
       "@/*": ["../core/src/*"]
     }

@@ -25,7 +25,18 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   + import { S3Storage } from '@cloudbitmaps/s3';
   ```
 
-  `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` follow the same shape; `@cloudbitmaps/core/s3` and
+  ```diff
+  - import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
+  + import { GcsStorage } from '@cloudbitmaps/gcs';
+
+  - import { AzureBlobStorage } from '@cloudbitmaps/roaring/azure';
+  + import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
+  ```
+
+  **Note the Azure package is `@cloudbitmaps/azure-blob`, not `@cloudbitmaps/azure`.** The other two renames
+  are mechanical — drop the prefix, keep the last segment — and Azure is the one that is not: the subpath was
+  named for the cloud, the package is named for the service, because "azure" is ambiguous across Blob, Table,
+  Files and Data Lake. A full old→new table is in [`MIGRATING.md`](MIGRATING.md). `@cloudbitmaps/core/s3` and
   friends are gone too, and `@cloudbitmaps/core` stays transitive and is still never installed directly. The
   constructors, options and behaviour of `S3Storage`, `GcsStorage` and `AzureBlobStorage` are unchanged, so a
   migration is the two lines above per driver plus the install — **with one thing to check**: the cloud SDK

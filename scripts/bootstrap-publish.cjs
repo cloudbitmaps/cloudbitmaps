@@ -72,13 +72,37 @@ function run(cmd, args, opts = {}) {
   return typeof out === 'string' ? out.trim() : '';
 }
 
-/** Run a command whose non-zero exit is a legitimate answer (a 404 probe, a dirty tree). */
+/**
+ * Run a command whose non-zero exit is a legitimate answer (a 404 probe, a dirty tree).
+ *
+ * Captures STDERR as well as stdout, which the first version discarded. That mattered: `npm view` exits
+ * non-zero for a missing package AND for a 5xx, a rate limit, an ETIMEDOUT, a proxy failure and a bad
+ * `.npmrc` — and only stderr says which. Without it the caller had to treat every failure alike.
+ */
 function tryRun(cmd, args) {
   try {
     return { ok: true, out: run(cmd, args) };
   } catch (err) {
-    return { ok: false, out: String((err && (err.stdout || err.message)) || '').trim() };
+    const stdout = String((err && err.stdout) || '');
+    const stderr = String((err && err.stderr) || '');
+    return {
+      ok: false,
+      out: (stdout || String((err && err.message) || '')).trim(),
+      err: `${stdout}\n${stderr}\n${String((err && err.message) || '')}`,
+    };
   }
+}
+
+/**
+ * Did `npm view <name>` fail because the name genuinely is not on the registry?
+ *
+ * ONLY a 404 means "free". Everything else — a 500, a 429, ETIMEDOUT, ENOTFOUND, an auth or proxy failure —
+ * means "unknown", and unknown must never be treated as free: this script's whole job is to hand-publish
+ * the names it believes are missing, so a registry blip would otherwise make it publish an unattested
+ * prerelease over packages that are already live, irreversibly. Fail loudly instead of guessing.
+ */
+function isRegistry404(probe) {
+  return /\bE?404\b|not found|is not in (?:this|the) registry/i.test(probe.err ?? probe.out ?? '');
 }
 
 // ---------------------------------------------------------------- discover the publishable packages
@@ -166,8 +190,19 @@ else notes.push(`npm user: ${who.out}`);
 const missing = [];
 for (const p of packages) {
   const probe = tryRun('npm', ['view', p.json.name, 'versions', '--json']);
-  if (probe.ok) notes.push(`${p.json.name} already on the registry — skipping (ship it by tag)`);
-  else missing.push(p);
+  if (probe.ok) {
+    notes.push(`${p.json.name} already on the registry — skipping (ship it by tag)`);
+  } else if (isRegistry404(probe)) {
+    missing.push(p);
+  } else {
+    // NOT "free". See isRegistry404: guessing here publishes over a live package.
+    fail(
+      `could not determine whether ${p.json.name} exists — \`npm view\` failed with something other than a ` +
+        `404, so this is a registry or network problem, not a missing name. Refusing to guess, because the ` +
+        `guess would hand-publish an unattested version over a package that may already be live. ` +
+        `Retry when the registry is reachable.\n      ${(probe.err ?? '').trim().split('\n').filter(Boolean).slice(0, 3).join('\n      ')}`,
+    );
+  }
 }
 if (missing.length === 0) {
   fail(
@@ -255,17 +290,50 @@ const touched = missing.map((p) => ({
   rel: p.rel,
   before: readFileSync(join(ROOT, p.rel), 'utf8'),
 }));
+let restored = false;
 function restoreManifests() {
-  for (const t of touched) writeFileSync(join(ROOT, t.rel), t.before);
+  if (restored) return; // the finally already ran; do not clobber a later edit
+  restored = true;
+  // Each write is guarded separately: an EACCES on the first file must not skip the other two, and must not
+  // replace whatever exception the caller was already unwinding with.
+  for (const t of touched) {
+    try {
+      writeFileSync(join(ROOT, t.rel), t.before);
+    } catch (e) {
+      console.error(
+        `bootstrap-publish: COULD NOT RESTORE ${t.rel} — put it back by hand: ${e.message}`,
+      );
+    }
+  }
+}
+// `process.on('exit')` does NOT run when node is killed by a signal, and the publish below is the long
+// interactive 2FA step with inherited stdio — exactly where an operator presses Ctrl-C, which the shell
+// delivers to the whole foreground process group. Without these the rewritten version stays on disk: a
+// phantom bump one `git commit -a` away from being committed and shipped as the real tag.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    restoreManifests();
+    process.kill(process.pid, sig); // re-raise so the exit status still reports the signal
+  });
 }
 process.on('exit', restoreManifests);
 try {
   if (effectiveVersion !== version) {
     for (const t of touched) {
-      writeFileSync(
-        join(ROOT, t.rel),
-        t.before.replace(`"version": "${version}"`, `"version": "${effectiveVersion}"`),
-      );
+      const after = t.before.replace(`"version": "${version}"`, `"version": "${effectiveVersion}"`);
+      // An unchecked `String.replace` is a SILENT NO-OP when the manifest is formatted differently — no
+      // space after the colon, say. That hands pnpm the family's REAL version: published by hand and so
+      // unattested, and then skipped by the pipeline on the real tag because the registry already has it.
+      // Assert the rewrite landed before anything is sent.
+      if (after === t.before) {
+        restoreManifests();
+        console.error(
+          `bootstrap-publish: could not rewrite the version in ${t.rel} — expected the literal ` +
+            `"version": "${version}" and did not find it. Nothing was published.`,
+        );
+        process.exit(1);
+      }
+      writeFileSync(join(ROOT, t.rel), after);
     }
     console.log(`  (manifests temporarily set to ${effectiveVersion}; restored when this exits)`);
   }
@@ -282,6 +350,19 @@ try {
     ],
     { stdio: ['inherit', 'inherit', 'inherit'] },
   );
+} catch (e) {
+  // `pnpm publish` stops at the FIRST failure, so some names may already be live and irreversible. A raw
+  // stack would bury that, and the Trusted-Publisher guidance below would never print — at the one moment
+  // it matters most.
+  restoreManifests();
+  console.error(
+    `\nbootstrap-publish: the publish FAILED PART-WAY. ${missing.length} name(s) were attempted:\n` +
+      missing.map((p) => `  · ${p.json.name}`).join('\n') +
+      `\n\nSome may already be on the registry and CANNOT be unpublished outside 72 hours. Check each with\n` +
+      `\`npm access get status <name>\` before re-running — this script skips the ones that landed.\n` +
+      `For every name that DID land, still bind its Trusted Publisher before tagging.\n\n${e.message}`,
+  );
+  process.exit(1);
 } finally {
   restoreManifests();
 }

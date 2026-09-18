@@ -57,6 +57,31 @@ I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver
 enforceable rather than aspirational. **Anything needing a builtin belongs in a driver** — either one of the
 driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
 
+## Adding a storage driver package
+
+Most of the topology is **derived** — `scripts/build.mjs` reads each package's own `exports`, the release
+workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync`, `issue-template-sync`
+and `sdk-floor-claims` gates all read the manifests. Those need no edit.
+
+These do, and the list is exhaustive as of this writing. A missing one fails **loudly** — in `pnpm lint`,
+`pnpm typecheck` or `pnpm smoke`, long before a publish — but knowing them up front turns a bisect into a
+checklist:
+
+| File | What to add |
+|---|---|
+| `package.json` | the workspace devDependency, **and** the package in the `typecheck:pkgs` and `typecheck:next` chains (both spell every package out) |
+| `tsconfig.json` | the two `paths` entries |
+| `vitest.config.ts` · `vitest.integration.config.ts` | the two aliases in **each**, above the `@/*` catch-all |
+| `eslint.config.js` | a per-package block re-stating the full SDK list **minus** this package's own — eslint replaces a rule's options rather than merging them |
+| `scripts/sdk-specifiers.cjs` | the driver-name pattern |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` | the two dropdown options; `tests/docs/issue-template-sync.test.ts` derives the *expectation* and fails until the template catches up |
+| docs | the README install + driver tables, `docs/guide/getting-started.md` wiring, the API reference entry points and export index, and the guide index |
+| npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) |
+
+Two things to copy rather than invent: the package must declare its SDK as a **real dependency** (never an
+optional peer), and its README must state the same range its manifest does — `tests/docs/sdk-floor-claims.test.ts`
+compares them.
+
 ## Dependency policy
 
 Third-party runtime dependencies are counted **per package**, and each one is deliberate:

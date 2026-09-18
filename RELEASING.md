@@ -12,12 +12,13 @@ workflow names a package: it globs `packages/*/package.json` and filters `./pack
 it does carry (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts).
 
-**Adding a package is still not free**, and the cost is not in this file. Its **name must be bootstrapped**
-before the tokenless pipeline can publish it at all (see [Bootstrapping a name](#bootstrapping-a-name)), and
-a handful of gates the release job runs do enumerate the driver packages by name — `DRIVER_PACKAGES` in
-`scripts/smoke.cjs`, the per-package SDK blocks in `eslint.config.js`, and the driver pattern in
-`scripts/sdk-specifiers.cjs`. A sixth driver package goes red in `pnpm lint` or `pnpm smoke` long before it
-reaches a publish step, which is the right direction for it to fail in — but it is an edit, not nothing.
+**Adding a package is still not free**, and most of the cost is not in this file. Its **name must be
+bootstrapped** before the tokenless pipeline can publish it at all (see
+[Bootstrapping a name](#bootstrapping-a-name)); the rest is a checklist of the places that enumerate the
+driver packages by hand, which lives in
+[CONTRIBUTING → Adding a storage driver package](CONTRIBUTING.md#adding-a-storage-driver-package). Every one
+of them fails loudly in `pnpm lint`, `pnpm typecheck` or `pnpm smoke` long before a publish step, which is
+the right direction for it to fail in — but it is an edit, not nothing.
 
 ## Table of contents
 

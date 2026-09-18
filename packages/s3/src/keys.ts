@@ -8,12 +8,9 @@
  * (absent) namespace maps to `_default`, which cannot collide with a real namespace because a caller's
  * `_default` encodes to `%5Fdefault` while the sentinel is emitted literally.
  */
-// The storage and registry layouts sit under the SAME caller prefix, so they must normalize it identically —
-// a second copy of this three-line function is how the two halves of one bucket drift apart.
-
-const SUFFIX = '.crbm';
-
-/** Validate a caller-supplied key prefix. The rule is shared with every other object store. */
+// `prefixPart` is imported, never redefined: the storage and registry layouts sit under the SAME caller
+// prefix, so they must normalize it identically — a second copy of that three-line function is how the two
+// halves of one bucket drift apart.
 import {
   ValidationError,
   encodeNameForKey,
@@ -22,6 +19,10 @@ import {
   validateSegmentRef,
 } from '@cloudbitmaps/core/driver-kit';
 import type { GenKey, SegmentRef } from '@cloudbitmaps/core/driver-kit';
+
+const SUFFIX = '.crbm';
+
+/** Validate a caller-supplied key prefix. The rule is shared with every other object store. */
 export { normalizeObjectPrefix as normalizeS3Prefix } from '@cloudbitmaps/core/driver-kit';
 
 /**

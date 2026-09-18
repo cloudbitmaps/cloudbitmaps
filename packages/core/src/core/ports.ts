@@ -334,7 +334,12 @@ export function createBackend(halves: {
  * `Symbol.for('cloudbitmaps.storage-backend')`. That is deliberate effort equivalent to calling
  * `createBackend`, and it is not what the check is for. The check is for the accident.
  */
-/** The brand key, for the classes' type-only `declare` field. Package-internal. */
+/**
+ * The brand key, for the type-only `declare` field a backend class carries.
+ *
+ * Exported from `@cloudbitmaps/core/driver-kit` and part of the driver contract: a third-party storage
+ * package needs it to declare the field that {@link brandAsBackend} then stamps at runtime.
+ */
 export const STORAGE_BACKEND: typeof STORAGE_BACKEND_BRAND = STORAGE_BACKEND_BRAND;
 
 export function brandAsBackend<T extends { storage: IStorageDriver; registry: IRegistryDriver }>(

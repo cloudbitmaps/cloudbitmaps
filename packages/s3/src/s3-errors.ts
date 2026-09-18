@@ -6,7 +6,6 @@
  * unit-testable without a live MinIO/S3 or even the AWS SDK. Shared AWS shapes come from `_shared/aws-errors`.
  */
 
-/** A conditional `If-None-Match: *` PUT lost the write-once race (the object already existed). */
 import {
   errorName,
   httpStatus,
@@ -14,6 +13,8 @@ import {
   isSdkRetryable,
   isServerSide,
 } from '@cloudbitmaps/core/driver-kit';
+
+/** A conditional `If-None-Match: *` PUT lost the write-once race (the object already existed). */
 export function isPreconditionFailed(err: unknown): boolean {
   return errorName(err) === 'PreconditionFailed' || httpStatus(err) === 412;
 }

@@ -232,7 +232,11 @@ export default tseslint.config(
                 'reach core by its package name (@cloudbitmaps/core, or /driver-kit), not by a relative path out of this package.',
             },
             {
-              group: ['@google-cloud/*', '@azure/*'],
+              // `aws-sdk` is the LEGACY v2 SDK and is nobody's dependency — including this package's, which
+              // takes `@aws-sdk/client-s3` (v3). It belongs in this list for the same reason the siblings
+              // keep it: importing it resolves from the hoisted workspace root during development and is
+              // ERR_MODULE_NOT_FOUND for every published consumer.
+              group: ['aws-sdk', '@google-cloud/*', '@azure/*'],
               message:
                 "this package imports only its own cloud SDK — a sibling's is not in its dependencies and would be missing for every consumer.",
             },

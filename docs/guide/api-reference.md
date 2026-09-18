@@ -395,6 +395,64 @@ API — an addition is something we support, a removal breaks every driver packa
 Application code never needs this. It is listed because it is public, and because an unimported surface is
 exactly the kind that rots undocumented.
 
+**The method signatures are the `.d.ts`, not this page.** `IStorageDriver` and `IRegistryDriver` are
+TypeScript interfaces and their shipped declarations are the specification — implement them and the compiler
+tells you what is missing. What this page adds is everything the types cannot say.
+
+<details>
+<summary><strong>A minimal storage backend, end to end</strong></summary>
+
+The one non-obvious part is the **brand**. A store accepts a backend by brand, never by `instanceof`, so a
+backend built in your package is recognised in ours. It takes two lines that have to agree: a **type-only
+`declare` field** so the class satisfies `StorageBackend`, and a **runtime stamp** in the constructor, which
+`brandAsBackend` applies non-enumerably so a spread cannot carry it off.
+
+```ts
+import {
+  STORAGE_BACKEND,
+  brandAsBackend,
+  type IRegistryDriver,
+  type IStorageDriver,
+  type StorageBackend,
+} from '@cloudbitmaps/core/driver-kit';
+
+export class MyStorage implements StorageBackend {
+  declare readonly [STORAGE_BACKEND]: true; // type-only: no value is emitted here
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
+
+  constructor(options: MyStorageOptions) {
+    this.storage = new MyStorageDriver(options);
+    this.registry = new MyRegistryDriver(options);
+    brandAsBackend(this); // the runtime half — without it, `new CloudRoaring({ storage: this })` is refused
+  }
+}
+```
+
+Depend on core as a **peer** plus a dev dependency, not a plain dependency:
+
+```jsonc
+{
+  "peerDependencies": { "@cloudbitmaps/core": "^<the minor you build against>" },
+  "devDependencies": { "@cloudbitmaps/core": "^<the same>" }
+}
+```
+
+A plain dependency lets your package pull in a *second* copy of core beside the consumer's, which is the
+duplicate-major case described under [Errors](#errors-typed--you-catch-these) where `instanceof` stops
+holding. A peer makes the
+consumer's copy the only one.
+
+**On correctness, be aware of what you cannot yet run.** The conformance suite the in-repo drivers are held
+to (`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public subpath, so a third-party
+driver cannot execute it today. Until it is, the load-bearing behaviours to reproduce by hand are: a
+conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
+loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
+the pointer row that reports a lost race rather than clobbering, and the four `currentGen: null` obligations
+listed below.
+
+</details>
+
 | Symbol | What it does |
 |---|---|
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |

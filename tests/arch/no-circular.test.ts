@@ -58,7 +58,19 @@ export function specifiers(source: string): string[] {
 }
 
 function asFile(base: string): string | null {
-  for (const cand of [base, `${base}.ts`, path.join(base, 'index.ts')]) {
+  // `.js` is stripped because a `nodenext` migration REQUIRES it on relative specifiers, and on that day
+  // every relative edge here would resolve to null — silently, since a dropped edge is just not pushed. The
+  // graph would become isolated nodes, `findCycle` would return null, and the only sanity guard
+  // (`graph.size > 50`) counts FILES, not edges, so it would still pass. Hence both this and the edge-count
+  // assertion in the suite below.
+  const withoutJs = base.replace(/\.js$/, '');
+  for (const cand of [
+    base,
+    `${base}.ts`,
+    path.join(base, 'index.ts'),
+    `${withoutJs}.ts`,
+    path.join(withoutJs, 'index.ts'),
+  ]) {
     if (existsSync(cand) && statSync(cand).isFile()) return cand;
   }
   return null;
@@ -189,6 +201,14 @@ describe('architecture: no circular imports under packages/*/src', () => {
   it('the real source graph is acyclic', () => {
     const graph = buildGraph();
     expect(graph.size).toBeGreaterThan(50); // the walk found the code (guards against a silently empty graph)
+    // …and that it found the EDGES. `graph.size` counts files, so a resolver that silently dropped every
+    // relative specifier would leave 80 isolated nodes, no cycle, and this test green. Only an edge count
+    // can see that.
+    const edges = [...graph.values()].reduce((n, deps) => n + deps.length, 0);
+    expect(
+      edges,
+      'the graph has nodes but almost no edges — the resolver is dropping specifiers',
+    ).toBeGreaterThan(200);
     const cycle = findCycle(graph);
     expect(
       cycle,

@@ -28,7 +28,28 @@ const S3 = '@cloudbitmaps/s3';
  * drivers were subpaths of core. They are packages now, so the boundary moved from a path prefix to a
  * package name — and the SDK-free sweep skips these three rather than skipping three folders in each.
  */
-const DRIVER_PACKAGES = ['s3', 'gcs', 'azure-blob'];
+/**
+ * Which packages are storage-driver packages — DERIVED, like every other topology list in this repo.
+ *
+ * A driver package is one that depends on a cloud SDK; that is the same definition the packaging uses, so
+ * the two cannot disagree. Hardcoding the three meant a fourth service package would have had
+ * `assertEntrySdkFree` run against it and fail for naming the SDK it exists to wrap.
+ */
+const DRIVER_PACKAGES = (() => {
+  const { readdirSync, readFileSync, existsSync } = require('node:fs');
+  const dir = path.join(__dirname, '..', 'packages');
+  const CLOUD_SDK = /^(?:@aws-sdk\/|aws-sdk$|@google-cloud\/|@azure\/)/;
+  const found = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(path.join(dir, e.name, 'package.json')))
+    .filter((e) => {
+      const m = JSON.parse(readFileSync(path.join(dir, e.name, 'package.json'), 'utf8'));
+      return Object.keys(m.dependencies ?? {}).some((d) => CLOUD_SDK.test(d));
+    })
+    .map((e) => e.name);
+  if (found.length === 0)
+    throw new Error('smoke: no driver package found — the derivation is broken');
+  return found;
+})();
 
 /**
  * Every relative specifier in an emitted `.d.ts` must carry an explicit extension, and must resolve.
@@ -56,6 +77,15 @@ function assertDtsSpecifiers(pkgDir) {
   const bad = [];
   const unresolvable = [];
   const allDts = declarationFiles(dist);
+  // A package that emits NO declarations at all would sail through both loops below with an empty list and
+  // report "0 file(s)" as a pass — while its `types` entry points at nothing and every consumer silently
+  // gets `any`. Every package here declares types, so zero is always a build regression, never a valid state.
+  if (allDts.length === 0) {
+    throw new Error(
+      `${pkgDir}: dist/ contains no .d.ts files at all. The exports map promises types, so this is a build ` +
+        `regression — and every check over the declaration tree would otherwise pass vacuously.`,
+    );
+  }
   for (const file of allDts) {
     const source = read(file);
     for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
@@ -216,13 +246,17 @@ async function exerciseCore(label, m) {
  * copy of core across all five packages, so `instanceof` holds and the identity the predicates defend is
  * the one a normal install already has.
  *
- * So what these checks pin is the BRAND itself, not any particular boundary. Every `Symbol.for` here is a
- * registered symbol precisely so it survives the cases a build cannot see — a consumer's bundler inlining
- * core twice, two majors resolved side by side, a worker or vm realm. None of those can be reproduced here,
- * so what is asserted is that the brand is registered and the predicates read it: switching a
- * `Symbol.for(…)` to a plain `Symbol(…)` in the built chunk must turn this red. Keep both legs running for
- * the same reason — a future build change that stops sharing the ESM chunk is then covered without anyone
- * remembering to add it.
+ * So what these checks pin is that the predicates are WIRED UP across a real package boundary — that the
+ * built `@cloudbitmaps/s3` throws something the built `@cloudbitmaps/core` classifies. They do NOT pin the
+ * brand's registration, and an earlier version of this comment claimed they did: it said switching a
+ * `Symbol.for(…)` to a plain `Symbol(…)` "must turn this red". It does not. With one shared copy of core
+ * the brand is a single module-level constant that the throwing class and the reading predicate both close
+ * over, so symbol identity holds whether or not the symbol is registered, and every assertion below stays
+ * green. That property is asserted directly, against the global registry, in
+ * `tests/core/error-predicates.test.ts` — which is where a claim a build cannot reproduce belongs.
+ *
+ * Keep both legs running anyway: a future build change that stops sharing the ESM chunk is then covered
+ * without anyone remembering to add it.
  */
 function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;

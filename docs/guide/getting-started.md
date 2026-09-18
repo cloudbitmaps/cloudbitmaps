@@ -116,8 +116,13 @@ The rest of this guide walks each step in turn.
 
 ## Upgrading from 0.9.x?
 
-Two constructor changes, both of which **throw with a message naming the fix** rather than being ignored — so
-you will find them the first time you run, not the first time something reads wrong.
+**Four things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Two are packaging and are
+covered there in full — the cloud drivers became their own packages (`@cloudbitmaps/roaring/s3` →
+`@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the packages are now ESM-only and
+need Node ≥ 22.12.
+
+The other two are the constructor changes below. Both **throw with a message naming the fix** rather than
+being ignored, so you will find them the first time you run, not the first time something reads wrong.
 
 1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
    `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
@@ -140,7 +145,8 @@ you will find them the first time you run, not the first time something reads wr
    `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
    default instead of requiring all five.
 
-The full entry, with a runnable before/after, is in
+The full upgrade, including the packaging half, is [`MIGRATING.md`](../../MIGRATING.md); the entries with
+their rationale are in
 [`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
 
 ## 1. The simplest thing: in-memory
@@ -344,6 +350,11 @@ task or a short-lived container — the process that produced the set is usually
 request path for what it is good at: `has`, `count`, `intersect`.
 
 ## 4. Storage on S3 (or any S3-compatible store)
+
+> **If you construct the SDK client yourself, declare the SDK in your own `package.json` too.** The driver
+> package depends on it, so it is in your tree — but importing a package you did not declare is not
+> guaranteed to resolve, and pnpm refuses it by default. You only need this if *your* code names
+> `@aws-sdk/client-s3`, as the snippets below do.
 
 The S3 storage driver is its own package, **`@cloudbitmaps/s3`**, which depends on `@aws-sdk/client-s3` for
 real — so `npm i @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.

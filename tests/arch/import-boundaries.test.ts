@@ -22,6 +22,11 @@ const CORE = 'packages/core/src/core/some-module.ts';
 const CORE_ROOT = 'packages/core/src/some-barrel.ts';
 const ROARING_ROOT = 'packages/roaring/src/some-file.ts';
 const S3_PKG = 'packages/s3/src/storage.ts';
+// A service package that does NOT exist yet. The generic driver block is scoped `packages/*/src/**` for
+// exactly this reason — its comment records that naming the three meant `packages/r2/src/**` matched no
+// block at all and silently had no boundary rules — but every planted case sat inside one of the three
+// per-package blocks that override it, so reverting the glob left the arch suite green.
+const FUTURE_PKG = 'packages/r2/src/storage.ts';
 
 describe('architecture: import boundaries (eslint no-restricted-imports)', () => {
   it('core/ imports no node builtin', async () => {
@@ -111,6 +116,33 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toHaveLength(1);
   });
 
+  it('a package that does not exist yet already has boundaries — the generic block, not a named one', async () => {
+    // Everything here is about `packages/r2`, which is not in the workspace. If the generic block were
+    // narrowed back to the three named packages, all four of these would report zero errors.
+    expect(
+      await boundaryErrors(
+        FUTURE_PKG,
+        "import { CloudRoaring } from '@cloudbitmaps/roaring';\nCloudRoaring;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(FUTURE_PKG, "import { S3Storage } from '@cloudbitmaps/s3';\nS3Storage;"),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(FUTURE_PKG, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(FUTURE_PKG, "import { x } from '../../core/src/core/ports';\nx;"),
+    ).toHaveLength(1);
+    // …and the one dependency it is meant to have is still allowed.
+    expect(
+      await boundaryErrors(
+        FUTURE_PKG,
+        "import { IStorageDriver } from '@cloudbitmaps/core/driver-kit';",
+      ),
+    ).toEqual([]);
+  });
+
   it('a driver package may take its own SDK, but not a flavor or a sibling', async () => {
     expect(
       await boundaryErrors(S3_PKG, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
@@ -133,6 +165,10 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     expect(
       await boundaryErrors(S3_PKG, "import { GcsStorage } from '@cloudbitmaps/gcs';\nGcsStorage;"),
     ).toHaveLength(1);
+    // The LEGACY v2 SDK, which is nobody's dependency — including this package's, which takes v3. The s3
+    // block alone had dropped it from its group, so this import linted clean and would have been
+    // ERR_MODULE_NOT_FOUND for every published consumer.
+    expect(await boundaryErrors(S3_PKG, "import AWS from 'aws-sdk';\nAWS;")).toHaveLength(1);
     // And core is reached by package name, never by climbing out of the package.
     expect(
       await boundaryErrors(S3_PKG, "import { x } from '../../core/src/core/ports';\nx;"),

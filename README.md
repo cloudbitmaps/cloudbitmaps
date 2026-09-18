@@ -596,6 +596,11 @@ one package per service. You install one of each axis; core arrives as their dep
   the mental model, local → cloud wiring, the operations, the real flows (load, match, campaign targeting,
   retention, encryption), and where cost + observability fit.
 - **[Getting started](docs/guide/getting-started.md)** — the exhaustive, per-tier reference with every signature.
+- **[API reference](docs/guide/api-reference.md)** — the complete callable surface, every export with its
+  shape, kept in sync with the code by CI. Writing a storage driver? It documents
+  [`@cloudbitmaps/core/driver-kit`](docs/guide/api-reference.md#cloudbitmapscoredriver-kit), the declared
+  contract a driver package builds against.
+- **[Migrating from 0.9.x](MIGRATING.md)** — the driver packages, ESM-only, and the two constructor changes.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.
