@@ -110,16 +110,14 @@ export default tseslint.config(
     },
   },
   {
-    // The rest of @cloudbitmaps/core outside core/ and outside the cloud subpaths: the main entry, the local
-    // and memory drivers, export, testing. core-never-imports-a-flavor + core-bundle-no-cloud-sdk +
-    // core-bundle-no-cloud-driver: everything reachable from the `.` entry stays SDK-free, so
-    // `npm i @cloudbitmaps/roaring` pulls only `roaring`.
+    // The rest of @cloudbitmaps/core outside core/: the main entry, the driver-kit subpath, the local and
+    // memory drivers, export, testing. core-never-imports-a-flavor + no cloud SDK anywhere.
+    //
+    // There is no longer an exception for cloud subpaths, because core has none: the cloud drivers are their
+    // own packages. That makes this the stronger statement — core contains no cloud SDK reference at all,
+    // rather than none outside three directories — and it is why core has no optional peer dependencies left.
     files: ['packages/core/src/**/*.ts'],
-    ignores: [
-      'packages/core/src/core/**',
-      'packages/core/src/drivers/{s3,gcs,azure}/**',
-      'packages/core/src/{s3,gcs,azure}/**',
-    ],
+    ignores: ['packages/core/src/core/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -133,12 +131,7 @@ export default tseslint.config(
             {
               group: ['@aws-sdk/*', 'aws-sdk', '@google-cloud/*', '@azure/*'],
               message:
-                'A cloud SDK may be imported only from its own subpath (src/drivers/<cloud>, src/<cloud>) — the main entry must stay SDK-free.',
-            },
-            {
-              regex: '(^|/)drivers/(s3|gcs|azure)(/|$)',
-              message:
-                'A cloud driver is reached only through its own subpath entry — importing it here would pull its SDK into the main bundle.',
+                'core contains no cloud SDK — the cloud drivers are separate packages (@cloudbitmaps/s3, /gcs, /azure-blob) which depend on their SDK for real.',
             },
           ],
         },
@@ -146,20 +139,27 @@ export default tseslint.config(
     },
   },
   {
-    // The cloud subpaths of core may import their SDK and their driver — but still never a flavor.
-    files: [
-      'packages/core/src/drivers/{s3,gcs,azure}/**/*.ts',
-      'packages/core/src/{s3,gcs,azure}/**/*.ts',
-    ],
+    // The driver packages may import their own SDK — that is what they are for — but still never a flavor.
+    // The arrow runs flavor → driver → core, and a driver that reached back into a codec would make the
+    // codec-agnostic claim false and force every flavor to carry every driver's dependencies.
+    files: ['packages/{s3,gcs,azure-blob}/src/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              regex: '^(?:@cloudbitmaps/.*|(?:\\.\\./)+roaring(?:/.*)?)$',
+              // Any `@cloudbitmaps/*` EXCEPT core. A driver package must import core — that is where the
+              // ports and the driver-kit live — so the blanket "no @cloudbitmaps/*" rule that applies inside
+              // core would forbid the one dependency these packages are required to have.
+              regex: '^@cloudbitmaps/(?!core(?:/|$))',
               message:
-                'core never imports a flavor package — the dependency arrow is core → flavor only.',
+                'a driver package depends on @cloudbitmaps/core and nothing else of ours — never a flavor, and never a sibling driver.',
+            },
+            {
+              regex: '^(?:\\.\\./)+(?:roaring|core)(?:/.*)?$',
+              message:
+                'reach core by its package name (@cloudbitmaps/core, or /driver-kit), not by a relative path out of this package.',
             },
           ],
         },
@@ -167,10 +167,12 @@ export default tseslint.config(
     },
   },
   {
-    // @cloudbitmaps/roaring outside its cloud subpath barrels: SDK-free, and a cloud driver is reached only
-    // through its own `@cloudbitmaps/roaring/<cloud>` entry.
+    // @cloudbitmaps/roaring: SDK-free, and it does not name a driver package either.
+    //
+    // The `ignores` for its cloud barrels is gone with the barrels themselves. A user installs the driver
+    // package they want alongside the flavor, so the flavor re-exporting one would put that SDK back into
+    // every install — which is the whole thing the split removes.
     files: ['packages/roaring/src/**/*.ts'],
-    ignores: ['packages/roaring/src/{s3,gcs,azure}/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -182,9 +184,9 @@ export default tseslint.config(
                 'A cloud SDK may be imported only from its own subpath barrel (src/<cloud>) — the main entry must stay SDK-free.',
             },
             {
-              regex: '^@cloudbitmaps/core/(s3|gcs|azure)(/|$)',
+              regex: '^@cloudbitmaps/(s3|gcs|azure-blob)(/|$)',
               message:
-                'A cloud driver is reached only through its own subpath entry — importing it here would pull its SDK into the main bundle.',
+                'A flavor does not name a driver package — the user installs the one they want, so re-exporting it here would pull that SDK into every install.',
             },
           ],
         },

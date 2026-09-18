@@ -14,6 +14,12 @@
       "@/*": ["./packages/core/src/*"],
       "@cloudbitmaps/core": ["./packages/core/src/index.ts"],
       "@cloudbitmaps/roaring": ["./packages/roaring/src/index.ts"],
+      "@/s3/*": ["./packages/s3/src/*"],
+      "@/gcs/*": ["./packages/gcs/src/*"],
+      "@/azure-blob/*": ["./packages/azure-blob/src/*"],
+      "@cloudbitmaps/s3": ["./packages/s3/src/index.ts"],
+      "@cloudbitmaps/gcs": ["./packages/gcs/src/index.ts"],
+      "@cloudbitmaps/azure-blob": ["./packages/azure-blob/src/index.ts"],
       "@cloudbitmaps/core/*": ["./packages/core/src/*"]
     }
   },

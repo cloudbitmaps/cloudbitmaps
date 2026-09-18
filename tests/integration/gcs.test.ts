@@ -9,9 +9,9 @@ import {
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
-import { GcsStorageDriver } from '@/drivers/gcs/storage';
-import { GcsRegistryDriver } from '@/drivers/gcs/registry';
-import { GcsStorage } from '@/gcs/index';
+import { GcsStorageDriver } from '@/gcs/storage';
+import { GcsRegistryDriver } from '@/gcs/registry';
+import { GcsStorage } from '@cloudbitmaps/gcs';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';

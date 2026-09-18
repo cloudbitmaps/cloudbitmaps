@@ -15,6 +15,45 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the cloud drivers are their own packages.** `npm i @cloudbitmaps/roaring` plus the SDK becomes
+  `npm i @cloudbitmaps/roaring @cloudbitmaps/s3` — a codec and a storage — and the import moves with it:
+
+  ```diff
+  - import { S3Storage } from '@cloudbitmaps/roaring/s3';
+  + import { S3Storage } from '@cloudbitmaps/s3';
+  ```
+
+  Nothing else in the wiring changes. `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` follow the same
+  shape; `@cloudbitmaps/core/s3` and friends are gone too, and `@cloudbitmaps/core` stays transitive and is
+  still never installed directly.
+
+  **Why.** Every driver lived in core behind an **optional peer** subpath, re-exported by a one-line barrel
+  per flavor — three barrels today, and three more for every codec added. Optional peers also bring the
+  "install the peer" error path and a pnpm strict-resolution hazard, since a consumer cannot import a package
+  they did not declare. One package per storage **service**, each depending on its SDK **for real**, removes
+  all of it: no optional peers anywhere in the repo, no barrels, and adding a codec costs nothing on the
+  driver axis.
+
+  Named by service rather than by cloud on purpose. An `@cloudbitmaps/aws` would have to carry both the S3 and
+  DynamoDB SDKs, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
+  because S3 is a protocol as much as a product — one package serves AWS, R2, MinIO, Ceph, Wasabi and B2.
+
+  **What core gains.** It now contains no cloud SDK *at all*, rather than none outside three directories —
+  the boundary is a package name instead of a path prefix, which is why the eslint rule got simpler and
+  stronger at once. Core also publishes **`@cloudbitmaps/core/driver-kit`**, the declared contract a driver
+  package builds against: 37 symbols, every one of them imported by a driver today, documented in the API
+  reference. A third-party driver has exactly that surface.
+
+  **What the split did not touch:** `MemoryStorage` and `LocalFsStorage` stay in the flavor's main entry —
+  no SDK, so nothing to split out, and it keeps the first five minutes to one import.
+
+  Three places stopped hardcoding the driver list, which is what made the rest cheap: `scripts/build.mjs`
+  derives its entries from each package's own `exports` map, and so do the API-reference sync test and
+  `scripts/smoke.cjs`. A sixth package needs no edit to any of them.
+
+
 ### Fixed
 
 - **`export-segments` did nothing when run as a command.** The CLI's run-guard compared `process.argv[1]`

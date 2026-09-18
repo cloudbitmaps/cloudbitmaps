@@ -1,0 +1,15 @@
+{
+  "//": "Declaration emit for the package build (scripts/build.mjs). Unlike ./tsconfig.json this does NOT alias `@cloudbitmaps/core` to core's SOURCE: that alias pulls core's files into the program and tsc would then emit THEIR declarations next to core's sources. Here `@cloudbitmaps/core` resolves through the workspace symlink to core's BUILT `dist/*.d.ts` — which is why `pnpm -r run build` builds core first.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

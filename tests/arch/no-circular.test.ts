@@ -122,7 +122,7 @@ describe('architecture: no circular imports under packages/*/src', () => {
       "export { y } from '@/core/d';",
       "import './e';",
       "const m = await import('./f');",
-      "import z from '@cloudbitmaps/core/s3';",
+      "import z from '@cloudbitmaps/s3';",
     ].join('\n');
     expect(specifiers(src)).toEqual([
       './a',
@@ -131,7 +131,7 @@ describe('architecture: no circular imports under packages/*/src', () => {
       '@/core/d',
       './e',
       './f',
-      '@cloudbitmaps/core/s3',
+      '@cloudbitmaps/s3',
     ]);
   });
 

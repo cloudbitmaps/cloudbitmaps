@@ -8,10 +8,10 @@ import {
   registryConcurrency,
   CONFORMANCE_SEGMENT,
 } from '@/testing/conformance';
-import { AzureBlobStorageDriver } from '@/drivers/azure/storage';
-import { AzureBlobRegistryDriver } from '@/drivers/azure/registry';
-import { AzureBlobStorage } from '@/azure/index';
-import { isConditionalConflict } from '@/drivers/azure/azure-errors';
+import { AzureBlobStorageDriver } from '@/azure-blob/storage';
+import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
+import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
+import { isConditionalConflict } from '@/azure-blob/azure-errors';
 import { CrbmStorageChunkSource, writeCrbmGeneration } from '@/core/crbm-storage-source';
 // bulk-load is codec-bound: import the public (flavor) entry point, exactly as an application would.
 import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';

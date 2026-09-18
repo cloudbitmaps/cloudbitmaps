@@ -21,6 +21,7 @@ async function boundaryErrors(relPath: string, code: string): Promise<string[]> 
 const CORE = 'packages/core/src/core/some-module.ts';
 const CORE_ROOT = 'packages/core/src/some-barrel.ts';
 const ROARING_ROOT = 'packages/roaring/src/some-file.ts';
+const S3_PKG = 'packages/s3/src/storage.ts';
 
 describe('architecture: import boundaries (eslint no-restricted-imports)', () => {
   it('core/ imports no node builtin', async () => {
@@ -74,15 +75,17 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toHaveLength(1);
   });
 
-  it('the main entries of both packages stay free of cloud SDKs and cloud drivers', async () => {
-    expect(
-      await boundaryErrors(CORE_ROOT, "export { S3StorageDriver } from './drivers/s3/storage';"),
-    ).toHaveLength(1);
+  it('neither published package names a cloud SDK or a driver package', async () => {
+    // Core is now SDK-free UNCONDITIONALLY, not merely outside three directories: the cloud drivers are
+    // their own packages, so there is nowhere in core an SDK is allowed. That is why core carries no
+    // optional peer dependencies any more.
     expect(
       await boundaryErrors(CORE_ROOT, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
     ).toHaveLength(1);
+    // A flavor does not re-export a driver package. It used to, through one barrel per service; re-exporting
+    // one now would put that SDK back into every install, which is the thing the split removes.
     expect(
-      await boundaryErrors(ROARING_ROOT, "export * from '@cloudbitmaps/core/azure';"),
+      await boundaryErrors(ROARING_ROOT, "export * from '@cloudbitmaps/azure-blob';"),
     ).toHaveLength(1);
     expect(
       await boundaryErrors(
@@ -92,23 +95,45 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toHaveLength(1);
   });
 
-  it('the cloud subpaths themselves are allowed to do exactly that', async () => {
+  it('a driver package may take its own SDK, but not a flavor or a sibling', async () => {
+    expect(
+      await boundaryErrors(S3_PKG, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
+    ).toEqual([]);
+    // The one dependency it is required to have — the blanket "no @cloudbitmaps/*" rule that applies inside
+    // core would forbid exactly this, which is why the driver packages carry their own pattern.
     expect(
       await boundaryErrors(
-        'packages/core/src/s3/index.ts',
-        "export { S3StorageDriver } from '../drivers/s3/storage';",
+        S3_PKG,
+        "import { IStorageDriver } from '@cloudbitmaps/core/driver-kit';",
       ),
     ).toEqual([]);
     expect(
       await boundaryErrors(
-        'packages/core/src/drivers/azure/registry.ts',
+        S3_PKG,
+        "import { CloudRoaring } from '@cloudbitmaps/roaring';\nCloudRoaring;",
+      ),
+    ).toHaveLength(1);
+    // Nor a sibling driver: three packages, three SDKs, no shared surface between them.
+    expect(
+      await boundaryErrors(S3_PKG, "import { GcsStorage } from '@cloudbitmaps/gcs';\nGcsStorage;"),
+    ).toHaveLength(1);
+    // And core is reached by package name, never by climbing out of the package.
+    expect(
+      await boundaryErrors(S3_PKG, "import { x } from '../../core/src/core/ports';\nx;"),
+    ).toHaveLength(1);
+  });
+
+  it('the driver packages are where an SDK belongs', async () => {
+    expect(
+      await boundaryErrors(
+        'packages/azure-blob/src/registry.ts',
         "import { ContainerClient } from '@azure/storage-blob';\nContainerClient;",
       ),
     ).toEqual([]);
     expect(
       await boundaryErrors(
-        'packages/roaring/src/gcs/index.ts',
-        "export * from '@cloudbitmaps/core/gcs';",
+        'packages/gcs/src/storage.ts',
+        "import { Storage } from '@google-cloud/storage';\nStorage;",
       ),
     ).toEqual([]);
   });

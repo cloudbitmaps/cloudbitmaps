@@ -13,18 +13,26 @@ Start with the [README](README.md), then the [getting-started guide](docs/guide/
 
 ## Repo layout
 
-A **pnpm workspace of two packages**, both versioned in lockstep:
+A **pnpm workspace of five packages**, all versioned in lockstep. Two axes: the **codec** is a flavor
+package, the **storage service** is a driver package, and core is what both build on.
 
 - **`packages/core` → `@cloudbitmaps/core`** — the codec-agnostic read engine (`SegmentEngine` + the
-  `CodecInterface` seam) and **every** storage driver as optional-peer subpaths (`/s3`, `/gcs`, `/azure`), plus the `.crbm` format, the load/publish write path, generation GC, erasure-by-rewrite, crypto,
-  registry, consistency, budget, eject. **Zero runtime dependencies.**
-- **`packages/roaring` → `@cloudbitmaps/roaring`** — the roaring codec (`SafeBitmap`/`roaringCodec`), the
-  `CloudRoaring` facade, one-line re-export barrels per driver subpath, and the `export-segments` CLI. Depends on core.
-- **Users install one flavor** — `npm i @cloudbitmaps/roaring` (+ only the backend SDK(s) they use);
-  `@cloudbitmaps/core` arrives **transitively, never installed directly**.
+  `CodecInterface` seam), the `.crbm` format, the load/publish write path, generation GC, erasure-by-rewrite,
+  crypto, registry, consistency, budget, eject, the in-memory and local-filesystem drivers, and the driver
+  ports. Publishes `@cloudbitmaps/core/driver-kit`, the declared contract a driver package builds against.
+  **Zero runtime dependencies, and no cloud SDK anywhere in it.**
+- **`packages/roaring` → `@cloudbitmaps/roaring`** — the flavor: the roaring codec
+  (`SafeBitmap`/`roaringCodec`), the `CloudRoaring` facade, and the `export-segments` CLI. Depends on core.
+- **`packages/{s3,gcs,azure-blob}` → `@cloudbitmaps/{s3,gcs,azure-blob}`** — one package per storage
+  **service**, each depending on its SDK **for real** rather than as an optional peer. Named by service, not
+  by cloud: an `aws` package would have to carry both the S3 and DynamoDB SDKs, and "azure" is ambiguous
+  across Blob, Table, Files and Data Lake.
+- **Users install two packages** — `npm i @cloudbitmaps/roaring @cloudbitmaps/s3`, the codec they want and
+  the storage they have. `@cloudbitmaps/core` arrives **transitively, never installed directly.** Nothing is
+  an optional peer, so there is no "install the peer" error path and no pnpm strict-resolution hazard.
 - **Tests live at the repo root under `tests/`** (many drive the facade + core internals together), with the
   `@/…` alias remapped onto the packages in `vitest.config.ts` and the root `tsconfig.json`. All gate commands
-  run from the root. See [CONTRIBUTING](CONTRIBUTING.md#repo-layout-a-pnpm-workspace-of-two-packages).
+  run from the root. See [CONTRIBUTING](CONTRIBUTING.md#repo-layout-a-pnpm-workspace-of-five-packages).
 
 ## Principles
 

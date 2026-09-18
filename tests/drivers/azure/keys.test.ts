@@ -3,7 +3,7 @@ import {
   normalizeAzurePrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
-} from '@/drivers/azure/keys';
+} from '@/azure-blob/keys';
 import { ValidationError } from '@/core/errors';
 
 /** Pure Azure blob-name logic — the same `.crbm` scheme as S3/GCS/LocalFs, so a segment reads identically. */

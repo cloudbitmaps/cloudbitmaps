@@ -5,9 +5,9 @@ import {
   bulkLoadCrbmGeneration,
   nextGeneration,
 } from '@/index';
-import { S3Storage } from '@/s3/index';
-import { GcsStorage } from '@/gcs/index';
-import { AzureBlobStorage } from '@/azure/index';
+import { S3Storage } from '@cloudbitmaps/s3';
+import { GcsStorage } from '@cloudbitmaps/gcs';
+import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

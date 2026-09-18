@@ -1,6 +1,6 @@
 import type { S3Client } from '@aws-sdk/client-s3';
 import { registryConformance } from '@/testing/conformance';
-import { S3RegistryDriver } from '@/drivers/s3/registry';
+import { S3RegistryDriver } from '@/s3/registry';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 
 /**

@@ -1,6 +1,6 @@
 import type { ContainerClient } from '@azure/storage-blob';
 import { registryConformance, registryConcurrency } from '@/testing/conformance';
-import { AzureBlobRegistryDriver } from '@/drivers/azure/registry';
+import { AzureBlobRegistryDriver } from '@/azure-blob/registry';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 

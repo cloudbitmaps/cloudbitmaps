@@ -67,8 +67,11 @@
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1132.0",
     "@azure/storage-blob": "^12",
+    "@cloudbitmaps/azure-blob": "workspace:*",
     "@cloudbitmaps/core": "workspace:*",
+    "@cloudbitmaps/gcs": "workspace:*",
     "@cloudbitmaps/roaring": "workspace:*",
+    "@cloudbitmaps/s3": "workspace:*",
     "@eslint/js": "^10.0.1",
     "@google-cloud/storage": "^8.1.0",
     "@types/node": "^22.0.0",

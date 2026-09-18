@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config';
 
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
+const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
+const GCS = fileURLToPath(new URL('./packages/gcs/src', import.meta.url));
+const AZURE = fileURLToPath(new URL('./packages/azure-blob/src', import.meta.url));
 
 export default defineConfig({
   test: {
@@ -25,7 +28,15 @@ export default defineConfig({
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/portable\/(.*)$/, replacement: ROARING + '/portable/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },
+      // The driver packages' own sources, for the white-box unit tests. Same idea as `@/index` above:
+      // `@/…` addresses workspace sources, and which package a path lands in follows the topology.
+      { find: /^@\/s3\/(.*)$/, replacement: S3 + '/$1' },
+      { find: /^@\/gcs\/(.*)$/, replacement: GCS + '/$1' },
+      { find: /^@\/azure-blob\/(.*)$/, replacement: AZURE + '/$1' },
       { find: /^@\/(.*)$/, replacement: CORE + '/$1' },
+      { find: /^@cloudbitmaps\/s3$/, replacement: S3 + '/index.ts' },
+      { find: /^@cloudbitmaps\/gcs$/, replacement: GCS + '/index.ts' },
+      { find: /^@cloudbitmaps\/azure-blob$/, replacement: AZURE + '/index.ts' },
       { find: /^@cloudbitmaps\/core$/, replacement: CORE + '/index.ts' },
       { find: /^@cloudbitmaps\/core\/(.*)$/, replacement: CORE + '/$1' },
     ],

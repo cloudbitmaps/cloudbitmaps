@@ -20,7 +20,104 @@ const { pathToFileURL } = require('node:url');
 // two-package graph end to end, not just one bundle.
 const PKG = '@cloudbitmaps/roaring';
 const CORE = '@cloudbitmaps/core';
-const SUBPATHS = ['', '/s3', '/gcs', '/azure'];
+const S3 = '@cloudbitmaps/s3';
+/**
+ * The packages whose whole job is to name a cloud SDK. Everything else must not.
+ *
+ * This used to be a list of DIRECTORIES inside one package (`dist/s3`, `dist/drivers/s3`), because the
+ * drivers were subpaths of core. They are packages now, so the boundary moved from a path prefix to a
+ * package name — and the SDK-free sweep skips these three rather than skipping three folders in each.
+ */
+const DRIVER_PACKAGES = ['s3', 'gcs', 'azure-blob'];
+
+/**
+ * Every relative specifier in an emitted `.d.ts` must carry an explicit extension, and must resolve.
+ *
+ * Runs for EVERY package, including the driver packages the SDK sweep deliberately skips. Those two checks
+ * used to share one function, so skipping the SDK sweep for a driver package silently skipped this as well —
+ * and the driver packages publish `.d.ts` like any other, so they need it just as much.
+ */
+function assertDtsSpecifiers(pkgDir) {
+  const { readFileSync, existsSync } = require('node:fs');
+  const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
+  const read = (f) => readFileSync(path.join(dist, f), 'utf8');
+  //
+  // Without an extension, `moduleResolution: node16`/`nodenext` cannot resolve it (TS2834) — and the failure
+  // is SILENT for almost everyone, because the near-universal `skipLibCheck: true` suppresses the error and
+  // TypeScript then types everything reached through that specifier as `any`. Since an entry re-exports
+  // nearly everything, that is nearly the whole published surface — and a consumer gets no diagnostic at
+  // all; they just lose it, including compile-time guards meant to refuse a bad wiring.
+  //
+  // The scanner is the same module `scripts/build.mjs` rewrites with, so the gate cannot check something
+  // other than what the build fixes, and neither one touches a relative path inside a doc-comment.
+  //
+  // The second half checks the build's own work: a specifier the rewrite produced that points at no file
+  // would be just as unresolvable, and is the one remaining way to ship a broken `.d.ts` quietly.
+  const bad = [];
+  const unresolvable = [];
+  const allDts = declarationFiles(dist);
+  for (const file of allDts) {
+    const source = read(file);
+    for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
+    for (const spec of allSpecifiers(source)) {
+      if (!EXTENSIONED.test(spec)) continue; // already reported above
+      const abs = path.resolve(path.dirname(path.join(dist, file)), spec);
+      const candidates = [
+        abs, // .json, and anything already naming a real file
+        abs.replace(/\.js$/, '.d.ts'),
+        abs.replace(/\.mjs$/, '.d.mts'),
+        abs.replace(/\.cjs$/, '.d.cts'),
+      ];
+      if (!candidates.some((c) => existsSync(c))) unresolvable.push(`${file} → ${spec}`);
+    }
+  }
+  const report = (list, what) => {
+    const shown = list.slice(0, 5).join('\n  ');
+    const rest = list.length > 5 ? `\n  … and ${list.length - 5} more` : '';
+    return `${list.length} ${what}\n  ${shown}${rest}`;
+  };
+  if (bad.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(bad, 'extensionless relative specifier(s) in emitted .d.ts — ') +
+        `\n  node16/nodenext consumers would silently get \`any\` for everything behind it.`,
+    );
+  }
+  if (unresolvable.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(unresolvable, 'relative specifier(s) in emitted .d.ts pointing at no file — ') +
+        `\n  The extension pass in scripts/build.mjs produced a path that does not resolve.`,
+    );
+  }
+  console.log(
+    `  .d.ts specifiers all extensioned and resolvable: @cloudbitmaps/${pkgDir} ` +
+      `(${allDts.length} file(s))`,
+  );
+}
+
+/** Every package directory in the workspace. */
+function packageDirs() {
+  return require('node:fs')
+    .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+}
+
+/** Every entry a package declares, as a specifier — derived from its own `exports`, never a written list. */
+function entriesOf(pkgDir) {
+  const manifest = JSON.parse(
+    require('node:fs').readFileSync(
+      path.join(__dirname, '..', 'packages', pkgDir, 'package.json'),
+      'utf8',
+    ),
+  );
+  const name = manifest.name;
+  return Object.keys(manifest.exports ?? { '.': null }).map((k) =>
+    k === '.' ? name : `${name}/${k.replace(/^\.\//, '')}`,
+  );
+}
 
 // The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
 // `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
@@ -165,30 +262,19 @@ function assertPackagesAreSeparateCopies(coreMod, driverMod) {
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
 
-/** Driver homes, relative to a package's `dist/` — the one place an SDK specifier is correct. */
-const DRIVER_DIRS = ['s3', 'gcs', 'azure'];
-
-function isDriverPath(rel) {
-  const parts = rel.split(path.sep);
-  return (
-    DRIVER_DIRS.includes(parts[0]) || (parts[0] === 'drivers' && DRIVER_DIRS.includes(parts[1]))
-  );
-}
-
 /**
  * Every `.d.ts` under `dist/`, as a path relative to `dist`. `includeDrivers` distinguishes the two
  * callers: the SDK sweep must skip the driver trees (naming an SDK is exactly what they are for), while
  * the specifier sweep covers them too — a driver subpath is published with the same resolution rules.
  */
-function declarationFiles(dist, { includeDrivers = false } = {}) {
+function declarationFiles(dist) {
   const { readdirSync } = require('node:fs');
   const out = [];
   const walk = (dir, rel) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const childRel = rel ? path.join(rel, entry.name) : entry.name;
       if (entry.isDirectory()) walk(path.join(dir, entry.name), childRel);
-      else if (entry.name.endsWith('.d.ts') && (includeDrivers || !isDriverPath(childRel)))
-        out.push(childRel);
+      else if (entry.name.endsWith('.d.ts')) out.push(childRel);
     }
   };
   walk(dist, '');
@@ -196,7 +282,7 @@ function declarationFiles(dist, { includeDrivers = false } = {}) {
 }
 
 function assertEntrySdkFree(pkgDir) {
-  const { readFileSync, existsSync, statSync } = require('node:fs');
+  const { readFileSync, statSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
@@ -241,11 +327,18 @@ function assertEntrySdkFree(pkgDir) {
 
   // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
   // Rename it there and this walk would quietly cover less, so make that loud instead.
-  if (!entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
+  //
+  // Only for a package with MORE THAN ONE entry, because only then is there anything to code-split. A
+  // single-entry package legitimately emits no chunk — everything lands in `index.js`, so walking that one
+  // file already covers the whole reachable graph. Requiring a chunk unconditionally turned the package
+  // split into a false alarm: the flavor dropped from four entries to one and this fired saying the build
+  // had stopped splitting, which was true and fine.
+  const entryCount = entriesOf(pkgDir).length;
+  if (entryCount > 1 && !entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
-      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file, so the chunk walk covers nothing. ` +
-        `Either the build stopped splitting, or \`chunkNames\` in scripts/build.mjs no longer emits ` +
-        `\`chunk-\` — update the pattern here to match.`,
+      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file although the package declares ` +
+        `${entryCount} entries, so the chunk walk covers nothing. Either the build stopped splitting, or ` +
+        `\`chunkNames\` in scripts/build.mjs no longer emits \`chunk-\` — update the pattern here to match.`,
     );
   }
 
@@ -265,61 +358,6 @@ function assertEntrySdkFree(pkgDir) {
   console.log(
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
       `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
-  );
-
-  // Every relative specifier in an emitted .d.ts must carry an explicit extension, and must resolve.
-  //
-  // Without an extension, `moduleResolution: node16`/`nodenext` cannot resolve it (TS2834) — and the failure
-  // is SILENT for almost everyone, because the near-universal `skipLibCheck: true` suppresses the error and
-  // TypeScript then types everything reached through that specifier as `any`. Since an entry re-exports
-  // nearly everything, that is nearly the whole published surface — and a consumer gets no diagnostic at
-  // all; they just lose it, including compile-time guards meant to refuse a bad wiring.
-  //
-  // The scanner is the same module `scripts/build.mjs` rewrites with, so the gate cannot check something
-  // other than what the build fixes, and neither one touches a relative path inside a doc-comment.
-  //
-  // The second half checks the build's own work: a specifier the rewrite produced that points at no file
-  // would be just as unresolvable, and is the one remaining way to ship a broken `.d.ts` quietly.
-  const bad = [];
-  const unresolvable = [];
-  const allDts = declarationFiles(dist, { includeDrivers: true });
-  for (const file of allDts) {
-    const source = read(file);
-    for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
-    for (const spec of allSpecifiers(source)) {
-      if (!EXTENSIONED.test(spec)) continue; // already reported above
-      const abs = path.resolve(path.dirname(path.join(dist, file)), spec);
-      const candidates = [
-        abs, // .json, and anything already naming a real file
-        abs.replace(/\.js$/, '.d.ts'),
-        abs.replace(/\.mjs$/, '.d.mts'),
-        abs.replace(/\.cjs$/, '.d.cts'),
-      ];
-      if (!candidates.some((c) => existsSync(c))) unresolvable.push(`${file} → ${spec}`);
-    }
-  }
-  const report = (list, what) => {
-    const shown = list.slice(0, 5).join('\n  ');
-    const rest = list.length > 5 ? `\n  … and ${list.length - 5} more` : '';
-    return `${list.length} ${what}\n  ${shown}${rest}`;
-  };
-  if (bad.length > 0) {
-    throw new Error(
-      `@cloudbitmaps/${pkgDir}: ` +
-        report(bad, 'extensionless relative specifier(s) in emitted .d.ts — ') +
-        `\n  node16/nodenext consumers would silently get \`any\` for everything behind it.`,
-    );
-  }
-  if (unresolvable.length > 0) {
-    throw new Error(
-      `@cloudbitmaps/${pkgDir}: ` +
-        report(unresolvable, 'relative specifier(s) in emitted .d.ts pointing at no file — ') +
-        `\n  The extension pass in scripts/build.mjs produced a path that does not resolve.`,
-    );
-  }
-  console.log(
-    `  .d.ts specifiers all extensioned and resolvable: @cloudbitmaps/${pkgDir} ` +
-      `(${allDts.length} file(s))`,
   );
 }
 
@@ -388,10 +426,12 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
 }
 
 async function main() {
-  for (const sub of SUBPATHS) {
-    await import(PKG + sub); // ESM `import` condition — the path that used to crash under Node ESM
-    require(PKG + sub); // CJS `require` condition
-    console.log(`  import + require OK: ${PKG}${sub || ''}`);
+  for (const pkgDir of packageDirs()) {
+    for (const specifier of entriesOf(pkgDir)) {
+      await import(specifier); // ESM `import` condition
+      require(specifier); // CJS `require` condition, which on >=22.12 is `require(esm)`
+      console.log(`  import + require OK: ${specifier}`);
+    }
   }
   // The bin is built by scripts/build.mjs into dist/bin (its own bundle) and isn't in `exports`,
   // so load it by path. Safe: its run-guard only invokes main() when executed as the CLI, not on import.
@@ -406,22 +446,15 @@ async function main() {
   await exerciseCore('cjs', require(PKG));
 
   // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
-  exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/s3'));
-  exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/s3'));
+  exerciseCrossBundleErrors('esm', await import(CORE), await import(S3), await import(PKG));
+  exerciseCrossBundleErrors('cjs', require(CORE), require(S3), require(PKG));
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
-  assertPackagesAreSeparateCopies(require(CORE), require(PKG + '/s3'));
-  exerciseCrossBundleErrors('cross-package', require(CORE), require(PKG + '/s3'), require(PKG));
-  exerciseCrossBundleErrors(
-    'cross-package (core driver → roaring store)',
-    require(CORE),
-    require(CORE + '/s3'),
-    require(PKG),
-  );
-  for (const pkgDir of require('node:fs')
-    .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)) {
-    assertEntrySdkFree(pkgDir);
+  assertPackagesAreSeparateCopies(require(CORE), require(S3));
+  for (const pkgDir of packageDirs()) {
+    // The SDK sweep skips the driver packages — naming an SDK is what they exist for. The specifier check
+    // does not: they publish `.d.ts` like everything else.
+    if (!DRIVER_PACKAGES.includes(pkgDir)) assertEntrySdkFree(pkgDir);
+    assertDtsSpecifiers(pkgDir);
   }
 
   console.log(

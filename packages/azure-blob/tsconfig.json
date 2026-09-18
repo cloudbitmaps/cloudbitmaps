@@ -1,0 +1,21 @@
+{
+  "//": "@cloudbitmaps/roaring — the roaring codec + CloudRoaring facade. `@cloudbitmaps/core` is a real dependency and stays one in the manifest and the emitted .d.ts, but it is NOT external in the JS bundle: the `paths` entries below resolve it to core's source so this package typechecks without core being built first, and esbuild applies `paths` before it decides what to externalise, so core is inlined. That is why an error thrown by a roaring driver is not `instanceof` the class `@cloudbitmaps/core` exports — the two packages carry separate copies — and why the cross-package identity checks use the `Symbol.for` brands instead. `scripts/smoke.cjs` asserts both halves of that.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@cloudbitmaps/core": ["../core/src/index.ts"],
+      "@cloudbitmaps/core/*": ["../core/src/*"],
+
+      // CORE's self-alias, not this package's. The two entries above deliberately resolve
+      // `@cloudbitmaps/core` to core's SOURCE so this package typechecks without core being built first,
+      // which pulls core's 26 `@/…`-importing files into this program. `paths` REPLACES the inherited map
+      // rather than merging with it, so without this line those imports resolve against nothing: 70 ×
+      // TS2307, plus 2 × TS7006 where a failed resolution degraded a parameter to `any`. Nothing under
+      // packages/roaring/src imports `@/…` (zero files), so there is no ambiguity today — but if that
+      // changed, `@/` here would silently mean core's src.
+      "@/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

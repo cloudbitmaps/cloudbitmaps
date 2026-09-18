@@ -4,8 +4,11 @@ New versions of `@cloudbitmaps/core` and `@cloudbitmaps/roaring` are published b
 human-gated** pipeline — you never run `npm publish` by hand. This is the map to that pipeline, which lives in
 [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-The two packages release **in lockstep**: one version number, one tag, both published together. `roaring`
-depends on `core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first.
+All five packages release **in lockstep**: one version number, one tag, everything published together —
+`core`, the `roaring` flavor, and the `s3` / `gcs` / `azure-blob` driver packages. Each of the four depends on
+`core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. Nothing in the
+workflow names a package: it globs `packages/*/package.json` and filters `./packages/**`, so a sixth package
+is published without editing it.
 
 ## Table of contents
 

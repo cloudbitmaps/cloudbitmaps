@@ -1,26 +1,44 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 // Guards that docs/guide/api-reference.md lists EVERY public export. It parses each barrel for exported
 // names (values + types) and asserts each appears — backtick-wrapped — somewhere on the reference page. So a new
 // export can't merge without being documented. One-way by design: it catches undocumented *additions*, not stale
 // entries for a *removed* export (prune those in review).
-const BARRELS = [
-  // Both package barrels: the roaring facade (what users import) AND the codec-agnostic core barrel it
-  // re-exports via `export *`. Checking core explicitly matters because a star-export contributes no names to
-  // parse — without it, core's surface would silently escape the doc guard after the family split.
-  '../../packages/roaring/src/index.ts',
-  '../../packages/core/src/index.ts',
-  // The driver subpaths live in core; the roaring package's same-named barrels are one-line re-exports of these.
-  '../../packages/core/src/s3/index.ts',
-  '../../packages/core/src/gcs/index.ts',
-  '../../packages/core/src/azure/index.ts',
-  // The flavor's own driver barrels are declared entry points too (`@cloudbitmaps/roaring/s3`, …). They are
-  // one-line re-exports of core's equivalents today, but they ARE public surface — parse them so an own export
-  // added to one can't become public undocumented.
-  '../../packages/roaring/src/s3/index.ts',
-  '../../packages/roaring/src/gcs/index.ts',
-  '../../packages/roaring/src/azure/index.ts',
-] as const;
+// DERIVED from the workspace, not written down. Every package's `exports` map names its public entries, and
+// each entry maps to `src/<name>/index.ts` or `src/<name>.ts` — the same rule `scripts/build.mjs` uses to pick
+// its esbuild entries. Hardcoding the list meant the driver topology was spelled out in four places (here, the
+// build, each manifest, and `scripts/smoke.cjs`); splitting the drivers into their own packages would have
+// required editing all four, and forgetting this one would have silently stopped guarding three surfaces.
+//
+// `./driver-kit` is included deliberately. It is the contract a storage-driver package builds against, so it
+// is public API with the same documentation obligation as anything else — and being a surface nobody imports
+// by accident, it is exactly the kind that rots undocumented.
+const BARRELS: readonly string[] = (() => {
+  const root = new URL('../../', import.meta.url);
+  const workspace = readdirSync(new URL('packages/', root), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  const out: string[] = [];
+  for (const pkg of workspace) {
+    const manifest = JSON.parse(
+      readFileSync(new URL(`packages/${pkg}/package.json`, root), 'utf8'),
+    ) as {
+      exports?: Record<string, unknown>;
+    };
+    for (const key of Object.keys(manifest.exports ?? { '.': null })) {
+      const name = key === '.' ? 'index' : key.replace(/^\.\//, '');
+      for (const candidate of [`${name}/index.ts`, `${name}.ts`]) {
+        const rel = `../../packages/${pkg}/src/${candidate}`;
+        if (existsSync(new URL(rel, import.meta.url))) {
+          out.push(rel);
+          break;
+        }
+      }
+    }
+  }
+  return out;
+})();
 const DOC_PATH = '../../docs/guide/api-reference.md';
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), 'utf8');

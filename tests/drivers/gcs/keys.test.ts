@@ -3,7 +3,7 @@ import {
   normalizeGcsPrefix,
   parseGenerationFromName,
   segmentObjectPrefix,
-} from '@/drivers/gcs/keys';
+} from '@/gcs/keys';
 import { ValidationError } from '@/core/errors';
 
 /** Pure GCS object-name logic — the same `.crbm` scheme as S3/LocalFs, so a segment reads identically. */

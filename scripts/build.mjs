@@ -33,11 +33,23 @@ const fuzzBuild = path.resolve(pkgDir, '..', '..', 'fuzz', 'build');
 
 await rm(dist, { recursive: true, force: true });
 
-const SUBPATHS = ['s3', 'gcs', 'azure'];
-const entries = { index: 'src/index.ts' };
-for (const s of SUBPATHS) {
-  if (existsSync(path.join(pkgDir, 'src', s, 'index.ts')))
-    entries[`${s}/index`] = `src/${s}/index.ts`;
+// Entries come from the package's OWN `exports` map, so the two cannot disagree.
+//
+// This used to be a hardcoded `['s3', 'gcs', 'azure']`, which was the same list of driver subpaths written
+// down in three places — here, each manifest's `exports`, and `scripts/smoke.cjs`. Splitting the drivers into
+// their own packages would have meant editing all three; deriving it means editing none. A subpath that is
+// declared and not built now fails the build rather than 404-ing for a consumer, and `smoke.cjs` independently
+// loads every entry the map declares, so the map is checked from both directions.
+const entries = {};
+for (const key of Object.keys(pkg.exports ?? { '.': null })) {
+  const name = key === '.' ? 'index' : key.replace(/^\.\//, '');
+  const dir = path.join('src', name, 'index.ts');
+  const flat = path.join('src', `${name}.ts`);
+  if (existsSync(path.join(pkgDir, dir)))
+    entries[`${name}/index`.replace(/^index\/index$/, 'index')] = dir;
+  else if (existsSync(path.join(pkgDir, flat))) entries[name] = flat;
+  else
+    throw new Error(`${pkg.name}: exports declares "${key}" but neither ${dir} nor ${flat} exists`);
 }
 
 const common = {

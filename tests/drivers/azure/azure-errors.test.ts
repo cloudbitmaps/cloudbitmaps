@@ -3,7 +3,7 @@ import {
   isInvalidRange,
   isNotFound,
   isTransient,
-} from '@/drivers/azure/azure-errors';
+} from '@/azure-blob/azure-errors';
 
 /** Azure's `RestError` carries the HTTP status on `err.statusCode` and a code on `err.code`/`details.errorCode`. */
 const statusErr = (statusCode: number) => ({ statusCode });

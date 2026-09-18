@@ -48,18 +48,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./s3": {
-      "types": "./dist/s3/index.d.ts",
-      "default": "./dist/s3/index.js"
-    },
-    "./gcs": {
-      "types": "./dist/gcs/index.d.ts",
-      "default": "./dist/gcs/index.js"
-    },
-    "./azure": {
-      "types": "./dist/azure/index.d.ts",
-      "default": "./dist/azure/index.js"
     }
   },
   "files": [
@@ -82,22 +70,6 @@
   "dependencies": {
     "@cloudbitmaps/core": "workspace:*",
     "roaring": "2.7.0"
-  },
-  "peerDependencies": {
-    "@aws-sdk/client-s3": "^3",
-    "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^7 || ^8"
-  },
-  "peerDependenciesMeta": {
-    "@aws-sdk/client-s3": {
-      "optional": true
-    },
-    "@azure/storage-blob": {
-      "optional": true
-    },
-    "@google-cloud/storage": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1132.0",

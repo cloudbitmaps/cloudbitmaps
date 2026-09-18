@@ -5,7 +5,7 @@ import {
   isPreconditionFailed,
   isTransient,
   totalFromContentRange,
-} from '@/drivers/s3/s3-errors';
+} from '@/s3/s3-errors';
 
 // The subtlest S3-specific logic — error classification + Content-Range parsing — unit-tested over fake
 // SDK error/header shapes, so it's covered on the normal lane (not only the Docker/MinIO integration lane).

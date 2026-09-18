@@ -1,6 +1,6 @@
 import type { Storage } from '@google-cloud/storage';
 import { registryConformance, registryConcurrency } from '@/testing/conformance';
-import { GcsRegistryDriver } from '@/drivers/gcs/registry';
+import { GcsRegistryDriver } from '@/gcs/registry';
 import { MAX_ROW_BYTES } from '@/drivers/_shared/object-registry';
 import { IntegrityError, ValidationError, WriteConflictError } from '@/core/errors';
 

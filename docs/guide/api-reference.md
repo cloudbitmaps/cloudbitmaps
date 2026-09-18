@@ -5,11 +5,11 @@ user-first: the everyday surface at the top, the occasional operations next, the
 a flat **[Complete export index](#complete-export-index)** at the end that names every export.
 
 > **Kept in sync by CI.** [`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts)
-> extracts every exported name from **both** package barrels (`packages/roaring/src/index.ts` and the
-> `packages/core/src/index.ts` it re-exports) plus each driver-subpath barrel under `packages/core/src/*/index.ts`
-> and `packages/roaring/src/*/index.ts`, and fails the build if any is missing from this page. So a new export
-> **cannot** merge without being documented here. (The guard is one-way — it catches undocumented _additions_, not
-> stale entries for a _removed_ export; prune those in review.)
+> derives the list of entry points from every package's own `exports` map — so each package in the workspace and
+> each subpath it declares is covered, with no list to keep up to date — extracts every exported name from each,
+> and fails the build if any is missing from this page. So a new export **cannot** merge without being documented
+> here. (The guard is one-way — it catches undocumented _additions_, not stale entries for a _removed_ export;
+> prune those in review.)
 
 ---
 
@@ -34,9 +34,9 @@ Everything below is reachable from the flavor:
 
 ```
 @cloudbitmaps/roaring            the store + memory/localfs drivers + every function & type
-@cloudbitmaps/roaring/s3         S3StorageDriver, S3RegistryDriver          (peer: @aws-sdk/client-s3)
-@cloudbitmaps/roaring/gcs        GcsStorageDriver, GcsRegistryDriver        (peer: @google-cloud/storage)
-@cloudbitmaps/roaring/azure      AzureBlobStorageDriver, …RegistryDriver    (peer: @azure/storage-blob)
+@cloudbitmaps/s3         S3StorageDriver, S3RegistryDriver          (peer: @aws-sdk/client-s3)
+@cloudbitmaps/gcs        GcsStorageDriver, GcsRegistryDriver        (peer: @google-cloud/storage)
+@cloudbitmaps/azure-blob      AzureBlobStorageDriver, …RegistryDriver    (peer: @azure/storage-blob)
 CLI (binary):                    export-segments
 ```
 
@@ -63,9 +63,9 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage()` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps')` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects |
-| `S3Storage` | `@cloudbitmaps/roaring/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, now? })` |
-| `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
-| `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, now? })` |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
 
 **A backend comes from one of these five classes, or from `createBackend`.** A plain `{ storage, registry }` object is
 refused — it is also the shape of the free functions' deps, so before this it was possible to build a store
@@ -381,10 +381,31 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 
 ### Driver kit — what you need to *implement* a driver
 
+Imported from **`@cloudbitmaps/core/driver-kit`**, a subpath whose whole purpose is this: the declared contract
+a storage-driver package builds against. `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob`
+are built from nothing else, and a third-party driver has the same surface available. It is versioned public
+API — an addition is something we support, a removal breaks every driver package including ours.
+
+Application code never needs this. It is listed because it is public, and because an unimported surface is
+exactly the kind that rots undocumented.
+
 | Symbol | What it does |
 |---|---|
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row |
+| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
+| `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend class, and the symbol it uses. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another |
 | `Token` | the registry's opaque compare-and-swap token — unique per write, compared by equality only (ABA-safe across delete→recreate) |
+| `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
+| `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
+| `ObjectVersionRaced` · `MAX_ROW_BYTES` | the sentinel a lost compare-and-swap throws, and the hard cap on a serialized row |
+| `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` | where a registry row lives. Defined once here and re-exported verbatim by each driver, because two drivers disagreeing about a row's key would be a silent incompatibility on the same bucket |
+| `normalizeObjectPrefix` · `prefixPart` | prefix normalization, so `cr`, `cr/` and `/cr/` address the same place |
+| `encodeNameForKey` · `namespaceKeyPart` | how a segment name and namespace become an object key |
 | `chunkRefKey` · `segmentKey` | the canonical key-string helpers (used by the conformance suite and the memory drivers) |
+| `isSdkRetryable` · `isNetworkOrTimeout` · `isServerSide` · `httpStatus` · `errorName` | retry classification shared by the SDK-backed drivers — which failures are transient and worth another attempt |
+| `validateSegmentRef` | boundary validation a driver applies to a caller-supplied ref |
+| `BlobSink` | the sink a range read writes into |
+| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `isValidationError` · `isWriteConflictError` · `isNotFoundError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
 
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a
@@ -460,7 +481,7 @@ Two things worth knowing:
 
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
 `isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
-errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`).
+errors that originate in a cloud driver (`@cloudbitmaps/s3` / `…/gcs` / `…/azure`).
 
 Inside one package `instanceof` holds: `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure` subpaths share
 a chunk, so the error classes there are the same objects.
@@ -527,30 +548,51 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` · `CodecInterface` · `CodecBitmap` ·
 `EngineDeps` · `Token`
 
-### `@cloudbitmaps/roaring/s3`
+### `@cloudbitmaps/core/driver-kit`
+
+The contract a storage-driver package builds against — see
+[Driver kit](#driver-kit--what-you-need-to-implement-a-driver) for what each one is for. Application code does
+not import these.
+
+Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
+`SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+
+Object-store registry: `ObjectStoreRegistry` · `ObjectRegistryStore` · `ObjectRow` · `ObjectVersionRaced` ·
+`MAX_ROW_BYTES`
+
+Keys and prefixes: `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` ·
+`normalizeObjectPrefix` · `prefixPart` · `encodeNameForKey` · `namespaceKeyPart`
+
+Retry classification: `isSdkRetryable` · `isNetworkOrTimeout` · `isServerSide` · `httpStatus` · `errorName`
+
+Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
+`NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·
+`isNotFoundError`
+
+### `@cloudbitmaps/s3`
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
 `S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions` — the halves.
 
-### `@cloudbitmaps/roaring/gcs`
+### `@cloudbitmaps/gcs`
 
 `GcsStorage` · `GcsStorageOptions` — the backend, both halves in one bucket. It builds its own client, which
 also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, so the
 lower-level driver option that takes it is `storage` too.
 
-`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves
-(peer: `@google-cloud/storage`). The registry lets a GCS deployment run on **one bucket
+`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves.
+The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer.
 
-### `@cloudbitmaps/roaring/azure`
+### `@cloudbitmaps/azure-blob`
 
 `AzureBlobStorage` · `AzureBlobStorageOptions` — the backend, both halves in one container. Give it a
 `containerClient`, or a `connectionString` + `container` and it builds one.
 
 `AzureBlobStorageDriver` · `AzureBlobRegistryDriver` · `AzureBlobStorageDriverOptions` ·
-`AzureBlobRegistryDriverOptions` — the halves (peer: `@azure/storage-blob`). Inject a
+`AzureBlobRegistryDriverOptions` — the halves. Inject a
 container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer.
@@ -558,7 +600,8 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 ## Keeping this in sync
 
 - The **sync test** ([`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts))
-  parses the eight barrel files (both package barrels + the three driver subpaths in each package) and asserts each
+  derives its entry list from every package's own `exports` map — so each package and each subpath it declares
+  is covered, with no list to maintain — and asserts each
   exported name appears (backtick-wrapped) somewhere on this page — so **adding an export without documenting it
   breaks CI**. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
   keeping every export explicit; the allowed exceptions are the flavor barrels re-exporting core's same-named
