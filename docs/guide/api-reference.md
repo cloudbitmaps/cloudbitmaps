@@ -221,6 +221,7 @@ it is the same function over the store's own drivers.
 | `eraseNamespace(namespace, { registry }, { confirmNamespace, allowCleartext?, audit? })` → `{ destroyed: DestroyResult[] }` | crypto-shred an entire namespace / tenant; per-segment faults land in the ledger (`reason: 'contended'` / `` `failed: …` ``) — **inspect it** |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `DropResult` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
 | `runConsistencyCheck({ storage, registry }, { namespace?, concurrency? })` → `ConsistencyReport` | the free function behind `store.checkConsistency` — run it over your own drivers |
+| `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you **already hold** — a fleet sweep over `registry.list()`, where `getSegmentRetention` would cost a read per segment. The three-way answer is the point: `'invalid'` lets a sweep *report* a malformed row instead of silently reading it as "never expires" or aborting the whole ledger |
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
 | `retireExpired({ registry, storage }, { now, … })` → `RetireExpiredResult` | the free function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
 | `runExport(reader, registry, sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `ExportManifest` | the free function behind `store.exportSegments`; the flavor pre-binds the codec |
@@ -575,7 +576,8 @@ or `segmentKey` from core will find each one there.
 `roaringCodec` · `withRetry` · `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` ·
 `runExport` · `splitId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` ·
 `collectWithinBudget` · `validateSegmentRef` · `segmentKey` · `encodeNameForPath` · `namespacePathPart` ·
-`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `MIN_EXPIRES_AT_MS` ·
+`setSegmentRetention` · `getSegmentRetention` · `readRetentionPolicy` · `clearSegmentRetention` ·
+`MIN_EXPIRES_AT_MS` ·
 `retireExpired` · `excludingReservedRows` · `DEFAULT_RETRY_POLICY` · `RetryingStorageDriver` ·
 `RetryingRegistryDriver` · `RetryingStorageChunkSource` · `CrbmReader` · `BufferReader` ·
 `CountingMetricsSink` · `NOOP_METRICS` · `RecordingAuditSink` · `estimateCost` · `DEFAULT_PRICING` ·

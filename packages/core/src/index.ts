@@ -157,14 +157,18 @@ export type { DropDeps, DropResult, EraseDeps, DestroyResult } from './core/eras
 // duration the library derived would be anchored to `updatedAt`/`currentGen`, which every load republishes, so a
 // busy segment would never expire. Nothing here runs on a timer; the sweep is a separate call the operator
 // schedules (see the getting-started "Retention" section for where to run it).
-// `getSegmentRetention` is how a caller reads a segment's policy. The raw row parser (`readRetentionPolicy`)
-// and the raw validator (`validateRetentionPolicy`) are deliberately NOT exported: `setSegmentRetention`
-// validates on the way in and `getSegmentRetention` parses on the way out, so neither has an outside caller,
-// and public surface is the hardest kind of decision to reverse.
+// `getSegmentRetention(ref)` reads ONE segment's policy and costs a registry read. `readRetentionPolicy(meta)`
+// is the pure parser for a caller who already holds rows — a fleet-wide sweep over `registry.list()`, where
+// per-segment reads would turn one listing into N+1 round trips. It stays exported because `RegistryRecord`
+// and its `retention: GovernanceMeta` field are both public, so without it a caller can reach the metadata and
+// has nothing supported to parse it with; hand-rolling that parse is how a single malformed row takes down a
+// whole sweep, which is the case its three-way `null | 'invalid' | policy` answer exists to prevent.
+// `validateRetentionPolicy` deliberately is NOT exported: `setSegmentRetention` validates on the way in.
 export {
   setSegmentRetention,
   clearSegmentRetention,
   getSegmentRetention,
+  readRetentionPolicy,
   MIN_EXPIRES_AT_MS,
 } from './core/retention';
 export type { RetentionPolicy, RetentionDeps, SetRetentionResult } from './core/retention';

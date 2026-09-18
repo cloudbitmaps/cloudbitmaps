@@ -189,20 +189,19 @@ A lost race still throws `WriteConflictError` — unchanged.
 
 ## 6. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **110 exports to 79**. It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **110 exports to 80**. It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 
 **Most people are unaffected.** You install `@cloudbitmaps/roaring` and a storage package; core arrives
 transitively and is not something you import directly. This matters only if you reached into it.
 
-Fifteen names were public in `0.9.x`:
+Fourteen names were public in `0.9.x`:
 
 | gone | what to do instead |
 |---|---|
 | `isTransient` | **use `isTransientError`** — see below, this is the only one worth a thought |
 | `NOOP_AUDIT` | omit the `audit` option; that is what "no audit sink" already means |
-| `readRetentionPolicy` | `getSegmentRetention(ref)` returns the parsed policy |
 | `drainRegistry` · `validateMaxScanSegments` | `listSegments()` — the supported enumeration, already bounded. For a pass you write yourself, `excludingReservedRows` is still exported and is the part you must not skip |
 | `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` | the values are in the [API reference](docs/guide/api-reference.md); pass your own to `maxScanSegments` / `limit` / `tombstoneGraceMs` rather than reading ours |
 | `CrbmWriter` · `CrbmWriterOptions` | none. Building a `.crbm` is the library's job; `CrbmReader` is still exported for tooling that inspects one |

@@ -17,16 +17,22 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 79.** The entry had
+- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 80.** The entry had
   accumulated the internals of whatever landed beside it, so a reader could not tell supported API from
   plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;
   it simply stops being importable.
 
-  **Fifteen names were public in `0.9.x` and are gone.** See
+  **Fourteen names were public in `0.9.x` and are gone.** See
   [`MIGRATING.md`](MIGRATING.md#6-core-exports-only-what-it-supports) for what to do about each:
   `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
-  `DEFAULT_TOMBSTONE_GRACE_MS` · `readRetentionPolicy` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` ·
-  `aadFor` · `joinId` · `checkBudget` · `isTransient` · `NOOP_AUDIT` · `BufferSink`.
+  `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `aadFor` · `joinId` ·
+  `checkBudget` · `isTransient` · `NOOP_AUDIT` · `BufferSink`.
+
+  `readRetentionPolicy` was on that list and was put back. It is a pure parser over a row the caller already
+  holds, and `RegistryRecord.retention` (a `GovernanceMeta`) is public — so cutting it left a public field
+  with no supported way to read it, and pushed a fleet sweep from one listing to a registry read per segment.
+  A parse people would then hand-roll, on the one code path whose three-way `null | 'invalid' | policy` answer
+  exists precisely so a single malformed row cannot abort a whole sweep.
 
   Only one needs a real decision: **`isTransient` was `return isTransientError(err)` verbatim**, with a
   `boolean` return where its twin has a type predicate. Use `isTransientError` — it narrows, and it matches

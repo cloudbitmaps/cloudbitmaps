@@ -78,7 +78,7 @@ export interface RetireExpiredOptions {
   readonly dryRun?: boolean;
   /** Forwarded to each `dropSegment`, so every retirement lands in the audit trail as `segment.dispose`. */
   readonly audit?: IAuditSink;
-  /** Ceiling on rows enumerated (default `DEFAULT_MAX_SCAN_SEGMENTS`, 250,000); exceeding it throws. */
+  /** Ceiling on rows enumerated (default 250,000); exceeding it throws. */
   readonly maxScanSegments?: number;
   /**
    * **Where the candidates come from.**

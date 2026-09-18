@@ -5,9 +5,9 @@ import {
   MIN_EXPIRES_AT_MS,
   destroySegment,
   clearSegmentRetention,
+  readRetentionPolicy,
   setSegmentRetention,
 } from '@/index';
-import { readRetentionPolicy } from '@/core/retention';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { UnsupportedError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
