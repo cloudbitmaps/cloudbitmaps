@@ -30,6 +30,7 @@
  *   CR_EXPORT_NAMESPACE  scope the export to one namespace
  */
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -165,9 +166,45 @@ export async function main(
   return manifest;
 }
 
-// Run only when invoked directly (not when imported by tests). Compared as URLs: `process.argv[1]` is a path and
-// `import.meta.url` is a `file:` URL, so a string compare would never match.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Was this module executed as the CLI, rather than imported?
+ *
+ * Compared as URLs because `process.argv[1]` is a path and `import.meta.url` is a `file:` URL, so a string
+ * compare would never match — and through `realpathSync`, which is the part that was missing.
+ *
+ * Node resolves a module's `import.meta.url` through symlinks but leaves `process.argv[1]` exactly as it was
+ * typed. Every normal installation puts a SYMLINK at `node_modules/.bin/export-segments`, and that is the
+ * path `npx` and every npm script invoke, so the two sides disagreed and the guard was false: the CLI exited
+ * 0 having done nothing at all. Running the real file worked, which is why it looked fine here — pnpm writes
+ * shell shims that exec the real path, so the repo's own package manager hid it while npm and yarn-classic
+ * users got silence.
+ *
+ * BOTH comparisons are kept, because `--preserve-symlinks-main` inverts which one holds. That flag tells
+ * Node not to resolve the main entry, so `import.meta.url` becomes the symlink path while `realpathSync`
+ * still returns the real one — the same mismatch, the other way round, and the same silent exit-0 no-op.
+ * Some monorepo and bundler setups put it in `NODE_OPTIONS` globally. The literal comparison is the original
+ * condition, which was only ever too NARROW: it matches when this module IS the unresolved entry, so adding
+ * it back as a disjunct widens without creating a way to run on import.
+ *
+ * `realpathSync` can throw, and none of those cases mean "run the CLI", so they resolve to false. The one
+ * that genuinely reaches the catch is `node -` (a script on stdin), where `argv[1]` is the literal string
+ * `"-"` and resolving it raises `ENOENT`. (Under `node --eval` there is no `argv[1]` at all, so the early
+ * return above handles that one — this comment used to cite it, which was wrong.)
+ */
+function invokedAsCli(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return (
+      import.meta.url === pathToFileURL(entry).href ||
+      import.meta.url === pathToFileURL(realpathSync(entry)).href
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   main()
     .then((manifest) => {
       if (manifest.failed.length > 0) {
