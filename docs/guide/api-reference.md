@@ -220,16 +220,11 @@ it is the same function over the store's own drivers.
 | `destroySegment(ref, { registry }, { confirmSegment, allowCleartext?, audit? })` → `DestroyResult` | crypto-shred one whole segment (key deleted → bytes unrecoverable everywhere, backups included); leaves the objects in the bucket, needs encryption unless `allowCleartext` |
 | `eraseNamespace(namespace, { registry }, { confirmNamespace, allowCleartext?, audit? })` → `{ destroyed: DestroyResult[] }` | crypto-shred an entire namespace / tenant; per-segment faults land in the ledger (`reason: 'contended'` / `` `failed: …` ``) — **inspect it** |
 | `dropSegment(ref, { registry, storage }, { confirmSegment, dryRun?, audit? })` → `DropResult` | **dispose of a segment** — tombstone, then delete every Storage generation. Works on cleartext; also crypto-shreds an encrypted one. `store.dropSegment` is the wired form |
-| `drainRegistry(registry, { namespace?, maxScanSegments, op })` → `RegistryRecord[]` | the one bounded drain of `registry.list()` — shared by `checkConsistency` and `retireExpired`; refuses past the ceiling rather than exhausting memory. `validateMaxScanSegments(value, op)` is its fail-fast check |
 | `runConsistencyCheck({ storage, registry }, { namespace?, concurrency? })` → `ConsistencyReport` | the free function behind `store.checkConsistency` — run it over your own drivers |
 | `setSegmentRetention(ref, { registry }, { expiresAt })` → `SetRetentionResult` | the free function behind `store.setRetention` — for a scheduler/CLI that holds only a registry driver. `getSegmentRetention(ref, { registry })` / `clearSegmentRetention(ref, { registry })` are its read/cancel siblings |
-| `readRetentionPolicy(record.retention)` → `RetentionPolicy \| null \| 'invalid'` | parse a policy out of a row you already have (a `list()` sweep does this — no extra read per segment) |
 | `retireExpired({ registry, storage }, { now, … })` → `RetireExpiredResult` | the free function behind `store.retireExpired` — for a scheduled worker that wires its own drivers. `now` is explicit here (core takes its time from the caller) |
 | `runExport(reader, registry, sink, { format?, namespace?, ndjsonBatchBytes?, codec? })` → `ExportManifest` | the free function behind `store.exportSegments`; the flavor pre-binds the codec |
-| `isReservedRow(record)` / `excludingReservedRows(listing)` | the bookkeeping-row filter (the due-index pointers), as a predicate and as a stream wrapper. **Every unscoped fleet-wide enumeration skips these** |
-| `dueBucket(expiresAt)` · `dueNamespace(bucket)` · `dueBucketsAt(now, lookbackBuckets)` | **the due index** — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is *expiring* rather than what the fleet *holds*. A bucket is a **day index** (`Math.floor(expiresAt / 86_400_000)`) and becomes a namespace, because `list()` filters by namespace and nothing else — that single constraint is what shapes the design. `dueBucketsAt` includes past buckets so a sweep that did not run leaves nothing stranded, bounded by `lookbackBuckets` so a long outage costs a bounded number of list calls |
-| `dueIndexRef(bucket, ref)` · `encodeDueName(ref)` · `decodeDueName(name)` · `canIndex(ref)` · `isDueIndexRow(record)` | the pointer rows. A name is `${namespaceLength}.${namespace}${segment}` — **length-prefixed, not delimited**, because every character the grammar allows is legal *inside* a name, so no separator could be unambiguous. `canIndex` is false only for a ref whose encoding would exceed the 256-character cap; that is **not an error and not "never retired"** — the repair scan still sees the segment's own row, so it expires on the repair cadence instead of the fast one |
-| `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` | `cbm.due.` · one day · 256. **The index is a fast path, never the source of truth**: the sweep re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse, and the full `registry.list()` scan remains as a periodic **repair** pass, so a missing pointer is slower, never never |
+| `excludingReservedRows(listing)` | wraps a `registry.list()` stream and drops the bookkeeping rows (the due-index pointers). **Every unscoped fleet-wide enumeration must apply it** — `listSegments` and the sweep already do, so this is for a fleet pass you write yourself |
 | `estimateCost({ segments, workload?, pricing? })` → `CostReport` | the free function behind the static `CloudRoaring.estimateCost` |
 | `groundedReport({ storageBytes, grounded?, workload?, pricing?, extraNotes? })` → `CostReport` | build a report from a **measured** byte total (backs `segment.costReport()`) |
 
@@ -239,7 +234,7 @@ it is the same function over the store's own drivers.
 |---|---|---|
 | `new InProcessKeystore({ keys, activeKeyId, recoveryKeyId? })` | `keystore` (store, `bulkLoadCrbmGeneration`, `eraseIdFromSegment`) | encryption-at-rest + crypto-shred (BYOK) |
 | `new CountingMetricsSink()` (or your own `IMetricsSink`; `NOOP_METRICS` is the default) | `metrics` | observability — `storage.get` / `cache` / `retry` / `intersect` / `op` events |
-| `new RecordingAuditSink()` (or your own `IAuditSink`; `NOOP_AUDIT` is the default) | `audit` (on load / erasure / drop / sweep) | compliance trail — `segment.publish` / `segment.rewrite` / `segment.erase` / `segment.dispose` / `namespace.erase` |
+| `new RecordingAuditSink()` (or your own `IAuditSink`; omit the option to record nothing) | `audit` (on load / erasure / drop / sweep) | compliance trail — `segment.publish` / `segment.rewrite` / `segment.erase` / `segment.dispose` / `namespace.erase` |
 
 ### CLIs (run as binaries, env-configured)
 
@@ -338,11 +333,10 @@ chunk payload bytes differ. A future `@cloudbitmaps/bitset` writes the same form
 
 | Symbol | What it does |
 |---|---|
-| `CrbmWriter` / `CrbmWriterOptions` | write the `.crbm` archive format |
 | `CrbmReader` / `CrbmReaderOptions` | read it (`tailBytes`, `maxPayloadBytes`, `maxIndexBytes`, `crypto`) |
 | `CrbmStorageChunkSource` / `CrbmStorageChunkSourceOptions` | the `.crbm` storage reader over an `IStorageDriver` (the store builds this from a raw driver for you); options add `registry`, `keystore`, `requireEncryption`, `clock`, `currentGenTtlMs`, `maxOpenSegments`, `maxOpenIndexBytes` |
 | `writeCrbmGeneration` · `publishGeneration` | lower-level load: write a generation from `SafeBitmap`s / advance the pointer |
-| `BufferSink` · `BufferReader` · `BlobSink` · `BlobReader` | byte sink/reader impls + interfaces |
+| `BufferReader` · `BlobSink` · `BlobReader` | the in-memory byte reader + the sink/reader interfaces a range read is written through |
 | `SafeBitmap` | size-capped wrapper over `RoaringBitmap32` (the roaring codec's `CodecBitmap`) |
 
 ### Bitmap-codec seam
@@ -371,19 +365,14 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 | `safeMetrics` | wrap a user `IMetricsSink` so a throwing sink can never break the data path |
 | `groundedReport` | build a `CostReport` from measured segment sizes (backs `segment.costReport()`) |
 | `runExport` | the eject/export driver (**needs a `codec` for the `roaring` format**; the flavor binds it) |
-| `splitId` / `joinId` | the id ⇄ `(chunkKey, remainder)` bit-routing pair |
+| `splitId` | an id → its `(chunkKey, remainder)` bit routing, and a range check on the way: it throws `ValidationError` for anything that is not a u32, which is how a bad id fails fast |
 | `mapWithConcurrency` | the bounded, order-preserving fan-out primitive (admin scans, the Storage sweep) |
-| `resolveBudget` / `resolvePerOpBudget` / `checkBudget` | the denial-of-wallet budget plumbing |
-| `DEFAULT_MAX_SCAN_SEGMENTS` | default ceiling (250,000) on registry records one fleet scan holds resident — raise via `maxScanSegments` |
-| `DEFAULT_RETIRE_LIMIT` | default cap (100) on segments one `retireExpired` cycle **attempts** — `limited: true` when it bites |
-| `DEFAULT_TOMBSTONE_GRACE_MS` | default delay (24 h) before the sweep deletes a tombstone row it stamped itself |
-| `DEFAULT_LOOKBACK_BUCKETS` | default number (7) of past due buckets an `'index'` scan also reads |
+| `resolveBudget` / `resolvePerOpBudget` | the denial-of-wallet budget plumbing: normalize a `BudgetOption` into a `Budget`, and pick the one that applies to a given op |
 | `MIN_EXPIRES_AT_MS` | floor (1,000,000,000,000 — 2001-09-09) on `expiresAt` **and** on the sweep's `now`: anything smaller is almost certainly epoch *seconds*, which reads as already-expired |
 | `collectWithinBudget` | drain an async iterable into an array, refusing **as soon as** the budget is exceeded rather than after — so resident memory is `O(budget)`, not `O(source)` |
 | `validateSegmentRef` | boundary validation of a `SegmentRef` (untrusted-input posture) |
-| `encodeNameForPath` / `decodeNameFromPath` | percent-encode a name for use as a **filesystem path component**, and back. Escapes everything `encodeNameForKey` does plus `:` (an NTFS alternate-data-stream separator on Windows), plus three hazards that are properties of the whole component: `.`/`..` traversal, Windows reserved device names (`CON`, `NUL`, `COM1`…, reserved with *or without* an extension), and a trailing dot or space, which Windows silently strips so two names would collide on one path. Use these if you write your own filesystem `ExportSink`, so your dump matches the drivers' layout. **When reading a name back, require the encoding to round-trip** (`encodeNameForPath(decoded) === raw`) rather than merely decoding it — the decoder accepts spellings the encoder never emits (a lowercase escape, say), and without that check a planted entry can alias a real one |
-| `namespaceKeyPart` / `namespacePathPart` | the physical namespace component of a key or path: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use these rather than encoding `ns ?? '_default'` yourself |
-| `encodeNameForKey` / `decodeNameFromKey` | the same for an **object key** (S3, GCS, Azure Blob). Escapes `/` (which would invent hierarchy and break a key parser that splits on it), `#` and `|` (reserved by the former DynamoDB registry and kept reserved so no stored key moves), and control characters. `%` escapes itself as `%25` and is encoded first, which is what makes both transforms injective — so two distinct names can never claim one key. Every name legal before the encoding existed encodes to **itself**, so no stored key moved. **Require the encoding to round-trip when reading a name back**, for the same reason as above |
+| `encodeNameForPath` | percent-encode a name for use as a **filesystem path component**. Escapes everything `encodeNameForKey` does plus `:` (an NTFS alternate-data-stream separator on Windows), plus three hazards that are properties of the whole component: `.`/`..` traversal, Windows reserved device names (`CON`, `NUL`, `COM1`…, reserved with *or without* an extension), and a trailing dot or space, which Windows silently strips so two names would collide on one path. Use it if you write your own filesystem `ExportSink`, so your dump matches the drivers' layout. **If you decode these names back, require the encoding to round-trip** (`encodeNameForPath(decoded) === raw`) rather than trusting a decode — percent-decoding accepts spellings the encoder never emits (a lowercase escape, say), and without that check a planted entry can alias a real one |
+| `namespacePathPart` | the physical namespace component of a **path**: the caller's namespace **encoded**, or the `_default` sentinel emitted **literally**. That asymmetry is load-bearing — encoding the sentinel too would send an absent namespace to `%5Fdefault`, exactly where a caller who names their namespace `_default` already goes, and the two would read each other's data. Use it rather than encoding `ns ?? '_default'` yourself. (`namespaceKeyPart`, the object-key twin, is on [`@cloudbitmaps/core/driver-kit`](#cloudbitmapscoredriver-kit) — it is a driver concern) |
 
 ### Driver kit — what you need to *implement* a driver
 
@@ -458,7 +447,7 @@ listed below.
 | `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend class, and the symbol it uses. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another |
-| `Token` · `chunkRefKey` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical key-string helpers. A driver package may import core's main entry for these |
+| `Token` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical segment key-string helper. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
 | `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
 | `ObjectVersionRaced` · `MAX_ROW_BYTES` | the sentinel a lost compare-and-swap throws, and the hard cap on a serialized row |
@@ -490,14 +479,14 @@ therefore:
 
 | Symbol | What it does |
 |---|---|
-| `withRetry` · `isTransient` · `DEFAULT_RETRY_POLICY` · `RetryDeps` | the retry primitive + classifier + defaults (4 attempts, 50 ms base, ×2, 2 s cap, full jitter) |
+| `withRetry` · `DEFAULT_RETRY_POLICY` · `RetryDeps` | the retry primitive + defaults (4 attempts, 50 ms base, ×2, 2 s cap, full jitter). It retries whatever `isTransientError` accepts unless you pass `RetryDeps.isRetryable` |
 | `RetryingStorageChunkSource` · `RetryingStorageDriver` · `RetryingRegistryDriver` · `RetryingOptions` | manual driver-wrapping decorators |
 
 ### Crypto seams
 
 | Symbol | What it does |
 |---|---|
-| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `aadFor` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use; `aadFor` binds each chunk/index to `(segment, generation)` |
+| `NodeAead` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` | the AES-256-GCM implementation + the crypto interfaces the `.crbm` reader/writer use. The library derives the associated data itself and binds each chunk/index to `(segment, generation)`, so an `Aead` implementation receives the AAD rather than constructing it |
 | `EraseDeps` | `{ registry }` — deps for the free-function crypto-shred (`destroySegment` / `eraseNamespace`) |
 | `DropDeps` | `EraseDeps` plus `storage` — `dropSegment` deletes the objects, so it needs the storage driver |
 
@@ -572,54 +561,51 @@ Every export, by entry point. This section is the completeness anchor the sync t
 
 `@cloudbitmaps/core`'s **main** entry has no section of its own, deliberately: the flavor re-exports it
 wholesale, so every name below the two `@cloudbitmaps/roaring` headings is also a name on
-`@cloudbitmaps/core`. A driver author told elsewhere on this page to import `Token`, `RegistryRecord`,
-`chunkRefKey` or `segmentKey` from core will find each one there.
+`@cloudbitmaps/core`. A driver author told elsewhere on this page to import `Token`, `RegistryRecord`
+or `segmentKey` from core will find each one there.
 
 ### `@cloudbitmaps/roaring` — values
 
 `CloudRoaring` · `Segment` · `MemoryStorage` · `LocalFsStorage` · `createBackend` · `isStorageBackend` ·
 `MemoryStorageDriver` · `MemoryRegistryDriver` · `MemoryStorageChunkSource` · `PinnedStorageChunkSource` ·
 `LocalFsStorageDriver` · `LocalFsRegistryDriver` · `bulkLoadCrbmGeneration` · `writeCrbmGeneration` ·
-`publishGeneration` · `CrbmStorageChunkSource` · `nextGeneration` · `gcOrphanGenerations` · `loadSegment` · `listGenerations` · `rollbackSegment` · `segmentExists` · `listSegments` · `eraseIdFromSegment` ·
-`destroySegment` · `dropSegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `aadFor` · `SafeBitmap` ·
-`roaringCodec` · `withRetry` · `isTransient` · `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` ·
-`runExport` · `splitId` · `joinId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` · `checkBudget` ·
-`collectWithinBudget` · `DEFAULT_MAX_SCAN_SEGMENTS` · `validateSegmentRef` · `chunkRefKey` · `segmentKey` ·
-`encodeNameForKey` · `decodeNameFromKey` · `encodeNameForPath` · `decodeNameFromPath` ·
-`namespaceKeyPart` · `namespacePathPart` ·
-`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `readRetentionPolicy` ·
-`MIN_EXPIRES_AT_MS` · `retireExpired` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` ·
-`drainRegistry` · `validateMaxScanSegments` · `DEFAULT_LOOKBACK_BUCKETS` ·
-`isReservedRow` · `excludingReservedRows` ·
-`dueBucket` · `dueBucketsAt` · `dueNamespace` · `dueIndexRef` · `encodeDueName` · `decodeDueName` ·
-`canIndex` · `isDueIndexRow` · `DUE_NAMESPACE_PREFIX` · `DUE_BUCKET_MS` · `MAX_NAME_LENGTH` ·
-`DEFAULT_RETRY_POLICY` · `RetryingStorageDriver` · `RetryingRegistryDriver` · `RetryingStorageChunkSource` ·
-`CrbmWriter` · `CrbmReader` · `BufferSink` · `BufferReader` · `CountingMetricsSink` · `NOOP_METRICS` ·
-`RecordingAuditSink` · `NOOP_AUDIT` · `estimateCost` · `DEFAULT_PRICING` · `AWS_US_EAST_1_ONDEMAND` ·
-`runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` · `ValidationError` · `WriteConflictError` ·
-`IntegrityError` · `NotFoundError` · `UnsupportedError` · `CapabilityError` · `TransientError` · `TimeoutError` ·
-`KeyUnavailableError` · `BudgetExceededError` · `isCloudRoaringError` · `isWriteConflictError` ·
-`isTransientError` · `isNotFoundError` · `isIntegrityError` · `isValidationError` · `VERSION`
+`publishGeneration` · `CrbmStorageChunkSource` · `nextGeneration` · `gcOrphanGenerations` · `loadSegment` ·
+`listGenerations` · `rollbackSegment` · `segmentExists` · `listSegments` · `eraseIdFromSegment` ·
+`destroySegment` · `dropSegment` · `eraseNamespace` · `InProcessKeystore` · `NodeAead` · `SafeBitmap` ·
+`roaringCodec` · `withRetry` · `SegmentEngine` · `BoundedLru` · `safeMetrics` · `groundedReport` ·
+`runExport` · `splitId` · `mapWithConcurrency` · `resolveBudget` · `resolvePerOpBudget` ·
+`collectWithinBudget` · `validateSegmentRef` · `segmentKey` · `encodeNameForPath` · `namespacePathPart` ·
+`setSegmentRetention` · `getSegmentRetention` · `clearSegmentRetention` · `MIN_EXPIRES_AT_MS` ·
+`retireExpired` · `excludingReservedRows` · `DEFAULT_RETRY_POLICY` · `RetryingStorageDriver` ·
+`RetryingRegistryDriver` · `RetryingStorageChunkSource` · `CrbmReader` · `BufferReader` ·
+`CountingMetricsSink` · `NOOP_METRICS` · `RecordingAuditSink` · `estimateCost` · `DEFAULT_PRICING` ·
+`AWS_US_EAST_1_ONDEMAND` · `runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` ·
+`ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
+`CapabilityError` · `TransientError` · `TimeoutError` · `KeyUnavailableError` · `BudgetExceededError` ·
+`isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
+· `isValidationError` · `VERSION`
 
 ### `@cloudbitmaps/roaring` — types
 
 `CloudRoaringOptions` · `CacheOptions` · `EncryptionOptions` · `RetryOptions` · `SeamOptions` ·
-`SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
-`EraseSubjectResult` · `MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions` · `AndNotIntoOptions` · `EngineCombineOptions` ·
-`BulkLoadResult` · `LoadDeps` · `LoadOptions` · `LoadGuard` · `LoadResult` · `LoadRefusal` · `GenerationListDeps` · `GenerationEntry` · `RollbackResult` · `SegmentInfo` · `CrbmStorageChunkSourceOptions` · `GenerationDeps` · `EraseIdDeps` · `EraseIdResult` ·
-`MemoryStorageOptions` · `LocalFsStorageOptions` · `MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` ·
-`ExportOptions` · `ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
-`StorageBackend` · `StorageChunkSource` · `PinnedAt` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps` ·
-`RegCaps` · `RegistryRecord` ·
-`NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta` · `SegmentSize` · `IKeystore` ·
-`Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` · `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` ·
-`DestroyResult` · `DropResult` · `RetentionPolicy` · `RetentionDeps` · `SetRetentionResult` ·
-`RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` · `RetryPolicy` · `RetryDeps` · `RetryingOptions` ·
-`CrbmWriterOptions` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` · `IMetricsSink` · `MetricEvent` ·
-`MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `CostReport` · `Workload` · `SegmentSizing` ·
-`EstimateInput` · `IAuditSink` · `AuditEvent` · `AuditEventKind` · `Clock` · `Rng` · `Budget` · `BudgetOption` ·
-`ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` · `CodecInterface` · `CodecBitmap` ·
-`EngineDeps` · `Token`
+`SegmentOptions` · `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` · `EraseSubjectResult` ·
+`MaterializeResult` · `MaterializeRefusal` · `BaseCombineOptions` · `CombineOptions` · `MaterializeOptions`
+· `AndNotIntoOptions` · `EngineCombineOptions` · `BulkLoadResult` · `LoadDeps` · `LoadOptions` · `LoadGuard`
+· `LoadResult` · `LoadRefusal` · `GenerationListDeps` · `GenerationEntry` · `RollbackResult` · `SegmentInfo`
+· `CrbmStorageChunkSourceOptions` · `GenerationDeps` · `EraseIdDeps` · `EraseIdResult` ·
+`MemoryStorageOptions` · `LocalFsStorageOptions` · `MemoryRegistryDriverOptions` ·
+`LocalFsRegistryDriverOptions` · `ExportFormat` · `ExportSink` · `ExportWriter` · `ExportOptions` ·
+`ExportedSegment` · `ExportFailure` · `ExportManifest` · `IStorageDriver` · `IRegistryDriver` ·
+`StorageBackend` · `StorageChunkSource` · `PinnedAt` · `SegmentRef` · `ChunkRef` · `GenKey` · `StorageCaps`
+· `RegCaps` · `RegistryRecord` · `NewRegistryRecord` · `RegistryPatch` · `RegistryStatus` · `GovernanceMeta`
+· `SegmentSize` · `IKeystore` · `Aead` · `AeadSealed` · `WrappedDek` · `CrbmCrypto` ·
+`InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
+`RetentionDeps` · `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
+`RetryPolicy` · `RetryDeps` · `RetryingOptions` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
+`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `CostReport` ·
+`Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `AuditEventKind` · `Clock` ·
+`Rng` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
+`CodecInterface` · `CodecBitmap` · `EngineDeps` · `Token`
 
 ### `@cloudbitmaps/core/driver-kit`
 

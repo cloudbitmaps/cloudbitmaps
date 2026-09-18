@@ -6,13 +6,9 @@
  * reason it exists, and the only thing a correctness test would not notice if it regressed).
  */
 import { describe, expect, it, vi } from 'vitest';
-import {
-  DEFAULT_LOOKBACK_BUCKETS,
-  dueBucket,
-  dueIndexRef,
-  dueNamespace,
-  type SegmentRef,
-} from '@/index';
+import type { SegmentRef } from '@/index';
+import { DEFAULT_LOOKBACK_BUCKETS } from '@/core/retention-sweep';
+import { dueBucket, dueIndexRef, dueNamespace } from '@/core/due-index';
 import { type LoadedStore, loadedStore } from '../helpers/loaded';
 
 const DAY = 86_400_000;

@@ -1,12 +1,12 @@
-import {
-  withRetry,
-  backoffDelayMs,
-  applyJitter,
-  isTransient,
-  DEFAULT_RETRY_POLICY,
-} from '@/core/retry';
+import { withRetry, backoffDelayMs, applyJitter, DEFAULT_RETRY_POLICY } from '@/core/retry';
 import type { RetryPolicy } from '@/core/retry';
-import { IntegrityError, TimeoutError, TransientError, ValidationError } from '@/core/errors';
+import {
+  IntegrityError,
+  TimeoutError,
+  TransientError,
+  ValidationError,
+  isTransientError,
+} from '@/core/errors';
 import type { Clock, Rng } from '@/core/determinism';
 
 /** A clock that records every requested sleep and resolves instantly (no real waiting in tests). */
@@ -69,12 +69,12 @@ describe('applyJitter', () => {
   });
 });
 
-describe('isTransient', () => {
+describe('isTransientError', () => {
   it('is true only for TransientError (incl. TimeoutError subclass)', () => {
-    expect(isTransient(new TransientError('x'))).toBe(true);
-    expect(isTransient(new TimeoutError('x'))).toBe(true);
-    expect(isTransient(new ValidationError('x'))).toBe(false);
-    expect(isTransient(new Error('x'))).toBe(false);
+    expect(isTransientError(new TransientError('x'))).toBe(true);
+    expect(isTransientError(new TimeoutError('x'))).toBe(true);
+    expect(isTransientError(new ValidationError('x'))).toBe(false);
+    expect(isTransientError(new Error('x'))).toBe(false);
   });
 });
 

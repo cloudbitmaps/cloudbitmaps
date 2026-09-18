@@ -17,6 +17,36 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 79.** The entry had
+  accumulated the internals of whatever landed beside it, so a reader could not tell supported API from
+  plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;
+  it simply stops being importable.
+
+  **Fifteen names were public in `0.9.x` and are gone.** See
+  [`MIGRATING.md`](MIGRATING.md#6-core-exports-only-what-it-supports) for what to do about each:
+  `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
+  `DEFAULT_TOMBSTONE_GRACE_MS` · `readRetentionPolicy` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` ·
+  `aadFor` · `joinId` · `checkBudget` · `isTransient` · `NOOP_AUDIT` · `BufferSink`.
+
+  Only one needs a real decision: **`isTransient` was `return isTransientError(err)` verbatim**, with a
+  `boolean` return where its twin has a type predicate. Use `isTransientError` — it narrows, and it matches
+  the `isValidationError` / `isWriteConflictError` / `isNotFoundError` family. `RetryDeps.isRetryable` now
+  defaults to it, which changes no behaviour.
+
+  The rest is what the library does *to* you rather than *for* you: the due-index scheduler, the bounded
+  registry drain under `listSegments`, sweep and scan defaults already stated in prose, `.crbm` construction,
+  object-key layout, AEAD associated data, and budget enforcement.
+
+  **This was the window for it.** `0.10.0` already breaks the import path, so the cost is one more entry in a
+  migration guide rather than a second breaking release. Re-exporting a name later is additive and not
+  breaking, so the bias is to cut now and restore deliberately — `CrbmWriter` and `joinId` in particular would
+  return, documented and tested, if the roadmap's raw bit-position import/export lands.
+
+- **The API reference guard now runs in both directions.** It checked that every export is documented; it now
+  also checks that every name in the "Complete export index" is still exported. The one-way version said in
+  its own comment to prune stale entries "in review" — this change would have left 32 of them behind, each
+  reading to a user like API that exists.
+
 - **BREAKING — the cloud drivers are their own packages.** `npm i @cloudbitmaps/roaring` plus the SDK becomes
   `npm i @cloudbitmaps/roaring @cloudbitmaps/s3` — a codec and a storage — and the import moves with it:
 
@@ -632,8 +662,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   form — plain ASCII gets the full 256, while heavily non-ASCII text reaches it sooner (one emoji is twelve
   encoded characters). The error reports both numbers.
 
-  `encodeNameForKey`/`decodeNameFromKey` and `namespaceKeyPart`/`namespacePathPart` join the existing
-  `encodeNameForPath`/`decodeNameFromPath` as exports, for anyone writing their own filesystem `ExportSink`.
+  `encodeNameForPath` and `namespacePathPart` are exported, for anyone writing their own filesystem
+  `ExportSink`. Their object-key twins `encodeNameForKey` and `namespaceKeyPart` are a driver concern and live
+  on `@cloudbitmaps/core/driver-kit`. The decoders stay internal: writing a dump needs the encoder, and a tool
+  that reads one back must verify the encoding round-trips rather than trust a decode.
 
 ### Added
 - **`store.exists(ref)` and `store.segments({ namespace })` — ask the registry what is there.** The registry has
@@ -682,9 +714,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   name into a path percent-encodes it as `%3A` and decodes on the way back: the LocalFs cold and registry
   drivers, and the `export-segments` eject sink. The encoding is reversible precisely because `%` is not in
   the grammar, and it is applied unconditionally — POSIX accepts the literal colon, so encoding only where
-  the OS forces it would pass every test on a Linux runner and lose data on Windows. `encodeNameForPath` and
-  `decodeNameFromPath` are exported so anyone writing their own filesystem `ExportSink` lands on the same
-  spelling and their dump stays diffable against the store.
+  the OS forces it would pass every test on a Linux runner and lose data on Windows. `encodeNameForPath` is
+  exported so anyone writing their own filesystem `ExportSink` lands on the same spelling and their dump stays
+  diffable against the store.
 
 ### Added
 - **`store.generations(ref)` and `store.rollback(ref, toGeneration)` — see what a segment has been, and put it
@@ -1039,8 +1071,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
     `stress` / `calibrate:aws` package scripts).
 
   If a pre-release engine ever wrote `cbm.leases` rows to your registry, they are harmless bookkeeping and can be
-  deleted. `isReservedRow` / `excludingReservedRows` remain — the due-index pointers are the one reserved family —
-  and now live beside `drainRegistry`.
+  deleted. The due-index pointers are now the one reserved family, and `excludingReservedRows` remains the
+  exported filter for a fleet-wide pass you write yourself; the predicate it is built on is internal.
 
 ### Added
 - **`tests/docs/internal-citations.test.ts`** — the gate for the above, scanning every tracked text file for
@@ -1103,8 +1135,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   A seconds-shaped value is refused **at the handle** rather than silently making the segment permanently empty.
 
 - **The due index — the structure that makes a retention cycle cost what is *expiring* rather than what the
-  fleet *holds*.** `dueBucket` / `dueNamespace` / `dueBucketsAt` / `dueIndexRef` / `encodeDueName` /
-  `decodeDueName` / `canIndex` / `isDueIndexRow`.
+  fleet *holds*.** Entirely internal: `retireExpired` consults it for you, and a caller never builds a bucket
+  name or a synthetic row.
 
   A sweep that drains `registry.list()` and filters reads the whole fleet every cycle even when nothing
   expires. The index makes the day a segment expires into a **namespace**, so listing one due day yields exactly
@@ -1156,7 +1188,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   bundled file per entry. The public types are unchanged; the `exports` map points at the same paths. The build is
   now `scripts/build.mjs` (esbuild for the bundles, `tsc` for the declarations) rather than tsup.
 - Every unscoped fleet-wide enumeration skips **reserved bookkeeping rows** — the due-index pointers. One
-  predicate (`isReservedRow`) declares the families, rather than a comparison inlined at each call site: the
+  internal predicate declares the families, rather than a comparison inlined at each call site: the
   first cut inlined it and shipped with three sites missed, and the due index then leaked into the retention
   sweep's own `scanned` count the moment it began writing pointers. A scan explicitly scoped to a reserved
   namespace still sees its rows.

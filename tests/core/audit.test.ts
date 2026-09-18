@@ -4,7 +4,6 @@ import {
   CrbmStorageChunkSource,
   MemoryStorageDriver,
   MemoryRegistryDriver,
-  NOOP_AUDIT,
   RecordingAuditSink,
   bulkLoadCrbmGeneration,
   destroySegment,
@@ -12,7 +11,7 @@ import {
   eraseNamespace,
 } from '@/index';
 import type { AuditEvent, IKeystore, SegmentRef } from '@/index';
-import { safeAudit } from '@/core/audit';
+import { NOOP_AUDIT, safeAudit } from '@/core/audit';
 import { InProcessKeystore } from '@/drivers/crypto';
 
 /**

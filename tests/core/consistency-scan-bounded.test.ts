@@ -1,4 +1,5 @@
-import { runConsistencyCheck, BudgetExceededError, DEFAULT_MAX_SCAN_SEGMENTS } from '@/index';
+import { runConsistencyCheck, BudgetExceededError } from '@/index';
+import { DEFAULT_MAX_SCAN_SEGMENTS } from '@/core/registry-scan';
 import type { RegistryRecord } from '@/core/ports';
 
 // The DR consistency check bounds its registry scan, like every other enumeration in the library.

@@ -625,7 +625,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
  * Write one immutable generation from in-memory bitmaps (the seed / bulk-load primitive). Chunks are
  * sorted ascending and empty bitmaps skipped (empty chunks are never stored). Returns the driver's
  * `{ size, sha256 }` for the written object. Pass `options.crypto` to AES-256-GCM-encrypt the generation
- * (the caller builds it from the segment's DEK + a `(segment, generation)`-bound {@link aadFor}).
+ * (built from the segment's DEK, with associated data bound to `(segment, generation)`).
  */
 export function writeCrbmGeneration(
   driver: IStorageDriver,

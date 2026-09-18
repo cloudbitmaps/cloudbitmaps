@@ -3,7 +3,6 @@ import {
   createBackend,
   CloudRoaring,
   CrbmStorageChunkSource,
-  DEFAULT_RETIRE_LIMIT,
   MemoryStorageDriver,
   MemoryRegistryDriver,
   MIN_EXPIRES_AT_MS,
@@ -12,6 +11,7 @@ import {
   nextGeneration,
   retireExpired,
 } from '@/index';
+import { DEFAULT_RETIRE_LIMIT } from '@/core/retention-sweep';
 import { InProcessKeystore } from '@/drivers/crypto';
 import { BudgetExceededError, UnsupportedError, ValidationError } from '@/core/errors';
 import { clearSegmentRetention } from '@/index';
