@@ -358,6 +358,8 @@ request path for what it is good at: `has`, `count`, `intersect`.
 
 The S3 storage driver is its own package, **`@cloudbitmaps/s3`**, which depends on `@aws-sdk/client-s3` for
 real — so `npm i @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.
+(The storage packages land in 0.10.0 and are not on npm yet; on the published `0.9.0` they are subpaths of
+`@cloudbitmaps/roaring`.)
 You can inject your own `S3Client`, so the driver works against AWS S3, MinIO, or any compatible backend just
 by how you configure the client:
 

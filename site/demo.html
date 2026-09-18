@@ -557,7 +557,9 @@
 
 <span class="c"># the memory and local drivers need nothing else</span>
 <span class="c"># for a real backend, add its package:</span>
-<span class="c"># @cloudbitmaps/s3 · @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span></code></pre>
+<span class="c"># @cloudbitmaps/s3 · @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span>
+<span class="c"># the storage packages land in 0.10.0; on the published 0.9.0 they are
+# subpaths — npm i @cloudbitmaps/roaring, then import from @cloudbitmaps/roaring/s3</span></code></pre>
             <div class="install-alt">
               <p class="label">Or reproduce the run above</p>
               <pre><code>git clone https://github.com/cloudbitmaps/cloudbitmaps

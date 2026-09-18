@@ -89,10 +89,28 @@ const FOREIGN_VERSIONS = new Map<string, string>([
  * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
  * bare-token match would otherwise flag forever.
  */
+/**
+ * The next minor, which pages may legitimately name as a FORWARD reference.
+ *
+ * While the storage packages are unpublished, every install block says so and names the release that fixes it
+ * (see `unreleased-install-caveat.test.ts`). That is a true statement about a version that is not current, and
+ * it is the one kind of non-current version this file must not treat as a stale badge.
+ *
+ * It is computed, not allowlisted, which is what keeps it safe: `FOREIGN_VERSIONS` would exempt the string
+ * `0.10.0` permanently, so a badge left reading `0.10.0` after `0.11.0` shipped would sail through — the exact
+ * drift this file exists to catch. As a computed next-minor the exemption moves with the version and can only
+ * ever excuse a reference to the release that has not happened yet. Once it ships it becomes `version` itself
+ * and is checked normally, and the caveat naming it is force-removed by the other guard.
+ */
+const NEXT_MINOR = ((): string => {
+  const [major = 0, minor = 0] = version.split('.').map((n) => Number.parseInt(n, 10));
+  return `${major}.${minor + 1}.0`;
+})();
+
 function badgeVersions(html: string): string[] {
   return [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(VERSION_RE)]
     .map((m) => m[1] as string)
-    .filter((v) => !FOREIGN_VERSIONS.has(v));
+    .filter((v) => !FOREIGN_VERSIONS.has(v) && v !== NEXT_MINOR);
 }
 
 /**
@@ -211,9 +229,10 @@ describe('site version badges', () => {
   });
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
-    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)].map(
-      (m) => m[1] as string,
-    );
+    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)]
+      .map((m) => m[1] as string)
+      // Same forward-reference rule as the HTML pages: see NEXT_MINOR.
+      .filter((v) => !FOREIGN_VERSIONS.has(v) && v !== NEXT_MINOR);
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,

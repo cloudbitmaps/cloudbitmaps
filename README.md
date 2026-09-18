@@ -211,6 +211,8 @@ and an explicit list of what the run does *not* establish:
 ```bash
 npm i @cloudbitmaps/roaring    # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
 npm i @cloudbitmaps/s3         # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
+                               # ^ the storage packages land in 0.10.0; on the published 0.9.0 they are
+                               #   subpaths of @cloudbitmaps/roaring (@cloudbitmaps/roaring/s3)
 ```
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is

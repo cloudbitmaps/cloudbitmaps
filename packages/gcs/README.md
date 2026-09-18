@@ -16,6 +16,10 @@ Google Cloud Storage. Compare-and-swap rides GCS object preconditions, so a depl
 npm i @cloudbitmaps/roaring @cloudbitmaps/gcs
 ```
 
+> [!NOTE]
+> **The storage packages land in 0.10.0 and are not on npm yet.** On the published `0.9.0` they are
+> subpaths of the flavor — `npm i @cloudbitmaps/roaring`, then import from `@cloudbitmaps/roaring/s3`.
+
 Two packages: the **codec** you want and the **storage** you have. `@google-cloud/storage` (`^7 || ^8`) is a real dependency of
 this package, so installing it is the whole step — there is no optional peer to remember. `@cloudbitmaps/core` is one
 too, so the engine lands in your tree without you installing it — you never name it yourself.
