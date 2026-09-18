@@ -8,8 +8,16 @@ human-gated** pipeline — you never run `npm publish` by hand. This is the map 
 All five packages release **in lockstep**: one version number, one tag, everything published together —
 `core`, the `roaring` flavor, and the `s3` / `gcs` / `azure-blob` driver packages. Each of the four depends on
 `core`, and `pnpm -r publish` walks the workspace in topological order so `core` lands first. Nothing in the
-workflow names a package: it globs `packages/*/package.json` and filters `./packages/**`, so a sixth package
-is published without editing it.
+workflow names a package: it globs `packages/*/package.json` and filters `./packages/**`, and the one count
+it does carry (`EXPECTED_PACKAGES`) is asserted against the real number of manifests by
+[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts).
+
+**Adding a package is still not free**, and the cost is not in this file. Its **name must be bootstrapped**
+before the tokenless pipeline can publish it at all (see [Bootstrapping a name](#bootstrapping-a-name)), and
+a handful of gates the release job runs do enumerate the driver packages by name — `DRIVER_PACKAGES` in
+`scripts/smoke.cjs`, the per-package SDK blocks in `eslint.config.js`, and the driver pattern in
+`scripts/sdk-specifiers.cjs`. A sixth driver package goes red in `pnpm lint` or `pnpm smoke` long before it
+reaches a publish step, which is the right direction for it to fail in — but it is an edit, not nothing.
 
 ## Table of contents
 
