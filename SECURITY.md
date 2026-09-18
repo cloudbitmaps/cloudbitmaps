@@ -136,7 +136,7 @@ produced the package they installed**. The controls:
 - **Recoverable checks run before the irreversible one.** Every gate above — the re-run test suite, the audit,
   the tag/version agreement, the release-notes check, the tarball scan — precedes `pnpm publish`, and
   [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) fails if any of them is ever moved
-  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the two packages
+  after it. A release is also never cancelled in flight (`cancel-in-progress: false`), so the five packages
   cannot be left half-published.
 - **Least-privilege CI.** Workflows declare minimal `permissions:`: the workflow-level default is
   `contents: read`, and the release workflow adds `id-token: write` for provenance. **Exactly one job holds

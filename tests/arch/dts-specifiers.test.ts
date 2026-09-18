@@ -58,7 +58,7 @@ describe('the .d.ts specifier gate leaves a legitimate look-alike alone', () => 
     ['a .cjs specifier', "export * from './core/engine.cjs';"],
     ['a .json specifier — extensioned, so out of scope', "import x from './data.json';"],
     ['a bare package specifier', "export * from '@cloudbitmaps/core';"],
-    ['a bare deep specifier', "export * from '@cloudbitmaps/core/s3';"],
+    ['a bare deep specifier', "export * from '@cloudbitmaps/s3';"],
     ['a node builtin', "import { readFile } from 'node:fs';"],
     // The false positive that matters: this is prose, and both halves must ignore it.
     [

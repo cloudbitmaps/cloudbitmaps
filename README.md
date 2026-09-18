@@ -19,8 +19,8 @@
 > boundary, and mutation testing of the highest-risk core modules. What's proven to what degree — and
 > what isn't — is set out in the [validated envelope](docs/ROADMAP.md#the-validated-envelope--whats-proven-and-what-isnt).
 > **Works today:** the loaded store over **in-memory** and **local-filesystem** storage, with every cloud driver
-> on its own `@cloudbitmaps/roaring/<backend>` subpath — **object storage** on **S3-compatible** (`/s3`),
-> **GCS** (`/gcs`), and **Azure Blob** (`/azure`); a **segment registry** on each of those same three clouds
+> in its own package — **object storage** on **S3-compatible** (`@cloudbitmaps/s3`), **GCS**
+> (`@cloudbitmaps/gcs`), and **Azure Blob** (`@cloudbitmaps/azure-blob`); a **segment registry** on each of those same three clouds
 > (plus memory / LocalFs), so a deployment can run on **one bucket alone**. `store.load` (write one immutable
 > generation from an array, a Set or an async cursor, then publish it forward-only) · `has` / `count` /
 > `iterate` / **`intersect` (chunk-skipping)** / `union` / `andNot`, all with `exclude` suppression folded into
@@ -209,8 +209,8 @@ and an explicit list of what the run does *not* establish:
 ## Install & entry points
 
 ```bash
-npm i @cloudbitmaps/roaring    # the engine + in-memory & local drivers (one third-party dep: roaring)
-npm i @aws-sdk/client-s3       # only if you use the S3 tier
+npm i @cloudbitmaps/roaring    # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
+npm i @cloudbitmaps/s3         # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
 ```
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
@@ -235,22 +235,26 @@ npm i @aws-sdk/client-s3       # only if you use the S3 tier
 >   `node16` and `node18` do not know about `require(esm)` and report `TS1479` on the import. A project on
 >   `moduleResolution: bundler` is unaffected.
 
-**You install one package.** `@cloudbitmaps/roaring` is the *flavor* — the roaring codec + the `CloudRoaring`
-facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds every storage driver.
-Core arrives **transitively** — you never install it, and the subpaths below re-export its drivers so
-`@cloudbitmaps/roaring` stays the one package name to know (importing `@cloudbitmaps/core/s3` is equivalent if you
-prefer). `core` itself has **zero runtime dependencies**.
+**You install two packages: a codec and a storage.** `@cloudbitmaps/roaring` is the *flavor* — the roaring
+codec + the `CloudRoaring` facade. `@cloudbitmaps/s3` is the *storage* — one package per service, which
+depends on its cloud SDK **for real**, so installing it is all you do. Both depend on
+**`@cloudbitmaps/core`**, the codec-agnostic engine; core arrives **transitively**, you never install it, and
+it has **zero runtime dependencies and no cloud SDK in it at all**.
 
-| Import | Gives you | Peer dep |
+Nothing here is an optional peer. There is no second install step to forget, no "install the peer" error, and
+no SDK for a service you do not use.
+
+| Install | Gives you | Pulls |
 |---|---|---|
-| `@cloudbitmaps/roaring` | `CloudRoaring` + all in-memory/local drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | — (pulls `roaring` + `@cloudbitmaps/core`) |
-| `@cloudbitmaps/roaring/s3` | `S3StorageDriver`, `S3RegistryDriver` | `@aws-sdk/client-s3` |
-| `@cloudbitmaps/roaring/gcs` | `GcsStorageDriver`, `GcsRegistryDriver` | `@google-cloud/storage` |
-| `@cloudbitmaps/roaring/azure` | `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob` |
-| `export-segments` (CLI bin) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
+| `@cloudbitmaps/roaring` | `CloudRoaring` + the in-memory and local-filesystem drivers, loading, erasure, crypto, cost/metrics/audit seams, errors | `roaring`, `@cloudbitmaps/core` |
+| `@cloudbitmaps/s3` | `S3Storage` — and `S3StorageDriver` / `S3RegistryDriver` if you want the halves separately. S3 and every S3-compatible service: R2, MinIO, Ceph, Wasabi, B2 | `@aws-sdk/client-s3`, core |
+| `@cloudbitmaps/gcs` | `GcsStorage`, `GcsStorageDriver`, `GcsRegistryDriver` | `@google-cloud/storage`, core |
+| `@cloudbitmaps/azure-blob` | `AzureBlobStorage`, `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob`, core |
+| `export-segments` (CLI bin, in the flavor) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
-The cloud SDKs are **optional peer dependencies** — the main entry never imports a cloud SDK (CI-enforced), so
-you pull one in only for the tier you use.
+**Why by service rather than by cloud.** An `@cloudbitmaps/aws` would have to depend on both the S3 SDK and
+the DynamoDB SDK, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
+because S3 is a protocol as much as a product — the same package serves R2 and MinIO.
 
 > **Alpine / musl:** `roaring` — the one third-party runtime dep — ships prebuilt binaries for common **glibc**
 > targets (incl. Amazon Linux, which CI proves each run). It has **no musl prebuilt**, so on an Alpine base image
@@ -296,7 +300,7 @@ the registry in one bucket; no other service):
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 
 // Bucket stated once, for both the generations and the pointer. Builds its own client from the
 // ambient credential chain; pass `client`, or `endpoint` + `pathStyle` + `credentials`, when you need to.
@@ -315,9 +319,9 @@ written:
 |---|---|---|
 | `MemoryStorage` | `@cloudbitmaps/roaring` | `new MemoryStorage()` |
 | `LocalFsStorage` | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps')` |
-| `S3Storage` | `@cloudbitmaps/roaring/s3` | `new S3Storage({ bucket, prefix })` |
-| `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix })` |
-| `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ connectionString, container })` |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix })` |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix })` |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ connectionString, container })` |
 
 Underneath, each seam is still an independent, swappable driver — all pass the same conformance suite, so the
 same application code runs on any mix. Reach for these directly only when a backend cannot express your
@@ -373,7 +377,7 @@ cannot check that your two halves agree either; calling it is you taking that on
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
@@ -579,17 +583,24 @@ keeping a list beside it, a **snapshot handle** so a long export or reconciliati
 than whichever generations were current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs. The repo is a
-pnpm workspace of `@cloudbitmaps/core` (the codec-agnostic engine + every driver, zero runtime
-dependencies) and `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring` facade, and the
-`export-segments` CLI). You install one flavor; core arrives transitively.
+The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
+storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic
+engine, the `.crbm` format, the driver ports, and the SDK-free memory and local-filesystem drivers — zero
+runtime dependencies), the **codec** axis `@cloudbitmaps/roaring` (the roaring codec, the `CloudRoaring`
+facade, and the `export-segments` CLI), and the **storage** axis `@cloudbitmaps/s3` · `/gcs` · `/azure-blob`,
+one package per service. You install one of each axis; core arrives as their dependency.
 
 ## Documentation
 
-- **Usage walkthrough** — how you actually use it, end to end: the mental model,
-  local → cloud wiring, the operations, the real flows (load, match, campaign targeting, retention,
-  encryption), and where cost + observability fit.
+- **[Usage walkthrough](https://cloudbitmaps.pages.dev/usage.html)** — how you actually use it, end to end:
+  the mental model, local → cloud wiring, the operations, the real flows (load, match, campaign targeting,
+  retention, encryption), and where cost + observability fit.
 - **[Getting started](docs/guide/getting-started.md)** — the exhaustive, per-tier reference with every signature.
+- **[API reference](docs/guide/api-reference.md)** — the complete callable surface, every export with its
+  shape, kept in sync with the code by CI. Writing a storage driver? It documents
+  [`@cloudbitmaps/core/driver-kit`](docs/guide/api-reference.md#cloudbitmapscoredriver-kit), the declared
+  contract a driver package builds against.
+- **[Migrating from 0.9.x](MIGRATING.md)** — the driver packages, ESM-only, and the two constructor changes.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.

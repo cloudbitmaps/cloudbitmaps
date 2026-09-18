@@ -5,7 +5,7 @@ import {
   registryListPrefix,
   registryObjectKey,
   segmentObjectPrefix,
-} from '@/drivers/s3/keys';
+} from '@/s3/keys';
 import { ValidationError } from '@/core/errors';
 
 describe('S3 object-key grammar', () => {

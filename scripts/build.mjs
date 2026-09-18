@@ -3,14 +3,18 @@
  * emits declarations with tsc, and rewrites the `@/…` self-alias in the emitted .d.ts to relative paths.
  *
  * This replaced tsup. What it reproduces, on purpose:
- *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — the main entry and each cloud subpath
- *     barrel — with sourcemaps, node platform, ES2022. ESM ONLY: the package is `"type": "module"` and the
- *     exports map offers a single `default` condition, so `require()` resolves to the same file and Node's
- *     `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a second self-contained CJS
- *     bundle bought nothing: it duplicated every module, which is why `instanceof` used to fail across a
- *     driver subpath, and it forced the types to describe an ESM file while the runtime served CJS;
- *   - every bare import left EXTERNAL (`packages: 'external'`): dependencies, optional peers and node builtins
- *     resolve at runtime from the consumer's node_modules, so the main entry never pulls a cloud SDK in;
+ *   - one ESM bundle per entry (`.js`, code-split into shared chunks) — every entry the package's own
+ *     `exports` map declares — with sourcemaps, node platform, ES2022. ESM ONLY: the package is
+ *     `"type": "module"` and the exports map offers a single `default` condition, so `require()` resolves to
+ *     the same file and Node's `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a
+ *     second self-contained CJS bundle bought nothing: it duplicated every module, and it forced the types
+ *     to describe an ESM file while the runtime served CJS;
+ *   - every bare import left EXTERNAL (`packages: 'external'` plus `@cloudbitmaps/*`): dependencies, the
+ *     other workspace packages and node builtins all resolve at runtime from the consumer's node_modules.
+ *     That is what keeps a cloud SDK out of a main entry, and what gives the whole install ONE copy of
+ *     `@cloudbitmaps/core` — so the error classes are the same objects and `instanceof` holds across
+ *     packages. esbuild applies tsconfig `paths` BEFORE `packages: 'external'`, which is why the
+ *     `@cloudbitmaps/*` entry has to be spelled out rather than left to the flag;
  *   - one `.d.ts` tree under dist/ mirroring src/ (the exports map already points at `dist/<entry>/index.d.ts`);
  *   - the ESM-only `export-segments` bin with its `#!` line preserved (esbuild keeps an entry's hashbang);
  *   - the fuzz-only bundles into the git-ignored repo-root `fuzz/build/`, never into dist/.
@@ -33,11 +37,23 @@ const fuzzBuild = path.resolve(pkgDir, '..', '..', 'fuzz', 'build');
 
 await rm(dist, { recursive: true, force: true });
 
-const SUBPATHS = ['s3', 'gcs', 'azure'];
-const entries = { index: 'src/index.ts' };
-for (const s of SUBPATHS) {
-  if (existsSync(path.join(pkgDir, 'src', s, 'index.ts')))
-    entries[`${s}/index`] = `src/${s}/index.ts`;
+// Entries come from the package's OWN `exports` map, so the two cannot disagree.
+//
+// This used to be a hardcoded `['s3', 'gcs', 'azure']`, which was the same list of driver subpaths written
+// down in three places — here, each manifest's `exports`, and `scripts/smoke.cjs`. Splitting the drivers into
+// their own packages would have meant editing all three; deriving it means editing none. A subpath that is
+// declared and not built now fails the build rather than 404-ing for a consumer, and `smoke.cjs` independently
+// loads every entry the map declares, so the map is checked from both directions.
+const entries = {};
+for (const key of Object.keys(pkg.exports ?? { '.': null })) {
+  const name = key === '.' ? 'index' : key.replace(/^\.\//, '');
+  const dir = path.join('src', name, 'index.ts');
+  const flat = path.join('src', `${name}.ts`);
+  if (existsSync(path.join(pkgDir, dir)))
+    entries[`${name}/index`.replace(/^index\/index$/, 'index')] = dir;
+  else if (existsSync(path.join(pkgDir, flat))) entries[name] = flat;
+  else
+    throw new Error(`${pkg.name}: exports declares "${key}" but neither ${dir} nor ${flat} exists`);
 }
 
 const common = {
@@ -46,6 +62,19 @@ const common = {
   target: 'es2022',
   sourcemap: true,
   packages: 'external',
+  // Our OWN packages too, which `packages: 'external'` does not cover on its own.
+  //
+  // Each package's tsconfig maps `@cloudbitmaps/core` through `paths` to core's SOURCE, so it typechecks
+  // without core being built first — and esbuild applies `paths` BEFORE it decides what to externalise, so
+  // without this line every dependent inlined its own private copy of core. That had three costs, all
+  // measured: a flavor bundle of 232 KB against 70 KB, four copies of the same classes in one install, and a
+  // published `.d.ts` asserting `extends ObjectStoreRegistry` that was false at runtime because the base
+  // class in the driver's copy was not the one core exports.
+  //
+  // External means the declared `dependencies: { '@cloudbitmaps/core': … }` is load-bearing at runtime
+  // rather than types-only, there is exactly one copy of core in an ordinary install, and `instanceof`
+  // across our packages holds.
+  external: ['@cloudbitmaps/*'],
   logLevel: 'warning',
   absWorkingDir: pkgDir,
 };

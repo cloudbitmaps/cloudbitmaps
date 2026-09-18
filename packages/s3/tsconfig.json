@@ -1,0 +1,21 @@
+{
+  "//": "@cloudbitmaps/s3 — a storage driver package. `@cloudbitmaps/core` is a real dependency: the `paths` below resolve it to core's SOURCE so this package typechecks without core being built first, while `scripts/build.mjs` marks `@cloudbitmaps/*` external so the BUNDLE imports it at runtime instead of inlining a private copy. Both halves matter — inlining it is what made `extends ObjectStoreRegistry` false at runtime in the published .d.ts.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@cloudbitmaps/core": ["../core/src/index.ts"],
+      "@cloudbitmaps/core/*": ["../core/src/*"],
+
+      // CORE's self-alias, not this package's. The two entries above deliberately resolve
+      // `@cloudbitmaps/core` to core's SOURCE so this package typechecks without core being built first,
+      // which pulls core's 26 `@/…`-importing files into this program. `paths` REPLACES the inherited map
+      // rather than merging with it, so without this line those imports resolve against nothing: 70 ×
+      // TS2307, plus 2 × TS7006 where a failed resolution degraded a parameter to `any`. Nothing under
+      // packages/s3/src imports `@/…` (zero files), so there is no ambiguity today — but if that
+      // changed, `@/` here would silently mean core's src.
+      "@/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules"]
+}

@@ -6,21 +6,196 @@
  * Guards the `roaring` CJS→ESM interop: `roaring` is a CommonJS native addon, and a *named* ESM import of
  * it crashes Node's ESM loader (its static lexer can't see the CJS exports). We load the package **by name**
  * — so the package.json `exports` map and its `import`/`require` conditions are exercised too, not just the
- * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every subpath, then run the
- * roaring-backed load/read path. The roaring interop is exercised specifically by the main `.` entry (only it
- * pulls in the SafeBitmap); the `/s3` + `/gcs` + `/azure` entries additionally guard the exports map and their
- * AWS-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
+ * dist files — via dynamic `import()` (ESM) and `require()` (CJS) for every entry of every package, then run
+ * the roaring-backed load/read path. The roaring interop is exercised specifically by the flavor's main `.`
+ * entry (only it pulls in the SafeBitmap); the three driver packages additionally guard their own exports
+ * maps and their cloud-SDK interop. The bin is a separate tsup build with its own bundled `roaring` import, so it's loaded
  * too. Any regression fails the build. Run via `pnpm smoke` (builds first) or `node scripts/smoke.cjs`.
  */
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-// Self-reference by name → resolves through the package `exports` map. This is the FLAVOR package (what
-// users install); its driver subpaths re-export `@cloudbitmaps/core/<driver>`, so the smoke exercises the real
-// two-package graph end to end, not just one bundle.
+// Self-reference by name → resolves through the package `exports` map. `PKG` is the flavor and `S3` one of
+// the driver packages a user installs beside it; naming them separately is what lets the checks below cross
+// a real package boundary rather than staying inside one bundle.
 const PKG = '@cloudbitmaps/roaring';
 const CORE = '@cloudbitmaps/core';
-const SUBPATHS = ['', '/s3', '/gcs', '/azure'];
+const S3 = '@cloudbitmaps/s3';
+/**
+ * The packages whose whole job is to name a cloud SDK. Everything else must not.
+ *
+ * This used to be a list of DIRECTORIES inside one package (`dist/s3`, `dist/drivers/s3`), because the
+ * drivers were subpaths of core. They are packages now, so the boundary moved from a path prefix to a
+ * package name — and the SDK-free sweep skips these three rather than skipping three folders in each.
+ */
+/**
+ * Which packages are storage-driver packages — DERIVED, like every other topology list in this repo.
+ *
+ * A driver package is one that depends on a cloud SDK; that is the same definition the packaging uses, so
+ * the two cannot disagree. Hardcoding the three meant a fourth service package would have had
+ * `assertEntrySdkFree` run against it and fail for naming the SDK it exists to wrap.
+ */
+const DRIVER_PACKAGES = (() => {
+  const { readdirSync, readFileSync, existsSync } = require('node:fs');
+  const dir = path.join(__dirname, '..', 'packages');
+  const CLOUD_SDK = /^(?:@aws-sdk\/|aws-sdk$|@google-cloud\/|@azure\/)/;
+  // `core` can NEVER be a driver package, whatever its manifest says. This list decides who is EXEMPT from
+  // `assertEntrySdkFree`, so a derivation able to classify core would let core exempt itself from the check
+  // enforcing "the main entry stays SDK-free" — hard invariant 7. An innocuous `@aws-sdk/types` or
+  // `@azure/core-*` utility is enough to trigger it, and the check would then stop running rather than
+  // fail. eslint still catches a direct import in source, but only smoke walks the BUILT entry graph.
+  const NEVER_A_DRIVER = new Set(['core']);
+  const found = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(path.join(dir, e.name, 'package.json')))
+    .filter((e) => !NEVER_A_DRIVER.has(e.name))
+    .filter((e) => {
+      const m = JSON.parse(readFileSync(path.join(dir, e.name, 'package.json'), 'utf8'));
+      return Object.keys(m.dependencies ?? {}).some((d) => CLOUD_SDK.test(d));
+    })
+    .map((e) => e.name);
+  if (found.length === 0)
+    throw new Error('smoke: no driver package found — the derivation is broken');
+  return found;
+})();
+
+/**
+ * Every relative specifier in an emitted `.d.ts` must carry an explicit extension, and must resolve.
+ *
+ * Runs for EVERY package, including the driver packages the SDK sweep deliberately skips. Those two checks
+ * used to share one function, so skipping the SDK sweep for a driver package silently skipped this as well —
+ * and the driver packages publish `.d.ts` like any other, so they need it just as much.
+ */
+function assertDtsSpecifiers(pkgDir) {
+  const { readFileSync, existsSync } = require('node:fs');
+  const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
+  const read = (f) => readFileSync(path.join(dist, f), 'utf8');
+  //
+  // Without an extension, `moduleResolution: node16`/`nodenext` cannot resolve it (TS2834) — and the failure
+  // is SILENT for almost everyone, because the near-universal `skipLibCheck: true` suppresses the error and
+  // TypeScript then types everything reached through that specifier as `any`. Since an entry re-exports
+  // nearly everything, that is nearly the whole published surface — and a consumer gets no diagnostic at
+  // all; they just lose it, including compile-time guards meant to refuse a bad wiring.
+  //
+  // The scanner is the same module `scripts/build.mjs` rewrites with, so the gate cannot check something
+  // other than what the build fixes, and neither one touches a relative path inside a doc-comment.
+  //
+  // The second half checks the build's own work: a specifier the rewrite produced that points at no file
+  // would be just as unresolvable, and is the one remaining way to ship a broken `.d.ts` quietly.
+  const bad = [];
+  const unresolvable = [];
+  const allDts = declarationFiles(dist);
+  // A package that emits NO declarations at all would sail through both loops below with an empty list and
+  // report "0 file(s)" as a pass — while its `types` entry points at nothing and every consumer silently
+  // gets `any`. Every package here declares types, so zero is always a build regression, never a valid state.
+  if (allDts.length === 0) {
+    throw new Error(
+      `${pkgDir}: dist/ contains no .d.ts files at all. The exports map promises types, so this is a build ` +
+        `regression — and every check over the declaration tree would otherwise pass vacuously.`,
+    );
+  }
+  for (const file of allDts) {
+    const source = read(file);
+    for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
+    for (const spec of allSpecifiers(source)) {
+      if (!EXTENSIONED.test(spec)) continue; // already reported above
+      const abs = path.resolve(path.dirname(path.join(dist, file)), spec);
+      const candidates = [
+        abs, // .json, and anything already naming a real file
+        abs.replace(/\.js$/, '.d.ts'),
+        abs.replace(/\.mjs$/, '.d.mts'),
+        abs.replace(/\.cjs$/, '.d.cts'),
+      ];
+      if (!candidates.some((c) => existsSync(c))) unresolvable.push(`${file} → ${spec}`);
+    }
+  }
+  const report = (list, what) => {
+    const shown = list.slice(0, 5).join('\n  ');
+    const rest = list.length > 5 ? `\n  … and ${list.length - 5} more` : '';
+    return `${list.length} ${what}\n  ${shown}${rest}`;
+  };
+  if (bad.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(bad, 'extensionless relative specifier(s) in emitted .d.ts — ') +
+        `\n  node16/nodenext consumers would silently get \`any\` for everything behind it.`,
+    );
+  }
+  if (unresolvable.length > 0) {
+    throw new Error(
+      `@cloudbitmaps/${pkgDir}: ` +
+        report(unresolvable, 'relative specifier(s) in emitted .d.ts pointing at no file — ') +
+        `\n  The extension pass in scripts/build.mjs produced a path that does not resolve.`,
+    );
+  }
+  console.log(
+    `  .d.ts specifiers all extensioned and resolvable: @cloudbitmaps/${pkgDir} ` +
+      `(${allDts.length} file(s))`,
+  );
+}
+
+/**
+ * A declared subpath must also be reachable by a resolver that cannot read `exports`.
+ *
+ * `moduleResolution: node`/`node10` ignores `exports` entirely and looks at `types`/`typesVersions`. So a
+ * subpath like `@cloudbitmaps/core/driver-kit` resolves for a modern consumer and is INVISIBLE to a node10
+ * one — and because the driver packages name it in twelve shipped `.d.ts` files, everything behind it
+ * silently became `any` there, which `skipLibCheck: true` then hides completely.
+ *
+ * That is the same silent-`any` failure `scripts/build.mjs` documents at length for extensionless relative
+ * specifiers, arriving by a different route: a bare cross-package specifier. Second occurrence of one class
+ * earns a gate, so this asserts the manifest-level invariant rather than re-deriving resolution — every
+ * subpath in `exports` has a `typesVersions` entry pointing at a real declaration file.
+ */
+function assertSubpathsResolveWithoutExports(pkgDir) {
+  const { readFileSync, existsSync } = require('node:fs');
+  const root = path.join(__dirname, '..', 'packages', pkgDir);
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const subpaths = Object.keys(manifest.exports ?? {}).filter((k) => k !== '.');
+  if (subpaths.length === 0) return;
+  const tv = manifest.typesVersions?.['*'] ?? {};
+  const missing = [];
+  for (const key of subpaths) {
+    const name = key.replace(/^\.\//, '');
+    const target = tv[name]?.[0];
+    if (target === undefined || !existsSync(path.join(root, target))) {
+      missing.push(
+        `${manifest.name}/${name}${target === undefined ? '' : ` -> ${target} (no such file)`}`,
+      );
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `${manifest.name}: ${missing.length} declared subpath(s) have no usable \`typesVersions\` entry, so a ` +
+        `\`moduleResolution: node\` consumer cannot resolve their types and everything behind them becomes ` +
+        `\`any\` — silently, because skipLibCheck hides the diagnostic.\n  ` +
+        missing.join('\n  '),
+    );
+  }
+  console.log(`  subpaths resolve without exports: @cloudbitmaps/${pkgDir} (${subpaths.length})`);
+}
+
+/** Every package directory in the workspace. */
+function packageDirs() {
+  return require('node:fs')
+    .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+}
+
+/** Every entry a package declares, as a specifier — derived from its own `exports`, never a written list. */
+function entriesOf(pkgDir) {
+  const manifest = JSON.parse(
+    require('node:fs').readFileSync(
+      path.join(__dirname, '..', 'packages', pkgDir, 'package.json'),
+      'utf8',
+    ),
+  );
+  const name = manifest.name;
+  return Object.keys(manifest.exports ?? { '.': null }).map((k) =>
+    k === '.' ? name : `${name}/${k.replace(/^\.\//, '')}`,
+  );
+}
 
 // The loaded store's whole write path in one call: `bulkLoadCrbmGeneration` encodes the ids into one immutable
 // `.crbm` generation and publishes it forward-only, and only then can a read see them. So this is also the
@@ -72,14 +247,23 @@ async function exerciseCore(label, m) {
  * and neither can observe a mismatch. Run as-was, this check had become vacuous — replacing every
  * `Symbol.for(…)` with `Symbol(…)` in the built chunk left it green.
  *
- * The boundary that still exists is between the two PACKAGES. `@cloudbitmaps/roaring` and
- * `@cloudbitmaps/core` are bundled separately and each carries its own copy of the error classes, so
- * `instanceof` across them is genuinely false (asserted below, so this rationale cannot quietly rot) while
- * the predicates hold. That is also a real user path: the docs say importing `@cloudbitmaps/core/s3` is
- * equivalent to the roaring subpath, and a consumer who mixes the two gets exactly this.
+ * Nor is the PACKAGE boundary load-bearing any more, and this comment previously claimed it was — it said
+ * each package carried its own copy of the error classes, which stopped being true the moment the build
+ * started marking `@cloudbitmaps/*` external. `assertPackagesShareOneCopy` now asserts the opposite: one
+ * copy of core across all five packages, so `instanceof` holds and the identity the predicates defend is
+ * the one a normal install already has.
  *
- * The same-package legs are kept as cheap consistency checks, so a future build change that stops sharing
- * the ESM chunk is covered without anyone remembering to add it.
+ * So what these checks pin is that the predicates are WIRED UP across a real package boundary — that the
+ * built `@cloudbitmaps/s3` throws something the built `@cloudbitmaps/core` classifies. They do NOT pin the
+ * brand's registration, and an earlier version of this comment claimed they did: it said switching a
+ * `Symbol.for(…)` to a plain `Symbol(…)` "must turn this red". It does not. With one shared copy of core
+ * the brand is a single module-level constant that the throwing class and the reading predicate both close
+ * over, so symbol identity holds whether or not the symbol is registered, and every assertion below stays
+ * green. That property is asserted directly, against the global registry, in
+ * `tests/core/error-predicates.test.ts` — which is where a claim a build cannot reproduce belongs.
+ *
+ * Keep both legs running anyway: a future build change that stops sharing the ESM chunk is then covered
+ * without anyone remembering to add it.
  */
 function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod) {
   let caught;
@@ -100,7 +284,7 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
   // Same boundary, second brand. A backend built in the driver bundle must be recognised by the store —
   // the whole reason the brand is a registered `Symbol.for` and not a class check or a module-local symbol.
   // Nothing else pins it: switching it to a plain `Symbol()` leaves lint, typecheck and the full suite green
-  // while every user of a driver subpath gets `storage must be a backend` for a backend they just built.
+  // while every user of a driver package gets `storage must be a backend` for a backend they just built.
   const s3Backend = new driverMod.S3Storage({ bucket: 'smoke', region: 'us-east-1' });
   if (!coreMod.isStorageBackend(s3Backend)) {
     throw new Error(
@@ -119,26 +303,42 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
 }
 
 /**
- * Prove the two packages really are separate copies, so the cross-package leg above is not quietly testing
- * one bundle against itself. If a future build ever merges them, `instanceof` starts succeeding here and
- * this fails loudly rather than leaving the brand check to pass for the wrong reason.
+ * Prove our packages share ONE copy of core — the property that makes `instanceof` work across them.
+ *
+ * This assertion used to say the opposite, and was right to: every dependent bundled its own private copy of
+ * core, because each tsconfig maps `@cloudbitmaps/core` through `paths` to core's source and esbuild applies
+ * `paths` before deciding externals. `scripts/build.mjs` now marks `@cloudbitmaps/*` external, so there is
+ * one copy, and the assertion inverts with it.
+ *
+ * It is worth keeping in the new direction because the old behaviour is one missing line away: drop that
+ * `external` and every dependent silently re-inlines core, `instanceof` silently stops matching, and the
+ * published `.d.ts` goes back to asserting an `extends` that is false at runtime. Nothing else notices —
+ * lint, typecheck and the whole suite compile one source graph and cannot see it.
+ *
+ * The `Symbol.for` predicates stay the documented way to classify an error even so, because a consumer can
+ * still end up with two copies through version skew between our packages, and there `instanceof` fails again.
  */
-function assertPackagesAreSeparateCopies(coreMod, driverMod) {
+function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
+  if (coreMod.ValidationError !== flavorMod.ValidationError) {
+    throw new Error(
+      'core and the flavor no longer share one copy of the error classes — `@cloudbitmaps/*` has stopped ' +
+        'being external in scripts/build.mjs, so each package inlined its own core again. `instanceof` ' +
+        'across our packages is now silently false for every consumer.',
+    );
+  }
   let caught;
   try {
     new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
   } catch (e) {
     caught = e;
   }
-  if (caught instanceof coreMod.ValidationError) {
+  if (!(caught instanceof coreMod.ValidationError)) {
     throw new Error(
-      'the core and roaring packages now share one copy of the error classes, so the cross-package brand ' +
-        'check no longer crosses anything — point it at a boundary that still exists, or drop it.',
+      'an error thrown by the S3 driver package is not `instanceof` the class core exports, so the driver ' +
+        'package is carrying its own copy of core.',
     );
   }
-  console.log(
-    '  core and roaring are separate copies (instanceof across them is false, as designed)',
-  );
+  console.log('  one shared copy of core: instanceof holds across packages');
 }
 
 /*
@@ -153,42 +353,32 @@ function assertPackagesAreSeparateCopies(coreMod, driverMod) {
  * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
  * never called the feature: a bundler resolves specifiers before it tree-shakes.
  *
- * WHAT IS CHECKED. The ESM entry, every module reachable from it (transitively, lazy `import()` included),
- * and the published `.d.ts` tree outside the driver subpaths — a type-only `import('@aws-sdk/client-s3')` in
- * `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a hard `Cannot find module` for any
- * consumer building with `skipLibCheck: false` who did not install the optional peer.
+ * WHAT IS CHECKED. For `@cloudbitmaps/core` and `@cloudbitmaps/roaring`: the ESM entry, every module
+ * reachable from it (transitively, lazy `import()` included), and the published `.d.ts` tree. A type-only
+ * `import('@aws-sdk/client-s3')` in `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a
+ * hard `Cannot find module` for any consumer building with `skipLibCheck: false`.
  *
- * WHAT IS NOT. The driver subpath bundles (`dist/s3/…`) are where an SDK belongs and are never read, and
- * neither is the chunk only they share — unreachable from the main entry, which is the whole point.
- * The walk asserts it actually reached a chunk rather than silently covering none.
+ * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary
+ * used to be a directory inside core and is now a package name, which is why this is a list of packages to
+ * skip rather than a path prefix to avoid — and why core is now SDK-free unconditionally rather than
+ * SDK-free outside three directories.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
 
-/** Driver homes, relative to a package's `dist/` — the one place an SDK specifier is correct. */
-const DRIVER_DIRS = ['s3', 'gcs', 'azure'];
-
-function isDriverPath(rel) {
-  const parts = rel.split(path.sep);
-  return (
-    DRIVER_DIRS.includes(parts[0]) || (parts[0] === 'drivers' && DRIVER_DIRS.includes(parts[1]))
-  );
-}
-
 /**
- * Every `.d.ts` under `dist/`, as a path relative to `dist`. `includeDrivers` distinguishes the two
- * callers: the SDK sweep must skip the driver trees (naming an SDK is exactly what they are for), while
- * the specifier sweep covers them too — a driver subpath is published with the same resolution rules.
+ * Every `.d.ts` under `dist/`, as a path relative to `dist`. Both sweeps take the whole tree; which
+ * PACKAGES each one runs over is decided by the caller, since the SDK sweep skips the driver packages while
+ * the specifier sweep covers all five.
  */
-function declarationFiles(dist, { includeDrivers = false } = {}) {
+function declarationFiles(dist) {
   const { readdirSync } = require('node:fs');
   const out = [];
   const walk = (dir, rel) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const childRel = rel ? path.join(rel, entry.name) : entry.name;
       if (entry.isDirectory()) walk(path.join(dir, entry.name), childRel);
-      else if (entry.name.endsWith('.d.ts') && (includeDrivers || !isDriverPath(childRel)))
-        out.push(childRel);
+      else if (entry.name.endsWith('.d.ts')) out.push(childRel);
     }
   };
   walk(dist, '');
@@ -196,7 +386,7 @@ function declarationFiles(dist, { includeDrivers = false } = {}) {
 }
 
 function assertEntrySdkFree(pkgDir) {
-  const { readFileSync, existsSync, statSync } = require('node:fs');
+  const { readFileSync, statSync } = require('node:fs');
   const dist = path.join(__dirname, '..', 'packages', pkgDir, 'dist');
   const read = (f) => readFileSync(path.join(dist, f), 'utf8');
 
@@ -214,9 +404,9 @@ function assertEntrySdkFree(pkgDir) {
   // lazy `import()` or a chunk-imported-by-chunk ever appears. Neither does today: there is not one dynamic
   // import in either package's source, which is why both entries report 2 reachable modules.
   //
-  // It also stays correctly SCOPED. A driver-only chunk is not reachable from `index.js` — verified: each
-  // package emits one chunk shared by the three driver subpaths and never imported by the main entry — so
-  // it is not walked, which is right, since naming an SDK is exactly what a driver is for.
+  // Scoping is now a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which
+  // this walk never enters, so there is no longer a driver-only chunk inside core or the flavor for it to
+  // have to avoid.
   const reachable = (entry) => {
     const seen = new Set();
     const queue = [entry];
@@ -241,11 +431,18 @@ function assertEntrySdkFree(pkgDir) {
 
   // `chunkNames: 'chunk-[hash]'` in scripts/build.mjs is an undocumented contract with the literal below.
   // Rename it there and this walk would quietly cover less, so make that loud instead.
-  if (!entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
+  //
+  // Only for a package with MORE THAN ONE entry, because only then is there anything to code-split. A
+  // single-entry package legitimately emits no chunk — everything lands in `index.js`, so walking that one
+  // file already covers the whole reachable graph. Requiring a chunk unconditionally turned the package
+  // split into a false alarm: the flavor dropped from four entries to one and this fired saying the build
+  // had stopped splitting, which was true and fine.
+  const entryCount = entriesOf(pkgDir).length;
+  if (entryCount > 1 && !entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
-      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file, so the chunk walk covers nothing. ` +
-        `Either the build stopped splitting, or \`chunkNames\` in scripts/build.mjs no longer emits ` +
-        `\`chunk-\` — update the pattern here to match.`,
+      `@cloudbitmaps/${pkgDir}: dist/index.js reaches no ./chunk-* file although the package declares ` +
+        `${entryCount} entries, so the chunk walk covers nothing. Either the build stopped splitting, or ` +
+        `\`chunkNames\` in scripts/build.mjs no longer emits \`chunk-\` — update the pattern here to match.`,
     );
   }
 
@@ -265,61 +462,6 @@ function assertEntrySdkFree(pkgDir) {
   console.log(
     `  main entry SDK-free: @cloudbitmaps/${pkgDir} ` +
       `(${entryGraph.length} reachable module(s), ${declarationFiles(dist).length} .d.ts)`,
-  );
-
-  // Every relative specifier in an emitted .d.ts must carry an explicit extension, and must resolve.
-  //
-  // Without an extension, `moduleResolution: node16`/`nodenext` cannot resolve it (TS2834) — and the failure
-  // is SILENT for almost everyone, because the near-universal `skipLibCheck: true` suppresses the error and
-  // TypeScript then types everything reached through that specifier as `any`. Since an entry re-exports
-  // nearly everything, that is nearly the whole published surface — and a consumer gets no diagnostic at
-  // all; they just lose it, including compile-time guards meant to refuse a bad wiring.
-  //
-  // The scanner is the same module `scripts/build.mjs` rewrites with, so the gate cannot check something
-  // other than what the build fixes, and neither one touches a relative path inside a doc-comment.
-  //
-  // The second half checks the build's own work: a specifier the rewrite produced that points at no file
-  // would be just as unresolvable, and is the one remaining way to ship a broken `.d.ts` quietly.
-  const bad = [];
-  const unresolvable = [];
-  const allDts = declarationFiles(dist, { includeDrivers: true });
-  for (const file of allDts) {
-    const source = read(file);
-    for (const spec of findSpecifiers(source)) bad.push(`${file} → ${spec}`);
-    for (const spec of allSpecifiers(source)) {
-      if (!EXTENSIONED.test(spec)) continue; // already reported above
-      const abs = path.resolve(path.dirname(path.join(dist, file)), spec);
-      const candidates = [
-        abs, // .json, and anything already naming a real file
-        abs.replace(/\.js$/, '.d.ts'),
-        abs.replace(/\.mjs$/, '.d.mts'),
-        abs.replace(/\.cjs$/, '.d.cts'),
-      ];
-      if (!candidates.some((c) => existsSync(c))) unresolvable.push(`${file} → ${spec}`);
-    }
-  }
-  const report = (list, what) => {
-    const shown = list.slice(0, 5).join('\n  ');
-    const rest = list.length > 5 ? `\n  … and ${list.length - 5} more` : '';
-    return `${list.length} ${what}\n  ${shown}${rest}`;
-  };
-  if (bad.length > 0) {
-    throw new Error(
-      `@cloudbitmaps/${pkgDir}: ` +
-        report(bad, 'extensionless relative specifier(s) in emitted .d.ts — ') +
-        `\n  node16/nodenext consumers would silently get \`any\` for everything behind it.`,
-    );
-  }
-  if (unresolvable.length > 0) {
-    throw new Error(
-      `@cloudbitmaps/${pkgDir}: ` +
-        report(unresolvable, 'relative specifier(s) in emitted .d.ts pointing at no file — ') +
-        `\n  The extension pass in scripts/build.mjs produced a path that does not resolve.`,
-    );
-  }
-  console.log(
-    `  .d.ts specifiers all extensioned and resolvable: @cloudbitmaps/${pkgDir} ` +
-      `(${allDts.length} file(s))`,
   );
 }
 
@@ -388,10 +530,12 @@ function assertRanLikeDirect(bin, how, viaLink, direct, out) {
 }
 
 async function main() {
-  for (const sub of SUBPATHS) {
-    await import(PKG + sub); // ESM `import` condition — the path that used to crash under Node ESM
-    require(PKG + sub); // CJS `require` condition
-    console.log(`  import + require OK: ${PKG}${sub || ''}`);
+  for (const pkgDir of packageDirs()) {
+    for (const specifier of entriesOf(pkgDir)) {
+      await import(specifier); // ESM `import` condition
+      require(specifier); // CJS `require` condition, which on >=22.12 is `require(esm)`
+      console.log(`  import + require OK: ${specifier}`);
+    }
   }
   // The bin is built by scripts/build.mjs into dist/bin (its own bundle) and isn't in `exports`,
   // so load it by path. Safe: its run-guard only invokes main() when executed as the CLI, not on import.
@@ -406,22 +550,16 @@ async function main() {
   await exerciseCore('cjs', require(PKG));
 
   // Same-package legs: cheap consistency, and cover for a future build that stops sharing the ESM chunk.
-  exerciseCrossBundleErrors('esm', await import(PKG), await import(PKG + '/s3'));
-  exerciseCrossBundleErrors('cjs', require(PKG), require(PKG + '/s3'));
+  exerciseCrossBundleErrors('esm', await import(CORE), await import(S3), await import(PKG));
+  exerciseCrossBundleErrors('cjs', require(CORE), require(S3), require(PKG));
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
-  assertPackagesAreSeparateCopies(require(CORE), require(PKG + '/s3'));
-  exerciseCrossBundleErrors('cross-package', require(CORE), require(PKG + '/s3'), require(PKG));
-  exerciseCrossBundleErrors(
-    'cross-package (core driver → roaring store)',
-    require(CORE),
-    require(CORE + '/s3'),
-    require(PKG),
-  );
-  for (const pkgDir of require('node:fs')
-    .readdirSync(path.join(__dirname, '..', 'packages'), { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)) {
-    assertEntrySdkFree(pkgDir);
+  assertPackagesShareOneCopy(require(CORE), require(PKG), require(S3));
+  for (const pkgDir of packageDirs()) {
+    // The SDK sweep skips the driver packages — naming an SDK is what they exist for. The specifier check
+    // does not: they publish `.d.ts` like everything else.
+    if (!DRIVER_PACKAGES.includes(pkgDir)) assertEntrySdkFree(pkgDir);
+    assertDtsSpecifiers(pkgDir);
+    assertSubpathsResolveWithoutExports(pkgDir);
   }
 
   console.log(

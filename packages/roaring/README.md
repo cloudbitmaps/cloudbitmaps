@@ -13,20 +13,21 @@ always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `inter
 
 This is the **flagship flavor** of the [CloudBitmaps](https://github.com/cloudbitmaps/cloudbitmaps) family: the
 roaring codec (CRoaring, via `roaring`) plus the `CloudRoaring` facade, on top of the codec-agnostic
-[`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core) engine — which arrives **transitively**,
-so this is the only package you install.
+[`@cloudbitmaps/core`](https://www.npmjs.com/package/@cloudbitmaps/core) engine, which is a dependency of
+this package and of the storage package you pair it with — so you never install or name core yourself.
 
 ```bash
-npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
+npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the codec, and the storage you have
 ```
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 ```
 
-Every storage driver is re-exported on a matching subpath (`/s3`, `/gcs`, `/azure`); each backend SDK
-is an optional peer dependency, so the main entry stays lean. Ships one CLI: `export-segments`.
+Install the storage you have alongside this: **`@cloudbitmaps/s3`** (also R2, MinIO, Ceph, Wasabi, B2),
+**`@cloudbitmaps/gcs`** or **`@cloudbitmaps/azure-blob`**. Each depends on its cloud SDK for real, so nothing
+is an optional peer and no install carries an SDK you do not use. Ships one CLI: `export-segments`.
 
 ## The model in one paragraph
 

@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/roaring",
   "version": "0.9.0",
-  "description": "Distributed, cloud-native Roaring Bitmaps \u2014 query and intersect billion-scale integer sets straight out of object storage, from a bounded RAM cache over immutable objects in your own bucket, at a fraction of an always-on cache.",
+  "description": "Distributed, cloud-native Roaring Bitmaps — query and intersect billion-scale integer sets straight out of object storage, from a bounded RAM cache over immutable objects in your own bucket, at a fraction of an always-on cache.",
   "keywords": [
     "roaring",
     "bitmap",
@@ -31,7 +31,8 @@
   "author": "Sharvil Kadam",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git",
+    "directory": "packages/roaring"
   },
   "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
   "bugs": {
@@ -48,18 +49,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./s3": {
-      "types": "./dist/s3/index.d.ts",
-      "default": "./dist/s3/index.js"
-    },
-    "./gcs": {
-      "types": "./dist/gcs/index.d.ts",
-      "default": "./dist/gcs/index.js"
-    },
-    "./azure": {
-      "types": "./dist/azure/index.d.ts",
-      "default": "./dist/azure/index.js"
     }
   },
   "files": [
@@ -80,29 +69,10 @@
     "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
-    "@cloudbitmaps/core": "workspace:*",
+    "@cloudbitmaps/core": "workspace:^",
     "roaring": "2.7.0"
   },
-  "peerDependencies": {
-    "@aws-sdk/client-s3": "^3",
-    "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^7 || ^8"
-  },
-  "peerDependenciesMeta": {
-    "@aws-sdk/client-s3": {
-      "optional": true
-    },
-    "@azure/storage-blob": {
-      "optional": true
-    },
-    "@google-cloud/storage": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.1132.0",
-    "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^8.1.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
   }

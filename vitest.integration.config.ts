@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config';
 
 const CORE = fileURLToPath(new URL('./packages/core/src', import.meta.url));
 const ROARING = fileURLToPath(new URL('./packages/roaring/src', import.meta.url));
+const S3 = fileURLToPath(new URL('./packages/s3/src', import.meta.url));
+const GCS = fileURLToPath(new URL('./packages/gcs/src', import.meta.url));
+const AZURE = fileURLToPath(new URL('./packages/azure-blob/src', import.meta.url));
 
 // Integration suite — runs against the object stores via `docker compose` (see docker-compose.yml).
 // The first real integration test was the S3 storage driver against MinIO; the lane now covers MinIO,
@@ -11,7 +14,10 @@ export default defineConfig({
   test: {
     globals: true,
     include: ['tests/integration/**/*.test.ts'],
-    passWithNoTests: true,
+    // A zero-file sweep is a green light that proves nothing, and this lane is the ONLY place the three
+    // split-out driver packages touch a real backend — everything else mocks the SDK client. A renamed
+    // directory or a glob typo would otherwise start three containers, exercise nothing, and pass.
+    passWithNoTests: false,
     // S3/MinIO round-trips + bucket setup need more than the default 5s.
     testTimeout: 30_000,
     hookTimeout: 30_000,
@@ -26,9 +32,21 @@ export default defineConfig({
     alias: [
       { find: /^@\/index$/, replacement: ROARING + '/index.ts' },
       { find: /^@\/roaring-codec$/, replacement: ROARING + '/roaring-codec.ts' },
+      // Kept in step with `vitest.config.ts`: two aliases were missing here, so an integration test
+      // importing either would fall through the `@/(.*)` catch-all to a core path that does not exist.
+      { find: /^@\/system-clock$/, replacement: ROARING + '/system-clock.ts' },
+      { find: /^@\/portable\/(.*)$/, replacement: ROARING + '/portable/$1' },
       { find: /^@\/testing\/(.*)$/, replacement: ROARING + '/testing/$1' },
       { find: /^@\/bin\/(.*)$/, replacement: ROARING + '/bin/$1' },
+      // The driver packages' own sources, for the white-box unit tests. Same idea as `@/index` above:
+      // `@/…` addresses workspace sources, and which package a path lands in follows the topology.
+      { find: /^@\/s3\/(.*)$/, replacement: S3 + '/$1' },
+      { find: /^@\/gcs\/(.*)$/, replacement: GCS + '/$1' },
+      { find: /^@\/azure-blob\/(.*)$/, replacement: AZURE + '/$1' },
       { find: /^@\/(.*)$/, replacement: CORE + '/$1' },
+      { find: /^@cloudbitmaps\/s3$/, replacement: S3 + '/index.ts' },
+      { find: /^@cloudbitmaps\/gcs$/, replacement: GCS + '/index.ts' },
+      { find: /^@cloudbitmaps\/azure-blob$/, replacement: AZURE + '/index.ts' },
       { find: /^@cloudbitmaps\/core$/, replacement: CORE + '/index.ts' },
       { find: /^@cloudbitmaps\/core\/(.*)$/, replacement: CORE + '/$1' },
     ],

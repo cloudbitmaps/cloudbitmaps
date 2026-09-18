@@ -42,7 +42,7 @@ async function validFile(): Promise<Uint8Array> {
   return sink.bytes();
 }
 
-describe('fuzz the .crbm read boundary (V7)', () => {
+describe('fuzz the .crbm read boundary (hard invariant 5: tier bytes are untrusted)', () => {
   it('arbitrary bytes only ever raise typed CloudRoaringErrors', async () => {
     await fc.assert(
       fc.asyncProperty(fc.uint8Array({ maxLength: 400 }), async (bytes) => {

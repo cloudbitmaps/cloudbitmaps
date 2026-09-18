@@ -8,15 +8,15 @@
 > and chunk-skipping `intersect` — from anywhere, with **automatic retry/backoff**, **encryption-at-rest +
 > crypto-shred**, retention, GDPR erasure, cost reporting and observability around it.
 
-> **One package to install: `@cloudbitmaps/roaring`.** Every import below is the real specifier. It is the
-> *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
-> the `CloudRoaring` facade — and it depends on **`@cloudbitmaps/core`**, the codec-agnostic engine that holds
-> every storage driver. Core arrives **transitively**: you never install or name it (each
-> `@cloudbitmaps/roaring/<backend>` subpath re-exports core's driver of the same name, so
-> `@cloudbitmaps/core/s3` is equivalent if you prefer it).
+> **Two packages to install: a codec and a storage.** Every import below is the real specifier. The codec is
+> `@cloudbitmaps/roaring`, the *roaring flavor* of the `@cloudbitmaps` family — the roaring codec +
+> the `CloudRoaring` facade. The storage you use is the second package — `@cloudbitmaps/s3`,
+> `@cloudbitmaps/gcs` or `@cloudbitmaps/azure-blob` — which depends on its cloud SDK for real, so installing
+> it is the whole step. Both depend on **`@cloudbitmaps/core`**, the codec-agnostic engine, which arrives
+> **transitively**: you never install or name it.
 
 > **Every export at a glance:** for the complete list of everything you can import and call (across
-> `@cloudbitmaps/roaring` and its `/s3`, `/gcs` and `/azure` subpaths), see the
+> `@cloudbitmaps/roaring` and the `s3` / `gcs` / `azure-blob` driver packages), see the
 > **[API Reference](api-reference.md)** — it's kept in sync with the code by CI. This guide is the narrated
 > walkthrough of that same surface.
 
@@ -57,7 +57,7 @@
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 
 const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', prefix: 'prod' }) });
 
@@ -84,8 +84,8 @@ The rest of this guide walks each step in turn.
 | **`intersectInto` / `unionInto` / `andNotInto`** — materialize a result as a **new generation** of another segment | ✅ |
 | In-memory drivers (zero setup) | ✅ |
 | Persistent **local filesystem** drivers (survive restart) | ✅ |
-| **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/roaring/s3`), multipart for large generations | ✅ |
-| **GCS + Azure Blob** storage (`@cloudbitmaps/roaring/gcs`, `@cloudbitmaps/roaring/azure`) — write-once immutable generations | ✅ |
+| **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/s3`), multipart for large generations | ✅ |
+| **GCS + Azure Blob** storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) — write-once immutable generations | ✅ |
 | `.crbm` archive read/write + a bounded cache | ✅ |
 | **Automatic retry + backoff** for transient faults (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
@@ -104,8 +104,8 @@ The rest of this guide walks each step in turn.
 ### Choosing a registry
 
 > **Every backend ships a registry.** `MemoryRegistryDriver`, `LocalFsRegistryDriver`, `S3RegistryDriver`
-> (`@cloudbitmaps/roaring/s3`), `GcsRegistryDriver` (`@cloudbitmaps/roaring/gcs`), `AzureBlobRegistryDriver`
-> (`@cloudbitmaps/roaring/azure`). **Each
+> (`@cloudbitmaps/s3`), `GcsRegistryDriver` (`@cloudbitmaps/gcs`), `AzureBlobRegistryDriver`
+> (`@cloudbitmaps/azure-blob`). **Each
 > object store can host its own pointer**, so one bucket or one container is the whole deployment — no second
 > service, and for GCS and Azure no second *cloud*. All three ride the same primitive under different names:
 > S3 `If-None-Match`/`If-Match`, GCS `ifGenerationMatch`, Azure `ifNoneMatch`/`ifMatch`.
@@ -116,8 +116,13 @@ The rest of this guide walks each step in turn.
 
 ## Upgrading from 0.9.x?
 
-Two constructor changes, both of which **throw with a message naming the fix** rather than being ignored — so
-you will find them the first time you run, not the first time something reads wrong.
+**Four things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Two are packaging and are
+covered there in full — the cloud drivers became their own packages (`@cloudbitmaps/roaring/s3` →
+`@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the packages are now ESM-only and
+need Node ≥ 22.12.
+
+The other two are the constructor changes below. Both **throw with a message naming the fix** rather than
+being ignored, so you will find them the first time you run, not the first time something reads wrong.
 
 1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
    `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
@@ -140,7 +145,8 @@ you will find them the first time you run, not the first time something reads wr
    `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
    default instead of requiring all five.
 
-The full entry, with a runnable before/after, is in
+The full upgrade, including the packaging half, is [`MIGRATING.md`](../../MIGRATING.md); the entries with
+their rationale are in
 [`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
 
 ## 1. The simplest thing: in-memory
@@ -345,15 +351,20 @@ request path for what it is good at: `has`, `count`, `intersect`.
 
 ## 4. Storage on S3 (or any S3-compatible store)
 
-The S3 storage driver lives at the **`@cloudbitmaps/roaring/s3`** subpath, so the AWS SDK is an **optional peer
-dependency** — install it only when you use S3 (`npm i @aws-sdk/client-s3`); the main entry never pulls it.
-You inject your own `S3Client`, so the driver works against AWS S3, MinIO, or any compatible backend just by
-how you configure the client:
+> **If you construct the SDK client yourself, declare the SDK in your own `package.json` too.** The driver
+> package depends on it, so it is in your tree — but importing a package you did not declare is not
+> guaranteed to resolve, and pnpm refuses it by default. You only need this if *your* code names
+> `@aws-sdk/client-s3`, as the snippets below do.
+
+The S3 storage driver is its own package, **`@cloudbitmaps/s3`**, which depends on `@aws-sdk/client-s3` for
+real — so `npm i @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.
+You can inject your own `S3Client`, so the driver works against AWS S3, MinIO, or any compatible backend just
+by how you configure the client:
 
 ```ts
 import { S3Client } from '@aws-sdk/client-s3';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 
 // Bucket and prefix stated ONCE, for both halves. It builds its own client from the ambient credential
 // chain; pass `client` for one the SDK cannot infer, or `endpoint` + `pathStyle` + `credentials` for MinIO/R2.
@@ -415,16 +426,16 @@ you taking that on.
 | --- | --- | --- |
 | `MemoryRegistryDriver` | `@cloudbitmaps/roaring` | tests / dev |
 | `LocalFsRegistryDriver` | `@cloudbitmaps/roaring` | single node / on-prem |
-| `S3RegistryDriver` | `@cloudbitmaps/roaring/s3` | **the same bucket as your storage data — one store, no second service** |
-| `GcsRegistryDriver` | `@cloudbitmaps/roaring/gcs` | the same, on Google Cloud Storage |
-| `AzureBlobRegistryDriver` | `@cloudbitmaps/roaring/azure` | the same, on Azure Blob Storage |
+| `S3RegistryDriver` | `@cloudbitmaps/s3` | **the same bucket as your storage data — one store, no second service** |
+| `GcsRegistryDriver` | `@cloudbitmaps/gcs` | the same, on Google Cloud Storage |
+| `AzureBlobRegistryDriver` | `@cloudbitmaps/azure-blob` | the same, on Azure Blob Storage |
 
 The **`S3RegistryDriver`** keeps the current-generation pointer as a tiny object in the *same bucket* as your
 Storage data, using S3's conditional writes (`If-Match`) for the atomic generation swap — so a deployment runs on
 **S3 only**:
 
 ```ts
-import { S3Storage } from '@cloudbitmaps/roaring/s3';
+import { S3Storage } from '@cloudbitmaps/s3';
 
 const backend = new S3Storage({ bucket: 'my-bitmaps', client: s3 }); // one bucket, no second service
 const store = new CloudRoaring({ storage: backend });
@@ -459,28 +470,29 @@ and takes the first publish. To publish a generation you wrote yourself, call
 client, hand it to the driver. Each hosts **both** the storage tier and the registry, so either one is a complete
 deployment on its own (see [Choosing a registry](#choosing-a-registry)).
 
-### GCS — storage + registry (`@cloudbitmaps/roaring/gcs`)
+### GCS — storage + registry (`@cloudbitmaps/gcs`)
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
+import { GcsStorage } from '@cloudbitmaps/gcs';
 
 // Builds its own client from ADC; pass `apiEndpoint` to point at fake-gcs-server locally, or `client` for your own.
 const backend = new GcsStorage({ bucket: 'my-bitmaps', prefix: 'cloudroaring' });
 const store = new CloudRoaring({ storage: backend }); // one bucket is the whole deployment
 ```
 
-> **Checklist.** Peer `@google-cloud/storage`; generations are write-once via `ifGenerationMatch: 0` (both the
+> **Checklist.** `@google-cloud/storage` is a real dependency of `@cloudbitmaps/gcs`, not a peer — installing
+> the package installs it. Generations are write-once via `ifGenerationMatch: 0` (both the
 > simple and resumable upload paths), and the registry swaps the pointer with `ifGenerationMatch: <generation>`.
 > Note the two senses of the word in that snippet: the drivers' own `storage` option takes the **GCS client**
 > (`@google-cloud/storage` names its client class `Storage`), which is why it is built as `gcs` above — while
 > `CloudRoaring`'s `storage` option takes the driver.
 
-### Azure Blob — storage + registry (`@cloudbitmaps/roaring/azure`)
+### Azure Blob — storage + registry (`@cloudbitmaps/azure-blob`)
 
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
-import { AzureBlobStorage } from '@cloudbitmaps/roaring/azure';
+import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 
 // Give it a container client, or a connection string + container name and it builds one.
 const backend = new AzureBlobStorage({
@@ -491,7 +503,8 @@ const backend = new AzureBlobStorage({
 const store = new CloudRoaring({ storage: backend }); // one container is the whole deployment
 ```
 
-> **Checklist.** Peer `@azure/storage-blob`; inject a container-scoped `ContainerClient`; generations are
+> **Checklist.** `@azure/storage-blob` is a real dependency of `@cloudbitmaps/azure-blob`, not a peer.
+> Inject a container-scoped `ContainerClient`; generations are
 > write-once via `If-None-Match: '*'`, and the registry swaps the pointer with `If-Match: <etag>`.
 
 Per-backend DR/backup guidance (RPO/RTO, point-in-time recovery, what to snapshot) lives in the

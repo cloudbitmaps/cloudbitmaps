@@ -11,16 +11,19 @@ The **codec-agnostic cloud engine** behind the [CloudBitmaps](https://github.com
 a bounded RAM cache over immutable `.crbm` objects in STORAGE, serverless chunk-skipping intersection, the segment
 registry, the write-once load-and-publish write path, generation GC, encryption-at-rest + crypto-shred, subject
 erasure by generation rewrite, segment lifecycle (disposal, and a per-segment retention policy with the sweep
-that enforces it), and **every storage driver** (S3 · GCS · Azure Blob — each hosts both the generations and the
-registry, each on its own subpath with the backend SDK as an optional peer dependency).
+that enforces it), and the **in-memory and local-filesystem drivers**. It contains **no cloud SDK at all**: the
+cloud drivers are their own packages (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each hosting both the
+generations and the registry, and each built against `@cloudbitmaps/core/driver-kit` — the declared contract a
+driver package depends on, which a third-party driver can use too.
 
 ## You probably want a flavor, not this package
 
 This package holds no bitmap codec — that lives in a *flavor* package which depends on this one and supplies it
-through the `CodecInterface` seam. Install the flavor; `@cloudbitmaps/core` arrives **transitively**:
+through the `CodecInterface` seam, and it holds no cloud driver either — those are packages of their own.
+Install a codec and a storage; `@cloudbitmaps/core` is a dependency of both and never named by you:
 
 ```bash
-npm i @cloudbitmaps/roaring        # the roaring flavor (flagship)
+npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship), and the storage you have
 ```
 
 Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime

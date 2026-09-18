@@ -44,8 +44,8 @@ function publicFacingFiles(): string[] {
     'CLAUDE.md',
     'SECURITY.md',
     'PRIVACY.md',
-    'packages/core/README.md',
-    'packages/roaring/README.md',
+    'MIGRATING.md',
+    ...packageReadmes(),
     'packages/roaring/PRIVACY.md',
   ];
 
@@ -68,9 +68,25 @@ function publicFacingFiles(): string[] {
   walk('.github', (n) => n.endsWith('.md'));
   // The published source. Its doc-comments are user-facing twice over — on hover in an editor, and inside the
   // `.d.ts` files and sourcemaps that ship in the tarball.
-  walk('packages/core/src', (n) => n.endsWith('.ts'));
-  walk('packages/roaring/src', (n) => n.endsWith('.ts'));
+  // EVERY package's src, derived: all five publish `.d.ts` and sourcemaps, so all five are user-facing.
+  for (const pkg of readdirSync(join(ROOT, 'packages'), { withFileTypes: true })) {
+    if (pkg.isDirectory()) walk(`packages/${pkg.name}/src`, (n) => n.endsWith('.ts'));
+  }
   return out;
+}
+
+/**
+ * Every package's README, derived from the workspace rather than listed.
+ *
+ * These were hardcoded to core + roaring and stayed that way through the split to five packages, so the
+ * three NEW npm landing pages — the highest-risk copy in the repo for a stale specifier, since they are
+ * brand new and carry runnable import examples — were outside the guard entirely.
+ */
+function packageReadmes(): string[] {
+  return readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'README.md')))
+    .map((e) => `packages/${e.name}/README.md`)
+    .sort();
 }
 
 /**

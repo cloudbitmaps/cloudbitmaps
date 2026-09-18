@@ -26,12 +26,21 @@ importers:
       '@azure/storage-blob':
         specifier: ^12
         version: 12.33.0
+      '@cloudbitmaps/azure-blob':
+        specifier: workspace:*
+        version: link:packages/azure-blob
       '@cloudbitmaps/core':
         specifier: workspace:*
         version: link:packages/core
+      '@cloudbitmaps/gcs':
+        specifier: workspace:*
+        version: link:packages/gcs
       '@cloudbitmaps/roaring':
         specifier: workspace:*
         version: link:packages/roaring
+      '@cloudbitmaps/s3':
+        specifier: workspace:*
+        version: link:packages/s3
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.10.0)
@@ -78,17 +87,40 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
 
-  packages/core:
-    devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
-        version: 3.1132.0
+  packages/azure-blob:
+    dependencies:
       '@azure/storage-blob':
         specifier: ^12
         version: 12.33.0
+      '@cloudbitmaps/core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
+  packages/core:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
+  packages/gcs:
+    dependencies:
+      '@cloudbitmaps/core':
+        specifier: workspace:^
+        version: link:../core
       '@google-cloud/storage':
-        specifier: ^8.1.0
+        specifier: ^7 || ^8
         version: 8.1.0
+    devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -99,21 +131,28 @@ importers:
   packages/roaring:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       roaring:
         specifier: 2.7.0
         version: 2.7.0
     devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
+  packages/s3:
+    dependencies:
       '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
+        specifier: '>=3.645.0 <4'
         version: 3.1132.0
-      '@azure/storage-blob':
-        specifier: ^12
-        version: 12.33.0
-      '@google-cloud/storage':
-        specifier: ^8.1.0
-        version: 8.1.0
+      '@cloudbitmaps/core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

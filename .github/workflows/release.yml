@@ -23,7 +23,8 @@
 #   - **SHA-pinned Actions**: every `uses:` is pinned to a full commit SHA (a moved tag can't inject code).
 #   - **Version/tag agreement**: a `vX.Y.Z` tag must match `package.json` version, or the run fails.
 # Prerequisites (one-time, outside this file — see RELEASING.md):
-#   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`) → Trusted Publisher:
+#   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
+#      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) → Trusted Publisher:
 #      GitHub Actions, repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment `release`.
 #      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so the very first
 #      version is published manually with interactive 2FA to create the names (see RELEASING.md "First
@@ -51,12 +52,19 @@ permissions:
 
 # One release at a time, and NEVER cancel one in flight. `cancel-in-progress: false` is the opposite of the
 # CI workflow's setting, deliberately: cancelling a build is free, but cancelling a release is not — kill a run
-# between `pnpm publish` of core and of roaring and npm holds a half-published family that cannot be unpublished
-# back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
+# mid-run and npm holds a half-published family — some of the five up, the rest not — that cannot be
+# unpublished back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
 # race for the same version pointers.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
+
+# How many manifests `packages/*/package.json` must match. A glob that comes back short means a package was
+# renamed, moved or lost — and the family releases in lockstep, so a short glob is a PARTIAL publish waiting to
+# happen, not a smaller release. Stated once here; `tests/ci/release-workflow.test.ts` asserts it still equals
+# the number of packages in the workspace, so adding one fails the gate instead of silently under-releasing.
+env:
+  EXPECTED_PACKAGES: 5
 
 jobs:
   publish:
@@ -108,9 +116,10 @@ jobs:
           # run exactly once on a path that does not exist. Guard the count explicitly instead of relying on
           # what a `require()` of a nonexistent file happens to do.
           shopt -s nullglob
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
           pkgs=(packages/*/package.json)
-          if [ "${#pkgs[@]}" -lt 2 ]; then
-            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
             exit 1
           fi
           fail=0
@@ -124,8 +133,8 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch both
-      # packages are deliberately private (the last accidental-publish guard), so a real publish attempt would
+      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch every
+      # package is deliberately private (the last accidental-publish guard), so a real publish attempt would
       # otherwise produce a fully GREEN run that published nothing at all. Fail loudly instead: the release
       # commit that clears `private` is what makes this pass, which is exactly the intended sequencing
       # (see the launch runbook's publish stage).
@@ -133,9 +142,10 @@ jobs:
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
         run: |
           shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}" # see the probe step
           pkgs=(packages/*/package.json)
-          if [ "${#pkgs[@]}" -lt 2 ]; then
-            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
             exit 1
           fi
           fail=0
@@ -143,6 +153,72 @@ jobs:
             if [ "$(node -p "require('./$pkg').private === true")" = "true" ]; then
               echo "::error::$pkg still has \"private\": true — pnpm would skip it and report success"
               fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+      # Two things npm will not tell you until it is too late, both of which produce a PARTIAL release of a
+      # family that ships in lockstep — the one npm state that cannot be undone.
+      #
+      #   1. A NAME THAT DOES NOT EXIST YET. This pipeline is tokenless: it authenticates by OIDC against a
+      #      Trusted Publisher, which is a per-package npm setting that cannot be bound to a package that has
+      #      never been published. `pnpm -r publish` walks the workspace topologically and stops at the first
+      #      failure, so a family where `core` is published and a new driver package is not would put
+      #      `core@X.Y.Z` on the registry, immutably, and then fail — with the flagship never published at
+      #      all. Create the name first (`pnpm release:bootstrap`), bind its Trusted Publisher, then tag.
+      #
+      #   2. A VERSION THAT IS ALREADY THERE. `pnpm publish` SILENTLY SKIPS a version already on the
+      #      registry and exits 0. A re-run, or a tag cut against a version some package was hand-published
+      #      at, therefore produces a fully GREEN release that published some packages and quietly skipped
+      #      others — which is indistinguishable from success in the log.
+      #
+      # Both are read-only probes of the registry, so they cost seconds and can only fail BEFORE anything
+      # irreversible happens. `npm view` reads a replica that lags for minutes after a first publish, but by
+      # release time these names are long-established, so a 404 here means the name genuinely is not there.
+      - name: Refuse to publish an unbootstrapped name or a version already on the registry
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
+        run: |
+          shopt -s nullglob # see the tag-match step: an unmatched glob would otherwise loop once on a literal
+          # `[ 5 -lt "" ]` is a bash ERROR (status 2), and as an `if` CONDITION that does not trip `set -e` —
+          # so an unset variable would silently skip the guard below rather than fail it.
+          : "${EXPECTED_PACKAGES:?EXPECTED_PACKAGES must be set at the workflow level}"
+          pkgs=(packages/*/package.json)
+          # And with nullglob an unmatched glob loops ZERO times, so this guard would pass having probed
+          # nothing at all — the exact vacuous-check shape the other two steps already defend against.
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+            exit 1
+          fi
+          fail=0
+          for pkg in "${pkgs[@]}"; do
+            NAME="$(node -p "require('./$pkg').name")"
+            VER="$(node -p "require('./$pkg').version")"
+            # Both probes must fail CLOSED. `npm view` exits non-zero for a missing name AND for a 5xx, a
+            # rate limit or a timeout, so a transient failure on the VERSION probe used to be read as "this
+            # version is not published" and the run proceeded — straight into the silent-skip it exists to
+            # prevent. Classify on the error text and refuse anything that is not a clean 404.
+            # `x="$(cmd)"; rc=$?` does NOT work under `set -e` (the Actions default shell): the failing
+            # substitution aborts the step before `$?` is ever read, so the guard fails closed but SILENTLY,
+            # with no ::error:: line to tell the operator which package or why. `|| rc=$?` keeps the command
+            # in a list, where `set -e` is suppressed.
+            probe_rc=0
+            probe_err="$(npm view "$NAME" version 2>&1 >/dev/null)" || probe_rc=$?
+            if [ "$probe_rc" -ne 0 ] && ! printf '%s' "$probe_err" | grep -qiE 'code E404|404 Not Found|is not in th'; then
+              echo "::error::could not reach the registry to check $NAME — refusing to release rather than guess. $probe_err"
+              fail=1
+            elif [ "$probe_rc" -ne 0 ]; then
+              echo "::error::$NAME does not exist on the registry. A Trusted Publisher cannot be bound to a package that has never been published, so this tokenless workflow cannot create it — run \`pnpm release:bootstrap\` to create the name, bind its Trusted Publisher on npmjs.com, then re-tag. Releasing now would publish the packages that DO exist and fail on this one, leaving a partial, immutable release."
+              fail=1
+            else
+              ver_rc=0
+              ver_err="$(npm view "$NAME@$VER" version 2>&1 >/dev/null)" || ver_rc=$?
+              if [ "$ver_rc" -eq 0 ]; then
+                echo "::error::$NAME@$VER is already on the registry. pnpm would SKIP it and exit 0, so this run would report success while publishing nothing for it. Bump the version."
+                fail=1
+              elif ! printf '%s' "$ver_err" | grep -qiE 'code E404|404 Not Found|is not in th'; then
+                echo "::error::could not reach the registry to check $NAME@$VER — refusing to release rather than guess. $ver_err"
+                fail=1
+              fi
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
@@ -177,7 +253,7 @@ jobs:
       # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
       # `publishConfig.access=public` + `provenance:true` live in package.json; `--provenance` is explicit here too.
       # `pnpm -r publish` walks the workspace in topological order (core before the flavor that depends on it)
-      # and rewrites each `workspace:*` range to the real version. `--no-git-checks` because the tag/branch state
+      # and rewrites each `workspace:^` range to the real version. `--no-git-checks` because the tag/branch state
       # is already verified above. The root manifest is `private: true`, so it is skipped automatically.
       - name: Publish (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun

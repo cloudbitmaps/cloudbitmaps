@@ -54,6 +54,25 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '3.645.0',
+    "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
+      'correctness floor, not a preference: measured against MinIO, 3.640.0 drops the unmodeled ' +
+      '`IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — write-once silently lost, which is ' +
+      'hard invariant 2 — while 3.641.0 rejects it. 3.645.0 is the pinned floor, a small margin above the ' +
+      'measured boundary',
+  ],
+  [
+    '3.640.0',
+    'the last @aws-sdk/client-s3 that SILENTLY OVERWRITES on a conditional write, named in ' +
+      "@cloudbitmaps/s3's README as the reason its floor is a correctness floor rather than a preference. " +
+      'A third-party version and a measurement, not a claim about our release',
+  ],
+  [
+    '3.641.0',
+    'the first @aws-sdk/client-s3 that correctly REJECTS a colliding conditional write — the measured ' +
+      "boundary @cloudbitmaps/s3's floor sits just above. A third-party version, not a claim about ours",
+  ],
+  [
     '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],
@@ -129,6 +148,10 @@ const VERSIONED_TEXT_FILES = ['llms.txt'];
  */
 const HISTORICAL_DOCS = new Set([
   'docs/ROADMAP.md', // a release history by design — every version in it is deliberately not the current one
+  // A migration guide names the version you are going TO, which by construction is not yet published when
+  // the guide is written, and the version you are coming FROM, which by construction is not current either.
+  // Both are the point of the document.
+  'MIGRATING.md',
 ]);
 
 function markdownUnder(dir: string, prefix: string): string[] {

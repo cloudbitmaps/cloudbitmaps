@@ -274,13 +274,13 @@
             <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 4 storage drivers</p>
           </div>
           <div class="install">
-            <div class="install-head label"><span>Install</span><span>One flavor</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring
+            <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
-<span class="c"># the memory drivers need nothing else</span>
-<span class="c"># add an SDK only for a real backend:</span>
-npm i @aws-sdk/client-s3</code></pre>
-            <p class="link-row"><a href="usage.html">Every driver and its peer deps →</a></p>
+<span class="c"># the memory and local drivers need nothing else</span>
+<span class="c"># for a real backend, add its package:</span>
+<span class="c"># @cloudbitmaps/s3 · @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span></code></pre>
+            <p class="link-row"><a href="usage.html">Every driver package →</a></p>
           </div>
         </div>
       </section>

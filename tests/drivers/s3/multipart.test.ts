@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { S3StorageDriver } from '@/drivers/s3/storage';
+import { S3StorageDriver } from '@/s3/storage';
 import { ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/index';
 import type { S3Client } from '@aws-sdk/client-s3';

@@ -1,9 +1,4 @@
-import {
-  isInvalidRange,
-  isNotFound,
-  isPreconditionFailed,
-  isTransient,
-} from '@/drivers/gcs/gcs-errors';
+import { isInvalidRange, isNotFound, isPreconditionFailed, isTransient } from '@/gcs/gcs-errors';
 
 /** GCS carries the HTTP status on `err.code` (number) or `err.response.status`; sockets use a string code. */
 const apiErr = (code: number) => ({ code });

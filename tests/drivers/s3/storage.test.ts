@@ -1,5 +1,5 @@
 import type { S3Client } from '@aws-sdk/client-s3';
-import { S3StorageDriver } from '@/drivers/s3/storage';
+import { S3StorageDriver } from '@/s3/storage';
 import { ValidationError } from '@/core/errors';
 
 // Constructor-level checks need no network (the client is never called), so they run on the normal lane.

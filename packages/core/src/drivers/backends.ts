@@ -1,10 +1,10 @@
 /**
  * The two SDK-free backends, each as one object: `MemoryStorage` and `LocalFsStorage`.
  *
- * These live in the main entry rather than on a subpath because neither needs a cloud SDK — there is nothing
- * to keep out of the bundle, and it keeps the first five minutes to a single import. Their cloud siblings
- * (`S3Storage`, `GcsStorage`, `AzureBlobStorage`) live beside their drivers on the subpaths, for the opposite
- * reason.
+ * These live in the main entry because neither needs a cloud SDK — there is nothing to keep out of the
+ * install, and it keeps the first five minutes to a single import. Their cloud siblings (`S3Storage`,
+ * `GcsStorage`, `AzureBlobStorage`) ship in `@cloudbitmaps/s3`, `/gcs` and `/azure-blob` for the opposite
+ * reason: each carries an SDK nobody should install for a service they do not use.
  *
  * Each one exists to state a location **once**. See {@link StorageBackend} for why that is worth a class.
  */

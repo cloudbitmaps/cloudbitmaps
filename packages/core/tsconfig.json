@@ -1,5 +1,5 @@
 {
-  "//": "@cloudbitmaps/core — the codec-agnostic engine + every storage driver. Keeps the repo's long-standing `@/…` self-alias, now scoped to THIS package's own `src` (the drivers use it throughout, e.g. `@/core/errors`). It never resolves outside the package, which is what keeps the dependency arrow one-way: core cannot reach a flavor package even by accident.",
+  "//": "@cloudbitmaps/core — the codec-agnostic engine, the ports, and the in-memory/local-filesystem drivers. Keeps the repo's long-standing `@/…` self-alias, now scoped to THIS package's own `src` (the drivers use it throughout, e.g. `@/core/errors`). It never resolves outside the package, which is what keeps the dependency arrow one-way: core cannot reach a flavor package even by accident.",
   "extends": "../../tsconfig.base.json",
   // No `outDir`. It used to say "dist" and was never used for anything: `tsc` in this repo only ever runs
   // `--noEmit`, and tsup owns emit with its own outDir. What the dead setting DID do was make TypeScript

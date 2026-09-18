@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import { collect, loadedStore } from './helpers/loaded';
 
 /**
- * Property tests against a `Set` oracle (I2, V4, V5). Every generation here is written through the real load
+ * Property tests against a `Set` oracle. Every generation here is written through the real load
  * path (`bulkLoadCrbmGeneration` + publish), so the properties hold over the shape production actually stores:
  * a published `.crbm` generation, read back chunk by chunk.
  *
@@ -90,7 +90,7 @@ describe('the operand generator actually reaches the interesting shapes', () => 
   });
 });
 
-describe('loaded segment vs Set oracle (I2, V4, V5)', () => {
+describe('loaded segment vs Set oracle', () => {
   it('has / count / iterate match the loaded set', async () => {
     await fc.assert(
       fc.asyncProperty(idSet, async (ids) => {

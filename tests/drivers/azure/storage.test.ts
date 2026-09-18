@@ -1,8 +1,5 @@
 import type { ContainerClient } from '@azure/storage-blob';
-import {
-  AzureBlobStorageDriver,
-  type AzureBlobStorageDriverOptions,
-} from '@/drivers/azure/storage';
+import { AzureBlobStorageDriver, type AzureBlobStorageDriverOptions } from '@/azure-blob/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 

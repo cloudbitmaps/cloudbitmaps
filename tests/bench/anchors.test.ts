@@ -21,7 +21,7 @@ import { collect, loadedStore, seededStore } from '../helpers/loaded';
  *
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
  * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the storage requests
- * the engine actually issued (K3).
+ * the engine actually issued.
  */
 
 const SECONDS_PER_MONTH = 730 * 3600; // matches the estimator's convention

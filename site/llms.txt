@@ -11,15 +11,20 @@ current. The distinguishing capability is **serverless chunk-skipping intersecti
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
 and `count()` on a published segment does zero payload reads.
 
-Install `@cloudbitmaps/roaring` — `@cloudbitmaps/core` (the codec-agnostic engine plus all the storage
-drivers) arrives transitively. Five storage backends: S3, GCS and Azure Blob as optional-peer subpaths, plus
-the local filesystem in the main entry. Each of the three clouds hosts both the storage generations and the
-registry, so a deployment needs exactly one cloud account.
+Install two packages: a codec and a storage — `npm i @cloudbitmaps/roaring @cloudbitmaps/s3`.
+`@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the driver ports) is a dependency of
+both and is never installed directly; it contains no cloud SDK at all. Five storage backends: S3
+(`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
+Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real rather
+than as an optional peer, plus the in-memory and local-filesystem backends in core's main entry. There are no
+driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
+and the registry, so a deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
 carries both halves, the generations and the currentGen pointer, from one bucket and one prefix.
-MemoryStorage and LocalFsStorage come from the main entry; S3Storage, GcsStorage and AzureBlobStorage from
-their subpaths. There is no separate `registry` option.
+MemoryStorage and LocalFsStorage come from the flavor's main entry; S3Storage, GcsStorage and
+AzureBlobStorage from `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` respectively.
+There is no separate `registry` option.
 
 ## How data gets in
 
@@ -103,7 +108,8 @@ in a minor bump until the .crbm format freezes at 1.0.
 ## Links
 
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
-- Package: https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
+- Package (storage): https://www.npmjs.com/package/@cloudbitmaps/s3
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
 - Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
 - Roaring flavor: https://cloudbitmaps.pages.dev/flavors/roaring

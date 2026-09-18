@@ -49,7 +49,7 @@
  * Env knobs (for a quick validation run at small scale):
  *   SCALE_FLEETS=1000,10000,100000   fleet sizes to measure       SCALE_CAP=1024        maxOpenSegments
  *   SCALE_IDS_PER_SEG=256            ids seeded per segment        SCALE_INTERSECT_CHUNKS=2000
- *   SCALE_INTERSECT_DENSITY=1000     ids per chunk (M3)            SCALE_INTERSECT_OVERLAP=0.05
+ *   SCALE_INTERSECT_DENSITY=1000     ids per 65,536-id chunk       SCALE_INTERSECT_OVERLAP=0.05
  *   SCALE_INJECT=1                   inject into docs/site         SCALE_TASK / SCALE_N   (internal: child mode)
  */
 'use strict';

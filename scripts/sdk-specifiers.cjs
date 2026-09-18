@@ -17,12 +17,16 @@ const SDK_ROOTS = ['@aws-sdk/', '@google-cloud/', '@azure/', 'aws-sdk'];
 /**
  * Our OWN driver subpaths are forbidden from a main entry too, and for the same reason one hop removed.
  *
- * `@cloudbitmaps/core/s3` is left external by the bundler when imported from core's own entry, so no SDK
+ * `@cloudbitmaps/s3` is left external by the bundler when imported from another package's entry, so no SDK
  * string ever appears — the first version of this detector passed it cleanly. It is still a leak: a
  * consumer's bundler follows that specifier into the driver entry and hits `@aws-sdk/client-s3` there, which
  * is exactly the failure this gate exists to prevent. Naming a driver IS reaching an SDK.
+ *
+ * Both spellings are matched. The drivers are packages now (`@cloudbitmaps/s3`), but the retired subpath
+ * form (`@cloudbitmaps/core/s3`) stays in the pattern: it costs nothing, and a stale import of it is exactly
+ * the kind of thing that should be caught rather than silently pass as an unknown specifier.
  */
-const DRIVER_SUBPATH = /^@cloudbitmaps\/[^/]+\/(s3|gcs|azure)(\/|$)/;
+const DRIVER_SUBPATH = /^@cloudbitmaps\/(?:(s3|gcs|azure-blob)(\/|$)|[^/]+\/(s3|gcs|azure)(\/|$))/;
 
 /**
  * Blank out comments while KEEPING string and template literals.

@@ -1,7 +1,7 @@
 {
   "name": "@cloudbitmaps/core",
   "version": "0.9.0",
-  "description": "The codec-agnostic cloud engine behind the @cloudbitmaps family: a RAM cache over write-once .crbm generations in object storage, chunk-skipping intersection, the load-and-publish write path, generation GC, erasure by rewrite, encryption-at-rest, and every storage driver.",
+  "description": "Codec-agnostic engine for CloudBitmaps: the .crbm format, the write-once load/publish path, generation GC, encryption-at-rest, and the driver ports. No cloud SDK.",
   "keywords": [
     "roaring",
     "bitmap",
@@ -15,9 +15,6 @@
     "typescript",
     "set",
     "set-intersection",
-    "s3",
-    "gcs",
-    "azure",
     "serverless",
     "object-storage",
     "scale-to-zero",
@@ -29,7 +26,8 @@
   "author": "Sharvil Kadam",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git"
+    "url": "git+https://github.com/cloudbitmaps/cloudbitmaps.git",
+    "directory": "packages/core"
   },
   "homepage": "https://github.com/cloudbitmaps/cloudbitmaps#readme",
   "bugs": {
@@ -47,17 +45,9 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./s3": {
-      "types": "./dist/s3/index.d.ts",
-      "default": "./dist/s3/index.js"
-    },
-    "./gcs": {
-      "types": "./dist/gcs/index.d.ts",
-      "default": "./dist/gcs/index.js"
-    },
-    "./azure": {
-      "types": "./dist/azure/index.d.ts",
-      "default": "./dist/azure/index.js"
+    "./driver-kit": {
+      "types": "./dist/driver-kit.d.ts",
+      "default": "./dist/driver-kit.js"
     }
   },
   "files": [
@@ -73,27 +63,15 @@
     "prepack": "pnpm run build",
     "build": "node ../../scripts/build.mjs"
   },
-  "peerDependencies": {
-    "@aws-sdk/client-s3": "^3",
-    "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^7 || ^8"
-  },
-  "peerDependenciesMeta": {
-    "@aws-sdk/client-s3": {
-      "optional": true
-    },
-    "@azure/storage-blob": {
-      "optional": true
-    },
-    "@google-cloud/storage": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.1132.0",
-    "@azure/storage-blob": "^12",
-    "@google-cloud/storage": "^8.1.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
+  },
+  "typesVersions": {
+    "*": {
+      "driver-kit": [
+        "./dist/driver-kit.d.ts"
+      ]
+    }
   }
 }

@@ -37,15 +37,22 @@ const NAMED_FILES = [
   'CODE_OF_CONDUCT.md',
   'CHANGELOG.md',
   'RELEASING.md',
-  'packages/core/README.md',
-  'packages/roaring/README.md',
+  'MIGRATING.md',
   'packages/roaring/PRIVACY.md',
   'fuzz/README.md',
 ] as const;
 
 /** Every `.md` under `docs/` and `.github/`, the named files above, and every `site/` page. */
 function filesToCheck(): string[] {
-  const out: string[] = [...NAMED_FILES];
+  // The package READMEs are derived, not named: hardcoding core + roaring left the three new npm landing
+  // pages outside the link check entirely.
+  const out: string[] = [
+    ...NAMED_FILES,
+    ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'README.md')))
+      .map((e) => `packages/${e.name}/README.md`)
+      .sort(),
+  ];
 
   const walk = (rel: string, match: (name: string) => boolean): void => {
     const abs = join(ROOT, rel);

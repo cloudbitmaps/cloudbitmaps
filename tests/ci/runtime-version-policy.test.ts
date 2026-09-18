@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,12 +50,25 @@ const FLOOR_MAJOR = Number(FLOOR.split('.')[0]);
 /** The CI matrix is the active LTS + the current release — not every major that still runs. */
 const EXPECTED_MATRIX = [22, 24];
 
-const MANIFESTS = ['package.json', 'packages/core/package.json', 'packages/roaring/package.json'];
+/**
+ * The root manifest plus EVERY package manifest, derived rather than listed.
+ *
+ * This was a hardcoded three — root, core, roaring — and stayed three through the split to five packages.
+ * A driver package could therefore advertise `engines.node: ">=20"`: an EOL major, and one below 22.12
+ * where a CommonJS consumer cannot `require()` these ESM packages at all, with the whole suite green.
+ */
+const MANIFESTS = [
+  'package.json',
+  ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'package.json')))
+    .map((e) => `packages/${e.name}/package.json`)
+    .sort(),
+];
 const readJson = (rel: string) =>
   JSON.parse(readFileSync(join(ROOT, rel), 'utf8')) as { engines?: { node?: string } };
 
-describe('runtime version policy is consistent across all three declarations', () => {
-  it.each(MANIFESTS)('%s declares the floor as >=%s', (rel) => {
+describe('runtime version policy is consistent across every declaration', () => {
+  it.each(MANIFESTS)(`%s declares the floor as >=${FLOOR}`, (rel) => {
     const engines = readJson(rel).engines;
     expect(engines?.node, `${rel} declares no engines.node`).toBeDefined();
     expect(engines?.node).toBe(`>=${FLOOR}`);
@@ -98,8 +111,14 @@ describe('runtime version policy is consistent across all three declarations', (
       'CONTRIBUTING.md',
       'SECURITY.md',
       'docs/guide/getting-started.md',
-      'packages/core/README.md',
-      'packages/roaring/README.md',
+      // States the floor three times and is the first page an upgrading user reads.
+      'MIGRATING.md',
+      // Every package README, derived: these are npm landing pages, and the three newest are exactly when
+      // a wrong floor is cheapest to write and least likely to be noticed.
+      ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
+        .filter((e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'README.md')))
+        .map((e) => `packages/${e.name}/README.md`)
+        .sort(),
     ];
     // These two are where the floor is actually stated. If a rewording drops it from EITHER, that is the
     // silent regression this test exists for — a global "something matched somewhere" count would let the

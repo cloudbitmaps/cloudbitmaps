@@ -5,11 +5,11 @@ user-first: the everyday surface at the top, the occasional operations next, the
 a flat **[Complete export index](#complete-export-index)** at the end that names every export.
 
 > **Kept in sync by CI.** [`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts)
-> extracts every exported name from **both** package barrels (`packages/roaring/src/index.ts` and the
-> `packages/core/src/index.ts` it re-exports) plus each driver-subpath barrel under `packages/core/src/*/index.ts`
-> and `packages/roaring/src/*/index.ts`, and fails the build if any is missing from this page. So a new export
-> **cannot** merge without being documented here. (The guard is one-way — it catches undocumented _additions_, not
-> stale entries for a _removed_ export; prune those in review.)
+> derives the list of entry points from every package's own `exports` map — so each package in the workspace and
+> each subpath it declares is covered, with no list to keep up to date — extracts every exported name from each,
+> and fails the build if any is missing from this page. So a new export **cannot** merge without being documented
+> here. (The guard is one-way — it catches undocumented _additions_, not stale entries for a _removed_ export;
+> prune those in review.)
 
 ---
 
@@ -29,22 +29,28 @@ chunks from it. There is no `add`, no `remove`, and no mutable tier.
 
 ## Entry points
 
-You install **one flavor package** — `@cloudbitmaps/roaring` — and `@cloudbitmaps/core` arrives transitively.
-Everything below is reachable from the flavor:
+You install **two packages** — a codec and a storage — and `@cloudbitmaps/core` arrives as a dependency of
+both. Each package is its own entry point; nothing is reachable through another:
 
 ```
-@cloudbitmaps/roaring            the store + memory/localfs drivers + every function & type
-@cloudbitmaps/roaring/s3         S3StorageDriver, S3RegistryDriver          (peer: @aws-sdk/client-s3)
-@cloudbitmaps/roaring/gcs        GcsStorageDriver, GcsRegistryDriver        (peer: @google-cloud/storage)
-@cloudbitmaps/roaring/azure      AzureBlobStorageDriver, …RegistryDriver    (peer: @azure/storage-blob)
-CLI (binary):                    export-segments
+@cloudbitmaps/roaring         the store + memory/localfs drivers + every function & type
+@cloudbitmaps/s3              S3Storage, S3StorageDriver, S3RegistryDriver        (dep: @aws-sdk/client-s3)
+@cloudbitmaps/gcs             GcsStorage, GcsStorageDriver, GcsRegistryDriver     (dep: @google-cloud/storage)
+@cloudbitmaps/azure-blob      AzureBlobStorage, …StorageDriver, …RegistryDriver   (dep: @azure/storage-blob)
+@cloudbitmaps/core/driver-kit the declared contract for writing a driver package   (driver authors only)
+CLI (binary):                 export-segments
 ```
 
-**Where the code actually lives.** The flavor package is the roaring codec (`SafeBitmap` / `roaringCodec`), the
-`CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports `@cloudbitmaps/core` wholesale and each
-`/<backend>` barrel is a one-line re-export of `@cloudbitmaps/core/<backend>` — the drivers are codec-agnostic,
-so one set in core serves every flavor. A flavor or driver author who depends on core directly imports the same
-surface from `@cloudbitmaps/core` and its `/s3`, `/gcs`, `/azure` subpaths. Applications never need to name core.
+Each cloud SDK is a **real dependency** of its driver package, not an optional peer: installing
+`@cloudbitmaps/s3` installs `@aws-sdk/client-s3`, and no install carries an SDK for a service you do not use.
+
+**Where the code actually lives.** The flavor package is the roaring codec (`SafeBitmap` / `roaringCodec`),
+the `CloudRoaring` facade, and the `export-segments` CLI; its main barrel re-exports `@cloudbitmaps/core`
+wholesale, which is why an application never needs to name core. The drivers are codec-agnostic — they move
+opaque payload bytes — so one package per storage **service** serves every codec, which is what makes adding
+a codec cost nothing on the storage axis. A driver author builds against
+[`@cloudbitmaps/core/driver-kit`](#cloudbitmapscoredriver-kit), and a flavor never re-exports a driver
+package: doing so would put that SDK back into every install.
 
 ---
 
@@ -63,9 +69,9 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 |---|---|---|
 | `MemoryStorage` (`MemoryStorageOptions`) | `@cloudbitmaps/roaring` | `new MemoryStorage()` |
 | `LocalFsStorage` (`LocalFsStorageOptions`) | `@cloudbitmaps/roaring` | `new LocalFsStorage('/var/lib/cloudbitmaps')` — generations under `<root>/storage`, pointers under `<root>/registry`, which is also the layout `export-segments` expects |
-| `S3Storage` | `@cloudbitmaps/roaring/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, now? })` |
-| `GcsStorage` | `@cloudbitmaps/roaring/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
-| `AzureBlobStorage` | `@cloudbitmaps/roaring/azure` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
+| `S3Storage` | `@cloudbitmaps/s3` | `new S3Storage({ bucket, prefix?, client?, region?, endpoint?, pathStyle?, credentials?, now? })` |
+| `GcsStorage` | `@cloudbitmaps/gcs` | `new GcsStorage({ bucket, prefix?, client?, projectId?, apiEndpoint? })` |
+| `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
 
 **A backend comes from one of these five classes, or from `createBackend`.** A plain `{ storage, registry }` object is
 refused — it is also the shape of the free functions' deps, so before this it was possible to build a store
@@ -381,10 +387,88 @@ this for you. They are reachable from `@cloudbitmaps/roaring` too, because the f
 
 ### Driver kit — what you need to *implement* a driver
 
+Imported from **`@cloudbitmaps/core/driver-kit`**, a subpath whose whole purpose is this: the declared contract
+a storage-driver package builds against. `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob`
+are built from nothing else, and a third-party driver has the same surface available. It is versioned public
+API — an addition is something we support, a removal breaks every driver package including ours.
+
+Application code never needs this. It is listed because it is public, and because an unimported surface is
+exactly the kind that rots undocumented.
+
+**The method signatures are the `.d.ts`, not this page.** `IStorageDriver` and `IRegistryDriver` are
+TypeScript interfaces and their shipped declarations are the specification — implement them and the compiler
+tells you what is missing. What this page adds is everything the types cannot say.
+
+<details>
+<summary><strong>A minimal storage backend, end to end</strong></summary>
+
+The one non-obvious part is the **brand**. A store accepts a backend by brand, never by `instanceof`, so a
+backend built in your package is recognised in ours. It takes two lines that have to agree: a **type-only
+`declare` field** so the class satisfies `StorageBackend`, and a **runtime stamp** in the constructor, which
+`brandAsBackend` applies non-enumerably so a spread cannot carry it off.
+
+```ts
+import {
+  STORAGE_BACKEND,
+  brandAsBackend,
+  type IRegistryDriver,
+  type IStorageDriver,
+  type StorageBackend,
+} from '@cloudbitmaps/core/driver-kit';
+
+export class MyStorage implements StorageBackend {
+  declare readonly [STORAGE_BACKEND]: true; // type-only: no value is emitted here
+  readonly storage: IStorageDriver;
+  readonly registry: IRegistryDriver;
+
+  constructor(options: MyStorageOptions) {
+    this.storage = new MyStorageDriver(options);
+    this.registry = new MyRegistryDriver(options);
+    brandAsBackend(this); // the runtime half — without it, `new CloudRoaring({ storage: this })` is refused
+  }
+}
+```
+
+Depend on core as a **peer** plus a dev dependency, not a plain dependency:
+
+```jsonc
+{
+  "peerDependencies": { "@cloudbitmaps/core": "^<the minor you build against>" },
+  "devDependencies": { "@cloudbitmaps/core": "^<the same>" }
+}
+```
+
+A plain dependency lets your package pull in a *second* copy of core beside the consumer's, which is the
+duplicate-major case described under [Errors](#errors-typed--you-catch-these) where `instanceof` stops
+holding. A peer makes the
+consumer's copy the only one.
+
+**On correctness, be aware of what you cannot yet run.** The conformance suite the in-repo drivers are held
+to (`packages/roaring/src/testing/conformance.ts`) is *not* exported as a public subpath, so a third-party
+driver cannot execute it today. Until it is, the load-bearing behaviours to reproduce by hand are: a
+conditional create that **refuses** rather than overwrites (hard invariant 2 — this is the one that silently
+loses data if you get it wrong), ranged reads that return exactly the requested bytes, a compare-and-swap on
+the pointer row that reports a lost race rather than clobbering, and the four `currentGen: null` obligations
+listed below.
+
+</details>
+
 | Symbol | What it does |
 |---|---|
-| `Token` | the registry's opaque compare-and-swap token — unique per write, compared by equality only (ABA-safe across delete→recreate) |
-| `chunkRefKey` · `segmentKey` | the canonical key-string helpers (used by the conformance suite and the memory drivers) |
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
+| `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
+| `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend class, and the symbol it uses. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another |
+| `Token` · `chunkRefKey` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical key-string helpers. A driver package may import core's main entry for these |
+| `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
+| `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
+| `ObjectVersionRaced` · `MAX_ROW_BYTES` | the sentinel a lost compare-and-swap throws, and the hard cap on a serialized row |
+| `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` | where a registry row lives, defined once here. Two drivers disagreeing about a row's key would be a silent incompatibility on the same bucket, so the layout has exactly one definition — all three drivers reach it through `ObjectStoreRegistry` |
+| `normalizeObjectPrefix` · `prefixPart` | prefix normalization, so `cr`, `cr/` and `/cr/` address the same place |
+| `encodeNameForKey` · `namespaceKeyPart` | how a segment name and namespace become an object key |
+| `isSdkRetryable` · `isNetworkOrTimeout` · `isServerSide` · `httpStatus` · `errorName` | retry classification shared by the SDK-backed drivers — which failures are transient and worth another attempt |
+| `validateSegmentRef` | boundary validation a driver applies to a caller-supplied ref |
+| `BlobSink` | the sink a range read writes into |
+| the typed errors + predicates | `ValidationError` · `WriteConflictError` · `NotFoundError` · `IntegrityError` · `TransientError`, and `isValidationError` · `isWriteConflictError` · `isNotFoundError`. Throw the classes; classify with the predicates, which hold across package copies where `instanceof` does not |
 
 **`currentGen` is nullable, and `null` is a value — not a missing field.** A `RegistryRecord` with
 `currentGen: null` says *this segment exists and has no Storage generation yet*: the row `setRetention` mints when a
@@ -423,7 +507,7 @@ therefore:
 `RegistryStatus` (`'active' | 'compacting' | 'erasing' | 'destroyed'` — the middle two are reserved and set by no
 writer in this build) · `GovernanceMeta` · `SegmentSize`
 
-### Driver option types (subpath entry points)
+### Driver option types (one per driver package)
 
 `MemoryRegistryDriverOptions` · `LocalFsRegistryDriverOptions` · `InProcessKeystoreOptions` ·
 `S3StorageDriverOptions` · `S3RegistryDriverOptions` ·
@@ -459,27 +543,37 @@ Two things worth knowing:
   *chain* includes that metadata.
 
 **Bundle-safe predicates** — `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` ·
-`isNotFoundError` · `isIntegrityError` · `isValidationError`. Prefer these over `instanceof` when catching
-errors that originate in a cloud driver (`@cloudbitmaps/roaring/s3` / `…/gcs` / `…/azure`).
+`isNotFoundError` · `isIntegrityError` · `isValidationError`.
 
-Inside one package `instanceof` holds: `@cloudbitmaps/roaring` and its `/s3`, `/gcs`, `/azure` subpaths share
-a chunk, so the error classes there are the same objects.
+**On an ordinary install, `instanceof` holds everywhere** — across `@cloudbitmaps/roaring`, the driver
+packages and `@cloudbitmaps/core` itself. Every package is published with `@cloudbitmaps/core` left
+**external** rather than bundled in, so your tree has one copy of the error classes and
+`core.ValidationError` and the class an `@cloudbitmaps/s3` driver throws are the same object. Catch them
+however you normally would.
 
-**Across the two packages it does not, on an ordinary install.** `@cloudbitmaps/roaring` is built with its own
-copy of `@cloudbitmaps/core` bundled in, so `core.ValidationError` and `roaring.ValidationError` are different
-class objects even when your lockfile has exactly one version of each. Catch an error thrown by a roaring
-driver with `instanceof core.ValidationError` and it will not match — no skew, no duplicate install, nothing
-you can fix by deduping. The same applies if a version skew or a bundler really does give you two copies.
+Reach for the predicates where that stops being true, which is not something the library can control:
 
-The failure is silent, which is what makes it worth a rule: a `catch` that stops matching just falls through.
-The predicates match a `Symbol.for` brand plus the runtime `name`, so they hold in every one of these cases —
-verified on each build by the smoke test.
+- a bundler that inlines `@cloudbitmaps/core` into two separate outputs;
+- two major versions of core resolved side by side in one tree, which npm and pnpm will both do;
+- an error crossing a `worker_threads` worker, a `vm` realm, or an iframe.
+
+Each predicate matches a `Symbol.for` brand plus the runtime `name`, and a `Symbol.for` key is the same
+symbol in every copy and every realm, where a class object is not. So the predicates hold in all three cases
+and `instanceof` does not. The failure is silent — a `catch` that stops matching just falls through — which
+is why library code that cannot see how it will be bundled should prefer them by default. `pnpm smoke`
+asserts both halves on every build: that the shared copy really is shared, and that the predicates classify
+an error thrown by one package and caught in another.
 
 ---
 
 ## Complete export index
 
 Every export, by entry point. This section is the completeness anchor the sync test checks against.
+
+`@cloudbitmaps/core`'s **main** entry has no section of its own, deliberately: the flavor re-exports it
+wholesale, so every name below the two `@cloudbitmaps/roaring` headings is also a name on
+`@cloudbitmaps/core`. A driver author told elsewhere on this page to import `Token`, `RegistryRecord`,
+`chunkRefKey` or `segmentKey` from core will find each one there.
 
 ### `@cloudbitmaps/roaring` — values
 
@@ -527,30 +621,51 @@ Every export, by entry point. This section is the completeness anchor the sync t
 `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` · `CodecInterface` · `CodecBitmap` ·
 `EngineDeps` · `Token`
 
-### `@cloudbitmaps/roaring/s3`
+### `@cloudbitmaps/core/driver-kit`
+
+The contract a storage-driver package builds against — see
+[Driver kit](#driver-kit--what-you-need-to-implement-a-driver) for what each one is for. Application code does
+not import these.
+
+Ports and the backend brand: `IStorageDriver` · `IRegistryDriver` · `StorageBackend` · `StorageCaps` ·
+`SegmentRef` · `GenKey` · `brandAsBackend` · `STORAGE_BACKEND`
+
+Object-store registry: `ObjectStoreRegistry` · `ObjectRegistryStore` · `ObjectRow` · `ObjectVersionRaced` ·
+`MAX_ROW_BYTES`
+
+Keys and prefixes: `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` ·
+`normalizeObjectPrefix` · `prefixPart` · `encodeNameForKey` · `namespaceKeyPart`
+
+Retry classification: `isSdkRetryable` · `isNetworkOrTimeout` · `isServerSide` · `httpStatus` · `errorName`
+
+Boundary helpers and errors: `validateSegmentRef` · `BlobSink` · `ValidationError` · `WriteConflictError` ·
+`NotFoundError` · `IntegrityError` · `TransientError` · `isValidationError` · `isWriteConflictError` ·
+`isNotFoundError`
+
+### `@cloudbitmaps/s3`
 
 `S3Storage` · `S3StorageOptions` — the backend, both halves in one bucket.
 
 `S3StorageDriver` · `S3RegistryDriver` · `S3StorageDriverOptions` · `S3RegistryDriverOptions` — the halves.
 
-### `@cloudbitmaps/roaring/gcs`
+### `@cloudbitmaps/gcs`
 
 `GcsStorage` · `GcsStorageOptions` — the backend, both halves in one bucket. It builds its own client, which
 also sidesteps a confusing collision: `@google-cloud/storage` calls its client class `Storage`, so the
 lower-level driver option that takes it is `storage` too.
 
-`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves
-(peer: `@google-cloud/storage`). The registry lets a GCS deployment run on **one bucket
+`GcsStorageDriver` · `GcsRegistryDriver` · `GcsStorageDriverOptions` · `GcsRegistryDriverOptions` — the halves.
+The registry lets a GCS deployment run on **one bucket
 alone**: compare-and-swap rides GCS object preconditions (`ifGenerationMatch: 0` to create, `ifGenerationMatch:
 <generation>` to swap), so no second service is needed to hold the `currentGen` pointer.
 
-### `@cloudbitmaps/roaring/azure`
+### `@cloudbitmaps/azure-blob`
 
 `AzureBlobStorage` · `AzureBlobStorageOptions` — the backend, both halves in one container. Give it a
 `containerClient`, or a `connectionString` + `container` and it builds one.
 
 `AzureBlobStorageDriver` · `AzureBlobRegistryDriver` · `AzureBlobStorageDriverOptions` ·
-`AzureBlobRegistryDriverOptions` — the halves (peer: `@azure/storage-blob`). Inject a
+`AzureBlobRegistryDriverOptions` — the halves. Inject a
 container-scoped `ContainerClient`; write-once via `ifNoneMatch: '*'`. The registry lets an Azure deployment
 run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneMatch: '*'` to create,
 `ifMatch: <etag>` to swap), so no second service is needed to hold the `currentGen` pointer.
@@ -558,11 +673,12 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 ## Keeping this in sync
 
 - The **sync test** ([`tests/docs/api-reference-sync.test.ts`](../../tests/docs/api-reference-sync.test.ts))
-  parses the eight barrel files (both package barrels + the three driver subpaths in each package) and asserts each
+  derives its entry list from every package's own `exports` map — so each package and each subpath it declares
+  is covered, with no list to maintain — and asserts each
   exported name appears (backtick-wrapped) somewhere on this page — so **adding an export without documenting it
   breaks CI**. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
-  keeping every export explicit; the allowed exceptions are the flavor barrels re-exporting core's same-named
-  barrel, because core's barrels are parsed too.
+  keeping every export explicit; the one allowed exception is the flavor's main barrel re-exporting core's,
+  because core's barrel is parsed too.
 - When you add/rename/remove a public export: update the relevant section **and** the
   [Complete export index](#complete-export-index) in the same change (this is part of the standard
   [keep-the-docs-current step](../../CONTRIBUTING.md#documentation--keeping-it-current)).

@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
-import { GcsStorageDriver } from '@/drivers/gcs/storage';
+import { GcsStorageDriver } from '@/gcs/storage';
 import { TransientError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 

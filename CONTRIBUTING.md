@@ -21,43 +21,82 @@ CI runs exactly these, and all must pass (TypeScript, pnpm):
   Azurite) — no real cloud account needed
 - `pnpm lint:arch` runs `tests/arch`: the import graph is acyclic, and every import-boundary rule in `eslint.config.js` (the storage-agnostic-core rule and its siblings) is proven to fire on a planted violation — and, since
   `core-no-node-builtins`, the **runtime**-agnostic one too.
-- `pnpm smoke` loads the **built** packages through their `exports` maps under both ESM and `require()`, on
-  every driver subpath, and cross-checks the `Symbol.for`-branded error predicates across bundles — the class
-  of bug the source-graph tests structurally cannot see.
+- `pnpm smoke` loads **every** built package through its own `exports` map under both ESM and `require()` —
+  the entry list is derived from each manifest, so a declared entry that does not load fails the build — and
+  cross-checks the `Symbol.for`-branded error and backend predicates ACROSS PACKAGES, and asserts the five
+  built packages really do share **one** copy of core — every package leaves `@cloudbitmaps/core` external,
+  so `instanceof` holds across them and a regression to a bundled copy would break it silently. Both halves
+  are the class of bug the source-graph tests structurally cannot see.
 
 A fresh clone must pass `install → lint → lint:arch → format:check → typecheck → test → build → smoke` with
 **no manual setup** (Node ≥22.12, which the manifests enforce — `.nvmrc` pins the major, 22 — and pnpm 9; Docker only for
 `test:integration`).
-Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover both packages.
+Every command runs from the **repo root** — it is a pnpm workspace, and the root scripts cover all five packages.
 
-## Repo layout (a pnpm workspace of two packages)
+## Repo layout (a pnpm workspace of five packages)
 
 The `@cloudbitmaps` family split makes this repo a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |
 |---|---|---|
-| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, **every** storage driver (`drivers/` + the `s3` / `gcs` / `azure` subpath barrels, SDKs as optional peers), the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject |
-| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, one-line re-export barrels for each driver subpath, the `export-segments` CLI, and the test-only conformance SDK |
-| `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the two packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
+| `packages/core/src/` | **`@cloudbitmaps/core`** (zero runtime deps, no cloud SDK) | the codec-agnostic `SegmentEngine` + the `CodecInterface` seam, the driver ports, the in-memory and local-filesystem drivers, the `.crbm` format, the load/publish write path, generation GC, erasure, crypto, registry, consistency, budget, eject — plus `driver-kit`, the declared contract a driver package builds against |
+| `packages/roaring/src/` | **`@cloudbitmaps/roaring`** (depends on core) | the flavor: the roaring codec (`SafeBitmap` / `roaringCodec`), the `CloudRoaring` facade, the `export-segments` CLI, and the test-only conformance SDK |
+| `packages/{s3,gcs,azure-blob}/src/` | **`@cloudbitmaps/{s3,gcs,azure-blob}`** (depend on core + their SDK) | one package per storage **service**, each a real dependency on its own SDK. They build against `@cloudbitmaps/core/driver-kit` and nothing else of ours — never a flavor, never a sibling |
+| `tests/` (repo root) | — | **all** tests, deliberately *not* per package: many drive the facade and core internals together, so the `@/…` alias is remapped onto the packages (`@/index` → the facade, `@/roaring-codec` → the codec, `@/s3/*` → the S3 driver package, `@/*` → core) in `vitest.config.ts` + the root `tsconfig.json` |
 | `bench/` · `fuzz/` · `scripts/` · `site/` · `docs/` | — | benchmarks, fuzz targets, gate scripts, the static site, and the docs trees below |
 
-A user installs **one flavor** (`@cloudbitmaps/roaring`); core arrives transitively and is never installed
-directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor package, if the main entry
-reaches a cloud SDK, or if `core/` reaches a driver impl.
+A user installs **two packages** — a flavor (`@cloudbitmaps/roaring`) and the storage they have
+(`@cloudbitmaps/s3`, `/gcs` or `/azure-blob`); core arrives as a dependency of both and is never installed
+directly. The dependency arrow is one-way — `lint:arch` fails if core imports a flavor or a driver package, if
+any main entry outside a driver package reaches a cloud SDK, or if `core/` reaches a driver impl.
 
 `core/` is also **runtime**-agnostic: `lint:arch` fails on any `node:*` import under `packages/core/src/core`, so
 the seam stays loadable where no node builtin exists (a V8 isolate — Workers, Deno Deploy). Randomness, time and
 I/O reach it through injected seams — `Clock`, `Rng`, `BlobReader`, the driver ports — which is what makes that
-enforceable rather than aspirational. **Anything needing a builtin belongs in a driver under `src/drivers`**,
-where all of them live today.
+enforceable rather than aspirational. **Anything needing a builtin belongs in a driver** — either one of the
+driver packages, or `packages/core/src/drivers/` where the SDK-free memory and local-filesystem drivers live.
+
+## Adding a storage driver package
+
+Most of the topology is **derived** — `scripts/build.mjs` reads each package's own `exports`, the release
+workflow globs `packages/*/package.json`, and the `no-circular`, `api-reference-sync`, `issue-template-sync`
+and `sdk-floor-claims` gates all read the manifests. Those need no edit.
+
+These do, and the list is exhaustive as of this writing. A missing one fails **loudly** — in `pnpm lint`,
+`pnpm typecheck` or `pnpm smoke`, long before a publish — but knowing them up front turns a bisect into a
+checklist:
+
+| File | What to add |
+|---|---|
+| `package.json` | the workspace devDependency, **and** the package in the `typecheck:pkgs` and `typecheck:next` chains (both spell every package out) |
+| `tsconfig.json` | the two `paths` entries |
+| `vitest.config.ts` · `vitest.integration.config.ts` | the two aliases in **each**, above the `@/*` catch-all |
+| `eslint.config.js` | a per-package block re-stating the full SDK list **minus** this package's own — eslint replaces a rule's options rather than merging them |
+| `scripts/sdk-specifiers.cjs` | the driver-name pattern |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` | the two dropdown options; `tests/docs/issue-template-sync.test.ts` derives the *expectation* and fails until the template catches up |
+| docs | the README install + driver tables, `docs/guide/getting-started.md` wiring, the API reference entry points and export index, and the guide index |
+| npm | **bootstrap the package name** before any release can include it — see [`RELEASING.md`](RELEASING.md#bootstrapping-a-name) |
+
+Two things to copy rather than invent: the package must declare its SDK as a **real dependency** (never an
+optional peer), and its README must state the same range its manifest does — `tests/docs/sdk-floor-claims.test.ts`
+compares them.
 
 ## Dependency policy
 
-The published packages depend on **one** third-party runtime package, `roaring`. Everything else a user installs is
-their own storage SDK (an optional peer). Keep it that way:
+Third-party runtime dependencies are counted **per package**, and each one is deliberate:
 
-1. **Runtime: one.** Adding a runtime dependency is a design review, not a PR.
+| package | third-party runtime deps |
+|---|---|
+| `@cloudbitmaps/core` | **none** |
+| `@cloudbitmaps/roaring` | `roaring` — the native codec, the reason a flavor is a package |
+| `@cloudbitmaps/s3` · `/gcs` · `/azure-blob` | its own cloud SDK, and only its own |
+
+A user therefore installs a flavor and the driver for the storage they actually have; nothing is an optional
+peer, and no package pulls an SDK for a service the user does not use. Keep it that way:
+
+1. **Per package: as few as that table shows.** Adding a runtime dependency is a design review, not a PR —
+   and adding one to `core` means every install pays for it.
 2. **A development dependency earns its place on three tests:** (a) it does something we should not write — a
    compiler, a test runner, a formatter, an official cloud SDK — *or* replaces more than ~300 lines we would
    otherwise own; (b) it is widely used (≥ 1M weekly downloads, or the vendor's official SDK) and maintained (a
@@ -198,7 +237,7 @@ text file. Ids a reader *can* resolve are fine and stay: the seven hard invarian
   (`WriteConflictError`, `IntegrityError`, …) over thrown strings — callers must learn *why* something failed.
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
-  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-two-packages)) keeps that
+  package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-five-packages)) keeps that
   mirror intact across the split. Integration tests under `tests/integration/`. Property tests over loaded
   generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**

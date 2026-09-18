@@ -41,7 +41,11 @@ export const mapFsError = (err: unknown): unknown =>
  */
 export const O_NOFOLLOW = FS.O_NOFOLLOW ?? 0;
 
-/** Best-effort parent-directory fsync so a just-published `rename`/`link` survives a crash (C13). */
+/**
+ * Best-effort parent-directory fsync, so a just-published `rename`/`link` survives a crash. Without it the
+ * directory entry can still be in the page cache when power goes: the generation's bytes are durable and
+ * the name pointing at them is not, which is the one way a published generation can come back missing.
+ */
 export async function fsyncDir(dir: string): Promise<void> {
   try {
     const handle = await open(dir, 'r');
