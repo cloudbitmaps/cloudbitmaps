@@ -192,6 +192,12 @@ describe('intersectInto — the result is a NEW GENERATION of the destination', 
       .intersectInto(store.segment('dest'), [store.segment('b')]);
     expect(result).toEqual({
       generation: 0,
+      // A materialisation now reports whether it PUBLISHED, because it can refuse — an empty or implausible
+      // result no longer overwrites the destination. `dest` did not exist here, so there was nothing to
+      // protect and nothing to collect.
+      published: true,
+      cardinalityBefore: null,
+      collected: [],
       cardinality: 3,
       chunkCount: 2, // {2, 3} share chunk 0; 200_000 is chunk 3
       size: expect.any(Number),

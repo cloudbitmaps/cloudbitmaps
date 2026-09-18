@@ -9,6 +9,9 @@ changes behaviour silently. Work down the list; most upgrades are the first two 
 3. [A storage backend must be built, not assembled](#3-a-storage-backend-must-be-built-not-assembled)
 4. [The flat options became six groups](#4-the-flat-options-became-six-groups)
 
+Plus one behaviour change that is not breaking but will change what you see:
+[the `*Into` verbs can now refuse](#the-into-verbs-can-now-refuse).
+
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
 
@@ -151,6 +154,29 @@ instead of requiring all five.
 This one throws too.
 
 ---
+
+## The `*Into` verbs can now refuse
+
+`intersectInto` / `unionInto` / `andNotInto` used to write and publish in one step. An empty combine
+therefore replaced the destination with an empty generation and reported success — indistinguishable from a
+correct run, and reachable without passing any option.
+
+They now refuse instead, the same way `load()` always has:
+
+```ts
+const res = await audience.intersectInto(dest, [eligible]);
+if (!res.published) {
+  // res.reason === 'empty', res.cardinalityBefore === what dest still holds
+}
+```
+
+**What to check in your code:** anywhere you call an `*Into` verb and assume it wrote. If emptying the
+destination is genuinely the point, pass `allowEmpty: true` and the old behaviour returns exactly.
+
+`MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. Reading the existing
+fields is unaffected; a deep equality check on the whole object is not.
+
+A lost race still throws `WriteConflictError` — unchanged.
 
 ## `instanceof` now holds across packages
 

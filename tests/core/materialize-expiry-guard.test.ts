@@ -13,8 +13,13 @@ import { collect, loadedStore } from '../helpers/loaded';
  *
  * The two behaviours therefore have to differ, and the tests below pin the difference: the read verbs still
  * degrade to empty (that is the feature), and the three write verbs refuse with a message naming the expired
- * segments. The broader guard — refusing to publish an empty generation over a non-empty one, with an
- * `allowEmpty` override — belongs to `load()`; this is the narrow case that is unambiguously a mistake.
+ * segments.
+ *
+ * The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
+ * `allowEmpty` override — now applies here too (`materialize-load-guard.test.ts`). The two are still worth
+ * keeping apart: that one is a REPORTED refusal a caller may legitimately override, while an expired handle
+ * is a wiring mistake and THROWS, before any object is written. An `allowEmpty: true` must not turn an
+ * expired operand into a wipe.
  */
 
 /** A clock the test drives, so "expired" is a fact about the test rather than about wall-clock timing. */
