@@ -567,21 +567,26 @@ generations (see the `CHANGELOG`). Security and supply-chain hardening is in pla
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
 prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 
-**Where it is headed (September 2026).** `1.0` centres on the **loaded store**, and as of this line it *is* the
-library: compute a set upstream (a warehouse query, a job), load it as an immutable generation into your bucket,
-then `has`, `count` and chunk-skipping-`intersect` it from anywhere — one bucket, no background process, nothing
-of ours in your request path. The **live tier** — per-call `add`/`remove` over a mutable warm store, with the
-compaction daemon and partition leases that kept it healthy — has been **removed** and is archived at the git tag
-`archive/live-warm-tier` (`0.9.x` stays on npm and still has it). Why: every roaring-based engine that needs
-freshness meets it by micro-batching into immutable segments, never by mutating a stored bitmap per call — so
-that is the shape we build. Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that
-well. If a live tier returns, it will be immutable delta generations on the same bucket.
+**Where it is headed (September 2026).** The **loaded store** is the library. Compute a set upstream — a
+warehouse query, a nightly job — load it as one immutable generation into your bucket, and then `has`, `count`
+and chunk-skipping `intersect` it from anywhere: one bucket, no background process, nothing of ours in your
+request path, and no bill while nobody is asking. `1.0` is that shape, finished and frozen.
+
+That shape is a choice, not a remainder. Every roaring-based engine that needs freshness meets it by
+micro-batching into immutable segments, never by mutating a stored bitmap per call — so immutability is the
+design, and the write-once generation is what makes a read cheap enough to serve from a stateless function.
+Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that well. A per-call
+`add`/`remove` tier shipped in `0.9.x` and was retired ahead of `1.0` for exactly this reason; it is archived at
+the git tag `archive/live-warm-tier`, and `0.9.x` stays on npm for anyone still on it. If per-call freshness
+returns, it will arrive as immutable delta generations on the same bucket.
 
 Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
 keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
-than whichever generations were current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+than whichever generations were current as it ran, and a curated public surface. The loaded store's own
+benchmarks — load throughput, `intersect` latency, an RSS soak — are **owed, not shipped**; until they exist the
+[benchmarks page](docs/benchmarks.md) quotes only the S3-side figures of the July 2026 calibration run, and says
+so wherever it quotes one. The public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
 storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic
