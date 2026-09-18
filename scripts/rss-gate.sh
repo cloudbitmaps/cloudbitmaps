@@ -89,7 +89,7 @@ docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage
   npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund
   # soak.cjs now requires the packages BY NAME (`@cloudbitmaps/roaring`), so lay out a minimal node_modules with
   # both built packages. Placing them directly (rather than `npm install`-ing tarballs) keeps the stage
-  # registry-free: the flavor package depends on `@cloudbitmaps/core@workspace:*`, which no registry can resolve
+  # registry-free: the flavor package depends on `@cloudbitmaps/core@workspace:^`, which no registry can resolve
   # pre-publish. Node needs only package.json + dist to resolve through the `exports` map, which is what we want
   # to exercise. `roaring` sits at the stage root, so both packages resolve the native addon from there.
   mkdir -p bench node_modules/@cloudbitmaps/core node_modules/@cloudbitmaps/roaring

@@ -14,7 +14,29 @@ import path from 'node:path';
  */
 const ROOT = path.resolve(__dirname, '..', '..');
 const CORE = path.join(ROOT, 'packages', 'core', 'src');
-const ROARING = path.join(ROOT, 'packages', 'roaring', 'src');
+/**
+ * Every package's `src`, derived — the gate named two while the workspace had five, so 18 files in the
+ * driver packages were unchecked and its own `describe` ("no circular imports under packages/*\/src") was
+ * describing more than it did. Deriving is also how the split stopped costing edits elsewhere.
+ */
+const PACKAGE_SRCS = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => path.join(ROOT, 'packages', e.name, 'src'))
+  .filter((p) => existsSync(p))
+  .sort();
+
+/** `@cloudbitmaps/<name>` → that package's `src`, read from the manifests rather than listed here. */
+const WORKSPACE_SRCS = new Map<string, string>(
+  readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .flatMap((e) => {
+      const manifest = path.join(ROOT, 'packages', e.name, 'package.json');
+      const src = path.join(ROOT, 'packages', e.name, 'src');
+      if (!existsSync(manifest) || !existsSync(src)) return [];
+      const { name } = JSON.parse(readFileSync(manifest, 'utf8')) as { name: string };
+      return [[name, src] as const];
+    }),
+);
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -48,7 +70,15 @@ export function resolveSpecifier(fromFile: string, spec: string): string | null 
   if (spec === '@cloudbitmaps/core') return asFile(path.join(CORE, 'index.ts'));
   if (spec.startsWith('@cloudbitmaps/core/'))
     return asFile(path.join(CORE, spec.slice('@cloudbitmaps/core/'.length)));
-  return null; // a package or a builtin — not part of the graph
+  // Every OTHER workspace package, so a cross-package edge into one is part of the graph rather than
+  // invisible. This was a hardcoded ['s3', 'gcs', 'azure-blob'] directly under a comment warning that
+  // "a cycle running flavor → driver → core → flavor would simply not be seen" — with `roaring`, the flavor
+  // in that very sentence, missing from the list. Deriving the names from the manifests is what makes the
+  // comment true, and a sixth package is covered the day it is added.
+  const src = WORKSPACE_SRCS.get(spec.split('/').slice(0, 2).join('/'));
+  if (src === undefined) return null; // a third-party package or a builtin — not part of the graph
+  const rest = spec.split('/').slice(2).join('/');
+  return asFile(rest === '' ? path.join(src, 'index.ts') : path.join(src, rest));
 }
 
 /** Returns one cycle as a path of node ids (first === last), or null when the graph is acyclic. */
@@ -84,7 +114,7 @@ export function findCycle(graph: ReadonlyMap<string, readonly string[]>): string
 
 function buildGraph(): Map<string, string[]> {
   const graph = new Map<string, string[]>();
-  for (const file of [...walk(CORE), ...walk(ROARING)]) {
+  for (const file of PACKAGE_SRCS.flatMap((d) => walk(d))) {
     const deps: string[] = [];
     for (const spec of specifiers(readFileSync(file, 'utf8'))) {
       const target = resolveSpecifier(file, spec);
@@ -141,7 +171,19 @@ describe('architecture: no circular imports under packages/*/src', () => {
     expect(resolveSpecifier(from, '@/core/errors')).toBe(path.join(CORE, 'core', 'errors.ts'));
     expect(resolveSpecifier(from, '@cloudbitmaps/core')).toBe(path.join(CORE, 'index.ts'));
     expect(resolveSpecifier(from, 'node:crypto')).toBeNull();
+    // `roaring` the npm addon, NOT `@cloudbitmaps/roaring` — one is outside the graph, the other is in it.
     expect(resolveSpecifier(from, 'roaring')).toBeNull();
+    expect(resolveSpecifier(from, '@cloudbitmaps/roaring')).toBe(
+      path.join(ROOT, 'packages', 'roaring', 'src', 'index.ts'),
+    );
+    expect(resolveSpecifier(from, '@cloudbitmaps/s3')).toBe(
+      path.join(ROOT, 'packages', 's3', 'src', 'index.ts'),
+    );
+    expect(resolveSpecifier(from, '@cloudbitmaps/core/driver-kit')).toBe(
+      path.join(CORE, 'driver-kit.ts'),
+    );
+    // A workspace name that does not exist stays outside the graph rather than resolving to something.
+    expect(resolveSpecifier(from, '@cloudbitmaps/nope')).toBeNull();
   });
 
   it('the real source graph is acyclic', () => {

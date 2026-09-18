@@ -58,6 +58,19 @@ const common = {
   target: 'es2022',
   sourcemap: true,
   packages: 'external',
+  // Our OWN packages too, which `packages: 'external'` does not cover on its own.
+  //
+  // Each package's tsconfig maps `@cloudbitmaps/core` through `paths` to core's SOURCE, so it typechecks
+  // without core being built first — and esbuild applies `paths` BEFORE it decides what to externalise, so
+  // without this line every dependent inlined its own private copy of core. That had three costs, all
+  // measured: a flavor bundle of 232 KB against 70 KB, four copies of the same classes in one install, and a
+  // published `.d.ts` asserting `extends ObjectStoreRegistry` that was false at runtime because the base
+  // class in the driver's copy was not the one core exports.
+  //
+  // External means the declared `dependencies: { '@cloudbitmaps/core': … }` is load-bearing at runtime
+  // rather than types-only, there is exactly one copy of core in an ordinary install, and `instanceof`
+  // across our packages holds.
+  external: ['@cloudbitmaps/*'],
   logLevel: 'warning',
   absWorkingDir: pkgDir,
 };

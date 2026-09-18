@@ -68,7 +68,7 @@
     "build": "node ../../scripts/build.mjs"
   },
   "dependencies": {
-    "@cloudbitmaps/core": "workspace:*",
+    "@cloudbitmaps/core": "workspace:^",
     "roaring": "2.7.0"
   },
   "devDependencies": {

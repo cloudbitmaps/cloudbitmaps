@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
@@ -34,6 +34,7 @@ interface Job {
 }
 
 const wf = parse(readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8')) as {
+  env?: Record<string, unknown>;
   permissions?: Record<string, string>;
   concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
   jobs: Record<string, Job>;
@@ -177,8 +178,8 @@ describe('release workflow shape', () => {
   });
 
   it('never cancels a release in flight', () => {
-    // Opposite of the CI workflow on purpose. Cancelling a build is free; cancelling a release between the
-    // publish of core and of roaring leaves npm holding a half-published family that cannot be unpublished.
+    // Opposite of the CI workflow on purpose. Cancelling a build is free; cancelling a release part-way
+    // through leaves npm holding a half-published family that cannot be unpublished.
     expect(wf.concurrency?.['cancel-in-progress']).toBe(false);
     expect(wf.concurrency?.group).toBeTruthy();
   });
@@ -193,6 +194,24 @@ describe('release workflow shape', () => {
       const run = job('publish').steps.find((s) => s.name === name)?.run ?? '';
       expect(run, `${name} must set nullglob`).toContain('shopt -s nullglob');
       expect(run, `${name} must assert the match count`).toMatch(/\$\{#pkgs\[@\]\}/);
+      // The COMPARISON specifically, not just a mention: the error message also interpolates the variable,
+      // so a `toContain` over the whole block stayed green when the `-lt` was changed back to a literal.
+      expect(run, `${name} must compare the count against EXPECTED_PACKAGES`).toMatch(
+        /-lt\s+"\$EXPECTED_PACKAGES"/,
+      );
     }
+  });
+
+  it('expects as many package manifests as the workspace actually has', () => {
+    // The count was hardcoded as `2` and stayed `2` through the split to five packages, so both guards would
+    // have passed a tag that shipped core and roaring and silently left the three driver packages behind —
+    // a PARTIAL publish of a family that releases in lockstep, which is the one npm state that cannot be
+    // undone. The number is a policy claim about the workspace, and nothing in the workflow can see the
+    // workspace, so the comparison has to happen here.
+    const packages = readdirSync(join(ROOT, 'packages'), { withFileTypes: true }).filter(
+      (e) => e.isDirectory() && existsSync(join(ROOT, 'packages', e.name, 'package.json')),
+    );
+    expect(packages.length).toBeGreaterThan(1);
+    expect(Number(wf.env?.EXPECTED_PACKAGES)).toBe(packages.length);
   });
 });

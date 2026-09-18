@@ -17,7 +17,7 @@ roaring codec (CRoaring, via `roaring`) plus the `CloudRoaring` facade, on top o
 so this is the only package you install.
 
 ```bash
-npm i @cloudbitmaps/roaring @aws-sdk/client-s3   # + only the SDK(s) you use
+npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the codec, and the storage you have
 ```
 
 ```ts

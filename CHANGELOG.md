@@ -25,9 +25,15 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   + import { S3Storage } from '@cloudbitmaps/s3';
   ```
 
-  Nothing else in the wiring changes. `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` follow the same
-  shape; `@cloudbitmaps/core/s3` and friends are gone too, and `@cloudbitmaps/core` stays transitive and is
-  still never installed directly.
+  `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` follow the same shape; `@cloudbitmaps/core/s3` and
+  friends are gone too, and `@cloudbitmaps/core` stays transitive and is still never installed directly. The
+  constructors, options and behaviour of `S3Storage`, `GcsStorage` and `AzureBlobStorage` are unchanged, so a
+  migration is the two lines above per driver plus the install — **with one thing to check**: the cloud SDK
+  was an optional peer and is now a real dependency of the driver package, so if you had pinned, patched or
+  deliberately deduped it yourself, that pin now has to satisfy the driver's range. `@cloudbitmaps/s3`
+  requires **`@aws-sdk/client-s3` >= 3.645.0**: earlier versions do not model the conditional write this
+  library's write-once guarantee is built on, and 3.640.0 silently OVERWRITES an existing object instead of
+  refusing — measured against MinIO, not inferred from the changelog.
 
   **Why.** Every driver lived in core behind an **optional peer** subpath, re-exported by a one-line barrel
   per flavor — three barrels today, and three more for every codec added. Optional peers also bring the
@@ -43,7 +49,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   **What core gains.** It now contains no cloud SDK *at all*, rather than none outside three directories —
   the boundary is a package name instead of a path prefix, which is why the eslint rule got simpler and
   stronger at once. Core also publishes **`@cloudbitmaps/core/driver-kit`**, the declared contract a driver
-  package builds against: 37 symbols, every one of them imported by a driver today, documented in the API
+  package builds against: 36 symbols, every one of them imported by a driver today, documented in the API
   reference. A third-party driver has exactly that surface.
 
   **What the split did not touch:** `MemoryStorage` and `LocalFsStorage` stay in the flavor's main entry —

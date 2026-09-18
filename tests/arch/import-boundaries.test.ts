@@ -75,6 +75,22 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     ).toHaveLength(1);
   });
 
+  it('core/ never imports a flavor either — the rule is restated there, so it needs its own proof', async () => {
+    // `packages/core/src/core/**` has its own config block, and eslint REPLACES a rule's options rather than
+    // merging them: the flavor pattern in the outer block does not reach files the inner block matches. So
+    // the inner block carries a copy, and a copy with no planted violation is a rule nobody has watched fire.
+    // Delete it and `pnpm lint` stays green while the purest part of the codebase gains the widest boundary.
+    expect(
+      await boundaryErrors(
+        CORE,
+        "import { CloudRoaring } from '@cloudbitmaps/roaring';\nCloudRoaring;",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await boundaryErrors(CORE, "import { S3Storage } from '@cloudbitmaps/s3';\nS3Storage;"),
+    ).toHaveLength(1);
+  });
+
   it('neither published package names a cloud SDK or a driver package', async () => {
     // Core is now SDK-free UNCONDITIONALLY, not merely outside three directories: the cloud drivers are
     // their own packages, so there is nowhere in core an SDK is allowed. That is why core carries no

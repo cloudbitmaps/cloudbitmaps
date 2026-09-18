@@ -1,10 +1,17 @@
-# The @cloudbitmaps family monorepo.
+# The @cloudbitmaps family monorepo — five packages on two axes, all versioned and released in lockstep.
 #
-#   packages/core     → @cloudbitmaps/core     the codec-agnostic engine + every storage driver
-#   packages/roaring  → @cloudbitmaps/roaring  the roaring codec + CloudRoaring facade (what users install)
+#   packages/core        → @cloudbitmaps/core        the codec-agnostic engine, the .crbm format, the driver
+#                                                    PORTS, and the in-memory + local-filesystem drivers.
+#                                                    No cloud SDK anywhere in it. Publishes
+#                                                    `@cloudbitmaps/core/driver-kit`, the contract a driver
+#                                                    package builds against.
+#   packages/roaring     → @cloudbitmaps/roaring     the CODEC axis: the roaring codec + CloudRoaring facade
+#   packages/s3          → @cloudbitmaps/s3          the STORAGE axis: one package per storage service, each
+#   packages/gcs         → @cloudbitmaps/gcs         depending on its cloud SDK for real rather than as an
+#   packages/azure-blob  → @cloudbitmaps/azure-blob  optional peer. Users install one of each axis.
 #
-# `@cloudbitmaps/roaring` depends on `@cloudbitmaps/core` via `workspace:*`, which pnpm resolves to a symlink
-# into `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is
-# one-way — core never imports a flavor package (that would be a cycle).
+# Every dependent depends on `@cloudbitmaps/core` via `workspace:^`, which pnpm resolves to a symlink into
+# `packages/core` locally and rewrites to a real semver range at publish. The dependency arrow is one-way —
+# core never imports a flavor or a driver package (that would be a cycle), which `pnpm lint:arch` proves.
 packages:
   - 'packages/*'

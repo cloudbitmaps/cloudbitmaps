@@ -96,6 +96,47 @@ function assertDtsSpecifiers(pkgDir) {
   );
 }
 
+/**
+ * A declared subpath must also be reachable by a resolver that cannot read `exports`.
+ *
+ * `moduleResolution: node`/`node10` ignores `exports` entirely and looks at `types`/`typesVersions`. So a
+ * subpath like `@cloudbitmaps/core/driver-kit` resolves for a modern consumer and is INVISIBLE to a node10
+ * one — and because the driver packages name it in twelve shipped `.d.ts` files, everything behind it
+ * silently became `any` there, which `skipLibCheck: true` then hides completely.
+ *
+ * That is the same silent-`any` failure `scripts/build.mjs` documents at length for extensionless relative
+ * specifiers, arriving by a different route: a bare cross-package specifier. Second occurrence of one class
+ * earns a gate, so this asserts the manifest-level invariant rather than re-deriving resolution — every
+ * subpath in `exports` has a `typesVersions` entry pointing at a real declaration file.
+ */
+function assertSubpathsResolveWithoutExports(pkgDir) {
+  const { readFileSync, existsSync } = require('node:fs');
+  const root = path.join(__dirname, '..', 'packages', pkgDir);
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const subpaths = Object.keys(manifest.exports ?? {}).filter((k) => k !== '.');
+  if (subpaths.length === 0) return;
+  const tv = manifest.typesVersions?.['*'] ?? {};
+  const missing = [];
+  for (const key of subpaths) {
+    const name = key.replace(/^\.\//, '');
+    const target = tv[name]?.[0];
+    if (target === undefined || !existsSync(path.join(root, target))) {
+      missing.push(
+        `${manifest.name}/${name}${target === undefined ? '' : ` -> ${target} (no such file)`}`,
+      );
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `${manifest.name}: ${missing.length} declared subpath(s) have no usable \`typesVersions\` entry, so a ` +
+        `\`moduleResolution: node\` consumer cannot resolve their types and everything behind them becomes ` +
+        `\`any\` — silently, because skipLibCheck hides the diagnostic.\n  ` +
+        missing.join('\n  '),
+    );
+  }
+  console.log(`  subpaths resolve without exports: @cloudbitmaps/${pkgDir} (${subpaths.length})`);
+}
+
 /** Every package directory in the workspace. */
 function packageDirs() {
   return require('node:fs')
@@ -216,26 +257,42 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
 }
 
 /**
- * Prove the two packages really are separate copies, so the cross-package leg above is not quietly testing
- * one bundle against itself. If a future build ever merges them, `instanceof` starts succeeding here and
- * this fails loudly rather than leaving the brand check to pass for the wrong reason.
+ * Prove our packages share ONE copy of core — the property that makes `instanceof` work across them.
+ *
+ * This assertion used to say the opposite, and was right to: every dependent bundled its own private copy of
+ * core, because each tsconfig maps `@cloudbitmaps/core` through `paths` to core's source and esbuild applies
+ * `paths` before deciding externals. `scripts/build.mjs` now marks `@cloudbitmaps/*` external, so there is
+ * one copy, and the assertion inverts with it.
+ *
+ * It is worth keeping in the new direction because the old behaviour is one missing line away: drop that
+ * `external` and every dependent silently re-inlines core, `instanceof` silently stops matching, and the
+ * published `.d.ts` goes back to asserting an `extends` that is false at runtime. Nothing else notices —
+ * lint, typecheck and the whole suite compile one source graph and cannot see it.
+ *
+ * The `Symbol.for` predicates stay the documented way to classify an error even so, because a consumer can
+ * still end up with two copies through version skew between our packages, and there `instanceof` fails again.
  */
-function assertPackagesAreSeparateCopies(coreMod, driverMod) {
+function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
+  if (coreMod.ValidationError !== flavorMod.ValidationError) {
+    throw new Error(
+      'core and the flavor no longer share one copy of the error classes — `@cloudbitmaps/*` has stopped ' +
+        'being external in scripts/build.mjs, so each package inlined its own core again. `instanceof` ' +
+        'across our packages is now silently false for every consumer.',
+    );
+  }
   let caught;
   try {
     new driverMod.S3RegistryDriver({ client: {}, bucket: 'b', prefix: '..' });
   } catch (e) {
     caught = e;
   }
-  if (caught instanceof coreMod.ValidationError) {
+  if (!(caught instanceof coreMod.ValidationError)) {
     throw new Error(
-      'the core and roaring packages now share one copy of the error classes, so the cross-package brand ' +
-        'check no longer crosses anything — point it at a boundary that still exists, or drop it.',
+      'an error thrown by the S3 driver package is not `instanceof` the class core exports, so the driver ' +
+        'package is carrying its own copy of core.',
     );
   }
-  console.log(
-    '  core and roaring are separate copies (instanceof across them is false, as designed)',
-  );
+  console.log('  one shared copy of core: instanceof holds across packages');
 }
 
 /*
@@ -449,12 +506,13 @@ async function main() {
   exerciseCrossBundleErrors('esm', await import(CORE), await import(S3), await import(PKG));
   exerciseCrossBundleErrors('cjs', require(CORE), require(S3), require(PKG));
   // The leg that can actually fail: two separately bundled packages, each with its own class copy.
-  assertPackagesAreSeparateCopies(require(CORE), require(S3));
+  assertPackagesShareOneCopy(require(CORE), require(PKG), require(S3));
   for (const pkgDir of packageDirs()) {
     // The SDK sweep skips the driver packages — naming an SDK is what they exist for. The specifier check
     // does not: they publish `.d.ts` like everything else.
     if (!DRIVER_PACKAGES.includes(pkgDir)) assertEntrySdkFree(pkgDir);
     assertDtsSpecifiers(pkgDir);
+    assertSubpathsResolveWithoutExports(pkgDir);
   }
 
   console.log(

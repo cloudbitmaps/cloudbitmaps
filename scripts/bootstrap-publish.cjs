@@ -210,9 +210,10 @@ console.log(`bootstrap-publish: publishing under --tag ${distTag} (expect a 2FA 
 // `NPM_CONFIG_PROVENANCE=false` could override the manifest. A bootstrap publish is unattested by design (see
 // RELEASING.md), and that is now expressible rather than blocked.
 //
-// This stays `pnpm publish` rather than a per-package `npm publish`: `@cloudbitmaps/roaring` depends on core
-// via `workspace:*`, and pnpm is what rewrites that to a real version range on the way out. npm would publish
-// the protocol string verbatim and ship a package nobody can install.
+// This stays `pnpm publish` rather than a per-package `npm publish`: every other package depends on core via
+// `workspace:^`, and pnpm is what rewrites that to a real version range on the way out. npm would publish the
+// protocol string verbatim and ship four packages nobody can install. `pnpm -r` also walks the workspace in
+// topological order, so core goes up before the four that name it.
 run(
   'pnpm',
   [

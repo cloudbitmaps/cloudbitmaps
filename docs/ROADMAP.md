@@ -61,11 +61,12 @@ Current install and publish status lives in the [README](../README.md) — this 
 restate it, so the two can't drift. You install **one codec flavor** plus only the backend SDKs you use:
 
 ```bash
-npm i @cloudbitmaps/roaring @aws-sdk/client-s3                            # roaring on AWS: one bucket, storage + registry
+npm i @cloudbitmaps/roaring @cloudbitmaps/s3                              # roaring on AWS: one bucket, storage + registry
 ```
 
-`@cloudbitmaps/core` — the codec-agnostic engine and every storage driver, with **zero runtime
-dependencies** — arrives transitively and is never installed directly.
+`@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
+arrives transitively and is never installed directly. The storage drivers are their own packages
+(`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), each depending on its SDK for real.
 
 ## Shipped today
 

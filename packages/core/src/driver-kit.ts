@@ -15,6 +15,11 @@
  *
  * It is versioned public API. Anything added here is something we support; anything removed is a breaking
  * change for a driver package — including ours, which is the point of making it explicit.
+ *
+ * Not quite self-sufficient, and worth saying rather than letting someone discover it: a registry driver
+ * that does NOT extend `ObjectStoreRegistry` needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord`
+ * and `RegistryPatch` to write `IRegistryDriver`'s method signatures, and those come from
+ * `@cloudbitmaps/core`'s main entry. The contract is this subpath PLUS those record types.
  */
 
 // The ports a driver implements, and the brand that marks a pair of halves as a backend.
@@ -55,9 +60,10 @@ export {
 export type { ObjectRegistryStore, ObjectRow } from './drivers/_shared/object-registry';
 
 // Key construction: how a segment name and namespace become an object key, how a prefix is normalized, and
-// where a registry row lives. Every cloud registry driver re-exports the four `registry*` helpers verbatim,
-// so the key layout is defined once here rather than three times — two drivers disagreeing about where a row
-// lives would be a silent cross-driver incompatibility on the same bucket.
+// where a registry row lives. The layout has exactly one definition here — two drivers disagreeing about a
+// row's key would be a silent cross-driver incompatibility on the same bucket — and all three reach it
+// through `ObjectStoreRegistry`. The S3 driver additionally re-exports the four `registry*` helpers for its
+// own callers; the other two do not, so this is one definition rather than three re-exports of it.
 export { encodeNameForKey, namespaceKeyPart } from './drivers/_shared/keys';
 export {
   normalizeObjectPrefix,

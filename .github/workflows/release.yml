@@ -23,7 +23,8 @@
 #   - **SHA-pinned Actions**: every `uses:` is pinned to a full commit SHA (a moved tag can't inject code).
 #   - **Version/tag agreement**: a `vX.Y.Z` tag must match `package.json` version, or the run fails.
 # Prerequisites (one-time, outside this file — see RELEASING.md):
-#   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`) → Trusted Publisher:
+#   1. npmjs.com → each published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
+#      `@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) → Trusted Publisher:
 #      GitHub Actions, repo `cloudbitmaps/cloudbitmaps`, workflow `release.yml`, environment `release`.
 #      A publisher can only be bound to a package that ALREADY EXISTS on the registry, so the very first
 #      version is published manually with interactive 2FA to create the names (see RELEASING.md "First
@@ -51,12 +52,19 @@ permissions:
 
 # One release at a time, and NEVER cancel one in flight. `cancel-in-progress: false` is the opposite of the
 # CI workflow's setting, deliberately: cancelling a build is free, but cancelling a release is not — kill a run
-# between `pnpm publish` of core and of roaring and npm holds a half-published family that cannot be unpublished
-# back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
+# mid-run and npm holds a half-published family — some of the five up, the rest not — that cannot be
+# unpublished back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
 # race for the same version pointers.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
+
+# How many manifests `packages/*/package.json` must match. A glob that comes back short means a package was
+# renamed, moved or lost — and the family releases in lockstep, so a short glob is a PARTIAL publish waiting to
+# happen, not a smaller release. Stated once here; `tests/ci/release-workflow.test.ts` asserts it still equals
+# the number of packages in the workspace, so adding one fails the gate instead of silently under-releasing.
+env:
+  EXPECTED_PACKAGES: 5
 
 jobs:
   publish:
@@ -109,8 +117,8 @@ jobs:
           # what a `require()` of a nonexistent file happens to do.
           shopt -s nullglob
           pkgs=(packages/*/package.json)
-          if [ "${#pkgs[@]}" -lt 2 ]; then
-            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
             exit 1
           fi
           fail=0
@@ -124,8 +132,8 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch both
-      # packages are deliberately private (the last accidental-publish guard), so a real publish attempt would
+      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch every
+      # package is deliberately private (the last accidental-publish guard), so a real publish attempt would
       # otherwise produce a fully GREEN run that published nothing at all. Fail loudly instead: the release
       # commit that clears `private` is what makes this pass, which is exactly the intended sequencing
       # (see the launch runbook's publish stage).
@@ -134,8 +142,8 @@ jobs:
         run: |
           shopt -s nullglob # see the tag-match step above: an unmatched glob would otherwise loop once on a literal
           pkgs=(packages/*/package.json)
-          if [ "${#pkgs[@]}" -lt 2 ]; then
-            echo "::error::expected the 2 publishable package manifests, matched ${#pkgs[@]} — refusing to release"
+          if [ "${#pkgs[@]}" -lt "$EXPECTED_PACKAGES" ]; then
+            echo "::error::expected $EXPECTED_PACKAGES publishable package manifests, matched ${#pkgs[@]} — refusing to release"
             exit 1
           fi
           fail=0
@@ -177,7 +185,7 @@ jobs:
       # Dry-run on manual dispatch (default): packs + validates only — mints no attestation, needs no auth token.
       # `publishConfig.access=public` + `provenance:true` live in package.json; `--provenance` is explicit here too.
       # `pnpm -r publish` walks the workspace in topological order (core before the flavor that depends on it)
-      # and rewrites each `workspace:*` range to the real version. `--no-git-checks` because the tag/branch state
+      # and rewrites each `workspace:^` range to the real version. `--no-git-checks` because the tag/branch state
       # is already verified above. The root manifest is `private: true`, so it is skipped automatically.
       - name: Publish (dry-run)
         if: github.event_name == 'workflow_dispatch' && inputs.dryRun

@@ -54,6 +54,14 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '3.645.0',
+    "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
+      'correctness floor, not a preference: measured against MinIO, 3.640.0 drops the unmodeled ' +
+      '`IfNoneMatch: "*"` and a second PUT to the same key SUCCEEDS — write-once silently lost, which is ' +
+      'hard invariant 2 — while 3.641.0 rejects it. 3.645.0 is the pinned floor, a small margin above the ' +
+      'measured boundary',
+  ],
+  [
     '24.18.1',
     'the Node version in the benchmarks methodology — a fact about the measurement, not a release',
   ],

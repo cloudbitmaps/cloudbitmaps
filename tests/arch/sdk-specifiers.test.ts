@@ -48,7 +48,13 @@ describe('the SDK-free gate detects a specifier', () => {
       'OUR OWN driver subpath — stays external so no SDK string appears, but a bundler follows it',
       'await import("@cloudbitmaps/core/s3")',
     ],
-    ['a flavor driver subpath', 'require("@cloudbitmaps/roaring/azure")'],
+    // The live package names. Naming a driver package IS reaching its SDK — a consumer's bundler follows
+    // the specifier into the driver entry and finds `@aws-sdk/client-s3` there.
+    ['a driver package', 'require("@cloudbitmaps/s3")'],
+    ['a driver package, dynamic', 'import("@cloudbitmaps/azure-blob")'],
+    ['a driver package deep path', 'require("@cloudbitmaps/gcs/whatever")'],
+    // The retired subpath spelling stays matched: a stale import of it should be caught, not silently pass.
+    ['a retired driver subpath', 'require("@cloudbitmaps/roaring/azure")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source).length).toBeGreaterThan(0);
   });

@@ -391,17 +391,16 @@ exactly the kind that rots undocumented.
 
 | Symbol | What it does |
 |---|---|
-| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row |
+| `IStorageDriver` · `IRegistryDriver` | the two ports a driver implements — the object tier and the pointer row. A registry driver that does NOT extend `ObjectStoreRegistry` also needs `Token`, `RegCaps`, `RegistryRecord`, `NewRegistryRecord` and `RegistryPatch` to write its method signatures; those come from `@cloudbitmaps/core`'s main entry |
 | `StorageBackend` · `StorageCaps` · `SegmentRef` · `GenKey` | the backend pair, a driver's declared capabilities, and the two key shapes |
 | `brandAsBackend` · `STORAGE_BACKEND` | stamp the cross-package brand on a backend class, and the symbol it uses. A store accepts a backend by brand, never by `instanceof`, so a backend built in one package is recognised in another |
-| `Token` | the registry's opaque compare-and-swap token — unique per write, compared by equality only (ABA-safe across delete→recreate) |
+| `Token` · `chunkRefKey` · `segmentKey` | **from `@cloudbitmaps/core`, not from `driver-kit`.** The opaque compare-and-swap token (unique per write, compared by equality only, ABA-safe across delete→recreate) and the canonical key-string helpers. A driver package may import core's main entry for these |
 | `ObjectStoreRegistry` | compare-and-swap over a plain object store. Every cloud registry driver is a thin adapter over this, which is why all three pass one conformance suite — the OCC semantics live here, not in the drivers |
 | `ObjectRegistryStore` · `ObjectRow` | the minimal store a driver hands `ObjectStoreRegistry`, and the row it persists |
 | `ObjectVersionRaced` · `MAX_ROW_BYTES` | the sentinel a lost compare-and-swap throws, and the hard cap on a serialized row |
-| `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` | where a registry row lives. Defined once here and re-exported verbatim by each driver, because two drivers disagreeing about a row's key would be a silent incompatibility on the same bucket |
+| `registryPrefix` · `registryObjectKey` · `registryListPrefix` · `parseRegistryKey` | where a registry row lives, defined once here. Two drivers disagreeing about a row's key would be a silent incompatibility on the same bucket, so the layout has exactly one definition — all three drivers reach it through `ObjectStoreRegistry`, and the S3 driver additionally re-exports these for its own callers |
 | `normalizeObjectPrefix` · `prefixPart` | prefix normalization, so `cr`, `cr/` and `/cr/` address the same place |
 | `encodeNameForKey` · `namespaceKeyPart` | how a segment name and namespace become an object key |
-| `chunkRefKey` · `segmentKey` | the canonical key-string helpers (used by the conformance suite and the memory drivers) |
 | `isSdkRetryable` · `isNetworkOrTimeout` · `isServerSide` · `httpStatus` · `errorName` | retry classification shared by the SDK-backed drivers — which failures are transient and worth another attempt |
 | `validateSegmentRef` | boundary validation a driver applies to a caller-supplied ref |
 | `BlobSink` | the sink a range read writes into |

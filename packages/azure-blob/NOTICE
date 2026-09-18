@@ -1,4 +1,4 @@
-CloudRoaring
+@cloudbitmaps/azure-blob
 Copyright 2026 Sharvil Kadam
 
 This product includes software developed as an open-source project.
@@ -7,6 +7,5 @@ file. You may obtain a copy of the License at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-CloudRoaring builds on the Roaring Bitmap data structure and is designed to use
-the CRoaring engine (via the `roaring` Node.js binding) for in-memory bit math.
-Those projects are independent works under their own licenses.
+@cloudbitmaps/azure-blob is a storage driver for CloudBitmaps. It contains no bitmap code and is
+codec-agnostic: it moves opaque payload bytes.

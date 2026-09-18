@@ -409,7 +409,11 @@ const specAnchors = [];
       }
     }
   };
-  walk(path.join(ROOT, 'packages', 'core', 'src'));
+  // EVERY package, not just core. The cloud drivers are their own packages now, so walking only core
+  // counted 1 backend where the site claims 4 — the gate caught the move, which is what it is for.
+  for (const e of fs.readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })) {
+    if (e.isDirectory()) walk(path.join(ROOT, 'packages', e.name, 'src'));
+  }
 
   // Without this the check is vacuous in the one case that matters most: a refactor that moves or renames the
   // driver classes makes the regex match nothing, and a count of 0 would then "disagree" in a way someone could
@@ -421,7 +425,7 @@ const specAnchors = [];
     );
   }
 
-  // Only `roaring` is somebody else's code; `@cloudbitmaps/core` is ours and is declared `workspace:*`. This is
+  // Only `roaring` is somebody else's code; `@cloudbitmaps/core` is ours and is declared `workspace:^`. This is
   // what makes the page's wording "third-party dependency" true where a bare "runtime dependency" would not be.
   const roaringPkg = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8'),

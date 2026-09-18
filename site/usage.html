@@ -102,7 +102,7 @@
               <a class="btn" href="#retention">Retention</a>
             </p>
             <p class="meta">
-              Apache-2.0 · 1 third-party dependency · cloud SDKs are optional peers you already have
+              Apache-2.0 · 1 third-party dependency · one package per storage service, each with its own SDK
             </p>
           </div>
 
@@ -153,7 +153,7 @@ npm audit signatures</code></pre>
               <span class="label">production.ts</span><span class="label">Only the drivers</span>
             </div>
             <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
-<span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring/s3'</span>;
+<span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/s3'</span>;
 
 <span class="c">// one bucket holds both the data and the pointer, stated once</span>
 <span class="k">const</span> backend = <span class="k">new</span> S3Storage({
@@ -436,7 +436,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <p class="lede">
           Storage and registry are picked separately. Anything with a cheap ranged read and a write-once put
           works as storage; anything with a cheap compare-and-swap works as the registry. Each backend's SDK is
-          an <strong>optional peer</strong> — install only the ones you use.
+          a <strong>real dependency</strong> of its own package — install only the storage you use.
         </p>
         <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
              seen that page can reasonably arrive here looking for Redis in the table and read its absence as
@@ -465,19 +465,19 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
               <tbody>
                 <tr>
                   <td>S3</td>
-                  <td><span class="m">/s3</span></td>
+                  <td><span class="m">@cloudbitmaps/s3</span></td>
                   <td class="from">storage · registry</td>
-                  <td class="num">@aws-sdk/client-s3 ^3</td>
+                  <td class="num">@aws-sdk/client-s3 &gt;=3.645</td>
                 </tr>
                 <tr>
                   <td>Google Cloud Storage</td>
-                  <td><span class="m">/gcs</span></td>
+                  <td><span class="m">@cloudbitmaps/gcs</span></td>
                   <td class="from">storage · registry</td>
                   <td class="num">@google-cloud/storage ^7</td>
                 </tr>
                 <tr>
                   <td>Azure Blob</td>
-                  <td><span class="m">/azure</span></td>
+                  <td><span class="m">@cloudbitmaps/azure-blob</span></td>
                   <td class="from">storage · registry</td>
                   <td class="num">@azure/storage-blob ^12</td>
                 </tr>
@@ -631,11 +631,11 @@ bill.redisCrossover.readsPerSec;</code></pre>
             <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 4 storage drivers</p>
           </div>
           <div class="install">
-            <div class="install-head label"><span>Install</span><span>One flavor</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring
+            <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
-<span class="c"># then only what you actually use:</span>
-npm i @aws-sdk/client-s3</code></pre>
+<span class="c"># the codec you want, and the storage you have.</span>
+<span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span></code></pre>
             <p class="link-row"><a href="flavors.html">Compare flavors →</a></p>
           </div>
         </div>

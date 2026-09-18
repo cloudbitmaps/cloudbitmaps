@@ -93,15 +93,9 @@ importers:
         specifier: ^12
         version: 12.33.0
       '@cloudbitmaps/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
-        version: 3.1132.0
-      '@google-cloud/storage':
-        specifier: ^8.1.0
-        version: 8.1.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -130,18 +124,12 @@ importers:
   packages/gcs:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@google-cloud/storage':
         specifier: ^7 || ^8
         version: 8.1.0
     devDependencies:
-      '@aws-sdk/client-s3':
-        specifier: ^3.1132.0
-        version: 3.1132.0
-      '@azure/storage-blob':
-        specifier: ^12
-        version: 12.33.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
@@ -152,7 +140,7 @@ importers:
   packages/roaring:
     dependencies:
       '@cloudbitmaps/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       roaring:
         specifier: 2.7.0
@@ -177,18 +165,12 @@ importers:
   packages/s3:
     dependencies:
       '@aws-sdk/client-s3':
-        specifier: ^3
+        specifier: '>=3.645.0 <4'
         version: 3.1132.0
       '@cloudbitmaps/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
-      '@azure/storage-blob':
-        specifier: ^12
-        version: 12.33.0
-      '@google-cloud/storage':
-        specifier: ^8.1.0
-        version: 8.1.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

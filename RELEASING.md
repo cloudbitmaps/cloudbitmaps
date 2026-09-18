@@ -1,6 +1,7 @@
 # Releasing CloudBitmaps
 
-New versions of `@cloudbitmaps/core` and `@cloudbitmaps/roaring` are published by an **automated, tokenless,
+New versions of all five packages — `@cloudbitmaps/core`, `@cloudbitmaps/roaring`, and the
+`@cloudbitmaps/s3` · `/gcs` · `/azure-blob` driver packages — are published by an **automated, tokenless,
 human-gated** pipeline — you never run `npm publish` by hand. This is the map to that pipeline, which lives in
 [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
@@ -23,12 +24,14 @@ is published without editing it.
 ## TL;DR — cutting a release
 
 1. **Land everything on `main`** with the gate green and `CHANGELOG.md` updated.
-2. **Bump both package versions** to the new number in one commit (`packages/core/package.json` and
-   `packages/roaring/package.json` — they must match exactly, and the workflow enforces it).
+2. **Bump EVERY package version** to the new number in one commit — every `packages/*/package.json`. They
+   must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses the release if
+   any one disagrees, so a missed package costs a failed run rather than a partial publish.
 3. **Tag and push:** `git tag v0.1.0 && git push origin v0.1.0`.
 4. **Approve the deployment** — the run pauses on the `release` environment. Open the run → _Review
    deployments_ → approve `release`.
-5. It publishes both packages, tokenlessly, with a signed provenance attestation.
+5. It publishes all five packages, tokenlessly, with a signed provenance attestation. `pnpm -r publish`
+   walks the workspace in topological order, so `core` lands before the four that depend on it.
 
 The approval prompt is the last point at which a release can be stopped. Nothing reaches npm before it.
 
@@ -65,8 +68,8 @@ release for a version that never reached npm.
 [`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) now asserts this ordering.)
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
-free; cancelling a release between the publish of `core` and of `roaring` leaves npm holding a half-published
-family that cannot be taken back.
+free; cancelling a release part-way through leaves npm holding a half-published family — some of the five
+packages up, the rest not — that cannot be taken back.
 
 Every `uses:` is pinned to a full commit SHA, so a moved tag can't inject code. Dependabot bumps the SHA and
 the human-readable version comment together, monthly. The npm upgrade the OIDC publish needs is pinned to a
@@ -95,7 +98,9 @@ This mirrors the sibling projects (`onadiet`, `babystack`), which use the same t
 
 Configured once, outside this file; documented here so the pipeline can be rebuilt or audited.
 
-**npm** — per published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`):
+**npm** — per published package (`@cloudbitmaps/core`, `@cloudbitmaps/roaring`, `@cloudbitmaps/s3`,
+`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`). **A newly created package name starts with none of this**,
+so the hardening below is part of first-publishing one, not an afterthought:
 
 - Account-level 2FA enabled — ideally a passkey or hardware key. Once tokens are gone, the account is the root
   of trust.
@@ -145,8 +150,10 @@ resolves — see the note below.
 
 1. **Repo public first.** The GitHub repo must exist and be public before publishing, so the packages'
    `repository`/`homepage` links resolve and provenance has a public source to attest to.
-2. **Cut the prerelease commit** — set both packages to `0.1.0-rc.0` and remove `"private": true`
-   (that flag is the accidental-publish guard; clearing it is what makes any publish real).
+2. **Cut the prerelease commit** — set EVERY package to `0.1.0-rc.0` and remove `"private": true` from each
+   (that flag is the accidental-publish guard; clearing it is what makes any publish real). Miss one and
+   `pnpm publish` skips it silently with exit 0, so the name it was meant to create never exists — and a
+   Trusted Publisher cannot be bound to a name that does not exist, which is the whole reason for this step.
 3. **Publish it manually**, with interactive 2FA. Use the guarded helper rather than typing this by hand — it
    verifies every precondition below *before* the irreversible step, and requires `--confirm`:
 
@@ -164,8 +171,11 @@ resolves — see the note below.
    pnpm -r --filter './packages/**' publish --access public --tag rc
    ```
 
-   Both names now exist on the registry, with **no `latest` tag**. This tarball is unattested, by design —
-   nobody installs it.
+   All five names now exist on the registry, with **no `latest` tag**. These tarballs are unattested, by
+   design — nobody installs them. Confirm all five exist before moving on, with
+   `npm access get status <name>` rather than `npm view` — `npm view` reads a replica that lags for minutes
+   after a first publish (see the troubleshooting table), so a 404 there proves nothing either way. A package
+   left `private` produces no error during the publish at all, only a name that never appears.
 4. **Do the [one-time setup](#one-time-setup)** — now that the packages exist, bind a Trusted Publisher to each
    and set publishing access to *require 2FA and disallow tokens*. From here a token publish is impossible.
 5. **Create the GitHub `release` environment** with yourself as required reviewer.

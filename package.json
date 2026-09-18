@@ -21,7 +21,7 @@
     "rss-gate": "bash scripts/rss-gate.sh",
     "build-lambda-layer": "bash scripts/build-lambda-layer.sh",
     "typecheck": "tsc --noEmit && pnpm run typecheck:pkgs && pnpm run typecheck:next",
-    "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit && node node_modules/typescript-next/bin/tsc -p packages/core --noEmit && node node_modules/typescript-next/bin/tsc -p packages/roaring --noEmit",
+    "typecheck:next": "node node_modules/typescript-next/bin/tsc --noEmit && node node_modules/typescript-next/bin/tsc -p packages/core --noEmit && node node_modules/typescript-next/bin/tsc -p packages/roaring --noEmit && node node_modules/typescript-next/bin/tsc -p packages/s3 --noEmit && node node_modules/typescript-next/bin/tsc -p packages/gcs --noEmit && node node_modules/typescript-next/bin/tsc -p packages/azure-blob --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run -c vitest.integration.config.ts",
@@ -51,7 +51,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky",
-    "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit",
+    "typecheck:pkgs": "tsc -p packages/core --noEmit && tsc -p packages/roaring --noEmit && tsc -p packages/s3 --noEmit && tsc -p packages/gcs --noEmit && tsc -p packages/azure-blob --noEmit",
     "bench:encoding": "pnpm run build && node bench/encoding.cjs",
     "fuzz:install": "pnpm -C fuzz install --ignore-workspace --frozen-lockfile"
   },

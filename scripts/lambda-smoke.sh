@@ -30,13 +30,17 @@ command -v docker >/dev/null 2>&1 || {
 . "$ROOT/scripts/lib/docker-pull.sh"
 docker_pull_with_backoff "$IMAGE"
 
-echo "lambda-smoke: build + pack both workspace packages"
+echo "lambda-smoke: build + pack the codec and the engine"
 pnpm build >/dev/null
-# Pack each package separately. `pnpm pack` rewrites the `workspace:*` dependency to a concrete version, so the
+# Pack each package separately. `pnpm pack` rewrites the `workspace:^` dependency to a concrete version, so the
 # tarballs are what a publish would ship. They are placed into the container's node_modules BY HAND rather than
 # `npm install`-ed, because the flavor's pinned `@cloudbitmaps/core` version is not resolvable from any
 # registry pre-launch — manual placement keeps the check registry-free while still exercising the REAL packed
 # artifacts + the `exports` maps.
+#
+# Codec + engine only. What this proves is that the NATIVE `roaring` addon compiles and loads on the Lambda
+# runtime; the driver packages are plain JS over a cloud SDK with nothing platform-specific to establish, and
+# `pnpm smoke` already resolves their entries and subpaths out of the built artifacts.
 # Repo-local (NOT mktemp): Docker Desktop shares /Users, not /var/folders, and these get bind-mounted.
 PACKDIR="$ROOT/.pack-tmp"
 rm -rf "$PACKDIR" && mkdir -p "$PACKDIR"
