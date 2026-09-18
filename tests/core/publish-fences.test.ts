@@ -399,9 +399,11 @@ describe('a materialisation reports whether it actually landed', () => {
     expect(events).toEqual([{ kind: 'segment.publish', segment: 'dest', generation: 0 }]);
   });
 
-  it('a streaming combine writes nothing, so it emits nothing', async () => {
-    // The counter-test: `audit` sits on the shared options type, and the read verbs must ignore it rather than
-    // attesting to a publish that did not happen.
+  it('a streaming combine cannot even be handed an audit sink', async () => {
+    // This used to be a RUNTIME counter-test: `audit` sat on the shared options type, so a read verb had to
+    // ignore it rather than attest to a publish that never happened. It now lives on `MaterializeOptions`,
+    // which only the writing verbs take — so the mistake is a compile error instead of a silent no-op, and
+    // the `@ts-expect-error` below fails the build the day that regresses.
     const w = await world();
     await w.load('a', [1, 2, 3]);
     await w.load('b', [2, 3, 4]);
@@ -409,9 +411,12 @@ describe('a materialisation reports whether it actually landed', () => {
     const audit = { onEvent: (e: unknown) => void events.push(e) };
 
     const store = w.reader();
-    expect(await collect(store.segment('a').intersect([store.segment('b')], { audit }))).toEqual([
-      2, 3,
-    ]);
+    expect(
+      await collect(
+        // @ts-expect-error a read verb writes nothing, so it does not take an audit sink
+        store.segment('a').intersect([store.segment('b')], { audit }),
+      ),
+    ).toEqual([2, 3]);
     expect(events).toEqual([]);
   });
 

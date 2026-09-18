@@ -52,7 +52,7 @@ Where each piece sits today:
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
 | `exists()` + `segments()` | **shipped** — the registry always knew which segments existed; nothing exposed it, so the answer had to be inferred from `count()` (which cannot tell *never loaded* from *loaded and empty*) or a bucket listing, and the fallback was keeping a hand-maintained list of names beside the store. `exists()` is one point read; `segments()` streams the registry's own enumeration, namespace-scoped, admin-path |
-| Extending the load guard to the `*Into` verbs | **next** — a materialisation still publishes directly, so a combine that comes out empty still replaces `dest` with an empty generation |
+| Extending the load guard to the `*Into` verbs | **shipped** — a materialisation routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` restores the old behaviour where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
@@ -86,8 +86,10 @@ is a dependency of both and is never installed directly. The storage drivers are
   suppression side only where it overlaps, and `union` can prune nothing at all — all three budgeted alike.
 - **Materialised results.** `intersectInto` / `unionInto` / `andNotInto` write the result as a **new generation
   of a destination segment** — the destination is superseded, not appended to — and return
-  `MaterializeResult { generation, cardinality, chunkCount, size }`. An empty result publishes an empty
-  generation today; the guard for that is [next](#on-the-way-to-10).
+  `MaterializeResult { generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size,
+  collected }`. An empty or implausible result over a non-empty destination is **refused** rather than
+  published, with `allowEmpty` / `guard` to override — the same guard `load()` takes. Unlike `load()` it
+  collects nothing by default, so a `rollback` target survives the materialisation.
 - **Cheap counts.** `count()` sums per-chunk cardinality straight from the `.crbm` index, so a segment counts
   with **zero payload reads**.
 - **Bounded memory, always.** A hard LRU ceiling on cached chunks, a byte-aware storage-reader cache, bounded fan-out
@@ -216,10 +218,10 @@ between here and there:
    multipart), `intersect` / `*Into` latency by operand count and chunk overlap, and an RSS soak over a long
    read/load mix. Until they exist, the measured numbers on the benchmarks page are the S3-side figures of the
    July 2026 calibration run, and this page says so wherever it quotes one.
-3. **The empty-load guard and `load()` — next.** A first-class `load()` on the store with `allowEmpty` (an empty
+3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
-   refused load. It covers the `*Into` verbs too, which today publish an empty generation when a combine comes
-   out empty.
+   refused load. It covers the `*Into` verbs too: a combine that comes out empty over a non-empty destination
+   is refused rather than published.
 4. **A snapshot handle — one instant for a long job. ✅ Shipped.** `segment.pin()` resolves the current
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. Generation

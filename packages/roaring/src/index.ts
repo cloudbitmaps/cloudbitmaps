@@ -43,7 +43,6 @@ import {
   estimateCost,
   groundedReport,
   mapWithConcurrency,
-  nextGeneration,
   resolveBudget,
   resolvePerOpBudget,
   retireExpired,
@@ -59,9 +58,10 @@ import {
 import type {
   Budget,
   BudgetOption,
-  BulkLoadResult,
   GenerationEntry,
+  LoadGuard,
   LoadOptions,
+  LoadRefusal,
   LoadResult,
   RollbackResult,
   Clock,
@@ -95,7 +95,7 @@ import type {
   SegmentRef,
   Workload,
 } from '@cloudbitmaps/core';
-import { bulkLoadCrbmGeneration, eraseIdFromSegment } from './codec-bound';
+import { eraseIdFromSegment } from './codec-bound';
 // This package's reason to exist: the roaring codec the facade injects into the codec-agnostic engine.
 import { listGenerations, rollbackSegment } from '@cloudbitmaps/core';
 import { listSegments, segmentExists } from '@cloudbitmaps/core';
@@ -373,16 +373,48 @@ export interface EraseSubjectResult {
   readonly scannedSegments: number;
 }
 
-/** What an `*Into` verb wrote: the new generation of the destination and what it holds. */
+/**
+ * Why a materialisation did not become current.
+ *
+ * {@link LoadRefusal} minus `'superseded'`: that one is a lost race, and the `*Into` verbs throw
+ * {@link WriteConflictError} for it rather than reporting it. Narrowing the type rather than saying so only
+ * in prose means the compiler enforces it, and a caller's exhaustive `switch` has no dead branch.
+ */
+export type MaterializeRefusal = Exclude<LoadRefusal, 'superseded'>;
+
+/** What an `*Into` verb wrote: the new generation of the destination, and whether it became current. */
 export interface MaterializeResult {
-  /** The destination's new current generation. */
+  /** The generation written. Present even when refused — it is what was written and then deleted again. */
   readonly generation: number;
+  /**
+   * Whether this generation is now the destination's current one.
+   *
+   * Before the guard existed this was always true, because a materialisation always published. Branch on it:
+   * a refusal is reported, not thrown, so a caller that ignores it sees a successful-looking result for a
+   * write that deliberately did not happen.
+   */
+  readonly published: boolean;
+  /** Set only when `published` is false. A lost race throws {@link WriteConflictError} rather than appearing here. */
+  readonly reason?: MaterializeRefusal;
   /** Ids in the generation. */
   readonly cardinality: number;
+  /**
+   * What the destination held when the guard judged it — `null` when it had no current generation, **or when
+   * no bound needed the read**. The read costs an object-header fetch, so it is taken only when a bound will
+   * use it: `allowEmpty: true` with no `guard.minRetained` skips it, and this is `null` even though `dest`
+   * was non-empty.
+   */
+  readonly cardinalityBefore: number | null;
   /** Non-empty chunks in the generation. */
   readonly chunkCount: number;
   /** Bytes of the written object. */
   readonly size: number;
+  /**
+   * The superseded generations collected after publishing. Empty when nothing was published — and **also
+   * empty on a successful publish** unless you passed `keep`, because a materialisation collects nothing by
+   * default. See {@link MaterializeOptions.keep}.
+   */
+  readonly collected: readonly number[];
 }
 
 /**
@@ -770,7 +802,7 @@ export class CloudRoaring {
       ref,
       this.clock,
       this.metrics,
-      (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+      (dest, ids, op, options) => this.materialize(dest, ids, op, options),
       (r, e) => this.pinSegment(r, e),
       (handles) => this.engineForCombine(handles),
       expiresAt,
@@ -779,51 +811,102 @@ export class CloudRoaring {
 
   /**
    * Write `ids` as a **new generation of `dest`** and publish it forward-only — the shared body of the `*Into`
-   * verbs. A load in disguise: `bulkLoadCrbmGeneration` over the store's own drivers, at the generation number
-   * after the highest the registry or the bucket knows. The destination's previous generation stays readable
-   * until the publish lands (readers re-resolve within `cache.genTtlMs`) and is collected by the next
-   * `gcOrphanGenerations`/retention sweep — this call deletes nothing.
+   * verbs. The destination's previous generation stays readable until the publish lands (readers re-resolve
+   * within `cache.genTtlMs`).
+   *
+   * This routes through `loadSegment` rather than writing the generation itself, and that is the whole point
+   * of it. A materialisation is a load whose ids happen to come from a combine instead of from upstream, so
+   * everything `load()` learned the hard way applies unchanged: the generation is written UNPUBLISHED, the
+   * guard runs while the old generation is still authoritative, the publish is fenced (on the pointer it
+   * judged, on the row's identity, and — where it judged an ABSENT segment — on that absence), and a refused
+   * object is reclaimed only after re-reading the row and finding the same incarnation (hard invariant 1:
+   * deleting it after a purge-and-recreate would put a live row over a missing generation).
+   *
+   * That last check narrows the window rather than closing it: the row read and the delete are two round
+   * trips, and `IStorageDriver` has no conditional delete to make them one. `gcOrphanGenerations` carries
+   * the same residual and says so. The failure it leaves is an orphan object, which costs storage until
+   * something collects it — deliberately the cheaper side of the trade.
+   *
+   * Materialising used to do none of that. It wrote and published in one step, so an empty combine — a typo'd
+   * operand, an `exclude` that swallowed everything, an operand that had not loaded yet — silently replaced
+   * `dest` with an empty generation. That is the same failure `load()`'s guard exists to prevent, on the same
+   * data, and it was reachable without passing any option at all.
+   *
+   * **A lost race still throws.** `loadSegment` reports one as `reason: 'superseded'`; the `*Into` verbs have
+   * always thrown {@link WriteConflictError} for it, and a caller who wrote `catch (WriteConflictError)` must
+   * keep working. So that one refusal is translated back into the throw, and `MaterializeResult.reason` never
+   * carries it.
+   *
+   * **A `WriteConflictError` does not by itself mean nothing was published**, and that is worth knowing
+   * before you write the retry. `'superseded'` covers four different causes — the write-once PUT collided,
+   * the pointer moved, the row's token changed, the row was purged — and only the first two are the
+   * "somebody beat us" the name suggests. A token can also change on a write that is not a supersession at
+   * all, such as a `setRetention` on the destination. On top of that, the collection pass that runs AFTER a
+   * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
+   * never as "the write did not happen".
+   *
+   * **And it still collects nothing**, unlike `load()`. See the `keep` default below.
    */
   private async materialize(
     dest: SegmentRef,
     ids: AsyncIterable<number>,
     op: string,
-    audit?: IAuditSink,
+    options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     const deps = this.lifecycleDeps(op);
-    const generation = await nextGeneration(dest, deps);
-    const result: BulkLoadResult = await bulkLoadCrbmGeneration(
-      deps.storage,
-      { ...dest, generation },
-      ids,
-      {
-        registry: deps.registry,
-        keystore: deps.keystore,
-        requireEncryption: deps.requireEncryption,
-        clock: deps.clock,
-        audit,
-      },
-    );
-    if (result.becameCurrent === false) {
+    const result = await loadSegment(dest, ids, deps, {
+      ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
+      ...(options?.guard === undefined ? {} : { guard: options.guard }),
+      // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
+      // the rest. A materialisation has never collected: the guide states "**It deletes nothing.** The
+      // destination's previous generation stays in the bucket until you collect it", and the ownership table
+      // puts that call on the operator. Inheriting `load()`'s collection would have silently deleted the
+      // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
+      // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
+      keep: options?.keep ?? KEEP_EVERY_GENERATION,
+      ...(options?.audit === undefined ? {} : { audit: options.audit }),
+    });
+    // Checked on `reason` alone, not `published && reason`: the compiler narrows a const through an equality
+    // test, so after this throw `reason` is provably a `MaterializeRefusal` and the return below type-checks
+    // without an assertion. `'superseded'` only ever accompanies `published: false` anyway.
+    const reason = result.reason;
+    if (reason === 'superseded') {
       // The object is durable, but a concurrent writer published a higher generation of `dest` between our
-      // numbering and our publish, so ours is an orphan no reader will resolve. Returning the result here would
-      // name `generation` as "the destination's new current generation" — which is what `MaterializeResult`
+      // numbering and our publish, so ours is an orphan no reader will resolve. Returning it here would name
+      // `generation` as "the destination's new current generation" — which is what `MaterializeResult`
       // documents it to be, and it would be false. The destination holds someone else's content.
       //
-      // A throw rather than a flag on the result: every other write path in the library reports a lost race
-      // loudly (`WriteConflictError` on a write-once collision) or as a typed refusal (`'superseded'` from the
-      // erasure rewrite), and a materialisation that silently did not take effect is the one outcome a caller
-      // cannot detect on its own. The orphan is collected by the next `gcOrphanGenerations`/retention sweep.
+      // A throw rather than a flag: every other write path in the library reports a lost race loudly, and a
+      // materialisation that silently did not take effect is the one outcome a caller cannot detect on its
+      // own.
+      // `size > 0` distinguishes the two ways a materialisation loses the race, and the operator needs them
+      // apart: the object either exists as an orphan above the pointer (collected by the next sweep) or was
+      // never written at all, because the write-once PUT itself collided. Telling someone to look for an
+      // orphan that does not exist is a wasted investigation.
+      // Deliberately does NOT assert which of the four causes it was. The message used to say "a newer
+      // generation was published first", and that is wrong for two of them: a `setRetention` on the
+      // destination bumps the row's token without publishing anything, and a purge leaves no row at all.
+      // Telling an operator to go looking for a newer generation that does not exist costs a real
+      // investigation. `size > 0` is the one thing this path can state as fact.
+      const wrote =
+        result.size > 0
+          ? `generation ${result.generation} was written and did not become current`
+          : `nothing was written — another writer took generation ${result.generation} first`;
       throw new WriteConflictError(
-        `${op}: generation ${generation} of "${dest.segment}" was written but a newer generation was published ` +
-          `first, so it never became current — nothing was materialised. Re-run against the new generation.`,
+        `${op}: the destination "${dest.segment}" changed while this materialisation was in flight, so it ` +
+          `never became current: ${wrote}. The pointer may have moved, the row may have been rewritten ` +
+          `(a retention policy does this) or purged. Re-read the destination and re-run.`,
       );
     }
     return {
-      generation,
+      generation: result.generation,
+      published: result.published,
+      ...(reason === undefined ? {} : { reason }),
       cardinality: result.cardinality,
+      cardinalityBefore: result.cardinalityBefore,
       chunkCount: result.chunkCount,
       size: result.size,
+      collected: result.collected,
     };
   }
 
@@ -1403,7 +1486,7 @@ export class CloudRoaring {
       ref,
       this.clock,
       this.metrics,
-      (dest, ids, op, audit) => this.materialize(dest, ids, op, audit),
+      (dest, ids, op, options) => this.materialize(dest, ids, op, options),
       (r, e) => this.pinSegment(r, e),
       (handles) => this.engineForCombine(handles),
       expiresAt,
@@ -1520,16 +1603,6 @@ export interface BaseCombineOptions {
   /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
   readonly budget?: BudgetOption;
   /**
-   * Audit sink for the **`*Into` verbs only** — they publish a generation, and a publish is an auditable event
-   * (`segment.publish`, exactly as a load emits). Ignored by the streaming verbs, which write nothing.
-   *
-   * It is here rather than on the store because that is where every other auditable operation takes it
-   * (`eraseSubject`, `dropSegment`, `retireExpired`): the caller who performs the act decides where the record
-   * goes. Without it a `*Into` was the one write path in the library that could make a generation current and
-   * leave no trace in the compliance trail.
-   */
-  readonly audit?: IAuditSink;
-  /**
    * Allow an operand naming a segment that does not exist. Default `false`: a combine **refuses** one, because
    * a misspelled or mis-namespaced operand is indistinguishable from a correct one in the result.
    *
@@ -1562,12 +1635,73 @@ export interface CombineOptions extends BaseCombineOptions {
   readonly exclude?: Segment[];
 }
 
+/**
+ * A combine that WRITES its result — the extra options `intersect`/`union`/`andNot` have no use for.
+ *
+ * Separate from {@link CombineOptions} on purpose: `allowEmpty` and `guard` decide whether a generation is
+ * published, and a read verb publishes nothing. Offering them on `intersect()` would be offering a parameter
+ * that cannot do anything.
+ */
+export interface MaterializeOptions extends CombineOptions {
+  /**
+   * Audit sink. A materialisation publishes a generation, and a publish is an auditable event
+   * (`segment.publish`, exactly as a load emits) — as is a refusal (`segment.load-refused`).
+   *
+   * It is on the call rather than on the store because that is where every other auditable operation takes it
+   * (`eraseSubject`, `dropSegment`, `retireExpired`): the caller who performs the act decides where the record
+   * goes. Without it a `*Into` was the one write path in the library that could make a generation current and
+   * leave no trace in the compliance trail.
+   *
+   * It sits HERE rather than on {@link BaseCombineOptions}, where it used to, for the reason this type exists:
+   * the streaming verbs write nothing, so an audit sink on `intersect()` was a parameter that could not do
+   * anything. Same rule, now applied to itself.
+   */
+  readonly audit?: IAuditSink;
+  /**
+   * Publish an empty result over a non-empty destination. Off by default, exactly as on {@link CloudRoaring.load}:
+   * an empty combine is far more often a mistake upstream — a typo'd operand, a segment that has not loaded
+   * yet, an `exclude` that swallowed everything — than an intent, and once it lands it is indistinguishable
+   * from a correct run.
+   */
+  readonly allowEmpty?: boolean;
+  /** Refuse an implausible result rather than publish it. Same bounds, and same meaning, as on `load()`. */
+  readonly guard?: LoadGuard;
+  /**
+   * Generations to keep below the new pointer — see {@link LoadOptions.keep}.
+   *
+   * **Defaults to keeping everything**, unlike `load()`, which keeps 1 and collects the rest. A
+   * materialisation has never collected, and an operator's recovery story can depend on that: `rollbackSegment`
+   * refuses a target that has been collected. Pass a number to collect on the way through; `0` keeps only the
+   * generation this call publishes.
+   */
+  readonly keep?: number;
+}
+
 /** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
 const EMPTY_IDS: AsyncIterable<number> = {
   async *[Symbol.asyncIterator]() {
     // deliberately yields nothing
   },
 };
+
+/**
+ * What `andNotInto` takes: the write options without `exclude`, because its `excludes` argument IS the
+ * subtraction — a second one in the options would be two spellings of one thing.
+ *
+ * Named rather than left as an inline `Omit` so it can be imported and annotated. The read sibling `andNot`
+ * solves the same problem the same way, by taking {@link BaseCombineOptions}.
+ */
+export type AndNotIntoOptions = Omit<MaterializeOptions, 'exclude'>;
+
+/**
+ * The `keep` a materialisation passes when the caller does not: a grace window wide enough to collect nothing.
+ *
+ * `gcOrphanGenerations` keeps the newest `keep` generations below the pointer and deletes the rest, so an
+ * integer at the top of the range keeps all of them. It has to be an integer — `loadSegment` validates that,
+ * and `Infinity` is rejected — which is why this is `MAX_SAFE_INTEGER` and not the value that reads more
+ * naturally.
+ */
+const KEEP_EVERY_GENERATION = Number.MAX_SAFE_INTEGER;
 
 /** How a `Segment` hands a result stream back to its store to become a new generation of `dest`. */
 /** Build a pinned twin of a handle — injected into `Segment` so it stays free of store wiring. */
@@ -1583,7 +1717,7 @@ type Materialize = (
   dest: SegmentRef,
   ids: AsyncIterable<number>,
   op: string,
-  audit?: IAuditSink,
+  options?: MaterializeOptions,
 ) => Promise<MaterializeResult>;
 
 /**
@@ -1682,11 +1816,11 @@ export class Segment {
    * but a caller who put a deadline on the thing they are writing into has said something contradictory and is
    * better told than guessed at. Open a handle without `expiresAt` to write, or drop the deadline.
    *
-   * (The broader guard — refusing to publish an empty generation over a non-empty one, with an `allowEmpty`
-   * override — shipped on {@link CloudRoaring.load} and does **not** yet cover these verbs: a materialisation
-   * still calls the bulk-load path directly, so a combine that legitimately comes out empty still publishes an
-   * empty generation over `dest`. Routing them through the guarded load is owed. This is the narrow case that is
-   * unambiguously a mistake and costs one comparison to catch.)
+   * (The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
+   * `allowEmpty` override — now covers these verbs too: they route through the same guarded write path as
+   * {@link CloudRoaring.load}. The two stay separate because they differ in kind. That one is a REPORTED
+   * refusal a caller may legitimately override; an expired handle is a wiring mistake, so it THROWS, before
+   * any object is written — and `allowEmpty: true` does not reach it.)
    *
    * The verbs are `async` so this surfaces as a **rejected promise**, like every other validation in the facade —
    * a synchronous throw out of a promise-returning method escapes a caller who attached `.catch()` instead of
@@ -1773,18 +1907,27 @@ export class Segment {
    * forward-only, so readers of `dest` see either the old generation or the new one, never a partial. Needs the
    * store built with a backend (throws {@link UnsupportedError} otherwise).
    *
-   * **An empty result publishes an empty generation** — deliberate for now (the guard that refuses empty over
-   * non-empty arrives with `load()`), with one exception: a call involving an **expired handle** is refused
-   * rather than silently wiping `dest`. See {@link refuseIfExpired}.
+   * **An empty result does NOT overwrite a non-empty destination.** A combine that comes out empty is far more
+   * often a mistake upstream — a typo'd operand, an `exclude` that swallowed everything, an operand that has
+   * not loaded yet — than an intent, and once it publishes it is indistinguishable from a correct run. So the
+   * write is **refused and reported**: `published: false`, `reason: 'empty'`, and `dest` keeps what it had.
+   * Pass `allowEmpty: true` when emptying the destination is the point.
+   *
+   * `guard` adds the same plausibility bounds `load()` takes — `minCardinality` and `minRetained` — judged
+   * against what `dest` held before. A refusal is **reported, not thrown**, exactly as on `load()`; branch on
+   * `published`. A lost race is the one outcome that still throws ({@link WriteConflictError}), because a
+   * materialisation that silently did not take effect is the one thing a caller cannot detect on its own.
+   *
+   * A call involving an **expired handle** is refused before any of this. See {@link refuseIfExpired}.
    */
   async intersectInto(
     dest: Segment,
     others: Segment[],
-    options?: CombineOptions,
+    options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('intersectInto', dest, [...others, ...(options?.exclude ?? [])]);
     return this.timed('intersectInto', () =>
-      this.materialize(dest.ref, this.intersect(others, options), 'intersectInto', options?.audit),
+      this.materialize(dest.ref, this.intersect(others, options), 'intersectInto', options),
     );
   }
 
@@ -1824,11 +1967,11 @@ export class Segment {
   async unionInto(
     dest: Segment,
     others: Segment[],
-    options?: CombineOptions,
+    options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('unionInto', dest, [...others, ...(options?.exclude ?? [])]);
     return this.timed('unionInto', () =>
-      this.materialize(dest.ref, this.union(others, options), 'unionInto', options?.audit),
+      this.materialize(dest.ref, this.union(others, options), 'unionInto', options),
     );
   }
 
@@ -1863,11 +2006,11 @@ export class Segment {
   async andNotInto(
     dest: Segment,
     excludes: Segment[],
-    options?: BaseCombineOptions,
+    options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('andNotInto', dest, excludes);
     return this.timed('andNotInto', () =>
-      this.materialize(dest.ref, this.andNot(excludes, options), 'andNotInto', options?.audit),
+      this.materialize(dest.ref, this.andNot(excludes, options), 'andNotInto', options),
     );
   }
 

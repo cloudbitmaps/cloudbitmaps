@@ -73,6 +73,32 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Fixed
 
+- **BREAKING — an empty combine silently replaced the destination.** `intersectInto` / `unionInto` / `andNotInto` wrote
+  and published in one step, so a combine that came out empty — a typo'd operand, an `exclude` that swallowed
+  everything, an operand that had not loaded yet — published an empty generation over `dest` and reported a
+  fresh generation number. That is indistinguishable from a correct run, and it was reachable without passing
+  any option at all. `load()` has refused exactly this since it shipped; the `*Into` verbs now route through
+  the same path and inherit the whole guard:
+
+  ```ts
+  const res = await audience.intersectInto(dest, [eligible]);
+  if (!res.published) console.warn(res.reason, res.cardinalityBefore); // 'empty', 12000
+  ```
+
+  Pass `allowEmpty: true` when emptying the destination is the point, and
+  `guard: { minCardinality, minRetained }` for the same plausibility bounds `load()` takes, judged against
+  what `dest` held. A refusal is **reported, not thrown** — branch on `published`. A lost race still throws
+  `WriteConflictError`, unchanged, because a materialisation that silently did not take effect is the one
+  outcome a caller cannot detect on its own.
+
+  Routing through `loadSegment` rather than re-implementing the guard also brings the parts that are easy to
+  get wrong and were absent here: the publish is fenced with `expectFrom` so a concurrent write cannot void
+  the guard's premise, and a refused object is reclaimed **only** while the row is provably the same
+  incarnation — deleting it after a purge-and-recreate would put a live row over a missing generation.
+
+  `MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. A caller that only
+  read `generation`/`cardinality`/`chunkCount`/`size` is unaffected; one that deep-compares the object is not.
+
 - **A release cut with a new package in the tree would have published part of the family, immutably.** The
   publish pipeline is tokenless — it authenticates by OIDC against a **Trusted Publisher**, which is a
   per-package npm setting that cannot be bound to a name that has never been published. `pnpm -r publish`

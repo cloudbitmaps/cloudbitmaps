@@ -13,8 +13,13 @@ import { collect, loadedStore } from '../helpers/loaded';
  *
  * The two behaviours therefore have to differ, and the tests below pin the difference: the read verbs still
  * degrade to empty (that is the feature), and the three write verbs refuse with a message naming the expired
- * segments. The broader guard — refusing to publish an empty generation over a non-empty one, with an
- * `allowEmpty` override — belongs to `load()`; this is the narrow case that is unambiguously a mistake.
+ * segments.
+ *
+ * The broader guard — refusing to publish an empty or implausible generation over a non-empty one, with an
+ * `allowEmpty` override — now applies here too (`materialize-load-guard.test.ts`). The two are still worth
+ * keeping apart: that one is a REPORTED refusal a caller may legitimately override, while an expired handle
+ * is a wiring mistake and THROWS, before any object is written. An `allowEmpty: true` must not turn an
+ * expired operand into a wipe.
  */
 
 /** A clock the test drives, so "expired" is a fact about the test rather than about wall-clock timing. */
@@ -33,6 +38,27 @@ const PAST = MIN_EXPIRES_AT_MS + 1_000;
 const FUTURE = MIN_EXPIRES_AT_MS + 1_000_000;
 
 describe('the *Into verbs refuse an expired handle instead of publishing over the destination', () => {
+  it('allowEmpty: true does NOT turn an expired operand into a wipe', async () => {
+    // The docblock above asserts this; nothing proved it. The two guards differ in KIND — the empty guard is
+    // a reported refusal a caller may override, an expired handle is a wiring mistake — so the override must
+    // not reach it. It does not, because `refuseIfExpired` runs before `materialize` and never sees options;
+    // this pins that ordering, which is otherwise one refactor away from inverting.
+    const clock = fakeClock();
+    const { store } = await loadedStore(
+      { a: [1, 2, 3], b: [2, 3, 4], dest: [9] },
+      { cache: { genTtlMs: 0 }, seams: { clock } },
+    );
+    clock.set(PAST + 1);
+    const a = store.segment('a');
+    const b = store.segment('b', { expiresAt: PAST });
+    const dest = store.segment('dest');
+
+    await expect(a.intersectInto(dest, [b], { allowEmpty: true })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(await store.segment('dest').count()).toBe(1); // untouched
+  });
+
   it('refuses when an OPERAND has expired, and leaves the destination untouched', async () => {
     const clock = fakeClock();
     const { store, registry } = await loadedStore(

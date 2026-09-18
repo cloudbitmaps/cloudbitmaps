@@ -738,7 +738,27 @@ export async function writeCrbmGenerationStream(
 export async function publishGeneration(
   registry: IRegistryDriver,
   key: GenKey,
-  options: { wrappedDeks?: readonly WrappedDek[]; expectFrom?: number; expectToken?: Token } = {},
+  options: {
+    wrappedDeks?: readonly WrappedDek[];
+    expectFrom?: number;
+    expectToken?: Token;
+    /**
+     * Publish only while the segment still has **no registry row**.
+     *
+     * The fence for a caller whose decision rests on the row being ABSENT. `expectFrom` and `expectToken`
+     * cannot express it: both compare against a value read from a row, so when there was no row there is
+     * nothing to compare and both are simply omitted — leaving the publish a bare forward-only advance that
+     * happily lands over whatever appeared in the meantime.
+     *
+     * That gap was a silent wipe, not a theoretical one. A guarded load into a segment that did not exist yet
+     * read "no row", so its empty/`minRetained` bounds had nothing to judge and passed vacuously; a
+     * concurrent writer then created the row and published a thousand ids; and the guarded load published an
+     * EMPTY generation over them, reporting `published: true` with no reason. Reproduced through both
+     * `loadSegment` and the `*Into` verbs, which hit it far more often because materialising into a
+     * destination that does not exist yet is the ordinary first run of a pipeline.
+     */
+    expectAbsent?: boolean;
+  } = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const record = await registry.get(key);
@@ -746,6 +766,11 @@ export async function publishGeneration(
       if (options.expectFrom !== undefined && record?.currentGen !== options.expectFrom) {
         // The pointer is no longer where the caller derived its content from — including the cases where the row
         // has vanished or has no generation at all. Not an error: the caller re-reads and re-derives.
+        return false;
+      }
+      if (options.expectAbsent === true && record !== null) {
+        // A row appeared since the caller looked. Whatever it decided from "this segment does not exist" no
+        // longer holds — most importantly "there is nothing here to overwrite".
         return false;
       }
       if (options.expectToken !== undefined && record?.token !== options.expectToken) {

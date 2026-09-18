@@ -1,13 +1,15 @@
 # Migrating to 0.10.0
 
-`0.10.0` is a breaking release with **four** changes that can stop your code compiling or running. Each one
-fails loudly — an unresolved import, a refused constructor, or a module that will not load — so nothing here
-changes behaviour silently. Work down the list; most upgrades are the first two and take a few minutes.
+`0.10.0` is a breaking release with **five** changes. The first four fail loudly — an unresolved import, a
+refused constructor, or a module that will not load. The fifth changes a default, so it is the one that needs
+you to look at your call sites rather than wait for an error. Work down the list; most upgrades are the first
+two and take a few minutes.
 
 1. [The cloud drivers are their own packages](#1-the-cloud-drivers-are-their-own-packages)
 2. [ESM only, Node ≥ 22.12](#2-esm-only-node--2212)
 3. [A storage backend must be built, not assembled](#3-a-storage-backend-must-be-built-not-assembled)
 4. [The flat options became six groups](#4-the-flat-options-became-six-groups)
+5. [The `*Into` verbs can now refuse](#5-the-into-verbs-can-now-refuse)
 
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
@@ -151,6 +153,38 @@ instead of requiring all five.
 This one throws too.
 
 ---
+
+## 5. The `*Into` verbs can now refuse
+
+`intersectInto` / `unionInto` / `andNotInto` used to write and publish in one step. An empty combine
+therefore replaced the destination with an empty generation and reported success — indistinguishable from a
+correct run, and reachable without passing any option.
+
+They now refuse instead, the same way `load()` always has:
+
+```ts
+const res = await audience.intersectInto(dest, [eligible]);
+if (!res.published) {
+  // res.reason === 'empty', res.cardinalityBefore === what dest still holds
+}
+```
+
+**What to check in your code:** anywhere you call an `*Into` verb and assume it wrote. If emptying the
+destination is genuinely the point, pass `allowEmpty: true`.
+
+That restores the old *publishing* behaviour, with one difference that is not worth hiding: the publish is
+now fenced on the destination's registry row, so a segment purged and re-created under the same name while
+your call was in flight throws `WriteConflictError` instead of publishing into the new incarnation. That is a
+narrow race and the new outcome is the correct one.
+
+**Generation collection is unchanged.** Unlike `load()`, a materialisation still collects nothing, so a
+`rollback` target survives it. Pass `keep` if you want it to collect on the way through.
+
+`MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. Reading the existing
+fields is unaffected; a deep equality check on the whole object is not. `cardinalityBefore` is `null` when no
+bound needed the read — with `allowEmpty: true` and no `guard.minRetained`, nothing reads it.
+
+A lost race still throws `WriteConflictError` — unchanged.
 
 ## `instanceof` now holds across packages
 
