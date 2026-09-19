@@ -30,7 +30,7 @@ export { runExport } from './export';
 // caller outside core, so it stays internal rather than shipping as half-documented public API.
 export { splitId } from './core/bit-route';
 export { mapWithConcurrency } from './core/concurrency';
-export { resolveBudget, resolvePerOpBudget, collectWithinBudget } from './core/budget';
+export { resolveBudget, resolvePerOpBudget, checkBudget, collectWithinBudget } from './core/budget';
 // Also in `driver-kit` (a driver validates at its own boundary); here because the flavor calls it on every
 // ref an application hands in.
 export { validateSegmentRef } from './core/validate';
@@ -144,6 +144,13 @@ export {
 // implementation (`node:crypto`, outside core). KMS/Vault adapters are future optional packages against
 // `IKeystore`. See the getting-started "Encryption" section for key-management guidance.
 export type { Aead, AeadSealed, IKeystore, WrappedDek, CrbmCrypto } from './core/crypto';
+// The AAD builder. NOT for an `Aead` implementor — they are handed the associated data. This is for the
+// other seam: `CrbmCrypto` requires an `aadFor` member, and `CrbmReader.open` and `writeCrbmGeneration`
+// both take one, so tooling that reads or writes an ENCRYPTED archive has to construct it. Without this
+// the only way to do that is to re-derive an undocumented byte layout, where a mistake on the read side
+// is an `IntegrityError` indistinguishable from real corruption, and on the write side is an archive this
+// library can never read back.
+export { aadFor } from './core/crypto';
 export { NodeAead, InProcessKeystore } from './drivers/crypto';
 export type { InProcessKeystoreOptions } from './drivers/crypto';
 
@@ -180,14 +187,16 @@ export { retireExpired } from './core/retention-sweep';
 // `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
 // registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
 // caller that forgets to skip them reports phantom segments. The bounded drain itself (`drainRegistry`) and
-// its ceiling validator stay internal; `listSegments` is the supported way to enumerate.
+// its ceiling validator stay internal. `listSegments` is the supported enumeration but is NOT a drop-in for
+// the drain: it streams (so the bound is yours) and yields `SegmentInfo`, which carries no retention.
 export { excludingReservedRows } from './core/registry-scan';
 
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
 // with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
 // Nothing here is exported: a caller never builds a bucket name or a synthetic row, and `retireExpired`
-// consults the index for them. `excludingReservedRows` above is the one piece an outside caller needs.
+// consults it for them when asked for it (`retireExpired({ scan: 'index' })`; the default `'fleet'` scan
+// drains the registry instead). `excludingReservedRows` above is the one piece an outside caller needs.
 export type {
   RetireExpiredOptions,
   RetireExpiredResult,

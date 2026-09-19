@@ -23,28 +23,38 @@ const P = AWS_US_EAST_1_ONDEMAND;
 const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
 
 describe('DEFAULT_PRICING', () => {
-  // It survived the 110 → 79 export curation on the argument that a caller clones and tweaks it for their own
-  // region — and it was the one kept export with no test at all, which is how a "default" quietly becomes
-  // whatever the last edit left behind.
-  it('is the AWS us-east-1 on-demand profile, so the docs and the default agree', () => {
+  // It survived the export curation on the argument that a caller clones and tweaks it for their own
+  // region — and it was the one kept export with no test at all.
+  //
+  // The first version of this block mostly restated JavaScript: that an alias equals its target, that `??`
+  // falls back, that a spread copies. Those cannot fail for the reason the block exists. Every number below
+  // is HAND-MAINTAINED from published cloud pricing, and a stale or fat-fingered edit to any of them changes
+  // every estimate this library produces while every other test stays green — so the profile is pinned
+  // WHOLE. That is also the assertion that fails loudest when a price is deliberately updated, which is when
+  // someone should be looking at it.
+  it('is the exact published rate card, every field pinned', () => {
+    // The identity matters as much as the values: `AWS_US_EAST_1_ONDEMAND` is `const P`, which the ~40
+    // assertions in the rest of this file compute against. Re-point `DEFAULT_PRICING` at a fresh literal with
+    // the same numbers and every other test here would still pass while the two silently diverged.
     expect(DEFAULT_PRICING).toBe(AWS_US_EAST_1_ONDEMAND);
-    expect(DEFAULT_PRICING.name).toBe('aws-us-east-1-ondemand');
+    expect(DEFAULT_PRICING).toEqual({
+      name: 'aws-us-east-1-ondemand',
+      storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
+      redis: { monthlyUSD: 346 },
+    });
   });
 
-  it('is what `estimateCost` uses when no profile is passed', () => {
+  it('is the profile `estimateCost` falls back to, and the fallback is not vacuous', () => {
     const input = { segments: [{ sizeBytes: 1.2e9 }], workload: { readsPerSec: 10 } };
     expect(estimateCost(input)).toEqual(estimateCost({ ...input, pricing: DEFAULT_PRICING }));
-  });
-
-  it('is usable as a base for a region override without mutating the original', () => {
-    const cheaper: PricingProfile = {
+    // `??` would satisfy the line above against ANY profile, so prove the default actually reaches the
+    // arithmetic: a profile with different rates must produce a different answer.
+    const dearer: PricingProfile = {
       ...DEFAULT_PRICING,
-      name: 'custom',
-      storage: { ...DEFAULT_PRICING.storage, getPerMillion: 0.2 },
+      name: 'dearer',
+      storage: { ...DEFAULT_PRICING.storage, getPerMillion: 40 },
     };
-    expect(cheaper.storage.getPerMillion).toBe(0.2);
-    expect(DEFAULT_PRICING.storage.getPerMillion).toBe(0.4); // untouched
-    expect(cheaper.redis).toEqual(DEFAULT_PRICING.redis);
+    expect(estimateCost({ ...input, pricing: dearer })).not.toEqual(estimateCost(input));
   });
 });
 

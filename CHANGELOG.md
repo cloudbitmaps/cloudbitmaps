@@ -17,16 +17,30 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 80.** The entry had
+- **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 82.** The entry had
   accumulated the internals of whatever landed beside it, so a reader could not tell supported API from
   plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;
   it simply stops being importable.
 
-  **Fourteen names were public in `0.9.x` and are gone.** See
+  **Twelve names were public in `0.9.x` and are gone.** See
   [`MIGRATING.md`](MIGRATING.md#6-core-exports-only-what-it-supports) for what to do about each:
   `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
-  `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `aadFor` · `joinId` ·
-  `checkBudget` · `isTransient` · `NOOP_AUDIT` · `BufferSink`.
+  `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `joinId` ·
+  `isTransient` · `NOOP_AUDIT` · `BufferSink`. Note `@cloudbitmaps/roaring` re-exports core wholesale, so
+  these left the flavor too — an import of one of them from the flavor is affected just as much.
+
+  **Three removals were reverted** after an adversarial review, each for the same reason: a public type or
+  field that only the removed symbol could produce or consume.
+
+  `aadFor` is the sharpest. `CrbmCrypto` is exported, requires an `aadFor` member, and is a parameter of both
+  `CrbmReader.open` and `writeCrbmGeneration` — which stayed public precisely so tooling can inspect an
+  archive. Removing its only producer meant an encrypted archive could not be read without re-deriving an
+  undocumented byte layout, where a mistake reads as `IntegrityError` (indistinguishable from real
+  corruption) and, on the write side, produces a generation this library can never read back.
+
+  `checkBudget` is the budget family's only O(1) enforcer, with every other member exported. Its `>`
+  threshold is load-bearing — a re-implementation that reaches for `>=` disagrees with `collectWithinBudget`
+  by exactly one unit.
 
   `readRetentionPolicy` was on that list and was put back. It is a pure parser over a row the caller already
   holds, and `RegistryRecord.retention` (a `GovernanceMeta`) is public — so cutting it left a public field
@@ -40,8 +54,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   defaults to it, which changes no behaviour.
 
   The rest is what the library does *to* you rather than *for* you: the due-index scheduler, the bounded
-  registry drain under `listSegments`, sweep and scan defaults already stated in prose, `.crbm` construction,
-  object-key layout, AEAD associated data, and budget enforcement.
+  registry drain beneath the supported enumeration, sweep and scan defaults already stated in prose, `.crbm`
+  construction, and object-key layout. (The AEAD associated data and the budget enforcer were on this list
+  and came back — see the reverts above.)
 
   **This was the window for it.** `0.10.0` already breaks the import path, so the cost is one more entry in a
   migration guide rather than a second breaking release. Re-exporting a name later is additive and not
@@ -50,7 +65,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - **The API reference guard now runs in both directions.** It checked that every export is documented; it now
   also checks that every name in the "Complete export index" is still exported. The one-way version said in
-  its own comment to prune stale entries "in review" — this change would have left 32 of them behind, each
+  its own comment to prune stale entries "in review" — this change would have left 29 of them behind, each
   reading to a user like API that exists.
 
 - **BREAKING — the cloud drivers are their own packages.** `npm i @cloudbitmaps/roaring` plus the SDK becomes

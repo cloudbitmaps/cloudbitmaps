@@ -229,13 +229,15 @@ between here and there:
    more generations did not affect it. Size `keep` past your longest pinned job — a pinned read does not heal
    forward, it fails, which is the honest failure for a caller that asked for one instant.
 5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry went from **110 exports to
-   80**: the due-index scheduler, `.crbm` construction, object-key layout, AEAD associated data, budget
-   enforcement and a set of defaults already stated in prose stopped being importable. They had accumulated
+   82**: the due-index scheduler, `.crbm` construction, object-key layout and a set of defaults already
+   stated in prose stopped being importable. They had accumulated
    there because nothing forced the question, and a reader could not tell supported API from plumbing that
    happened to be reachable. `1.0` freezes the format; a surface this size is the other half of that promise,
-   and a name is far cheaper to *add* later than to take away. Fourteen of the removals were public in `0.9.x`
-   and are listed in [`MIGRATING.md`](../MIGRATING.md#6-core-exports-only-what-it-supports). The API
-   reference guard now runs in both directions, so a removed export cannot leave a stale entry behind.
+   and a name is far cheaper to *add* later than to take away. Twelve of the removals were public in `0.9.x`
+   and are listed in [`MIGRATING.md`](../MIGRATING.md#6-core-exports-only-what-it-supports). Three FURTHER removals — `readRetentionPolicy`,
+   `aadFor` and `checkBudget` — were reverted after an adversarial review and are not among those twelve; the
+   82 above is the count after those reverts. Each was the same case: a public type or field that only the
+   symbol being cut could produce or consume, which is the test worth applying to any surface reduction. The API reference guard now runs in both directions.
 6. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
    were written for a tiered engine and still explain the loaded store as what is left after a warm tier was
    removed. They should lead with what it is: one bucket, immutable generations, cheap chunk-skipping reads from
