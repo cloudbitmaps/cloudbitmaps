@@ -105,8 +105,15 @@ const NEXT_MINOR = ((): string => {
   return `${major}.${minor + 1}.0`;
 })();
 
-/** The caveat that may legitimately name the next minor — see {@link NEXT_MINOR}. */
-const CAVEAT_LINE = 'land in 0.10.0 and are not on npm yet';
+/**
+ * A line may name the next minor only if it says, on that same line, that the version is not out.
+ *
+ * Keyed on the CLAIM rather than on one exact sentence: the install caveat is not the only place that
+ * legitimately names an unreleased version — a status line saying which release is published has to as well —
+ * and an exemption tied to a single string would force honest prose to quote it verbatim. What it must never
+ * excuse is a bare badge, which is the whole point of this file.
+ */
+const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;
 
 /**
  * Version tokens a reader can actually see, excluding HTML comments.
@@ -120,7 +127,7 @@ function badgeVersions(html: string): string[] {
     .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
     .flatMap((line) => {
-      const forwardOk = line.includes(CAVEAT_LINE);
+      const forwardOk = MARKS_UNRELEASED.test(line);
       return [...line.matchAll(VERSION_RE)]
         .map((m) => m[1] as string)
         .filter((v) => !FOREIGN_VERSIONS.has(v) && !(forwardOk && v === NEXT_MINOR));

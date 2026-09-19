@@ -11,7 +11,10 @@
 > `has`, `count`, `iterate`, `intersect` — from anywhere, including a stateless function with no cache to
 > warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
-> **Status: `0.9.0` — published, and pre-1.0 on purpose.** `1.0` is earned by real-cloud
+> **Status: the published release is `0.9.0`. This page documents `0.10.0`, which is unreleased.**
+> Everything under *Works today* is implemented and tested in this repository; `0.10.0` is not on npm yet,
+> and neither are the storage packages it names.
+> Pre-1.0 on purpose — `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
 > tests — unit, property-vs-oracle, a deterministic fault-injecting simulator, conformance suites run

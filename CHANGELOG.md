@@ -23,7 +23,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   it simply stops being importable.
 
   **Twelve names were public in `0.9.x` and are gone.** See
-  [`MIGRATING.md`](MIGRATING.md#6-core-exports-only-what-it-supports) for what to do about each:
+  [`MIGRATING.md`](MIGRATING.md#7-core-exports-only-what-it-supports) for what to do about each:
   `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
   `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `joinId` ·
   `isTransient` · `NOOP_AUDIT` · `BufferSink`. Note `@cloudbitmaps/roaring` re-exports core wholesale, so
