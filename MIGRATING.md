@@ -204,12 +204,36 @@ Twelve names were public in `0.9.x`:
 |---|---|
 | `isTransient` | **use `isTransientError`** — see below, this is the only one worth a thought |
 | `NOOP_AUDIT` | omit the `audit` option; that is what "no audit sink" already means |
-| `drainRegistry` · `validateMaxScanSegments` | compose the two exported halves: `collectWithinBudget(excludingReservedRows(registry.list(ns)), budget, op)`. **`listSegments()` is not a drop-in** — it streams, so the bound is yours, and it yields `SegmentInfo`, which carries no `retention`. `excludingReservedRows` is the part you must not skip |
+| `drainRegistry` · `validateMaxScanSegments` | compose the exported halves — see the recipe below. **`listSegments()` is not a drop-in**: it streams, so the bound is yours, and it yields `SegmentInfo`, which carries no `retention` |
 | `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` · `DEFAULT_TOMBSTONE_GRACE_MS` | the values are in the [API reference](docs/guide/api-reference.md); pass your own to `maxScanSegments` / `limit` / `tombstoneGraceMs` rather than reading ours |
 | `CrbmWriter` · `CrbmWriterOptions` | none. Building a `.crbm` is the library's job; `CrbmReader` is still exported for tooling that inspects one |
 | `chunkRefKey` | none. `segmentKey` is still exported |
 | `joinId` | none. `splitId` is still exported, because it range-checks an id on the way |
 | `BufferSink` | implement `BlobSink` — it is one method, `write(bytes)` |
+
+### Replacing `drainRegistry`
+
+```ts
+import { collectWithinBudget, excludingReservedRows, resolveBudget, DEFAULT_BUDGET }
+  from '@cloudbitmaps/roaring';
+
+// Skip the reserved bookkeeping rows ONLY on an unscoped pass — a caller who names a namespace is asking
+// for that namespace, including a reserved one. This is what `drainRegistry` did, and what `listSegments`
+// still does.
+const rows = namespace === undefined
+  ? excludingReservedRows(registry.list())
+  : registry.list(namespace);
+
+// `resolveBudget` VALIDATES, which the raw object literal does not: a `maxRequests` of NaN would otherwise
+// drain unbounded instead of throwing, and the ceiling is the whole property you are replacing.
+const budget = resolveBudget({ maxRequests: 250_000 }, DEFAULT_BUDGET);
+
+const drained = await collectWithinBudget(rows, budget, 'my-admin-pass');
+```
+
+Both halves matter. Forgetting `excludingReservedRows` makes a fleet-wide pass report the due index's own
+pointer rows as segments; forgetting the budget removes the ceiling that was the entire point of the call you
+are replacing.
 
 ### The one that needs a decision: `isTransient`
 

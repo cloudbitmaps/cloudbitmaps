@@ -26,6 +26,20 @@ import { fileURLToPath } from 'node:url';
  * still could not see this.
  *
  * Resolution is against the SOURCE barrels, not `dist/`, so this runs in a clean checkout without a build.
+ *
+ * WHAT IT DOES NOT COVER, stated so nobody over-trusts it. It reads the destructured `require`/`import` of a
+ * workspace specifier and nothing else: a namespace or default import, property access off a whole-module
+ * handle (`const R = require(...); R.foo()`), a computed specifier, a destructure with a default value or a
+ * nested pattern, and `createRequire` all pass unseen. It resolves a subpath against `src/<subpath>.ts`
+ * rather than the package's `exports` map, so it would green-light a deep path Node refuses with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. It cannot tell a type-only export destructured as a value from a real
+ * one, because the barrel parser folds `export type {…}` in with values. And `fuzz/targets/*.mjs` import
+ * from `fuzz/build/fuzz-core.js`, a bundled artifact rather than a workspace specifier, so those three files
+ * are scanned and matched by nothing.
+ *
+ * That is a deliberate floor, not an aspiration: it catches the destructured form, which is the one that has
+ * broken three times, and under-coverage is the safe direction for a guard whose false positives would teach
+ * people to route around it.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -72,7 +86,10 @@ function exportedNames(barrel: string, seen = new Set<string>()): Set<string> {
 }
 
 /** `const { a, b } = require('@cloudbitmaps/x')` and `import { a, b } from '@cloudbitmaps/x'`. */
-function destructuredImports(src: string): Array<{ spec: string; names: string[] }> {
+function destructuredImports(raw: string): Array<{ spec: string; names: string[] }> {
+  // Strip comments first. A commented-out import throws nothing, so flagging one is a false positive — and a
+  // dev bisecting by commenting an import out is exactly who would then learn to skip this gate.
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
   const out: Array<{ spec: string; names: string[] }> = [];
   const push = (raw: string, spec: string): void => {
     const names = raw
@@ -88,9 +105,12 @@ function destructuredImports(src: string): Array<{ spec: string; names: string[]
       .filter((n) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n));
     if (names.length > 0) out.push({ spec, names });
   };
-  for (const m of src.matchAll(/(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*'([^']+)'\s*\)/g))
+  // All three quote forms: a double-quoted specifier is the same import.
+  for (const m of src.matchAll(
+    /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*['"`]([^'"`]+)['"`]\s*\)/g,
+  ))
     push(m[1] ?? '', m[2] ?? '');
-  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'([^']+)'/g))
+  for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"`]([^'"`]+)['"`]/g))
     push(m[1] ?? '', m[2] ?? '');
   return out;
 }

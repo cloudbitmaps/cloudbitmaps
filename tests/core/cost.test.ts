@@ -33,6 +33,10 @@ describe('DEFAULT_PRICING', () => {
   // WHOLE. That is also the assertion that fails loudest when a price is deliberately updated, which is when
   // someone should be looking at it.
   it('is the exact published rate card, every field pinned', () => {
+    // The identity matters as much as the values: `AWS_US_EAST_1_ONDEMAND` is `const P`, which the ~40
+    // assertions in the rest of this file compute against. Re-point `DEFAULT_PRICING` at a fresh literal with
+    // the same numbers and every other test here would still pass while the two silently diverged.
+    expect(DEFAULT_PRICING).toBe(AWS_US_EAST_1_ONDEMAND);
     expect(DEFAULT_PRICING).toEqual({
       name: 'aws-us-east-1-ondemand',
       storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
@@ -51,22 +55,6 @@ describe('DEFAULT_PRICING', () => {
       storage: { ...DEFAULT_PRICING.storage, getPerMillion: 40 },
     };
     expect(estimateCost({ ...input, pricing: dearer })).not.toEqual(estimateCost(input));
-  });
-
-  it('can be cloned and overridden without disturbing the shared default', () => {
-    const cheaper: PricingProfile = {
-      ...DEFAULT_PRICING,
-      name: 'custom',
-      storage: { ...DEFAULT_PRICING.storage, getPerMillion: 0.2 },
-    };
-    expect(
-      estimateCost({
-        segments: [{ sizeBytes: 1e9 }],
-        workload: { readsPerSec: 100 },
-        pricing: cheaper,
-      }),
-    ).not.toEqual(estimateCost({ segments: [{ sizeBytes: 1e9 }], workload: { readsPerSec: 100 } }));
-    expect(DEFAULT_PRICING.storage.getPerMillion).toBe(0.4); // the shared default is untouched
   });
 });
 

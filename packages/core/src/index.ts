@@ -187,7 +187,8 @@ export { retireExpired } from './core/retention-sweep';
 // `excludingReservedRows` is the filter a fleet-wide pass must apply — the due index stores its state AS
 // registry rows, so an unscoped `registry.list()` returns bookkeeping rows alongside real segments and a
 // caller that forgets to skip them reports phantom segments. The bounded drain itself (`drainRegistry`) and
-// its ceiling validator stay internal; `listSegments` is the supported way to enumerate.
+// its ceiling validator stay internal. `listSegments` is the supported enumeration but is NOT a drop-in for
+// the drain: it streams (so the bound is yours) and yields `SegmentInfo`, which carries no retention.
 export { excludingReservedRows } from './core/registry-scan';
 
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is

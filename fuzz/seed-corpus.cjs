@@ -15,6 +15,11 @@
  * rather than driving the `.crbm` writer class directly. That class is not public — and this is the better
  * seed anyway, because the bytes then come off exactly the code path that writes a real generation, so a
  * corpus entry cannot drift from the format the library actually emits.
+ *
+ * ONE CONSEQUENCE WORTH KNOWING: that path calls `optimize()` before serializing, which the writer class did
+ * not. Run-encodable payloads therefore serialize much smaller here, and the layouts below are chosen so the
+ * corpus still covers both container shapes — a strided `dense-chunk` that stays an array container and keeps
+ * a multi-KB payload in the corpus, alongside the small run-encoded ones.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -91,7 +96,10 @@ async function seedCrbmReader() {
         { key: 65535, vals: [7] },
       ],
     },
-    { name: 'dense-chunk', gen: 3, chunks: [{ key: 42, vals: rangeVals(0, 4000) }] },
+    // STRIDED, not contiguous. The write path optimizes before serializing, and a contiguous range
+    // collapses to one run container — which turned this seed into 136 bytes and left the corpus with no
+    // multi-KB payload and no array-container decode branch. A stride of 10 cannot run-encode.
+    { name: 'dense-chunk', gen: 3, chunks: [{ key: 42, vals: stridedVals(0, 6000, 10) }] },
   ];
   for (const l of layouts) {
     const bytes = await validCrbm(l.chunks, l.gen);
@@ -104,9 +112,10 @@ async function seedCrbmReader() {
   }
 }
 
-function rangeVals(lo, hi) {
+/** A strided set: dense enough to be a large array container, never a run. See `dense-chunk` above. */
+function stridedVals(lo, count, step) {
   const out = [];
-  for (let i = lo; i < hi; i++) out.push(i);
+  for (let i = 0; i < count; i++) out.push(lo + i * step);
   return out;
 }
 

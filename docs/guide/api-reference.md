@@ -666,9 +666,9 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
   exported name appears (backtick-wrapped) in the **"Complete export index"** section — so **adding an export
   without documenting it breaks CI**. It runs in **both** directions: a name listed in that index that nothing
   exports any more also fails, so a removed export cannot leave a stale entry behind. Two limits worth knowing
-  rather than over-trusting: both directions are scoped to that one section, so the descriptive tables earlier
-  on this page are guarded by neither; and the reverse direction only reads names joined by `·`, which is how
-  every list in that section is written. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
+  rather than over-trusting: neither direction looks *above* that section, so the descriptive tables earlier on
+  this page are guarded by neither; and the reverse direction only reads names joined by `·`, which is how
+  every list in that index is written. It also fails if a barrel introduces an `export *` (which would let names slip past the guard),
   keeping every export explicit; the one allowed exception is the flavor's main barrel re-exporting core's,
   because core's barrel is parsed too.
 - When you add/rename/remove a public export: update the relevant section **and** the
