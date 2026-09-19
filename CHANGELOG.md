@@ -17,6 +17,27 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **BREAKING (fix) — the upgrade guard was keyed to option names that never shipped.**
+  `MOVED_OPTIONS` is what catches a `0.9.x` option and tells you where it went. It keyed on
+  `storageGenTtlMs`, `storageReaderCacheMax` and `storageReaderCacheMaxBytes` — three spellings that existed
+  only between two unreleased commits of this cycle. `0.9.0` had `coldGenTtlMs`, `coldReaderCacheMax` and
+  `coldReaderCacheMaxBytes`, and those were **accepted in silence.**
+
+  Silence is the failure this guard exists to prevent, and its own doc comment says so: an ignored
+  `requireEncryption` reads cleartext when the caller demanded encryption, and an ignored reader-cache
+  ceiling restores a 64 MiB default someone lowered deliberately for a small heap. Neither announces itself.
+
+  **Eight of the seventeen options `0.9.x` had and `0.10.0` does not were silently ignored** — the three
+  above plus `warm`, `warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`. `warm`
+  is the one that matters most: it was **required**, so every `0.9.x` deployment passes one.
+
+  All eight are now rejected by name, and the message distinguishes an option that **moved** from one that was
+  **removed** — saying "moved into a group: `warm` → nothing" sends a reader looking for a group that will
+  never have it. The message also said six groups; there are four, and `metrics` and `budget` are unchanged.
+
+  `tests/core/moved-options-cover-the-old-release.test.ts` derives the set by diffing `CloudRoaringOptions`
+  at the `v0.9.0` tag against HEAD, so it cannot drift the way the hardcoded list did.
+
 - **BREAKING — `@cloudbitmaps/core`'s main entry is curated: 110 exports down to 82.** The entry had
   accumulated the internals of whatever landed beside it, so a reader could not tell supported API from
   plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;

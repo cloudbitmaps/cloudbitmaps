@@ -599,12 +599,18 @@ interface LifecycleDeps {
  * this particular set, being ignored is worse than being rejected, because **every one of them is a knob whose
  * absence is silent and wrong**: a dropped `requireEncryption` reads cleartext when the caller demanded
  * encryption, a dropped `clock` makes a "deterministic" job non-deterministic, and a dropped
- * `storageReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
+ * `coldReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
  * None of those announces itself; each looks like the store simply working.
  */
 const MOVED_OPTIONS: ReadonlyArray<readonly [string, string]> = [
   ['cacheMaxChunks', 'cache.maxChunks'],
   ['cacheTtlMs', 'cache.ttlMs'],
+  // The `cold*` spellings are what `0.9.x` ACTUALLY had. The `storage*` ones below never appeared in any
+  // release — they existed between two unreleased commits of this cycle — and for a while they were the only
+  // ones here, so the guard written to catch an upgrader missed every real upgrader and caught nobody.
+  ['coldGenTtlMs', 'cache.genTtlMs'],
+  ['coldReaderCacheMax', 'cache.readerMax'],
+  ['coldReaderCacheMaxBytes', 'cache.readerMaxBytes'],
   ['storageGenTtlMs', 'cache.genTtlMs'],
   ['storageReaderCacheMax', 'cache.readerMax'],
   ['storageReaderCacheMaxBytes', 'cache.readerMaxBytes'],
@@ -617,6 +623,14 @@ const MOVED_OPTIONS: ReadonlyArray<readonly [string, string]> = [
   // this one first, and "unknown option" would send them looking in the wrong place.
   ['registry', 'the backend passed as `storage` (S3Storage, GcsStorage, …), which carries it'],
   ['cold', 'storage'],
+  // The live (warm) tier and its knobs. `warm` was REQUIRED in `0.9.x`, so every upgrader passes one — and
+  // an upgrader who fixes `cold` first meets this next. None of these has a replacement, so the message says
+  // so rather than pointing at a key that would also be wrong.
+  ['warm', 'nothing — the live tier is gone; see MIGRATING.md change 1'],
+  ['warmReadConsistency', 'nothing — it tuned the live tier, which is gone'],
+  ['maxWarmScanBytes', 'nothing — it tuned the live tier, which is gone'],
+  ['writeConcurrency', 'nothing — it bounded the live tier’s flusher, which is gone'],
+  ['occBackoff', 'nothing — it tuned the live tier’s read-modify-write, which is gone'],
 ];
 
 export class CloudRoaring {
@@ -653,13 +667,22 @@ export class CloudRoaring {
     const bag = options as unknown as Record<string, unknown>;
     const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
     if (moved.length === 0) return;
-    const list = moved
-      .map(([from, to]) => `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`)
-      .join(', ');
+    // Moved and removed read differently, and saying "moved into a group: `warm` → nothing" of an option
+    // that simply no longer exists sends the reader looking for a group that will never have it.
+    const isMove = (to: string): boolean => /^[\w.]+$/.test(to);
+    const say = (pairs: typeof moved): string =>
+      pairs.map(([from, to]) => `\`${from}\` → ${isMove(to) ? `\`${to}\`` : to}`).join(', ');
+    const relocated = moved.filter(([, to]) => isMove(to));
+    const retired = moved.filter(([, to]) => !isMove(to));
+    const parts: string[] = [];
+    if (relocated.length > 0)
+      parts.push(`option${relocated.length > 1 ? 's' : ''} moved into a group: ${say(relocated)}`);
+    if (retired.length > 0)
+      parts.push(`option${retired.length > 1 ? 's' : ''} removed: ${say(retired)}`);
     throw new ValidationError(
-      `CloudRoaring option${moved.length > 1 ? 's' : ''} moved into a group: ${list}. ` +
-        'Options are now one required `storage` plus the optional groups `cache`, `encryption`, `retry`, ' +
-        '`metrics`, `budget` and `seams`.',
+      `CloudRoaring ${parts.join('; ')}. ` +
+        'Options are now one required `storage` plus four optional groups — `cache`, `encryption`, ' +
+        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are.',
     );
   }
 
