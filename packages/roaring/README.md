@@ -20,6 +20,10 @@ this package and of the storage package you pair it with — so you never instal
 npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the codec, and the storage you have
 ```
 
+> [!NOTE]
+> **The storage packages land in 0.10.0 and are not on npm yet.** The published release is `0.9.0`, whose
+> packaging and API differ from what is shown here — see [`MIGRATING.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md).
+
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 import { S3Storage } from '@cloudbitmaps/s3';

@@ -83,6 +83,39 @@ const FOREIGN_VERSIONS = new Map<string, string>([
 ]);
 
 /**
+ * The next minor, which pages may legitimately name as a FORWARD reference.
+ *
+ * While the storage packages are unpublished, every install block says so and names the release that fixes it
+ * (see `unreleased-install-caveat.test.ts`). That is a true statement about a version that is not current, and
+ * it is the one kind of non-current version this file must not treat as a stale badge.
+ *
+ * It is computed, not allowlisted, which is what keeps it safe: `FOREIGN_VERSIONS` would exempt the string
+ * `0.10.0` permanently, so a badge left reading `0.10.0` after `0.11.0` shipped would sail through — the exact
+ * drift this file exists to catch. As a computed next-minor the exemption moves with the version and can only
+ * ever excuse a reference to the release that has not happened yet. Once it ships it becomes `version` itself
+ * and is checked normally, and the caveat naming it is force-removed by the other guard.
+ *
+ * It is also scoped to the LINE carrying that caveat, not the page. Page-wide, a hero eyebrow reading
+ * "roaring shipped · v0.10.0" — a release that is not on npm — passed while the footer badges still said
+ * 0.9.0, which is precisely the stale badge this file exists to catch. Every legitimate mention of the next
+ * minor sits on a caveat line, so the narrow scope costs nothing.
+ */
+const NEXT_MINOR = ((): string => {
+  const [major = 0, minor = 0] = version.split('.').map((n) => Number.parseInt(n, 10));
+  return `${major}.${minor + 1}.0`;
+})();
+
+/**
+ * A line may name the next minor only if it says, on that same line, that the version is not out.
+ *
+ * Keyed on the CLAIM rather than on one exact sentence: the install caveat is not the only place that
+ * legitimately names an unreleased version — a status line saying which release is published has to as well —
+ * and an exemption tied to a single string would force honest prose to quote it verbatim. What it must never
+ * excuse is a bare badge, which is the whole point of this file.
+ */
+const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;
+
+/**
  * Version tokens a reader can actually see, excluding HTML comments.
  *
  * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
@@ -90,9 +123,29 @@ const FOREIGN_VERSIONS = new Map<string, string>([
  * bare-token match would otherwise flag forever.
  */
 function badgeVersions(html: string): string[] {
-  return [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(VERSION_RE)]
-    .map((m) => m[1] as string)
-    .filter((v) => !FOREIGN_VERSIONS.has(v));
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .split('\n')
+    .flatMap((line) => {
+      return [...line.matchAll(VERSION_RE)]
+        .filter((m) => {
+          const v = m[1] as string;
+          if (FOREIGN_VERSIONS.has(v)) return false;
+          if (v !== NEXT_MINOR) return true;
+          // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
+          // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
+          // `roaring shipped · v0.10.0` passed with an unrelated "see the unreleased notes" span beside it.
+          const at = m.index ?? 0;
+          const near = line.slice(Math.max(0, at - 80), at + 80);
+          // The marker must be adjacent AND the version must not also be claimed as shipped. Proximity alone
+          // cannot tell "this version is unreleased" from "see the unreleased notes" — verified: a hero
+          // reading `roaring shipped · v0.10.0` passed with an unrelated "unreleased" span beside it. A
+          // version cannot be both shipped and not out, so the contradiction is the thing to reject.
+          if (/\b(shipped|ships|available|released|out now)\b/i.test(near)) return true;
+          return !MARKS_UNRELEASED.test(near);
+        })
+        .map((m) => m[1] as string);
+    });
 }
 
 /**
@@ -211,9 +264,8 @@ describe('site version badges', () => {
   });
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
-    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)].map(
-      (m) => m[1] as string,
-    );
+    // Same line-scoped forward-reference rule as the HTML pages: see NEXT_MINOR.
+    const found = badgeVersions(readFileSync(join(SITE, file), 'utf8'));
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,

@@ -22,8 +22,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   plumbing that happened to be reachable. Everything below stays in the codebase and keeps working internally;
   it simply stops being importable.
 
-  **Twelve names were public in `0.9.x` and are gone.** See
-  [`MIGRATING.md`](MIGRATING.md#6-core-exports-only-what-it-supports) for what to do about each:
+  **Twelve of these removals were names `0.9.x` also published.** See
+  [`MIGRATING.md`](MIGRATING.md#7-core-exports-only-what-it-supports) for what to do about each:
   `drainRegistry` · `validateMaxScanSegments` · `DEFAULT_MAX_SCAN_SEGMENTS` · `DEFAULT_RETIRE_LIMIT` ·
   `DEFAULT_TOMBSTONE_GRACE_MS` · `CrbmWriter` · `CrbmWriterOptions` · `chunkRefKey` · `joinId` ·
   `isTransient` · `NOOP_AUDIT` · `BufferSink`. Note `@cloudbitmaps/roaring` re-exports core wholesale, so
@@ -355,10 +355,11 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **BREAKING — the 14 flat constructor options become one required `storage` plus six groups.** Five of the
+- **BREAKING — the 14 flat constructor options become one required `storage` plus four groups.** Five of the
   old keys were cache knobs distinguished only by a prefix (`cacheMaxChunks`, `cacheTtlMs`,
   `storageGenTtlMs`, `storageReaderCacheMax`, `storageReaderCacheMaxBytes`), which is a naming convention
-  standing in for a structure. They are now `cache` · `encryption` · `retry` · `metrics` · `budget` · `seams`:
+  standing in for a structure. The groups are `cache` · `encryption` · `retry` · `seams`; `metrics` and
+  `budget` stay flat single options and are unchanged:
 
   ```ts
   // before
@@ -382,7 +383,12 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   });
   ```
 
-  | before | after |
+  The "before" column is the shape **at the time of this change**, mid-cycle. If you are coming from the
+  published `0.9.x`, your names are `coldGenTtlMs` / `coldReaderCacheMax` / `coldReaderCacheMaxBytes` — the
+  `storage*` spellings below only ever existed between two unreleased commits. `MIGRATING.md` maps from
+  `0.9.x` directly and is the one to follow.
+
+  | before (mid-cycle) | after |
   |---|---|
   | `cacheMaxChunks` | `cache.maxChunks` |
   | `cacheTtlMs` | `cache.ttlMs` |

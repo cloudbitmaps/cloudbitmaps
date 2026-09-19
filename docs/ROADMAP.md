@@ -47,7 +47,7 @@ Where each piece sits today:
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
-| Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The measured numbers on the [benchmarks page](benchmarks.md) are the S3-side figures of the July 2026 calibration run |
+| Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The [benchmarks page](benchmarks.md) carries no loaded-store measurement; its cloud figures are the S3-side ones of the July 2026 calibration run |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and the object it wrote is deleted again |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
@@ -62,7 +62,8 @@ restate it, so the two can't drift. You install **one codec flavor plus the one 
 and each storage package brings its own SDK — so no install carries an SDK for a service you do not use:
 
 ```bash
-npm i @cloudbitmaps/roaring @cloudbitmaps/s3                              # roaring on AWS: one bucket, storage + registry
+npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
+# the storage packages land in 0.10.0 and are not on npm yet
 ```
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
@@ -234,9 +235,9 @@ between here and there:
    there because nothing forced the question, and a reader could not tell supported API from plumbing that
    happened to be reachable. `1.0` freezes the format; a surface this size is the other half of that promise,
    and a name is far cheaper to *add* later than to take away. Twelve of the removals were public in `0.9.x`
-   and are listed in [`MIGRATING.md`](../MIGRATING.md#6-core-exports-only-what-it-supports). Three FURTHER removals — `readRetentionPolicy`,
-   `aadFor` and `checkBudget` — were reverted after an adversarial review and are not among those twelve; the
-   82 above is the count after those reverts. Each was the same case: a public type or field that only the
+   and are listed in [`MIGRATING.md`](../MIGRATING.md#7-core-exports-only-what-it-supports). Two further removals — `aadFor` and `checkBudget` — were
+   reverted after an adversarial review, which is what takes 80 to the 82 above; a third,
+   `readRetentionPolicy`, was pulled back before the change ever landed, so it never left the surface. Each was the same case: a public type or field that only the
    symbol being cut could produce or consume, which is the test worth applying to any surface reduction. The API reference guard now runs in both directions.
 6. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
    were written for a tiered engine and still explain the loaded store as what is left after a warm tier was

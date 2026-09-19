@@ -1,23 +1,53 @@
 # Migrating to 0.10.0
 
-`0.10.0` is a breaking release with **six** changes. Four of them fail loudly — an unresolved import, a
-refused constructor, or a module that will not load. The fifth changes a default, so it is the one that needs
-you to look at your call sites rather than wait for an error. The sixth is a list of removed exports, and it
-fails loudly too. Work down the list; most upgrades are the first two and take a few minutes.
+`0.10.0` is a breaking release with **seven** changes. Most fail loudly — an unresolved import, a refused
+constructor, or a module that will not load. One changes a default, so it is the one that needs you to look at
+your call sites rather than wait for an error.
 
-1. [The cloud drivers are their own packages](#1-the-cloud-drivers-are-their-own-packages)
-2. [ESM only, Node ≥ 22.12](#2-esm-only-node--2212)
-3. [A storage backend must be built, not assembled](#3-a-storage-backend-must-be-built-not-assembled)
-4. [The flat options became six groups](#4-the-flat-options-became-six-groups)
-5. [The `*Into` verbs can now refuse](#5-the-into-verbs-can-now-refuse)
-6. [Core exports only what it supports](#6-core-exports-only-what-it-supports)
+**Start with change 1.** It is the only one that can require a design decision rather than an edit, and it
+affects every `0.9.x` deployment, because the option it removes was required.
+
+1. [The live (warm) tier is gone](#1-the-live-warm-tier-is-gone)
+2. [The cloud drivers are their own packages](#2-the-cloud-drivers-are-their-own-packages)
+3. [ESM only, Node ≥ 22.12](#3-esm-only-node--2212)
+4. [A storage backend must be built, not assembled](#4-a-storage-backend-must-be-built-not-assembled)
+5. [The flat options became four groups](#5-the-flat-options-became-four-groups)
+6. [The `*Into` verbs can now refuse](#6-the-into-verbs-can-now-refuse)
+7. [Core exports only what it supports](#7-core-exports-only-what-it-supports)
 
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
 
 ---
 
-## 1. The cloud drivers are their own packages
+## 1. The live (warm) tier is gone
+
+**This affects every `0.9.x` deployment**, because `warm` was a *required* option — you cannot have a `0.9.x`
+store without one:
+
+```ts
+// before — 0.9.x, where `cold` and `warm` were both required
+new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry });
+```
+
+`0.10.0` has one storage tier. The mutable warm store, the per-call `add`/`remove` verbs over it, the
+compaction daemon and the partition leases that kept it healthy are all removed, along with their options
+(`warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff`) and their metric events.
+
+**What to do depends on why you had it**, and only you can answer that:
+
+| you used the warm tier for | in `0.10.0` |
+|---|---|
+| **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it. No change in shape, and it is what the library is now built around |
+| **per-call `add` / `remove` on the read path** | there is no replacement, and there will not be one on the object store. Micro-batch into a load, or keep those writes in RAM — Redis does that well. Hot-path *reads* are what this library is for |
+| **freshness inside a few seconds** | load more often. A load is one PUT plus a pointer swap, so the floor is your job cadence, not the library |
+
+If you need the old behaviour while you decide, `0.9.x` stays on npm and the tier is archived at the git tag
+`archive/live-warm-tier`. It will not receive fixes.
+
+---
+
+## 2. The cloud drivers are their own packages
 
 You now install **two packages**: the codec you want and the storage you have.
 
@@ -48,16 +78,61 @@ that came with it.
 > named for the *cloud*; the package is named for the *service*, because "azure" is ambiguous across Blob,
 > Table, Files and Data Lake. `@cloudbitmaps/azure` does not exist and never will.
 
-The classes, their constructors and their options are unchanged, so the move is the import line and the
-install:
+**The classes were renamed too.** In `0.9.x` a driver was a *tier* — `S3ColdDriver`, `GcsColdDriver`,
+`AzureBlobColdDriver` — and the object-store tier was called "cold". There is only one storage tier now, so
+the name says what it is:
+
+| `0.9.x` | `0.10.0` |
+|---|---|
+| `S3ColdDriver` / `S3ColdDriverOptions` | `S3StorageDriver` / `S3StorageDriverOptions` |
+| `GcsColdDriver` / `GcsColdDriverOptions` | `GcsStorageDriver` / `GcsStorageDriverOptions` |
+| `AzureBlobColdDriver` / `AzureBlobColdDriverOptions` | `AzureBlobStorageDriver` / `AzureBlobStorageDriverOptions` |
+| — | `S3Storage` / `GcsStorage` / `AzureBlobStorage` — **new**: one object holding both halves |
+
+So the move is three things, not one — the install, the import line, and the name:
 
 ```diff
-- import { CloudRoaring, S3Storage } from '@cloudbitmaps/roaring/s3';
+- import { CloudRoaring } from '@cloudbitmaps/roaring';
+- import { S3ColdDriver, S3RegistryDriver } from '@cloudbitmaps/roaring/s3';
 + import { CloudRoaring } from '@cloudbitmaps/roaring';
 + import { S3Storage } from '@cloudbitmaps/s3';
 
   const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' }) });
 ```
+
+### The rest of the `Cold` → `Storage` renames
+
+The same rename runs through core and the flavor, and it is mechanical: **every `Cold` in a name became
+`Storage`.** All ten:
+
+| `0.9.x` | `0.10.0` |
+|---|---|
+| `IColdDriver` | `IStorageDriver` |
+| `ColdChunkSource` · `ColdCaps` | `StorageChunkSource` · `StorageCaps` |
+| `MemoryColdDriver` · `LocalFsColdDriver` | `MemoryStorageDriver` · `LocalFsStorageDriver` |
+| `MemoryColdChunkSource` | `MemoryStorageChunkSource` |
+| `CrbmColdChunkSource` · `CrbmColdChunkSourceOptions` | `CrbmStorageChunkSource` · `CrbmStorageChunkSourceOptions` |
+| `RetryingColdDriver` · `RetryingColdChunkSource` | `RetryingStorageDriver` · `RetryingStorageChunkSource` |
+
+`MemoryColdDriver` and `LocalFsColdDriver` are the two the `0.9.x` quickstart started with, so most projects
+hit these before they hit anything above.
+
+### The subpaths that are gone entirely
+
+`0.9.0` published nine subpaths. Three moved to packages (above). The other six went with the write tier and
+have **no replacement**: `/dynamodb` · `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql`.
+
+`/dynamodb` is the one worth calling out separately, because it was not only a warm driver — it carried
+`DynamoDbRegistryDriver`, and a DynamoDB registry was the shape the `0.9.x` README led with. Every object
+store now hosts its own registry, so a deployment that kept its pointer in DynamoDB moves the pointer into
+the bucket it already has. If you need the pointer off the object store, implement `IRegistryDriver` against
+a database you already run.
+
+> [!NOTE]
+> Among the object stores, `0.9.x` shipped a registry driver for **S3 only** (`S3RegistryDriver`) — there
+> was also a DynamoDB registry, since removed. The GCS and Azure subpaths exported
+> a cold driver and nothing else. `0.10.0` ships a registry for all three, which is what makes a
+> single-bucket deployment possible on GCP and Azure as well.
 
 ### If you pin the cloud SDK yourself
 
@@ -102,7 +177,7 @@ still come from core's main entry, and the API reference says so where it lists 
 
 ---
 
-## 2. ESM only, Node ≥ 22.12
+## 3. ESM only, Node ≥ 22.12
 
 The packages ship as ES modules. There is no CommonJS bundle.
 
@@ -119,10 +194,10 @@ If you are on Node 20, or on a Node 22 older than 22.12, upgrade Node before upg
 
 ---
 
-## 3. A storage backend must be built, not assembled
+## 4. A storage backend must be built, not assembled
 
 ```diff
-- new CloudRoaring({ storage: driver, registry })
+- new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry })
 + new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })
 ```
 
@@ -137,16 +212,18 @@ This one **throws with a message naming the fix**, so you will find it the first
 
 ---
 
-## 4. The flat options became six groups
+## 5. The flat options became four groups
 
-`cache` · `encryption` · `retry` · `metrics` · `budget` · `seams`:
+`cache` · `encryption` · `retry` · `seams`. **`metrics` and `budget` are unchanged** — both were already
+single flat options in `0.9.x` and still take the same value, so leave them alone:
 
 | before | after |
 |---|---|
-| `cacheMaxChunks` · `cacheTtlMs` · `storageGenTtlMs` · `storageReaderCacheMax` · `storageReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
+| `cacheMaxChunks` · `cacheTtlMs` · `coldGenTtlMs` · `coldReaderCacheMax` · `coldReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
 | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
 | `onRetry` | `retry.onRetry` |
 | `clock` · `rng` | `seams.clock` · `seams.rng` |
+| `occBackoff` · `warmReadConsistency` · `writeConcurrency` · `maxWarmScanBytes` | **gone** — see change 1 |
 
 `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's default
 instead of requiring all five.
@@ -155,7 +232,7 @@ This one throws too.
 
 ---
 
-## 5. The `*Into` verbs can now refuse
+## 6. The `*Into` verbs can now refuse
 
 `intersectInto` / `unionInto` / `andNotInto` used to write and publish in one step. An empty combine
 therefore replaced the destination with an empty generation and reported success — indistinguishable from a
@@ -187,9 +264,9 @@ bound needed the read — with `allowEmpty: true` and no `guard.minRetained`, no
 
 A lost race still throws `WriteConflictError` — unchanged.
 
-## 6. Core exports only what it supports
+## 7. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **110 exports to 82**. It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The `[Unreleased]` changelog quotes 110 → 82; 110 was the count at an unreleased mid-cycle commit, not at any release.) It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 

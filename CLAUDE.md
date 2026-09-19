@@ -29,7 +29,8 @@ package, the **storage service** is a driver package, and core is what both buil
   across Blob, Table, Files and Data Lake.
 - **Users install two packages** — `npm i @cloudbitmaps/roaring @cloudbitmaps/s3`, the codec they want and
   the storage they have. `@cloudbitmaps/core` arrives **transitively, never installed directly.** Nothing is
-  an optional peer, so there is no "install the peer" error path and no pnpm strict-resolution hazard.
+  an optional peer, so there is no "install the peer" error path and no pnpm strict-resolution hazard. The
+  storage packages land in 0.10.0 and are not on npm yet; the published release is `0.9.0`.
 - **Tests live at the repo root under `tests/`** (many drive the facade + core internals together), with the
   `@/…` alias remapped onto the packages in `vitest.config.ts` and the root `tsconfig.json`. All gate commands
   run from the root. See [CONTRIBUTING](CONTRIBUTING.md#repo-layout-a-pnpm-workspace-of-five-packages).
