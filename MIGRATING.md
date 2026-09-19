@@ -11,7 +11,7 @@ affects every `0.9.x` deployment, because the option it removes was required.
 2. [The cloud drivers are their own packages](#2-the-cloud-drivers-are-their-own-packages)
 3. [ESM only, Node ≥ 22.12](#3-esm-only-node--2212)
 4. [A storage backend must be built, not assembled](#4-a-storage-backend-must-be-built-not-assembled)
-5. [The flat options became six groups](#5-the-flat-options-became-six-groups)
+5. [The flat options became four groups](#5-the-flat-options-became-four-groups)
 6. [The `*Into` verbs can now refuse](#6-the-into-verbs-can-now-refuse)
 7. [Core exports only what it supports](#7-core-exports-only-what-it-supports)
 
@@ -183,9 +183,10 @@ This one **throws with a message naming the fix**, so you will find it the first
 
 ---
 
-## 5. The flat options became six groups
+## 5. The flat options became four groups
 
-`cache` · `encryption` · `retry` · `metrics` · `budget` · `seams`:
+`cache` · `encryption` · `retry` · `seams`. **`metrics` and `budget` are unchanged** — both were already
+single flat options in `0.9.x` and still take the same value, so leave them alone:
 
 | before | after |
 |---|---|
@@ -193,7 +194,6 @@ This one **throws with a message naming the fix**, so you will find it the first
 | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
 | `onRetry` | `retry.onRetry` |
 | `clock` · `rng` | `seams.clock` · `seams.rng` |
-| `metrics` | `metrics.sink` |
 | `occBackoff` · `warmReadConsistency` · `writeConcurrency` · `maxWarmScanBytes` | **gone** — see change 1 |
 
 `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's default

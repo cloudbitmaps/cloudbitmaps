@@ -382,7 +382,12 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   });
   ```
 
-  | before | after |
+  The "before" column is the shape **at the time of this change**, mid-cycle. If you are coming from the
+  published `0.9.x`, your names are `coldGenTtlMs` / `coldReaderCacheMax` / `coldReaderCacheMaxBytes` — the
+  `storage*` spellings below only ever existed between two unreleased commits. `MIGRATING.md` maps from
+  `0.9.x` directly and is the one to follow.
+
+  | before (mid-cycle) | after |
   |---|---|
   | `cacheMaxChunks` | `cache.maxChunks` |
   | `cacheTtlMs` | `cache.ttlMs` |

@@ -132,12 +132,12 @@ being ignored, so you will find them the first time you run, not the first time 
    `createBackend({ storage, registry })`. A plain object literal is refused. `createBackend` cannot verify
    the two halves agree, so calling it is you taking that on — which is the difference between a decision and
    the accident it replaces.
-2. **The flat tuning options became six groups** — `cache` · `encryption` · `retry` · `metrics` · `budget` ·
-   `seams`:
+2. **The flat tuning options became four groups** — `cache` · `encryption` · `retry` · `seams`. `metrics`
+   and `budget` are unchanged; both were already single flat options and still take the same value:
 
    | before | after |
    |---|---|
-   | `cacheMaxChunks` · `cacheTtlMs` · `storageGenTtlMs` · `storageReaderCacheMax` · `storageReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
+   | `cacheMaxChunks` · `cacheTtlMs` · `coldGenTtlMs` · `coldReaderCacheMax` · `coldReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
    | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
    | `onRetry` | `retry.onRetry` |
    | `clock` · `rng` | `seams.clock` · `seams.rng` |
