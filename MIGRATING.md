@@ -101,7 +101,8 @@ So the move is three things, not one — the install, the import line, and the n
 ```
 
 > [!NOTE]
-> `0.9.x` shipped a registry driver for **S3 only** (`S3RegistryDriver`); the GCS and Azure subpaths exported
+> Among the object stores, `0.9.x` shipped a registry driver for **S3 only** (`S3RegistryDriver`) — there
+> was also a DynamoDB registry, since removed. The GCS and Azure subpaths exported
 > a cold driver and nothing else. `0.10.0` ships a registry for all three, which is what makes a
 > single-bucket deployment possible on GCP and Azure as well.
 
@@ -237,7 +238,7 @@ A lost race still throws `WriteConflictError` — unchanged.
 
 ## 7. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **110 exports to 82**. It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The `[Unreleased]` changelog quotes 110 → 82; 110 was the count at an unreleased mid-cycle commit, not at any release.) It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 

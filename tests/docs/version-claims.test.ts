@@ -127,10 +127,24 @@ function badgeVersions(html: string): string[] {
     .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
     .flatMap((line) => {
-      const forwardOk = MARKS_UNRELEASED.test(line);
       return [...line.matchAll(VERSION_RE)]
-        .map((m) => m[1] as string)
-        .filter((v) => !FOREIGN_VERSIONS.has(v) && !(forwardOk && v === NEXT_MINOR));
+        .filter((m) => {
+          const v = m[1] as string;
+          if (FOREIGN_VERSIONS.has(v)) return false;
+          if (v !== NEXT_MINOR) return true;
+          // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
+          // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
+          // `roaring shipped · v0.10.0` passed with an unrelated "see the unreleased notes" span beside it.
+          const at = m.index ?? 0;
+          const near = line.slice(Math.max(0, at - 80), at + 80);
+          // The marker must be adjacent AND the version must not also be claimed as shipped. Proximity alone
+          // cannot tell "this version is unreleased" from "see the unreleased notes" — verified: a hero
+          // reading `roaring shipped · v0.10.0` passed with an unrelated "unreleased" span beside it. A
+          // version cannot be both shipped and not out, so the contradiction is the thing to reject.
+          if (/\b(shipped|ships|available|released|out now)\b/i.test(near)) return true;
+          return !MARKS_UNRELEASED.test(near);
+        })
+        .map((m) => m[1] as string);
     });
 }
 

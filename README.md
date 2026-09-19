@@ -12,8 +12,7 @@
 > warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
 > **Status: the published release is `0.9.0`. This page documents `0.10.0`, which is unreleased.**
-> Everything under *Works today* is implemented and tested in this repository; `0.10.0` is not on npm yet,
-> and neither are the storage packages it names.
+> `0.10.0` is not on npm yet, and neither are the storage packages it names.
 > Pre-1.0 on purpose — `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
@@ -589,9 +588,10 @@ Shipped on the loaded store: a single-call `load()` with a guard against an upst
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
 keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
 than whichever generations were current as it ran, and a curated public surface. The loaded store's own
-benchmarks — load throughput, `intersect` latency, an RSS soak — are **owed, not shipped**; until they exist the
-[benchmarks page](docs/benchmarks.md) quotes only the S3-side figures of the July 2026 calibration run, and says
-so wherever it quotes one. The public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+benchmarks — load throughput, `intersect` latency, an RSS soak — are **owed, not shipped**. Until they exist
+the [benchmarks page](docs/benchmarks.md) quotes no loaded-store measurement: its cloud figures are the S3-side
+ones of the July 2026 calibration run, its crossover chart is modelled, and its at-scale table is a local-disk
+run — and it labels each as such. The public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
 storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic
