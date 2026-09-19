@@ -211,8 +211,7 @@ and an explicit list of what the run does *not* establish:
 ```bash
 npm i @cloudbitmaps/roaring    # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
 npm i @cloudbitmaps/s3         # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
-                               # ^ the storage packages land in 0.10.0; on the published 0.9.0 they are
-                               #   subpaths of @cloudbitmaps/roaring (@cloudbitmaps/roaring/s3)
+                               # ^ the storage packages land in 0.10.0 and are not on npm yet
 ```
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
@@ -572,7 +571,8 @@ prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 **Where it is headed (September 2026).** The **loaded store** is the library. Compute a set upstream — a
 warehouse query, a nightly job — load it as one immutable generation into your bucket, and then `has`, `count`
 and chunk-skipping `intersect` it from anywhere: one bucket, no background process, nothing of ours in your
-request path, and no bill while nobody is asking. `1.0` is that shape, finished and frozen.
+request path, and no bill while nobody is asking. `1.0`'s scope is that shape — settled, not still being
+decided.
 
 That shape is a choice, not a remainder. Every roaring-based engine that needs freshness meets it by
 micro-batching into immutable segments, never by mutating a stored bitmap per call — so immutability is the

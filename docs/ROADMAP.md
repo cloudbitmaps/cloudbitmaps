@@ -63,7 +63,7 @@ and each storage package brings its own SDK — so no install carries an SDK for
 
 ```bash
 npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
-# the storage packages land in 0.10.0; on the published 0.9.0 they are subpaths of @cloudbitmaps/roaring
+# the storage packages land in 0.10.0 and are not on npm yet
 ```
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —

@@ -30,10 +30,26 @@ const EXTS = ['.md', '.html', '.txt'];
 const DEFINES_THE_RULE = new Set([join('tests', 'docs', 'unreleased-install-caveat.test.ts')]);
 const HISTORY = new Set(['CHANGELOG.md', 'MIGRATING.md']);
 
-/** The canonical wording. One string, so a page cannot half-comply with a paraphrase. */
-const CAVEAT = 'land in 0.10.0';
-/** Telling a reader to install a driver package. */
-const ADVERTISES_INSTALL = /npm i [^\n]*@cloudbitmaps\/(?:s3|gcs|azure-blob)/;
+/**
+ * The canonical wording — the WHOLE claim, not a fragment.
+ *
+ * It was `'land in 0.10.0'`, which let a page comply by saying only "the storage packages land in 0.10.0".
+ * That reads as naturally in the past tense as the future ("they landed in 0.10.0, so they are available"),
+ * and eight of the fifteen surfaces said exactly that — including the site hero, five words under its install
+ * CTA, which is the surface this guard exists for. Requiring the phrase that carries the actual fact makes the
+ * gate enforce the substance rather than a prefix of it.
+ */
+const CAVEAT = 'land in 0.10.0 and are not on npm yet';
+
+/**
+ * Telling a reader to install a driver package, in any of the forms people actually write.
+ *
+ * The first version matched `npm i` on one line, which missed `pnpm add`, `yarn add`, the `npm install` long
+ * form, and every block that wraps the package onto the next line — so a page could advertise the install and
+ * never enter the checked set at all.
+ */
+const ADVERTISES_INSTALL =
+  /\b(?:npm (?:i|install|add)|pnpm (?:i|add|install)|yarn add|bun add)\b[\s\S]{0,200}?@cloudbitmaps\/(?:s3|gcs|azure-blob)/;
 
 const version = (
   JSON.parse(readFileSync(join(ROOT, 'packages/roaring/package.json'), 'utf8')) as {
@@ -77,7 +93,10 @@ describe('the unreleased-driver install caveat tracks the version that makes it 
   });
 
   if (driversPublished) {
-    it.each(advertising)('%s no longer carries the pre-release caveat', (rel) => {
+    // Scan EVERY file, not just the ones that still advertise an install. Reword an install line — `npm i`
+    // to `pnpm add`, say — and the file leaves `advertising` while keeping the caveat, so the release would
+    // ship "not on npm yet" on a page CI never named. The removal direction has to be unconditional.
+    it.each(files)('%s no longer carries the pre-release caveat', (rel) => {
       const src = readFileSync(join(ROOT, rel), 'utf8');
       expect(
         src.includes(CAVEAT),

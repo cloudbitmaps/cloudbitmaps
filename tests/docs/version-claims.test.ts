@@ -83,13 +83,6 @@ const FOREIGN_VERSIONS = new Map<string, string>([
 ]);
 
 /**
- * Version tokens a reader can actually see, excluding HTML comments.
- *
- * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
- * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
- * bare-token match would otherwise flag forever.
- */
-/**
  * The next minor, which pages may legitimately name as a FORWARD reference.
  *
  * While the storage packages are unpublished, every install block says so and names the release that fixes it
@@ -101,16 +94,37 @@ const FOREIGN_VERSIONS = new Map<string, string>([
  * drift this file exists to catch. As a computed next-minor the exemption moves with the version and can only
  * ever excuse a reference to the release that has not happened yet. Once it ships it becomes `version` itself
  * and is checked normally, and the caveat naming it is force-removed by the other guard.
+ *
+ * It is also scoped to the LINE carrying that caveat, not the page. Page-wide, a hero eyebrow reading
+ * "roaring shipped · v0.10.0" — a release that is not on npm — passed while the footer badges still said
+ * 0.9.0, which is precisely the stale badge this file exists to catch. Every legitimate mention of the next
+ * minor sits on a caveat line, so the narrow scope costs nothing.
  */
 const NEXT_MINOR = ((): string => {
   const [major = 0, minor = 0] = version.split('.').map((n) => Number.parseInt(n, 10));
   return `${major}.${minor + 1}.0`;
 })();
 
+/** The caveat that may legitimately name the next minor — see {@link NEXT_MINOR}. */
+const CAVEAT_LINE = 'land in 0.10.0 and are not on npm yet';
+
+/**
+ * Version tokens a reader can actually see, excluding HTML comments.
+ *
+ * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
+ * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
+ * bare-token match would otherwise flag forever.
+ */
 function badgeVersions(html: string): string[] {
-  return [...html.replace(/<!--[\s\S]*?-->/g, '').matchAll(VERSION_RE)]
-    .map((m) => m[1] as string)
-    .filter((v) => !FOREIGN_VERSIONS.has(v) && v !== NEXT_MINOR);
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .split('\n')
+    .flatMap((line) => {
+      const forwardOk = line.includes(CAVEAT_LINE);
+      return [...line.matchAll(VERSION_RE)]
+        .map((m) => m[1] as string)
+        .filter((v) => !FOREIGN_VERSIONS.has(v) && !(forwardOk && v === NEXT_MINOR));
+    });
 }
 
 /**
@@ -229,10 +243,8 @@ describe('site version badges', () => {
   });
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
-    const found = [...readFileSync(join(SITE, file), 'utf8').matchAll(VERSION_RE)]
-      .map((m) => m[1] as string)
-      // Same forward-reference rule as the HTML pages: see NEXT_MINOR.
-      .filter((v) => !FOREIGN_VERSIONS.has(v) && v !== NEXT_MINOR);
+    // Same line-scoped forward-reference rule as the HTML pages: see NEXT_MINOR.
+    const found = badgeVersions(readFileSync(join(SITE, file), 'utf8'));
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,

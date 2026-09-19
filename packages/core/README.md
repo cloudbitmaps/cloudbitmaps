@@ -27,8 +27,8 @@ npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship), 
 ```
 
 > [!NOTE]
-> **The storage packages land in 0.10.0 and are not on npm yet.** On the published `0.9.0` they are
-> subpaths of the flavor — `npm i @cloudbitmaps/roaring`, then import from `@cloudbitmaps/roaring/s3`.
+> **The storage packages land in 0.10.0 and are not on npm yet.** The published release is `0.9.0`, whose
+> packaging and API differ from what is shown here — see [`MIGRATING.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md).
 
 Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime
 dependencies** of its own.
