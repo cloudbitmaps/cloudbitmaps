@@ -100,6 +100,34 @@ So the move is three things, not one — the install, the import line, and the n
   const store = new CloudRoaring({ storage: new S3Storage({ bucket: 'bitmaps', region: 'us-east-1' }) });
 ```
 
+### The rest of the `Cold` → `Storage` renames
+
+The same rename runs through core and the flavor, and it is mechanical: **every `Cold` in a name became
+`Storage`.** All ten:
+
+| `0.9.x` | `0.10.0` |
+|---|---|
+| `IColdDriver` | `IStorageDriver` |
+| `ColdChunkSource` · `ColdCaps` | `StorageChunkSource` · `StorageCaps` |
+| `MemoryColdDriver` · `LocalFsColdDriver` | `MemoryStorageDriver` · `LocalFsStorageDriver` |
+| `MemoryColdChunkSource` | `MemoryStorageChunkSource` |
+| `CrbmColdChunkSource` · `CrbmColdChunkSourceOptions` | `CrbmStorageChunkSource` · `CrbmStorageChunkSourceOptions` |
+| `RetryingColdDriver` · `RetryingColdChunkSource` | `RetryingStorageDriver` · `RetryingStorageChunkSource` |
+
+`MemoryColdDriver` and `LocalFsColdDriver` are the two the `0.9.x` quickstart started with, so most projects
+hit these before they hit anything above.
+
+### The subpaths that are gone entirely
+
+`0.9.0` published nine subpaths. Three moved to packages (above). The other six went with the write tier and
+have **no replacement**: `/dynamodb` · `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql`.
+
+`/dynamodb` is the one worth calling out separately, because it was not only a warm driver — it carried
+`DynamoDbRegistryDriver`, and a DynamoDB registry was the shape the `0.9.x` README led with. Every object
+store now hosts its own registry, so a deployment that kept its pointer in DynamoDB moves the pointer into
+the bucket it already has. If you need the pointer off the object store, implement `IRegistryDriver` against
+a database you already run.
+
 > [!NOTE]
 > Among the object stores, `0.9.x` shipped a registry driver for **S3 only** (`S3RegistryDriver`) — there
 > was also a DynamoDB registry, since removed. The GCS and Azure subpaths exported
