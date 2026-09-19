@@ -42,6 +42,15 @@ const HISTORY = new Set(['CHANGELOG.md', 'MIGRATING.md']);
 const CAVEAT = 'land in 0.10.0 and are not on npm yet';
 
 /**
+ * The other sentence that becomes false the moment 0.10.0 ships: the status line saying it is unreleased.
+ *
+ * It needs its own marker because it does not contain {@link CAVEAT}, and `version-claims` cannot see it
+ * either — after the bump, `0.10.0` IS the current version, so a badge check passes while the sentence
+ * beside it still says the release has not happened. Two canonical strings, both force-removed.
+ */
+const STATUS_CAVEAT = 'which is unreleased';
+
+/**
  * Telling a reader to install a driver package, in any of the forms people actually write.
  *
  * The first version matched `npm i` on one line, which missed `pnpm add`, `yarn add`, the `npm install` long
@@ -98,11 +107,12 @@ describe('the unreleased-driver install caveat tracks the version that makes it 
     // ship "not on npm yet" on a page CI never named. The removal direction has to be unconditional.
     it.each(files)('%s no longer carries the pre-release caveat', (rel) => {
       const src = readFileSync(join(ROOT, rel), 'utf8');
+      const stale = [CAVEAT, STATUS_CAVEAT].filter((phrase) => src.includes(phrase));
       expect(
-        src.includes(CAVEAT),
-        `${rel} still says "${CAVEAT}", but this workspace is ${version} — the storage packages ship now. ` +
-          `Remove the caveat as part of the release.`,
-      ).toBe(false);
+        stale,
+        `${rel} still says ${stale.map((p) => `"${p}"`).join(' and ')}, but this workspace is ${version} — ` +
+          `it has shipped. Remove these as part of the release.`,
+      ).toEqual([]);
     });
   } else {
     it.each(advertising)('%s says the storage packages are not on npm yet', (rel) => {
