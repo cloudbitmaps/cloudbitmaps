@@ -103,6 +103,7 @@ import type { SegmentInfo } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
+import { MOVED_OPTIONS, type MovedOptionKind } from './moved-options';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -602,37 +603,15 @@ interface LifecycleDeps {
  * `coldReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
  * None of those announces itself; each looks like the store simply working.
  */
-const MOVED_OPTIONS: ReadonlyArray<readonly [string, string]> = [
-  ['cacheMaxChunks', 'cache.maxChunks'],
-  ['cacheTtlMs', 'cache.ttlMs'],
-  // The `cold*` spellings are what `0.9.x` ACTUALLY had. The `storage*` ones below never appeared in any
-  // release — they existed between two unreleased commits of this cycle — and for a while they were the only
-  // ones here, so the guard written to catch an upgrader missed every real upgrader and caught nobody.
-  ['coldGenTtlMs', 'cache.genTtlMs'],
-  ['coldReaderCacheMax', 'cache.readerMax'],
-  ['coldReaderCacheMaxBytes', 'cache.readerMaxBytes'],
-  ['storageGenTtlMs', 'cache.genTtlMs'],
-  ['storageReaderCacheMax', 'cache.readerMax'],
-  ['storageReaderCacheMaxBytes', 'cache.readerMaxBytes'],
-  ['keystore', 'encryption.keystore'],
-  ['requireEncryption', 'encryption.required'],
-  ['onRetry', 'retry.onRetry'],
-  ['clock', 'seams.clock'],
-  ['rng', 'seams.rng'],
-  // Removed a release earlier, and still worth naming: a caller upgrading across both changes at once meets
-  // this one first, and "unknown option" would send them looking in the wrong place.
-  ['registry', 'the backend passed as `storage` (S3Storage, GcsStorage, …), which carries it'],
-  ['cold', 'storage'],
-  // The live (warm) tier and its knobs. `warm` was REQUIRED in `0.9.x`, so every upgrader passes one — and
-  // an upgrader who fixes `cold` first meets this next. None of these has a replacement, so the message says
-  // so rather than pointing at a key that would also be wrong.
-  ['warm', 'nothing — the live tier is gone; see MIGRATING.md change 1'],
-  ['warmReadConsistency', 'nothing — it tuned the live tier, which is gone'],
-  ['maxWarmScanBytes', 'nothing — it tuned the live tier, which is gone'],
-  ['writeConcurrency', 'nothing — it bounded the live tier’s flusher, which is gone'],
-  ['occBackoff', 'nothing — it tuned the live tier’s read-modify-write, which is gone'],
-];
-
+/**
+ * How a `0.9.x` option is answered: it moved into a group, it was renamed, or it is gone.
+ *
+ * The category is DATA, not inferred from how the guidance happens to be punctuated. The first version
+ * decided by testing whether the replacement text looked like an identifier, which got two entries wrong in
+ * opposite directions: `registry` HAS a successor and was announced as "removed", and `cold` → `storage` was
+ * announced as "moved into a group" when `storage` is the one required flat option, not a group. A reader
+ * told to look in a group that does not exist is the failure this whole guard is about.
+ */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
@@ -667,22 +646,31 @@ export class CloudRoaring {
     const bag = options as unknown as Record<string, unknown>;
     const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
     if (moved.length === 0) return;
-    // Moved and removed read differently, and saying "moved into a group: `warm` → nothing" of an option
-    // that simply no longer exists sends the reader looking for a group that will never have it.
-    const isMove = (to: string): boolean => /^[\w.]+$/.test(to);
-    const say = (pairs: typeof moved): string =>
-      pairs.map(([from, to]) => `\`${from}\` → ${isMove(to) ? `\`${to}\`` : to}`).join(', ');
-    const relocated = moved.filter(([, to]) => isMove(to));
-    const retired = moved.filter(([, to]) => !isMove(to));
-    const parts: string[] = [];
-    if (relocated.length > 0)
-      parts.push(`option${relocated.length > 1 ? 's' : ''} moved into a group: ${say(relocated)}`);
-    if (retired.length > 0)
-      parts.push(`option${retired.length > 1 ? 's' : ''} removed: ${say(retired)}`);
+    // One clause per kind, so a reader is never sent to a group that will not have their key. The intra-
+    // clause separator is ` · ` rather than a comma: the guidance prose contains commas and semicolons of its
+    // own, and "…see MIGRATING.md change 1, `warmReadConsistency` → …" reads as one continued sentence.
+    const clause = (kind: MovedOptionKind, one: string, many: string): string | null => {
+      const hits = moved.filter(([, , k]) => k === kind);
+      if (hits.length === 0) return null;
+      const body = hits
+        .map(([from, to]) =>
+          kind === 'gone'
+            ? `\`${from}\` (${to})`
+            : `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
+        )
+        .join(' · ');
+      return `${hits.length > 1 ? many : one}: ${body}`;
+    };
+    const parts = [
+      clause('group', 'option moved into a group', 'options moved into groups'),
+      clause('renamed', 'option renamed', 'options renamed'),
+      clause('gone', 'option removed', 'options removed'),
+    ].filter((c): c is string => c !== null);
     throw new ValidationError(
       `CloudRoaring ${parts.join('; ')}. ` +
         'Options are now one required `storage` plus four optional groups — `cache`, `encryption`, ' +
-        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are.',
+        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are. ' +
+        'Full guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md',
     );
   }
 

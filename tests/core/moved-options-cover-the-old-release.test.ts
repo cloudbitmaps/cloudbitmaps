@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import { MOVED_OPTIONS } from '@/moved-options';
 
 /**
  * Every constructor option the previous release had, and this one does not, must be REJECTED BY NAME.
@@ -29,7 +30,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const PREVIOUS_TAG = 'v0.9.0';
 
 function optionNames(src: string): Set<string> {
-  const body = /export interface CloudRoaringOptions[^{]*\{([\s\S]*?)\n\}/.exec(src)?.[1] ?? '';
+  // Comments stripped FIRST. Without it the ground truth is raw text, so a `readonly foo?:` written inside a
+  // JSDoc — an upgrader note in the interface, say — counts as a live option, is subtracted from `removed`,
+  // and its case simply stops existing. Measured: one such comment took the suite from 19 tests to 17, all
+  // green, while the constructor silently ignored `occBackoff` again. `previous-release-claims.test.ts` had
+  // already learned this and written it down; the lesson did not travel to this file until it bit here too.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const body = /export interface CloudRoaringOptions[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1] ?? '';
   return new Set([...body.matchAll(/readonly\s+([A-Za-z0-9_]+)\??:/g)].map((m) => m[1] as string));
 }
 
@@ -56,11 +63,70 @@ describe(`every ${PREVIOUS_TAG} option that no longer exists is rejected by name
 
   const removed = [...optionNames(old ?? '')].filter((n) => !current.has(n)).sort();
 
-  it('found a plausible set of removed options', () => {
-    // If this collapses to nothing the test below passes vacuously, which is how the original hole felt.
-    expect(removed.length).toBeGreaterThan(10);
-    expect(removed).toContain('warm'); // required in 0.9.x — every upgrader passes one
-    expect(removed).toContain('coldGenTtlMs'); // the name the guard used to miss
+  it('found exactly the removed options, so a silent shrink is loud', () => {
+    // An EXACT set, not a floor. `> 10` let the count drop 17 → 14 without a word — and a dropped entry is
+    // precisely a constructor that goes back to ignoring an option in silence.
+    expect(removed).toEqual(
+      [
+        'cold',
+        'coldGenTtlMs',
+        'coldReaderCacheMax',
+        'coldReaderCacheMaxBytes',
+        'cacheMaxChunks',
+        'cacheTtlMs',
+        'clock',
+        'keystore',
+        'maxWarmScanBytes',
+        'occBackoff',
+        'onRetry',
+        'registry',
+        'requireEncryption',
+        'rng',
+        'warm',
+        'warmReadConsistency',
+        'writeConcurrency',
+      ].sort(),
+    );
+  });
+
+  it('the advice is pinned, so changing what an upgrader is told is a deliberate edit', () => {
+    // Shape checks alone were not enough: repointing `warm` at `cache.maxChunks` and calling it a `group`
+    // satisfies every structural rule while telling an upgrader to move a removed tier into a cache ceiling.
+    // The guidance IS the product here, so it is pinned verbatim — a change has to be typed on purpose, in a
+    // diff someone reads, rather than arrived at.
+    expect(MOVED_OPTIONS.filter(([, , k]) => k === 'gone')).toEqual([
+      ['warm', 'the live tier is gone', 'gone'],
+      ['warmReadConsistency', 'it tuned the live tier', 'gone'],
+      ['maxWarmScanBytes', 'it tuned the live tier', 'gone'],
+      ['writeConcurrency', 'it bounded the live tier\u2019s flusher', 'gone'],
+      ['occBackoff', 'it tuned the live tier\u2019s read-modify-write', 'gone'],
+    ]);
+    expect(MOVED_OPTIONS.filter(([, , k]) => k === 'renamed').map(([from]) => from)).toEqual([
+      'registry',
+      'cold',
+    ]);
+  });
+
+  it('the advice each one gives is structurally valid', () => {
+    // Rejection alone was the only thing asserted, so the moved/removed correctness this guard is ABOUT was
+    // ungated: repointing `warm` at `cache.maxChunks` left the suite 19/19 green while the shipped error told
+    // every upgrader to move a removed tier into a cache ceiling.
+    const live = optionNames(readFileSync(join(ROOT, 'packages/roaring/src/index.ts'), 'utf8'));
+    const groups = new Set(['cache', 'encryption', 'retry', 'seams']);
+    for (const [from, to, kind] of MOVED_OPTIONS) {
+      if (kind === 'gone') continue; // no successor to check — that IS the claim
+      if (kind === 'renamed') {
+        // A rename points at a live top-level option, or explains itself in prose.
+        expect(live.has(to) || to.includes(' '), `${from} → ${to}`).toBe(true);
+        continue;
+      }
+      const [group, key] = to.split('.');
+      expect(
+        groups.has(group ?? ''),
+        `${from} → ${to}: \`${group}\` is not one of the four groups`,
+      ).toBe(true);
+      expect(key, `${from} → ${to} names no key inside the group`).toBeTruthy();
+    }
   });
 
   it.each(removed)('`%s` throws instead of being ignored', (name) => {

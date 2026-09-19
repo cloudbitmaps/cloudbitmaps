@@ -22,7 +22,8 @@ import { KeyUnavailableError, ValidationError, BudgetExceededError } from '@/cor
 import type { SegmentRef } from '@/index';
 
 /**
- * The 14 flat options became one required `storage` plus six groups.
+ * The 14 flat options became one required `storage` plus four groups (`cache`, `encryption`, `retry`,
+ * `seams`); `metrics` and `budget` stayed flat.
  *
  * A regrouping is the kind of change that passes every existing test while quietly doing nothing: wire
  * `cache.genTtlMs` to the wrong place and it reverts to the 2 s default, which is what most tests want anyway.

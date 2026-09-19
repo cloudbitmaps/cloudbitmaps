@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
+import { MOVED_OPTIONS } from '@/moved-options';
+
 /**
  * Every TypeScript sample in the docs must at least be *parseable*, and must not name a removed option key.
  *
@@ -170,26 +172,20 @@ describe('documentation code samples', () => {
 
   // Option keys this release removed. A sample naming one throws at runtime rather than misbehaving, so the
   // reader's first experience of the library would be an error in code we gave them.
-  const REMOVED_KEYS = [
-    'cold',
-    'coldGenTtlMs',
-    'coldReaderCacheMax',
-    'coldReaderCacheMaxBytes',
-    // The 14 flat options became six groups. Each of these is now a member of a group, and a sample still
-    // passing the flat spelling is not merely out of date: the store REFUSES it, so the sample throws on its
-    // first line. They are listed here rather than left to review because the previous regrouping-adjacent
-    // change shipped three broken samples.
-    'cacheMaxChunks',
-    'cacheTtlMs',
-    'storageGenTtlMs',
-    'storageReaderCacheMax',
-    'storageReaderCacheMaxBytes',
-    'requireEncryption',
-    // `onRetry`, `keystore`, `clock` and `rng` are deliberately NOT listed: each still exists as a key, just
-    // one level down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several are also
-    // valid on the free-function deps objects. Listing them made this gate fire on the correct new spelling.
-    // Only spellings that vanished outright belong here.
-  ] as const;
+  //
+  // DERIVED from the store's own `MOVED_OPTIONS`, minus the four spellings below that survive one level down.
+  // The hand-typed list this replaced had drifted: it named three `storage*` keys no release ever shipped,
+  // and omitted the five options that went away with the live tier, so a sample wiring `warm:` was unwatched.
+  //
+  // `onRetry`, `keystore`, `clock`, `rng` and `registry` are deliberately excluded: each still exists as a
+  // key, just one level down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several
+  // are also valid on the free-function deps objects. Listing them made this gate fire on the correct new
+  // spelling. Only spellings that vanished outright belong here; the survivors are caught positionally by
+  // ILLEGAL_AT_TOP_LEVEL below.
+  const STILL_VALID_ONE_LEVEL_DOWN = new Set(['registry', 'keystore', 'onRetry', 'clock', 'rng']);
+  const REMOVED_KEYS = MOVED_OPTIONS.map(([from]) => from).filter(
+    (from) => !STILL_VALID_ONE_LEVEL_DOWN.has(from),
+  );
 
   // A migration note has to show the old spelling — that is its whole job. So the rule is not "never write
   // the removed key", it is "label it when you do": the line, or the one above it, must carry a `// before`
@@ -226,14 +222,9 @@ describe('documentation code samples', () => {
    * encryption example in the guide — with all eleven doc gates green, because the machinery existed and was
    * pointed at one key instead of five.
    */
-  const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = [
-    ['registry', 'a backend carries it'],
-    ['keystore', 'it moved to `encryption.keystore`'],
-    ['requireEncryption', 'it moved to `encryption.required`'],
-    ['onRetry', 'it moved inside `retry`'],
-    ['clock', 'it moved to `seams.clock`'],
-    ['rng', 'it moved to `seams.rng`'],
-  ];
+  const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.filter(
+    ([from]) => STILL_VALID_ONE_LEVEL_DOWN.has(from),
+  ).map(([from, to]) => [from, /^[\w.]+$/.test(to) ? `it moved to \`${to}\`` : to]);
 
   it('no sample passes a moved key at the top level of CloudRoaring options', () => {
     const offenders: string[] = [];

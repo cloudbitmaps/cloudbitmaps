@@ -44,6 +44,7 @@ const PREVIOUS_TAG = 'v0.9.0';
 const CLAIMS_ABOUT_THE_OLD_RELEASE = [
   'MIGRATING.md',
   join('docs', 'guide', 'getting-started.md'),
+  join('docs', 'guide', 'api-reference.md'),
   'README.md',
 ] as const;
 
@@ -85,10 +86,23 @@ function apiNames(src: string): Set<string> {
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
   for (const m of code.matchAll(/readonly\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[?:]/g))
     if (m[1]) out.add(m[1]);
-  for (const m of code.matchAll(/^\s{2}([A-Za-z_$][A-Za-z0-9_$]*)\??:/gm)) if (m[1]) out.add(m[1]);
+  // ANY indentation, not just two spaces. A two-space rule sees only the top level of an interface, so every
+  // field of a nested option group (`retry: { onRetry?: … }`) and every member of an inline object type read
+  // as fabricated — which is what put `expectFrom`, `expectToken`, `allowForward` and `confirmSegment` on the
+  // accused list the first time the API reference was scanned. Widening this widens the ALLOWLIST, so it can
+  // only forgive; the names it must still catch (`storageGenTtlMs` and the other never-shipped spellings)
+  // appear in our source only as string literals inside the rejection table, never as declarations.
+  for (const m of code.matchAll(/^\s+([A-Za-z_$][A-Za-z0-9_$]*)\??:/gm)) if (m[1]) out.add(m[1]);
+  // Fields of an INLINE object type — `options: { audit?: IAuditSink; allowForward?: boolean } = {}`. These
+  // sit on one line, so no line-anchored pattern above can see them, and `allowForward` (a real, current,
+  // documented option on `rollbackSegment`) was accused of being fabricated. Anchoring on `{` or `;` keeps
+  // this to type/object positions: the never-shipped spellings this gate exists to catch live in our source
+  // only as quoted strings inside an array literal, which is preceded by `[` or `,` and so never matches.
+  for (const m of code.matchAll(/[{;]\s*([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:/g))
+    if (m[1]) out.add(m[1]);
   // Class methods. `count`, `iterate` and the `*Into` verbs are as much a part of the old API as any export,
   // and a table row naming one is a true claim.
-  for (const m of code.matchAll(/^\s{2}(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*[(<]/gm))
+  for (const m of code.matchAll(/^\s{2,4}(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*[(<]/gm))
     if (m[1]) out.add(m[1]);
   return out;
 }
@@ -175,6 +189,11 @@ function claimedOldIdentifiers(text: string): Array<{ name: string; where: strin
 
 /** Names that are not ours to check — prose words and third-party types that happen to be backticked. */
 const NOT_OURS = new Set([
+  // Sample variable names the API reference uses to explain pinning (`snap.intersect([other])`), and the
+  // standard `Error.cause` every typed error preserves an SDK error in. None of the three is ours to own.
+  'snap',
+  'other',
+  'cause',
   'npm',
   'pnpm',
   'yarn',
@@ -311,6 +330,10 @@ describe(`public pages' account of ${PREVIOUS_TAG} matches ${PREVIOUS_TAG}`, () 
     // Both of these held the same wrong "before" column. A guard scoped to one of them is how that shipped.
     expect(CLAIMS_ABOUT_THE_OLD_RELEASE).toContain('MIGRATING.md');
     expect(CLAIMS_ABOUT_THE_OLD_RELEASE).toContain(join('docs', 'guide', 'getting-started.md'));
+    // Added after the reference's own migration paragraph was found naming three `storage*` option keys that
+    // no release ever had. The page was outside this list purely because it reads as reference rather than as
+    // a migration note — but any page that says "this used to be called X" is making a claim about the tag.
+    expect(CLAIMS_ABOUT_THE_OLD_RELEASE).toContain(join('docs', 'guide', 'api-reference.md'));
   });
 
   it.each(CLAIMS_ABOUT_THE_OLD_RELEASE)('%s', (page) => {
