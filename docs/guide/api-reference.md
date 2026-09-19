@@ -251,13 +251,13 @@ The option / result types the public methods above reference — you import thes
 
 ### Construction & result types
 
-`CloudRoaringOptions` and its six groups — `CacheOptions` · `EncryptionOptions` · `RetryOptions` ·
-`SeamOptions` (`metrics` and `budget` take `IMetricsSink` / `BudgetOption` directly) · `SegmentOptions` ·
+`CloudRoaringOptions` and its four groups — `CacheOptions` · `EncryptionOptions` · `RetryOptions` ·
+`SeamOptions` (`metrics` and `budget` are flat options taking `IMetricsSink` / `BudgetOption` directly) · `SegmentOptions` ·
 `SubjectReport` · `SubjectSegmentRef` · `SubjectErasureEntry` ·
 `EraseSubjectResult` · `MaterializeResult` (`{ generation, published, reason?, cardinality, cardinalityBefore, chunkCount, size, collected }` — what an `*Into` verb
 wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurrent?, wrappedDeks? }` — `becameCurrent` is absent with no `registry`, and `false` means the object is durable but a concurrent writer published a higher generation first, so the load did not take effect)
 
-`CloudRoaringOptions`, in full — **one required key plus six optional groups**:
+`CloudRoaringOptions`, in full — **one required key, four optional groups, and two flat options**:
 
 | key | type | what it holds |
 |---|---|---|
@@ -269,11 +269,16 @@ wrote) · `BulkLoadResult` (`{ size, sha256, chunkCount, cardinality, becameCurr
 | `budget?` | `BudgetOption` | `{ maxRequests }` or `false` |
 | `seams?` | `SeamOptions` | `clock?` · `rng?` — determinism, for tests and replayable jobs |
 
-**The flat spellings are refused, not ignored.** `cacheMaxChunks`, `cacheTtlMs`, `storageGenTtlMs`,
-`storageReaderCacheMax`, `storageReaderCacheMaxBytes`, `keystore`, `requireEncryption`, `onRetry`, `clock` and
-`rng` each throw a `ValidationError` naming the group they moved into. Every one of them is a knob whose
-absence is silent — a dropped `requireEncryption` reads cleartext, a dropped `clock` makes a deterministic job
-non-deterministic — so being ignored would be worse than being rejected.
+**Every 0.9.0 spelling that no longer exists is refused, not ignored**, and the error says which of the
+three things happened to it. Ten **moved into a group** — `cacheMaxChunks`, `cacheTtlMs`, `coldGenTtlMs`,
+`coldReaderCacheMax`, `coldReaderCacheMaxBytes`, `keystore`, `requireEncryption`, `onRetry`, `clock` and `rng`
+(the error names the group each one landed in). Two were **renamed** — `cold` is now `storage`, and `registry`
+is now carried by the backend you pass as `storage`. Five are **gone with the live tier** — `warm`,
+`warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`; there is no new home for these,
+which is why the error says so outright instead of pointing somewhere plausible. Every one of them is a knob
+whose absence is silent — a dropped `requireEncryption` reads cleartext, a dropped `clock` makes a
+deterministic job non-deterministic — so being ignored would be worse than being rejected. The full
+before/after table is in [`MIGRATING.md`](../../MIGRATING.md).
 
 ### Generation bookkeeping & erasure
 

@@ -103,6 +103,7 @@ import type { SegmentInfo } from '@cloudbitmaps/core';
 import { loadSegment } from './codec-bound';
 import { roaringCodec } from './roaring-codec';
 import { SystemClock } from './system-clock';
+import { MOVED_OPTIONS, type MovedOptionKind } from './moved-options';
 
 /** Default randomness for backoff jitter — lives outside `core/`, so `Math.random()` is allowed here. */
 class SystemRng implements Rng {
@@ -599,26 +600,18 @@ interface LifecycleDeps {
  * this particular set, being ignored is worse than being rejected, because **every one of them is a knob whose
  * absence is silent and wrong**: a dropped `requireEncryption` reads cleartext when the caller demanded
  * encryption, a dropped `clock` makes a "deterministic" job non-deterministic, and a dropped
- * `storageReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
+ * `coldReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
  * None of those announces itself; each looks like the store simply working.
  */
-const MOVED_OPTIONS: ReadonlyArray<readonly [string, string]> = [
-  ['cacheMaxChunks', 'cache.maxChunks'],
-  ['cacheTtlMs', 'cache.ttlMs'],
-  ['storageGenTtlMs', 'cache.genTtlMs'],
-  ['storageReaderCacheMax', 'cache.readerMax'],
-  ['storageReaderCacheMaxBytes', 'cache.readerMaxBytes'],
-  ['keystore', 'encryption.keystore'],
-  ['requireEncryption', 'encryption.required'],
-  ['onRetry', 'retry.onRetry'],
-  ['clock', 'seams.clock'],
-  ['rng', 'seams.rng'],
-  // Removed a release earlier, and still worth naming: a caller upgrading across both changes at once meets
-  // this one first, and "unknown option" would send them looking in the wrong place.
-  ['registry', 'the backend passed as `storage` (S3Storage, GcsStorage, …), which carries it'],
-  ['cold', 'storage'],
-];
-
+/**
+ * How a `0.9.x` option is answered: it moved into a group, it was renamed, or it is gone.
+ *
+ * The category is DATA, not inferred from how the guidance happens to be punctuated. The first version
+ * decided by testing whether the replacement text looked like an identifier, which got two entries wrong in
+ * opposite directions: `registry` HAS a successor and was announced as "removed", and `cold` → `storage` was
+ * announced as "moved into a group" when `storage` is the one required flat option, not a group. A reader
+ * told to look in a group that does not exist is the failure this whole guard is about.
+ */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
@@ -653,13 +646,31 @@ export class CloudRoaring {
     const bag = options as unknown as Record<string, unknown>;
     const moved = MOVED_OPTIONS.filter(([from]) => bag[from] !== undefined);
     if (moved.length === 0) return;
-    const list = moved
-      .map(([from, to]) => `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`)
-      .join(', ');
+    // One clause per kind, so a reader is never sent to a group that will not have their key. The intra-
+    // clause separator is ` · ` rather than a comma: the guidance prose contains commas and semicolons of its
+    // own, and "…see MIGRATING.md change 1, `warmReadConsistency` → …" reads as one continued sentence.
+    const clause = (kind: MovedOptionKind, one: string, many: string): string | null => {
+      const hits = moved.filter(([, , k]) => k === kind);
+      if (hits.length === 0) return null;
+      const body = hits
+        .map(([from, to]) =>
+          kind === 'gone'
+            ? `\`${from}\` (${to})`
+            : `\`${from}\` → ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
+        )
+        .join(' · ');
+      return `${hits.length > 1 ? many : one}: ${body}`;
+    };
+    const parts = [
+      clause('group', 'option moved into a group', 'options moved into groups'),
+      clause('renamed', 'option renamed', 'options renamed'),
+      clause('gone', 'option removed', 'options removed'),
+    ].filter((c): c is string => c !== null);
     throw new ValidationError(
-      `CloudRoaring option${moved.length > 1 ? 's' : ''} moved into a group: ${list}. ` +
-        'Options are now one required `storage` plus the optional groups `cache`, `encryption`, `retry`, ' +
-        '`metrics`, `budget` and `seams`.',
+      `CloudRoaring ${parts.join('; ')}. ` +
+        'Options are now one required `storage` plus four optional groups — `cache`, `encryption`, ' +
+        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are. ' +
+        'Full guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md',
     );
   }
 

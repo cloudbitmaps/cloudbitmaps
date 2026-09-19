@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { MOVED_OPTIONS } from '@/moved-options';
+
 /**
  * The executable harnesses — `scripts/`, `bench/` — must not construct a store with an option that moved.
  *
@@ -30,21 +32,21 @@ import { join } from 'node:path';
 
 const ROOT = join(__dirname, '..', '..');
 
-/** Option keys that no longer exist at the top level of a store config, and where each one went. */
-const MOVED: ReadonlyArray<readonly [string, string]> = [
-  ['registry', 'the backend passed as `storage`'],
-  ['cold', '`storage`'],
-  ['keystore', '`encryption.keystore`'],
-  ['requireEncryption', '`encryption.required`'],
-  ['cacheMaxChunks', '`cache.maxChunks`'],
-  ['cacheTtlMs', '`cache.ttlMs`'],
-  ['storageGenTtlMs', '`cache.genTtlMs`'],
-  ['storageReaderCacheMax', '`cache.readerMax`'],
-  ['storageReaderCacheMaxBytes', '`cache.readerMaxBytes`'],
-  ['onRetry', 'inside `retry`'],
-  ['clock', '`seams.clock`'],
-  ['rng', '`seams.rng`'],
-];
+/**
+ * Option keys that no longer exist at the top level of a store config, and where each one went.
+ *
+ * DERIVED, not retyped. The hand-maintained copy that used to sit here had drifted into a strictly worse
+ * state than no list at all: it carried three names (`storageGenTtlMs`, `storageReaderCacheMax`,
+ * `storageReaderCacheMaxBytes`) that no release ever shipped, so the gate spent its effort watching for
+ * spellings nobody can have written, while the five options that actually vanished with the live tier —
+ * `warm`, `warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff` — were not checked at
+ * all. A harness passing one of those would have sailed through. The store's own `MOVED_OPTIONS` is the
+ * thing that decides at runtime, so it is the thing to read.
+ */
+const MOVED: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.map(([from, to, kind]) => [
+  from,
+  kind === 'gone' ? `gone — ${to}` : `now ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
+]);
 
 const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
   cwd: ROOT,
@@ -95,7 +97,7 @@ describe('the executable harnesses build a store the way the docs say', () => {
     for (const { body, line } of topLevelOptionBodies(src)) {
       for (const [key, moved] of MOVED) {
         if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(body)) {
-          offenders.push(`${file}:${line} — passes \`${key}\` to CloudRoaring; it is now ${moved}`);
+          offenders.push(`${file}:${line} — passes \`${key}\` to CloudRoaring; it is ${moved}`);
         }
       }
     }
