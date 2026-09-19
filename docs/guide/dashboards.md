@@ -23,7 +23,7 @@ The metrics sink pushes raw observations on the I/O path. There are five event k
 | `kind` | When | Payload |
 | --- | --- | --- |
 | `storage.get` | one object-store GET for a chunk | `bytes` (0 if the chunk was absent — a GET still happened), `ms` (includes any retry backoff) |
-| `cache` | one cache-cache lookup | `hit` |
+| `cache` | one cache lookup | `hit` |
 | `retry` | a transient infrastructure fault (throttling, 5xx, a dropped connection) is about to be retried — the one kind of retry the store does | `reason: 'transient'`, `attempt`, `delayMs` |
 | `intersect` | one chunk-aligned combine | `op` (`intersect` / `union` / `andNot`; absent means `intersect`), `operands`, `fetchedChunks`, `skippedChunks` |
 | `op` | one timed segment operation | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` |

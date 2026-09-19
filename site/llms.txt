@@ -5,7 +5,7 @@
 > of an always-on cache, with the familiar bitmap API: `has`, `count`, `iterate`, `intersect`, `union`,
 > `andNot`.
 
-CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: a cache in-process LRU over a storage
+CloudBitmaps maps each 16-bit Roaring chunk onto pluggable cloud storage: an in-process LRU cache over a storage
 tier of write-once `.crbm` generations, with one small registry row per segment saying which generation is
 current. The distinguishing capability is **serverless chunk-skipping intersection**: `A ∩ B` fetches only the
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
@@ -100,7 +100,8 @@ ndjson, which is the exit path.
 
 ## When NOT to use it
 
-If you need a sub-millisecond p99 on a working set that fits a bounded cache, use Redis: a check that
+If you need a sub-millisecond p99, use Redis. Our cache is in-process RAM, so on a hit there is nothing
+between us; the limit is the tail, where a miss is a ranged GET against object storage. A check that
 misses the cache costs a ranged GET against object storage, where an in-process RAM store costs a memory
 read. CloudBitmaps is for sets that are large, mostly read, and shouldn't cost $346/month to keep warm.
 In-region latency is not yet calibrated and no in-region figure is published.
@@ -114,7 +115,6 @@ in a minor bump until the .crbm format freezes at 1.0.
 
 - Repository: https://github.com/cloudbitmaps/cloudbitmaps
 - Package (codec): https://www.npmjs.com/package/@cloudbitmaps/roaring
-- Package (storage): https://www.npmjs.com/package/@cloudbitmaps/s3
 - Benchmarks + method: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md
 - Flavors (choose a codec): https://cloudbitmaps.pages.dev/flavors
 - Roaring flavor: https://cloudbitmaps.pages.dev/flavors/roaring

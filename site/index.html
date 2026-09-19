@@ -155,14 +155,16 @@
               <a class="btn" href="architecture.html">How it works</a>
               <a class="btn" href="flavors.html">Choose a flavor</a>
             </p>
-            <!-- "third-party", matching the spec strip further down. This line said "1 runtime dependency",
-                 which is the loose form: `@cloudbitmaps/roaring` declares TWO runtime deps, `roaring` and
-                 `@cloudbitmaps/core`, and only the first belongs to somebody else. Both places are gated by
-                 scripts/site-figures.cjs now — the counts appear twice on purpose, once at a glance for a
-                 skimmer and once in context beside the tiering, and gating both is what makes the duplication
-                 safe rather than two chances to drift. -->
+            <!-- `zero-dependency core` is the SCOPED form, matching the spec strip further down. The
+                 unscoped forms it replaced — "1 runtime dependency", then "1 third-party dependency" — were
+                 true only before the package split: the codec adds `roaring` and each storage package its own
+                 cloud SDK, so no single number describes the project. The install line two rows up asks for
+                 TWO packages, which is exactly why the count has to say whose it is.
+                 Both places are gated by scripts/site-figures.cjs — the counts appear twice on purpose, once
+                 at a glance for a skimmer and once in context beside the tiering, and gating both is what
+                 makes the duplication safe rather than two chances to drift. -->
             <p class="meta">
-              Apache-2.0 · 1 third-party dependency · 4 storage drivers · published tokenlessly via OIDC
+              Apache-2.0 · zero-dependency core · 4 storage drivers · published tokenlessly via OIDC
             </p>
             <!-- MUST stay BELOW the counts line above. `scripts/site-figures.cjs` gates the hero's
                  figures by matching the FIRST `<p class="meta">` in this file, so a meta line inserted above
@@ -577,14 +579,17 @@
                  also load-bearing for the composition: the merged code panel is 17 lines where the old one
                  was 10, and without this the left column ended 157px short of it. (It was 15 lines until the
                  load call replaced `addMany`: writing a generation and publishing it is two lines longer than
-                 mutating a segment, and that IS the change.) "third-party" is deliberate
-                 — `@cloudbitmaps/roaring` declares two runtime deps, `roaring` and `@cloudbitmaps/core`, and
-                 only the first is somebody else's. The final section's meta line used to carry these two
-                 figures; it no longer does, so each is stated once. -->
+                 mutating a segment, and that IS the change.) The dependency count is
+                 `@cloudbitmaps/core`'s, deliberately: it is the one package every install pulls in, and the
+                 only one with nothing behind it. The codec and each storage package add one dependency each,
+                 so a project-wide number would be false however it was totalled. The package is NAMED here
+                 because this strip is the only place on Home a reader can learn what "core" refers to.
+                 The final section's meta line used to carry these two figures; it no longer does, so each is
+                 stated once. -->
             <p class="keys-stats">
               <span><strong>2</strong> tiers</span>
               <span><strong>4</strong> drivers</span>
-              <span><strong>1</strong> third-party dependency</span>
+              <span><strong>0</strong> dependencies in @cloudbitmaps/core</span>
             </p>
           </div>
           <div class="code">

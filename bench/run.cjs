@@ -1,7 +1,7 @@
 /*
  * Offline benchmark + crossover-chart generator.
  *
- * Draws the CloudRoaring pay-per-use read-cost curve against a flat Redis-HA node and marks where they cross,
+ * Draws the CloudBitmaps pay-per-use read-cost curve against a flat Redis-HA node and marks where they cross,
  * straight from the SHIPPED estimator (`estimateCost`) + the default pricing — so the published chart can
  * never drift from the library's own numbers. Wall-clock latency lives here (not in CI) because shared
  * runners are too noisy to gate on; the deterministic anchors are gated in tests/bench/anchors.test.ts.
@@ -116,7 +116,7 @@ const X_TICKS_READS = [0, 100, 200, 300, 400, 500];
 }
 
 const svg = [
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">`,
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="${FONT}" role="img" aria-label="CloudBitmaps vs flat Redis-HA cost crossover chart">`,
   // rx=0: the site's design language has no rounded corners, and this chart sits inline in it.
   `<rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="0" fill="${COL.card}" stroke="${COL.hair}"/>`,
   // header
@@ -138,7 +138,7 @@ const svg = [
 
 function legend(x0, y) {
   const items = [
-    { c: COL.cr, t: 'CloudRoaring (pay-per-use)' },
+    { c: COL.cr, t: 'CloudBitmaps (pay-per-use)' },
     { c: COL.redis, t: 'Redis HA (flat)' },
   ];
   let x = x0;
@@ -211,7 +211,7 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
   out.push(
     `<line x1="${plotL}" y1="${redisY.toFixed(1)}" x2="${plotR}" y2="${redisY.toFixed(1)}" stroke="${COL.redis}" stroke-width="2" stroke-dasharray="6 4"/>`,
   );
-  // CloudRoaring curve
+  // CloudBitmaps curve
   out.push(
     `<polyline points="${pts.join(' ')}" fill="none" stroke="${COL.cr}" stroke-width="2.5"/>`,
   );
@@ -263,7 +263,7 @@ write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
 // to host every marker pair — but a marker pair that IS named must exist, or replaceRegion throws.
 inject('site/benchmarks.html', { CHART: svg });
 inject('docs/benchmarks.md', {
-  CHART: `![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)`,
+  CHART: `![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)`,
   STATS: mdTable,
 });
 

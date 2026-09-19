@@ -836,8 +836,8 @@ the handful you care about:
 
 | Event | Carries | Fired |
 | --- | --- | --- |
-| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Storage (a cache-cache miss) |
-| `cache` | `hit` | every cache-cache lookup |
+| `storage.get` | `segment`, `namespace?`, `bytes`, `ms` | one chunk read from Storage (a cache miss) |
+| `cache` | `hit` | every cache lookup |
 | `retry` | `reason: 'transient'`, `attempt`, `delayMs` | before each transient-retry backoff wait |
 | `intersect` | `op` (`intersect` / `union` / `andNot`), `operands`, `fetchedChunks`, `skippedChunks` | per combine — `skippedChunks` is the chunk-skipping saving (distinct keys never fetched) |
 | `op` | `name` (`has` / `count` / `intersectInto` / `unionInto` / `andNotInto`), `ms` | per timed segment op |

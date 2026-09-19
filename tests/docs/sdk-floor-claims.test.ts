@@ -66,6 +66,24 @@ describe('a driver package states its SDK range identically in the manifest and 
     ).toBe(true);
   });
 
+  it.each(RANGES)("$name: site/usage.html quotes $sdk's range verbatim", ({ sdk, range }) => {
+    // The site's driver table states these ranges too, and nothing read it. The S3 cell said `>=3.645` while
+    // the manifest declared `>=3.645.0 <4` — semver-equivalent, but it dropped the upper bound this very file
+    // insists on for the READMEs, so a reader could conclude SDK v4 was supported. Same rule, same corpus.
+    const page = readFileSync(join(ROOT, 'site', 'usage.html'), 'utf8')
+      .replace(/&gt;/g, '>')
+      .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&');
+    expect(page, `site/usage.html never names ${sdk}`).toContain(sdk);
+    const bounded = new RegExp(
+      `(^|[\\s\`(\\[>])${range.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`,
+    );
+    expect(
+      bounded.test(page),
+      `site/usage.html does not state the range "${range}" that ${sdk}'s manifest declares`,
+    ).toBe(true);
+  });
+
   it('the S3 write-once floor has not been lowered', () => {
     // Named explicitly, and separately from the derived check above, because this one number is the
     // difference between refusing a colliding write and silently overwriting a published generation. A

@@ -102,7 +102,7 @@
         </p>
         <p class="note" style="max-width: 78ch">
           Every number on this page comes from one recorded run of
-          <span class="m">pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
+          <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
           and nothing is computed live — this is a replay, and it says so because the distinction is the
           point.
         </p>
@@ -316,7 +316,7 @@
               <div class="tally-cell">
                 <span class="label">Bytes read</span>
                 <span class="tally-fig" id="t-bytes">3,000</span>
-                <span class="tally-note">30 per fetched chunk</span>
+                <span class="tally-note">30 per fetched key, both operands</span>
               </div>
             </div>
           </div>
@@ -344,9 +344,10 @@
             <article class="beat" data-beat="2">
               <p class="beat-head"><span class="beat-n">03</span> 3,000 bytes, 100 chunks</p>
               <p>
-                Only the hundred aligned chunks are requested, 30 bytes each. The other
-                <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never issued. On
-                object storage that is 3,800 GET requests you are not charged for.
+                Only the hundred aligned <em>keys</em> are fetched — 30 bytes per key, 3,000 bytes in all.
+                A key is read from each operand, so two segments make that ~200 GETs of about 15 bytes, not
+                100. The other <strong>3,800 chunk reads never happen</strong> — not deferred or cached, never
+                issued. On object storage that is 3,800 GET requests you are not charged for.
               </p>
             </article>
             <article class="beat" data-beat="3">
@@ -456,9 +457,9 @@
                     <td class="from">2,000,000 ids &divide; 2,000 keys</td>
                   </tr>
                   <tr>
-                    <td>Bytes per fetched chunk</td>
+                    <td>Bytes per fetched key</td>
                     <td class="num">30</td>
-                    <td class="from">3,000 bytes &divide; 100 chunks</td>
+                    <td class="from">3,000 bytes &divide; 100 keys (both operands)</td>
                   </tr>
                   <tr>
                     <td>Key-space extent</td>
@@ -545,11 +546,11 @@
               anything at a bucket.
             </p>
             <div class="actions">
-              <a class="btn btn-primary" href="usage.html">Six-line quickstart →</a>
+              <a class="btn btn-primary" href="usage.html">Eight-line quickstart →</a>
               <a class="btn" href="architecture.html">How the skipping works</a>
               <a class="btn" href="benchmarks.html">Real-backend numbers</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.9.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
