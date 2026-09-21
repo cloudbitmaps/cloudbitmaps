@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 // Runs against fake-gcs-server from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real GCP needed. Passing `apiEndpoint` (with any `projectId`) targets the
 // emulator and skips auth — do NOT also set `STORAGE_EMULATOR_HOST` (empirically it makes the JSON-API calls
@@ -18,6 +19,18 @@ import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+
+/**
+ * A keyspace unique to THIS run.
+ *
+ * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
+ * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
+ * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
+ * never saw it because each job gets fresh containers; every local re-run did.
+ *
+ * `GITHUB_RUN_ID` in CI, a random token locally: the point is only that two runs cannot collide.
+ */
+const RUN = process.env.GITHUB_RUN_ID ?? randomUUID().slice(0, 8);
 
 const ENDPOINT = process.env.GCS_ENDPOINT ?? 'http://127.0.0.1:4443';
 const BUCKET = 'cloud-roaring-it';
@@ -55,7 +68,12 @@ const ticking = (): (() => number) => {
 registryConformance(
   'GcsRegistryDriver (fake-gcs-server)',
   () =>
-    new GcsRegistryDriver({ storage, bucket: BUCKET, prefix: `reg-conf/${rn++}`, now: ticking() }),
+    new GcsRegistryDriver({
+      storage,
+      bucket: BUCKET,
+      prefix: `${RUN}/reg-conf/${rn++}`,
+      now: ticking(),
+    }),
 );
 
 // And it must fence writers that do NOT share a process — the property the sequential suite above cannot
@@ -63,7 +81,7 @@ registryConformance(
 // The emulator only enforces `ifGenerationMatch` on the simple (non-resumable) upload path, which is
 // precisely why `GcsStore.write` pins `resumable: false`; these cases fail without it.
 registryConcurrency('GcsRegistryDriver (fake-gcs-server)', () => {
-  const prefix = `reg-race/${rn++}`;
+  const prefix = `${RUN}/reg-race/${rn++}`;
   return [
     new GcsRegistryDriver({ storage, bucket: BUCKET, prefix, now: ticking() }),
     new GcsRegistryDriver({ storage, bucket: BUCKET, prefix, now: ticking() }),
@@ -72,7 +90,7 @@ registryConcurrency('GcsRegistryDriver (fake-gcs-server)', () => {
 
 let n = 0;
 const freshDriver = (): GcsStorageDriver =>
-  new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `conf/${n++}` });
+  new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
 
 // The GCS driver must pass the SAME storage-source contract as in-memory + LocalFs + S3.
 storageChunkSourceConformance('GcsStorageDriver (fake-gcs-server)', async (chunks) => {
@@ -113,7 +131,7 @@ describe('GcsStorageDriver specifics (fake-gcs-server)', () => {
     const driver = new GcsStorageDriver({
       storage,
       bucket: BUCKET,
-      prefix: `resumable/${n++}`,
+      prefix: `${RUN}/resumable/${n++}`,
       simpleUploadThresholdBytes: 8, // any real .crbm object exceeds this → resumable stream
     });
     await writeCrbmGeneration(driver, gen(1), [
@@ -180,7 +198,7 @@ describe('GcsStorageDriver end-to-end through the engine (fake-gcs-server)', () 
   // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
   // bulk-load two segments to GCS, then count + chunk-skipping intersect via the engine's public API.
   it('bulk-load → GCS → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
-    const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `e2e/${n++}` });
+    const driver = new GcsStorageDriver({ storage, bucket: BUCKET, prefix: `${RUN}/e2e/${n++}` });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
@@ -202,7 +220,7 @@ describe('GcsStorage (fake-gcs-server) — the backend builds its own client', (
   it('loads and reads through one object, with both halves in the same bucket and prefix', async () => {
     const backend = new GcsStorage({
       bucket: BUCKET,
-      prefix: `backend/${n++}`,
+      prefix: `${RUN}/backend/${n++}`,
       projectId: 'test',
       apiEndpoint: ENDPOINT,
     });

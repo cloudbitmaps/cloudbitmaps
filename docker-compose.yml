@@ -16,7 +16,11 @@ name: cloud-roaring
 # authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
 services:
   minio:
-    image: quay.io/minio/minio:latest
+    # PINNED (not `:latest`), like fake-gcs and azurite below and for the same reason: every run otherwise
+    # pulls whatever MinIO shipped that morning, and the write-once semantics this suite asserts are exactly
+    # what a MinIO release could change — producing a red integration job with nothing in our diff to point
+    # at. Bump deliberately, and re-run `pnpm test:integration` when you do.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: cloud-roaring-minio
     ports:
       - '9000:9000'
@@ -25,6 +29,16 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
+    # `docker compose up --wait` treats a service with no healthcheck as ready the moment it is RUNNING,
+    # which for an object store is tens of milliseconds before it accepts a connection. ci.yml already
+    # justifies its `--wait-timeout` as protection against "a backend that never goes healthy" — a condition
+    # that could not arise while nothing defined health. These make that true.
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
 
   # Google Cloud Storage emulator for the GcsStorageDriver integration lane. The client reaches it by
   # passing `apiEndpoint: http://127.0.0.1:4443` (see tests/integration/gcs.test.ts) — no real GCP, no auth.
@@ -48,12 +62,19 @@ services:
       - '-backend'
       - 'memory'
 
-  # Azure Blob Storage emulator (Azurite) for the AzureBlobStorageDriver integration lane. The client
-  # reaches it via the well-known dev connection string (see tests/integration/azure.test.ts) — no real Azure,
-  # no auth. PINNED (not `:latest`): 3.35.0 is a known-good build; `--skipApiVersionCheck` lets a newer SDK
-  # `x-ms-version` through (the SDK ships a more recent API version than a pinned Azurite recognizes).
-  # Write-once (`ifNoneMatch: '*'`) is enforced by Azurite on BOTH upload paths the driver uses (empirically
-  # verified — 409 BlobAlreadyExists); that assertion depends on it. Bump deliberately.
+    # Azure Blob Storage emulator (Azurite) for the AzureBlobStorageDriver integration lane. The client
+    # reaches it via the well-known dev connection string (see tests/integration/azure.test.ts) — no real Azure,
+    # no auth. PINNED (not `:latest`): 3.35.0 is a known-good build; `--skipApiVersionCheck` lets a newer SDK
+    # `x-ms-version` through (the SDK ships a more recent API version than a pinned Azurite recognizes).
+    # Write-once (`ifNoneMatch: '*'`) is enforced by Azurite on BOTH upload paths the driver uses (empirically
+    # verified — 409 BlobAlreadyExists); that assertion depends on it. Bump deliberately.
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:4443/storage/v1/b']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.35.0
     container_name: cloud-roaring-azurite
@@ -69,3 +90,12 @@ services:
       # Memory-only, like fake-gcs's `-backend memory`: state is dropped on restart so a reused container never
       # accumulates blobs across runs and collides on the write-once `conf/N` keys (the suite assumes a fresh emulator).
       - '--inMemoryPersistence'
+    healthcheck:
+      # A TCP connect, not an HTTP probe: Azurite answers 400/403 to every UNAUTHENTICATED request, so no
+      # URL returns 200 and an HTTP healthcheck would never pass. Accepting a connection is exactly the
+      # property that was missing anyway — the failure this guards against is ECONNREFUSED on a cold start.
+      test: ['CMD', 'nc', '-z', '127.0.0.1', '10000']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s

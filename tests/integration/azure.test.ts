@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 // Runs against Azurite from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real Azure needed. The well-known dev connection string points at the emulator
 // and skips auth; the driver takes a `ContainerClient` scoped to an already-created container.
@@ -18,6 +19,18 @@ import { CloudRoaring, bulkLoadCrbmGeneration } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
+
+/**
+ * A keyspace unique to THIS run.
+ *
+ * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
+ * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
+ * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
+ * never saw it because each job gets fresh containers; every local re-run did.
+ *
+ * `GITHUB_RUN_ID` in CI, a random token locally: the point is only that two runs cannot collide.
+ */
+const RUN = process.env.GITHUB_RUN_ID ?? randomUUID().slice(0, 8);
 
 const BLOB_ENDPOINT =
   process.env.AZURITE_BLOB_ENDPOINT ?? 'http://127.0.0.1:10000/devstoreaccount1';
@@ -59,7 +72,7 @@ registryConformance(
   () =>
     new AzureBlobRegistryDriver({
       containerClient: container,
-      prefix: `reg-conf/${rn++}`,
+      prefix: `${RUN}/reg-conf/${rn++}`,
       now: ticking(),
     }),
 );
@@ -68,7 +81,7 @@ registryConformance(
 // enforces `If-None-Match: *` / `If-Match` for real, so these prove the fence rather than the in-process
 // token check that answers every sequential case above.
 registryConcurrency('AzureBlobRegistryDriver (Azurite)', () => {
-  const prefix = `reg-race/${rn++}`;
+  const prefix = `${RUN}/reg-race/${rn++}`;
   return [
     new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
     new AzureBlobRegistryDriver({ containerClient: container, prefix, now: ticking() }),
@@ -77,7 +90,7 @@ registryConcurrency('AzureBlobRegistryDriver (Azurite)', () => {
 
 let n = 0;
 const freshDriver = (): AzureBlobStorageDriver =>
-  new AzureBlobStorageDriver({ containerClient: container, prefix: `conf/${n++}` });
+  new AzureBlobStorageDriver({ containerClient: container, prefix: `${RUN}/conf/${n++}` });
 
 // The Azure driver must pass the SAME storage-source contract as in-memory + LocalFs + S3 + GCS.
 storageChunkSourceConformance('AzureBlobStorageDriver (Azurite)', async (chunks) => {
@@ -107,7 +120,7 @@ describe('AzureBlobStorageDriver specifics (Azurite)', () => {
     const staged = (): AzureBlobStorageDriver =>
       new AzureBlobStorageDriver({
         containerClient: container,
-        prefix: `staged/${n++}`,
+        prefix: `${RUN}/staged/${n++}`,
         blockBytes: 8,
         maxObjectBytes: 1 << 20,
       });
@@ -130,7 +143,7 @@ describe('AzureBlobStorageDriver specifics (Azurite)', () => {
     const staged = (): AzureBlobStorageDriver =>
       new AzureBlobStorageDriver({
         containerClient: container,
-        prefix: `race/${n++}`,
+        prefix: `${RUN}/race/${n++}`,
         blockBytes: 8, // tiny → many blocks → heavy interleaving, forcing the staged path
         maxObjectBytes: 1 << 20,
       });
@@ -156,7 +169,7 @@ describe('AzureBlobStorageDriver specifics (Azurite)', () => {
   it('Azurite returns 409 BlobAlreadyExists on a lost ifNoneMatch:"*" race (classifier ground truth)', async () => {
     // Grounds the load-bearing "Azure uses 409, not 412" claim against the real emulator (not just an author-
     // supplied error shape), and cross-checks the classifier the driver relies on.
-    const blob = container.getBlockBlobClient(`raw-409/${n++}.bin`);
+    const blob = container.getBlockBlobClient(`${RUN}/raw-409/${n++}.bin`);
     await blob.upload(Buffer.from([1, 2, 3]), 3, { conditions: { ifNoneMatch: '*' } });
     const err = await blob
       .upload(Buffer.from([9]), 1, { conditions: { ifNoneMatch: '*' } })
@@ -220,7 +233,10 @@ describe('AzureBlobStorageDriver end-to-end through the engine (Azurite)', () =>
   // Proves the driver works behind a real `CloudRoaring` store — not just the low-level storage-source contract:
   // bulk-load two segments to Azure Blob, then count + chunk-skipping intersect via the engine's public API.
   it('bulk-load → Azure Blob → engine count / iterate / intersect (multi-chunk, chunk-skipping)', async () => {
-    const driver = new AzureBlobStorageDriver({ containerClient: container, prefix: `e2e/${n++}` });
+    const driver = new AzureBlobStorageDriver({
+      containerClient: container,
+      prefix: `${RUN}/e2e/${n++}`,
+    });
     // Ids straddle two 16-bit chunks (0 and 3), so intersect must chunk-skip, not read everything.
     await bulkLoadCrbmGeneration(driver, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driver, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
@@ -243,7 +259,7 @@ describe('AzureBlobStorage (Azurite) — the backend builds its own container cl
     const backend = new AzureBlobStorage({
       connectionString: CONN,
       container: CONTAINER,
-      prefix: `backend/${n++}`,
+      prefix: `${RUN}/backend/${n++}`,
     });
     const store = new CloudRoaring({ storage: backend });
     await bulkLoadCrbmGeneration(

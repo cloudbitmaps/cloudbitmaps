@@ -39,8 +39,28 @@ for (const dir of dirs) {
     console.log(`RECORD ${key} ${sha256}`);
     if (strict) failed = true;
   } else if (expected !== sha256) {
+    // A mismatch here has one overwhelmingly likely cause, and it is not a changed upstream artifact: the
+    // prebuilt DOWNLOAD failed and node-pre-gyp fell back to compiling from source. That happened on a
+    // Windows runner when GitHub returned 500 for the release asset — the install log said so plainly
+    // ("Pre-built binaries not installable … falling back to source compile with node-gyp") and the locally
+    // compiled binary naturally hashed differently. The directory key is identical either way, so this
+    // script cannot tell the two apart from the file alone; the install log can, which is why the message
+    // says where to look rather than guessing.
+    //
+    // It deliberately does NOT retry or soften the verdict: this is a supply-chain check, and one that
+    // retries until it likes the answer is not a check. The size is reported because it is the cheap tell —
+    // a source build and a prebuilt differ in size, so the number distinguishes "built here" from "the
+    // upstream artifact changed", which are very different problems.
+    const again = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const bytes = fs.statSync(file).size;
     console.error(
-      `verify-roaring-prebuilt: MISMATCH for ${key}\n  expected ${expected}\n  got      ${sha256}`,
+      `verify-roaring-prebuilt: MISMATCH for ${key}\n  expected ${expected}\n  got      ${sha256}\n` +
+        `  re-read  ${again === sha256 ? 'identical (stable on disk)' : `DIFFERENT (${again}) — the file is changing under us`}\n` +
+        `  size     ${bytes} bytes\n` +
+        `  FIRST check the install log above for "falling back to source compile": a failed prebuilt\n` +
+        `  download means this binary was built here, and its hash will never match a recorded one.\n` +
+        `  Only if a prebuilt really was downloaded is this an upstream artifact change — verify with the\n` +
+        `  roaring maintainers before touching ${path.basename(table)}.`,
     );
     failed = true;
   } else {

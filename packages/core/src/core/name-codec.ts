@@ -99,7 +99,20 @@ function decodePercent(encoded: string): string {
       i += 1;
     }
   }
-  return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+  // `ignoreBOM: true` is load-bearing, not a tidy-up. Without it `TextDecoder` STRIPS a leading U+FEFF, so
+  // `%EF%BB%BForders` decodes to `orders` — a different, probably existing, segment. That is a collision in
+  // the one direction everything else here rests on, and it is reachable: `validatePart` accepts U+FEFF, and
+  // a BOM-prefixed name is what any spreadsheet export or CSV read without BOM stripping hands you.
+  //
+  // The visible symptom was worse than a failed round-trip. Each parser (`parseRegistryRow`,
+  // `parseNamespaceDir`, `parseRegistryKey`) re-encodes what it decoded and refuses a spelling it cannot
+  // reproduce, so a BOM-prefixed row could be WRITTEN and then silently skipped by `list()`,
+  // `checkConsistency`, `exportSegments`, the retention sweep and subject erasure — present in the bucket and
+  // invisible to every sweep over it.
+  //
+  // Decode-only, so nothing that works today changes: `encode` is untouched, no stored key moves, and the
+  // only names whose decoding changes are ones that are currently rejected by that round-trip guard anyway.
+  return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(new Uint8Array(bytes));
 }
 
 /**

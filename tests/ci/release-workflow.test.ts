@@ -180,6 +180,21 @@ describe('release workflow shape', () => {
     );
   });
 
+  it('checks out with tags, because the suite it runs reads the previous release at its tag', () => {
+    // `previous-release-claims` reads the PREVIOUS release's sources at its git tag to check that what the
+    // docs say about it is true, and a shallow checkout carries NO tags. It fails loudly rather than passing
+    // vacuously, which is correct — and means this job, which claims to re-run the complete gate, would have
+    // failed on the first real release. `ci.yml` has carried `fetch-depth: 0` for exactly this reason since
+    // the gate was written; release.yml did not, and nothing compared them.
+    const checkout = job('publish').steps.find((s) => (s.uses ?? '').includes('actions/checkout'));
+    expect(checkout, 'the publish job no longer checks out').toBeDefined();
+    expect(
+      (checkout as unknown as { with?: { 'fetch-depth'?: number } }).with?.['fetch-depth'],
+      'release.yml must check out with fetch-depth: 0 — a shallow clone has no tags, and the suite this job ' +
+        'runs includes a gate that reads one',
+    ).toBe(0);
+  });
+
   it('scans the packed tarballs, which is the only artifact the other leak-scan modes cannot see', () => {
     // dist/ is gitignored, so neither the tracked-file nor the history enumeration covers the bytes a consumer
     // actually downloads — and sourcemaps carry every src comment verbatim via sourcesContent.

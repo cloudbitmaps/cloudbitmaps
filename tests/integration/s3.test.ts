@@ -1,4 +1,5 @@
-import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { randomUUID } from 'node:crypto';
+import { CreateBucketCommand, ListBucketsCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   storageChunkSourceConformance,
   registryConformance,
@@ -15,6 +16,18 @@ import { SafeBitmap } from '@/roaring-codec';
 import { NotFoundError, ValidationError, WriteConflictError } from '@/core/errors';
 import type { GenKey } from '@/core/ports';
 
+/**
+ * A keyspace unique to THIS run.
+ *
+ * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
+ * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
+ * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
+ * never saw it because each job gets fresh containers; every local re-run did.
+ *
+ * `GITHUB_RUN_ID` in CI, a random token locally: the point is only that two runs cannot collide.
+ */
+const RUN = process.env.GITHUB_RUN_ID ?? randomUUID().slice(0, 8);
+
 // Runs against MinIO from docker-compose (see docker-compose.yml): `docker compose up -d` then
 // `pnpm test:integration`. No real AWS needed.
 const ENDPOINT = process.env.S3_ENDPOINT ?? 'http://127.0.0.1:9000';
@@ -28,6 +41,23 @@ const client = new S3Client({
 });
 
 beforeAll(async () => {
+  // `docker compose up --wait` returns when the container is *running*, not necessarily accepting HTTP — poll
+  // until MinIO answers so a cold-start ECONNREFUSED can't red the suite (deterministic readiness).
+  //
+  // /gcs and /azure have carried this since they were written; S3 was the one that did not, and it passed on
+  // an accident of timing rather than a margin: MinIO accepts connections a few tens of milliseconds after
+  // `--wait` returns, the AWS SDK gives up on ECONNREFUSED in about the same, and the only thing covering the
+  // gap was vitest's own startup. A `beforeAll` failure here reds all 38 tests at once, which reads like a
+  // driver regression rather than a cold container.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await client.send(new ListBucketsCommand({}));
+      break;
+    } catch (err) {
+      if (attempt >= 30) throw err; // ~15s, inside the 30s hookTimeout
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
   try {
     await client.send(new CreateBucketCommand({ Bucket: BUCKET }));
   } catch (err) {
@@ -39,7 +69,7 @@ beforeAll(async () => {
 
 let n = 0;
 const freshDriver = (): S3StorageDriver =>
-  new S3StorageDriver({ client, bucket: BUCKET, prefix: `conf/${n++}` });
+  new S3StorageDriver({ client, bucket: BUCKET, prefix: `${RUN}/conf/${n++}` });
 
 // The S3 driver must pass the SAME storage-source contract as in-memory + LocalFs.
 storageChunkSourceConformance('S3StorageDriver (MinIO)', async (chunks) => {
@@ -58,13 +88,18 @@ const ticking = (): (() => number) => {
 registryConformance(
   'S3RegistryDriver (MinIO)',
   () =>
-    new S3RegistryDriver({ client, bucket: BUCKET, prefix: `reg-conf/${rn++}`, now: ticking() }),
+    new S3RegistryDriver({
+      client,
+      bucket: BUCKET,
+      prefix: `${RUN}/reg-conf/${rn++}`,
+      now: ticking(),
+    }),
 );
 
 // Two drivers over one bucket, racing the same row — the cross-process fence (`If-None-Match: *` /
 // `If-Match: <etag>`) that the sequential suite never exercises.
 registryConcurrency('S3RegistryDriver (MinIO)', () => {
-  const prefix = `reg-race/${rn++}`;
+  const prefix = `${RUN}/reg-race/${rn++}`;
   return [
     new S3RegistryDriver({ client, bucket: BUCKET, prefix, now: ticking() }),
     new S3RegistryDriver({ client, bucket: BUCKET, prefix, now: ticking() }),
@@ -143,7 +178,7 @@ describe('S3StorageDriver specifics (MinIO)', () => {
   });
 
   it('end to end: bulk-load → S3 → engine count/iterate/intersect', async () => {
-    const driverA = new S3StorageDriver({ client, bucket: BUCKET, prefix: `e2e/${n++}` });
+    const driverA = new S3StorageDriver({ client, bucket: BUCKET, prefix: `${RUN}/e2e/${n++}` });
     const driverB = driverA; // same prefix space, different segments
     await bulkLoadCrbmGeneration(driverA, { segment: 'a', generation: 1 }, [1, 2, 3, 200_000]);
     await bulkLoadCrbmGeneration(driverB, { segment: 'b', generation: 1 }, [2, 3, 4, 200_000]);
@@ -164,7 +199,7 @@ describe('S3Storage (MinIO) — the backend builds its own client', () => {
   it('loads and reads through one object, with both halves in the same bucket and prefix', async () => {
     const storage = new S3Storage({
       bucket: BUCKET,
-      prefix: `backend/${n++}`,
+      prefix: `${RUN}/backend/${n++}`,
       endpoint: ENDPOINT,
       pathStyle: true,
       region: 'us-east-1',
