@@ -28,9 +28,13 @@ import type { GenKey } from '@/core/ports';
  * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
  * never saw it because each job gets fresh containers; every local re-run did.
  *
- * `GITHUB_RUN_ID` in CI, a random token locally: the point is only that two runs cannot collide.
+ * `GITHUB_RUN_ID` plus `GITHUB_RUN_ATTEMPT` in CI, a random token locally. The attempt matters: re-running
+ * a failed job keeps the same run id, so the id alone would replay the very keys that just failed.
  */
-const RUN = process.env.GITHUB_RUN_ID ?? randomUUID().slice(0, 8);
+const RUN =
+  process.env.GITHUB_RUN_ID === undefined
+    ? randomUUID().slice(0, 8)
+    : `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`;
 
 const BLOB_ENDPOINT =
   process.env.AZURITE_BLOB_ENDPOINT ?? 'http://127.0.0.1:10000/devstoreaccount1';

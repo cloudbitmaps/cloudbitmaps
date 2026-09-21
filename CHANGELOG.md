@@ -15,6 +15,36 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **CI reliability, from an adversarial audit of every source of nondeterminism.** None of these changed
+  library behaviour; all of them changed whether a gate could be trusted.
+  - **A queued release could be silently cancelled.** `release.yml` grouped concurrency by workflow, with a
+    comment claiming two tags "queue rather than race". GitHub holds exactly one *pending* run per group and
+    cancels any earlier one — and this workflow parks in an environment awaiting a reviewer, so a tag pushed
+    (or a dry run dispatched) during that window evicted the queued release: tag present, nothing on npm, no
+    Release object, and a cancelled run nobody watches. Now grouped per ref.
+  - **Fuzz findings were discarded exactly when found.** The crash-reproducer upload ran `if: failure()`,
+    which is false when a job is *cancelled* — and this job is cancellable by `cancel-in-progress` (both crons
+    resolve to `main`, so the weekly soak cancels an overrunning nightly) and by its timeout, where a hung
+    input *is* the finding. Now `if: always()`. The corpus that produced a crash was also thrown away, because
+    `actions/cache` saves only on success; restore and save are now separate, with the save unconditional.
+  - **`fuzz/` was outside every gate.** It installs with `--ignore-workspace`, so the root
+    `--frozen-lockfile` never validated `fuzz/pnpm-lock.yaml`, and Dependabot's `directory: /` never reached
+    it — `@jazzer.js/core` was updated by nothing. PR CI now validates that lockfile (0.6s) and Dependabot
+    covers the directory; a new test derives the rule from the lockfiles on disk, so the next separate install
+    is covered the day it lands.
+  - **Every workflow job now declares `timeout-minutes`.** All eleven inherited GitHub's 360-minute default,
+    so a hang burned six hours per matrix leg. Sized from observed durations; the fuzz job is set to its work
+    rather than its siblings.
+  - **The container gate scripts retry the registry and show their errors.** `npm install` inside
+    `rss-gate` / `lambda-smoke` / `build-lambda-layer` used npm's default of two attempts, and two of the
+    three discarded output entirely — a registry blip red the gate with nothing to read. Retries raised, and a
+    failure now re-runs once with output, the same rule `scripts/lib/docker-pull.sh` already states.
+  - A dispatched artifact build no longer shares a cancelling concurrency group with pushes to the same
+    branch, integration run keys include the run *attempt* (a re-run keeps the same run id), and
+    `fuzz/README.md` no longer documents an `--includes` path and checkout name that do not exist.
+
 ### Fixed
 
 - **A name beginning with a byte-order mark decoded back as a DIFFERENT name.** `decodePercent` used

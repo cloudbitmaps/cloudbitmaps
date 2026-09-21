@@ -35,8 +35,9 @@ pnpm fuzz:seed              # (re)generate the seed corpus only
 ```
 
 Each script builds first (including the fuzz-only internals — see below), (re)generates the seed corpus, then
-fuzzes. Instrumentation is scoped with `--includes cloud-roaring/fuzz/build`; **run from a checkout named
-`cloud-roaring`**, or adjust the include, or coverage guidance silently degrades to black-box.
+fuzzes. Instrumentation is scoped with `--includes fuzz/build` — a SUBSTRING match against module paths, so it
+works from a checkout of any name. Widen it and jazzer instruments dependencies too, which buries the signal;
+narrow it to something that matches nothing and coverage guidance silently degrades to black-box fuzzing.
 
 ## Fuzz-only internals build
 

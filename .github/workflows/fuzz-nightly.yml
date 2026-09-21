@@ -43,6 +43,7 @@ jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -64,21 +65,38 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm fuzz:install # jazzer lives in fuzz/package.json, outside the root dependency graph
       # Persist the evolved corpus across nightly runs so coverage accretes instead of restarting from seeds.
+      #
+      # Split into restore + save rather than the combined `actions/cache`, because that action saves in a post
+      # step that runs only on SUCCESS. The corpus that matters most is the one that just produced a crash, and
+      # that is exactly the run where the combined action threw it away — so the next night restarted from the
+      # previous entry and had to rediscover the input. `if: always()` on the save keeps it.
       - name: Restore fuzz corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Fuzz
         run: pnpm fuzz:${{ matrix.target }}
-      # Normally only on failure — there is nothing to collect from a clean run. The extra `pull_request` arm
-      # exists so the smoke run actually REACHES this step: `if: failure()` alone means a green smoke run skips
-      # it, which is precisely how the upload-artifact v4→v7 bump reached `main` with its only two call sites
-      # unexecuted. `if-no-files-found: ignore` already makes the empty case a no-op, so on a passing PR this
-      # costs one resolved action and uploads nothing.
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      # `always()`, not `failure()`. A fuzz finding is exactly what this step exists to carry off the runner,
+      # and the two cases where one is most likely are the two where `failure()` is FALSE: a job cancelled by
+      # `cancel-in-progress` (both crons resolve to refs/heads/main, so the Sunday soak cancels a nightly that
+      # is still running) and a job stopped by `timeout-minutes` — and a hung input IS a finding. Under the
+      # old condition the reproducer was discarded at precisely the moment it was produced.
+      #
+      # It also subsumes the `pull_request` arm that existed so the smoke run would REACH this step at all:
+      # `if: failure()` alone meant a green smoke run skipped it, which is how the upload-artifact v4→v7 bump
+      # reached `main` with both its call sites unexecuted. `if-no-files-found: ignore` makes the clean case a
+      # no-op, so running always costs one resolved action and uploads nothing.
       - name: Upload crash reproducers
-        if: failure() || github.event_name == 'pull_request'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-crashes-${{ matrix.target }}

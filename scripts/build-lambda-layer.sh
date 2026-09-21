@@ -66,7 +66,18 @@ docker run --rm --entrypoint bash \
     npm init -y >/dev/null 2>&1
     # --omit=dev: ship only runtime deps (the library + roaring); build roaring FROM SOURCE for AL2023.
     npm init -y >/dev/null 2>&1
-    npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund >/dev/null 2>&1
+    # npm has its own retry; this raises it from the default of 2. Every one of these installs reaches the
+    # public registry from the shared GitHub-runner IP pool - the same throttling surface that made the image
+    # pull above grow docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
+    # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
+    export npm_config_fetch_retries=5
+    npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund >/dev/null 2>&1 || {
+      # Re-run once WITHOUT suppressing output, so the log carries the registry real error instead of a bare
+      # non-zero exit. Same rule as scripts/lib/docker-pull.sh: a retry that hides a bad version or a
+      # genuinely missing package is worse than no retry.
+      echo "npm install failed; re-running with output so the real error is visible" >&2
+      npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --omit=dev --no-audit --no-fund
+    }
     mkdir -p node_modules/@cloudbitmaps/core node_modules/@cloudbitmaps/roaring
     tar -xzf /w/core.tgz    --strip-components=1 -C node_modules/@cloudbitmaps/core
     tar -xzf /w/roaring.tgz --strip-components=1 -C node_modules/@cloudbitmaps/roaring

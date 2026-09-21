@@ -22,6 +22,24 @@ updates:
           - minor
           - patch
 
+  # `fuzz/` is a SEPARATE install: `pnpm-workspace.yaml` lists only `packages/*`, so `fuzz/pnpm-lock.yaml` is
+  # outside the root graph and the entry above (directory: /) never saw it. `@jazzer.js/core` was therefore
+  # never bumped by anything, in the one corner of the repo whose whole job is finding memory-safety bugs.
+  - package-ecosystem: npm
+    directory: /fuzz
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    groups:
+      fuzz-dependencies:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
