@@ -12,7 +12,7 @@ name: cloud-roaring
 # job with HTTP 429 on every run. `public.ecr.aws/docker/library/*` is AWS's official mirror of the same Docker
 # Official Images (same content, no auth, no rate limit); minio publishes to quay.io and azurite to mcr, both
 # first-party. `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous pull
-# is a far smaller target than nine. If Docker Hub 429s return, that image is the one to deal with, either by
+# is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one to deal with, either by
 # authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
 services:
   minio:

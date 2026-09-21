@@ -52,3 +52,7 @@ crash-*
 # Real-cloud calibration: the LocalStack REHEARSAL output is a mechanics check, not published evidence, so it
 # is not committed. `bench/calibrate-aws-results.json` (a real run) IS committed — it is the evidence.
 bench/calibrate-aws-rehearsal.json
+
+# Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
+# silently: the committed set still showed a tier removed two releases earlier.
+.site-screenshots/

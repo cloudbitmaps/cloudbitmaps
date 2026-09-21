@@ -253,9 +253,7 @@ export class SegmentEngine {
     // future reader should not take an untested claim for a tested one. Against a `CrbmStorageChunkSource` — the
     // only source with a generation to resolve — both reads go through the same resolved-reader memo, so the
     // pathological state (`keys` non-empty, `gen` null) does not arise and swapping the two is observably
-    // identical. What made the reverse order genuinely lossy was the removed delta tier: the shape was a union
-    // of warm keys and storage keys, so a stale null storage generation dropped real data from a chunk the warm side
-    // had put in the shape. The ordering is kept because it is the order that is correct for *any* source
+    // identical. The ordering is kept because it is the order that is correct for *any* source
     // satisfying the port — a custom source that resolves its shape and its generation independently can still
     // produce that state — not because a test can currently tell the difference.
     //

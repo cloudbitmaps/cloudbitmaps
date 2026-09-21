@@ -54,13 +54,13 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
     expect(
       await boundaryErrors(
         CORE,
-        "import { LocalFsStorageDriver } from '../drivers/localfs/storage';\nLocalFsColdDriver;",
+        "import { LocalFsStorageDriver } from '../drivers/localfs/storage';\nLocalFsStorageDriver;",
       ),
     ).toHaveLength(1);
     expect(
       await boundaryErrors(
         CORE,
-        "import { MemoryWarmDriver } from '@/drivers/memory';\nMemoryWarmDriver;",
+        "import { MemoryStorageDriver } from '@/drivers/memory';\nMemoryStorageDriver;",
       ),
     ).toHaveLength(1);
   });

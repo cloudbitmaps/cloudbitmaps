@@ -19,8 +19,8 @@ export class SystemClock implements Clock {
   sleep(ms: number): Promise<void> {
     if (ms <= 0) return Promise.resolve();
     // A *ref'd* timer, deliberately. Every `sleep` on this clock backs a caller-awaited, bounded retry — today
-    // the driver transient-retry loop (`withRetry`), and before the warm tier went, the engine's OCC backoff as
-    // well. A pending backoff therefore always means unfinished awaited work, so the timer MUST keep the event
+    // the driver transient-retry loop (`withRetry`). A pending backoff therefore always means unfinished
+    // awaited work, so the timer MUST keep the event
     // loop alive until it resolves. Unref-ing it (the pre-fix behaviour) let a short-lived process — CLI,
     // Lambda, a bare script — whose only remaining handle was the backoff timer exit 0 mid-retry, silently
     // dropping the awaited operation with neither a result nor a thrown error. Found by a stress test that

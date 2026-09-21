@@ -15,6 +15,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Removed
+
+- **The last residue of the removed live (warm) tier, and four dead security overrides.** The `adm-zip`
+  `pnpm.overrides` entry reached the project only through `cassandra-driver`, a dependency of a tier deleted
+  two releases ago; `SECURITY.md` had labelled it "*nothing, now*" and it still sat in the manifest. Applying
+  the same test to the rest of the table condemned four more — `fast-uri` attributed to `ajv` (which is on v6
+  and uses `uri-js`), `js-yaml` and `qs` to toolchains that run through `pnpm dlx` and never enter this
+  lockfile, and a `brace-expansion@1` pin for a major no longer in the tree. All five are gone; the lockfile
+  diff added nothing, because nothing could bind to them. **`esbuild` was also being pinned below its own
+  declared range** — the unbounded `>=0.28.1` override replaced the manifest's `^0.28.2` and resolved to
+  0.28.1, one patch under the floor, on the toolchain that builds the published tarballs. Now
+  `>=0.28.2 <0.29`, which installs 0.28.2 and dedupes with the copy `vite` already pulls.
+  `tests/docs/override-hygiene.test.ts` now fails the build on an override that binds to no installed package,
+  on one with no `SECURITY.md` row, and on a row describing a pin that no longer exists.
+- **12 MB of stale tracked screenshots** under `.site-screenshots/`, last regenerated two releases ago and
+  still rendering the retired tier. Regenerable with `pnpm site:screenshots`, and now gitignored.
+- **Editorial archaeology in the public page source.** Nine HTML/CSS comments narrated the tier's removal
+  rather than explaining the current design, and they ship verbatim to anyone who views source. One of them
+  had lost a word to an earlier edit and read "a segment is immutable objects generations". Rewritten on
+  current terms. Two arch-test fixtures named symbols that have never existed in this repo
+  (`MemoryWarmDriver`, `LocalFsColdDriver`) — the boundary rule keys on the import path, so the identifiers
+  were never checked; an orphaned `.is-total` CSS rule went with them.
+
+  The upgrade guard is deliberately untouched: `MOVED_OPTIONS` still names `warm`, `warmReadConsistency`,
+  `maxWarmScanBytes`, `writeConcurrency` and `occBackoff`, because `warm` was **required** in `0.9.x` and
+  every upgrader passes one. So are `MIGRATING.md`'s before-column and the pointers to the
+  `archive/live-warm-tier` tag.
+
 ### Changed
 
 - **BREAKING (fix) — the upgrade guard was keyed to option names that never shipped.**

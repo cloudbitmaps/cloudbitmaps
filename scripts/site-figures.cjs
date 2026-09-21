@@ -214,10 +214,10 @@ function checkDriverCountEverywhere(want) {
     // the same claim and used to walk straight past a pattern that demanded they be adjacent.
     //
     // The slot takes ADJECTIVES only. Function words are excluded because they change the sentence from a
-    // count of what ships into a reference to some of it: "one of our warm drivers" (a real sentence on
-    // /flavors/roaring, about Redis) counts nothing, and `the two drivers` names one backend's storage and
-    // registry halves. Both are true English about different things, so widening to catch them would flag
-    // correct prose — the gate people route around.
+    // count of what ships into a reference to some of it — "one of our drivers" counts nothing — and
+    // `the two drivers` names one backend's storage and registry halves, which `S3Storage` configures
+    // together. Both are true English about different things, so widening to catch them would flag correct
+    // prose: the gate people route around.
     const COUNT = `(\\d+|${NUMBER_WORDS.join('|')})`;
     const ADJECTIVES = '(?:(?!of\\b|in\\b|for\\b|to\\b|storage\\b)[a-z-]+\\s+){0,2}';
     for (const m of text.matchAll(
