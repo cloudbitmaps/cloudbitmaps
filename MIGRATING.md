@@ -90,6 +90,30 @@ was missing from earlier drafts of this guide.
 | **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it, and it is what the library is now built around. **The method is new** — `0.9.x` had no `load` on the store; the bulk path was the free function `bulkLoadCrbmGeneration(driver, key, ids)`, which is gone |
 | **per-call `add` / `remove` on the read path** | there is no replacement, and there will not be one on the object store. Micro-batch into a load, or keep those writes in RAM — Redis does that well. Hot-path *reads* are what this library is for |
 | **freshness inside a few seconds** | load more often. A load is one PUT plus a pointer swap, so the floor is your job cadence, not the library |
+| **exactly-once claim** — `segment.claimMany(ids)` returning only the ids this caller won | there is no replacement. See below; this one is a semantic loss, not an ergonomic one |
+
+### `claimMany` has no replacement, and that is a real loss
+
+`0.9.x` offered `segment.claimMany(ids)`: pass a batch, get back only the ids that were **not** already
+present, so exactly one concurrent caller could win any given id. It was the library's answer to Redis
+`SETBIT`-as-a-claim, and people build send-once and dedupe on it.
+
+It is gone, and nothing in `0.10.0` replaces it. The guarantee rested on the warm tier: each id lived in one
+chunk, a chunk was one OCC row, so a compare-and-swap on that row decided the winner. **A loaded store has no
+per-id compare-and-swap** — a load publishes a whole generation, and two loads racing do not partition ids
+between themselves, they order themselves.
+
+What to do:
+
+- **If the claim is the point** — a worker pool deciding who sends to whom — keep that in something with
+  per-key atomicity. Redis, DynamoDB conditional writes and Postgres `INSERT … ON CONFLICT` all do this
+  well, and it is a small, hot, low-cardinality workload, which is the shape those stores are good at.
+- **If you used it to filter an already-partitioned batch**, partition upstream instead: shard candidate ids
+  by worker, and each worker loads its own segment. No coordination is needed once the ids cannot collide.
+- **If you only needed "have I seen this before"** and not who won, that is `has` / `intersect` against the
+  loaded set, with the usual caveat that the answer is as fresh as your last load.
+
+`0.9.x` stays on npm if you need the old behaviour while you decide.
 
 If you need the old behaviour while you decide, `0.9.x` stays on npm and the tier is archived at the git tag
 `archive/live-warm-tier`. It will not receive fixes.
@@ -312,14 +336,16 @@ cheaper shape, since it reads each operand once and publishes once. If the input
 than together, accumulate them upstream and `load()` the finished set; a segment changes by publishing a
 whole new generation, which is the write model the rest of this release is built on.
 
-This is the change the lede means by "one changes a default". It is the only one in this guide that a
-`0.9.x` deployment can upgrade into without seeing an error.
+This is the first of the two changes the lede flags as **not failing loudly** — change 8 is the other. A
+`0.9.x` deployment can upgrade into this one and see no error at all: the call succeeds, and the destination
+holds something different from what it would have held before.
 
 ### And they refuse an empty result
 
 An empty combine used to add nothing, leaving the destination exactly as it was. Under the new publishing
-model it would instead publish an empty generation over a destination that had data — so it refuses, the
-same way `load()` always has:
+model it would instead publish an empty generation over a destination that had data — so it refuses. The
+guard is **new in `0.10.0`**, on `load()` and on these verbs alike; `0.9.x` had no such refusal, and no
+`allowEmpty` to opt out of one:
 
 ```ts
 const res = await audience.intersectInto(dest, [eligible]);
@@ -339,15 +365,26 @@ narrow race and the new outcome is the correct one.
 **Generation collection is unchanged.** Unlike `load()`, a materialisation still collects nothing, so a
 `rollback` target survives it. Pass `keep` if you want it to collect on the way through.
 
-`MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. Reading the existing
-fields is unaffected; a deep equality check on the whole object is not. `cardinalityBefore` is `null` when no
-bound needed the read — with `allowEmpty: true` and no `guard.minRetained`, nothing reads it.
+**These verbs used to return nothing.** In `0.9.x` they were `Promise<void>`; there is no `0.9.x` result
+object whose fields you might be reading, so nothing you have can break on the shape. What you get now is
+`MaterializeResult` — `published`, `reason`, `cardinalityBefore` and `collected` — and the point of migrating
+is to start *checking* it. `cardinalityBefore` is `null` when no bound needed the read: with
+`allowEmpty: true` and no `guard.minRetained`, nothing reads it.
+
+**`batchSize` is gone.** `0.9.x` took `CombineIntoOptions extends CombineOptions { batchSize?: number }` on
+all three `*Into` verbs, sizing the chunks of ids drained into the destination. The options type is now
+`MaterializeOptions`, which has no such field, because there is no drain to size — a materialisation builds
+one generation and publishes it, rather than writing repeated batches. From TypeScript, passing it is an
+excess-property error; from JavaScript it is **ignored silently**, so grep for it rather than waiting for a
+compiler to tell you.
 
 A lost race still throws `WriteConflictError` — unchanged.
 
 ## 7. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The `[Unreleased]` changelog quotes 110 → 82; 110 was the count at an unreleased mid-cycle commit, not at any release.) It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The development log for
+this cycle quotes 110 → 82 in places; 110 was the count at an unreleased mid-cycle commit, not at any
+release.) It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 
@@ -376,8 +413,12 @@ import { collectWithinBudget, excludingReservedRows, resolveBudget, DEFAULT_BUDG
   from '@cloudbitmaps/roaring';
 
 // Skip the reserved bookkeeping rows ONLY on an unscoped pass — a caller who names a namespace is asking
-// for that namespace, including a reserved one. This is what `drainRegistry` did, and what `listSegments`
-// still does.
+// for that namespace, including a reserved one. This is what `listSegments` does.
+//
+// `drainRegistry` did NOT do this, and did not need to: it drained `registry.list()` with a bound and
+// nothing else. The reserved rows are new — the due index that backs `retireExpired({ scan: 'index' })`
+// landed in this cycle — so a faithful transcription of the old code would now enumerate bookkeeping rows
+// alongside your segments. This line is the part of the recipe that is NOT a like-for-like replacement.
 const rows = namespace === undefined
   ? excludingReservedRows(registry.list())
   : registry.list(namespace);
@@ -480,9 +521,18 @@ fail by reading as `false`.
 |---|---|---|
 | `new LocalFsStorage(root)` read `<root>/cold` | `<root>/storage` | rename the directory before switching. The `0.9.x` guide led with `./.cloudbitmaps/cold` |
 | `export-segments` read `<CR_EXPORT_ROOT>/cold` | `<CR_EXPORT_ROOT>/storage` | same rename; the CLI refuses loudly if it finds nothing |
+| `export-segments` read `CR_EXPORT_SEGMENTS` | *(gone)* | **the CLI ignores unknown environment variables, so a dump that named extra segments now exports fewer of them and still exits 0** |
 
-Both of these fail loudly — the constructor and the CLI each refuse a directory that is not there. The next
-one does not.
+The path rename fails loudly — the constructor and the CLI each refuse a directory that is not there. The
+`CR_EXPORT_SEGMENTS` row does not, and neither does the next section.
+
+`CR_EXPORT_SEGMENTS` took a comma-separated list of `segment` or `namespace/segment` entries to export
+**beyond** what the registry held — it existed for segments that were all-warm or not yet registered. In
+`0.10.0` neither state exists: a segment exists once a generation is loaded, and loading mints the registry
+row, so the registry is the complete list by construction. If your dump named segments there, drop the
+variable and confirm the export's `manifest.json` still lists what you expect. The API-level twin,
+`ExportOptions.candidates`, is gone for the same reason — that one at least trips excess-property checking
+if you pass it from TypeScript.
 
 ### Segment names a filesystem cannot hold
 
@@ -521,6 +571,7 @@ library cannot control it:
 
 ## Still stuck?
 
-The full entries, with rationale, are in [`CHANGELOG.md`](CHANGELOG.md) under `[Unreleased]`. If something here
+The full entries, with rationale, are in [`CHANGELOG.md`](CHANGELOG.md) — the curated notes under
+`## [0.10.0]`, and the cycle's blow-by-blow under `## Development log — 0.10.0` below them. If something here
 is wrong or missing, [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) — a migration you had
 to work out yourself is a bug in this page.

@@ -46,6 +46,16 @@ const CLAIMS_ABOUT_THE_OLD_RELEASE = [
   join('docs', 'guide', 'getting-started.md'),
   join('docs', 'guide', 'api-reference.md'),
   'README.md',
+  // The five npm landing pages. They were outside this list while `links`, `specifiers`, `version-claims`,
+  // `sdk-floor-claims` and `runtime-version-policy` had each already been widened to include them — so the
+  // most-read pages in the project were the ones whose account of the previous release nothing checked. An
+  // "Upgrading" table naming `S3ColdStorage` and `s3ColdTtlMs` (neither exists at the tag) passed here in
+  // `packages/s3/README.md` and failed instantly in `MIGRATING.md`; same content, same claim, different file.
+  join('packages', 'core', 'README.md'),
+  join('packages', 'roaring', 'README.md'),
+  join('packages', 's3', 'README.md'),
+  join('packages', 'gcs', 'README.md'),
+  join('packages', 'azure-blob', 'README.md'),
 ] as const;
 
 /** Every subpath the previous release published, from its own `exports` map. */
@@ -194,6 +204,12 @@ const NOT_OURS = new Set([
   'snap',
   'other',
   'cause',
+  // Redis command names. The migration guide explains what a removed verb was the answer to, and naming the
+  // Redis command is the clearest way to say it — `claimMany` was this library's `SETBIT`-as-a-claim. They
+  // are backticked identifiers that belong to another product, which is exactly what this set is for.
+  'SETBIT',
+  'GETBIT',
+  'BITCOUNT',
   'npm',
   'pnpm',
   'yarn',
@@ -302,6 +318,38 @@ describe(`public pages' account of ${PREVIOUS_TAG} matches ${PREVIOUS_TAG}`, () 
   const oldCore = atTag('packages/core/src/index.ts');
   const oldSubpaths = OLD_SUBPATHS.map((s) => atTag(`packages/core/src/${s}/index.ts`) ?? '');
   const exported = apiNames([oldFlavor ?? '', oldCore ?? '', ...oldSubpaths].join('\n'));
+
+  /**
+   * Every identifier-shaped token anywhere in `packages/**\/*.ts` at the tag.
+   *
+   * The `current` set below is already built this way, for a reason its own comment states: "fabricated means
+   * the name exists NOWHERE in our code", and a barrel-only view calls ordinary field names inventions. The
+   * SAME argument applies to the previous release and was never carried across — so the old half asked
+   * "was this EXPORTED at v0.9.0?" while the page was claiming only "did this EXIST at v0.9.0?".
+   *
+   * `CR_EXPORT_SEGMENTS` is what exposed it: an environment variable the `export-segments` CLI read at
+   * `v0.9.0` (bin/export-segments.ts:29,49,54,90) and ignores now. It is public interface — an operator's
+   * cron line — and it is not, and never could be, an export. Documenting its removal tripped this gate.
+   */
+  const atTagTokens = new Set(
+    execFileSync(
+      'git',
+      [
+        'grep',
+        '-h',
+        '-o',
+        '-E',
+        '[A-Za-z_$][A-Za-z0-9_$]+',
+        PREVIOUS_TAG,
+        '--',
+        'packages/**/*.ts',
+      ],
+      { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+    )
+      .split('\n')
+      .map((l) => l.slice(l.lastIndexOf(':') + 1).trim())
+      .filter(Boolean),
+  );
   /** Today's names, so a paragraph about 0.9.x may legitimately name the replacement alongside the old one. */
   // Every source file, not five barrels: "fabricated" means the name exists NOWHERE in our code, and a
   // barrel-only view called `currentGen`, `maxScanSegments` and `tombstoneGraceMs` inventions when they are
@@ -342,7 +390,9 @@ describe(`public pages' account of ${PREVIOUS_TAG} matches ${PREVIOUS_TAG}`, () 
       // In a diff or an old-form column the name must be OLD. In prose it may be either, so only a name that
       // exists in neither release is a fabrication.
       .filter(({ name, where }) =>
-        where === 'prose' ? !exported.has(name) && !current.has(name) : !exported.has(name),
+        where === 'prose'
+          ? !exported.has(name) && !atTagTokens.has(name) && !current.has(name)
+          : !exported.has(name) && !atTagTokens.has(name),
       )
       .map(
         ({ name, where }) => `${name} (in ${where}, as the ${PREVIOUS_TAG} form — absent there)`,
