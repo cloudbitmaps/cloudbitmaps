@@ -43,7 +43,11 @@ jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # The weekly soak measured 60.5 minutes against `-max_total_time=3600`, so 90 left only ~29 minutes of
+    # slack — and the corpus is deliberately accretive, so libFuzzer's startup replay of it grows run over run
+    # while that 3600s stays fixed. 120 restores real headroom. A hand-dispatched campaign can pass an
+    # arbitrary `seconds` input; one longer than this needs this raised with it.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

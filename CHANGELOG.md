@@ -41,6 +41,14 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
     `rss-gate` / `lambda-smoke` / `build-lambda-layer` used npm's default of two attempts, and two of the
     three discarded output entirely — a registry blip red the gate with nothing to read. Retries raised, and a
     failure now re-runs once with output, the same rule `scripts/lib/docker-pull.sh` already states.
+  - **The release job's bound is deliberately long, not tight.** Its execution is 2-3 minutes, but it waits
+    on a required reviewer first and a 104.8-minute approval wait has already happened here. Whether
+    `timeout-minutes` consumes that window is not something the docs state plainly, so the bound is set where
+    it is safe either way: too long costs idle minutes, too short kills a release mid-publish and leaves an
+    immutable half-published family.
+  - **The `dnf install` above each npm line got the same treatment**, having kept exactly the failure shape
+    being removed one line below it — suppressed, unretried, and producing zero bytes of diagnostic output
+    when an AL2023 mirror is throttled.
   - A dispatched artifact build no longer shares a cancelling concurrency group with pushes to the same
     branch, integration run keys include the run *attempt* (a re-run keeps the same run id), and
     `fuzz/README.md` no longer documents an `--includes` path and checkout name that do not exist.

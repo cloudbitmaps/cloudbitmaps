@@ -26,7 +26,7 @@ const JOBS = readdirSync(DIR)
   .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
   .flatMap((file) => {
     const doc = parse(readFileSync(join(DIR, file), 'utf8')) as {
-      jobs?: Record<string, { 'timeout-minutes'?: number; uses?: string }>;
+      jobs?: Record<string, { 'timeout-minutes'?: number; uses?: string; environment?: unknown }>;
     };
     return Object.entries(doc.jobs ?? {}).map(([name, job]) => ({ file, name, job }));
   });
@@ -39,10 +39,30 @@ describe('every workflow job is time-bounded', () => {
     const files = readdirSync(DIR).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
     expect(files.length).toBeGreaterThanOrEqual(3);
     for (const file of files) {
+      const parsed = JOBS.filter((j) => j.file === file).length;
       expect(
-        JOBS.filter((j) => j.file === file).length,
+        parsed,
         `${file} contributed no jobs — it failed to parse, or the shape changed`,
       ).toBeGreaterThan(0);
+      // Cross-check the PARSED job count against the number of `runs-on:` lines, which is indentation-
+      // INDEPENDENT and so survives the failure this is aimed at. A job re-parented underneath another one
+      // leaves the file valid YAML, shrinks the sweep, and keeps its own `runs-on:` exactly where it was —
+      // so the counts diverge and this fires. (Counting top-level `jobs:` children textually does NOT work:
+      // re-parenting re-indents them, so the textual count falls in step with the parsed one and the
+      // mismatch disappears.) A legitimately RETIRED job removes its `runs-on:` too, so the counts stay
+      // equal and the gate correctly stays quiet — which is the whole reason this is not a fixed number.
+      //
+      // Not hypothetical: tests/ci/release-workflow.test.ts documents a real edit that re-parented a job
+      // under another, and nothing noticed until a tag push.
+      const text = readFileSync(join(DIR, file), 'utf8');
+      const runsOn = (text.match(/^\s*runs-on:/gm) ?? []).length;
+      const runnerJobs = JOBS.filter((j) => j.file === file && j.job.uses === undefined).length;
+      expect(
+        runnerJobs,
+        `${file} has ${runsOn} \`runs-on:\` line(s) but parses to ${runnerJobs} runner job(s) — a job was ` +
+          'probably re-parented under another one, which leaves the file valid YAML and silently shrinks ' +
+          'this sweep.',
+      ).toBe(runsOn);
     }
   });
 
@@ -56,9 +76,13 @@ describe('every workflow job is time-bounded', () => {
         "hours per leg before failing. Pick a bound from the job's observed duration.",
     ).toBeDefined();
     expect(typeof timeout).toBe('number');
-    // A bound longer than a couple of hours is the default wearing a number, and one under a minute will
-    // flake on a cold runner.
+    // A bound under a few minutes will flake on a cold runner.
     expect(timeout as number).toBeGreaterThanOrEqual(5);
-    expect(timeout as number).toBeLessThanOrEqual(120);
+    // The upper bound does NOT apply to a job gated on a deployment environment. Such a job waits for a human
+    // reviewer before it runs — a 104.8-minute wait has happened on this repo — and it is not settled whether
+    // that waiting window consumes the timeout. Capping those at two hours would risk killing a release mid
+    // publish to enforce a tidy number, which is the wrong trade by a wide margin. They still must DECLARE a
+    // bound; they are just allowed to choose a long one on purpose.
+    if (job.environment === undefined) expect(timeout as number).toBeLessThanOrEqual(120);
   });
 });

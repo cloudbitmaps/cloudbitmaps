@@ -86,8 +86,10 @@ docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage
   set -e
   cd /stage
   npm init -y >/dev/null 2>&1
-    # npm has its own retry; this raises it from the default of 2. Every one of these installs reaches the
-  # public registry from the shared GitHub-runner IP pool - the same throttling surface that made the image
+  # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
+# (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
+# its headers separately and retries those on its own schedule, which this setting does not reach. Each
+  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface that made the image
   # pull above grow docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
   # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
   export npm_config_fetch_retries=5

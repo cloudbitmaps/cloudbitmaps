@@ -78,7 +78,19 @@ jobs:
   publish:
     name: publish (tokenless, provenance)
     runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
-    timeout-minutes: 45
+    # 360 — GitHub's default, but set EXPLICITLY so it reads as a decision rather than an omission.
+    #
+    # This job's actual execution is 2-3 minutes. The bound is long because the job waits on the `release`
+    # environment's required reviewer first, and a 104.8-minute approval wait has already happened on this
+    # repo. Whether `timeout-minutes` consumes that waiting window is not something the docs state plainly
+    # and not something we have tested, so the safe reading is that it might.
+    #
+    # The asymmetry settles it. Too long costs idle runner minutes on a job that hangs. Too short kills a
+    # release mid `pnpm -r publish`, leaving some of the family on npm and the rest not — immutable, not
+    # unpublishable back out, and the exact catastrophe the rest of this file is built to avoid. No finite
+    # bound is provably safe if the wait counts (a reviewer can take a day), so this one is deliberately not
+    # a tight fit. If the waiting window turns out NOT to count, this is simply generous, which is fine.
+    timeout-minutes: 360
     environment: release # manual-approval gate (required reviewer on the environment)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
