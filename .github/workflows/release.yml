@@ -50,13 +50,21 @@ permissions:
   contents: read
   id-token: write
 
-# One release at a time, and NEVER cancel one in flight. `cancel-in-progress: false` is the opposite of the
-# CI workflow's setting, deliberately: cancelling a build is free, but cancelling a release is not — kill a run
-# mid-run and npm holds a half-published family — some of the five up, the rest not — that cannot be
-# unpublished back out. The group is the workflow, not the ref, so two different tags pushed together queue rather than
-# race for the same version pointers.
+# NEVER cancel a release in flight. `cancel-in-progress: false` is the opposite of the CI workflow's setting,
+# deliberately: cancelling a build is free, but cancelling a release is not — kill a run mid-run and npm holds
+# a half-published family, some of the five up and the rest not, which cannot be unpublished back out.
+#
+# The group includes the REF. It used to be the workflow alone, with a comment claiming that "two different
+# tags pushed together queue rather than race" — GitHub does not do that. It holds exactly ONE pending run per
+# concurrency group and cancels any previously pending one, so a workflow-wide group meant a second tag could
+# evict a first that was still waiting. That wait is not hypothetical: this workflow parks in the `release`
+# environment for a required reviewer, which counts as in-progress for as long as the approval takes, so a
+# tag pushed (or a dry run dispatched) during that window silently cancelled the queued release. The tag would
+# exist with nothing on npm and no Release object, and the only signal is a cancelled run nobody is watching.
+# Per-ref means two tags each get their own slot and cannot evict each other, while a repeated push of the
+# SAME ref still cannot start a second concurrent publish — which is the property that actually matters.
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 # How many manifests `packages/*/package.json` must match. A glob that comes back short means a package was
@@ -70,6 +78,19 @@ jobs:
   publish:
     name: publish (tokenless, provenance)
     runs-on: ubuntu-latest # provenance needs a GitHub-hosted runner's OIDC identity — never a self-hosted one
+    # 360 — GitHub's default, but set EXPLICITLY so it reads as a decision rather than an omission.
+    #
+    # This job's actual execution is 2-3 minutes. The bound is long because the job waits on the `release`
+    # environment's required reviewer first, and a 104.8-minute approval wait has already happened on this
+    # repo. Whether `timeout-minutes` consumes that waiting window is not something the docs state plainly
+    # and not something we have tested, so the safe reading is that it might.
+    #
+    # The asymmetry settles it. Too long costs idle runner minutes on a job that hangs. Too short kills a
+    # release mid `pnpm -r publish`, leaving some of the family on npm and the rest not — immutable, not
+    # unpublishable back out, and the exact catastrophe the rest of this file is built to avoid. No finite
+    # bound is provably safe if the wait counts (a reviewer can take a day), so this one is deliberately not
+    # a tight fit. If the waiting window turns out NOT to count, this is simply generous, which is fine.
+    timeout-minutes: 360
     environment: release # manual-approval gate (required reviewer on the environment)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -297,6 +318,7 @@ jobs:
     needs: publish
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # create the release object; NOT granted to the publish job above
     steps:
