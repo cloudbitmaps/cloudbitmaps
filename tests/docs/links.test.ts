@@ -116,6 +116,26 @@ function slugify(heading: string): string {
     .replace(/ /g, '-');
 }
 
+/**
+ * An absolute URL that points back into THIS repository, as the repo-relative path it names.
+ *
+ * WHY. The checks below deliberately skip absolute URLs, because resolving them would need the network. But
+ * a `https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/...` link is not a foreign URL — it is a
+ * relative link wearing an absolute spelling, and every one of it can be resolved on disk with no network at
+ * all. The five package READMEs have to spell them this way: they are rendered on npmjs.com, where a relative
+ * link resolves against npm's own host and 404s. So the repo's most-read pages — the npm landing pages — were
+ * the only ones whose links and heading fragments nothing checked, which is the narrower-gate failure this
+ * suite exists to prevent.
+ *
+ * Returns `undefined` for a genuinely foreign URL and for links to issues, releases or the repo root, which
+ * name no file in the tree.
+ */
+const SELF_BLOB = /^https:\/\/github\.com\/cloudbitmaps\/cloudbitmaps\/(?:blob|tree)\/main\/(.+)$/;
+function selfLinkTarget(raw: string): string | undefined {
+  const m = SELF_BLOB.exec(raw);
+  return m === null ? undefined : (m[1] as string);
+}
+
 /** Every fragment a `.md` file exposes: heading slugs (deduped GitHub-style) plus explicit `<a id>`/`name`. */
 function anchorsOf(src: string): Set<string> {
   const out = new Set<string>();
@@ -233,6 +253,45 @@ describe('docs & site links', () => {
       if (!anchorsFor(abs).has(frag)) broken.push(raw);
     }
     expect(broken).toEqual([]);
+  });
+
+  // The npm landing pages spell their links absolutely because npmjs.com renders them off-host, so every check
+  // above — which skips absolute URLs by design — looked straight past them. Resolve the self-referential ones
+  // back to disk and hold them to the same standard: the file exists, and the fragment names a real heading.
+  it.each(files)('%s — every link back into this repo resolves, path and anchor', (rel) => {
+    const src = readFileSync(join(ROOT, rel), 'utf8');
+    const broken: string[] = [];
+    for (const raw of linkTargets(src)) {
+      const target = selfLinkTarget(raw);
+      if (target === undefined) continue;
+      const hash = target.indexOf('#');
+      const path = hash === -1 ? target : target.slice(0, hash);
+      const abs = join(ROOT, normalize(path));
+      if (!existsSync(abs)) {
+        broken.push(`${raw} — no such file: ${path}`);
+        continue;
+      }
+      if (hash === -1) continue;
+      const frag = decodeURIComponent(target.slice(hash + 1));
+      if (frag === '' || /^L\d+(?:-L\d+)?$/.test(frag)) continue;
+      if (!abs.endsWith('.md')) continue;
+      if (!anchorsFor(abs).has(frag)) broken.push(`${raw} — no heading "#${frag}" in ${path}`);
+    }
+    expect(broken).toEqual([]);
+  });
+
+  it('the self-link resolver recognises this repo and ignores foreign URLs', () => {
+    // Both directions: it must catch our own blob links, and must not claim links it cannot resolve.
+    expect(
+      selfLinkTarget('https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/benchmarks.md'),
+    ).toBe('docs/benchmarks.md');
+    expect(
+      selfLinkTarget('https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/x.md#frag'),
+    ).toBe('docs/guide/x.md#frag');
+    expect(selfLinkTarget('https://github.com/cloudbitmaps/cloudbitmaps/issues')).toBeUndefined();
+    expect(selfLinkTarget('https://github.com/cloudbitmaps/cloudbitmaps')).toBeUndefined();
+    expect(selfLinkTarget('https://www.npmjs.com/package/@cloudbitmaps/core')).toBeUndefined();
+    expect(selfLinkTarget('https://github.com/someone/else/blob/main/README.md')).toBeUndefined();
   });
 
   it('the anchor checker actually matches this repo’s heading style', () => {

@@ -23,12 +23,19 @@ through the `CodecInterface` seam, and it holds no cloud driver either — those
 Install a codec and a storage; `@cloudbitmaps/core` is a dependency of both and never named by you:
 
 ```bash
-npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship), and the storage you have
+pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # the roaring flavor (flagship), and the storage you have
+# npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
 
-> [!NOTE]
-> **The storage packages land in 0.10.0 and are not on npm yet.** The published release is `0.9.0`, whose
-> packaging and API differ from what is shown here — see [`MIGRATING.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md).
+> **On pnpm 10+, allow the one build script.** pnpm 10 skips dependency build scripts by default, so
+> the `roaring` native addon never downloads and the package throws at `import` — while the install
+> itself prints a warning and **exits 0**. Add this to your `package.json`, then install:
+>
+> ```json
+> { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+> ```
+>
+> pnpm 9 and npm run it already. [Full symptoms and fixes](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
 Depend on `@cloudbitmaps/core` directly only to **author a flavor or a driver**. It has **zero runtime
 dependencies** of its own.

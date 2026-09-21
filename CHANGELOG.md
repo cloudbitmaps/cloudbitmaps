@@ -15,6 +15,62 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-21
+
+> **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered
+> upgrade path from `0.9.x`, and it covers two changes that alter behaviour without raising anything.
+>
+> The notes below summarise the release. The full **development log for the cycle** follows them, under its
+> own heading, for anyone tracing *why* a thing changed — entries there appear in the order they landed, so a
+> later one sometimes supersedes an earlier one, and a few describe **intermediate states that existed
+> between commits and never shipped in any release**. Where one does, it now says so. If anything there
+> disagrees with `MIGRATING.md`, the migration guide is right.
+
+`0.10.0` is a breaking release. The short version:
+
+### Breaking
+
+- **The live (warm) tier is gone.** `warm` was a required option in `0.9.x`, so this touches every `0.9.x`
+  deployment. Data enters by loading a whole new generation; there is no per-id write. The removed code is
+  archived at the git tag `archive/live-warm-tier`, and `0.9.x` stays on npm.
+- **The cloud drivers are their own packages** — `@cloudbitmaps/s3`, `/gcs`, `/azure-blob`, each depending on
+  its SDK for real rather than as an optional peer. You install a codec and a storage.
+- **The DynamoDB registry is gone.** Every object store now hosts its own registry. **If your pointers live in
+  DynamoDB there is work to do on `0.9.x` before upgrading** — `0.10.0` cannot read those rows.
+- **ESM only, Node ≥ 22.12.**
+- **A storage backend is built, not assembled** — one `storage` key carrying both halves.
+- **The flat options became four groups** — `cache`, `encryption`, `retry`, `seams`; `metrics` and `budget`
+  stay flat. Every removed spelling is refused by name rather than ignored.
+- **The `*Into` verbs replace their destination** where they used to append, and refuse an empty result. This
+  one changes behaviour without raising anything.
+- **`cold` → `storage` and `hot` → `cache`** throughout, including metric kinds, snapshot keys, pricing fields
+  and the `checkConsistency` issue string — none of which the type system checks.
+- **`@cloudbitmaps/core`'s main entry went from 89 exports to 82.**
+
+### Added
+
+- **GCS and Azure registries**, so a Google Cloud or Azure deployment needs no AWS account.
+- **`segment.pin()`** — hold a segment at one generation for the life of a handle.
+- **`load()` with an empty-result guard**, extended to the `*Into` verbs.
+- **`@cloudbitmaps/core/driver-kit`** — the contract a driver package builds against.
+
+### Fixed
+
+- **A name beginning with a byte-order mark decoded back as a different name**, so such a segment could be
+  written and then be invisible to every sweep over the bucket.
+- **The install instructions now cover pnpm 10, where the documented command produces a broken install.**
+  pnpm 10 does not run dependency build scripts unless you allow them, so `pnpm add @cloudbitmaps/roaring`
+  warns, **exits 0**, and leaves the `roaring` native addon undownloaded — the package then throws at
+  `import`. Every install site now names the one-line `onlyBuiltDependencies` allowlist, and the
+  troubleshooting entry no longer presents `--ignore-scripts` as the only way to get there. It also records
+  that `pnpm rebuild roaring` **without** that allowlist is a silent no-op: no output, exit 0, still broken.
+
+## Development log — 0.10.0
+
+Everything below landed during the `0.10.0` cycle, in the order it landed. It is kept for tracing *why* a
+thing changed; the notes above and [`MIGRATING.md`](MIGRATING.md) are what to read to upgrade.
+
+
 ### Changed
 
 - **CI reliability, from an adversarial audit of every source of nondeterminism.** None of these changed
@@ -547,7 +603,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   per segment. Now one bucket, or one container, is the whole deployment.
 
   ```ts
-  import { GcsStorage } from '@cloudbitmaps/roaring/gcs';
+  // NOTE: this entry predates the package split later in this cycle. `@cloudbitmaps/roaring/gcs` no longer
+  // exists in 0.10.0 — the import is `@cloudbitmaps/gcs`. See MIGRATING.md change 2.
+  import { GcsStorage } from '@cloudbitmaps/gcs';
 
   const store = new CloudRoaring({
     storage: new GcsStorage({ bucket: 'bitmaps', prefix: 'cr' }),
@@ -694,6 +752,11 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
   Option keys: `cold` → `storage`, `coldGenTtlMs` → `storageGenTtlMs`, `coldReaderCacheMax` →
   `storageReaderCacheMax`, `coldReaderCacheMaxBytes` → `storageReaderCacheMaxBytes`.
+
+  **The three `storage*` spellings never shipped.** They were renamed again later in this cycle, when the
+  flat options became groups: the `0.10.0` names are `cache.genTtlMs`, `cache.readerMax` and
+  `cache.readerMaxBytes`. A `0.9.x` upgrader has `coldGenTtlMs` and should go straight to those — see
+  MIGRATING.md change 5.
 
   **Two renames reach past the type system**, so a find-and-replace over your source will not catch them:
 

@@ -11,9 +11,8 @@ current. The distinguishing capability is **serverless chunk-skipping intersecti
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
 and `count()` on a published segment does zero payload reads.
 
-Install two packages: a codec and a storage — `npm i @cloudbitmaps/roaring @cloudbitmaps/s3`.
-The storage packages land in 0.10.0 and are not on npm yet. The published release is 0.9.0, whose layout and
-API differ from what is described here.
+Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3`
+(or `npm i` the same two).
 `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the driver ports) is a dependency of
 both and is never installed directly; it contains no cloud SDK at all. Five storage backends: S3
 (`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
@@ -108,7 +107,7 @@ In-region latency is not yet calibrated and no in-region figure is published.
 
 ## Status
 
-v0.9.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
+v0.10.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
 in a minor bump until the .crbm format freezes at 1.0.
 
 ## Links

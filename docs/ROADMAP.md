@@ -5,7 +5,7 @@ is computed upstream, loaded as an immutable `.crbm` **generation** into S3 (or 
 and read from anywhere — `has`, `count`, `iterate`, and the centerpiece, **chunk-skipping intersection**: an
 `A ∩ B` fetches only the 16-bit chunks that can possibly contribute, which is what makes a serverless read
 cheap. The set lives at object-store prices instead of RAM prices; a bounded in-process LRU keeps the chunks a
-process actually touches cache.
+process actually touches.
 
 This page is a high-level view of what works today, what's proven to what degree, and where it's headed.
 It's a living document, not a promise — see [the note at the bottom](#a-note-on-priorities).
@@ -62,8 +62,8 @@ restate it, so the two can't drift. You install **one codec flavor plus the one 
 and each storage package brings its own SDK — so no install carries an SDK for a service you do not use:
 
 ```bash
-npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
-# the storage packages land in 0.10.0 and are not on npm yet
+pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3   # roaring on AWS: one bucket, storage + registry
+# npm i @cloudbitmaps/roaring @cloudbitmaps/s3     # the same, with npm
 ```
 
 `@cloudbitmaps/core` — the codec-agnostic engine, with **zero runtime dependencies and no cloud SDK** —
@@ -193,7 +193,7 @@ envelope**:
 
 **Measured, not asserted — and measured on what.** The figures on the [benchmarks page](benchmarks.md) are the
 S3-side figures of the July 2026 calibration run: the cost of the object-store requests the engine actually
-issued, and the in-region latency of a `has()`. The read path they exercise — one chunk GET behind the cache
+issued, and the in-region latency of a `has()`. The read path they exercise — one chunk GET behind the
 cache — is unchanged, so they still describe a loaded-store read. The write-side figures of that run described
 the removed warm tier and are no longer quoted. What is **not** yet measured is the loaded store's own shape —
 load throughput, `intersect` and `*Into` latency, RSS under a soak — and those are owed before `1.0`; until they
@@ -239,10 +239,14 @@ between here and there:
    reverted after an adversarial review, which is what takes 80 to the 82 above; a third,
    `readRetentionPolicy`, was pulled back before the change ever landed, so it never left the surface. Each was the same case: a public type or field that only the
    symbol being cut could produce or consume, which is the test worth applying to any surface reduction. The API reference guard now runs in both directions.
-6. **A public docs + site pass leading with the loaded store's strengths.** The README, the guide and the site
-   were written for a tiered engine and still explain the loaded store as what is left after a warm tier was
-   removed. They should lead with what it is: one bucket, immutable generations, cheap chunk-skipping reads from
-   anywhere.
+6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
+   the API reference, the migration guide and the site now lead with what this is: one bucket, immutable
+   generations, cheap chunk-skipping reads from anywhere. The framing turned out to be in better shape than
+   this item assumed — "two tiers" and the driver count were already correct and derived from the code. What
+   was actually wrong was a supply-chain badge that counted the whole project's third-party dependencies as one,
+   in eight places, while the gate watching it derived that number from `@cloudbitmaps/roaring`'s manifest
+   alone. The last
+   residue of the removed tier — nine removal-narrating comments in the public page source — went with it.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.

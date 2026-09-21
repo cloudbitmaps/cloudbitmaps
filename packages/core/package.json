@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/core",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Codec-agnostic engine for CloudBitmaps: the .crbm format, the write-once load/publish path, generation GC, encryption-at-rest, and the driver ports. No cloud SDK.",
   "keywords": [
     "roaring",

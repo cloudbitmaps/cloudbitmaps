@@ -11,8 +11,6 @@
 > `has`, `count`, `iterate`, `intersect` — from anywhere, including a stateless function with no cache to
 > warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
-> **Status: the published release is `0.9.0`. This page documents `0.10.0`, which is unreleased.**
-> `0.10.0` is not on npm yet, and neither are the storage packages it names.
 > Pre-1.0 on purpose — `1.0` is earned by real-cloud
 > cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
@@ -195,7 +193,7 @@ Request counts are read off the AWS SDK layer, command by command — not estima
 from the library's own metrics, which cannot see a PUT. The same run also measured the things a cost model can
 only assume: **zero retry billing** (HTTP
 attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
-list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded cache
+list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded
 cache did its job.
 
 That run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
@@ -211,10 +209,20 @@ and an explicit list of what the run does *not* establish:
 ## Install & entry points
 
 ```bash
-npm i @cloudbitmaps/roaring    # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
-npm i @cloudbitmaps/s3         # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
-                               # ^ the storage packages land in 0.10.0 and are not on npm yet
+pnpm add @cloudbitmaps/roaring   # the codec + engine + in-memory & local drivers (one third-party dep: roaring)
+pnpm add @cloudbitmaps/s3        # the storage you actually have — or @cloudbitmaps/gcs, or @cloudbitmaps/azure-blob
+# npm i @cloudbitmaps/roaring @cloudbitmaps/s3   # the same two packages, with npm
 ```
+
+> **On pnpm 10+, allow the one build script.** pnpm 10 skips dependency build scripts by default, so
+> the `roaring` native addon never downloads and the package throws at `import` — while the install
+> itself prints a warning and **exits 0**. Add this to your `package.json`, then install:
+>
+> ```json
+> { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+> ```
+>
+> pnpm 9 and npm run it already. [Full symptoms and fixes](docs/guide/getting-started.md#cannot-find-module-buildreleaseroaringnode-after-a-successful-install).
 
 > **ESM-only, Node ≥ 22.12.** These packages ship as ES modules; there is no CommonJS bundle. `import` is
 > unaffected, and so is bundling — verified with esbuild, webpack, rollup and Vite, emitting CommonJS as well
@@ -610,7 +618,10 @@ one package per service. You install one of each axis; core arrives as their dep
   shape, kept in sync with the code by CI. Writing a storage driver? It documents
   [`@cloudbitmaps/core/driver-kit`](docs/guide/api-reference.md#cloudbitmapscoredriver-kit), the declared
   contract a driver package builds against.
-- **[Migrating from 0.9.x](MIGRATING.md)** — the driver packages, ESM-only, and the two constructor changes.
+- **[Migrating from 0.9.x](MIGRATING.md)** — eight changes. The live tier's removal touches every `0.9.x`
+  deployment; a DynamoDB registry needs work **before** you upgrade; and two of the eight — the `*Into`
+  verbs now replacing rather than appending, and the renamed metric/result/path strings — change
+  behaviour without raising anything.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.

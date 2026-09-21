@@ -1,22 +1,57 @@
 # Migrating to 0.10.0
 
-`0.10.0` is a breaking release with **seven** changes. Most fail loudly — an unresolved import, a refused
-constructor, or a module that will not load. One changes a default, so it is the one that needs you to look at
-your call sites rather than wait for an error.
+`0.10.0` is a breaking release with **eight** changes. Most fail loudly — an unresolved import, a refused
+constructor, or a module that will not load. **Two do not**, and those are the ones that need you to look at
+your call sites rather than wait for an error: change 6 (the `*Into` verbs now replace where they appended)
+and change 8 (metric names, result fields and on-disk paths moved).
 
 **Start with change 1.** It is the only one that can require a design decision rather than an edit, and it
 affects every `0.9.x` deployment, because the option it removes was required.
+
+> [!WARNING]
+> **If your registry is DynamoDB, there is work to do BEFORE you upgrade** — on `0.9.x`, which is the only
+> line where both registry drivers exist. `0.10.0` cannot read a DynamoDB row at all, so this is not
+> something you can come back to. See [Before you upgrade](#before-you-upgrade-a-dynamodb-registry).
 
 1. [The live (warm) tier is gone](#1-the-live-warm-tier-is-gone)
 2. [The cloud drivers are their own packages](#2-the-cloud-drivers-are-their-own-packages)
 3. [ESM only, Node ≥ 22.12](#3-esm-only-node--2212)
 4. [A storage backend must be built, not assembled](#4-a-storage-backend-must-be-built-not-assembled)
 5. [The flat options became four groups](#5-the-flat-options-became-four-groups)
-6. [The `*Into` verbs can now refuse](#6-the-into-verbs-can-now-refuse)
+6. [The `*Into` verbs replace their destination, and can now refuse](#6-the-into-verbs-replace-their-destination-and-can-now-refuse)
 7. [Core exports only what it supports](#7-core-exports-only-what-it-supports)
+8. [Metric names, result fields and on-disk paths moved](#8-metric-names-result-fields-and-on-disk-paths-moved)
 
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
+
+---
+
+## Before you upgrade: a DynamoDB registry
+
+**Skip this unless your segment pointers live in DynamoDB.** If they do, this is the one piece of work that
+cannot be done after the upgrade.
+
+`0.9.x` is the only line in which the DynamoDB driver and an object-store registry both exist, so it is the
+only place the library itself can read the old rows and write the new ones. `0.10.0` has no DynamoDB driver
+at all. The `.crbm` objects are untouched either way — it is only the pointer rows that move.
+
+**On `0.9.x`, with writers quiesced**, stand up an `S3RegistryDriver` against the bucket you already use for
+generations, and copy every segment's row across **with every field it holds**, not just the pointer:
+
+| field | why dropping it hurts |
+|---|---|
+| `currentGen` | the generation pointer — without it the segment reads empty |
+| `wrappedDeks`, `keyId` | **an encrypted segment whose wrapped keys you drop is unrecoverable.** They exist nowhere else; losing them is a crypto-shred you performed on yourself |
+| `status` | a `destroyed` tombstone that comes back `active` un-fences a name that was erased on request |
+| `retention`, `residency` | drop these and the retention sweep silently stops expiring anything |
+
+Writers must be quiesced because pointer identity is per-registry: a publish landing in the old row during
+the copy is lost. Verify with `checkConsistency()` before you upgrade.
+
+**GCS and Azure users have no in-library bridge**, because those registry drivers arrive in this same release,
+after DynamoDB is gone. Copy the rows out yourself while still on `0.9.x` — the old table's key layout was
+`PK = ns#<namespace>|seg#<segment>`, `SK = reg#` — or move onto S3 first and change buckets afterwards.
 
 ---
 
@@ -52,9 +87,9 @@ If you need the old behaviour while you decide, `0.9.x` stays on npm and the tie
 You now install **two packages**: the codec you want and the storage you have.
 
 ```diff
-- npm i @cloudbitmaps/roaring
-- npm i @aws-sdk/client-s3          # the optional peer you had to remember
-+ npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+- pnpm add @cloudbitmaps/roaring
+- pnpm add @aws-sdk/client-s3          # the optional peer you had to remember
++ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3
 ```
 
 The SDK is a **real dependency** of the storage package, so installing it is the whole step. Nothing is an
@@ -232,13 +267,45 @@ This one throws too.
 
 ---
 
-## 6. The `*Into` verbs can now refuse
+## 6. The `*Into` verbs replace their destination, and can now refuse
 
-`intersectInto` / `unionInto` / `andNotInto` used to write and publish in one step. An empty combine
-therefore replaced the destination with an empty generation and reported success — indistinguishable from a
-correct run, and reachable without passing any option.
+**Two changes, and the first one is silent.** Read this section even if your combines never come out empty.
 
-They now refuse instead, the same way `load()` always has:
+### They replace where they used to append
+
+In `0.9.x`, `intersectInto` / `unionInto` / `andNotInto` **added to** the destination. The engine drained the
+result in batches through `addMany(dest, …)`, and the doc comment said so: *"into `dest` (added, not
+replaced)"*. They returned `Promise<void>`.
+
+In `0.10.0` they write a **new generation of `dest`** and publish it, so the destination holds the result of
+*this* call and nothing else.
+
+```ts
+// 0.9.x — accumulate three audiences into one segment
+await a.unionInto(all, []);
+await b.unionInto(all, []);   // `all` now holds a ∪ b
+await c.unionInto(all, []);   // `all` now holds a ∪ b ∪ c
+
+// 0.10.0 — the same three calls leave `all` holding ONLY c
+```
+
+**Nothing throws.** There is no type error to catch it: the return type changed from `Promise<void>` to
+`Promise<MaterializeResult>`, which is additive at every call site that ignored the result. A pipeline built
+on the accumulate shape keeps running and quietly keeps only its last write.
+
+**What to do instead.** Pass every operand to one call — `a.unionInto(all, [b, c])` — which is also the
+cheaper shape, since it reads each operand once and publishes once. If the inputs arrive over time rather
+than together, accumulate them upstream and `load()` the finished set; a segment changes by publishing a
+whole new generation, which is the write model the rest of this release is built on.
+
+This is the change the lede means by "one changes a default". It is the only one in this guide that a
+`0.9.x` deployment can upgrade into without seeing an error.
+
+### And they refuse an empty result
+
+An empty combine used to add nothing, leaving the destination exactly as it was. Under the new publishing
+model it would instead publish an empty generation over a destination that had data — so it refuses, the
+same way `load()` always has:
 
 ```ts
 const res = await audience.intersectInto(dest, [eligible]);
@@ -335,6 +402,50 @@ If you passed `RetryDeps.isRetryable` or `RetryingOptions.isRetryable`, nothing 
 **Why now rather than later.** `0.10.0` already breaks your import paths, so this costs one more entry in this
 guide instead of a second breaking release. And re-exporting a name is additive, never breaking — so the bias
 is to cut now and restore deliberately, with docs and tests, if a real use case turns up.
+
+## 8. Metric names, result fields and on-disk paths moved
+
+The `cold` → `storage` rename is mostly a type-level change, and your compiler will find it. These are the
+places it reaches past the type system — **strings and paths nothing type-checks**, so each one fails by
+going quiet rather than by erroring.
+
+### Observability strings
+
+| `0.9.x` | `0.10.0` | what stays broken if you miss it |
+|---|---|---|
+| metric event `kind: 'cold.get'` | `'storage.get'` | a dashboard panel filtered on the old kind plots a flat zero |
+| `CountingMetricsSink.snapshot().cold` | `.storage` | a counter read off the snapshot is `undefined`, which most charts render as 0 |
+| `pricing.cold` (on a `PricingProfile`) | `pricing.storage` | a custom profile silently prices storage at zero |
+| `CostReport`'s `coldBytes` | `storageBytes` | the bytes term drops out of your own cost arithmetic |
+| `checkConsistency()` issue `'missing-cold-generation'` | `'missing-storage-generation'` | **an alert rule keyed to the old string matches nothing, which reads exactly like "no torn restores found"** |
+
+The last one is worth a moment: a rule that stops matching looks identical to a rule that has nothing to
+report. Grep your alert definitions, dashboard queries and runbook automation for `cold` before you upgrade,
+not after.
+
+### Local filesystem and CLI paths
+
+| `0.9.x` | `0.10.0` | what to do |
+|---|---|---|
+| `new LocalFsStorage(root)` read `<root>/cold` | `<root>/storage` | rename the directory before switching. The `0.9.x` guide led with `./.cloudbitmaps/cold` |
+| `export-segments` read `<CR_EXPORT_ROOT>/cold` | `<CR_EXPORT_ROOT>/storage` | same rename; the CLI refuses loudly if it finds nothing |
+
+Both of these fail loudly — the constructor and the CLI each refuse a directory that is not there. The next
+one does not.
+
+### Segment names a filesystem cannot hold
+
+The name grammar widened, and `LocalFsStorage` now escapes names that a filesystem would mangle: the Windows
+device names (`con`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, in any case, with or without an extension) and any
+name ending in `.` or a space.
+
+If a `0.9.x` local store holds a segment with such a name, its bytes are still on disk under the old
+spelling, and `0.10.0` looks for the escaped one. **The failure mode is silence, not an error:** `get()`
+returns null, `list()` omits it, and every sweep skips it. Rename the directory to the escaped form, or
+re-load the segment under a name outside that set. Object-store backends are unaffected — this is a
+filesystem constraint, not a format one.
+
+---
 
 ## `instanceof` now holds across packages
 

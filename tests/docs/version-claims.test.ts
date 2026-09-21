@@ -54,6 +54,14 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '0.9.0',
+    "the PREVIOUS release, named in the API reference's paragraph on which option spellings are now refused " +
+      'and in the migration guide throughout. Those are claims about what 0.9.x had, not badges advertising ' +
+      'what this release is — and naming the version is the point of the sentence, so rewording it to dodge ' +
+      'this gate would make the docs worse. The badges that DO advertise the current release carry no ' +
+      'exemption and are still checked on every page.',
+  ],
+  [
     '3.645.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
       'correctness floor, not a preference: measured against MinIO, 3.640.0 drops the unmodeled ' +

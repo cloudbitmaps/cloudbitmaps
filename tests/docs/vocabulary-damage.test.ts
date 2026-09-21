@@ -43,14 +43,23 @@ const files = execFileSync(
  * count noun belongs. Widening these two to every occurrence flagged six correct sentences and no damage,
  * which is the gate that gets routed around rather than obeyed.
  */
+/*
+ * Every multi-word pattern joins on `\s+`, NOT a literal space.
+ *
+ * These files hard-wrap at about 110 characters, so a damaged phrase lands across a line break as often as
+ * not — and a literal space cannot match a newline. Three shipped sentences proved it: `README.md` and
+ * `docs/ROADMAP.md` each carried a wrapped "cache\ncache" while this gate ran green over both, which is the
+ * exact failure the file's header says it exists to prevent. A pattern that only matches the unwrapped
+ * spelling checks whichever half of the prose happens to be short.
+ */
 const DAMAGE: ReadonlyArray<readonly [RegExp, string]> = [
   [/storage\.storage\./g, '`storage.objects.*` — a real GCP permission name'],
-  [/\bplain storage\b/gi, '"plain objects" (JavaScript objects, not our tier)'],
-  [/\bstorage storage\b/gi, '"storage" once'],
-  [/\bcache cache\b/gi, '"cache" once'],
-  [/\bstorage exist\b/gi, '"objects exist"'],
-  [/\bimmutable storage\s*(?=[.,;:)]|$)/gim, '"immutable objects"'],
-  [/\bsuperseded storage\s*(?=[.,;:)]|$)/gim, '"superseded objects"'],
+  [/\bplain\s+storage\b/gi, '"plain objects" (JavaScript objects, not our tier)'],
+  [/\bstorage\s+storage\b/gi, '"storage" once'],
+  [/\bcache\s+cache\b/gi, '"cache" once'],
+  [/\bstorage\s+exist\b/gi, '"objects exist"'],
+  [/\bimmutable\s+storage\s*(?=[.,;:)]|$)/gim, '"immutable objects"'],
+  [/\bsuperseded\s+storage\s*(?=[.,;:)]|$)/gim, '"superseded objects"'],
 ];
 
 describe('the tier renames left no impossible phrasing', () => {
