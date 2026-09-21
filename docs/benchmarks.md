@@ -138,8 +138,10 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   an OOM-kill → exit 137).
 - **The fleet-wide registry scan is `O(total segments)`** — the near-linear "discovery" column is the
   enumeration that every admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`) pays before it does any
-  work. **No read verb enumerates**: `has`, `count`, `iterate` and `intersect` each address one segment. An
-  indexed-enumeration cursor that would bound it is a documented deferral.
+  work. **No read verb enumerates**: `has`, `count`, `iterate` and `intersect` each address one segment. The
+  retention sweep is the one pass that no longer has to pay it — `retireExpired({ scan: 'index' })` reads a
+  due-day index instead of the fleet — but `checkConsistency` and `eraseSubject` still enumerate, and the
+  column below is that enumeration.
 - **Chunk-skipping intersection holds at scale** — intersecting two large multi-chunk segments fetches only the
   shared chunks and skips the rest by key alignment (the crown jewel, on the ids-per-segment axis). The
   load-bearing figure there is the chunk **count** — 100 fetched of 2,000 — because key alignment does not depend

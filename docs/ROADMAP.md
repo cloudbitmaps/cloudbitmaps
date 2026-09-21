@@ -46,7 +46,7 @@ Where each piece sits today:
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| The live (warm) tier | **removed in D2**, archived at the git tag `archive/live-warm-tier` |
+| The live (warm) tier | **removed in two steps** ([above](#where-it-stands) — the lifecycle engine and non-AWS drivers, then the tier as a whole), archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency, RSS soak | **owed**. The [benchmarks page](benchmarks.md) carries no loaded-store measurement; its cloud figures are the S3-side ones of the July 2026 calibration run |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and the object it wrote is deleted again |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
@@ -189,12 +189,14 @@ envelope**:
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
 | **Backends** | S3 storage — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob storage: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency** beyond the one `has()` run; and every loaded-store figure listed as owed below |
+| **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency**, which no run has measured — the calibration run was driven from outside the region and calibrates cost only; and every loaded-store figure listed as owed below |
 
 **Measured, not asserted — and measured on what.** The figures on the [benchmarks page](benchmarks.md) are the
 S3-side figures of the July 2026 calibration run: the cost of the object-store requests the engine actually
-issued, and the in-region latency of a `has()`. The read path they exercise — one chunk GET behind the
-cache — is unchanged, so they still describe a loaded-store read. The write-side figures of that run described
+issued. **They carry no latency figure** — that run was driven from a laptop outside the region, so its
+wall-clock numbers measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed)
+rather than published. The read path the cost figures exercise — one chunk GET behind the cache — is
+unchanged, so they still describe a loaded-store read. The write-side figures of that run described
 the removed warm tier and are no longer quoted. What is **not** yet measured is the loaded store's own shape —
 load throughput, `intersect` and `*Into` latency, RSS under a soak — and those are owed before `1.0`; until they
 exist this page quotes no number for them. Benchmark numbers come with their methodology — we never publish a
@@ -229,8 +231,8 @@ between here and there:
    GC's grace window (`keep`) never provided this: the hop came from *re-resolution* on the TTL, so retaining
    more generations did not affect it. Size `keep` past your longest pinned job — a pinned read does not heal
    forward, it fails, which is the honest failure for a caller that asked for one instant.
-5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry went from **110 exports to
-   82**: the due-index scheduler, `.crbm` construction, object-key layout and a set of defaults already
+5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry went from **89 value exports
+   in `0.9.0` to 82**: the due-index scheduler, `.crbm` construction, object-key layout and a set of defaults already
    stated in prose stopped being importable. They had accumulated
    there because nothing forced the question, and a reader could not tell supported API from plumbing that
    happened to be reachable. `1.0` freezes the format; a surface this size is the other half of that promise,

@@ -1263,7 +1263,9 @@ thing changed; the notes above and [`MIGRATING.md`](MIGRATING.md) are what to re
   - **Compaction.** `compactSegment`, `runCompactionCycle`, `findCompactable`, `store.compact()`,
     `validateCompactionOptions`, every `Compaction*` type, and the `owner` / lease options — plus the partition
     leases (`runLeaseCycle` and family), the lifecycle cycle (`runLifecycleCycle`), the engine loop
-    (`createEngineLoop`) and the `compact-segments` CLI, none of which ever shipped in a release. There is
+    (`createEngineLoop`) and the `compact-segments` CLI. `createEngineLoop` never shipped in a release; the CLI
+    did, as a published `bin` of `@cloudbitmaps/roaring` through `0.9.x`, so its removal is a breaking change
+    for anyone who scheduled it — see `MIGRATING.md`. There is
     nothing left to compact: a generation is already the merged whole.
   - **The five non-AWS warm drivers** — PostgreSQL, Redis, MongoDB, Cassandra/ScyllaDB and MySQL — and their
     `/postgres` · `/redis` · `/mongodb` · `/cassandra` · `/mysql` subpaths. They shipped through `0.9.x`.
@@ -1685,7 +1687,7 @@ test that fails without its fix, verified by re-introducing the bug (`tests/core
 
   **Custom registry drivers:** `null` must round-trip through create, CAS, `get` **and** `list`, and a patch that
   omits `currentGen` must leave it alone while a patch that sets it to `null` must apply. The shared conformance
-  suite gates all of it (case **R8**) — a driver that JSON-drops the field, coerces it to `0`, or merges the patch
+  suite gates all of it — a driver that JSON-drops the field, coerces it to `0`, or merges the patch
   with `patch.currentGen ?? previous` fails.
 
 ### Documentation
@@ -1722,7 +1724,8 @@ test that fails without its fix, verified by re-introducing the bug (`tests/core
 
 - `IRegistryDriver.list`'s contract now *states* what two callers already depended on: a `destroyed` tombstone is
   still a record and must be yielded, a null-generation row must be yielded, and `retention` must survive the
-  projection — a driver that drops it makes retention silently never fire. Conformance **R9** gates it.
+  projection — a driver that drops it makes retention silently never fire. The shared conformance suite
+  gates it.
 
 - Plus the README admin table, `docs/ROADMAP.md` (retention moved to shipped; the sweep's scheduler and per-id TTL
   moved to *deliberately not planned*, where a stated non-goal belongs), the API reference, the DR guide, and the
@@ -2949,7 +2952,8 @@ provenance. Everything below is the work that got it here.
 
 ### Fixed
 
-- **Conformance `D4` now rides out a `TransientError`, ending a recurring Cassandra CI flake.** The
+- **The concurrent read-modify-write conformance case now rides out a `TransientError`, ending a recurring
+  Cassandra CI flake.** The
   concurrent read-modify-write conformance test asserts the OCC contract — *no lost updates* — but its retry loop
   only absorbed `WriteConflictError` and rethrew everything else. A cold Cassandra node whose Paxos layer isn't
   warm answers a burst of `INSERT … IF NOT EXISTS` with *"Server timeout at consistency SERIAL (0 peer(s)
@@ -3163,10 +3167,10 @@ provenance. Everything below is the work that got it here.
   shipped earlier in this line.
 - **Stress harness.** An offline `pnpm stress`
   (`bench/stress.cjs`; machine-dependent, **not** a CI gate) pushes three subsystems past their comfort zone,
-  each against a deterministic oracle: **S1** a budgeted compaction-backlog drain (1,000 dirty segments drain in
+  each against a deterministic oracle: **(1)** a budgeted compaction-backlog drain (1,000 dirty segments drain in
   16 monotonic cycles, ≤ 64 compacted/cycle — the compaction *count* is budget-bounded; discovery stays
-  O(fleet)); **S2** hot-row OCC contention (4,800 concurrent ops on one chunk → the effective set equals a
-  per-writer oracle exactly, no lost update); **S3** a 50 M-id single segment where `count === 50 M` (no loss),
+  O(fleet)); **(2)** hot-row OCC contention (4,800 concurrent ops on one chunk → the effective set equals a
+  per-writer oracle exactly, no lost update); **(3)** a 50 M-id single segment where `count === 50 M` (no loss),
   counted in tens of ms, footprint tracking the roaring container structure (RSS ~370 MiB; JS heap stays ~5.4 MiB
   only because roaring is off-heap). **S2 surfaced a real data-loss bug** (the OCC-backoff premature-exit fixed
   in ) — see Fixed. Results persist to
@@ -3558,7 +3562,7 @@ provenance. Everything below is the work that got it here.
   cost/perf regression or overclaim can't ship — chunk-skipping byte-savings (a 5%-overlap intersection
   fetches ≤ 10% of a full download, measured through the metrics sink), at-rest ≤ 10% of a Redis-HA node,
   the write crossover ≥ the published rate, and the estimator within **±20%** of the engine's measured
-  backend cost (**K3**). Adds an offline, **zero-dependency** `pnpm bench` generator that draws the
+  backend cost. Adds an offline, **zero-dependency** `pnpm bench` generator that draws the
   CloudRoaring-vs-flat-Redis crossover chart straight from the shipped `estimateCost()` (so it can't drift),
   published to `bench/crossover.svg`, `bench/results.json`, [`docs/benchmarks.md`](docs/benchmarks.md), and
   the [site](site/benchmarks.html). Wall-clock latency stays offline (too noisy to gate on shared CI

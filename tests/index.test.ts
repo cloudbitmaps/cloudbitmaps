@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { CloudRoaring, MemoryStorageChunkSource, ValidationError, VERSION } from '@/index';
 
 function store(): CloudRoaring {
@@ -15,10 +15,29 @@ describe('public API', () => {
   // constant drifts silently at the next release, so the manifests are the source of truth and this fails the
   // build the moment a version bump forgets one of the three.
   //
-  // BOTH packages are asserted: the release workflow requires every package version to equal the pushed tag
-  // ("the family releases in lockstep"), and that invariant otherwise had no test — core could drift all the
-  // way to tag-push time, long after merge.
-  it.each(['roaring', 'core'])('keeps VERSION in sync with @cloudbitmaps/%s', (pkg) => {
+  // EVERY package is asserted, derived from the workspace rather than listed here.
+  //
+  // This named `roaring` and `core` only, on the reasoning that those were the two published packages. The
+  // split made that list a subset: `s3`, `gcs` and `azure-blob` could sit at any version and the whole suite
+  // stayed green — 150 files, every gate — because nothing looked at them. The release workflow's tag check
+  // would have caught it, at tag-push time, after the approval, which is precisely the lateness this test
+  // exists to remove.
+  //
+  // The list is read off the filesystem so a sixth package is covered on the day it is created, rather than
+  // on the day someone remembers to add it here.
+  const PACKAGES = readdirSync(new URL('../packages', import.meta.url)).filter((d) =>
+    existsSync(new URL(`../packages/${d}/package.json`, import.meta.url)),
+  );
+
+  it('finds every workspace package', () => {
+    // Without this, a bad glob would make the lockstep check below pass over an empty list.
+    expect(PACKAGES.length).toBeGreaterThanOrEqual(5);
+    expect(PACKAGES).toContain('core');
+    expect(PACKAGES).toContain('roaring');
+    expect(PACKAGES).toContain('s3');
+  });
+
+  it.each(PACKAGES)('keeps VERSION in sync with @cloudbitmaps/%s', (pkg) => {
     const manifest: unknown = JSON.parse(
       readFileSync(new URL(`../packages/${pkg}/package.json`, import.meta.url), 'utf8'),
     );

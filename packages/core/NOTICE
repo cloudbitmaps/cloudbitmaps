@@ -7,6 +7,6 @@ file. You may obtain a copy of the License at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-CloudRoaring builds on the Roaring Bitmap data structure and is designed to use
-the CRoaring engine (via the `roaring` Node.js binding) for in-memory bit math.
-Those projects are independent works under their own licenses.
+@cloudbitmaps/core is the codec-agnostic engine of CloudBitmaps. It contains no bitmap
+codec and no cloud SDK, and has zero runtime dependencies; a flavor package supplies the
+codec through the CodecInterface seam.

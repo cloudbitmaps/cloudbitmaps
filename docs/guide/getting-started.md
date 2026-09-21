@@ -135,7 +135,8 @@ The two that stay quiet are the ones to check by hand: the `*Into` verbs now **r
 where they used to append to it, and the `cold` → `storage` rename reaches metric names, result fields and
 on-disk paths that nothing type-checks.
 
-1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
+1. **The three drivers became one backend.** `new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry })`
+   — where `cold` and `warm` were both required — is now
    `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
    the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
    expressible. Every driver is still exported; if you genuinely want the halves apart —

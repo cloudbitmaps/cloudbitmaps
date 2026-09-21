@@ -76,7 +76,12 @@ const BARE_ID = '[A-Z]{1,2}\\d{1,2}';
  * excused `V4`, `V5` and `V7`, which are private-corpus ids — the exemption silently swallowed three real
  * hits. Only `V8` is a product.
  */
-const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+)$/;
+const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+|C[01]|P\d{1,2})$/;
+//                                                        ^^^^^  ^^^^^^^
+// `C0`/`C1` are the Unicode control-character blocks — `// C0 plus DEL: a bare \`< 0x20\` lets U+007F
+// through` is a standards reference a reader resolves without us. `P50`/`P95`/`P99` are percentile notation,
+// which in a latency-benchmark repo will appear the moment someone starts a sentence with one. Both are the
+// narrow, honest collision the rule says to exempt by name rather than absorb by widening a frame.
 
 /**
  * Citation forms only. Each names a document that exists solely in the private corpus.
@@ -88,9 +93,14 @@ const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+)$/;
  * - `R2` — Cloudflare R2, the object store, which is a product name and not a decision id.
  */
 const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
-  ['phase id', /\bPhase[\s-]+(?:\d+[a-z]?|[A-G]\d?)\b/],
+  // Case-insensitivity applies to the NUMBERED form only. `phase 4e` is a tracker citation however it is
+  // capitalised, but a lone letter is usually a local identifier — `site/demo.js` says "the point of phase B"
+  // about its own `function phaseB` twelve lines up, which a reader resolves by scrolling. Lower-casing the
+  // letter form turned that into a hit.
+  ['phase id', /\bphase[\s-]+\d+[a-z]?\b/i],
+  ['phase id (letter)', /\bPhase[\s-]+[A-G]\d?\b/],
   ['audit gap', /\bgaps?\s*#\d+|\baudit gaps?\b/i],
-  ['review finding', /\bfinding\s+[A-Z]\d+\b/],
+  ['review finding', /\bfindings?\s+[A-Z]\d+\b/i],
   ['test-strategy id', /\btest-strategy\s+[A-Z]?\d+/i],
   ['threat-model id', /\bthreat[\s-]model\s+[A-Z]?\d+/i],
   ['audit round', /\baudit round\s+\d/i],
@@ -114,16 +124,108 @@ const CITATIONS: ReadonlyArray<readonly [string, RegExp]> = [
   ['id closing a parenthetical', new RegExp(`[—–-]\\s*${BARE_ID}\\)`)],
   [
     'id modifying a noun',
-    new RegExp(`\\b(?:the|The|in|In|case|per|from|by|and)\\s+${BARE_ID}\\s+[a-z]`),
+    // The trailing context is punctuation OR a lowercase word. Requiring a word missed `removed in D2,` and
+    // `see the T4.` — a citation that ends its clause is the commonest shape of all, and the one a sweep
+    // leaves behind when it deletes the surrounding words.
+    new RegExp(`\\b(?:the|The|in|In|case|per|from|by|and)\\s+${BARE_ID}(?:\\s+[a-z]|[,.;:)])`),
   ],
   [
     'labelled id',
-    new RegExp(`\\b(?:Conformance|conformance|round|Round|item|Item)\\s+${BARE_ID}\\b`),
+    new RegExp(`\\b(?:Conformance|conformance|round|Round|item|Item|case|Case)\\s+${BARE_ID}\\b`),
   ],
   // `(T3 regression guard)` — the id OPENS the parenthetical instead of filling it, which the first frame
   // (paren contains only ids) cannot see.
   ['id opening a parenthetical', new RegExp(`\\(${BARE_ID}\\s+[a-z]`)],
+  // `S1: validate size, then deserialize…` — the id LABELS what follows instead of sitting inside a phrase,
+  // so it carries no determiner, no parenthesis and no naming word. Every frame above needs one of those.
+  // This shipped in `@cloudbitmaps/roaring`'s published `.d.ts`, on the doc comment of a public static
+  // method, where it reaches users on hover.
+  ['id labelling a step', new RegExp(`(?:^|[\\s>])${BARE_ID}:\\s+[a-z]`, 'm')],
+  // `…against a deterministic oracle: S1 a budgeted drain …; S2 hot-row contention…` — an inline enumeration
+  // where each id heads its own clause, so there is no determiner in front and no bracket around it.
+  ['id heading a clause', new RegExp(`[:;]\\s+${BARE_ID}\\s+[a-z]`)],
 ];
+
+/**
+ * Frames that apply to PUBLISHED SOURCE only, by name.
+ *
+ * `id labelling a step` is the right check for a doc comment and the wrong one for prose, because the prose
+ * that writes `M1 — local end-to-end:` is DEFINING M1 in the same breath — `README.md` and `bench/scale.cjs`
+ * both enumerate their own milestone vocabulary in the file that uses it, which is precisely what makes those
+ * ids resolvable. Applying the frame everywhere flagged all three, and a gate that fires on the honest cases
+ * is one people learn to route around.
+ *
+ * Under `packages/*\/src` there is no such list, and the stakes are highest: these files become the published
+ * `.d.ts` and sourcemaps, where `S1: validate size, then deserialize` sat on a public static method.
+ */
+const SOURCE_ONLY_KINDS = new Set(['id labelling a step']);
+const isPublishedSource = (rel: string): boolean => /^packages[/\\][^/\\]+[/\\]src[/\\]/.test(rel);
+
+/**
+ * The text as a READER sees it, with an index back to the original for reporting.
+ *
+ * Two things sit between the raw bytes and the sentence a reader parses, and a pattern applied to the raw
+ * bytes misses a citation that is plainly there in both.
+ *
+ * **Markdown emphasis.** `(**I5**)` is not `(I5)`; `case **R8**` is not `case R8`. Every frame below is
+ * built around the punctuation that surrounds an id, and a `**` lands exactly there. This is not
+ * hypothetical: the header of this very file names ``case R8`` as a form it catches, and `CHANGELOG.md`
+ * carried `case **R8**` while this gate ran green over it — the gate failing on its own documented example.
+ *
+ * **Hard wraps.** These files wrap at ~110 columns, so `in Phase\n4e` is one phrase in two lines. A per-line
+ * scan cannot see it, and which half a citation lands in is decided by how long the preceding words happen
+ * to be. `vocabulary-damage.test.ts` learned this and switched to `\s+`; the lesson was never carried here.
+ * Joining also has to drop the continuation's comment prefix, or a JSDoc `*` sits where the id should be.
+ *
+ * Positions are mapped rather than recomputed: `map[i]` is the original offset of normalized character `i`,
+ * so a hit still reports the line a human would open.
+ */
+function normalize(src: string): { text: string; map: number[] } {
+  const out: string[] = [];
+  const map: number[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch0 = src[i] as string;
+    // Code ticks are presentation as well: a reader sees `Conformance \`D4\`` as "Conformance D4", and the
+    // frame that names it cannot span the tick.
+    if (ch0 === '`') {
+      i += 1;
+      continue;
+    }
+    // Bold/italic markers vanish: they are presentation, never part of the id or its frame.
+    if (src.startsWith('**', i) || src.startsWith('__', i)) {
+      i += 2;
+      continue;
+    }
+    const ch = ch0;
+    if ((ch === '*' || ch === '_') && /[A-Za-z0-9(]/.test(src[i + 1] ?? '')) {
+      const prev = src[i - 1] ?? ' ';
+      // An OPENING single marker: preceded by whitespace or an opening bracket. A `*` that follows a word
+      // (`a*b`) or starts a JSDoc line is handled by the join below, not here.
+      if (/[\s([{]/.test(prev)) {
+        i += 1;
+        continue;
+      }
+    }
+    if ((ch === '*' || ch === '_') && /[A-Za-z0-9).,;:]/.test(src[i - 1] ?? '')) {
+      i += 1;
+      continue;
+    }
+    // A hard wrap becomes one space, taking the continuation's comment prefix with it.
+    if (ch === '\n') {
+      const m = /^\n[ \t]*(?:\*(?!\/)[ \t]?|\/\/[ \t]?|#[ \t]?|>[ \t]?)?/.exec(src.slice(i));
+      const consumed = m === null ? 1 : m[0].length;
+      out.push(' ');
+      map.push(i);
+      i += consumed;
+      continue;
+    }
+    out.push(ch);
+    map.push(i);
+    i += 1;
+  }
+  return { text: out.join(''), map };
+}
 
 describe('no pointer the public cannot reach', () => {
   const files = publicFiles();
@@ -148,9 +250,15 @@ describe('no pointer the public cannot reach', () => {
 
   it.each(files)('%s — cites nothing that lives only in the private corpus', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
+    const { text: line, map } = normalize(src);
     const hits: string[] = [];
-    src.split('\n').forEach((line, i) => {
+    const lineOf = (idx: number): number => {
+      const orig = map[Math.min(idx, map.length - 1)] ?? 0;
+      return src.slice(0, orig).split('\n').length;
+    };
+    {
       for (const [kind, re] of CITATIONS) {
+        if (SOURCE_ONLY_KINDS.has(kind) && !isPublishedSource(rel)) continue;
         // EVERY match on the line, and the product exemption applied PER MATCHED ID.
         //
         // The first version did `re.exec(line)` and `continue`d the whole pattern when that one match's id
@@ -164,10 +272,10 @@ describe('no pointer the public cannot reach', () => {
           // would excuse the citation sitting behind a product name.
           const ids = [...m[0].matchAll(new RegExp(BARE_ID, 'g'))].map((x) => x[0]);
           if (ids.length > 0 && ids.every((x) => PRODUCT_IDS.test(x))) continue;
-          hits.push(`${rel}:${i + 1}  ${kind} "${m[0]}"  —  ${line.trim().slice(0, 100)}`);
+          hits.push(`${rel}:${lineOf(m.index ?? 0)}  ${kind} "${m[0]}"`);
         }
       }
-    });
+    }
     expect(hits).toEqual([]);
   });
 });

@@ -577,7 +577,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
    * Run `read` against the pinned snapshot, healing the torn-read window generation GC can open: if the
    * generation we resolved was superseded *and* swept (the grace window elapsed), the Storage driver throws
-   * {@link NotFoundError}. Rather than surface that as a query failure (**I5**), we drop the stale snapshot,
+   * {@link NotFoundError}. Surfacing that as a query failure would turn a benign, recoverable race into a
+   * caller-visible error, so instead we drop the stale snapshot,
    * re-resolve `currentGen`, and retry once — the read then serves the newer (committed, immutable) generation,
    * a monotonic move forward — within one incarnation of the row. A name that was retired and re-created is a
    * different segment and can resolve to a LOWER generation, which is why the snapshot carries the row's token

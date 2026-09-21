@@ -65,15 +65,29 @@ store without one:
 new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry });
 ```
 
-`0.10.0` has one storage tier. The mutable warm store, the per-call `add`/`remove` verbs over it, the
-compaction daemon and the partition leases that kept it healthy are all removed, along with their options
-(`warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff`) and their metric events.
+`0.10.0` has one storage tier. The mutable warm store, the per-call `add`/`remove` verbs over it and the
+compaction daemon are all removed, along with their options (`warmReadConsistency`, `maxWarmScanBytes`,
+`writeConcurrency`, `occBackoff`) and their metric events.
+
+**The `compact-segments` CLI went with them.** `@cloudbitmaps/roaring` published two binaries in `0.9.x` and
+publishes one now:
+
+```diff
+- compact-segments     # folded warm deltas into the storage tier — there are no deltas to fold
+  export-segments      # unchanged
+```
+
+If a cron entry, Kubernetes `CronJob` or systemd timer runs `compact-segments`, it will fail with
+`command not found` after the upgrade. **Delete the schedule — there is no replacement and nothing is left
+undone without it**, because a load publishes a complete generation rather than a delta needing compaction.
+Note that `CHANGELOG.md` says this CLI "never shipped in a release"; that is wrong, and it is why this entry
+was missing from earlier drafts of this guide.
 
 **What to do depends on why you had it**, and only you can answer that:
 
 | you used the warm tier for | in `0.10.0` |
 |---|---|
-| **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it. No change in shape, and it is what the library is now built around |
+| **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it, and it is what the library is now built around. **The method is new** — `0.9.x` had no `load` on the store; the bulk path was the free function `bulkLoadCrbmGeneration(driver, key, ids)`, which is gone |
 | **per-call `add` / `remove` on the read path** | there is no replacement, and there will not be one on the object store. Micro-batch into a load, or keep those writes in RAM — Redis does that well. Hot-path *reads* are what this library is for |
 | **freshness inside a few seconds** | load more often. A load is one PUT plus a pointer swap, so the floor is your job cadence, not the library |
 
@@ -415,13 +429,50 @@ going quiet rather than by erroring.
 |---|---|---|
 | metric event `kind: 'cold.get'` | `'storage.get'` | a dashboard panel filtered on the old kind plots a flat zero |
 | `CountingMetricsSink.snapshot().cold` | `.storage` | a counter read off the snapshot is `undefined`, which most charts render as 0 |
-| `pricing.cold` (on a `PricingProfile`) | `pricing.storage` | a custom profile silently prices storage at zero |
-| `CostReport`'s `coldBytes` | `storageBytes` | the bytes term drops out of your own cost arithmetic |
+| `pricing.cold` (on a `PricingProfile`) | `pricing.storage` | **`TypeError: Cannot read properties of undefined (reading 'getPerMillion')`** — a custom profile does not mis-price, it stops working |
+| `groundedReport({ coldBytes })` | `{ storageBytes }` | **`ValidationError: storageBytes must be a finite number >= 0; got undefined`**. This is a parameter of `groundedReport()`, not a field of `CostReport` |
 | `checkConsistency()` issue `'missing-cold-generation'` | `'missing-storage-generation'` | **an alert rule keyed to the old string matches nothing, which reads exactly like "no torn restores found"** |
 
-The last one is worth a moment: a rule that stops matching looks identical to a rule that has nothing to
-report. Grep your alert definitions, dashboard queries and runbook automation for `cold` before you upgrade,
-not after.
+The `checkConsistency` one is worth a moment: a rule that stops matching looks identical to a rule that has
+nothing to report. Grep your alert definitions, dashboard queries and runbook automation for `cold` before you
+upgrade, not after.
+
+The two cost rows are the exceptions to this section's lede — they raise rather than go quiet. Both are listed
+here anyway, because they are `cold` → `storage` renames and you will find them with the same grep.
+
+### `CostReport` lost fields, it did not only rename them
+
+Grepping for `cold` is **not** enough here, because the tier breakdown is gone rather than renamed. Reading
+`byTier.storage` after a search-and-replace gets you `undefined`, not a number.
+
+| `0.9.x` `CostReport` | `0.10.0` |
+|---|---|
+| `monthlyUSD.byTier` — `{ hot, warm, cold }` | **gone.** There is one tier to bill for, so a per-tier split has nothing to split. Use `monthlyUSD.byOp.storage` for the bytes term |
+| `monthlyUSD.byOp.writes` · `.compaction` | **gone** with the write path and the compactor |
+| `redisCrossover.writesPerSec` | **gone.** The crossover is a read rate; `redisCrossover.readsPerSec` remains |
+| `report.advisories` and the `CostAdvisory` type | **gone** |
+| `assumptions.topology` | **gone** — there is one topology now |
+
+What remains on `CostReport`: `monthlyUSD.{byOp,total}`, `redisCrossover.readsPerSec`, `verdict`,
+`rationale`, and `assumptions.{cacheHitRate,pricingName,grounded,notes}`.
+
+### The erasure ledger renamed its fields — and this one is silent
+
+`SubjectErasureEntry`, the per-segment record inside `EraseSubjectResult`, is the **proof-of-deletion
+artifact** this library tells you to persist. Its fields moved, and nothing raises if you read the old ones:
+a GDPR report built from `entry.removed` now reads `undefined`, which is falsy, which renders as *nothing was
+erased*. **Of everything in this guide, this is the change most likely to produce a compliance record that is
+confidently wrong.**
+
+| `0.9.x` | `0.10.0` | note |
+|---|---|---|
+| `removed: boolean` | `erased: boolean` | `erased` now means both halves at once: the id was a member, a generation without it is current, **and** the generation that held it has been deleted from the bucket |
+| `physicallyPurged: boolean` | *(folded into `erased`)* | the physical half is no longer a separate, deferred outcome — an erasure is a rewrite, and the rewrite's predecessor is collected before the entry is returned |
+| `toGen?: number` | `generation?: number` | the generation written without the id |
+| — | `fromGeneration?: number` | new: the generation the id was found in |
+
+Audit your erasure tooling for `.removed` and `.physicallyPurged` before you upgrade. Both are gone, and both
+fail by reading as `false`.
 
 ### Local filesystem and CLI paths
 
@@ -436,7 +487,8 @@ one does not.
 ### Segment names a filesystem cannot hold
 
 The name grammar widened, and `LocalFsStorage` now escapes names that a filesystem would mangle: the Windows
-device names (`con`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, in any case, with or without an extension) and any
+device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, in any case, with or without an
+extension) and any
 name ending in `.` or a space.
 
 If a `0.9.x` local store holds a segment with such a name, its bytes are still on disk under the old
