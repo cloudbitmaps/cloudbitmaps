@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /*
- * The one runtime dependency, `roaring`, is a native addon that node-pre-gyp downloads as a prebuilt binary at
- * install time (compiling from source if no prebuilt matches). Our provenance-signed publish does not cover it —
- * it is not in our tarball — so this records what we got, per platform, and fails when it changes.
+ * `@cloudbitmaps/roaring`'s one third-party dependency, `roaring`, is a native addon that node-pre-gyp
+ * downloads as a prebuilt binary at install time (compiling from source if no prebuilt matches). Our
+ * provenance-signed publish does not cover it — it is not in our tarball — so this records what we got,
+ * per platform, and fails when it changes.
  *
  * Modes:
  *   - key known in scripts/roaring-prebuilt-checksums.json → sha256 must match, else exit 1;

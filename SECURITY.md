@@ -67,8 +67,15 @@ because the two that matter most — `adm-zip` under `cassandra-driver` and `uui
 are on paths the unit suite never exercises.
 
 `uuid` is deliberately pinned to `^11.1.1` rather than left open: the advisory is fixed at 11.1.1, and an
-unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit. **None of these
-reach consumers** — `@cloudbitmaps/core` has zero runtime dependencies and `@cloudbitmaps/roaring` has two.
+unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit.
+
+**None of these overrides reach consumers.** A `pnpm.overrides` entry applies to *this workspace's* install
+tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
+ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
+`@cloudbitmaps/core`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
+(the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). Two of the packages above do
+sit under those SDKs transitively — `undici` under the AWS SDK, `uuid` under `@google-cloud/storage` — at
+whatever version the SDK itself resolves, which is the surface to reason about here, not our pinned one.
 
 ### Triaged (accepted) advisories
 

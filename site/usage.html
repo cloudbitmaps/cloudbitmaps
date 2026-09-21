@@ -102,7 +102,7 @@
               <a class="btn" href="#retention">Retention</a>
             </p>
             <p class="meta">
-              Apache-2.0 · 1 third-party dependency · one package per storage service, each with its own SDK
+              Apache-2.0 · zero-dependency core · one package per storage service, each with its own SDK
             </p>
           </div>
 
@@ -116,7 +116,10 @@ npm audit signatures</code></pre>
             <div class="install-alt">
               <p class="label">Supply chain</p>
               <p class="install-note">
-                Published tokenlessly from CI via OIDC with SLSA provenance attached. One third-party dependency.
+                Published tokenlessly from CI via OIDC with SLSA provenance attached.
+                <span class="m">@cloudbitmaps/core</span> has no third-party dependencies; the codec adds
+                one native dependency (<span class="m">roaring</span>, the Node binding to CRoaring), and each
+                storage package its own cloud SDK.
               </p>
             </div>
           </aside>
@@ -170,11 +173,13 @@ npm audit signatures</code></pre>
           </div>
         </div>
         <p class="note" style="max-width: 82ch">
-          The <span class="m">registry</span> is optional in the strict sense — hand the store
-          <span class="m">storage</span> alone and it finds the highest generation in the bucket and reads it. It
-          is what resolves a generation in one read instead of a list-scan, what makes an encrypted segment
-          readable, and what every write and every lifecycle call publishes through. Wire it for anything past
-          a first look.
+          The <span class="m">registry</span> is what resolves a generation in one read instead of a
+          list-scan, what makes an encrypted segment readable, and what every write and every lifecycle call
+          publishes through. <strong>You do not wire it separately.</strong> A backend —
+          <span class="m">S3Storage</span>, <span class="m">GcsStorage</span> and the rest — carries it, which
+          is why <span class="m">storage</span> is the only location key the store takes. Hand the store a bare
+          <span class="m">IStorageDriver</span> instead and there is no pointer at all: it finds the highest
+          generation in the bucket by list-scan, cleartext and read-only. Fine for a first look, not past it.
         </p>
       </section>
 
@@ -435,11 +440,16 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
            A matrix rather than a list of names. Which ROLES a backend can fill is the question a reader
            actually has, and a flat list of logos does not answer it. -->
       <section id="drivers">
-        <h2>Four drivers, two independent choices</h2>
+        <h2>Four drivers, each carrying both halves</h2>
         <p class="lede">
-          Storage and registry are picked separately. Anything with a cheap ranged read and a write-once put
-          works as storage; anything with a cheap compare-and-swap works as the registry. Each backend's SDK is
-          a <strong>real dependency</strong> of its own package — install only the storage you use.
+          A backend carries the immutable generation objects <em>and</em> the pointer row, from one bucket and
+          one prefix — so a deployment names one service, not two. Anything with a cheap ranged read and a
+          write-once put can serve as storage; anything with a cheap compare-and-swap can serve as the pointer;
+          each of the four below does both. Need them apart?
+          <span class="m">createBackend({ storage, registry })</span> still composes a storage driver and a registry
+          driver by hand. Each
+          backend's SDK is a <strong>real dependency</strong> of its own package — install only the storage you
+          use.
         </p>
         <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
              seen that page can reasonably arrive here looking for Redis in the table and read its absence as
@@ -470,7 +480,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
                   <td>S3</td>
                   <td><span class="m">@cloudbitmaps/s3</span></td>
                   <td class="from">storage · registry</td>
-                  <td class="num">@aws-sdk/client-s3 &gt;=3.645</td>
+                  <td class="num">@aws-sdk/client-s3 &gt;=3.645.0 &lt;4</td>
                 </tr>
                 <tr>
                   <td>Google Cloud Storage</td>
@@ -631,7 +641,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
               <a class="btn" href="architecture.html">How it works</a>
               <a class="btn" href="benchmarks.html">Benchmarks</a>
             </div>
-            <p class="meta">Apache-2.0 · v0.9.0 · 1 third-party dependency · 4 storage drivers</p>
+            <p class="meta">Apache-2.0 · v0.9.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>

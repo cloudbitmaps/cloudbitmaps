@@ -259,7 +259,7 @@ no SDK for a service you do not use.
 the DynamoDB SDK, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
 because S3 is a protocol as much as a product — the same package serves R2 and MinIO.
 
-> **Alpine / musl:** `roaring` — the one third-party runtime dep — ships prebuilt binaries for common **glibc**
+> **Alpine / musl:** `roaring` — `@cloudbitmaps/roaring`'s one third-party dep — ships prebuilt binaries for common **glibc**
 > targets (incl. Amazon Linux, which CI proves each run). It has **no musl prebuilt**, so on an Alpine base image
 > it compiles from source at install — add a toolchain first (`apk add --no-cache build-base python3`), or use a
 > glibc image (`node:22-slim`). This is a `roaring` install-time requirement, not a runtime dependency of

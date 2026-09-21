@@ -95,7 +95,7 @@
             <h1>What it costs, and where it stops paying.</h1>
             <p class="hero-lede">
               Measured against real S3 — no emulator — with the request counts read off the AWS SDK rather than
-              off our own arithmetic. Every figure below is checked against its source by a build gate, so a
+              off our own arithmetic. Every money figure and rate below is checked against its source by a build gate, so a
               regression <em>or an overclaim</em> fails the build.
             </p>
             <p class="actions">
@@ -223,7 +223,7 @@
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
                rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
-            Assumptions: cache-cache hit rate <strong>0</strong>, the stored-bytes term at
+            Assumptions: cache hit rate <strong>0</strong>, the stored-bytes term at
             <strong>zero</strong>, <span class="m">us-east-1</span> on-demand request rates, and the
             reserved-RAM baseline is an ElastiCache HA cluster — <strong>1 primary + 2 replicas</strong> on
             <span class="m">cache.m7g.large</span>, about $115/mo single-node. And one crossover rather than
@@ -278,7 +278,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Cache-cache hit rate</td>
+                  <td>Cache hit rate</td>
                   <td class="num">0</td>
                   <td class="from">
                     Every read billed — the pessimal value, chosen so the figure cannot flatter us. A cache that
@@ -398,11 +398,11 @@
         </p>
         <figure class="chart">
           <!-- BENCH:CHART:START -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 396" width="760" height="396" font-family="var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)" role="img" aria-label="CloudRoaring vs flat Redis-HA cost crossover chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 396" width="760" height="396" font-family="var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)" role="img" aria-label="CloudBitmaps vs flat Redis-HA cost crossover chart">
 <rect x="1" y="1" width="758" height="394" rx="0" fill="var(--cb-surface, #ffffff)" stroke="var(--cb-rule, #e4e8ed)"/>
 <text x="28" y="34" font-size="17" font-weight="700" fill="var(--cb-ink, #15181e)">Where pay-per-use crosses a flat Redis-HA node</text>
 <text x="28" y="56" font-size="12.5" fill="var(--cb-faint, #69737f)">aws-us-east-1-ondemand · cache off · flat Redis-HA = $346/mo</text>
-<line x1="28" y1="78" x2="44" y2="78" stroke="var(--cb-cyan, #34378f)" stroke-width="3"/><text x="50" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">CloudRoaring (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">Redis HA (flat)</text>
+<line x1="28" y1="78" x2="44" y2="78" stroke="var(--cb-cyan, #34378f)" stroke-width="3"/><text x="50" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">CloudBitmaps (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">Redis HA (flat)</text>
 <g>
 <text x="66" y="122" font-size="13.5" font-weight="600" fill="var(--cb-ink, #15181e)">Sustained point reads (object GETs, cache off)</text>
 <rect x="66" y="142" width="439.7" height="200" fill="var(--cb-ok, #1e7a52)" opacity="0.06"/>
@@ -556,7 +556,7 @@
                  mode, and a reader was left to conclude nothing had been done. But it is worth being exact
                  about what each one bounds — the shard filter runs after the registry enumeration, so every
                  worker still reads every row and only the per-segment work is divided. The enumeration is the
-                 part still unbounded in the general case, and it is the part the measured 12.9 s is mostly
+                 part still unbounded in the general case, and it is the part the measured 11.6 s is mostly
                  made of. -->
             <span class="rl-note">
               Only the admin passes pay this — <span class="m">checkConsistency</span>,
@@ -783,7 +783,7 @@ pnpm bench</code></pre>
           <a href="flavors.html">Flavors</a> <a href="architecture.html">Architecture</a>
           <a href="usage.html">Usage</a>
         </p>
-        <p class="meta">Pre-1.0 · single maintainer · every figure here is gated against its source</p>
+        <p class="meta">Pre-1.0 · single maintainer · every money figure and rate here is gated against its source</p>
       </div>
     </footer>
 

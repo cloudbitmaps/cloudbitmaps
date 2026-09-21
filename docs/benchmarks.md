@@ -14,7 +14,7 @@ rate. Reads are the axis where a flat, always-on node competes.
 ## The crossover chart
 
 <!-- BENCH:CHART:START -->
-![CloudRoaring vs flat Redis-HA cost crossover](../bench/crossover.svg)
+![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)
 <!-- BENCH:CHART:END -->
 
 <!-- BENCH:STATS:START -->

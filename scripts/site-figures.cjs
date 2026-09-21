@@ -91,13 +91,13 @@ if (strayLatency) {
 const k3 = /never quotes a cheaper bill than the engine incurs/.test(doc);
 if (!k3) {
   fail(
-    'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim (K3: "never quotes a cheaper ' +
+    'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim ("never quotes a cheaper ' +
       'bill than the engine incurs")',
   );
 }
 if (/prediction lands within ±\d+%/.test(doc)) {
   fail(
-    'docs/benchmarks.md states the estimator accuracy as a ±N% band — K3 asserts a floor (never cheaper than ' +
+    'docs/benchmarks.md states the estimator accuracy as a ±N% band, but the claim is a floor (never cheaper than ' +
       'measured), and a band would publish a weaker claim than the test makes',
   );
 }
@@ -164,30 +164,76 @@ const NUMBER_WORDS = [
   'nine',
   'ten',
 ];
+/**
+ * Reader-visible text: tags become a space, entities are decoded, whitespace collapses.
+ *
+ * Every prose rule below runs on THIS, never on raw markup. Matching a prose pattern against serialised HTML
+ * looked equivalent and was not: `<strong>9</strong> storage drivers` reads as a count to a human and matched
+ * nothing, because the regex wanted literal whitespace between the number and the noun — and wrapping a figure
+ * in `<strong>` is this site's own house style, so the markup the pages already use was the bypass. An
+ * adversarial review put a wrong driver count and a wrong dependency count on the page that way, and the only
+ * trace was a statement tally quietly dropping by one.
+ *
+ * Comments are KEPT deliberately. `view-source` is public, and a stale claim in a comment is exactly the kind
+ * that nothing re-reads.
+ */
+function visibleText(html) {
+  // `<meta name="description">` and `og:description` FIRST. Their text is reader-facing — it is what a search
+  // result and a shared link show — but it lives in an attribute, so stripping tags deletes it. Hoisting it
+  // into the body keeps it in scope; dropping it silently cost three of the thirteen driver-count statements
+  // the moment this function was introduced, which is the kind of coverage loss a passing gate hides.
+  const described = [...html.matchAll(/<meta\b[^>]*content="([^"]*)"[^>]*>/gi)]
+    .filter((m) => /name="(description|og:description)"|property="og:description"/i.test(m[0]))
+    .map((m) => m[1])
+    .join(' ');
+  return (described + ' ' + html)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ');
+}
+
+/** Every page under site/, as a [relative path, reader-visible text] pair. */
+function sitePages() {
+  return fs
+    .readdirSync(SITE, { withFileTypes: true, recursive: true })
+    .filter((e) => e.isFile() && /\.(html|txt)$/.test(e.name) && e.name !== 'robots.txt')
+    .map((e) => path.relative(SITE, path.join(e.parentPath ?? e.path, e.name)))
+    .map((rel) => [rel, visibleText(fs.readFileSync(path.join(SITE, rel), 'utf8'))]);
+}
+
 function checkDriverCountEverywhere(want) {
   const correctWord = NUMBER_WORDS[want];
   let checked = 0;
-  for (const rel of fs
-    .readdirSync(SITE, { withFileTypes: true, recursive: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.html'))
-    .map((e) => path.relative(SITE, path.join(e.parentPath ?? e.path, e.name)))) {
-    const html = fs.readFileSync(path.join(SITE, rel), 'utf8');
-
-    // `· N storage drivers` in the footer meta line.
-    for (const m of html.matchAll(/(\d+)\s+storage drivers/g)) {
-      checked++;
-      if (Number(m[1]) !== want) {
-        fail(`site/${rel} says "${m[1]} storage drivers" but the source has ${want}`);
-      }
-    }
-    // The spelled-out form, anywhere: prose, a heading, a nav button, a <meta> description.
-    for (const m of html.matchAll(
-      new RegExp(`\\b(${NUMBER_WORDS.join('|')})\\s+(?:storage\\s+)?drivers\\b`, 'gi'),
+  // `llms.txt` is in scope too: it is the copy written to be quoted verbatim by an assistant, so an ungated
+  // number there is one that gets repeated as fact somewhere we will never see.
+  for (const [rel, text] of sitePages()) {
+    // A count and the noun, with room for an adjective between them — "nine production storage drivers" is
+    // the same claim and used to walk straight past a pattern that demanded they be adjacent.
+    //
+    // The slot takes ADJECTIVES only. Function words are excluded because they change the sentence from a
+    // count of what ships into a reference to some of it: "one of our warm drivers" (a real sentence on
+    // /flavors/roaring, about Redis) counts nothing, and `the two drivers` names one backend's storage and
+    // registry halves. Both are true English about different things, so widening to catch them would flag
+    // correct prose — the gate people route around.
+    const COUNT = `(\\d+|${NUMBER_WORDS.join('|')})`;
+    const ADJECTIVES = '(?:(?!of\\b|in\\b|for\\b|to\\b|storage\\b)[a-z-]+\\s+){0,2}';
+    for (const m of text.matchAll(
+      new RegExp(`(\\bthe\\s+)?\\b${COUNT}\\s+${ADJECTIVES}(storage\\s+)?drivers\\b`, 'gi'),
     )) {
+      // "the" excludes the phrase ONLY where the noun is bare. `the two drivers` is anaphoric — it names one
+      // backend's storage and registry halves, which `S3Storage` configures together. `the four storage
+      // drivers` is a count of what ships, and saying "storage" is what distinguishes them. An unconditional
+      // `the` exclusion dropped that one silently, which the floor below is what caught.
+      if (m[1] && !m[3]) continue;
       checked++;
-      if (m[1].toLowerCase() !== correctWord) {
+      const token = (m[2] ?? '').toLowerCase();
+      const stated = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS.indexOf(token);
+      if (stated !== want) {
         fail(
-          `site/${rel} says "${m[0]}" but the source has ${want} (${correctWord}) — ` +
+          `site/${rel} says "${m[0].trim()}" but the source has ${want} (${correctWord}) — ` +
             'a spelled-out count drifts exactly like a digit one',
         );
       }
@@ -425,14 +471,51 @@ const specAnchors = [];
     );
   }
 
-  // Only `roaring` is somebody else's code; `@cloudbitmaps/core` is ours and is declared `workspace:^`. This is
-  // what makes the page's wording "third-party dependency" true where a bare "runtime dependency" would not be.
-  const roaringPkg = JSON.parse(
-    fs.readFileSync(path.join(ROOT, 'packages', 'roaring', 'package.json'), 'utf8'),
-  );
-  const thirdParty = Object.entries(roaringPkg.dependencies || {})
-    .filter(([, v]) => !String(v).startsWith('workspace:'))
-    .map(([n]) => n);
+  // Third-party (non-workspace) runtime dependencies, PER PACKAGE. `@cloudbitmaps/*` is ours and is declared
+  // `workspace:^`, which is what makes the wording "third-party" true where a bare "runtime dependency" is not.
+  //
+  // This used to read `packages/roaring/package.json` alone and compare it against a site-wide badge saying
+  // "1 third-party dependency". That was green and wrong: it answered "how many does the codec have?" while
+  // the badge made a claim about the project, sitting directly under an install line for TWO packages. The
+  // split gave three storage packages a real cloud SDK each, so a reader following that line gets two
+  // third-party deps, not one — and one page stated the badge and "each with its own SDK" in a single
+  // sentence. A derivation narrower than the claim it checks cannot fail when the claim goes wrong.
+  // EVERY dependency field, not just `dependencies`. An adversarial review moved an AWS SDK into core's
+  // `optionalDependencies` and this gate still certified "zero-dependency core" — and the repo has a
+  // deliberate rule that nothing is an optional peer, which makes that the most plausible accidental
+  // regression of the set.
+  const DEP_FIELDS = [
+    'dependencies',
+    'optionalDependencies',
+    'peerDependencies',
+    'bundledDependencies',
+  ];
+  const depsOf = (pkg) => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(ROOT, 'packages', pkg, 'package.json'), 'utf8'),
+    );
+    const out = new Set();
+    for (const field of DEP_FIELDS) {
+      const value = manifest[field];
+      if (!value) continue;
+      const entries = Array.isArray(value) ? value.map((n) => [n, '']) : Object.entries(value);
+      for (const [name, range] of entries) {
+        if (String(range).startsWith('workspace:')) continue;
+        if (!name.startsWith('@cloudbitmaps/')) out.add(name);
+      }
+    }
+    return [...out];
+  };
+  const coreDeps = depsOf('core');
+
+  // The badge's premise. If core ever takes a dependency, "zero-dependency core" is false everywhere at once
+  // and must be rewritten rather than recounted — so this fails loudly instead of quietly printing a 1.
+  if (coreDeps.length !== 0) {
+    fail(
+      `every page claims a "zero-dependency core", but @cloudbitmaps/core declares ${coreDeps.length} ` +
+        `third-party dependenc${coreDeps.length === 1 ? 'y' : 'ies'}: ${coreDeps.join(', ')}`,
+    );
+  }
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
 
@@ -575,7 +658,7 @@ const specAnchors = [];
     // outright, which an equality check alone would never see because there would be nothing to compare.
     for (const [label, want, detail] of [
       ['drivers', backends.size, () => [...backends].sort().join(', ')],
-      ['third-party dependency', thirdParty.length, () => thirdParty.join(', ')],
+      ['dependencies in @cloudbitmaps/core', coreDeps.length, () => coreDeps.join(', ') || 'none'],
     ]) {
       if (!stated.has(label)) {
         fail(`Home's spec strip no longer states "${label}"`);
@@ -601,7 +684,6 @@ const specAnchors = [];
   } else {
     for (const [label, want, detail] of [
       ['storage drivers', backends.size, () => [...backends].sort().join(', ')],
-      ['third-party dependency', thirdParty.length, () => thirdParty.join(', ')],
     ]) {
       const m = new RegExp(`(\\d+)\\s+${label}`).exec(heroMeta[1]);
       if (!m) {
@@ -617,8 +699,69 @@ const specAnchors = [];
     }
   }
 
+  // ── the dependency BADGE, on every page carrying the fact strip ────────────────────────────────────────
+  // Presence, per line: a fact line making a supply-chain claim must say `zero-dependency core` or name the
+  // package it counts, so deleting the claim is as loud as contradicting it. Its premise — core really has
+  // no third-party dependencies — is proved once, above.
+  //
+  // Whether a NUMBERED count names its package is deliberately NOT checked here any more. That rule belongs
+  // to every surface, not to `site/`: the two worst instances of the defect were in `README.md` and
+  // `SECURITY.md`, which this script does not read. It lives in `tests/docs/dependency-claims.test.ts`,
+  // over the whole `git ls-files` corpus, so there is one rule with one home rather than a site-shaped copy.
+  // Presence of the badge, on a PINNED list of pages.
+  //
+  // The previous shape inferred the requirement from the line's own words — a fact line was only required to
+  // carry the badge if it still mentioned dependencies, an SDK or a driver count. An adversarial review
+  // deleted the badge AND its trigger words from five of the six pages in one edit and the gate stayed
+  // green: the condition and the thing it guarded were removed together. A requirement a single edit can
+  // switch off is not a requirement, so the list is pinned instead. Adding a page means adding it here,
+  // which is a deliberate line in a diff someone reads.
+  //
+  // /benchmarks is deliberately absent: its meta line is `Apache-2.0 · v0.9.0 · pre-1.0 · single maintainer`
+  // and has never made a supply-chain claim.
+  const MUST_CARRY_THE_BADGE = [
+    'index.html',
+    'architecture.html',
+    'demo.html',
+    'flavors.html',
+    'usage.html',
+    path.join('flavors', 'roaring.html'),
+  ];
+  for (const rel of MUST_CARRY_THE_BADGE) {
+    const file = path.join(SITE, rel);
+    if (!fs.existsSync(file)) {
+      fail(
+        `site/${rel} is in MUST_CARRY_THE_BADGE but does not exist — update the list or restore the page`,
+      );
+      continue;
+    }
+    // Case-insensitive: a sentence-initial "Zero-dependency core" is the same true claim, and rejecting it
+    // teaches people to route around the gate rather than to state the scope.
+    if (!/zero-dependency core/i.test(fs.readFileSync(file, 'utf8'))) {
+      fail(
+        `site/${rel} no longer states \`zero-dependency core\`. Every page carrying the fact strip scopes ` +
+          'its dependency claim: since the split the codec adds `roaring` and each storage package its own ' +
+          'SDK, so an unscoped or absent count is not a smaller claim, it is a wrong one.',
+      );
+    }
+  }
+
   // …and the same number wherever else any page states it, in digits or in words.
+  //
+  // The FLOOR is the point. Every hole an adversarial review found in this check announced itself the same
+  // way: the tally quietly fell by one while the run stayed green, because a statement that stops matching
+  // looks identical to a statement that was deleted. A count that can only go up without a deliberate edit
+  // turns both into failures.
+  const DRIVER_STATEMENT_FLOOR = 14;
   const alsoChecked = checkDriverCountEverywhere(backends.size);
+  if (alsoChecked < DRIVER_STATEMENT_FLOOR) {
+    fail(
+      `only ${alsoChecked} driver-count statements were found across site/, down from ` +
+        `${DRIVER_STATEMENT_FLOOR}. Either a page stopped stating the count, or a phrasing stopped ` +
+        'matching — both are how this check has gone quiet before. Lower the floor deliberately if a page ' +
+        'really was removed.',
+    );
+  }
   specAnchors.push(['Site-wide · driver-count statements', String(alsoChecked)]);
 }
 
