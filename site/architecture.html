@@ -223,9 +223,9 @@
       </section>
 
       <!-- ── THE TWO TIERS ────────────────────────────────────────────────────
-           The middle row used to be a NoSQL delta tier. There is no delta tier: a segment is immutable objects
-           generations with a RAM cache in front, and the third row is now the one-row pointer that decides
-           WHICH generation — which is the fact the rest of the page rests on, and was previously unstated. -->
+           Three rows, two tiers: a segment is immutable object generations with a RAM cache in front, and
+           the third row is the one-row pointer that decides WHICH generation — the fact the rest of the
+           page rests on. -->
       <section>
         <h2>Two tiers, and the pointer that picks the generation</h2>
         <p class="lede">
@@ -300,9 +300,8 @@
       </section>
 
       <!-- ── AN ERASURE, AND A PUBLISH ──────────────────────────────────────
-           The left figure used to show a delta tier punching a tombstone through a storage chunk. There is no
-           delta tier, and erasing an id is now a REWRITE — so the cells show the one bit leaving a streamed
-           copy of the generation, which is the mechanism a reader has to trust for a GDPR answer. The right
+           Erasing an id is a REWRITE, so the left figure's cells show the one bit leaving a streamed copy
+           of the generation — the mechanism a reader has to trust for a GDPR answer. The right
            one is unchanged in kind: "storage objects are never overwritten" is a claim, while watching gen 7
            arrive beside gen 6 and the pointer move afterwards is the mechanism. -->
       <section>

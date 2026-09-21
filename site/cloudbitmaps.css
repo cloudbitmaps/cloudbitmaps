@@ -650,7 +650,7 @@ section > .lede {
   max-width: 75%;
 }
 
-/* ── three tiers ─────────────────────────────────────────────────────────── */
+/* ── the tier figure ─────────────────────────────────────────────────────── */
 .tiers {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2248,16 +2248,6 @@ section > .lede {
   font-size: 13px;
 }
 
-/* A summing row, not a fifth line item. Without this the calibration receipt's "Total" read as one more
-   charge in the list — the docs table bolds it, and the site had no equivalent.
-
-   Brightness and a rule, not weight: bolding the row would thicken the 15px tabular mono into the same mud
-   that bolding 11.5px mono produces, and the whole sheet resolves emphasis with --cb-ink instead. */
-.tpanel tr.is-total td {
-  border-top: 1px solid var(--cb-rule);
-  color: var(--cb-ink);
-}
-
 .code-plain {
   margin: 0;
   padding: 18px 16px;
@@ -3226,10 +3216,8 @@ section > .lede {
    overwritten" is a claim, whereas watching gen 7 appear beside gen 6 and the
    pointer move is the mechanism.
 
-   The left figure was a delta tier punching a tombstone through a storage chunk until
-   the warm tier was removed; the cells and their hues carry over because the shape
-   of the claim did — one marked id, and a later row where it is absent — but the
-   mechanism they illustrate is now a whole-generation rewrite.
+   The left figure illustrates a whole-generation rewrite: one marked id, and a later
+   row where it is absent.
 
    Both are built here rather than ported, because the old site's versions were
    never styled: `site/architecture.html` references .merge, .bits, .add, .gen,

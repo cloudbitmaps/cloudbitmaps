@@ -50,21 +50,19 @@ smuggles in a breaking change.
 
 | forced | reached us via | note |
 | --- | --- | --- |
-| `fast-uri >=3.1.6 <4` | `ajv`, whose range the updater could not resolve the fix through | the alert that had the Dependabot workflow red |
-| `js-yaml >=4.3.1 <5` | the eslint / stryker toolchains | |
-| `undici >=6.28.0 <7` | the AWS SDK's fetch handler | |
-| `brace-expansion >=1.1.18 <2` and `>=5.0.9 <6` | two majors reached us at once, so both are pinned | |
+| `undici >=6.28.0 <7` | `roaring` -> `node-gyp` (optional, install-time) | |
+| `brace-expansion >=5.0.9 <6` | `eslint` / `typescript-eslint`, through `minimatch` | |
 | `nanoid >=3.3.18 <4` | the vitest toolchain | |
-| `qs >=6.16.0` | `@stryker-mutator/core` | |
 | `uuid ^11.1.1` | `@google-cloud/storage` | |
-| `esbuild >=0.28.1` | the vitest / esbuild toolchain | |
-| `adm-zip >=0.6.0` | *nothing, now* | it reached us through `cassandra-driver`, a warm-tier dependency that left with the tier. The entry is inert and goes at the next dependency pass |
+| `esbuild >=0.28.2 <0.29` | a direct devDependency, and `vitest` -> `vite` | |
 
-An override is a **claim that the forced version still works**, which is only worth making if it is tested: each
-was verified against the full `pnpm test:integration` suite (against the real backends in containers — MinIO,
-fake-gcs-server and Azurite),
-because the two that matter most — `adm-zip` under `cassandra-driver` and `uuid` under `@google-cloud/storage` —
-are on paths the unit suite never exercises.
+An override is a **claim that the forced version still works**, which is only worth making if it is tested, and
+only meaningful while something in the tree actually resolves to it. Every row above binds to at least one
+package in `pnpm-lock.yaml` — `tests/docs/override-hygiene.test.ts` fails the build otherwise, because an
+override matching nothing cannot be tested by any suite and quietly becomes a claim about a package that is not
+here. Each was verified against the full `pnpm test:integration` suite (against the real backends in
+containers — MinIO, fake-gcs-server and Azurite), which matters most for `uuid` under `@google-cloud/storage`:
+it is the only one on a path the unit suite never exercises.
 
 `uuid` is deliberately pinned to `^11.1.1` rather than left open: the advisory is fixed at 11.1.1, and an
 unbounded range resolved to 14.x, which is three majors of blast radius for no security benefit.
@@ -73,9 +71,11 @@ unbounded range resolved to 14.x, which is three majors of blast radius for no s
 tree and is not part of any published manifest, so an installed `@cloudbitmaps/*` package resolves by the
 ranges its own manifest declares. What a consumer actually gets is counted **per package** — none for
 `@cloudbitmaps/core`, `roaring` for the flavor, and one cloud SDK each for `/s3`, `/gcs` and `/azure-blob`
-(the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). Two of the packages above do
-sit under those SDKs transitively — `undici` under the AWS SDK, `uuid` under `@google-cloud/storage` — at
-whatever version the SDK itself resolves, which is the surface to reason about here, not our pinned one.
+(the table in [CONTRIBUTING](CONTRIBUTING.md#dependency-policy) is the source). One of the packages above does
+sit under a shipped SDK transitively — `uuid` under `@google-cloud/storage` — at whatever version that SDK
+itself resolves, which is the surface to reason about here, not our pinned one. `undici` is **not** in that
+category: it reaches this repo only through `roaring`'s `node-gyp`, an optional install-time path, and never
+through a package a consumer installs.
 
 ### Triaged (accepted) advisories
 
