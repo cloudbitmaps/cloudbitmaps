@@ -206,7 +206,12 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile # resolves + builds/loads roaring for this OS + node ABI
-      - run: node scripts/verify-roaring-prebuilt.cjs # the addon's checksum, per platform (records when unknown, fails on mismatch)
+      # `--strict` is the point. Without it an UNKNOWN key prints `RECORD …` and exits 0 — and every key
+      # carries the roaring version, so a version bump makes all six unknown and all six of these jobs pass
+      # having verified nothing. Dependabot groups minor+patch monthly under `patterns: ['*']`, so that bump
+      # arrives in a routine PR that would have gone fully green while shipping an unverified native binary.
+      # A new version now fails until a human runs the script, reads the printed hashes and records them.
+      - run: node scripts/verify-roaring-prebuilt.cjs --strict # the addon's checksum, per platform
       - run: pnpm build
       - run: node scripts/smoke.cjs # loads the addon + round-trips under ESM + CJS on this OS
 

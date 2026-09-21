@@ -15,6 +15,39 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **A name beginning with a byte-order mark decoded back as a DIFFERENT name.** `decodePercent` used
+  `TextDecoder` without `ignoreBOM`, which strips a leading U+FEFF — so `%EF%BB%BForders` decoded to
+  `orders`, an existing segment. The validator accepts U+FEFF, so this was reachable from any caller taking a
+  name from a spreadsheet export or a CSV read without BOM stripping. The visible symptom was worse than a
+  failed round-trip: each registry parser re-encodes what it decoded and refuses a spelling it cannot
+  reproduce, so such a segment could be **written and then silently skipped** by `list()`,
+  `checkConsistency`, `exportSegments`, the retention sweep and subject erasure — present in the bucket and
+  invisible to every sweep over it. Decode-only fix: `encode` is unchanged, no stored key moves, and the only
+  names whose decoding changes are ones those guards already rejected. An exhaustive sweep of all 1,112,064
+  code points now round-trips on both alphabets; before the fix, exactly one did not.
+
+### Changed
+
+- **CI: the native-addon checksum gate now runs `--strict`.** Without it an unknown key printed `RECORD …`
+  and exited 0 — and every key carries the roaring version, so a version bump made all six keys unknown and
+  all six platform jobs passed having verified nothing. Dependabot groups minor+patch monthly, which is
+  exactly how that bump arrives. `--strict` existed for this and had no callers.
+- **CI: `release.yml` now checks out with `fetch-depth: 0`.** The suite it runs includes a gate that reads the
+  previous release at its git tag, and a shallow checkout carries none — it would have failed on the first
+  real release. `ci.yml` has carried this since the gate was written.
+- **Integration: the suite is re-runnable, MinIO is pinned, and all three services declare healthchecks.**
+  Prefixes are namespaced per run, so a second run against live containers no longer replays write-once keys
+  (it failed 78 tests that read exactly like a real regression). MinIO was the one image on `:latest`, while
+  its two siblings carried a documented pin. No service declared health, so `--wait` returned while MinIO was
+  still refusing connections and `ci.yml`'s note about "a backend that never goes healthy" described a
+  condition that could not occur.
+- **Property failures are reproducible.** `tests/setup-fast-check.ts` configures all exploratory suites with
+  verbose counterexamples and an `FC_SEED` env var to replay a CI failure locally. The seed stays random by
+  default: the exploration is the value, and what was missing was the ability to act on a failure rather than
+  determinism. This bug took an archived CI log to diagnose because nothing recorded the counterexample.
+
 ### Removed
 
 - **The last residue of the removed live (warm) tier, and four dead security overrides.** The `adm-zip`

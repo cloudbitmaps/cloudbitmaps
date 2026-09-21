@@ -221,6 +221,36 @@ describe('the three properties, over arbitrary strings', () => {
     },
   );
 
+  /**
+   * The byte-order mark, pinned from the counterexample CI actually produced.
+   *
+   * `TextDecoder` strips a leading U+FEFF unless told not to, so `decodePercent` used to turn
+   * `%EF%BB%BForders` back into `orders` — not a garbled name, an EXISTING one. Round-trip and injectivity
+   * both fail on it, and the validator accepts U+FEFF, so it was reachable from any caller that took a name
+   * from a spreadsheet export or a CSV read without BOM stripping.
+   *
+   * It survived because it needs the BOM in FIRST position: the property found it once, on seed -701574071
+   * after 670 draws, and a 4-million-draw sweep afterwards produced BOMs only in non-leading positions. A
+   * property that finds a case this rarely is worth keeping, and worth pinning the moment it does.
+   */
+  const BOM = String.fromCharCode(0xfeff);
+
+  it('a leading byte-order mark survives both alphabets, and does not collide', () => {
+    for (const n of [
+      BOM,
+      BOM + 'orders',
+      BOM + String.fromCharCode(0),
+      BOM + BOM,
+      'a' + BOM + 'b',
+    ]) {
+      expect(decodeNameFromKey(encodeNameForKey(n))).toBe(n);
+      expect(decodeNameFromPath(encodeNameForPath(n))).toBe(n);
+    }
+    // The collision, stated as itself: the BOM-prefixed name must not decode to the bare one.
+    expect(encodeNameForKey(BOM + 'orders')).not.toBe(encodeNameForKey('orders'));
+    expect(decodeNameFromKey(encodeNameForKey(BOM + 'orders'))).not.toBe('orders');
+  });
+
   it('property: round-trips on both alphabets', () => {
     fc.assert(
       fc.property(ANY_NAME, (n) => {

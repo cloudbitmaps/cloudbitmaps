@@ -10,6 +10,9 @@ const AZURE = fileURLToPath(new URL('./packages/azure-blob/src', import.meta.url
 export default defineConfig({
   test: {
     globals: true,
+    // Configures fast-check once for all eight property suites: verbose counterexamples, and `FC_SEED` to
+    // replay a CI failure locally. See the file for why the seed stays random by default.
+    setupFiles: ['tests/setup-fast-check.ts'],
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/integration/**', 'node_modules/**'],
     passWithNoTests: false,
