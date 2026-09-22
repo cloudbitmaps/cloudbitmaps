@@ -71,8 +71,12 @@ function htmlSamplesOf(file: string): Fence[] {
 function fencesOf(file: string): Fence[] {
   const text = readFileSync(join(ROOT, file), 'utf8');
   const out: Fence[] = [];
+  // An INFO STRING after the language is allowed. `\`\`\`ts title="wiring.ts"` and `\`\`\`ts twoslash` are
+  // ordinary Markdown that many renderers act on, and requiring end-of-line after the language meant such a
+  // fence left this gate altogether — not "checked more loosely", but unscanned, with every check in the file
+  // silent on it. The language must still be the FIRST word, so a ```text block is not dragged in.
   const re =
-    /^([ \t]*)```(?:ts|tsx|js|javascript|typescript)[ \t]*$\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
+    /^([ \t]*)```(?:ts|tsx|js|javascript|typescript)(?:[ \t]+[^\n]*)?[ \t]*$\n([\s\S]*?)^[ \t]*```[ \t]*$/gm;
   for (const m of text.matchAll(re)) {
     const indent = (m[1] as string).length;
     const code = (m[2] as string)

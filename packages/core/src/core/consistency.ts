@@ -34,8 +34,10 @@ import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
  * Generous — fleets of 100K+ segments are the design target — while still bounding a DR drill's memory to
  * something a modest operator box survives. Raisable, because a ceiling you cannot lift is a landmine.
  */
-// Re-exported from its original home so `@cloudbitmaps/core`'s public name does not move; the value and the loop
-// that enforces it now live in `registry-scan.ts`, shared with the retention sweep.
+// Re-exported from its original home because this module is where the ceiling is documented; the value and the
+// loop that enforces it live in `registry-scan.ts`, shared with the retention sweep. This is an INTERNAL
+// re-export: the name left `@cloudbitmaps/core`'s main entry in 0.10.0 along with the other two defaults, and
+// `MIGRATING.md` tells callers to pass their own `maxScanSegments` rather than read ours.
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 const DEFAULT_CHECK_CONCURRENCY = 8;
 

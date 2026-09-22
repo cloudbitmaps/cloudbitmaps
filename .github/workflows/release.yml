@@ -161,11 +161,13 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. Before the launch every
-      # package is deliberately private (the last accidental-publish guard), so a real publish attempt would
-      # otherwise produce a fully GREEN run that published nothing at all. Fail loudly instead: the release
-      # commit that clears `private` is what makes this pass, which is exactly the intended sequencing
-      # (see the launch runbook's publish stage).
+      # `pnpm publish` SILENTLY SKIPS a `private: true` package — no error, exit 0. So a package that carries
+      # it produces a fully GREEN release run that published nothing at all, which is the worst shape a
+      # failure can take here: the tag is public, the run is green, and the registry is unchanged.
+      #
+      # No package carries `private` today (only the workspace root, which is never published). This step is
+      # here for the day one gets it back — a new package scaffolded from a template, or a deliberate
+      # accidental-publish guard during development that nobody remembered to clear.
       - name: Refuse to "publish" a still-private package
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && !inputs.dryRun)
         run: |

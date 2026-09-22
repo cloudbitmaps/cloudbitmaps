@@ -106,7 +106,7 @@ export interface LoadResult {
   readonly cardinality: number;
   /**
    * What the segment held when the guard judged it — `null` when there was no current generation, or when no
-   * bound needed it. Returned because an alert on `reason: 'max-shrink'` is useless without it: "refused" is a
+   * bound needed it. Returned because an alert on `reason: 'min-retained'` is useless without it: "refused" is a
    * page, "refused: 4 → 1" is a diagnosis, and re-reading the segment to find out costs a round trip and races
    * whatever happens next.
    */

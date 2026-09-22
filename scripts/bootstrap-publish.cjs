@@ -449,6 +449,16 @@ if (latestOnPrerelease) {
       'remaining steps as time-sensitive rather than optional.',
   );
 }
+// The rc tarballs are NAME PLACEHOLDERS, not installable packages, and saying so here is cheaper than
+// letting someone discover it by trying. Only the missing manifests are rewritten to the rc version, so
+// `packages/core/package.json` keeps the real one and pnpm resolves each `workspace:^` against THAT — the rc
+// tarballs therefore declare `@cloudbitmaps/core@^<real version>`, which the registry does not have yet.
+// That is correct for the job they do (exist, so a Trusted Publisher can bind) and broken for any other use.
+console.log(
+  '\nbootstrap-publish: NOTE — these rc tarballs are not installable. They depend on the real version of\n' +
+    '@cloudbitmaps/core, which is not on the registry until the tagged release. They exist only so a name\n' +
+    'exists for a Trusted Publisher to bind to. Do not point anyone at them.',
+);
 console.log(
   `\nbootstrap-publish: done — ${missing.length} name(s) created. Next, for EACH of them: bind a Trusted\n` +
     'Publisher on npmjs.com (GitHub Actions · this repo · release.yml · environment `release`) and set\n' +

@@ -7,8 +7,8 @@ Two checks, from the same premise: a page nobody linked and a page nobody listed
    than only failing, so the list doubles as the build queue.
 
 2. CRAWLER FILES. robots.txt, sitemap.xml and llms.txt were all three LOST in the site/ rename and nobody
-   noticed for two commits. llms.txt surfaced only because tests/docs/site-version.test.ts happens to read it
-   for a version badge — robots.txt and sitemap.xml were gated by nothing at all, so the site would have
+   noticed for two commits. llms.txt surfaced only because a docs test happened to read it for a version badge
+   (that test is now tests/docs/version-claims.test.ts) — robots.txt and sitemap.xml were gated by nothing at all, so the site would have
    deployed with no crawler directives and no sitemap, and the only symptom would have been search traffic that
    never arrived.
 

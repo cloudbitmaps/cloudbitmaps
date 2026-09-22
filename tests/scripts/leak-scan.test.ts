@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,11 +45,68 @@ function scan(content: string, filename = 'sample.ts'): { status: number; out: s
   }
 }
 
+/** Same as {@link scan}, with extra argv and environment — for the `--snapshot` cases. */
+function scanWith(
+  content: string,
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = {},
+): { status: number; out: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'leak-scan-test-'));
+  try {
+    writeFileSync(join(dir, 'sample.ts'), content);
+    try {
+      const out = execFileSync(process.execPath, [SCRIPT, '--dir', dir, ...argv], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...env },
+      });
+      return { status: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { status: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe('leak-scan', () => {
   it('scans a directory and exits 0 on a clean tree', () => {
     const { status, out } = scan('export const answer = 42;\n');
     expect(status).toBe(0);
     expect(out).not.toMatch(/HARD/);
+  });
+
+  describe('--snapshot refuses to certify with the needle check disabled', () => {
+    // WHY THIS EXISTS. `--snapshot` is the mode run before a tree is published, and its whole point is that a
+    // missing `.leak-needles` becomes FATAL rather than a warning — the file is gitignored, so a `git archive`
+    // snapshot never carries it, and the employer-name check would be silently off in exactly the tree it
+    // exists to protect. That guarantee had no test at all; a comment two lines from here used to gesture at
+    // coverage that did not exist.
+    //
+    // `.leak-needles` is read from the REPO root, not from `--dir`, so the no-needles case can only be
+    // asserted when this checkout has no such file. That is stated rather than worked around: a test that
+    // quietly passes on a maintainer's machine and means something different on CI is worse than one that
+    // says which half it checked.
+    const hasLocalNeedles = existsSync(join(ROOT, '.leak-needles'));
+
+    it('accepts a snapshot when needles ARE configured', () => {
+      const { status, out } = scanWith('export const x = 1;\n', ['--snapshot'], {
+        LEAK_SCAN_EXTRA: 'acme-corp',
+      });
+      expect(out).toMatch(/SNAPSHOT MODE/);
+      expect(out).not.toMatch(/Refusing to certify/);
+      expect(status).toBe(0);
+    });
+
+    it.skipIf(hasLocalNeedles)('refuses a snapshot when needles are NOT configured', () => {
+      const { status, out } = scanWith('export const x = 1;\n', ['--snapshot'], {
+        LEAK_SCAN_EXTRA: '',
+      });
+      expect(out).toMatch(/Refusing to certify/);
+      expect(status).toBe(2);
+    });
   });
 
   describe('does NOT flag benign code (a false positive here gets the scanner bypassed)', () => {
@@ -206,8 +263,8 @@ describe('leak-scan', () => {
     //
     // Asserting only the "no needles" warning made this test depend on whether a developer happens to have a
     // local `.leak-needles` — green in CI, red on the machine of anyone actually using the feature. The real
-    // invariant is disclosure, and it holds in both states. The stronger guarantee (that `--snapshot` REFUSES
-    // to certify without needles) is enforced by the script itself and exercised at the Stage-4 gate.
+    // invariant is disclosure, and it holds in both states. The stronger guarantee — that `--snapshot`
+    // REFUSES to certify when no needles are configured — is covered by the `--snapshot` describe above.
     const { out } = scan('export const x = 1;\n');
     expect(out).toMatch(/no extra needles configured|\d+ extra needle\(s\) configured/);
   });

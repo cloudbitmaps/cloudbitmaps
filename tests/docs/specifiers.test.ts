@@ -95,13 +95,22 @@ function packageReadmes(): string[] {
  * prose mention, or `cloud-roaring` as an npm keyword.
  */
 const OFFENDERS: readonly RegExp[] = [
-  /\bnpm(?:&nbsp;| )+(?:i|install|add)(?:&nbsp;| )+cloud-roaring\b/,
-  /\bpnpm(?:&nbsp;| )+(?:i|install|add)(?:&nbsp;| )+cloud-roaring\b/,
+  // Every client people actually use. `unreleased-install-caveat.test.ts` records this exact lesson two
+  // files away — "the first version matched `npm i` on one line, which missed `pnpm add`, `yarn add`…" —
+  // and it was never re-derived here, so `yarn add cloud-roaring` and `bun add cloud-roaring` were legal.
+  /\b(?:npm|pnpm|yarn|bun)(?:&nbsp;| |\s)+(?:i|install|add)(?:&nbsp;| |\s)+cloud-roaring\b/,
   // `from 'cloud-roaring'` / `require("cloud-roaring/s3")`, tolerating the site's syntax-highlight spans
   // between the keyword and the quoted specifier.
   /(?:from|require\s*\()[^'"\n]{0,80}['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
   // A bare quoted specifier, e.g. inside a highlighted <span class="s">'cloud-roaring/s3'</span>.
+  //
+  // The SUBPATH is required, and stays required. Dropping it to catch a bare `'cloud-roaring'` immediately
+  // flagged `otel.getMeter('cloud-roaring')` in two guides — an OpenTelemetry meter name, which is a label a
+  // user chooses and not a module specifier at all. A quoted string is only evidence of an import when it
+  // names a subpath; otherwise the `from` / `require(` / `import(` forms below are what identify one.
   /['"]cloud-roaring\/[a-z0-9]+['"]/,
+  // `await import('cloud-roaring')` — a real import, and neither `from` nor `require`.
+  /\bimport\s*\(\s*['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
 ];
 
 describe('retired package specifier', () => {
@@ -116,10 +125,15 @@ describe('retired package specifier', () => {
   it.each(files)('%s — never tells a reader to install/import `cloud-roaring`', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const hits: string[] = [];
-    src.split('\n').forEach((line, i) => {
-      if (OFFENDERS.some((re) => re.test(line)))
-        hits.push(`${rel}:${i + 1}  ${line.trim().slice(0, 120)}`);
-    });
+    // Whole text, not line by line: an install command wraps like any other prose, and which half the
+    // package name lands in is decided by the width of the words before it.
+    for (const re of OFFENDERS) {
+      const m = new RegExp(re.source, `${re.flags.replace('g', '')}g`).exec(src);
+      if (m) {
+        const line = src.slice(0, m.index).split('\n').length;
+        hits.push(`${rel}:${line}  ${m[0].replace(/\s+/g, ' ').slice(0, 120)}`);
+      }
+    }
     expect(hits).toEqual([]);
   });
 });

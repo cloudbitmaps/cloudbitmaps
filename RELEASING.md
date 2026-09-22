@@ -48,9 +48,13 @@ The approval prompt is the last point at which a release can be stopped. Nothing
 
 A pushed `v*.*.*` tag (or a manual dispatch) starts one gated job that, in order:
 
-- **Re-runs the entire gate** against the exact commit being published — `lint · lint:arch · format:check ·
-  typecheck · test · audit · build · smoke`. A green `main` is necessary but not sufficient; the tagged commit
-  is re-verified from scratch on a clean runner with `--frozen-lockfile`. The **dependency audit** is repeated
+- **Re-runs the gate that governs the artifact** against the exact commit being published — `lint ·
+  lint:arch · format:check · typecheck · test · audit · build · smoke`. A green `main` is necessary but not
+  sufficient; the tagged commit is re-verified from scratch on a clean runner with `--frozen-lockfile`.
+  It is not literally every job CI runs: the site checks (`site:replay:check`, `site:figures`,
+  `site-classes.py`, `site-links.py`), the tracked-tree `leak-scan` and the fuzz lockfile check stay in CI,
+  because they guard what Pages serves from `main` rather than what goes in the tarball — and `main` has
+  already passed them by the time a tag points at it. The tarball's own `leak-scan` DOES run here. The **dependency audit** is repeated
   here rather than trusted from CI because it is the one gate whose verdict changes with *no commit at all*: an
   advisory published after `main` went green makes the same tree newly vulnerable.
 - **Refuses a mistagged release** — every publishable package's `version` must equal the tag, or the run fails.
@@ -229,6 +233,9 @@ automated flow. This exists so a broken pipeline never blocks a critical securit
 | `npm error unable to authenticate` on a fresh package | The Trusted Publisher binding is missing or its repo/workflow/environment don't match exactly. |
 | The run never pauses for approval | The `release` environment has no required reviewer — the gate is the reviewer, not the environment. |
 | Provenance missing on the published package | `id-token: write` was dropped, or the job ran on a self-hosted runner. Provenance needs a GitHub-hosted runner's OIDC identity. |
+| A publish failed PART-WAY through the family | Some packages are on the registry at this version, immutably, and the rest are not. **Do not re-run the workflow** — it refuses, correctly, because the first package's version now exists. Recovery is a **patch bump for the stragglers**: `workspace:^` rewrites to `^0.10.0`, and caret on a `0.x` with a non-zero minor means `>=0.10.0 <0.11.0`, so a straggler published at `0.10.1` still satisfies what the already-published packages declare. Bump only the packages that did not land, tag `v0.10.1`, and ship. Expensive and untidy; not fatal. |
+| `gh release create` failed after a successful publish | Use GitHub's **"Re-run failed jobs"**, which skips the already-green publish job. A full re-run cannot work: it stops at the already-on-the-registry guard, by design. |
+| `npm i @cloudbitmaps/s3` fails to resolve `@cloudbitmaps/core@^0.10.0` | **Expected, and it is why the bootstrap window is time-sensitive.** The bootstrap rewrites only the MISSING packages' versions to `-rc.0`; `packages/core/package.json` keeps the real version, so pnpm rewrites the rc tarballs' `workspace:^` dependency to `^0.10.0` — a version the registry will not have until the real release. The rc tarballs exist to create the NAME so a Trusted Publisher can bind to it; they are not installable and are not meant to be. Ship the real version promptly. |
 | `npm i @cloudbitmaps/roaring` serves a prerelease | `latest` landed on the bootstrap version — either because `--tag` was omitted (`npm publish` defaults to `latest` and is not semver-aware) or because the registry assigned it to the package's first version anyway. **Do not chase `npm dist-tag rm … latest`** — npm refuses to remove `latest`. Ship the real release; it claims `latest` and closes the window. |
 | `EUSAGE: Automatic provenance generation not supported for provider: null` | Something is asking for provenance outside CI. Provenance needs a workflow's OIDC identity, so it is opt-in at the call site (`--provenance`, in `release.yml` only) and deliberately **not** set via `publishConfig.provenance`, which cannot be overridden from the CLI or the environment and made every manual publish impossible. |
 | `bootstrap-publish: every package already exists on the registry` | Working as intended — there is nothing to create. Ship the version by tag through the pipeline instead. |

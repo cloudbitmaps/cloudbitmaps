@@ -26,6 +26,12 @@ function scriptsThatRunContainers(): string[] {
     .filter((f) => /\bdocker\s+run\b/.test(readFileSync(join(dir, f), 'utf8')));
 }
 
+/** Every workflow, not just `ci.yml`. */
+function workflowFiles(): string[] {
+  const dir = join(ROOT, '.github/workflows');
+  return readdirSync(dir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
+}
+
 describe('registry throttling is absorbed everywhere a container is started', () => {
   it('the shared helper exists and fails loudly rather than swallowing a real error', () => {
     const src = readFileSync(join(ROOT, HELPER), 'utf8');
@@ -51,18 +57,40 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     );
   });
 
-  it('the CI workflow uses the same one implementation, not a fourth copy', () => {
-    // The inlined loop was the original; keeping it would mean the rule drifting in two places at once.
-    const wf = parse(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')) as {
-      jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
-    };
-    const runs = Object.values(wf.jobs)
-      .flatMap((j) => j.steps)
-      .map((s) => s.run ?? '');
-    const pulling = runs.filter((r) => /docker pull|docker compose config --images/.test(r));
-    expect(pulling.length).toBeGreaterThan(0);
-    for (const r of pulling) {
-      expect(r, 'a CI step pulls images without the shared helper').toContain('docker-pull.sh');
+  it('every workflow uses the same one implementation, not a fourth copy', () => {
+    // TWO corrections to what this used to check, both of which let a real defect through.
+    //
+    // 1. It matched `docker pull` and `docker compose config --images` — EXPLICIT pulls, which is the
+    //    opposite of this file's own stated rationale. The trap named at the top is that `docker run` pulls
+    //    IMPLICITLY on a cache miss, and that was the one verb not looked for. A `docker run` step added to
+    //    ci.yml's integration job passed.
+    // 2. It read `ci.yml` alone. `release.yml` and `fuzz-nightly.yml` could pull unprotected, and an
+    //    explicit unguarded `docker pull` in fuzz-nightly passed the whole suite.
+    //    `runtime-version-policy.test.ts` had to be widened to "EVERY workflow" for the same reason.
+    const offenders: string[] = [];
+    let starting = 0;
+    for (const file of workflowFiles()) {
+      const wf = parse(readFileSync(join(ROOT, '.github/workflows', file), 'utf8')) as {
+        jobs?: Record<string, { steps?: { name?: string; run?: string }[] }>;
+      };
+      for (const [jobName, job] of Object.entries(wf.jobs ?? {})) {
+        for (const step of job.steps ?? []) {
+          const run = step.run ?? '';
+          if (!/docker\s+pull|docker\s+run|docker\s+compose\s+config\s+--images/.test(run))
+            continue;
+          starting += 1;
+          if (!run.includes('docker-pull.sh'))
+            offenders.push(`${file} › ${jobName} › ${step.name ?? '(unnamed step)'}`);
+        }
+      }
     }
+    expect(
+      starting,
+      'no workflow step starts a container — has the shape changed?',
+    ).toBeGreaterThan(0);
+    expect(
+      offenders,
+      'these workflow steps start or pull a container without the shared backoff helper',
+    ).toEqual([]);
   });
 });

@@ -32,6 +32,36 @@ const version = (
 const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
 
 /**
+ * The same badge written with two components: `v0.9`, `v0.10`.
+ *
+ * The `v` is REQUIRED here, and that is the whole reason this is a second pattern rather than a loosening of
+ * the one above. Two bare numbers separated by a dot are everywhere in these pages — `Node ≥ 22.12`,
+ * `TypeScript 5.9`, `^7 || ^8` — and every one of them belongs to somebody else. A leading `v` is what makes
+ * a token a version BADGE rather than a number, so it is what this matches.
+ *
+ * Compared against the release's own `major.minor`, not its full version: `v0.10` is an honest way to name
+ * the 0.10 line and must not be flagged, while `v0.9` on a hero is exactly the stale badge that a
+ * three-component pattern could not see.
+ */
+const SHORT_VERSION_RE = /\bv(\d+\.\d+)(?![.\d])/g;
+
+/** The release's `major.minor`, which is what a two-component badge names. */
+const MAJOR_MINOR = version.split('.').slice(0, 2).join('.');
+
+/**
+ * Is `mm` an OLDER line than this release?
+ *
+ * Only a backwards badge is stale. `v1.0` appears throughout the README and the roadmap as the format freeze
+ * this project is working towards — a forward reference, and flagging it would red the docs for describing
+ * their own plan. `v0.9` on a hero is the defect: a line that has shipped and moved on.
+ */
+function isOlderLine(mm: string): boolean {
+  const [a = 0, b = 0] = mm.split('.').map((n) => Number.parseInt(n, 10));
+  const [x = 0, y = 0] = MAJOR_MINOR.split('.').map((n) => Number.parseInt(n, 10));
+  return a < x || (a === x && b < y);
+}
+
+/**
  * Versions on the site that are deliberately NOT ours, each with the reason it is here.
  *
  * This allowlist is the whole design. Two earlier drafts tried to identify our badges by what sits NEAR them
@@ -53,6 +83,14 @@ const VERSION_RE = /\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/g;
  * positive that gets an entry added, not silent staleness.
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
+  [
+    '0.9.0',
+    "the PREVIOUS release, named in the API reference's paragraph on which option spellings are now refused " +
+      'and in the migration guide throughout. Those are claims about what 0.9.x had, not badges advertising ' +
+      'what this release is — and naming the version is the point of the sentence, so rewording it to dodge ' +
+      'this gate would make the docs worse. The badges that DO advertise the current release carry no ' +
+      'exemption and are still checked on every page.',
+  ],
   [
     '3.645.0',
     "the floor of @cloudbitmaps/s3's dependency on @aws-sdk/client-s3, in that package's README. It is a " +
@@ -127,24 +165,32 @@ function badgeVersions(html: string): string[] {
     .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
     .flatMap((line) => {
-      return [...line.matchAll(VERSION_RE)]
-        .filter((m) => {
-          const v = m[1] as string;
-          if (FOREIGN_VERSIONS.has(v)) return false;
-          if (v !== NEXT_MINOR) return true;
-          // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
-          // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
-          // `roaring shipped · v0.10.0` passed with an unrelated "see the unreleased notes" span beside it.
-          const at = m.index ?? 0;
-          const near = line.slice(Math.max(0, at - 80), at + 80);
-          // The marker must be adjacent AND the version must not also be claimed as shipped. Proximity alone
-          // cannot tell "this version is unreleased" from "see the unreleased notes" — verified: a hero
-          // reading `roaring shipped · v0.10.0` passed with an unrelated "unreleased" span beside it. A
-          // version cannot be both shipped and not out, so the contradiction is the thing to reject.
-          if (/\b(shipped|ships|available|released|out now)\b/i.test(near)) return true;
-          return !MARKS_UNRELEASED.test(near);
-        })
-        .map((m) => m[1] as string);
+      const short = [...line.matchAll(SHORT_VERSION_RE)]
+        .filter((m) => isOlderLine(m[1] as string))
+        .map(
+          (m) => `${m[1] as string} (a stale two-component badge; this release is ${MAJOR_MINOR})`,
+        );
+      return [
+        ...short,
+        ...[...line.matchAll(VERSION_RE)]
+          .filter((m) => {
+            const v = m[1] as string;
+            if (FOREIGN_VERSIONS.has(v)) return false;
+            if (v !== NEXT_MINOR) return true;
+            // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
+            // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
+            // `roaring shipped · v0.10.0` passed with an unrelated "see the unreleased notes" span beside it.
+            const at = m.index ?? 0;
+            const near = line.slice(Math.max(0, at - 80), at + 80);
+            // The marker must be adjacent AND the version must not also be claimed as shipped. Proximity alone
+            // cannot tell "this version is unreleased" from "see the unreleased notes" — verified: a hero
+            // reading `roaring shipped · v0.10.0` passed with an unrelated "unreleased" span beside it. A
+            // version cannot be both shipped and not out, so the contradiction is the thing to reject.
+            if (/\b(shipped|ships|available|released|out now)\b/i.test(near)) return true;
+            return !MARKS_UNRELEASED.test(near);
+          })
+          .map((m) => m[1] as string),
+      ];
     });
 }
 
@@ -166,16 +212,46 @@ function htmlPagesUnder(dir: string, prefix = ''): string[] {
   });
 }
 
+/** Same walk, for any set of extensions. */
+function filesUnder(dir: string, exts: readonly string[], prefix = ''): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return filesUnder(join(dir, entry.name), exts, rel);
+    return exts.some((e) => entry.name.endsWith(e)) ? [rel] : [];
+  });
+}
+
 const pages = htmlPagesUnder(SITE);
 
 /**
- * Non-HTML files that also name the release.
+ * Non-HTML files under `site/` that could name the release — DERIVED, not listed.
  *
- * `llms.txt` is the machine-readable summary served to crawlers and assistants, and it sat at `v0.1.0` through
- * three releases — invisible because this suite only ever read `*.html`. A version gate that covers some of the
- * files carrying a version is a gate with a hole in it, and this is what fell through.
+ * `llms.txt` is the machine-readable summary served to crawlers and assistants, and it sat at `v0.1.0`
+ * through three releases — invisible because this suite only ever read `*.html`. A version gate that covers
+ * some of the files carrying a version is a gate with a hole in it, and this is what fell through.
+ *
+ * It was then fixed by hardcoding `['llms.txt']`, which is the same hole with one file taken out of it:
+ * `site/demo.js`, `site/theme.js`, `site/robots.txt` and `site/sitemap.xml` ship to the same origin and were
+ * all still unread. None carries a version today, and a one-element list is exactly what stops being true the
+ * day one does. Enumerating the directory means a new served file is covered on the day it is added.
  */
 const VERSIONED_TEXT_FILES = ['llms.txt'];
+
+/**
+ * Every other non-HTML file served from `site/`.
+ *
+ * These are held to the weaker half of the rule — if one names a version it must be ours — because none of
+ * them is obliged to carry a version at all. `llms.txt` above is, which is why it keeps the stronger
+ * "must name it" assertion; asserting that of `robots.txt` would be asserting something untrue.
+ *
+ * Derived rather than listed. Hardcoding `['llms.txt']` fixed the original hole by taking exactly one file
+ * out of it and leaving `demo.js`, `theme.js`, `robots.txt`, `sitemap.xml` and the replay fixture unread —
+ * all served from the same origin. None carries a version today, and a hardcoded list is precisely what
+ * stops being true on the day one does.
+ */
+const OTHER_SERVED_FILES = filesUnder(SITE, ['.txt', '.xml', '.js', '.json']).filter(
+  (f) => !VERSIONED_TEXT_FILES.includes(f),
+);
 
 /**
  * Markdown that describes the CURRENT release, and therefore must name the current release.
@@ -275,6 +351,16 @@ describe('site version badges', () => {
     }
   });
 
+  it.each(OTHER_SERVED_FILES)('%s names no version but ours', (file) => {
+    for (const v of badgeVersions(readFileSync(join(SITE, file), 'utf8'))) {
+      expect(
+        v,
+        `${file} names ${v}, but the packages are at ${version}. It is served from the same origin as the ` +
+          `pages, so a stale version here is as public as one in a hero.`,
+      ).toBe(version);
+    }
+  });
+
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
     const found = badgeVersions(readFileSync(join(SITE, page), 'utf8'));
     for (const v of found) {
@@ -307,7 +393,9 @@ describe('site version badges', () => {
     // the moment a markdown-only exemption was added, and the tempting fix — a second parallel allowlist — is
     // how one rule becomes two that drift.
     const all = [
-      ...[...pages, ...VERSIONED_TEXT_FILES].map((f) => readFileSync(join(SITE, f), 'utf8')),
+      ...[...pages, ...VERSIONED_TEXT_FILES, ...OTHER_SERVED_FILES].map((f) =>
+        readFileSync(join(SITE, f), 'utf8'),
+      ),
       ...MARKDOWN_DOCS.map((f) => readFileSync(join(ROOT, f), 'utf8')),
     ].join('\n');
     for (const [v, why] of FOREIGN_VERSIONS) {

@@ -110,11 +110,19 @@ produced the package they installed**. The controls:
   `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's
   release workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to
-  be public and the package published under a real version — both true from `0.1.0` onward, so every
-  published tarball carries an attestation you can check yourself.
-- **Publish only a re-verified tree.** The release workflow re-runs the **entire** gate (`lint · lint:arch ·
-  format:check · typecheck · test · build · smoke`) against the exact commit being published before the tarball
-  is created — a green `main` is necessary but not sufficient. A `vX.Y.Z` tag must also match `package.json`
+  be public and the package published under a real version — both true from `0.1.0` onward, so every tarball
+  **published by the release workflow** carries an attestation you can check yourself.
+  **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
+  publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is
+  bootstrapped by hand, from a laptop, which has no workflow identity and therefore no provenance. Those are
+  published under the `rc` dist-tag at a throwaway prerelease (`0.10.0-rc.0`) and are never what `latest`
+  serves. If you are checking signatures, expect exactly those prerelease versions to have none, and treat an
+  unattested tarball at a **real** version as untrusted.
+- **Publish only a re-verified tree.** The release workflow re-runs the gate that governs the artifact
+  (`lint · lint:arch · format:check · typecheck · test · audit · build · smoke`, plus a `leak-scan` of the
+  packed tarball) against the exact commit being published before the tarball is created — a green `main` is
+  necessary but not sufficient. CI's site and fuzz-lockfile checks are not repeated here; they guard what is
+  served from `main`, not what is published. A `vX.Y.Z` tag must also match `package.json`
   version, or the release fails.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile.
@@ -125,9 +133,10 @@ produced the package they installed**. The controls:
   only native code is its runtime dependency **`roaring`** (CRoaring), which the *consumer* installs. Consumers
   who prefer not to trust `roaring`'s prebuilt binary can build it **from source** at install time
   (`npm_config_build_from_source=true npm ci`, given a C/C++ toolchain). CI already proves this exact path works
-  on every run: the `lambda deployability` job installs the packed tarball with **`npm_config_build_from_source=true`**
-  inside an Amazon Linux 2023 container — forcing the from-source compile (not merely relying on a missing
-  prebuilt) — and loads the result under both ESM and CJS. **Platform note:** `roaring` publishes prebuilt
+  on every run: inside an Amazon Linux 2023 container, the `lambda deployability` job installs **`roaring`
+  itself** with **`npm_config_build_from_source=true`** — forcing the compile rather than relying on a
+  missing prebuilt, so the path is exercised even on a runner that has one — then unpacks the packed
+  `@cloudbitmaps/*` tarballs beside it and loads the result under both ESM and CJS. **Platform note:** `roaring` publishes prebuilt
   binaries for common **glibc** targets but **none for musl**, so on Alpine the addon builds from source at
   install regardless — provision a toolchain (`apk add --no-cache build-base python3`) or use a glibc base
   image. The from-source path is currently CI-proven on glibc (AL2023); a musl/Alpine lane is a tracked

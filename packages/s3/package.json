@@ -1,6 +1,6 @@
 {
   "name": "@cloudbitmaps/s3",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "S3 and S3-compatible storage (R2, MinIO, Ceph, Wasabi, B2) for CloudBitmaps",
   "keywords": [
     "cloudbitmaps",

@@ -1,4 +1,4 @@
-CloudRoaring
+CloudBitmaps
 Copyright 2026 Sharvil Kadam
 
 This product includes software developed as an open-source project.
@@ -7,6 +7,7 @@ file. You may obtain a copy of the License at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-CloudRoaring builds on the Roaring Bitmap data structure and is designed to use
-the CRoaring engine (via the `roaring` Node.js binding) for in-memory bit math.
+CloudBitmaps is a family of packages. Its flagship flavor, @cloudbitmaps/roaring, builds
+on the Roaring Bitmap data structure and uses the CRoaring engine (via the `roaring`
+Node.js binding) for in-memory bit math.
 Those projects are independent works under their own licenses.

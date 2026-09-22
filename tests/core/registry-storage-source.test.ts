@@ -125,7 +125,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     expect(gets - primed).toBe(1); // …from a single registry read, not eight
   });
 
-  it('self-heals when GC sweeps the exact generation a reader pinned mid-read (I5, no torn read)', async () => {
+  it('self-heals when GC sweeps the exact generation a reader pinned mid-read (no torn read)', async () => {
     const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });

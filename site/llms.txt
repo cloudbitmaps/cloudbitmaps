@@ -11,9 +11,8 @@ current. The distinguishing capability is **serverless chunk-skipping intersecti
 chunks that can possibly contribute, so intersecting two 2,000,000-id segments touches only the shared chunks,
 and `count()` on a published segment does zero payload reads.
 
-Install two packages: a codec and a storage — `npm i @cloudbitmaps/roaring @cloudbitmaps/s3`.
-The storage packages land in 0.10.0 and are not on npm yet. The published release is 0.9.0, whose layout and
-API differ from what is described here.
+Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3`
+(or `npm i` the same two).
 `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the driver ports) is a dependency of
 both and is never installed directly; it contains no cloud SDK at all. Five storage backends: S3
 (`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
@@ -33,7 +32,9 @@ There is no separate `registry` option.
 Only by loading a whole new generation. `store.load(ref, ids)` writes one immutable object, checks the result is plausible, moves the pointer forward-only, and collects what the move superseded.
 It takes an array, a Set or an async cursor.
 A backend (MemoryStorage / LocalFsStorage / S3Storage / GcsStorage / AzureBlobStorage) carries both halves and
-is the only thing `storage` accepts; a hand-written `{ storage, registry }` object is refused. To supply a half
+is what `storage` normally takes; a hand-written `{ storage, registry }` object is refused. `storage` also
+accepts a bare driver, or an already-built StorageChunkSource for advanced reader wiring — both without a
+registry, so the store is read-only and cleartext. To supply a half
 of your own — an instrumented driver, a registry elsewhere — use `createBackend({ storage, registry })`. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
 authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
 remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
@@ -108,7 +109,7 @@ In-region latency is not yet calibrated and no in-region figure is published.
 
 ## Status
 
-v0.9.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
+v0.10.0, Apache-2.0, published tokenlessly with SLSA build provenance. Pre-1.0: breaking changes are possible
 in a minor bump until the .crbm format freezes at 1.0.
 
 ## Links

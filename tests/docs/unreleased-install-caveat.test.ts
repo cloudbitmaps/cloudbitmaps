@@ -42,6 +42,32 @@ const HISTORY = new Set(['CHANGELOG.md', 'MIGRATING.md']);
 const CAVEAT = 'land in 0.10.0 and are not on npm yet';
 
 /**
+ * The same two phrases as patterns that survive a line break.
+ *
+ * WHY, and it is not hypothetical. These files hard-wrap at about 110 columns, so whether a sentence is one
+ * line or two is decided by how long the words before it happen to be — not by anything an author controls.
+ * `src.includes(CAVEAT)` is a literal-space match, and a literal space cannot match a newline. Wrapping the
+ * caveat in `packages/roaring/README.md` — the npm landing page — defeated this gate completely while the
+ * sentence was still plainly on the page, which means the release's own force-removal could have passed over
+ * a surface that still carried it.
+ *
+ * `vocabulary-damage.test.ts` hit this exact defect, fixed it with `\s+`, and wrote the post-mortem. The
+ * lesson was never carried to its neighbours; this is that carry.
+ *
+ * **`\s+` alone is not enough, which only shows up when you test it.** The caveat lives in a Markdown
+ * blockquote, so its continuation line begins `> ` — and a JSDoc one begins `* `. Those markers sit BETWEEN
+ * the words, so the gap is not whitespace and `\s+` does not span it. The first version of this fix looked
+ * right, matched a plain wrap in isolation, and still passed over the real wrapped caveat in
+ * `packages/roaring/README.md`. Hence the optional marker.
+ */
+const asWrapped = (phrase: string): RegExp =>
+  new RegExp(
+    phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, String.raw`\s+(?:[>*#]\s*)?`),
+    'i',
+  );
+const CAVEAT_RE = asWrapped(CAVEAT);
+
+/**
  * The other sentence that becomes false the moment 0.10.0 ships: the status line saying it is unreleased.
  *
  * It needs its own marker because it does not contain {@link CAVEAT}, and `version-claims` cannot see it
@@ -49,6 +75,7 @@ const CAVEAT = 'land in 0.10.0 and are not on npm yet';
  * beside it still says the release has not happened. Two canonical strings, both force-removed.
  */
 const STATUS_CAVEAT = 'which is unreleased';
+const STATUS_CAVEAT_RE = asWrapped(STATUS_CAVEAT);
 
 /**
  * Telling a reader to install a driver package, in any of the forms people actually write.
@@ -107,7 +134,14 @@ describe('the unreleased-driver install caveat tracks the version that makes it 
     // ship "not on npm yet" on a page CI never named. The removal direction has to be unconditional.
     it.each(files)('%s no longer carries the pre-release caveat', (rel) => {
       const src = readFileSync(join(ROOT, rel), 'utf8');
-      const stale = [CAVEAT, STATUS_CAVEAT].filter((phrase) => src.includes(phrase));
+      const stale = (
+        [
+          [CAVEAT, CAVEAT_RE],
+          [STATUS_CAVEAT, STATUS_CAVEAT_RE],
+        ] as const
+      )
+        .filter(([, re]) => re.test(src))
+        .map(([phrase]) => phrase);
       expect(
         stale,
         `${rel} still says ${stale.map((p) => `"${p}"`).join(' and ')}, but this workspace is ${version} — ` +
@@ -118,7 +152,7 @@ describe('the unreleased-driver install caveat tracks the version that makes it 
     it.each(advertising)('%s says the storage packages are not on npm yet', (rel) => {
       const src = readFileSync(join(ROOT, rel), 'utf8');
       expect(
-        src.includes(CAVEAT),
+        CAVEAT_RE.test(src),
         `${rel} tells a reader to \`npm i\` a storage package, but this workspace is ${version} and those ` +
           `packages are not published until 0.10.0 — that command 404s. Add the caveat: "${CAVEAT}".`,
       ).toBe(true);

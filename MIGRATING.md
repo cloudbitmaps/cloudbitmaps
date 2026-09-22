@@ -1,22 +1,57 @@
 # Migrating to 0.10.0
 
-`0.10.0` is a breaking release with **seven** changes. Most fail loudly — an unresolved import, a refused
-constructor, or a module that will not load. One changes a default, so it is the one that needs you to look at
-your call sites rather than wait for an error.
+`0.10.0` is a breaking release with **eight** changes. Most fail loudly — an unresolved import, a refused
+constructor, or a module that will not load. **Two do not**, and those are the ones that need you to look at
+your call sites rather than wait for an error: change 6 (the `*Into` verbs now replace where they appended)
+and change 8 (metric names, result fields and on-disk paths moved).
 
 **Start with change 1.** It is the only one that can require a design decision rather than an edit, and it
 affects every `0.9.x` deployment, because the option it removes was required.
+
+> [!WARNING]
+> **If your registry is DynamoDB, there is work to do BEFORE you upgrade** — on `0.9.x`, which is the only
+> line where both registry drivers exist. `0.10.0` cannot read a DynamoDB row at all, so this is not
+> something you can come back to. See [Before you upgrade](#before-you-upgrade-a-dynamodb-registry).
 
 1. [The live (warm) tier is gone](#1-the-live-warm-tier-is-gone)
 2. [The cloud drivers are their own packages](#2-the-cloud-drivers-are-their-own-packages)
 3. [ESM only, Node ≥ 22.12](#3-esm-only-node--2212)
 4. [A storage backend must be built, not assembled](#4-a-storage-backend-must-be-built-not-assembled)
 5. [The flat options became four groups](#5-the-flat-options-became-four-groups)
-6. [The `*Into` verbs can now refuse](#6-the-into-verbs-can-now-refuse)
+6. [The `*Into` verbs replace their destination, and can now refuse](#6-the-into-verbs-replace-their-destination-and-can-now-refuse)
 7. [Core exports only what it supports](#7-core-exports-only-what-it-supports)
+8. [Metric names, result fields and on-disk paths moved](#8-metric-names-result-fields-and-on-disk-paths-moved)
 
 Also worth knowing, because it changes what your `catch` blocks can rely on:
 [`instanceof` now holds across packages](#instanceof-now-holds-across-packages).
+
+---
+
+## Before you upgrade: a DynamoDB registry
+
+**Skip this unless your segment pointers live in DynamoDB.** If they do, this is the one piece of work that
+cannot be done after the upgrade.
+
+`0.9.x` is the only line in which the DynamoDB driver and an object-store registry both exist, so it is the
+only place the library itself can read the old rows and write the new ones. `0.10.0` has no DynamoDB driver
+at all. The `.crbm` objects are untouched either way — it is only the pointer rows that move.
+
+**On `0.9.x`, with writers quiesced**, stand up an `S3RegistryDriver` against the bucket you already use for
+generations, and copy every segment's row across **with every field it holds**, not just the pointer:
+
+| field | why dropping it hurts |
+|---|---|
+| `currentGen` | the generation pointer — without it the segment reads empty |
+| `wrappedDeks`, `keyId` | **an encrypted segment whose wrapped keys you drop is unrecoverable.** They exist nowhere else; losing them is a crypto-shred you performed on yourself |
+| `status` | a `destroyed` tombstone that comes back `active` un-fences a name that was erased on request |
+| `retention`, `residency` | drop these and the retention sweep silently stops expiring anything |
+
+Writers must be quiesced because pointer identity is per-registry: a publish landing in the old row during
+the copy is lost. Verify with `checkConsistency()` before you upgrade.
+
+**GCS and Azure users have no in-library bridge**, because those registry drivers arrive in this same release,
+after DynamoDB is gone. Copy the rows out yourself while still on `0.9.x` — the old table's key layout was
+`PK = ns#<namespace>|seg#<segment>`, `SK = reg#` — or move onto S3 first and change buckets afterwards.
 
 ---
 
@@ -30,17 +65,55 @@ store without one:
 new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry });
 ```
 
-`0.10.0` has one storage tier. The mutable warm store, the per-call `add`/`remove` verbs over it, the
-compaction daemon and the partition leases that kept it healthy are all removed, along with their options
-(`warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff`) and their metric events.
+`0.10.0` has one storage tier. The mutable warm store, the per-call `add`/`remove` verbs over it and the
+compaction daemon are all removed, along with their options (`warmReadConsistency`, `maxWarmScanBytes`,
+`writeConcurrency`, `occBackoff`) and their metric events.
+
+**The `compact-segments` CLI went with them.** `@cloudbitmaps/roaring` published two binaries in `0.9.x` and
+publishes one now:
+
+```diff
+- compact-segments     # folded warm deltas into the storage tier — there are no deltas to fold
+  export-segments      # unchanged
+```
+
+If a cron entry, Kubernetes `CronJob` or systemd timer runs `compact-segments`, it will fail with
+`command not found` after the upgrade. **Delete the schedule — there is no replacement and nothing is left
+undone without it**, because a load publishes a complete generation rather than a delta needing compaction.
+Note that `CHANGELOG.md` says this CLI "never shipped in a release"; that is wrong, and it is why this entry
+was missing from earlier drafts of this guide.
 
 **What to do depends on why you had it**, and only you can answer that:
 
 | you used the warm tier for | in `0.10.0` |
 |---|---|
-| **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it. No change in shape, and it is what the library is now built around |
+| **batch updates** — a job recomputes a set and writes it | this is the loaded store. `store.load(ref, ids)` builds one immutable generation and publishes it, and it is what the library is now built around. **The method is new** — `0.9.x` had no `load` on the store; the bulk path was the free function `bulkLoadCrbmGeneration(driver, key, ids)`, which is gone |
 | **per-call `add` / `remove` on the read path** | there is no replacement, and there will not be one on the object store. Micro-batch into a load, or keep those writes in RAM — Redis does that well. Hot-path *reads* are what this library is for |
 | **freshness inside a few seconds** | load more often. A load is one PUT plus a pointer swap, so the floor is your job cadence, not the library |
+| **exactly-once claim** — `segment.claimMany(ids)` returning only the ids this caller won | there is no replacement. See below; this one is a semantic loss, not an ergonomic one |
+
+### `claimMany` has no replacement, and that is a real loss
+
+`0.9.x` offered `segment.claimMany(ids)`: pass a batch, get back only the ids that were **not** already
+present, so exactly one concurrent caller could win any given id. It was the library's answer to Redis
+`SETBIT`-as-a-claim, and people build send-once and dedupe on it.
+
+It is gone, and nothing in `0.10.0` replaces it. The guarantee rested on the warm tier: each id lived in one
+chunk, a chunk was one OCC row, so a compare-and-swap on that row decided the winner. **A loaded store has no
+per-id compare-and-swap** — a load publishes a whole generation, and two loads racing do not partition ids
+between themselves, they order themselves.
+
+What to do:
+
+- **If the claim is the point** — a worker pool deciding who sends to whom — keep that in something with
+  per-key atomicity. Redis, DynamoDB conditional writes and Postgres `INSERT … ON CONFLICT` all do this
+  well, and it is a small, hot, low-cardinality workload, which is the shape those stores are good at.
+- **If you used it to filter an already-partitioned batch**, partition upstream instead: shard candidate ids
+  by worker, and each worker loads its own segment. No coordination is needed once the ids cannot collide.
+- **If you only needed "have I seen this before"** and not who won, that is `has` / `intersect` against the
+  loaded set, with the usual caveat that the answer is as fresh as your last load.
+
+`0.9.x` stays on npm if you need the old behaviour while you decide.
 
 If you need the old behaviour while you decide, `0.9.x` stays on npm and the tier is archived at the git tag
 `archive/live-warm-tier`. It will not receive fixes.
@@ -52,9 +125,9 @@ If you need the old behaviour while you decide, `0.9.x` stays on npm and the tie
 You now install **two packages**: the codec you want and the storage you have.
 
 ```diff
-- npm i @cloudbitmaps/roaring
-- npm i @aws-sdk/client-s3          # the optional peer you had to remember
-+ npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+- pnpm add @cloudbitmaps/roaring
+- pnpm add @aws-sdk/client-s3          # the optional peer you had to remember
++ pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3
 ```
 
 The SDK is a **real dependency** of the storage package, so installing it is the whole step. Nothing is an
@@ -232,13 +305,47 @@ This one throws too.
 
 ---
 
-## 6. The `*Into` verbs can now refuse
+## 6. The `*Into` verbs replace their destination, and can now refuse
 
-`intersectInto` / `unionInto` / `andNotInto` used to write and publish in one step. An empty combine
-therefore replaced the destination with an empty generation and reported success — indistinguishable from a
-correct run, and reachable without passing any option.
+**Two changes, and the first one is silent.** Read this section even if your combines never come out empty.
 
-They now refuse instead, the same way `load()` always has:
+### They replace where they used to append
+
+In `0.9.x`, `intersectInto` / `unionInto` / `andNotInto` **added to** the destination. The engine drained the
+result in batches through `addMany(dest, …)`, and the doc comment said so: *"into `dest` (added, not
+replaced)"*. They returned `Promise<void>`.
+
+In `0.10.0` they write a **new generation of `dest`** and publish it, so the destination holds the result of
+*this* call and nothing else.
+
+```ts
+// 0.9.x — accumulate three audiences into one segment
+await a.unionInto(all, []);
+await b.unionInto(all, []);   // `all` now holds a ∪ b
+await c.unionInto(all, []);   // `all` now holds a ∪ b ∪ c
+
+// 0.10.0 — the same three calls leave `all` holding ONLY c
+```
+
+**Nothing throws.** There is no type error to catch it: the return type changed from `Promise<void>` to
+`Promise<MaterializeResult>`, which is additive at every call site that ignored the result. A pipeline built
+on the accumulate shape keeps running and quietly keeps only its last write.
+
+**What to do instead.** Pass every operand to one call — `a.unionInto(all, [b, c])` — which is also the
+cheaper shape, since it reads each operand once and publishes once. If the inputs arrive over time rather
+than together, accumulate them upstream and `load()` the finished set; a segment changes by publishing a
+whole new generation, which is the write model the rest of this release is built on.
+
+This is the first of the two changes the lede flags as **not failing loudly** — change 8 is the other. A
+`0.9.x` deployment can upgrade into this one and see no error at all: the call succeeds, and the destination
+holds something different from what it would have held before.
+
+### And they refuse an empty result
+
+An empty combine used to add nothing, leaving the destination exactly as it was. Under the new publishing
+model it would instead publish an empty generation over a destination that had data — so it refuses. The
+guard is **new in `0.10.0`**, on `load()` and on these verbs alike; `0.9.x` had no such refusal, and no
+`allowEmpty` to opt out of one:
 
 ```ts
 const res = await audience.intersectInto(dest, [eligible]);
@@ -258,15 +365,26 @@ narrow race and the new outcome is the correct one.
 **Generation collection is unchanged.** Unlike `load()`, a materialisation still collects nothing, so a
 `rollback` target survives it. Pass `keep` if you want it to collect on the way through.
 
-`MaterializeResult` gains `published`, `reason`, `cardinalityBefore` and `collected`. Reading the existing
-fields is unaffected; a deep equality check on the whole object is not. `cardinalityBefore` is `null` when no
-bound needed the read — with `allowEmpty: true` and no `guard.minRetained`, nothing reads it.
+**These verbs used to return nothing.** In `0.9.x` they were `Promise<void>`; there is no `0.9.x` result
+object whose fields you might be reading, so nothing you have can break on the shape. What you get now is
+`MaterializeResult` — `published`, `reason`, `cardinalityBefore` and `collected` — and the point of migrating
+is to start *checking* it. `cardinalityBefore` is `null` when no bound needed the read: with
+`allowEmpty: true` and no `guard.minRetained`, nothing reads it.
+
+**`batchSize` is gone.** `0.9.x` took `CombineIntoOptions extends CombineOptions { batchSize?: number }` on
+all three `*Into` verbs, sizing the chunks of ids drained into the destination. The options type is now
+`MaterializeOptions`, which has no such field, because there is no drain to size — a materialisation builds
+one generation and publishes it, rather than writing repeated batches. From TypeScript, passing it is an
+excess-property error; from JavaScript it is **ignored silently**, so grep for it rather than waiting for a
+compiler to tell you.
 
 A lost race still throws `WriteConflictError` — unchanged.
 
 ## 7. Core exports only what it supports
 
-`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The `[Unreleased]` changelog quotes 110 → 82; 110 was the count at an unreleased mid-cycle commit, not at any release.) It had accumulated the internals of
+`@cloudbitmaps/core`'s main entry went from **89 value exports in `0.9.0` to 82**. (The development log for
+this cycle quotes 110 → 82 in places; 110 was the count at an unreleased mid-cycle commit, not at any
+release.) It had accumulated the internals of
 whatever landed next to it, and a reader could not tell supported API from plumbing that happened to be
 reachable. Every name below still exists and still works inside the library — it is no longer importable.
 
@@ -295,8 +413,12 @@ import { collectWithinBudget, excludingReservedRows, resolveBudget, DEFAULT_BUDG
   from '@cloudbitmaps/roaring';
 
 // Skip the reserved bookkeeping rows ONLY on an unscoped pass — a caller who names a namespace is asking
-// for that namespace, including a reserved one. This is what `drainRegistry` did, and what `listSegments`
-// still does.
+// for that namespace, including a reserved one. This is what `listSegments` does.
+//
+// `drainRegistry` did NOT do this, and did not need to: it drained `registry.list()` with a bound and
+// nothing else. The reserved rows are new — the due index that backs `retireExpired({ scan: 'index' })`
+// landed in this cycle — so a faithful transcription of the old code would now enumerate bookkeeping rows
+// alongside your segments. This line is the part of the recipe that is NOT a like-for-like replacement.
 const rows = namespace === undefined
   ? excludingReservedRows(registry.list())
   : registry.list(namespace);
@@ -336,6 +458,97 @@ If you passed `RetryDeps.isRetryable` or `RetryingOptions.isRetryable`, nothing 
 guide instead of a second breaking release. And re-exporting a name is additive, never breaking — so the bias
 is to cut now and restore deliberately, with docs and tests, if a real use case turns up.
 
+## 8. Metric names, result fields and on-disk paths moved
+
+The `cold` → `storage` rename is mostly a type-level change, and your compiler will find it. These are the
+places it reaches past the type system — **strings and paths nothing type-checks**, so each one fails by
+going quiet rather than by erroring.
+
+### Observability strings
+
+| `0.9.x` | `0.10.0` | what stays broken if you miss it |
+|---|---|---|
+| metric event `kind: 'cold.get'` | `'storage.get'` | a dashboard panel filtered on the old kind plots a flat zero |
+| `CountingMetricsSink.snapshot().cold` | `.storage` | a counter read off the snapshot is `undefined`, which most charts render as 0 |
+| `pricing.cold` (on a `PricingProfile`) | `pricing.storage` | **`TypeError: Cannot read properties of undefined (reading 'getPerMillion')`** — a custom profile does not mis-price, it stops working |
+| `groundedReport({ coldBytes })` | `{ storageBytes }` | **`ValidationError: storageBytes must be a finite number >= 0; got undefined`**. This is a parameter of `groundedReport()`, not a field of `CostReport` |
+| `checkConsistency()` issue `'missing-cold-generation'` | `'missing-storage-generation'` | **an alert rule keyed to the old string matches nothing, which reads exactly like "no torn restores found"** |
+
+The `checkConsistency` one is worth a moment: a rule that stops matching looks identical to a rule that has
+nothing to report. Grep your alert definitions, dashboard queries and runbook automation for `cold` before you
+upgrade, not after.
+
+The two cost rows are the exceptions to this section's lede — they raise rather than go quiet. Both are listed
+here anyway, because they are `cold` → `storage` renames and you will find them with the same grep.
+
+### `CostReport` lost fields, it did not only rename them
+
+Grepping for `cold` is **not** enough here, because the tier breakdown is gone rather than renamed. Reading
+`byTier.storage` after a search-and-replace gets you `undefined`, not a number.
+
+| `0.9.x` `CostReport` | `0.10.0` |
+|---|---|
+| `monthlyUSD.byTier` — `{ hot, warm, cold }` | **gone.** There is one tier to bill for, so a per-tier split has nothing to split. Use `monthlyUSD.byOp.storage` for the bytes term |
+| `monthlyUSD.byOp.writes` · `.compaction` | **gone** with the write path and the compactor |
+| `redisCrossover.writesPerSec` | **gone.** The crossover is a read rate; `redisCrossover.readsPerSec` remains |
+| `report.advisories` and the `CostAdvisory` type | **gone** |
+| `assumptions.topology` | **gone** — there is one topology now |
+
+What remains on `CostReport`: `monthlyUSD.{byOp,total}`, `redisCrossover.readsPerSec`, `verdict`,
+`rationale`, and `assumptions.{cacheHitRate,pricingName,grounded,notes}`.
+
+### The erasure ledger renamed its fields — and this one is silent
+
+`SubjectErasureEntry`, the per-segment record inside `EraseSubjectResult`, is the **proof-of-deletion
+artifact** this library tells you to persist. Its fields moved, and nothing raises if you read the old ones:
+a GDPR report built from `entry.removed` now reads `undefined`, which is falsy, which renders as *nothing was
+erased*. **Of everything in this guide, this is the change most likely to produce a compliance record that is
+confidently wrong.**
+
+| `0.9.x` | `0.10.0` | note |
+|---|---|---|
+| `removed: boolean` | `erased: boolean` | `erased` now means both halves at once: the id was a member, a generation without it is current, **and** the generation that held it has been deleted from the bucket |
+| `physicallyPurged: boolean` | *(folded into `erased`)* | the physical half is no longer a separate, deferred outcome — an erasure is a rewrite, and the rewrite's predecessor is collected before the entry is returned |
+| `toGen?: number` | `generation?: number` | the generation written without the id |
+| — | `fromGeneration?: number` | new: the generation the id was found in |
+
+Audit your erasure tooling for `.removed` and `.physicallyPurged` before you upgrade. Both are gone, and both
+fail by reading as `false`.
+
+### Local filesystem and CLI paths
+
+| `0.9.x` | `0.10.0` | what to do |
+|---|---|---|
+| `new LocalFsStorage(root)` read `<root>/cold` | `<root>/storage` | rename the directory before switching. The `0.9.x` guide led with `./.cloudbitmaps/cold` |
+| `export-segments` read `<CR_EXPORT_ROOT>/cold` | `<CR_EXPORT_ROOT>/storage` | same rename; the CLI refuses loudly if it finds nothing |
+| `export-segments` read `CR_EXPORT_SEGMENTS` | *(gone)* | **the CLI ignores unknown environment variables, so a dump that named extra segments now exports fewer of them and still exits 0** |
+
+The path rename fails loudly — the constructor and the CLI each refuse a directory that is not there. The
+`CR_EXPORT_SEGMENTS` row does not, and neither does the next section.
+
+`CR_EXPORT_SEGMENTS` took a comma-separated list of `segment` or `namespace/segment` entries to export
+**beyond** what the registry held — it existed for segments that were all-warm or not yet registered. In
+`0.10.0` neither state exists: a segment exists once a generation is loaded, and loading mints the registry
+row, so the registry is the complete list by construction. If your dump named segments there, drop the
+variable and confirm the export's `manifest.json` still lists what you expect. The API-level twin,
+`ExportOptions.candidates`, is gone for the same reason — that one at least trips excess-property checking
+if you pass it from TypeScript.
+
+### Segment names a filesystem cannot hold
+
+The name grammar widened, and `LocalFsStorage` now escapes names that a filesystem would mangle: the Windows
+device names (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, in any case, with or without an
+extension) and any
+name ending in `.` or a space.
+
+If a `0.9.x` local store holds a segment with such a name, its bytes are still on disk under the old
+spelling, and `0.10.0` looks for the escaped one. **The failure mode is silence, not an error:** `get()`
+returns null, `list()` omits it, and every sweep skips it. Rename the directory to the escaped form, or
+re-load the segment under a name outside that set. Object-store backends are unaffected — this is a
+filesystem constraint, not a format one.
+
+---
+
 ## `instanceof` now holds across packages
 
 Not a breaking change — a guarantee that got *stronger* — but worth knowing if you wrote code around the old
@@ -358,6 +571,7 @@ library cannot control it:
 
 ## Still stuck?
 
-The full entries, with rationale, are in [`CHANGELOG.md`](CHANGELOG.md) under `[Unreleased]`. If something here
+The full entries, with rationale, are in [`CHANGELOG.md`](CHANGELOG.md) — the curated notes under
+`## [0.10.0]`, and the cycle's blow-by-blow under `## Development log — 0.10.0` below them. If something here
 is wrong or missing, [open an issue](https://github.com/cloudbitmaps/cloudbitmaps/issues) — a migration you had
 to work out yourself is a bug in this page.

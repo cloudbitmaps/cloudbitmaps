@@ -1,6 +1,6 @@
 # Getting started
 
-> **Status: `0.9.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
+> **Status: `0.10.0` — pre-1.0.** Everything below is real and tested: it is what the engine actually
 > exposes, covered by the test suite. The API may still change before `1.0`. CloudBitmaps is a **loaded store**:
 > a segment is a series of write-once `.crbm` generations in object storage — **in-memory**, **local-filesystem**,
 > **S3-compatible**, **GCS** or **Azure Blob** — behind one **registry** pointer (memory / LocalFs / S3 /
@@ -116,15 +116,27 @@ The rest of this guide walks each step in turn.
 
 ## Upgrading from 0.9.x?
 
-**Four things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Two are packaging and are
-covered there in full — the cloud drivers became their own packages (`@cloudbitmaps/roaring/s3` →
-`@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the packages are now ESM-only and
-need Node ≥ 22.12.
+**Eight things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Read it rather than
+this summary if you are actually upgrading — two of the eight do not announce themselves.
 
-The other two are the constructor changes below. Both **throw with a message naming the fix** rather than
-being ignored, so you will find them the first time you run, not the first time something reads wrong.
+**Start there with change 1, the live (warm) tier**, which is gone. It affects every `0.9.x` deployment,
+because the option it removed was required, and it is the only one that can need a design decision rather
+than an edit. **And if your registry is DynamoDB, there is work to do on `0.9.x` before you upgrade at all**
+— `0.10.0` cannot read those rows.
 
-1. **The two drivers became one backend.** `new CloudRoaring({ storage: driver, registry })` is now
+Two of the eight are packaging and are covered there in full — the cloud drivers became their own packages
+(`@cloudbitmaps/roaring/s3` → `@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the
+packages are now ESM-only and need Node ≥ 22.12.
+
+Two more are the constructor changes below. Both **throw with a message naming the fix** rather than being
+ignored, so you will find them the first time you run, not the first time something reads wrong.
+
+The two that stay quiet are the ones to check by hand: the `*Into` verbs now **replace** their destination
+where they used to append to it, and the `cold` → `storage` rename reaches metric names, result fields and
+on-disk paths that nothing type-checks.
+
+1. **The three drivers became one backend.** `new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry })`
+   — where `cold` and `warm` were both required — is now
    `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
    the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
    expressible. Every driver is still exported; if you genuinely want the halves apart —
@@ -357,8 +369,7 @@ request path for what it is good at: `has`, `count`, `intersect`.
 > `@aws-sdk/client-s3`, as the snippets below do.
 
 The S3 storage driver is its own package, **`@cloudbitmaps/s3`**, which depends on `@aws-sdk/client-s3` for
-real — so `npm i @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.
-(The storage packages land in 0.10.0 and are not on npm yet.)
+real — so `pnpm add @cloudbitmaps/s3` is the whole step, and nothing pulls that SDK unless you install it.
 You can inject your own `S3Client`, so the driver works against AWS S3, MinIO, or any compatible backend just
 by how you configure the client:
 
@@ -1436,7 +1447,7 @@ atomically) — so a directory with a `manifest.json` means the run **finished**
 re-run). It exits non-zero if any segment couldn't be read (see _fault isolation_ below):
 
 ```bash
-CR_EXPORT_ROOT=./.cloudroaring CR_EXPORT_OUT=./dump npx export-segments
+CR_EXPORT_ROOT=./.cloudroaring CR_EXPORT_OUT=./dump pnpm exec export-segments
 # → dump/manifest.json + dump/<namespace|_default>/<segment>.roaring   (CR_EXPORT_FORMAT=ndjson for .ndjson)
 # CR_EXPORT_NAMESPACE=eu             scope the dump to one namespace
 # CR_EXPORT_ROOT holds the local-filesystem store: <root>/storage and <root>/registry
@@ -1688,35 +1699,49 @@ Pick whichever you already use:
 Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
 CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` in an AL2023 container and
 loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer ships too: `pnpm build-lambda-layer`
-produces `dist-lambda/cloud-roaring-lambda-layer.zip`.)*
+produces `dist-lambda/cloudbitmaps-lambda-layer.zip`.)*
 
 ## Troubleshooting
 
 ### `Cannot find module './build/Release/roaring.node'` after a successful install
 
-If you install with **`--ignore-scripts`** — a common hardening default in CI — the install **exits 0** and the
-package is then unusable at runtime:
+The install **exits 0** and the package is then unusable at runtime. Two ways to get here — and on **pnpm 10
+the plain install is one of them**, with no flag of your own:
 
 ```
-$ npm i --ignore-scripts @cloudbitmaps/roaring
+$ pnpm add @cloudbitmaps/roaring          # pnpm 10+: warns "Ignored build scripts: roaring", exits 0
+$ npm i --ignore-scripts @cloudbitmaps/roaring    # any client, when you opt out of scripts
 $ node -e "require('@cloudbitmaps/roaring')"
 Error: Cannot find module './build/Release/roaring.node'
 ```
 
+**pnpm 10 does not run dependency build scripts unless you allow them** — a deliberate supply-chain default, not
+a bug — so it is the one client where the *documented* install command needs a second step. pnpm 9 runs them,
+and so does npm unless you pass `--ignore-scripts`.
+
 **Why.** The native dependency `roaring` publishes an npm tarball containing **no** compiled binary; it ships an
-`install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Disable install
-scripts and that download never happens, so there is nothing for the addon loader to find. npm reports success
-because the *install* did succeed — only the post-install step was skipped.
+`install` script that downloads the right prebuilt binary for your platform from GitHub Releases. Skip install
+scripts and that download never happens, so there is nothing for the addon loader to find. The client reports
+success because the *install* did succeed — only the post-install step was skipped.
 
 **Fixes, in order of preference:**
 
-1. **Allow the install script for that one package.** Both npm and pnpm let you narrow the exception rather than
-   re-enabling scripts globally — pnpm's `onlyBuiltDependencies`, or an npm install run scoped to it.
-2. **`npm rebuild roaring`** after the ignore-scripts install; it runs the skipped step.
+1. **Allow the install script for that one package** — narrow the exception rather than re-enabling scripts
+   globally. On pnpm, put it in your own `package.json` so CI and teammates inherit it:
+
+   ```json
+   { "pnpm": { "onlyBuiltDependencies": ["roaring"] } }
+   ```
+
+   `pnpm approve-builds` does the same thing interactively. On npm, scope an install to it.
+2. **Then re-run the skipped step** — `pnpm rebuild roaring`, or `npm rebuild roaring` on npm. On pnpm the
+   allowlist above has to be in place **first**: `pnpm rebuild roaring` without it is a **silent no-op** — it
+   prints nothing, exits 0, and leaves the package just as broken, because rebuilding still runs a build script
+   and pnpm still will not. (`npm rebuild roaring` does repair a pnpm-installed tree, if you have npm to hand.)
 3. **Build from source** — `npm_config_build_from_source=true npm i` with a C/C++ toolchain present. Also the
    route on **Alpine/musl**, where no prebuilt binary is published at all.
 
-**Check it at install time, not at 3am.** Because npm's exit code cannot tell you about this, add a startup or CI
+**Check it at install time, not at 3am.** Because no client's exit code tells you about this, add a startup or CI
 assertion that the addon actually loads — `node -e "require('@cloudbitmaps/roaring')"` — so a broken install
 fails your pipeline instead of your first request.
 

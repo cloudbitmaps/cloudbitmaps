@@ -7,7 +7,7 @@
  * {@link CodecInterface} seam, so a *flavor* package (`@cloudbitmaps/roaring` today) supplies the codec and a
  * facade on top.
  *
- * **You normally install a flavor, not this package** — `npm i @cloudbitmaps/roaring` pulls this in
+ * **You normally install a flavor, not this package** — `pnpm add @cloudbitmaps/roaring` pulls this in
  * transitively and re-exports it, so `@cloudbitmaps/roaring` is the one name to know. Depend on `core`
  * directly only when authoring a new flavor or a driver.
  *

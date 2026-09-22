@@ -34,7 +34,7 @@ export class SafeBitmap implements CodecBitmap {
   }
 
   /**
-   * S1: validate size, then deserialize with the **portable** (validated) format.
+   * Validate size, then deserialize with the **portable** (validated) format.
    * Throws `IntegrityError` if the input exceeds `maxBytes` or fails to decode — the
    * native addon is never handed unbounded or unsafe-format input.
    */

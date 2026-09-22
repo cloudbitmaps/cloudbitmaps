@@ -8,7 +8,7 @@
 # container, install the packed tarball with `npm_config_build_from_source=true` (compile roaring for the
 # target, no reliance on a prebuilt), then zip `nodejs/`.
 #
-# Usage: `pnpm build-lambda-layer`. Needs Docker. Output: dist-lambda/cloud-roaring-lambda-layer.zip.
+# Usage: `pnpm build-lambda-layer`. Needs Docker. Output: dist-lambda/cloudbitmaps-lambda-layer.zip.
 # Override the base image with LAMBDA_LAYER_IMAGE (its arch decides the layer's arch — arm64/Graviton on an
 # Apple-Silicon host, x64 on a GitHub-hosted runner; publish one layer per arch you target).
 
@@ -89,8 +89,8 @@ docker run --rm --entrypoint bash \
     tar -xzf /w/core.tgz    --strip-components=1 -C node_modules/@cloudbitmaps/core
     tar -xzf /w/roaring.tgz --strip-components=1 -C node_modules/@cloudbitmaps/roaring
     cd "$build"
-    zip -qr /out/cloud-roaring-lambda-layer.zip nodejs
+    zip -qr /out/cloudbitmaps-lambda-layer.zip nodejs
   '
 
-SIZE="$(du -h "$OUT/cloud-roaring-lambda-layer.zip" | cut -f1)"
-echo "build-lambda-layer: PASS — $OUT/cloud-roaring-lambda-layer.zip ($SIZE, $IMAGE)"
+SIZE="$(du -h "$OUT/cloudbitmaps-lambda-layer.zip" | cut -f1)"
+echo "build-lambda-layer: PASS — $OUT/cloudbitmaps-lambda-layer.zip ($SIZE, $IMAGE)"

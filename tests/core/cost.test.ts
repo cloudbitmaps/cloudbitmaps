@@ -67,13 +67,13 @@ describe('estimateCost (planning)', () => {
   it('at-rest, low-QPS is win-big and dominated by storage', () => {
     const r = estimateCost({ segments: [{ sizeBytes: 1.2e9 }] }); // ~1.2 GB, no traffic
     expect(r.verdict).toBe('win-big');
-    expect(r.assumptions.grounded).toBe(false); // K6: sizes were supplied, not measured
+    expect(r.assumptions.grounded).toBe(false); // sizes were supplied, not measured
     // storage = 1.2e9 / GiB * $0.023/GiB-mo
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((1.2e9 / GIB) * 0.023, 6);
     expect(r.monthlyUSD.total).toBeLessThan(P.redis.monthlyUSD * 0.1);
   });
 
-  it('K4: sustained read QPS past the crossover is the lose-zone', () => {
+  it('sustained read QPS past the crossover is the lose-zone', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { readsPerSec: 1000 }, // well past the ~329/s crossover
@@ -108,15 +108,15 @@ describe('estimateCost (planning)', () => {
 });
 
 describe('costReport (grounded)', () => {
-  it('K1: grounded storage cost matches a direct byte count of the real chunk payload', async () => {
+  it('grounded storage cost matches a direct byte count of the real chunk payload', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const r = await store.segment('s').costReport();
-    expect(r.assumptions.grounded).toBe(true); // K6
+    expect(r.assumptions.grounded).toBe(true); // measured, not supplied
     expect(r.monthlyUSD.byOp.storage).toBeCloseTo((ONE_CHUNK_BYTES / GIB) * 0.023, 9);
     expect(r.monthlyUSD.total).toBeCloseTo(r.monthlyUSD.byOp.storage, 9); // no workload → storage only
   });
 
-  it('K2: estimateCost and costReport agree when fed identical inputs', async () => {
+  it('estimateCost and costReport agree when fed identical inputs', async () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const workload = { readsPerSec: 50, cacheHitRate: 0.5, loadsPerMonth: 30 };
 
@@ -168,7 +168,7 @@ describe('costReport (grounded)', () => {
 });
 
 describe('cost model — additional coverage (5b review)', () => {
-  it('M6: byOp partitions the total — every dollar is attributed to exactly one op', () => {
+  it('byOp partitions the total — every dollar is attributed to exactly one op', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 5e8 }],
       workload: {
@@ -186,7 +186,7 @@ describe('cost model — additional coverage (5b review)', () => {
     }
   });
 
-  it('M5: read crossover scales with cache-hit rate; 100% hits → Infinity', () => {
+  it('read crossover scales with cache-hit rate; 100% hits → Infinity', () => {
     const base = estimateCost({ segments: [{ sizeBytes: 0 }] }); // cacheHitRate 0
     const cached = estimateCost({
       segments: [{ sizeBytes: 0 }],
@@ -220,7 +220,7 @@ describe('cost model — additional coverage (5b review)', () => {
     expect(r.rationale).toMatch(/intersection/i);
   });
 
-  it('L10: count multiplies segment bytes (and count:0 contributes nothing)', () => {
+  it('count multiplies segment bytes (and count:0 contributes nothing)', () => {
     const one = estimateCost({ segments: [{ sizeBytes: 1e8 }] });
     const three = estimateCost({ segments: [{ sizeBytes: 1e8, count: 3 }] });
     expect(three.monthlyUSD.byOp.storage).toBeCloseTo(one.monthlyUSD.byOp.storage * 3, 9);
