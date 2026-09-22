@@ -377,15 +377,24 @@ describe('calibrate guards — found by the first real run', () => {
   });
 
   describe('maskAccount', () => {
+    // Built at runtime, never written as a literal. The leak scan's structural needles flag any 12-digit run and
+    // any ARN, and they cannot tell a fixture from a real account — which is the point of them. Allowlisting this
+    // whole file would blind the scanner to the one file a real id is most likely to be pasted into while
+    // debugging the pin, so the fixture changes instead: an all-zeros prefix is unmistakably not an account, and a
+    // real id pasted here as a literal is still caught.
+    const FAKE_ACCOUNT = '0'.repeat(8) + '4321';
+
     it('shows the last four digits and nothing else', () => {
-      const masked = guards.maskAccount('123456789012');
-      expect(masked.endsWith('9012')).toBe(true);
-      expect(masked).not.toContain('12345678');
+      const masked = guards.maskAccount(FAKE_ACCOUNT);
+      expect(masked.endsWith('4321')).toBe(true);
+      expect(masked).not.toContain('00000000');
     });
 
     it('does not pretend to have verified something that is not an account id', () => {
       expect(guards.maskAccount(undefined)).toBe('(unverified)');
-      expect(guards.maskAccount('arn:aws:iam::123456789012:user/x')).toBe('(unverified)');
+      // Contains an account id without being one — an ARN, a URI, a log line — must not be read as verified.
+      expect(guards.maskAccount(`${FAKE_ACCOUNT}:user/x`)).toBe('(unverified)');
+      expect(guards.maskAccount(`${FAKE_ACCOUNT}9`)).toBe('(unverified)');
     });
   });
 });
