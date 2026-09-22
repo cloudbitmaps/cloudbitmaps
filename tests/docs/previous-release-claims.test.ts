@@ -130,8 +130,11 @@ function exportedNames(src: string): Set<string> {
         ?.trim();
       if (name) out.add(name);
     }
+  // Same modifier/kind coverage as `api-reference-sync` — see the note there. Here the blind spot points the
+  // other way: a genuine `export async function` at the tag would extract nothing, so a page naming it would
+  // be reported as a FABRICATION and a correct doc would go red.
   for (const decl of code.matchAll(
-    /export\s+(?:abstract\s+)?(?:interface|class|type|function|const)\s+([A-Za-z0-9_$]+)/g,
+    /export\s+(?:(?:declare|abstract|async)\s+)*(?:interface|class|type|function|const|let|var|enum)\s+([A-Za-z0-9_$]+)/g,
   ))
     if (decl[1]) out.add(decl[1]);
   return out;

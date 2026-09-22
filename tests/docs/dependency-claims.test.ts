@@ -76,10 +76,46 @@ function thirdPartyByPackage(): Map<string, string[]> {
 }
 
 /**
- * Text that scopes a count to a package. A bare `core`/`codec`/`engine` counts: "zero-dependency core" and
- * "the codec's one dependency" both say whose without naming the specifier.
+ * A package specifier or a product name. Anywhere in the window, this scopes the claim: the reader can see
+ * exactly which package is being counted.
  */
-const SCOPED = /@cloudbitmaps\/\w|CRoaring|roaring-node|\bcodec\b|\bcore\b|\bengine\b|\bflavor\b/i;
+const SCOPED_STRONG = /@cloudbitmaps\/\w|CRoaring|roaring-node/i;
+
+/**
+ * A common noun that can scope a count — "the codec's one third-party dependency" — but only when it is
+ * attached to the claim.
+ *
+ * WHY THE DISTINCTION. Accepting these anywhere in the ±160 window is what let the retired badge come back.
+ * Every hero and footer strip on the site reads `Apache-2.0 · v0.10.0 · zero-dependency core · 4 storage
+ * drivers`; drop `· 1 third-party dependency ·` into the middle of one and the bare `core` thirty characters
+ * to its left excused it. The claim said "the project", the scoping word belonged to a different item in the
+ * same list, and the gate written to kill that exact string passed over it on the landing page.
+ *
+ * Both real claims in this repo are scoped the STRONG way — `npm i @cloudbitmaps/roaring · 1 third-party
+ * dependency` and `@cloudbitmaps/core has no third-party dependencies` — so requiring attachment for the
+ * weak form costs nothing here and closes the laundering route.
+ */
+const SCOPED_WEAK = /\bcodec\b|\bcore\b|\bengine\b|\bflavor\b/gi;
+
+/**
+ * What separates one item of a meta strip, or one sentence, from the next. A weak scoping word on the far
+ * side of one of these belongs to a different claim.
+ */
+const CLAUSE_BREAK = /[·•|;\n]|\.\s/;
+
+/** Does some scoping token govern the claim at `at`, within `around`? */
+function isScoped(around: string, claimStart: number, claimLength: number): boolean {
+  if (SCOPED_STRONG.test(around)) return true;
+  for (const w of around.matchAll(SCOPED_WEAK)) {
+    const wAt = w.index ?? 0;
+    const between =
+      wAt < claimStart
+        ? around.slice(wAt + w[0].length, claimStart)
+        : around.slice(claimStart + claimLength, wAt);
+    if (!CLAUSE_BREAK.test(between)) return true;
+  }
+  return false;
+}
 
 /** A stated count of third-party dependencies, in digits or words. */
 const CLAIM =
@@ -116,8 +152,9 @@ describe('a dependency count says which package it counts', () => {
       const at = m.index ?? 0;
       // One sentence's worth either side: enough to carry "`@cloudbitmaps/roaring`'s one third-party dep",
       // short enough that an unrelated package name further down the page cannot launder a false claim.
-      const around = text.slice(Math.max(0, at - 160), at + m[0].length + 160);
-      if (!SCOPED.test(around)) {
+      const from = Math.max(0, at - 160);
+      const around = text.slice(from, at + m[0].length + 160);
+      if (!isScoped(around, at - from, m[0].length)) {
         unscoped.push(
           `"${m[0].trim()}" — in: …${around.replace(/\s+/g, ' ').trim().slice(0, 130)}…`,
         );

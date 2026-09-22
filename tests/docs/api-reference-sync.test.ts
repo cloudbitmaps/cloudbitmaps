@@ -64,9 +64,16 @@ function exportedNames(src: string): string[] {
       if (name) names.add(name);
     }
   }
-  // Inline declarations: export (interface|class|type|function|const) Name
+  // Inline declarations: `export <modifiers> <kind> Name`.
+  //
+  // The modifier list is `(declare|abstract|async)*` and the kinds include `enum`, `let` and `var` because
+  // the narrower version saw ONLY `export function`. `export async function`, `export enum`,
+  // `export declare const`, `export let` and `export var` each extracted nothing — so three undocumented
+  // public exports were added to `packages/roaring/src/index.ts` and this gate stayed green. In an
+  // async-first library `export async function` is the likely spelling, which made the gap the common case
+  // rather than an exotic one.
   for (const decl of code.matchAll(
-    /export\s+(?:abstract\s+)?(?:interface|class|type|function|const)\s+([A-Za-z0-9_]+)/g,
+    /export\s+(?:(?:declare|abstract|async)\s+)*(?:interface|class|type|function|const|let|var|enum)\s+([A-Za-z0-9_$]+)/g,
   )) {
     const name = decl[1];
     if (name) names.add(name);
