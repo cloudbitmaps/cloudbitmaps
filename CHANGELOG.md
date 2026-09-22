@@ -15,6 +15,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **A real-cloud calibration harness for the loaded store** — `pnpm calibrate:aws`. The previous one was
+  deleted with the warm tier because it metered a write path through a NoSQL registry that no longer ships,
+  which is why load throughput, in-region intersect latency and the single-bucket bill are all listed as owed
+  on the benchmarks page. This is the tool that pays them.
+
+  It spends money, so it defaults to a projection that touches nothing, rehearses in full against MinIO for
+  free, and refuses a run that cannot state its region, its spend ceiling and its intent separately. The
+  guards are pure functions in `bench/lib/calibrate-guards.cjs` with a regression test each, because every one
+  is a bug that actually happened — including a `NaN` spend ceiling that silently deleted the bound, and a
+  `HeadBucket` 403 read as "absent" for a bucket the caller owned, which in `us-east-1` would have run the
+  workload inside a real bucket and deleted it on teardown.
+
 ### Changed
 
 - **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run

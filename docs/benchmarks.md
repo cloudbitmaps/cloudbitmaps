@@ -264,6 +264,8 @@ Nothing above should be read as covering any of these.
 ## Reproduce
 
 ```sh
+pnpm calibrate:aws            # projection only — touches nothing, needs no credentials
+pnpm calibrate:aws --rehearse # the whole harness against MinIO from docker-compose, free
 pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results.json, and the cost table here + the site
 pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, rewrites the at-scale table
 SCALE_FLEETS=1000,10000 pnpm bench:scale   # smaller + faster for a quick check
