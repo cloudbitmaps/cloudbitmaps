@@ -1,44 +1,60 @@
 'use strict';
 /*
- * Real-cloud calibration for the LOADED STORE — load throughput, intersect latency, and what a single-bucket
- * topology actually costs.
+ * Real-cloud calibration for the LOADED STORE — load throughput, cold intersect latency, and what a
+ * single-bucket topology actually costs.
  *
  * WHY THIS EXISTS AGAIN. A harness by this name ran the July 2026 calibration and was deleted with the warm
  * tier, because it metered a write path through a NoSQL registry that no longer ships. Everything it measured
  * is therefore the object-store half of a shape you cannot deploy: today the pointer lives in the same bucket
  * as the data, so resolving a generation costs an object GET and advancing it costs a conditional PUT — terms
- * billed to DynamoDB in that run and simply absent from the published figures. `docs/benchmarks.md` lists all
- * three of those measurements as owed. This is the tool that pays them.
+ * billed to DynamoDB in that run and simply absent from the published figures. `docs/benchmarks.md` lists
+ * those measurements as owed. This is the tool that pays them.
  *
  * IT SPENDS REAL MONEY, so it is built to be hard to run by accident and impossible to run blind. The guards
  * live in `bench/lib/calibrate-guards.cjs` as pure functions with a regression test each, because every one of
- * them is a bug that actually happened — a NaN spend ceiling that silently deleted the bound, a `HeadBucket`
- * 403 read as "absent" on a bucket the caller owned, a projection the run could exceed. Read that file before
- * changing anything here.
+ * them is a bug that actually happened. Read that file before changing anything here.
  *
- *   node bench/calibrate-aws.cjs                 projection only. Touches nothing, needs no credentials.
- *   node bench/calibrate-aws.cjs --rehearse      the whole harness against MinIO from docker-compose. Free.
- *   node bench/calibrate-aws.cjs --run           the real thing. Requires region + ceiling + confirmation.
- *   node bench/calibrate-aws.cjs --cleanup <id>  remove a run's resources by id, after an uncatchable kill.
- *   node bench/calibrate-aws.cjs --rehearse --cleanup <id>   the same, against MinIO.
+ *   node bench/calibrate-aws.cjs                             projection only; touches nothing
+ *   node bench/calibrate-aws.cjs --rehearse                  the whole harness against MinIO, free
+ *   node bench/calibrate-aws.cjs --run                       the real thing (region + ceiling + confirmation)
+ *   node bench/calibrate-aws.cjs [--rehearse] --cleanup <id> remove a run's resources after a hard kill
+ *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
+ *                                                            packages — the only way latency means anything
  *
- * WHAT THE REHEARSAL DOES NOT COVER. MinIO is not AWS. It proves the mechanics — phases, metering, teardown
- * order, guard behaviour — but it cannot rehearse a versioned-bucket teardown or an in-flight multipart abort,
- * and it does not reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those
- * meet reality for the first time on a real account, which is why the probe refuses anything but a clean 404.
+ * WHAT A RUN CAN AND CANNOT CLAIM. Cost is location-independent: a request costs the same from anywhere. LATENCY
+ * is not: from outside the region it measures internet transit, which is why the July run's wall-clock was
+ * withheld and why the first run of this harness — from a laptop — produced a p50 of 112 ms that describes the
+ * network, not the library. So every run now measures its own distance to the region (the round-trip floor of a
+ * trivial request) and records it, and the results say whether the latency figures are in-region or not. A
+ * number that cannot be told apart from the network is not a latency number.
+ *
+ * WHAT THE REHEARSAL DOES NOT COVER. MinIO is not AWS. It proves the mechanics — stages, metering, teardown
+ * order, guard behaviour, signal handling — but it cannot rehearse a versioned-bucket teardown or an in-flight
+ * multipart abort on a real account, and it does not reproduce `us-east-1` answering 200 OK to `CreateBucket` on
+ * a bucket you already own. Those meet reality for the first time on a real account, which is why the probe
+ * refuses anything but a clean 404.
  */
 const { writeFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const { setTimeout: sleep } = require('node:timers/promises');
 
 const { meter, priceTally } = require('./lib/aws-meter.cjs');
 const {
   CONFIRM_PHRASE,
+  RETRY_BOUND,
+  CHUNK_SPAN,
+  DEFAULT_LAYOUT,
   parseCeiling,
   resolveSize,
   probeMeansAbsent,
   projectOps,
+  exceedsProjection,
   breached,
+  planLayout,
+  layoutIds,
+  maskAccount,
 } = require('./lib/calibrate-guards.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -46,11 +62,9 @@ const OUT = resolve(ROOT, 'bench/calibrate-aws-results.json');
 
 const argv = process.argv.slice(2);
 /**
- * `--rehearse` is a TARGET, not a mode, so it composes with `--cleanup`.
- *
- * It was a mode, and that left the rehearsal — the one you iterate on, and so the one most likely to leave a
- * half-made bucket behind — with no way to clean up: `--cleanup` assumed a real account and refused without a
- * region. The mode you break things in is the mode that most needs the recovery path.
+ * `--rehearse` is a TARGET, not a mode, so it composes with `--cleanup`. It was a mode, and that left the
+ * rehearsal — the one you iterate on, and so the one most likely to leave a half-made bucket — with no way to
+ * clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
 const MODE = argv.includes('--cleanup')
@@ -61,14 +75,29 @@ const MODE = argv.includes('--cleanup')
       ? 'rehearse'
       : 'project';
 
-/** Workload. Every size is overridable so a run can be made smaller; an explicit 0 really means 0. */
-const SEGMENTS = resolveSize(process.env.CR_CALIBRATE_SEGMENTS, 12, 'CR_CALIBRATE_SEGMENTS');
+// ---- the workload ----------------------------------------------------------------------------------------------
+// Every size is overridable so a run can be made smaller; an explicit 0 really means 0.
+const SEGMENTS = resolveSize(process.env.CR_CALIBRATE_SEGMENTS, 10, 'CR_CALIBRATE_SEGMENTS');
 const IDS = resolveSize(process.env.CR_CALIBRATE_IDS, 500_000, 'CR_CALIBRATE_IDS');
 const READS = resolveSize(process.env.CR_CALIBRATE_READS, 40, 'CR_CALIBRATE_READS');
-/** The engine's own OCC retry bound (1 attempt + DEFAULT_MAX_RETRIES), not a multiplier someone picked. */
-const RETRY_BOUND = 4;
-/** Chunks a skipping intersect fetches per operand, from the measured 100-of-2,000 shape. */
-const CHUNKS_PER_READ = 100;
+/**
+ * Segments large enough to be uploaded MULTIPART — the other half of "load throughput, single-part and
+ * multipart". The S3 driver uses a single conditional PUT for anything that fits one 8 MiB part, and the first
+ * run's segments were ~450 KB, so it never exercised multipart at all. These are dense (a bitmap container per
+ * chunk, 8 KiB each) and never intersected, so they cannot disturb the intersect workload.
+ */
+const LARGE = resolveSize(process.env.CR_CALIBRATE_LARGE, 2, 'CR_CALIBRATE_LARGE');
+const LARGE_CHUNKS = 1_536; // x 8 KiB bitmap containers ≈ 12 MiB: two 8 MiB parts
+const LARGE_IDS_PER_CHUNK = 8_192; // above roaring's 4,096 array→bitmap threshold, so every container is a bitmap
+const PART_SIZE = 8 * 1024 * 1024; // the S3 driver's default part size
+/** Trivial requests timed to find this client's round-trip floor to the region. */
+const RTT_SAMPLES = 10;
+/**
+ * Below this floor the client is treated as in-region. An in-region S3 request is single-digit to low-tens of
+ * milliseconds; a client on another continent cannot get under ~60 ms. The raw floor is recorded regardless, so
+ * a reader can apply their own line — this only decides the label.
+ */
+const IN_REGION_FLOOR_MS = 30;
 
 const log = (m) => console.log(`calibrate: ${m}`);
 function refuse(msg) {
@@ -76,52 +105,109 @@ function refuse(msg) {
   process.exit(2);
 }
 
-function projection(pricing) {
+/** The ids of large segment `i`: a bitmap-dense run of chunks, generated rather than materialised. */
+function* largeIds() {
+  for (let c = 0; c < LARGE_CHUNKS; c += 1) {
+    for (let j = 0; j < LARGE_IDS_PER_CHUNK; j += 1) yield c * CHUNK_SPAN + j * 8;
+  }
+}
+
+/** An upper bound on the parts a large segment needs: bitmap payloads plus a generous allowance for the index. */
+function largePartsBound() {
+  const bytes = LARGE_CHUNKS * (8_192 + 64) + 64 * 1024;
+  return Math.ceil(bytes / PART_SIZE) + 1;
+}
+
+function projection(pricing, layout) {
   const ops = projectOps({
     loads: SEGMENTS,
+    largeLoads: LARGE,
+    partsPerLargeLoad: largePartsBound(),
     reads: READS,
-    chunksPerRead: CHUNKS_PER_READ,
+    operandsPerRead: 2,
+    chunksPerRead: layout.sharedChunks,
     retryBound: RETRY_BOUND,
+    // The probe HEAD, the round-trip samples, and teardown's listing of uploads and object versions.
+    fixedGets: 1 + RTT_SAMPLES,
+    fixedPuts:
+      1 /* CreateBucket */ + 1 /* ListMultipartUploads */ + 2 /* ListObjectVersions pages */,
   });
   return { ops, priced: priceTally({ put: ops.put, get: ops.get }, pricing) };
 }
 
+function harnessRef() {
+  if (process.env.CR_CALIBRATE_HARNESS_REF) return process.env.CR_CALIBRATE_HARNESS_REF;
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return '(unknown)';
+  }
+}
+
 /**
- * Deterministic id set with a CONTROLLED overlap, so intersect selectivity is a parameter and not luck.
+ * Verify the caller's identity — and tell the two kinds of failure apart.
  *
- * The first version offset each segment into its own id range, which gave adjacent segments no overlap at all
- * — so the intersect phase measured the EMPTY intersection. That is chunk-skipping's best case (it skips
- * everything and fetches nothing), and timing it would have published a latency that describes no real query.
- * The rehearsal caught it only because the run prints how many ids the first pass returned; without that line
- * it would have produced a plausible p50 over zero work.
- *
- * Every segment now shares one common core and owns a disjoint remainder, so the overlap fraction is exactly
- * `OVERLAP` for any pair — matching the ~5% shape the published 100-of-2,000 chunk figure describes.
+ * The first version caught EVERY error and reported "@aws-sdk/client-sts not installed", so an expired SSO
+ * session or a wrong profile would have been blamed on a missing module. And because an account pin compared
+ * against that placeholder text, setting `CR_CALIBRATE_EXPECT_ACCOUNT` could never succeed — so the pin went
+ * unused, which is how the first real run went unpinned.
  */
-const OVERLAP = 0.05;
-function ids(n, segmentIndex) {
-  const shared = Math.floor(n * OVERLAP);
-  const out = new Array(n);
-  // Shared prefix: identical across every segment, so a pair always intersects in exactly these.
-  for (let i = 0; i < shared; i += 1) out[i] = i * 7;
-  // Private remainder: a band this segment alone occupies, placed far above the shared core.
-  const base = (segmentIndex + 1) * 100_000_000;
-  for (let i = shared; i < n; i += 1) out[i] = base + (i - shared) * 7;
-  return out;
+async function identity(region) {
+  let sts;
+  try {
+    sts = require('@aws-sdk/client-sts');
+  } catch (err) {
+    if (err?.code === 'MODULE_NOT_FOUND') return { verified: false, reason: 'module' };
+    throw err;
+  }
+  // A failure HERE is a credentials problem, and every later request would fail the same way. Say so now.
+  const out = await new sts.STSClient({ region }).send(new sts.GetCallerIdentityCommand({}));
+  return { verified: true, account: out.Account };
+}
+
+// A `finally` does not run on a signal, so the handler has to do the teardown itself. It is replaced once there
+// is something to tear down; until then an interrupt simply stops the run, which is the point of the abort
+// window. The first version of this handler printed "tearing down before exit" and did NEITHER — installing a
+// SIGINT handler replaces Node's default exit, so Ctrl-C left the workload running while claiming otherwise.
+let onInterrupt = async () => {};
+let interrupts = 0;
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    interrupts += 1;
+    if (interrupts > 1) {
+      // A second signal during teardown used to kill the process mid-delete, leaking the bucket. Warn instead.
+      console.error('calibrate: already tearing down — if anything is left, use --cleanup <runId>');
+      return;
+    }
+    console.error(`\ncalibrate: ${sig} — stopping`);
+    Promise.resolve()
+      .then(() => onInterrupt())
+      .catch((err) => console.error(`calibrate: teardown after ${sig} failed: ${err.message}`))
+      .finally(() => process.exit(130));
+  });
 }
 
 async function main() {
-  const { AWS_US_EAST_1_ONDEMAND } = await import('@cloudbitmaps/core');
+  const { AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring');
   const pricing = AWS_US_EAST_1_ONDEMAND;
-  const { ops, priced } = projection(pricing);
+  const layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
+  const { ops, priced } = projection(pricing, layout);
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
-    console.log(`  workload    ${SEGMENTS} segments x ${IDS} ids, ${READS} reads`);
     console.log(
-      `  projected   ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, not an estimate`,
+      `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)`,
     );
-    console.log(`  projected $ ${priced.totalUSD.toFixed(6)} at ${pricing.name}`);
+    console.log(
+      `               + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks, ${READS} cold intersects`,
+    );
+    console.log(
+      `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
+    );
+    console.log(`  projected $  ${priced.totalUSD.toFixed(6)} at ${pricing.name}`);
     console.log('\n  --rehearse   the whole harness against MinIO, free');
     console.log('  --run        the real thing (needs region + ceiling + confirmation)');
     return 0;
@@ -162,17 +248,8 @@ async function main() {
     }
   }
 
-  const {
-    S3Client,
-    HeadBucketCommand,
-    CreateBucketCommand,
-    DeleteObjectsCommand,
-    DeleteBucketCommand,
-    ListObjectVersionsCommand,
-    ListMultipartUploadsCommand,
-    AbortMultipartUploadCommand,
-  } = require('@aws-sdk/client-s3');
-  const client = new S3Client(clientOpts);
+  const s3 = require('@aws-sdk/client-s3');
+  const client = new s3.S3Client(clientOpts);
   const tally = meter(client);
 
   const runId =
@@ -186,53 +263,52 @@ async function main() {
   const bucket = `cloudbitmaps-calib-${runId}`;
 
   /**
-   * Teardown, memoised.
-   *
-   * One promise awaited by every exit path — the `finally`, the signal handler and the top-level catch —
-   * because they otherwise race: a SIGTERM'd run once printed one of two deletes when the catch's
-   * `process.exit(1)` killed an in-flight delete. A `finally` does NOT run on a signal, which is why the
-   * handler exists at all.
+   * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
+   * top-level catch — because they otherwise race, and a racing exit once killed an in-flight delete.
    */
   let teardownPromise;
   const teardown = () => {
     teardownPromise ??= (async () => {
       const leftovers = [];
       try {
-        // Abort in-flight multipart uploads first: their parts are billed, and a real `DeleteBucket` fails
-        // while they exist. MinIO cannot rehearse this path — it deletes such a bucket happily.
-        const uploads = await client.send(new ListMultipartUploadsCommand({ Bucket: bucket }));
+        // Abort in-flight multipart uploads first: their parts are billed, and a real `DeleteBucket` fails while
+        // they exist. MinIO cannot rehearse this on a real account's terms.
+        const uploads = await client.send(new s3.ListMultipartUploadsCommand({ Bucket: bucket }));
         for (const u of uploads.Uploads ?? []) {
           await client.send(
-            new AbortMultipartUploadCommand({ Bucket: bucket, Key: u.Key, UploadId: u.UploadId }),
+            new s3.AbortMultipartUploadCommand({
+              Bucket: bucket,
+              Key: u.Key,
+              UploadId: u.UploadId,
+            }),
           );
         }
-        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket, and
-        // a bucket that will not empty leaves the last-resort cleanup with no path at all.
+        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket.
         for (;;) {
-          const v = await client.send(new ListObjectVersionsCommand({ Bucket: bucket }));
+          const v = await client.send(new s3.ListObjectVersionsCommand({ Bucket: bucket }));
           const objects = [...(v.Versions ?? []), ...(v.DeleteMarkers ?? [])].map((o) => ({
             Key: o.Key,
             VersionId: o.VersionId,
           }));
           if (objects.length === 0) break;
-          // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype, and
-          // `{ ...cmd }` produces a lookalike the client cannot send. The rehearsal caught this.
+          // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype.
           await client.send(
-            new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }),
+            new s3.DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }),
           );
           if (!v.IsTruncated) break;
         }
-        await client.send(new DeleteBucketCommand({ Bucket: bucket }));
+        await client.send(new s3.DeleteBucketCommand({ Bucket: bucket }));
         log(`teardown: removed ${bucket}`);
       } catch (err) {
-        // "Already gone" is success, not a leftover: reporting a non-existent resource as one that "will keep
-        // costing money" cries wolf on the common case and trains you to ignore the one signal that matters.
+        // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal.
         if (!probeMeansAbsent(err)) leftovers.push(`${bucket}: ${err.message}`);
       }
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
-        console.error(`  remove them with: node bench/calibrate-aws.cjs --cleanup ${runId}`);
+        console.error(
+          `  remove them with: node bench/calibrate-aws.cjs${REHEARSE ? ' --rehearse' : ''} --cleanup ${runId}`,
+        );
         process.exitCode = 1;
       }
       return leftovers;
@@ -242,40 +318,48 @@ async function main() {
 
   if (MODE === 'cleanup') {
     log(`cleanup: removing resources for run ${runId}`);
-    const leftovers = await teardown();
-    return leftovers.length === 0 ? 0 : 1;
+    return (await teardown()).length === 0 ? 0 : 1;
   }
 
-  // Identity BEFORE anything is created. On a real run this is the first execution of this path, so it is
-  // also the one guard whose first exercise is the real thing — verify with `aws sts get-caller-identity`.
+  // ---- identity, before anything is created -------------------------------------------------------------------
   if (MODE === 'run') {
-    const expected = process.env.CR_CALIBRATE_EXPECT_ACCOUNT;
-    let account = '(unknown — @aws-sdk/client-sts not installed)';
+    const expected = process.env.CR_CALIBRATE_EXPECT_ACCOUNT ?? '';
+    let who;
     try {
-      const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
-      const sts = new STSClient({ region });
-      account = (await sts.send(new GetCallerIdentityCommand({}))).Account;
-    } catch {
-      /* optional dependency */
+      who = await identity(region);
+    } catch (err) {
+      refuse(
+        `could not verify credentials (${err.name ?? 'error'}: ${err.message}) — every later request would fail ` +
+          'the same way. Check the profile or re-authenticate, then run again.',
+      );
     }
-    log(`identity: account ${account}, region ${region}`);
-    if (expected !== undefined && expected !== '') {
-      // COMPARED, not merely printed — and a run that cannot verify the account refuses rather than proceeds.
-      if (account !== expected) {
-        refuse(
-          `account is ${account}, expected ${expected} — refusing rather than touching the wrong account`,
-        );
-      }
-      log(`identity: matches CR_CALIBRATE_EXPECT_ACCOUNT`);
+    if (!who.verified && expected !== '') {
+      refuse(
+        'CR_CALIBRATE_EXPECT_ACCOUNT is set but @aws-sdk/client-sts is not installed, so it cannot be checked',
+      );
     }
+    if (who.verified && expected !== '' && who.account !== expected) {
+      // Compared in full, printed masked: the comparison needs the id, the log does not.
+      refuse(
+        `account is ${maskAccount(who.account)}, expected ${maskAccount(expected)} — refusing`,
+      );
+    }
+    log(
+      `identity: account ${who.verified ? maskAccount(who.account) : '(not verified — install @aws-sdk/client-sts)'}` +
+        `, region ${region}${expected !== '' ? ', matches CR_CALIBRATE_EXPECT_ACCOUNT' : ''}`,
+    );
+    // A human check that works even without a pin. Confirm the last four digits are the account you meant.
+    log('Ctrl-C within 10 s to abort — nothing has been created yet.');
+    await sleep(10_000);
   }
 
-  // Probe BEFORE create. Only a genuine not-found counts as absent: `HeadBucket` answers 403 for a bucket you
-  // own but cannot list, and in us-east-1 `CreateBucket` on a bucket you already own returns 200 OK — so
-  // reading 403 as absent would run the workload inside your bucket and then delete it on teardown.
+  // ---- probe BEFORE create --------------------------------------------------------------------------------------
+  // Only a genuine not-found counts as absent: `HeadBucket` answers 403 for a bucket you own but cannot list,
+  // and in us-east-1 `CreateBucket` on a bucket you already own returns 200 OK — so reading 403 as absent would
+  // run the workload inside your bucket and then delete it on teardown.
   let probeErr;
   try {
-    await client.send(new HeadBucketCommand({ Bucket: bucket }));
+    await client.send(new s3.HeadBucketCommand({ Bucket: bucket }));
   } catch (err) {
     probeErr = err;
   }
@@ -293,143 +377,246 @@ async function main() {
     note: 'Written by bench/calibrate-aws.cjs. Regenerate with `pnpm calibrate:aws --run`.',
     runId,
     mode: MODE,
-    // A rehearsal's numbers must never be mistaken for a real run's. `region` alone would not say so — the
-    // MinIO client is configured with `us-east-1` because the SDK requires a region, not because the bytes
-    // went to AWS.
+    // A rehearsal's numbers must never be mistaken for a real run's. The MinIO client is configured with a region
+    // only because the SDK requires one.
     target: REHEARSE ? 'minio (rehearsal — NOT a real cloud measurement)' : 'aws',
     region: REHEARSE ? 'n/a (local container)' : region,
+    measured: { packageVersion: VERSION, harness: harnessRef(), node: process.version },
     pricing: pricing.name,
-    workload: { segments: SEGMENTS, idsPerSegment: IDS, reads: READS },
+    workload: {
+      segments: SEGMENTS,
+      idsPerSegment: IDS,
+      chunksPerSegment: layout.chunksPerSegment,
+      sharedChunks: layout.sharedChunks,
+      largeSegments: LARGE,
+      largeChunks: LARGE_CHUNKS,
+      coldIntersects: READS,
+    },
+    projected: ops,
     partial: true,
     phases: {},
   };
+  const writeResults = () => {
+    results.elapsedMs = Date.now() - started;
+    writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
+    log(`wrote ${OUT.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
+  };
+
+  const snap = () => ({
+    put: tally.put,
+    get: tally.get,
+    up: tally.bytesUp,
+    down: tally.bytesDown,
+    parts: tally.byCommand.UploadPartCommand ?? 0,
+    rangeN: tally.reads.range.n,
+    rangeBytes: tally.reads.range.bytes,
+    suffixN: tally.reads.suffix.n,
+    suffixBytes: tally.reads.suffix.bytes,
+    wholeN: tally.reads.whole.n,
+  });
+  const median = (xs) => {
+    if (xs.length === 0) return undefined;
+    const s = [...xs].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
 
   try {
-    await client.send(new CreateBucketCommand({ Bucket: bucket }));
+    await client.send(new s3.CreateBucketCommand({ Bucket: bucket }));
     log(`created ${bucket}`);
+    // From here on there is something to clean up, so an interrupt must tear it down rather than just exit.
+    onInterrupt = async () => {
+      results.interrupted = true;
+      await teardown();
+      writeResults();
+    };
+
+    // ---- how far away is this client? ---------------------------------------------------------------------------
+    // The floor over several trivial requests is the network's share of every figure below. Recorded raw, so no
+    // latency number in this file can be read without it.
+    const rtts = [];
+    for (let i = 0; i < RTT_SAMPLES; i += 1) {
+      const t0 = process.hrtime.bigint();
+      await client.send(new s3.HeadBucketCommand({ Bucket: bucket }));
+      rtts.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    const floor = Math.min(...rtts);
+    results.network = {
+      rttFloorMs: floor,
+      rttMedianMs: median(rtts),
+      client: REHEARSE
+        ? 'local container'
+        : floor < IN_REGION_FLOOR_MS
+          ? 'in-region'
+          : 'REMOTE — latency below is network-dominated',
+      inRegionThresholdMs: IN_REGION_FLOOR_MS,
+    };
+    log(`network: round-trip floor ${floor.toFixed(1)} ms — ${results.network.client}`);
 
     const { S3Storage } = await import('@cloudbitmaps/s3');
     const { CloudRoaring, bulkLoadCrbmGeneration } = await import('@cloudbitmaps/roaring');
     const storage = new S3Storage({ client, bucket, prefix: 'calib' });
-    const store = new CloudRoaring({ storage });
 
-    /** Re-check the ceiling DURING a phase, not only at its boundary — the load phase has no fixed op count. */
+    /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
     const checkCeiling = () => {
       const spent = priceTally(tally, pricing).totalUSD;
-      if (breached(spent, ceiling)) {
+      if (breached(spent, ceiling))
         throw new Error(`spend ceiling breached mid-run: $${spent.toFixed(6)} >= $${ceiling}`);
-      }
     };
 
-    // ---- load throughput ------------------------------------------------------------------------
+    // ---- load throughput: single-part and multipart ---------------------------------------------------------------
     const loads = [];
-    for (let i = 0; i < SEGMENTS; i += 1) {
-      const payload = ids(IDS, i);
+    const load = async (segment, ids, count) => {
+      const before = snap();
       const t0 = process.hrtime.bigint();
-      await bulkLoadCrbmGeneration(
-        storage.storage,
-        { segment: `seg-${i}`, generation: 0 },
-        payload,
-        { registry: storage.registry },
-      );
+      await bulkLoadCrbmGeneration(storage.storage, { segment, generation: 0 }, ids, {
+        registry: storage.registry,
+      });
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      const after = snap();
+      const bytes = after.up - before.up;
       loads.push({
-        segment: `seg-${i}`,
-        ids: payload.length,
+        segment,
+        ids: count,
         ms,
-        idsPerSec: payload.length / (ms / 1000),
+        bytes,
+        multipart: after.parts > before.parts,
+        idsPerSec: count / (ms / 1000),
+        bytesPerSec: bytes / (ms / 1000),
       });
       checkCeiling();
-    }
-    results.phases.load = {
-      runs: loads.length,
-      medianIdsPerSec: loads.map((l) => l.idsPerSec).sort((a, b) => a - b)[
-        Math.floor(loads.length / 2)
-      ],
-      bytesUp: tally.bytesUp,
     };
+    for (let i = 0; i < SEGMENTS; i += 1) await load(`seg-${i}`, layoutIds(layout, i, IDS), IDS);
+    for (let i = 0; i < LARGE; i += 1)
+      await load(`large-${i}`, largeIds(), LARGE_CHUNKS * LARGE_IDS_PER_CHUNK);
+
+    const summarise = (xs) =>
+      xs.length === 0
+        ? { runs: 0 }
+        : {
+            runs: xs.length,
+            medianIdsPerSec: median(xs.map((l) => l.idsPerSec)),
+            medianBytesPerSec: median(xs.map((l) => l.bytesPerSec)),
+            medianObjectBytes: median(xs.map((l) => l.bytes)),
+          };
+    results.phases.load = {
+      singlePart: summarise(loads.filter((l) => !l.multipart)),
+      multipart: summarise(loads.filter((l) => l.multipart)),
+    };
+    if (LARGE > 0 && results.phases.load.multipart.runs === 0) {
+      // Half of the load measurement is void. Say so loudly rather than publish a table with a silent hole.
+      console.error(
+        'calibrate: WARNING — no load went multipart; the multipart figure is not measured',
+      );
+    }
     log(
-      `load: ${loads.length} generations, median ${Math.round(results.phases.load.medianIdsPerSec)} ids/s`,
+      `load: ${results.phases.load.singlePart.runs} single-part, ${results.phases.load.multipart.runs} multipart ` +
+        `(median ${Math.round(results.phases.load.singlePart.medianIdsPerSec ?? 0)} ids/s single-part)`,
     );
 
-    // ---- intersect latency ----------------------------------------------------------------------
-    const latencies = [];
-    let checksum = 0;
+    // ---- cold intersects: every one fetches from the object store -------------------------------------------------
+    // A FRESH store per intersect, so no cache can answer it. The first run reused one store, so after the first
+    // pass most intersects were served from memory — 107 GETs across 40 reads — and its latency distribution mixed
+    // cache hits with object-store fetches into a single, meaningless p50.
+    const reads = [];
     for (let i = 0; i < READS; i += 1) {
       const a = `seg-${i % SEGMENTS}`;
       const b = `seg-${(i + 1) % SEGMENTS}`;
+      const store = new CloudRoaring({ storage });
+      const before = snap();
       const t0 = process.hrtime.bigint();
-      // `intersect` takes an ARRAY of operands and streams ids. Draining it is the measurement: a latency
-      // that stopped at the first chunk would time the resolve, not the skip.
       let n = 0;
-      // The ids are folded into a checksum rather than discarded, the way the soak does it: it costs nothing,
-      // it stops the loop being an unused binding, and it is evidence the stream carried real data rather
-      // than terminating early.
+      let sum = 0;
       for await (const id of store.segment(a).intersect([store.segment(b)])) {
         n += 1;
-        checksum = (checksum ^ id) >>> 0;
+        sum += id;
       }
-      latencies.push(Number(process.hrtime.bigint() - t0) / 1e6);
-      // A run that intersected to nothing measured the empty case, which is chunk-skipping's best case and
-      // describes no real query. Refuse rather than publish a latency over zero work.
-      if (i === 0) {
-        log(`intersect: first pass returned ${n} ids`);
-        if (n === 0)
-          throw new Error(
-            'intersect returned 0 ids — the operands do not overlap, so the latency would measure nothing',
-          );
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      const after = snap();
+      // EXACT content, not a plausible count. Every pair intersects in precisely the planned ids, so anything else
+      // from a real object store is a real finding about the read path — torn, partial or wrong.
+      if (n !== layout.expected.count || sum !== layout.expected.sum) {
+        throw new Error(
+          `intersect ${a} ∩ ${b} returned ${n} ids (sum ${sum}); expected exactly ${layout.expected.count} ` +
+            `(sum ${layout.expected.sum}). A read that is not exact must not produce a latency figure.`,
+        );
       }
+      reads.push({
+        ms,
+        gets: after.get - before.get,
+        chunkReads: after.rangeN - before.rangeN,
+        chunkBytes: after.rangeBytes - before.rangeBytes,
+        tailReads: after.suffixN - before.suffixN,
+        tailBytes: after.suffixBytes - before.suffixBytes,
+        pointerReads: after.wholeN - before.wholeN,
+      });
       checkCeiling();
     }
-    latencies.sort((x, y) => x - y);
-    const at = (q) => latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * q))];
-    results.phases.intersect =
-      latencies.length === 0
-        ? { runs: 0 }
-        : { runs: latencies.length, p50ms: at(0.5), p95ms: at(0.95), p99ms: at(0.99), checksum };
-    if (latencies.length > 0)
-      log(`intersect: p50 ${at(0.5).toFixed(2)} ms, p99 ${at(0.99).toFixed(2)} ms`);
-
-    // ---- the single-bucket bill -----------------------------------------------------------------
-    // Nothing extra runs here: the registry GETs and conditional PUTs are already in the tally, which is the
-    // whole point — in this topology they ARE object-store requests, and the old run could not see them.
-    results.cost = {
-      ...priceTally(tally, pricing),
-      ops: { ...tally, byCommand: { ...tally.byCommand } },
+    const q = (xs, p) => {
+      const s = [...xs].sort((x, y) => x - y);
+      return s[Math.min(s.length - 1, Math.floor(s.length * p))];
     };
+    const ms = reads.map((r) => r.ms);
+    const objectBytes = results.phases.load.singlePart.medianObjectBytes ?? Number.NaN;
+    const chunkReads = median(reads.map((r) => r.chunkReads));
+    results.phases.intersect =
+      reads.length === 0
+        ? { runs: 0 }
+        : {
+            runs: reads.length,
+            cold: true,
+            exact: true,
+            p50ms: q(ms, 0.5),
+            p95ms: q(ms, 0.95),
+            p99ms: q(ms, 0.99),
+            // Two operands, so per-operand figures are half the per-intersect ones.
+            chunksFetchedPerOperand: chunkReads / 2,
+            chunksPerSegment: layout.chunksPerSegment,
+            // The published claim: payload bytes fetched as a share of the two objects. The tail read is NOT in it.
+            payloadFraction: median(reads.map((r) => r.chunkBytes)) / (2 * objectBytes),
+            // Reported apart, because it is a fixed cost per operand rather than a share of the data: the reader
+            // takes a generous tail so the footer and index arrive in one round trip. On a ~1 MB segment it is a
+            // large fraction of the bytes; on a large one it is noise. S3 bills per request, not per byte, so it
+            // adds a request, not a meaningful cost.
+            tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
+            pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
+            medianGets: median(reads.map((r) => r.gets)),
+          };
+    if (reads.length > 0) {
+      const it = results.phases.intersect;
+      log(
+        `intersect: ${reads.length} cold, all exact — p50 ${it.p50ms.toFixed(1)} ms, p99 ${it.p99ms.toFixed(1)} ms; ` +
+          `${it.chunksFetchedPerOperand} of ${it.chunksPerSegment} chunks per operand ` +
+          `(${(100 * it.payloadFraction).toFixed(1)}% of payload) + a ${Math.round(it.tailReadBytesPerOperand / 1024)} KiB tail read each`,
+      );
+    }
     results.partial = false;
-    log(
-      `cost: $${results.cost.totalUSD.toFixed(6)} over ${tally.put} PUT-class + ${tally.get} GET-class`,
-    );
   } catch (err) {
-    // A crashed run KEEPS what it already paid for. An earlier version discarded every measurement on an
-    // exhaustion crash at ~90% of the workload.
+    // A crashed run KEEPS what it already paid for.
     results.error = err.message;
     console.error(`calibrate: FAILED — ${err.message}`);
     process.exitCode = 1;
   } finally {
-    results.elapsedMs = Date.now() - started;
-    writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
-    log(`wrote ${OUT.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
     await teardown();
+    // The single-bucket bill, AFTER teardown so its requests are in it too. Nothing extra ran for this: in this
+    // topology the pointer reads and conditional PUTs ARE object-store requests, which the old run could not see.
+    results.cost = {
+      ...priceTally(tally, pricing),
+      ops: { ...tally, byCommand: { ...tally.byCommand } },
+    };
+    const over = exceedsProjection(tally, ops);
+    if (over.length > 0) {
+      // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
+      // projection — before this harness is trusted with another pre-flight check.
+      results.projectionExceeded = over;
+      console.error(`calibrate: PROJECTION EXCEEDED — ${over.join('; ')}`);
+      process.exitCode = 1;
+    }
+    log(
+      `cost: $${results.cost.totalUSD.toFixed(6)} over ${tally.put} PUT-class + ${tally.get} GET-class`,
+    );
+    writeResults();
   }
   return process.exitCode ?? 0;
-}
-
-// A `finally` does not run on a signal. A second Ctrl-C during teardown used to reach Node's default handler
-// and kill the process mid-delete, leaking the bucket right after printing "tearing down".
-let interrupts = 0;
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    interrupts += 1;
-    if (interrupts > 1) {
-      console.error(
-        'calibrate: already tearing down — use --cleanup <runId> if this run leaves anything',
-      );
-      return;
-    }
-    console.error('\ncalibrate: interrupted, tearing down before exit');
-  });
 }
 
 main().then(

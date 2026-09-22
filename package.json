@@ -69,6 +69,7 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.1132.0",
+    "@aws-sdk/client-sts": "^3.1132.0",
     "@azure/storage-blob": "^12",
     "@changesets/cli": "^3.0.3",
     "@cloudbitmaps/azure-blob": "workspace:*",

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# In-region calibration: run this from AWS CloudShell, in the region being measured.
+#
+# WHY CLOUDSHELL. Latency measured from outside the region is internet transit, not the library. The first real
+# run of this harness went from a laptop and produced a p50 that described the network. CloudShell sits inside
+# the region, needs no instance to provision, and costs nothing.
+#
+# WHY THE PUBLISHED PACKAGES. This installs @cloudbitmaps/roaring and @cloudbitmaps/s3 from npm into a scratch
+# directory and runs the harness against those, not against a build of this checkout. The figures then describe
+# what a consumer actually installs, and CloudShell never needs this repository's toolchain.
+#
+# Usage, from a clone of this repository inside CloudShell:
+#   CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibrate-cloudshell.sh
+#
+# Optional: CR_CALIBRATE_EXPECT_ACCOUNT=<12-digit id> refuses to run anywhere else.
+#           CR_CALIBRATE_PACKAGE_VERSION=0.10.0 pins the release measured (default: latest).
+#           CR_CALIBRATE_REHEARSE=1 runs the same install path against local MinIO, to test this script.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+PKG_VERSION="${CR_CALIBRATE_PACKAGE_VERSION:-latest}"
+MODE_FLAG="--run"
+if [ "${CR_CALIBRATE_REHEARSE:-}" = "1" ]; then
+  MODE_FLAG="--rehearse"
+else
+  # CloudShell exports AWS_REGION for the region it was opened in. Stating the region twice is deliberate
+  # elsewhere in the harness; here the shell already knows it, and it must be the region the shell runs IN.
+  export CR_CALIBRATE_REGION="${CR_CALIBRATE_REGION:-${AWS_REGION:-}}"
+  if [ -z "$CR_CALIBRATE_REGION" ]; then
+    echo "cloudshell: set CR_CALIBRATE_REGION — AWS_REGION is not exported here" >&2
+    exit 2
+  fi
+fi
+# Which harness ran is part of the result: the numbers mean nothing without the code that produced them.
+CR_CALIBRATE_HARNESS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+export CR_CALIBRATE_HARNESS_REF
+
+# The packages declare Node >= 22.12, and CloudShell's default Node may be older.
+node_ok() {
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=12)?0:1)' 2>/dev/null
+}
+if ! node_ok; then
+  echo "cloudshell: installing Node 22 with nvm (the packages require Node >= 22.12)"
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  # shellcheck source=/dev/null
+  . "$NVM_DIR/nvm.sh"
+  nvm install 22 >/dev/null
+  nvm use 22 >/dev/null
+  node_ok || { echo "cloudshell: still no Node >= 22.12 — install it by hand, then re-run" >&2; exit 2; }
+fi
+
+WORK="$(mktemp -d)"
+# Copy the results out on EVERY exit, including an interrupt: the harness writes them before it stops, and a
+# scratch directory deleted with them inside would throw away a run already paid for.
+finish() {
+  if [ -f "$WORK/bench/calibrate-aws-results.json" ]; then
+    cp "$WORK/bench/calibrate-aws-results.json" "$HOME/calibrate-aws-results.json"
+    echo "cloudshell: results at ~/calibrate-aws-results.json (Actions → Download file, or cat it)"
+  fi
+  rm -rf "$WORK"
+}
+trap finish EXIT
+
+mkdir -p "$WORK/bench/lib"
+cp bench/calibrate-aws.cjs "$WORK/bench/"
+cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs "$WORK/bench/lib/"
+echo "cloudshell: installing the published packages at ${PKG_VERSION}"
+(
+  cd "$WORK"
+  npm init -y >/dev/null
+  npm i --no-audit --no-fund --loglevel=error \
+    "@cloudbitmaps/roaring@${PKG_VERSION}" "@cloudbitmaps/s3@${PKG_VERSION}" \
+    @aws-sdk/client-s3 @aws-sdk/client-sts
+)
+
+rc=0
+(cd "$WORK" && node bench/calibrate-aws.cjs "$MODE_FLAG") || rc=$?
+exit "$rc"
