@@ -227,9 +227,16 @@ Use your own registry driver instance — the facade keeps it private on purpose
 an API. `list()` carries `status` and `retention` in its projection, so this is one scan, no per-segment reads:
 
 ```ts
+import { MIN_EXPIRES_AT_MS } from '@cloudbitmaps/roaring';
+
 for await (const rec of registry.list(/* namespace? */)) {
   if (rec.status !== 'destroyed') continue;
-  if (typeof rec.retention?.retiredBySweepAt === 'number') continue;   // a normal sweep retirement
+  // Match the sweep's OWN predicate, not a looser one: it accepts a stamp only if it is an INTEGER at or
+  // above the epoch floor it uses for expiry instants. A row carrying `0`, `NaN` or a fractional value is
+  // unstamped as far as the sweep is concerned — it will never be auto-purged — so a looser check here
+  // silently drops exactly the rows this audit exists to surface.
+  const stamp = rec.retention?.retiredBySweepAt;
+  if (typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= MIN_EXPIRES_AT_MS) continue;
   console.log(rec.namespace ?? '_default', rec.segment, rec.retention);
 }
 ```
@@ -255,8 +262,12 @@ Once you have established a row was an interrupted *retirement*, pick by whether
 collects any orphan generations itself, and deletes the row:
 
 ```ts
+import { MIN_EXPIRES_AT_MS } from '@cloudbitmaps/roaring';
+
 const rec = await registry.get(ref);
-if (rec?.status === 'destroyed' && rec.retention?.retiredBySweepAt === undefined) {
+const stamp = rec?.retention?.retiredBySweepAt;
+const stamped = typeof stamp === 'number' && Number.isInteger(stamp) && stamp >= MIN_EXPIRES_AT_MS;
+if (rec?.status === 'destroyed' && !stamped) {
   await registry.compareAndSwap(ref, rec.token, {
     retention: { ...rec.retention, retiredBySweepAt: Date.now() },
   });
