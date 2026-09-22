@@ -23,6 +23,7 @@ the right direction for it to fail in — but it is an edit, not nothing.
 ## Table of contents
 
 - [TL;DR — cutting a release](#tldr--cutting-a-release)
+- [The version bump](#the-version-bump)
 - [What the automation does](#what-the-automation-does)
 - [Why tokenless](#why-tokenless)
 - [One-time setup](#one-time-setup)
@@ -32,10 +33,12 @@ the right direction for it to fail in — but it is an edit, not nothing.
 
 ## TL;DR — cutting a release
 
-1. **Land everything on `main`** with the gate green and `CHANGELOG.md` updated.
-2. **Bump EVERY package version** to the new number in one commit — every `packages/*/package.json`. They
-   must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses the release if
-   any one disagrees, so a missed package costs a failed run rather than a partial publish.
+1. **Land everything on `main`** with the gate green, `CHANGELOG.md` updated, and a
+   [changeset](#the-version-bump) per change that needs one.
+2. **Bump every version with one command** — `pnpm version:packages`. It runs `changeset version`, which
+   moves all five `packages/*/package.json` together, then syncs the `VERSION` constant and refreshes the
+   lockfile. They must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses
+   the release if any one disagrees, so a missed package costs a failed run rather than a partial publish.
 3. **Tag and push:** `git tag v0.1.0 && git push origin v0.1.0`.
 4. **Approve the deployment** — the run pauses on the `release` environment. Open the run → _Review
    deployments_ → approve `release`.
@@ -43,6 +46,43 @@ the right direction for it to fail in — but it is an edit, not nothing.
    walks the workspace in topological order, so `core` lands before the four that depend on it.
 
 The approval prompt is the last point at which a release can be stopped. Nothing reaches npm before it.
+
+## The version bump
+
+`pnpm version:packages` is the whole bump:
+
+```
+changeset version            # all five manifests move together
+node scripts/sync-version.cjs  # the VERSION constant follows the manifests
+pnpm install --lockfile-only   # the lockfile follows the manifests
+```
+
+**Changesets is used here as a version bumper and nothing else**, and two of its defaults are deliberately
+off. The reasoning lives in [`.changeset/README.md`](.changeset/README.md); the short version:
+
+- **It generates no changelogs** (`"changelog": false`). This project keeps one curated root `CHANGELOG.md`
+  and `scripts/changelog-section.cjs` quotes a single version's section into the GitHub Release notes, so the
+  two cannot drift. Per-package generated changelogs would split that source of truth and leave the root file
+  — the one the release notes are read from — unmanaged. **So write the user-facing entry under
+  `[Unreleased]` yourself, in the same change as the code.** A changeset carries the bump *type*, not the
+  prose.
+- **`changeset publish` is not used.** Publishing stays in `release.yml`, which is tokenless, provenance-
+  signed, human-gated, and carries pre-flight probes that `changeset publish` does not have — including the
+  one that refuses a version already on the registry, because `pnpm publish` silently skips it and exits 0.
+
+All five packages are a **`fixed` group**, matched by the glob `@cloudbitmaps/*` rather than named
+individually, so a sixth package is covered on the day it is created rather than the day someone remembers
+this file. `tests/index.test.ts` enforces lockstep independently, reading the package list off the
+filesystem, and it fails if the `VERSION` constant lags a bump — which is what makes the sync step above
+provable rather than remembered.
+
+Adding a changeset:
+
+```
+pnpm changeset
+```
+
+Pre-`1.0`, a breaking change is a **minor** bump. Choose the bump for the family, since they move together.
 
 ## What the automation does
 
