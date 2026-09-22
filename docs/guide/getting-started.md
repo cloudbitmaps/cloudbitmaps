@@ -1699,7 +1699,7 @@ Pick whichever you already use:
 Match the **arch** (`arm64` Graviton vs `x86_64`) and **Node version** of your function when you build. Our
 CI proves this path end-to-end with a `pnpm lambda-smoke` gate (builds `roaring` in an AL2023 container and
 loads the package under both ESM and CJS). *(A prebuilt, drop-in Lambda layer ships too: `pnpm build-lambda-layer`
-produces `dist-lambda/cloud-roaring-lambda-layer.zip`.)*
+produces `dist-lambda/cloudbitmaps-lambda-layer.zip`.)*
 
 ## Troubleshooting
 
