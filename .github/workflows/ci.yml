@@ -76,8 +76,23 @@ jobs:
       # until release day. Running them on each PR turns that into a red check next to the commit that caused
       # it. Together they take about a second, and `pnpm build` has already run, so the tarball scan is nearly
       # free — the tracked-tree scan alone would not have caught it, because the finding was in built output.
+      #
+      # BOTH get the needles. `release.yml` passed `LEAK_SCAN_EXTRA` to the tarball scan and this file passed
+      # it to neither, so the tracked-tree scan ran here on every PR with its most important class — employer
+      # names and other project-specific strings — switched OFF, printing "not being checked" and exiting 0.
+      # That is the class a committed benchmark results file would leak, and the PR is where it should be
+      # caught: by release day the commit is already on `main` and in every fork's history.
+      #
+      # An unset secret resolves to the empty string, which is exactly today's behaviour — so this is safe
+      # before the secret exists and starts working the moment it does. Secrets are not exposed to pull
+      # requests from forks, so a fork PR still scans without them; the tracked-tree scan on `main` after
+      # merge is what covers that.
       - run: node scripts/leak-scan.cjs
+        env:
+          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
       - run: node scripts/leak-scan-tarballs.cjs
+        env:
+          LEAK_SCAN_EXTRA: ${{ secrets.LEAK_SCAN_EXTRA }}
 
   dependency-audit:
     name: dependency audit (prod, high)
