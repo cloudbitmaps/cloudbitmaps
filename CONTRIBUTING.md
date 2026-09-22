@@ -211,8 +211,13 @@ root-level project files. What each one is, and when it must be updated:
    headline capability lands.
 2. **API reference** — a new export **cannot** merge undocumented; CI enforces it.
 3. **README** — refresh the status line / "what works today" / quick taste if the surface moved.
-4. **CHANGELOG** — add a bullet at the **top** of `[Unreleased]` (newest first).
-5. **Roadmap** — update [`docs/ROADMAP.md`](docs/ROADMAP.md) after any meaningful change, not only at
+4. **CHANGELOG** — add a bullet at the **top** of `[Unreleased]` (newest first). This is the prose, and it
+   is hand-written: `.changeset/` does **not** generate it, deliberately
+   ([why](.changeset/README.md)).
+5. **Changeset** — `pnpm changeset`, if the change should move the version. It records the **bump type**
+   only; all five packages move together, and pre-`1.0` a breaking change is a **minor**. A change that ships
+   no version move (docs, tests, tooling) needs none.
+6. **Roadmap** — update [`docs/ROADMAP.md`](docs/ROADMAP.md) after any meaningful change, not only at
    milestones. It must **never lag reality**.
 
 Benchmark and cost claims carry their methodology, and are labelled **measured** or **modeled** — never
