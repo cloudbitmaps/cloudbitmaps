@@ -15,7 +15,7 @@
  * them is a bug that actually happened. Read that file before changing anything here.
  *
  *   node bench/calibrate-aws.cjs                             projection only; touches nothing
- *   node bench/calibrate-aws.cjs --rehearse                  the whole harness against MinIO, free
+ *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
  *   node bench/calibrate-aws.cjs --run                       the real thing (region + ceiling + confirmation)
  *   node bench/calibrate-aws.cjs [--rehearse] --cleanup <id> remove a run's resources after a hard kill
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
@@ -29,10 +29,12 @@
  * number that cannot be told apart from the network is not a latency number.
  *
  * WHAT THE REHEARSAL DOES NOT COVER. MinIO is not AWS. It proves the mechanics — stages, metering, teardown
- * order, guard behaviour, signal handling — but it cannot rehearse a versioned-bucket teardown or an in-flight
- * multipart abort on a real account, and it does not reproduce `us-east-1` answering 200 OK to `CreateBucket` on
- * a bucket you already own. Those meet reality for the first time on a real account, which is why the probe
- * refuses anything but a clean 404.
+ * order, the probe, the end-of-run projection check, signal handling — but not the money guards. The region,
+ * confirmation, spend-ceiling and account checks do not run in a rehearsal at all: the ceiling is parsed and
+ * compared by pure functions with their own tests, and the rest are single comparisons made before anything is
+ * created. Nor can it rehearse a versioned-bucket teardown or an in-flight multipart abort on a real account, or
+ * reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those meet reality for the
+ * first time on a real account, which is why the probe refuses anything but a clean 404.
  */
 const { writeFileSync } = require('node:fs');
 const { resolve } = require('node:path');
@@ -55,10 +57,15 @@ const {
   planLayout,
   layoutIds,
   maskAccount,
+  resultsFile,
+  clientConfigs,
+  bucketIsGone,
+  uploadIsGone,
+  TEARDOWN_PASSES,
+  TEARDOWN_PUTS,
 } = require('./lib/calibrate-guards.cjs');
 
 const ROOT = resolve(__dirname, '..');
-const OUT = resolve(ROOT, 'bench/calibrate-aws-results.json');
 
 const argv = process.argv.slice(2);
 /**
@@ -67,6 +74,7 @@ const argv = process.argv.slice(2);
  * clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
+const OUT = resolve(ROOT, resultsFile(REHEARSE));
 const MODE = argv.includes('--cleanup')
   ? 'cleanup'
   : argv.includes('--run')
@@ -118,6 +126,10 @@ function largePartsBound() {
   return Math.ceil(bytes / PART_SIZE) + 1;
 }
 
+/**
+ * The run's worst case, in requests and dollars. It is checked against the ceiling before anything is created, and
+ * the run is checked against it after teardown — so it has to be an upper bound, not an estimate.
+ */
 function projection(pricing, layout) {
   const ops = projectOps({
     loads: SEGMENTS,
@@ -127,14 +139,18 @@ function projection(pricing, layout) {
     operandsPerRead: 2,
     chunksPerRead: layout.sharedChunks,
     retryBound: RETRY_BOUND,
-    // The probe HEAD, the round-trip samples, and teardown's listing of uploads and object versions.
+    // The probe HEAD and the round-trip samples, one attempt each; the bucket's creation; and teardown's listings
+    // at every attempt its retrying client may make (see TEARDOWN_PUTS).
     fixedGets: 1 + RTT_SAMPLES,
-    fixedPuts:
-      1 /* CreateBucket */ + 1 /* ListMultipartUploads */ + 2 /* ListObjectVersions pages */,
+    fixedPuts: 1 /* CreateBucket */ + TEARDOWN_PUTS,
   });
   return { ops, priced: priceTally({ put: ops.put, get: ops.get }, pricing) };
 }
 
+/**
+ * The commit the harness ran from, recorded in the results. `calibrate-cloudshell.sh` passes it in, because the
+ * copy it runs sits in a scratch directory that is not a git checkout.
+ */
 function harnessRef() {
   if (process.env.CR_CALIBRATE_HARNESS_REF) return process.env.CR_CALIBRATE_HARNESS_REF;
   try {
@@ -249,8 +265,13 @@ async function main() {
   }
 
   const s3 = require('@aws-sdk/client-s3');
-  const client = new s3.S3Client(clientOpts);
+  // Two clients, metered into one bill: the workload's makes one attempt per request, teardown's keeps its retries.
+  // `clientConfigs` says why, and the tests drive both against a server that fails on purpose.
+  const configs = clientConfigs(clientOpts);
+  const client = new s3.S3Client(configs.work);
   const tally = meter(client);
+  const admin = new s3.S3Client(configs.admin);
+  meter(admin, tally);
 
   const runId =
     MODE === 'cleanup'
@@ -272,36 +293,48 @@ async function main() {
       const leftovers = [];
       try {
         // Abort in-flight multipart uploads first: their parts are billed, and a real `DeleteBucket` fails while
-        // they exist. MinIO cannot rehearse this on a real account's terms.
-        const uploads = await client.send(new s3.ListMultipartUploadsCommand({ Bucket: bucket }));
+        // they exist. MinIO cannot rehearse this on a real account's terms. An upload already gone — completed by
+        // the workload meanwhile, or aborted by an attempt whose answer was lost — is done, not an error.
+        const uploads = await admin.send(new s3.ListMultipartUploadsCommand({ Bucket: bucket }));
         for (const u of uploads.Uploads ?? []) {
-          await client.send(
-            new s3.AbortMultipartUploadCommand({
-              Bucket: bucket,
-              Key: u.Key,
-              UploadId: u.UploadId,
-            }),
-          );
+          try {
+            await admin.send(
+              new s3.AbortMultipartUploadCommand({
+                Bucket: bucket,
+                Key: u.Key,
+                UploadId: u.UploadId,
+              }),
+            );
+          } catch (err) {
+            if (!uploadIsGone(err)) throw err;
+          }
         }
-        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket.
-        for (;;) {
-          const v = await client.send(new s3.ListObjectVersionsCommand({ Bucket: bucket }));
+        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket. Each pass
+        // lists what is left and deletes it, until nothing is listed. Bounded: a key that cannot be deleted is
+        // reported inside a 200, where no retry sees it, and must end in LEFTOVERS rather than in a listing loop.
+        for (let pass = 0; ; pass += 1) {
+          const v = await admin.send(new s3.ListObjectVersionsCommand({ Bucket: bucket }));
           const objects = [...(v.Versions ?? []), ...(v.DeleteMarkers ?? [])].map((o) => ({
             Key: o.Key,
             VersionId: o.VersionId,
           }));
           if (objects.length === 0) break;
+          if (pass === TEARDOWN_PASSES) {
+            throw new Error(
+              `${objects.length}${v.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
+            );
+          }
           // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype.
-          await client.send(
+          await admin.send(
             new s3.DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }),
           );
-          if (!v.IsTruncated) break;
         }
-        await client.send(new s3.DeleteBucketCommand({ Bucket: bucket }));
+        await admin.send(new s3.DeleteBucketCommand({ Bucket: bucket }));
         log(`teardown: removed ${bucket}`);
       } catch (err) {
-        // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal.
-        if (!probeMeansAbsent(err)) leftovers.push(`${bucket}: ${err.message}`);
+        // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal. Only
+        // S3's own NoSuchBucket says so: an abort's NoSuchUpload is also a 404, and was once read as this answer.
+        if (!bucketIsGone(err)) leftovers.push(`${bucket}: ${err.message}`);
       }
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
@@ -402,6 +435,32 @@ async function main() {
     log(`wrote ${OUT.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
   };
 
+  /**
+   * The bill and the projection check, then the results — run AFTER teardown, so its requests are in the bill
+   * too. Nothing extra ran for the bill: in this topology the pointer reads and conditional PUTs ARE object-store
+   * requests, which the old run could not see. Both exits call this, the `finally` and an interrupt: the
+   * interrupt path once wrote its results without it, losing the one figure the run had already paid for.
+   */
+  const settle = () => {
+    results.cost = {
+      ...priceTally(tally, pricing),
+      ops: { ...tally, byCommand: { ...tally.byCommand } },
+    };
+    const over = exceedsProjection(tally, ops);
+    if (over.length > 0) {
+      // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
+      // projection — before this harness is trusted with another pre-flight check.
+      results.projectionExceeded = over;
+      console.error(`calibrate: PROJECTION EXCEEDED — ${over.join('; ')}`);
+      process.exitCode = 1;
+    }
+    log(
+      `cost: $${results.cost.totalUSD.toFixed(6)} over ${tally.put} PUT-class + ${tally.get} GET-class`,
+    );
+    writeResults();
+  };
+
+  // The meter's counters at one instant. A stage's requests and bytes are the difference between two snapshots.
   const snap = () => ({
     put: tally.put,
     get: tally.get,
@@ -414,21 +473,27 @@ async function main() {
     suffixBytes: tally.reads.suffix.bytes,
     wholeN: tally.reads.whole.n,
   });
+  // A value the run actually observed, never an interpolation: for an even count, the upper of the two middles.
   const median = (xs) => {
     if (xs.length === 0) return undefined;
     const s = [...xs].sort((a, b) => a - b);
     return s[Math.floor(s.length / 2)];
   };
 
+  // True while the workload runs; cleared when it finishes or fails. A signal after that interrupts nothing that
+  // was measured, and must not relabel the run.
+  let running = true;
   try {
+    // Armed BEFORE the bucket exists: an interrupt while `CreateBucket` is in flight used to meet the do-nothing
+    // handler and exit with no teardown. Tearing down a bucket that was never made is a clean NoSuchBucket.
+    onInterrupt = async () => {
+      if (running) results.interrupted = true;
+      await teardown();
+      settle();
+    };
+    log(`creating ${bucket}`);
     await client.send(new s3.CreateBucketCommand({ Bucket: bucket }));
     log(`created ${bucket}`);
-    // From here on there is something to clean up, so an interrupt must tear it down rather than just exit.
-    onInterrupt = async () => {
-      results.interrupted = true;
-      await teardown();
-      writeResults();
-    };
 
     // ---- how far away is this client? ---------------------------------------------------------------------------
     // The floor over several trivial requests is the network's share of every figure below. Recorded raw, so no
@@ -489,6 +554,7 @@ async function main() {
     for (let i = 0; i < LARGE; i += 1)
       await load(`large-${i}`, largeIds(), LARGE_CHUNKS * LARGE_IDS_PER_CHUNK);
 
+    // Medians per kind of load. A kind with no loads reports `runs: 0` and no figures, rather than zeros.
     const summarise = (xs) =>
       xs.length === 0
         ? { runs: 0 }
@@ -521,7 +587,9 @@ async function main() {
     for (let i = 0; i < READS; i += 1) {
       const a = `seg-${i % SEGMENTS}`;
       const b = `seg-${(i + 1) % SEGMENTS}`;
-      const store = new CloudRoaring({ storage });
+      // `retry: false`: the store has a transient-read retry of its own, above the client, and it would re-run a
+      // failed read INSIDE the timed window — a second retry layer the client's one-attempt pin does not reach.
+      const store = new CloudRoaring({ storage, retry: false });
       const before = snap();
       const t0 = process.hrtime.bigint();
       let n = 0;
@@ -551,6 +619,9 @@ async function main() {
       });
       checkCeiling();
     }
+    // The value at index floor(N·p) — the same upper rule as `median`, and one rank above textbook nearest-rank
+    // when N·p is whole. With the default 40 reads, p99 is simply the slowest read and p95 the second slowest:
+    // read them as that, not as a tail estimate a sample this small cannot give.
     const q = (xs, p) => {
       const s = [...xs].sort((x, y) => x - y);
       return s[Math.min(s.length - 1, Math.floor(s.length * p))];
@@ -590,39 +661,26 @@ async function main() {
       );
     }
     results.partial = false;
+    running = false;
   } catch (err) {
+    running = false;
     // A crashed run KEEPS what it already paid for.
     results.error = err.message;
     console.error(`calibrate: FAILED — ${err.message}`);
     process.exitCode = 1;
   } finally {
     await teardown();
-    // The single-bucket bill, AFTER teardown so its requests are in it too. Nothing extra ran for this: in this
-    // topology the pointer reads and conditional PUTs ARE object-store requests, which the old run could not see.
-    results.cost = {
-      ...priceTally(tally, pricing),
-      ops: { ...tally, byCommand: { ...tally.byCommand } },
-    };
-    const over = exceedsProjection(tally, ops);
-    if (over.length > 0) {
-      // The projection is only a ceiling if the run cannot exceed it. It just did, so the next change is to the
-      // projection — before this harness is trusted with another pre-flight check.
-      results.projectionExceeded = over;
-      console.error(`calibrate: PROJECTION EXCEEDED — ${over.join('; ')}`);
-      process.exitCode = 1;
-    }
-    log(
-      `cost: $${results.cost.totalUSD.toFixed(6)} over ${tally.put} PUT-class + ${tally.get} GET-class`,
-    );
-    writeResults();
+    settle();
   }
   return process.exitCode ?? 0;
 }
 
+// An interrupted run exits 130 whichever path gets here first — the signal handler's, or main's own, once the request
+// that was in flight fails against a bucket the teardown has already removed.
 main().then(
-  (code) => process.exit(code ?? 0),
+  (code) => process.exit(interrupts > 0 ? 130 : (code ?? 0)),
   (err) => {
     console.error(`calibrate: ${err.stack ?? err.message}`);
-    process.exit(1);
+    process.exit(interrupts > 0 ? 130 : 1);
   },
 );

@@ -17,9 +17,10 @@ import { fileURLToPath } from 'node:url';
  * stated standard is that a figure is measured or it is not published.
  *
  * DERIVED, NOT LISTED. The condition is read from the roadmap itself, so this guard cannot outlive it: when
- * the benchmarks actually land and the roadmap stops saying "owed", the rule relaxes on its own rather than
- * becoming a stale test someone has to remember to delete. That is also why it fails loudly if it can no
- * longer find the roadmap entry it keys on — a guard that silently stops applying is worse than no guard.
+ * the benchmarks actually land and the roadmap stops saying "owed", the per-file checks stand down and the
+ * anchor test below fails, telling whoever landed them to delete this file — so it cannot linger as a stale test
+ * nobody remembers. It fails the same way if the roadmap is merely reworded: a guard that silently stops
+ * applying is worse than no guard.
  *
  * THE FIRST VERSION OF THIS FILE DID NOT CATCH ITS OWN DEFECT, and that is worth recording. It scanned
  * LINE by line and required a done-word on the same line. The sentence it was written for —

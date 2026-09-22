@@ -13,7 +13,7 @@ describe('public API', () => {
 
   // The exported marker is what a consumer reads to report "which CloudRoaring am I running". A hand-edited
   // constant drifts silently at the next release, so the manifests are the source of truth and this fails the
-  // build the moment a version bump forgets one of the three.
+  // build the moment a version bump forgets one of them.
   //
   // EVERY package is asserted, derived from the workspace rather than listed here.
   //

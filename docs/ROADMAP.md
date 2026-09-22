@@ -47,7 +47,7 @@ Where each piece sits today:
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | The live (warm) tier | **removed in two steps** ([above](#where-it-stands) — the lifecycle engine and non-AWS drivers, then the tier as a whole), archived at the git tag `archive/live-warm-tier` |
-| Loaded-store benchmarks — load throughput, intersect latency | **owed**. The [benchmarks page](benchmarks.md) carries no loaded-store *cloud* measurement; its cloud figures are the S3-side ones of the July 2026 calibration run. The **RSS ceiling** is measured and published — it is the one of the three that does not need a cloud account, because a cgroup limit is enforceable locally |
+| Loaded-store benchmarks — load throughput, intersect latency | **owed**. The [benchmarks page](benchmarks.md) carries no loaded-store *cloud* measurement; its cloud figures are the S3-side ones of the July 2026 calibration run. The **RSS ceiling** is measured and published — it is the one of the three that does not need a cloud account, because a cgroup limit is enforceable locally. The harness for the other two is built (`pnpm calibrate:aws`, its workload rehearsed against MinIO); its in-region run is still owed |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and the object it wrote is deleted again |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
@@ -216,14 +216,22 @@ between here and there:
    produced. **No latency figure is published either**, from that run or any other: it was driven from a laptop
    outside the region, so it calibrates cost only. What remains: an **in-region** run for read latency, a
    **Lambda** run for the serverless figure with cold-start and init included, and the loaded-store benchmarks
-   below.
+   below. **The harness for the in-region run is built:** `pnpm calibrate:aws` measures load throughput, cold
+   intersect latency and the single-bucket bill in one run against a real bucket, and its `--run` refuses to start
+   without an explicit region, a spend ceiling and a typed confirmation. Its workload has been rehearsed against
+   MinIO; the run itself is still owed, and the Lambda figure needs a run from inside a function, which it does not
+   do.
+   [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes it.
 2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
    and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
-   against a real object store. **The RSS soak is no longer owed:** `pnpm rss-gate` now records its run, and
+   against a real object store. The calibration harness above covers load throughput and a two-operand
+   `intersect` at one overlap; `*Into` latency, and the sweep over operand count and overlap, are not in it yet.
+   **The RSS soak is no longer owed:** `pnpm rss-gate` now records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
-   [benchmarks page](benchmarks.md#what-is-still-owed). Until they exist, the measured numbers on the benchmarks page are the S3-side figures of the
-   July 2026 calibration run, and this page says so wherever it quotes one.
+   [benchmarks page](benchmarks.md#what-is-still-owed). Until they exist, the only cloud measurements on the
+   benchmarks page are the S3-side figures of the July 2026 calibration run, and this page says so wherever it
+   quotes one.
 3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
    refused load. It covers the `*Into` verbs too: a combine that comes out empty over a non-empty destination

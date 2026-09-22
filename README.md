@@ -197,8 +197,9 @@ list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,
 cache did its job.
 
 That run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
-write-side line items and its grand total are not quoted here. Fresh loaded-store measurements — load
-throughput, intersect latency, and an RSS soak — are the next benchmark pass.
+write-side line items and its grand total are not quoted here. Fresh loaded-store measurements against a real
+object store are the next benchmark pass; the benchmarks page keeps the list of
+[what is still owed](docs/benchmarks.md#what-is-still-owed).
 
 **On latency, the honest version:** that run's client sat ~96 ms of internet from the region (measured, not
 inferred), so its p50s are network transit — a read is one round trip. It calibrates **cost**, not in-region
@@ -596,10 +597,12 @@ Shipped on the loaded store: a single-call `load()` with a guard against an upst
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
 keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
 than whichever generations were current as it ran, and a curated public surface. The loaded store's own
-benchmarks — load throughput, `intersect` latency, an RSS soak — are **owed, not shipped**. Until they exist
-the [benchmarks page](docs/benchmarks.md) quotes no loaded-store measurement: its cloud figures are the S3-side
-ones of the July 2026 calibration run, its crossover chart is modelled, and its at-scale table is a local-disk
-run — and it labels each as such. The public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+benchmarks against a real object store are **owed, not shipped**; the benchmarks page lists
+[what is still owed](docs/benchmarks.md#what-is-still-owed). Until they exist the
+[benchmarks page](docs/benchmarks.md) quotes no loaded-store cloud measurement: its cloud figures are the S3-side
+ones of the July 2026 calibration run, its crossover chart is modelled, its at-scale table is a local-disk run,
+and its RSS ceiling comes from a local container under a hard memory limit — and it labels each as such. The
+public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable
 storage. The repo is a pnpm workspace of five packages on two axes: `@cloudbitmaps/core` (the codec-agnostic

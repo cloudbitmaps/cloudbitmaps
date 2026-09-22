@@ -1,3 +1,6 @@
+import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -45,9 +48,23 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   };
   layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
+  resultsFile: (rehearse: boolean) => string;
+  clientConfigs: (base: Record<string, unknown>) => {
+    work: Record<string, unknown>;
+    admin: Record<string, unknown>;
+  };
+  ADMIN_ATTEMPTS: number;
+  TEARDOWN_PASSES: number;
+  TEARDOWN_PUTS: number;
+  bucketIsGone: (err: unknown) => boolean;
+  uploadIsGone: (err: unknown) => boolean;
 };
 
 const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
+  meter: (
+    client: unknown,
+    tally?: unknown,
+  ) => { put: number; get: number; byCommand: Record<string, number> };
   classify: (command: string) => 'put' | 'get' | 'free';
   rangeShape: (range: unknown) => 'whole' | 'suffix' | 'range';
   priceTally: (
@@ -396,5 +413,277 @@ describe('calibrate guards — found by the first real run', () => {
       expect(guards.maskAccount(`${FAKE_ACCOUNT}:user/x`)).toBe('(unverified)');
       expect(guards.maskAccount(`${FAKE_ACCOUNT}9`)).toBe('(unverified)');
     });
+  });
+});
+
+// `.gitignore` and the harness each name the file a rehearsal writes, and they drifted: the ignore rule outlived
+// the harness that wrote that file, and its replacement wrote rehearsals under the real run's name — one
+// `git add` from committing a free run against MinIO as the evidence. Asked of git itself, so the rule and the
+// harness cannot drift apart again without one of these failing.
+describe('a rehearsal cannot be committed as the evidence', () => {
+  const ignored = (rel: string): boolean => {
+    const { status } = spawnSync('git', ['check-ignore', '-q', rel], { cwd: ROOT });
+    // 0 is ignored and 1 is not. Anything else means git could not answer, which must not read as "not ignored".
+    if (status !== 0 && status !== 1)
+      throw new Error(`git check-ignore could not answer for ${rel}`);
+    return status === 0;
+  };
+
+  it('writes a rehearsal to a file git ignores', () => {
+    expect(ignored(guards.resultsFile(true))).toBe(true);
+  });
+
+  it('writes a real run to a file git does not ignore, so its evidence can be committed', () => {
+    expect(ignored(guards.resultsFile(false))).toBe(false);
+  });
+
+  // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
+  // Without them, putting the old hard-coded path back into the harness — the exact regression this block exists
+  // for — passed every test here.
+  it('the harness takes its output path from resultsFile(), and names neither file itself', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE))');
+    expect(src).not.toMatch(/calibrate-aws-(?:results|rehearsal)\.json/);
+  });
+
+  it('the CloudShell script copies out whichever file the run wrote', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    for (const rehearse of [true, false]) {
+      expect(sh).toContain(guards.resultsFile(rehearse).split('/').pop());
+    }
+  });
+});
+
+// The meter runs at the SDK's `initialize` step, and the SDK's retry loop sits further in, at `finalizeRequest` —
+// so one call through the meter can be several requests on the wire. It once claimed to count retries "as AWS
+// bills them" and counted each send once. These drive the REAL SDK retry path against a local server that
+// answers 503 until told otherwise, so the claim is tested against the SDK's behaviour rather than restated.
+describe('the meter counts every attempt the SDK makes, not every send', () => {
+  const s3 = require_('@aws-sdk/client-s3') as {
+    S3Client: new (cfg: Record<string, unknown>) => {
+      send: (c: unknown) => Promise<unknown>;
+      destroy: () => void;
+    };
+    HeadBucketCommand: new (i: { Bucket: string }) => unknown;
+  };
+
+  /** A stand-in S3 that fails the first `failures` requests with 503, then answers 200. */
+  async function flakyS3(
+    failures: number,
+  ): Promise<{ url: string; hits: () => number; close: () => Promise<void> }> {
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(hits <= failures ? 503 : 200, { 'content-length': '0' });
+      res.end();
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      hits: () => hits,
+      close: () => new Promise<void>((done) => server.close(() => done())),
+    };
+  }
+
+  const clientFor = (url: string, maxAttempts: number) =>
+    new s3.S3Client({
+      endpoint: url,
+      region: 'us-east-1',
+      forcePathStyle: true,
+      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      maxAttempts,
+    });
+
+  it('counts a retried request once per attempt', async () => {
+    const server = await flakyS3(1);
+    const client = clientFor(server.url, 3);
+    const tally = meterLib.meter(client);
+    try {
+      await client.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      expect(server.hits()).toBe(2); // the premise: the SDK really did retry
+      expect(tally.get).toBe(2);
+      expect(tally.byCommand.HeadBucketCommand).toBe(2);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
+  it('counts every attempt of a request that failed for good', async () => {
+    const server = await flakyS3(Number.POSITIVE_INFINITY);
+    const client = clientFor(server.url, 2);
+    const tally = meterLib.meter(client);
+    try {
+      await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
+      expect(server.hits()).toBe(2);
+      expect(tally.get).toBe(2);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
+  const baseFor = (url: string): Record<string, unknown> => ({
+    endpoint: url,
+    region: 'us-east-1',
+    forcePathStyle: true,
+    credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+  });
+
+  it('meters a second client into the same bill', async () => {
+    const one = await flakyS3(0);
+    const two = await flakyS3(1);
+    const a = clientFor(one.url, 3);
+    const b = clientFor(two.url, 3);
+    const tally = meterLib.meter(a);
+    meterLib.meter(b, tally);
+    try {
+      await a.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      await b.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      expect(tally.get).toBe(3);
+    } finally {
+      a.destroy();
+      b.destroy();
+      await one.close();
+      await two.close();
+    }
+  });
+
+  // The workload's client makes ONE attempt: the projection has no term for its retries, and a retry's backoff
+  // would sit inside a latency sample unseen. Driven against the failing server rather than read from the source,
+  // because an explicit `retryStrategy` beside `maxAttempts: 1` would pass a regex and still retry.
+  it('the workload client fails on a transient error instead of retrying', async () => {
+    const server = await flakyS3(1);
+    const client = new s3.S3Client(guards.clientConfigs(baseFor(server.url)).work);
+    try {
+      await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
+      expect(server.hits()).toBe(1);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
+  // Teardown keeps its retries. The one-attempt pin once reached it too, and a single 503 on `ListObjectVersions`
+  // then left the bucket and everything in it behind.
+  it('the teardown client retries, so one transient error cannot leave the bucket behind', async () => {
+    const server = await flakyS3(1);
+    const client = new s3.S3Client(guards.clientConfigs(baseFor(server.url)).admin);
+    try {
+      await client.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      expect(server.hits()).toBe(2);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+
+  it('the harness builds exactly those two clients, meters both, and tears down with the retrying one', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    // Each variable tied to its config, and the workload metered: a swap of the two configs, or a workload client
+    // with a tally of its own, passed the looser version of these checks.
+    expect(src.match(/new s3\.S3Client\(/g)?.length).toBe(2);
+    expect(src).toContain('const client = new s3.S3Client(configs.work)');
+    expect(src).toContain('const admin = new s3.S3Client(configs.admin)');
+    expect(src).toContain('const tally = meter(client)');
+    expect(src).toContain('meter(admin, tally)');
+    const teardown = teardownSource(src);
+    expect(teardown).toContain('admin.send(');
+    expect(teardown).not.toMatch(/\bclient\b/);
+  });
+
+  // The store has a retry layer of its own, above the client's, and it re-runs a failed read INSIDE the timed
+  // window. The client's one-attempt pin does not reach it, so the timed store turns it off.
+  it("the timed reads run with the store's own retry off", () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src.match(/new CloudRoaring\(/g)?.length).toBe(1);
+    expect(src).toMatch(/new CloudRoaring\(\{\s*storage,\s*retry:\s*false\s*\}\)/);
+  });
+
+  it('counts a request that needed no retry exactly once', async () => {
+    const server = await flakyS3(0);
+    const client = clientFor(server.url, 3);
+    const tally = meterLib.meter(client);
+    try {
+      await client.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      expect(server.hits()).toBe(1);
+      expect(tally.get).toBe(1);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
+  });
+});
+
+/** The harness's teardown function, comments stripped — what the structural checks below read. */
+function teardownSource(src: string): string {
+  return src
+    .slice(src.indexOf('const teardown = () =>'), src.indexOf('return teardownPromise;'))
+    .replace(/\/\/.*$/gm, '');
+}
+
+// Teardown is the one path whose failure leaves money on the table, so what counts as "done" is spelled out here.
+// Each rule below is a bug a fault-injecting proxy in front of MinIO reproduced: a lost-answer abort whose retry
+// got 404 NoSuchUpload made teardown skip the deletes and report nothing; and a key that could never be deleted
+// made the listing loop bill forever.
+describe('teardown — what counts as done', () => {
+  it('treats only NoSuchBucket as the bucket being gone', () => {
+    expect(guards.bucketIsGone({ name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })).toBe(
+      true,
+    );
+    expect(guards.bucketIsGone({ Code: 'NoSuchBucket' })).toBe(true);
+    // Every other 404 is someone else's "not found" — above all an abort's NoSuchUpload.
+    expect(guards.bucketIsGone({ name: 'NoSuchUpload', $metadata: { httpStatusCode: 404 } })).toBe(
+      false,
+    );
+    expect(guards.bucketIsGone({ name: 'NotFound', $metadata: { httpStatusCode: 404 } })).toBe(
+      false,
+    );
+    expect(guards.bucketIsGone({ $metadata: { httpStatusCode: 404 } })).toBe(false);
+    expect(guards.bucketIsGone({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })).toBe(
+      false,
+    );
+    expect(guards.bucketIsGone(undefined)).toBe(false);
+  });
+
+  it('treats an abort that finds its upload gone as done, and nothing else', () => {
+    expect(guards.uploadIsGone({ name: 'NoSuchUpload', $metadata: { httpStatusCode: 404 } })).toBe(
+      true,
+    );
+    expect(guards.uploadIsGone({ name: 'NoSuchBucket' })).toBe(false);
+    expect(
+      guards.uploadIsGone({ name: 'ServiceUnavailable', $metadata: { httpStatusCode: 503 } }),
+    ).toBe(false);
+    expect(guards.uploadIsGone(undefined)).toBe(false);
+  });
+
+  it('bounds its delete passes, and projects every listing they can make at every attempt', () => {
+    expect(Number.isInteger(guards.TEARDOWN_PASSES) && guards.TEARDOWN_PASSES >= 1).toBe(true);
+    // One ListMultipartUploads, a listing per pass, and the listing that finds the bucket empty — each at every
+    // attempt the retrying client may make.
+    expect(guards.TEARDOWN_PUTS).toBe(guards.ADMIN_ATTEMPTS * (1 + guards.TEARDOWN_PASSES + 1));
+  });
+
+  it('the harness applies those rules, and projects them', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const teardown = teardownSource(src);
+    expect(teardown).toContain('bucketIsGone(');
+    expect(teardown).not.toContain('probeMeansAbsent(');
+    expect(teardown).toContain('uploadIsGone(');
+    expect(teardown).toContain('TEARDOWN_PASSES');
+    expect(src).toMatch(/fixedPuts:\s*1 \/\* CreateBucket \*\/ \+ TEARDOWN_PUTS/);
+  });
+
+  // An interrupt while CreateBucket is in flight used to meet the do-nothing handler, and exit without teardown.
+  it('arms the interrupt handler before the bucket is created', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    // Searched from `main`: the module-level default, `let onInterrupt = async () => {}`, sits before it and does
+    // nothing — the first version of this check found that and passed.
+    const main = src.indexOf('async function main');
+    const armed = src.indexOf('onInterrupt = async', main);
+    expect(main).toBeGreaterThan(-1);
+    expect(armed).toBeGreaterThan(main);
+    expect(armed).toBeLessThan(src.indexOf('new s3.CreateBucketCommand', main));
   });
 });

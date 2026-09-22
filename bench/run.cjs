@@ -16,8 +16,8 @@
  *   - site/benchmarks.html          chart inlined (between BENCH markers)
  *   - docs/benchmarks.md            chart <img> + stats table (between BENCH markers)
  *
- * Imports the CJS build (@cloudbitmaps/roaring) on purpose: the ESM bundle pulls `roaring`'s named exports, which
- * Node's ESM loader can't statically resolve for a native CJS addon.
+ * `require()` loads @cloudbitmaps/roaring, which ships ESM only, through Node's `require(esm)` — unflagged from
+ * 22.12, the floor the packages declare. There is no CJS build.
  */
 'use strict';
 const fs = require('node:fs');

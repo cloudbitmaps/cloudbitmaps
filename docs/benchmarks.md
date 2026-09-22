@@ -56,7 +56,8 @@ path you cannot take, and the second is priced differently now that the pointer 
 now the whole write path and the whole read path.
 
 The harness that produced the run, and its raw artifact, were removed along with the tier they were built to
-meter. The figures below are the record.
+meter. The figures below are the record. Its replacement meters the topology that ships, and has not had its
+in-region run yet — see [What is still owed](#what-is-still-owed).
 
 ### What it cost
 
@@ -253,6 +254,19 @@ The loaded store's own measurements are the next benchmark pass, and none of the
   NoSQL table. The shipped topology keeps the registry in the object store, which trades that table's cost for
   object-store requests — a different bill, in both directions, and not yet measured. Until it is, treat the
   figures above as the object-store half of an older shape rather than as today's total.
+
+**The harness for these is built; the run is not.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
+(`pnpm calibrate:aws`) measures, in one run against a real bucket, load throughput single-part and multipart; cold
+`A ∩ B` latency for two 500,000-id operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the
+at-scale section reports, at a quarter of its density; and every request the single-bucket topology bills, pointer
+reads and conditional PUTs included, counted attempt by attempt. Each intersect must return exactly the planned ids
+or no latency is reported. Every run records its own round-trip floor to the region and labels its latency
+in-region only below 30 ms — a line that keeps another continent out, not a neighbouring region, so the raw floor
+is recorded with it for a reader who wants a stricter one. Its workload has been rehearsed against MinIO, which
+proves the mechanics and not the figures: MinIO is not S3, a local container says nothing about a region's latency,
+and a rehearsal never reaches the guards that stop a real run from spending. `andNot` with a large `exclude` is not
+in it yet. How it guards against spending more than it says, and how to run it from inside the region:
+[`bench/README.md`](../bench/README.md#real-cloud-calibration).
 
 Nothing above should be read as covering any of these.
 

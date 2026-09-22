@@ -44,7 +44,7 @@
  * half an hour and, worse, would silently replace a recorded 100K measurement with a different machine's
  * wall-clock numbers. The committed results file is the record; rendering is separate from measuring.
  *
- * Imports the CJS build (@cloudbitmaps/roaring) — same reason as bench/run.cjs (native `roaring` named exports).
+ * Loads the ESM-only package with `require()`, exactly as bench/run.cjs does (Node's `require(esm)`, from 22.12).
  *
  * Env knobs (for a quick validation run at small scale):
  *   SCALE_FLEETS=1000,10000,100000   fleet sizes to measure       SCALE_CAP=1024        maxOpenSegments
