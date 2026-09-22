@@ -12,7 +12,7 @@ import { CloudRoaringError } from '@/core/errors';
  */
 const PROBE_KEYS = [0, 1, 5, 256, 4096, 65_535];
 
-// Pinned so a failing run is reproducible (determinism bar V16).
+// Pinned so a failing run is reproducible.
 const SEED = 0x000b_0a7f;
 
 async function exercise(bytes: Uint8Array): Promise<void> {

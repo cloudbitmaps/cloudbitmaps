@@ -73,8 +73,8 @@ function filesToCheck(): string[] {
 /** Markdown `[text](target)` plus HTML `href="target"` / `src="target"`. */
 function linkTargets(src: string): string[] {
   const targets: string[] = [];
-  // A link written *inside* a code span or fenced block is a quoted example, not a link — docs that talk
-  // about linking (the launch runbook does) would otherwise fail on their own examples. Stripping code spans
+  // A link written *inside* a code span or fenced block is a quoted example, not a link — a doc that talks
+  // about how to write links would otherwise fail on its own examples. Stripping code spans
   // is safe for the common `[`code`](target)` shape: the backticks only wrap the link *text*, so removing
   // them leaves `[](target)`, which still matches.
   let inFence = false;

@@ -206,8 +206,10 @@ describe('leak-scan', () => {
     //
     // Asserting only the "no needles" warning made this test depend on whether a developer happens to have a
     // local `.leak-needles` — green in CI, red on the machine of anyone actually using the feature. The real
-    // invariant is disclosure, and it holds in both states. The stronger guarantee (that `--snapshot` REFUSES
-    // to certify without needles) is enforced by the script itself and exercised at the Stage-4 gate.
+    // invariant is disclosure, and it holds in both states. The stronger guarantee — that `--snapshot`
+    // REFUSES to certify when no needles are configured — is enforced by the script and is NOT covered here:
+    // nothing in this file runs `--snapshot`. Worth adding; said plainly rather than implied, because a
+    // comment that gestures at coverage which does not exist is how a gap survives a reading.
     const { out } = scan('export const x = 1;\n');
     expect(out).toMatch(/no extra needles configured|\d+ extra needle\(s\) configured/);
   });

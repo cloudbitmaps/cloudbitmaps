@@ -98,7 +98,7 @@ describe('bench-as-test anchors', () => {
     expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
   });
 
-  it('K3: the estimator never understates the storage requests the engine actually issued', async () => {
+  it('the estimator never understates the storage requests the engine actually issued', async () => {
     // The engine's only billable request on a read path is a storage GET of one chunk, and the sink counts them.
     // So the anchor is: price what the sink OBSERVED, then check the model — fed the same read rate and the
     // same observed cache posture — lands on it from above. That is what keeps the published crossover

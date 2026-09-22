@@ -15,7 +15,7 @@
 //
 // Usage
 //   node scripts/leak-scan.cjs                  # tracked working-tree files; migration findings informational
-//   node scripts/leak-scan.cjs --snapshot       # the Stage-4 gate: migration findings are failures
+//   node scripts/leak-scan.cjs --snapshot       # pre-publication: migration findings become failures
 //   node scripts/leak-scan.cjs --history        # every blob reachable from every ref (see below)
 //   node scripts/leak-scan.cjs --dir <path>     # an arbitrary tree — use it on an UNPACKED npm tarball
 //
@@ -37,8 +37,9 @@
 //   * History mode enumerates **every blob reachable from every ref** (`git rev-list --objects --all`), not
 //     `git log -p`. `git log -p` walks HEAD only and emits no diff for merge commits, so a secret introduced
 //     as a merge-conflict resolution, or sitting on an unmerged branch, is invisible to it — while
-//     `git push --mirror` (the migration mechanic in the launch runbook) pushes every one of those
-//     refs. Scanning the reachable object set is the only enumeration that matches what a push carries.
+//     `git push --mirror` — the usual way a repository is moved to a new remote — pushes every one of
+//     those refs. Scanning the reachable object set is the only enumeration that matches what a push
+//     carries.
 //
 // Extra needles that must NOT be committed (an employer name, a real address, a former handle) go in a
 // gitignored `.leak-needles` file — one case-insensitive regex per line, `#` comments allowed — or in
@@ -459,7 +460,7 @@ if (extra.length === 0) {
     );
     process.exit(2);
   }
-  console.log(`leak-scan: ${msg} Add them before the Stage-4 gate.`);
+  console.log(`leak-scan: ${msg} Add them before running with \`--snapshot\`.`);
 } else {
   console.log(`leak-scan: ${extra.length} extra needle(s) configured`);
 }

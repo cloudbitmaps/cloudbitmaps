@@ -49,7 +49,7 @@ describe('assertStoredRecordShape — an older row with the removed daemon field
           leaseExpiresAt: 1_725_000_060_000,
           status: 'compacting', // the transient status a daemon left behind — still a valid value, now reserved
         },
-        'pre-D2',
+        'a row written before the warm tier was removed',
       ),
     ).not.toThrow();
   });
