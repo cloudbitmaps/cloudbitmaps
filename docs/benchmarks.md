@@ -164,6 +164,66 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   are scattered and land in an array container nearer 2 KB per chunk. Read the byte count as "the window is
   small and bounded", not as a size to plan a bill around — for that, price the requests.
 
+## What RSS is, and why it is the number we bound
+
+The memory figures above are **RSS**, not heap. The difference is the whole reason the bound is meaningful, so
+it is worth stating plainly.
+
+### What RSS is
+
+**Resident Set Size** is the amount of physical RAM a process occupies right now — not what it reserved, not
+what it might use. It is the number your OS reports (`top`, Activity Monitor, `docker stats`), and it is the
+number the kernel consults when a container hits its memory limit and something has to die.
+
+### Why RSS and not the JavaScript heap
+
+CloudBitmaps does its set arithmetic through `roaring-node`, a **native addon**. Native code allocates with
+`malloc`, entirely outside V8's JavaScript heap. So a process holding a large bitmap looks like this:
+
+```
+┌──────────────── RSS — what the OS sees ────────────────┐
+│  Node binary, shared libraries      ~50–60 MiB, a floor │
+│  V8 JavaScript heap                 ← heap sampling     │
+│  roaring's containers               ← INVISIBLE to it   │
+│  stacks, buffers, allocator arenas  ← invisible too     │
+└─────────────────────────────────────────────────────────┘
+```
+
+**A leak in the bitmap containers is invisible to a heap sample.** The heap graph stays flat while the process
+grows until the kernel kills it. Since ["bounded memory & cost, always"](../CLAUDE.md) is one of this project's
+hard invariants, a measurement that cannot see the allocator doing the most work would be evidence of nothing.
+
+RSS is the only figure that includes all of it. That is why the ceiling is expressed in RSS, and why
+`--memory-swap` is pinned equal to `--memory`: with swap enabled a process that outgrows RAM merely spills to
+disk and keeps running, and the limit stops being a memory bound at all. With swap off it is a hard wall.
+
+### Why a ceiling is published, and not a number
+
+The gate answers a **pass/fail** question — *did this workload survive inside 384 MiB, or was it OOM-killed?* —
+rather than reporting a measurement. Two reasons the reading is the less useful half:
+
+1. **It is mostly Node.** The harness labels its own figure `~Node floor`: an idle Node process already sits
+   around 50–60 MiB, so the workload's contribution is small against that baseline. Quoting the total would
+   mostly be quoting the runtime.
+2. **It moves with the machine** — allocator behaviour, page size, what the OS has handed back. Published as a
+   headline it would be read as a specification this project has not promised.
+
+The ceiling, by contrast, is a property of *the workload and the bound*, which is what the gate actually
+establishes and what a reader can act on.
+
+The two-machine comparison is the evidence for that split, and it is why this figure is published while the
+latency figures under [What is still owed](#what-is-still-owed) are not:
+
+| | reader-process RSS | throughput |
+|---|---|---|
+| Linux CI runner | 69.5 MiB | 12.7 iters/s |
+| Apple M3 Pro under Docker | 69.9 MiB | 46.7 iters/s |
+| **spread** | **0.4 MiB** | **3.7×** |
+
+Same workload, same code, two very different machines. **The memory envelope travels; the rate does not.** A
+memory bound is therefore something we can state for your machine as well as ours. A latency number is not,
+which is why none is published until an in-region run produces one.
+
 ## Caveats
 
 - **Default pricing** (`aws-us-east-1-ondemand`, cache off). Your region, cloud, committed term and cache-hit
