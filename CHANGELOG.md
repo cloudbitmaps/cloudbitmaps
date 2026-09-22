@@ -25,6 +25,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   deleted on exit. What is published is the **ceiling**, not a reader-RSS reading: the ceiling is a property of
   the workload, an RSS number is a property of the machine.
 
+  `docs/benchmarks.md` also gains **What RSS is, and why it is the number we bound** — what resident set size
+  actually is, why a JS-heap sample cannot see the roaring addon's off-heap allocations (and so cannot evidence
+  the bounded-memory invariant), and why the published figure is a ceiling rather than a reading.
+
 ## [0.10.0] — 2026-09-21
 
 > **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered
