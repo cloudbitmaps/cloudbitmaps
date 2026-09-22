@@ -22,22 +22,36 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SKIP = new Set(['node_modules', 'dist', '.git', 'coverage', '.worktrees', 'build', 'golden']);
 const EXTS = ['.ts', '.md', '.html', '.txt', '.cjs', '.mjs'];
 
+/**
+ * The gap between two words, across a wrap.
+ *
+ * These phrases are sentences, and sentences in this repo hard-wrap at about 110 columns — inside Markdown
+ * blockquotes and JSDoc comments, whose continuation lines begin `> ` and `* `. So the gap between two words
+ * is often a newline plus a marker, and neither a literal space nor `\s+` alone spans it. Scanning line by
+ * line cannot see any of it: whether a retired claim is caught then depends on how long the preceding words
+ * happen to be, which is not a property anyone controls.
+ *
+ * `vocabulary-damage.test.ts` learned this first. Carried here, and to `unreleased-install-caveat`.
+ */
+const GAP = String.raw`\s+(?:[>*#]\s*)?`;
+const g = (src: string): string => src.replace(/ /g, GAP);
+
 /** Phrases that describe behaviour this library used to have. Each carries what to say instead. */
 const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
-    claim: /publish(?:es|ing)? an empty generation over `?dest/i,
+    claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
     why: 'the *Into verbs refuse an empty result over a non-empty destination — say that instead',
   },
   {
-    claim: /an empty result publishes an empty generation/i,
+    claim: new RegExp(g('an empty result publishes an empty generation'), 'i'),
     why: 'the *Into verbs refuse it; `allowEmpty: true` is the override',
   },
   {
-    claim: /still calls the bulk-load path directly/i,
+    claim: new RegExp(g('still calls the bulk-load path directly'), 'i'),
     why: 'the *Into verbs route through the guarded loadSegment path',
   },
   {
-    claim: /does \*\*not\*\* yet cover these verbs/i,
+    claim: new RegExp(g(String.raw`does \*\*not\*\* yet cover these verbs`), 'i'),
     why: 'the load guard covers the *Into verbs now',
   },
 ];
@@ -81,12 +95,13 @@ describe('no document claims behaviour this library has retired', () => {
   it.each(files)('%s', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const hits: string[] = [];
-    src.split('\n').forEach((line, i) => {
-      for (const { claim, why } of RETIRED) {
-        const m = claim.exec(line);
-        if (m) hits.push(`${rel}:${i + 1} — "${m[0]}" is no longer true. ${why}`);
+    for (const { claim, why } of RETIRED) {
+      const m = claim.exec(src);
+      if (m) {
+        const line = src.slice(0, m.index).split('\n').length;
+        hits.push(`${rel}:${line} — "${m[0].replace(/\s+/g, ' ')}" is no longer true. ${why}`);
       }
-    });
+    }
     expect(hits).toEqual([]);
   });
 });

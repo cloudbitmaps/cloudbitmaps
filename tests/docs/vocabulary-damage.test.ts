@@ -52,14 +52,31 @@ const files = execFileSync(
  * exact failure the file's header says it exists to prevent. A pattern that only matches the unwrapped
  * spelling checks whichever half of the prose happens to be short.
  */
+/**
+ * The gap between two words, across a wrap.
+ *
+ * `\s+` is not sufficient on its own: these phrases appear inside Markdown blockquotes and JSDoc comments,
+ * whose continuation lines begin `> ` and `* `. Those markers sit BETWEEN the words, so the gap is not pure
+ * whitespace. A pattern joined on `\s+` matches a wrap in flowing prose and silently misses the same wrap one
+ * blockquote away — which is the same shape of hole as the literal space this file already replaced, one
+ * level in.
+ */
+const GAP = String.raw`\s+(?:[>*#]\s*)?`;
+
 const DAMAGE: ReadonlyArray<readonly [RegExp, string]> = [
   [/storage\.storage\./g, '`storage.objects.*` — a real GCP permission name'],
-  [/\bplain\s+storage\b/gi, '"plain objects" (JavaScript objects, not our tier)'],
-  [/\bstorage\s+storage\b/gi, '"storage" once'],
-  [/\bcache\s+cache\b/gi, '"cache" once'],
-  [/\bstorage\s+exist\b/gi, '"objects exist"'],
-  [/\bimmutable\s+storage\s*(?=[.,;:)]|$)/gim, '"immutable objects"'],
-  [/\bsuperseded\s+storage\s*(?=[.,;:)]|$)/gim, '"superseded objects"'],
+  [
+    new RegExp(String.raw`\bplain${GAP}storage\b`, 'gi'),
+    '"plain objects" (JavaScript objects, not our tier)',
+  ],
+  [new RegExp(String.raw`\bstorage${GAP}storage\b`, 'gi'), '"storage" once'],
+  [new RegExp(String.raw`\bcache${GAP}cache\b`, 'gi'), '"cache" once'],
+  [new RegExp(String.raw`\bstorage${GAP}exist\b`, 'gi'), '"objects exist"'],
+  [new RegExp(String.raw`\bimmutable${GAP}storage\s*(?=[.,;:)]|$)`, 'gim'), '"immutable objects"'],
+  [
+    new RegExp(String.raw`\bsuperseded${GAP}storage\s*(?=[.,;:)]|$)`, 'gim'),
+    '"superseded objects"',
+  ],
 ];
 
 describe('the tier renames left no impossible phrasing', () => {
