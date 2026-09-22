@@ -446,14 +446,18 @@
            benchmark record is gated against a p50/p95/p99 row reappearing at all until a run produces one.
 
            What replaces it is the same list docs/benchmarks.md keeps under "What is still owed" — the honest
-           form of a measurement you have not made. Every row here is a debt, not a result, and none of them
-           is a number. -->
+           form of a measurement you have not made.
+
+           Rows 01-03 are debts, not results. Row 04 was one until the gate that measures it started RECORDING
+           what it measured; it is now a published ceiling, and it is marked differently so the two kinds are
+           not read as one. Do not re-generalise this comment to "every row is a debt" — that sentence was true
+           when it was written and stopped being true without anything noticing. -->
       <section id="owed">
         <h2>The latency claim we do not make</h2>
         <p class="lede">
           The loaded read path has never been timed inside a region, so no latency is published here at all.
-          Wall-clock throughput on shared runners is too noisy to gate; the figures below are what we owe you
-          instead of quoting it loosely.
+          Wall-clock throughput on shared runners is too noisy to gate; the first three rows below are what we
+          owe you instead of quoting it loosely. The fourth is a measured ceiling, marked as such.
         </p>
         <ul class="rowlist">
           <li>
@@ -491,12 +495,23 @@
           </li>
           <li>
             <span class="rl-mark">04</span>
-            <span class="rl-what">RSS soak</span>
-            <span class="rl-fig">owed</span>
+            <span class="rl-what">RSS ceiling</span>
+            <span class="rl-fig is-live">384m</span>
             <span class="rl-note">
-              A recorded envelope from <span class="m">pnpm rss-gate</span>. The gate exists and has teeth — the
-              soak runs under a hard <span class="m">docker --memory</span> ceiling with swap off, and an
-              OOM-kill fails the build — but no measured RSS figure from it is published here.
+              <!-- This row said "owed" while the job that measures it ran green on every PR: the soak inside the
+                   container ran without SOAK_INJECT, so its verdict reached container stdout and nothing else,
+                   and the stage directory is deleted on exit. A measurement nothing records is a measurement
+                   nobody has. `pnpm rss-gate` now writes bench/rss-gate-results.json, which site-figures.cjs
+                   gates this row against.
+                   What is published is the CEILING the workload survives, not a reader-RSS number. The ceiling
+                   is a property of the workload; an RSS reading is a property of the machine, and publishing
+                   one as a headline invites it to be read as a spec. -->
+              A sustained read + combine + re-load workload over <b>400</b> segments completes inside a hard
+              <span class="m">384m</span> cgroup ceiling with swap disabled — so the limit is a true RSS bound
+              and covers the addon's off-heap memory. No OOM-kill, and both creep verdicts inside their bands.
+              Two very different machines agree: a Linux CI runner and an Apple M3 Pro under Docker landed
+              <b>0.4 MiB</b> apart on reader RSS while throughput differed <b>3.7&times;</b> — which is why the
+              ceiling is published here and the latency in <b>01</b> still is not.
             </span>
           </li>
         </ul>

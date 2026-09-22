@@ -15,6 +15,16 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run
+  to `bench/rss-gate-results.json`, and `docs/benchmarks.md` plus the benchmarks page state the ceiling a
+  sustained read + combine + re-load workload over 400 segments survives: **384 MiB**, swap disabled, no
+  OOM-kill. The gate had been measuring this on every PR and discarding it — the soak inside the container ran
+  without `SOAK_INJECT`, so its verdict reached container stdout and nothing else, and the stage directory is
+  deleted on exit. What is published is the **ceiling**, not a reader-RSS reading: the ceiling is a property of
+  the workload, an RSS number is a property of the machine.
+
 ## [0.10.0] — 2026-09-21
 
 > **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered

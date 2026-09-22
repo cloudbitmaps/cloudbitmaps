@@ -1,0 +1,29 @@
+{
+  "note": "Written by scripts/rss-gate.sh. The ceiling is this gate parameter; the rest is the soak verdict run under it. Regenerate with `pnpm rss-gate`.",
+  "ceiling": "384m",
+  "swap": "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound and covers the roaring addon off-heap memory",
+  "seconds": 30,
+  "segments": 400,
+  "readerCacheCap": 64,
+  "oomKilled": false,
+  "verdict": "PASS",
+  "heapCreepMiB": -0.7,
+  "heapCreepLimitMiB": 2.13,
+  "nativeCreepMiB": 0,
+  "nativeCreepLimitMiB": 0.28,
+  "samples": 14,
+  "combines": 3822,
+  "reloads": 1532,
+  "readerProcess": {
+    "heapMiB": 6.8,
+    "nativeMiB": 0.24,
+    "rssMiB": 69.5,
+    "combines": 133,
+    "combineIds": 72
+  },
+  "env": {
+    "node": "v22.23.2",
+    "arch": "arm64",
+    "cpu": "unknown"
+  }
+}
