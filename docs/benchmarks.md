@@ -133,9 +133,20 @@ _Measured on Apple M3 Pro (arm64, node v24.18.1). **The bound is the retained he
   while the count looks "in bounds". Peak RSS is shown for context only: it is a **process high-water** that also
   folds in the benchmark's own fleet-_seeding_ allocations (not returned to the OS after GC), so it grows with
   fleet size here and is **not** a clean read-path footprint. The flat **live-heap** column is the bound. Live
-  heap plus the soak's native-memory watch prove **no leak** on the read path; the hard RSS ceiling under a
-  cgroup `--memory` limit ships as `pnpm rss-gate` (a soak under a hard `docker --memory` ceiling with swap off;
-  an OOM-kill → exit 137).
+  heap plus the soak's native-memory watch prove **no leak** on the read path.
+- **The hard RSS ceiling — measured.** A sustained read + combine + re-load workload over **400 segments**
+  completes inside a hard **384 MiB** cgroup ceiling with swap disabled (`--memory-swap == --memory`), so the
+  limit is a true RSS bound rather than a heap one, and it covers the roaring addon's **off-heap** memory that
+  a JS heap sample cannot see. No OOM-kill; both creep verdicts inside their bands. `pnpm rss-gate` records the
+  run to `bench/rss-gate-results.json`, which the site figure gate checks the published number against.
+
+  **Why a ceiling and not an RSS reading.** The ceiling is a property of the workload; a reader-process RSS
+  figure is a property of the machine, and published as a headline it gets read as a spec the project has not
+  promised. The two are easy to tell apart here because two very different machines were compared: a Linux CI
+  runner and an Apple M3 Pro under Docker landed **0.4 MiB apart** on reader RSS (69.5 vs 69.9 MiB) while
+  throughput differed **3.7×** (12.7/s vs 46.7/s). The memory envelope travels; the rate does not — which is
+  exactly why this figure is published and the latency figures above it still are not.
+
 - **The fleet-wide registry scan is `O(total segments)`** — the near-linear "discovery" column is the
   enumeration that every admin pass (`checkConsistency`, `retireExpired`, `eraseSubject`, `subjectReport`)
   pays before it does any
@@ -178,14 +189,17 @@ The loaded store's own measurements are the next benchmark pass, and none of the
   that number.
 - **Intersect latency** — in-region wall-clock for a chunk-skipping `A ∩ B`, and for `andNot` with a large
   `exclude`, against a real object store rather than local disk.
-- **RSS soak** — a recorded envelope from `pnpm rss-gate`. The gate exists and has teeth (an OOM-kill fails the
-  build), but no measured RSS figure from it is published here.
 - **Single-bucket cost.** Every published cost figure was metered on a topology whose registry was a separate
   NoSQL table. The shipped topology keeps the registry in the object store, which trades that table's cost for
   object-store requests — a different bill, in both directions, and not yet measured. Until it is, treat the
   figures above as the object-store half of an older shape rather than as today's total.
 
-Nothing above should be read as covering any of the three.
+Nothing above should be read as covering any of these.
+
+<!-- No count in that sentence, deliberately. It said "any of the three" while this list held four,
+     and the RSS-soak row leaving made it accidentally correct — which is the worse failure, because a
+     number that is right by coincidence reads as maintained. A tally in prose beside a list it does not
+     derive from is a drift surface with nothing checking it. -->
 
 ## Reproduce
 

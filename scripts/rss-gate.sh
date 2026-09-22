@@ -118,7 +118,12 @@ docker run --rm \
     # NOTE: soak spawns a reader-child; if the child alone were OOM-killed, soak.cjs treats it as a bonus and
     # the parent still runs — so a read-path blowup is caught by the parent hitting the ceiling / the creep
     # verdict, not by the child. Adequate here (big margin); the isolated child footprint is not separately gated.
-    node --expose-gc bench/soak.cjs
+    # SOAK_INJECT makes the soak write its verdict to /stage/bench/soak-results.json, which the host copies
+    # out below. Without it the numbers exist only in the stdout of this container, and the stage is deleted
+    # on exit — which is why the RSS envelope was listed as owed while the gate that measures it ran green on
+    # every PR. (No apostrophes in here: this whole block is a single-quoted argument to `bash -lc`, so one
+    # would close the quote. `bash -n` still passes, because what is left is valid — just not this script.)
+    SOAK_INJECT=1 node --expose-gc bench/soak.cjs
   ' || {
   code=$?
   if [ "$code" -eq 137 ]; then
@@ -128,5 +133,39 @@ docker run --rm \
   fi
   exit "$code"
 }
+
+# Record the envelope. The soak's own verdict says nothing about the CEILING it ran under — that is this
+# script's parameter, not the soak's — so the two halves are joined here, and the published claim is the
+# ceiling the workload survives rather than any single machine's RSS reading. `docs/benchmarks.md` and the
+# site quote this file, and `site-figures.cjs` refuses a figure it cannot account for, so the number on the
+# page cannot drift from the run that produced it.
+#
+# Written even on a re-run that changes nothing, so `git status` shows whether the committed envelope still
+# matches this machine.
+node -e '
+  const { readFileSync, writeFileSync } = require("node:fs");
+  const soak = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const out = {
+    note: "Written by scripts/rss-gate.sh. The ceiling is this gate parameter; the rest is the soak verdict run under it. Regenerate with `pnpm rss-gate`.",
+    ceiling: process.argv[2],
+    swap: "disabled (--memory-swap == --memory), so the ceiling is a true RSS bound and covers the roaring addon off-heap memory",
+    seconds: Number(process.argv[3]),
+    segments: Number(process.argv[4]),
+    readerCacheCap: Number(process.argv[5]),
+    oomKilled: false,
+    verdict: soak.verdict,
+    heapCreepMiB: soak.creepMiB,
+    heapCreepLimitMiB: soak.creepLimitMiB,
+    nativeCreepMiB: soak.nativeCreepMiB,
+    nativeCreepLimitMiB: soak.nativeCreepLimitMiB,
+    samples: Array.isArray(soak.samples) ? soak.samples.length : undefined,
+    combines: soak.combines,
+    reloads: soak.reloads,
+    readerProcess: soak.readerProcess,
+    env: soak.env,
+  };
+  writeFileSync(process.argv[6], JSON.stringify(out, null, 2) + "\n");
+' "$STAGE/bench/soak-results.json" "$MEM" "$SECONDS_" "$SEGMENTS" "$CAP" "$ROOT/bench/rss-gate-results.json"
+echo "rss-gate: wrote bench/rss-gate-results.json"
 
 echo "rss-gate: PASS — the sustained workload stayed within the hard ${MEM} RSS ceiling (no OOM, no creep)."
