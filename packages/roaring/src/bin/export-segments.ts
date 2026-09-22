@@ -20,8 +20,13 @@
  * **export to a fresh directory** for a clean dump. Artifacts are owner-only (decrypted **cleartext** — protect it).
  *
  * Ships the **local-filesystem** backend (zero-dependency, the dev/reference target). For a cloud store, wire a
- * ~10-line script that builds an `S3StorageDriver` + an `S3RegistryDriver` + a `CloudRoaring`, and calls
- * `store.exportSegments(sink, { format })` with your own sink — the binary stays SDK-free.
+ * short script that builds the backend for the storage you have and calls `store.exportSegments(sink,
+ * { format })` with your own sink — the binary stays SDK-free:
+ *
+ *   new CloudRoaring({ storage: new S3Storage({ bucket }) })
+ *
+ * One backend object, not a driver pair. Assembling `{ storage, registry }` by hand is refused with a
+ * `ValidationError` that names `createBackend` as the way to supply a half of your own.
  *
  * Config is read from the environment (12-factor-friendly):
  *   CR_EXPORT_ROOT       (required) — the local-filesystem root holding storage/ registry/

@@ -37,7 +37,7 @@
  * - **A missing pointer cannot lose data.** The full `registry.list()` scan still exists, demoted from the
  *   primary path to a periodic **repair** pass. Anything the index never learned about — a segment written
  *   before the index existed, or one whose name is too long to encode (see {@link canIndex}) — is retired by
- *   that pass instead. Slower, never never.
+ *   that pass instead. Slower, never wrong.
  *
  * So the index can only make the sweep *cheaper*, never *wronger*, and both drift directions are bounded by
  * machinery that already exists.

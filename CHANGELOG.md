@@ -1363,7 +1363,7 @@ thing changed; the notes above and [`MIGRATING.md`](MIGRATING.md) are what to re
   **It is a fast path, never the source of truth**, which is what makes a second index safe here: the sweep
   re-reads the live segment row before acting, so a stale pointer is a wasted read and nothing worse; and the
   full scan remains as a periodic **repair** pass, so a missing pointer — including a ref too long to encode —
-  means slower, never never.
+  means slower, never wrong.
 
 - **`retireExpired({ scan: 'index' })` — a sweep that reads what is *expiring*, not what the fleet *holds*.**
   Reads only the due buckets (the current one plus `lookbackBuckets`, default 7, so a sweep that did not run
