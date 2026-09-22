@@ -557,7 +557,8 @@
               rather than inferred — and there is exactly one reason,
               <span class="m">transient</span>, because nothing does a read-modify-write to lose a race over.
               Every change of state is an audit event beside it:
-              <span class="m">segment.publish</span>, <span class="m">segment.rewrite</span>,
+              <span class="m">segment.publish</span>, <span class="m">segment.rollback</span>,
+              <span class="m">segment.load-refused</span>, <span class="m">segment.rewrite</span>,
               <span class="m">segment.erase</span>, <span class="m">segment.dispose</span>,
               <span class="m">namespace.erase</span>.
             </span>
