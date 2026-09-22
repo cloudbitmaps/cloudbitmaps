@@ -71,11 +71,54 @@ describe('the native-addon checksum table matches what CI verifies', () => {
     // The exact version, because the key carries it: a bump invalidates the whole table at once.
     const version = roaringVersion.replace(/^[\^~]/, '');
     const forVersion = Object.keys(table).filter((k) => k.startsWith(`${version}/`));
+
+    // EVERY PAIR BY NAME, not a row count.
+    //
+    // `forVersion.length === osCount * nodeCount` is a weaker claim than the one this test's name makes, and
+    // the difference is a whole platform: rename `…win32-x64-unknown` to `…win64-x64-unknown` — a plausible
+    // slip in a table transcribed by hand — and the count is unchanged while Windows/node-24 now has no row
+    // at all. The two cases the header names (a row deleted, a platform added) do move the count, which is
+    // why this passed for as long as it did.
+    //
+    // The runner→platform and node-major→ABI maps are stated here because nothing in the repo derives them:
+    // `NODE_MODULE_VERSION` is a property of the Node release, not of anything checked in. An unmapped entry
+    // fails loudly rather than being skipped, so a new OS or Node major in the matrix lands here first.
+    const PLATFORM: Record<string, string> = {
+      'ubuntu-latest': 'linux-x64-glibc',
+      'windows-latest': 'win32-x64-unknown',
+      'macos-latest': 'darwin-arm64-unknown',
+    };
+    const ABI: Record<string, string> = { '22': 'v127', '24': 'v137' };
+
+    const missing: string[] = [];
+    for (const os of (matrix?.os ?? []) as string[]) {
+      for (const node of (matrix?.node ?? []) as (string | number)[]) {
+        const plat = PLATFORM[os];
+        const abi = ABI[String(node)];
+        expect(
+          plat,
+          `no platform mapping for runner "${os}" — add it here when the matrix grows`,
+        ).toBeTruthy();
+        expect(
+          abi,
+          `no ABI mapping for node ${String(node)} — add its NODE_MODULE_VERSION here`,
+        ).toBeTruthy();
+        const key = `${version}/roaring-node-${abi}-${plat}`;
+        if (!forVersion.includes(key)) missing.push(`${os} + node ${String(node)} → ${key}`);
+      }
+    }
+    expect(
+      missing,
+      `the checksum table has no row for these matrix pairs (present: ${forVersion.join(', ')}). Run ` +
+        '`node scripts/verify-roaring-prebuilt.cjs` on each platform, verify the printed hashes against the ' +
+        'upstream artifacts, and record them.',
+    ).toEqual([]);
+
+    // Kept as well: a row for a pair the matrix does NOT run is dead weight and usually a typo's other half.
     expect(
       forVersion.length,
-      `roaring resolves to ${version} but the checksum table has ${forVersion.length} row(s) for it ` +
-        `(${Object.keys(table).join(', ')}). Run \`node scripts/verify-roaring-prebuilt.cjs\` on each ` +
-        'platform, verify the printed hashes against the upstream artifacts, and record them.',
+      `the table has ${forVersion.length} rows for ${version} but the matrix runs ${osCount * nodeCount} ` +
+        `pairs (${forVersion.join(', ')})`,
     ).toBe(osCount * nodeCount);
   });
 });

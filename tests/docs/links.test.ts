@@ -89,8 +89,17 @@ function linkTargets(src: string): string[] {
   const prose = kept.join('\n').replace(/``?[^`\n]+``?/g, '');
   for (const m of prose.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g))
     targets.push(m[1] as string);
+  // REFERENCE-STYLE links: `[text][id]` resolved through a `[id]: target` definition at the foot of the file.
+  // Invisible to the inline pattern above, and the style is already in use here — `CODE_OF_CONDUCT.md` is
+  // written entirely with it. Its targets happen to be absolute today, so nothing was broken; a relative one
+  // would have been unchecked, which is the same hole as a dead inline link with a different spelling.
+  for (const m of prose.matchAll(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)/gm))
+    targets.push(m[2] as string);
   // From `prose`, not `src` — otherwise a fenced HTML *example* in a .md file yields a link that must resolve.
-  for (const m of prose.matchAll(/(?:href|src)="([^"]+)"/g)) targets.push(m[1] as string);
+  // Single quotes as well as double: HTML permits either, nothing here forbids one, and a gate that reads
+  // only one spelling checks whichever the author happened to type.
+  for (const m of prose.matchAll(/(?:href|src)=(?:"([^"]+)"|'([^']+)')/g))
+    targets.push((m[1] ?? m[2]) as string);
   return targets;
 }
 
