@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { MOVED_OPTIONS } from '@/moved-options';
 
 /**
- * Every TypeScript sample in the docs must at least be *parseable*, and must not name a removed option key.
+ * The TypeScript samples in the docs must not repeat the mistakes that have shipped in them: a name declared twice,
+ * a removed or moved option key, and the old and new wiring mixed in one sample. Nothing here parses a sample.
  *
  * WHY THIS EXISTS. Doc samples are copy-pasted; a sample that cannot run is worse than no sample, because the
  * reader assumes their own environment is at fault. Two of them shipped broken in one release, and neither
@@ -19,10 +20,10 @@ import { MOVED_OPTIONS } from '@/moved-options';
  * Both render fine, lint fine, and are invisible to the link and export-sync checks, which look at prose and
  * symbol names rather than at whether the code would run.
  *
- * WHAT IT CHECKS, and why only these two things. A full typecheck of every fence would need each sample to be
- * self-contained, which they deliberately are not (they elide imports and setup to stay readable). These two
- * checks need no such assumption: a duplicate binding is a `SyntaxError` in any context, and a removed option
- * key is wrong no matter what surrounds it.
+ * WHAT IT CHECKS, and why only things like these. A full typecheck of every fence would need each sample to be
+ * self-contained, which they deliberately are not (they elide imports and setup to stay readable). None of these
+ * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a removed or moved
+ * option key, or two wirings in one sample, is wrong no matter what surrounds it.
  */
 
 const ROOT = join(__dirname, '..', '..');

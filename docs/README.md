@@ -6,7 +6,7 @@ Two audiences, two trees:
 |---|---|
 | **using CloudBitmaps** (or evaluating it) | [**`guide/`**](guide/) — getting started, how-tos, and the [complete API reference](guide/api-reference.md), kept accurate to what is actually shipped |
 | **deciding whether to adopt it** | the [**roadmap**](ROADMAP.md) — what has shipped, what is proven to what degree, and what has been deliberately ruled out — and the [**benchmarks**](benchmarks.md), with their method and what they do *not* establish |
-| **contributing** | [**`CONTRIBUTING.md`**](../CONTRIBUTING.md) — branching, the gate every change must pass, the adversarial-review step, the doc rules and code style |
+| **contributing** | [**`CONTRIBUTING.md`**](../CONTRIBUTING.md) — branching, the gate every change must pass, the adversarial-review step, the doc rules and code style — then the README in [`bench/`](../bench/README.md), [`scripts/`](../scripts/README.md), [`site/`](../site/README.md) or [`tests/`](../tests/README.md), which gives each part of it a row: what it is, and what runs it |
 | **understanding *why* the design is shaped this way** | the code. Every module leads with a header explaining the decision it encodes and what the alternative cost; the [hard correctness invariants](../CLAUDE.md#hard-correctness-invariants) name the protocol rules and each one has named tests |
 
 Everything you need is in this repository. Where a decision matters to someone reading or extending the code,

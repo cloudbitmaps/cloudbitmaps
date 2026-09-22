@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gates the published figures on `site/benchmarks.html` and `site/index.html` against their sources.
+ * Gates the published figures on the site's pages — the `PAGES` list below, six of them — against their sources.
  *
  * WHY THIS SCRIPT EXISTS
  *
@@ -14,9 +14,10 @@
  * WHAT IS CHECKED
  *
  *   1. Every anchor value appears on the page, in the rendered form a reader sees.
- *   2. No unaccounted money figure or crossover rate appears anywhere in the page's visible text — the
- *      inverse direction, without which a check can only catch a MISSING number and never a WRONG one added
- *      beside the right ones. (That hole was real: an earlier version of the /demo gate passed while the page
+ *   2. No unaccounted DOLLAR figure appears anywhere in the page's visible text — the inverse direction,
+ *      without which a check can only catch a MISSING number and never a WRONG one added beside the right ones.
+ *      Only `$` amounts are matched: a crossover rate is required on the page that owns it (1), but a wrong rate
+ *      stated on another page is not caught here. (That hole was real: an earlier version of the /demo gate passed while the page
  *      said 41,208 instead of 100,000, because 100,000 still appeared elsewhere.)
  *   3. The counts in Home's spec strip, derived from the source tree — checked in three directions: the page
  *      drifting from the source, the source drifting from the page, and the entry being deleted outright.

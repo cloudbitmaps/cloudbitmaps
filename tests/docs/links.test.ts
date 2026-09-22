@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +43,14 @@ const NAMED_FILES = [
   'fuzz/README.md',
 ] as const;
 
-/** Every `.md` under `docs/` and `.github/`, the named files above, and every `site/` page. */
+/**
+ * Every tracked `.md` file, the named files above, and every `site/` page.
+ *
+ * The markdown is DERIVED from git as well as walked. A list of places to look went stale the way hand-kept
+ * lists here always do: the READMEs added to `bench/`, `scripts/`, `site/` and `tests/` sat outside it, and five
+ * links broken in them on purpose passed. The walks and the named list stay — the named list so that a renamed
+ * file fails loudly rather than dropping out.
+ */
 function filesToCheck(): string[] {
   // The package READMEs are derived, not named: hardcoding core + roaring left the three new npm landing
   // pages outside the link check entirely.
@@ -67,7 +75,12 @@ function filesToCheck(): string[] {
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));
-  return out;
+  out.push(
+    ...execFileSync('git', ['ls-files', '*.md'], { cwd: ROOT, encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean),
+  );
+  return [...new Set(out)];
 }
 
 /** Markdown `[text](target)` plus HTML `href="target"` / `src="target"`. */

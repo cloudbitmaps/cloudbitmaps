@@ -91,19 +91,37 @@ function classify(commandName) {
  * Attach the meter to an S3 client and return the tally it fills.
  *
  * The tally is live: read it during a run to enforce a spend ceiling mid-phase, which is the only way to bound
- * a phase whose op count is not known in advance.
+ * a phase whose op count is not known in advance. Pass the tally an earlier call returned to meter a second
+ * client into the same bill.
  */
-function meter(client) {
-  const tally = newTally();
+function meter(client, tally = newTally()) {
   client.middlewareStack.add(
     (next, context) => async (args) => {
       const name = context.commandName ?? 'UnknownCommand';
       const klass = classify(name);
-      tally[klass] += 1;
-      tally.byCommand[name] = (tally.byCommand[name] ?? 0) + 1;
+      const count = (n) => {
+        tally[klass] += n;
+        tally.byCommand[name] = (tally.byCommand[name] ?? 0) + n;
+      };
+      // The first attempt is counted BEFORE it is sent, so a request still in flight when the process dies is in
+      // the tally. Bytes are counted once, as the logical payload: a retried upload sends them again, but the bill
+      // is per request and throughput is about the data.
+      count(1);
       const body = args?.input?.Body;
       if (typeof body?.byteLength === 'number') tally.bytesUp += body.byteLength;
-      const result = await next(args);
+      // This runs OUTSIDE the SDK's retry loop, so one call here can be several requests on the wire. The retry
+      // middleware records how many on `$metadata.attempts` — on the result, and on the error when every attempt
+      // failed — and each attempt is a billed request.
+      const retries = (meta) =>
+        Number.isInteger(meta?.attempts) && meta.attempts > 1 ? meta.attempts - 1 : 0;
+      let result;
+      try {
+        result = await next(args);
+      } catch (err) {
+        count(retries(err?.$metadata));
+        throw err;
+      }
+      count(retries(result?.output?.$metadata));
       const len = Number(result?.output?.ContentLength);
       if (Number.isFinite(len)) {
         tally.bytesDown += len;
@@ -115,8 +133,10 @@ function meter(client) {
       }
       return result;
     },
-    // `initialize` sees the command before the SDK resolves it, which is where `context.commandName` is set
-    // and where a retry re-enters — so retries are counted individually, as AWS bills them.
+    // `initialize` sees the command before the SDK resolves it, which is where `context.commandName` is set. It is
+    // also OUTSIDE the retry loop (`retryMiddleware`, at `finalizeRequest`), which is why retries are read from the
+    // attempt count above rather than seen one by one. This comment once said the opposite, and the meter counted
+    // each send once.
     { step: 'initialize', name: 'cloudbitmapsMeter' },
   );
   return tally;

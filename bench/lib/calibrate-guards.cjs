@@ -262,6 +262,69 @@ function maskAccount(account) {
   return /^\d{12}$/.test(s) ? `••••••••${s.slice(-4)}` : '(unverified)';
 }
 
+/**
+ * How many attempts each of the harness's two S3 clients makes per request.
+ *
+ * The WORKLOAD's client makes one. The projection has no term for its retries, and a retry's backoff would sit
+ * inside a latency sample unseen — so a transient failure there fails the run instead. TEARDOWN's keeps the SDK's
+ * usual three: the one-attempt pin once reached it too, and a single 503 on `ListObjectVersions` then left the
+ * bucket, and everything in it, behind. The projection allows for every one of teardown's attempts.
+ */
+const WORK_ATTEMPTS = 1;
+const ADMIN_ATTEMPTS = 3;
+
+/**
+ * Does a teardown error mean "the bucket is already gone"?
+ *
+ * Narrower than `probeMeansAbsent`, on purpose. Teardown once used that, which reads ANY 404 as absent — and
+ * `AbortMultipartUpload` answers 404 `NoSuchUpload` for an upload already aborted or completed, which is exactly
+ * what a retried abort gets back when its first attempt landed but the answer was lost. Read as "the bucket is
+ * gone", it skipped deleting the objects and the bucket, and reported nothing. Only S3's own `NoSuchBucket`
+ * means the bucket is gone.
+ */
+function bucketIsGone(err) {
+  return (err?.name ?? err?.Code) === 'NoSuchBucket';
+}
+
+/** An abort that finds its upload already gone — completed, or aborted by an earlier attempt — has nothing to do. */
+function uploadIsGone(err) {
+  return (err?.name ?? err?.Code) === 'NoSuchUpload';
+}
+
+/**
+ * The most delete passes teardown makes before it reports what is left instead of trying again.
+ *
+ * `DeleteObjects` reports a key it could not delete INSIDE a 200, where the SDK's retries never see it, and each
+ * listing starts again from the first page — so a key that can never be deleted (a policy that forbids it) kept
+ * the loop listing, and billing, for as long as it ran: 794 listings in five seconds, under no ceiling and in no
+ * projection. Now bounded, and projected.
+ */
+const TEARDOWN_PASSES = 3;
+
+/**
+ * Teardown's PUT-class requests at most: one `ListMultipartUploads`, a `ListObjectVersions` per pass and the one
+ * that finds the bucket empty — each at every attempt its retrying client may make. Its deletes are free.
+ */
+const TEARDOWN_PUTS = ADMIN_ATTEMPTS * (1 + TEARDOWN_PASSES + 1);
+
+/** The two clients' configurations, from the one a run resolved. `maxAttempts` last, so nothing in `base` wins. */
+function clientConfigs(base) {
+  return {
+    work: { ...base, maxAttempts: WORK_ATTEMPTS },
+    admin: { ...base, maxAttempts: ADMIN_ATTEMPTS },
+  };
+}
+
+/**
+ * Where a run's results are written, relative to the repository root.
+ *
+ * A rehearsal gets a file of its own, which git ignores. It writes the same shape as a real run, and under the
+ * real run's name it sat one `git add` away from being committed as the evidence behind a published figure.
+ */
+function resultsFile(rehearse) {
+  return rehearse ? 'bench/calibrate-aws-rehearsal.json' : 'bench/calibrate-aws-results.json';
+}
+
 module.exports = {
   CONFIRM_PHRASE,
   RETRY_BOUND,
@@ -276,4 +339,11 @@ module.exports = {
   planLayout,
   layoutIds,
   maskAccount,
+  resultsFile,
+  ADMIN_ATTEMPTS,
+  clientConfigs,
+  bucketIsGone,
+  uploadIsGone,
+  TEARDOWN_PASSES,
+  TEARDOWN_PUTS,
 };

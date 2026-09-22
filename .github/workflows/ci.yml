@@ -173,8 +173,9 @@ jobs:
 
   lambda-smoke:
     name: lambda deployability (Amazon Linux 2023)
-    # Proves the packaged lib deploys to the flagship serverless target: builds the native `roaring` dep for
-    # the AL2023 Lambda runtime (no linux prebuilt exists → build-for-target) and loads it under ESM + CJS.
+    # Proves the packaged lib deploys to the flagship serverless target: forces a from-source build of the
+    # native `roaring` dep for the AL2023 Lambda runtime — the path arm64 Lambda must take, since it has no
+    # prebuilt — and loads it under ESM + CJS.
     # Needs Docker on the runner, which fixes the arch tested at x64. arm64/Graviton coverage is not claimed
     # by this job; the cross-OS addon build is covered by `native-os-matrix`.
     runs-on: ubuntu-latest

@@ -31,7 +31,7 @@
  * So the post-publish check REPORTS which happened instead of failing — the publish already succeeded and is
  * irreversible, and the condition resolves itself when the real release claims `latest`.
  *
- * Usage (via the pnpm entry, like every other script here — `pnpm audit`, `pnpm leak-scan`):
+ * Usage (via the pnpm entry, like `pnpm leak-scan` — though not `pnpm audit`, which is pnpm's own built-in):
  *   pnpm release:bootstrap             # dry run — checks everything, publishes nothing
  *   pnpm release:bootstrap --confirm   # the irreversible one
  */

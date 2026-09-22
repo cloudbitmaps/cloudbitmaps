@@ -38,12 +38,25 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   enough to go **multipart**, which the first run never did. Fetched bytes are split into chunk reads and the
   reader's fixed 256 KiB tail read for the footer and index, which a single "fraction fetched" had merged into a
   misleading 29.8%. `bash bench/calibrate-cloudshell.sh` runs all of it in-region against the published
-  packages.
+  packages. A rehearsal writes its own results file, which git ignores, so a plain `git add` cannot commit a
+  free run against MinIO as the evidence behind a published figure.
 
   Fixed before it could matter: **Ctrl-C did not stop a run.** The signal handler printed "tearing down" and
   then did nothing, and since installing a handler replaces Node's default exit, the workload kept spending. It
-  now tears down, keeps partial results, and exits 130 — proven by interrupting runs mid-workload, twice in quick
-  succession during teardown, and inside the new 10-second abort window of a real run.
+  now tears down, writes the results — every phase it had finished, and the cost — and exits 130, whichever exit
+  path gets there first — proven by interrupting runs mid-load, mid-intersect, twice in quick succession during
+  teardown, and inside the new 10-second abort window of a real run.
+
+  Also fixed before it could matter: **the request meter did not count SDK retries.** It sits outside the SDK's
+  retry loop, so it counted each call once however many attempts the call took — which undercounts exactly the
+  requests a spend ceiling most needs to see. It now reads every attempt from the SDK's own count. The workload
+  makes one attempt per request, and the timed intersects run with the store's own read retry off, so the
+  projection stays a true upper bound and no retry's backoff lands unseen inside a latency sample. Teardown keeps
+  its retries, on a second client metered into the same bill, so a single transient error cannot leave the
+  bucket behind — and it now reads only S3's own `NoSuchBucket` as "already removed". It read any 404 that way,
+  so an abort retried after a lost answer, which gets back 404 `NoSuchUpload`, made teardown skip the deletes and
+  report nothing. Its delete passes are bounded, too: a key that could never be deleted kept it listing, and
+  billing, until the process was killed.
 
 ### Changed
 

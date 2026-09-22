@@ -21,8 +21,15 @@ defined = set(re.findall(r'\.([A-Za-z][\w-]*)', css_no_comments))
 # needs that kind of reason.
 INTENTIONAL = {'rc1'}
 
+# Recursive, as site-links.py is. A depth-one glob skipped `flavors/roaring.html` — the one nested page — so its
+# classes were never checked, and a page this gate could not see passed it.
+pages = sorted(glob.glob(f'{ROOT}/**/*.html', recursive=True))
+if not pages:
+    print(f'site-classes: no pages found under {ROOT}/ — refusing to report success over nothing')
+    sys.exit(1)
+
 bad = {}
-for page in sorted(glob.glob(f'{ROOT}/*.html')):
+for page in pages:
     html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
     used = set()
     for m in re.finditer(r'class="([^"]*)"', html):
@@ -30,7 +37,7 @@ for page in sorted(glob.glob(f'{ROOT}/*.html')):
             used.add(c)
     missing = sorted(c for c in used if c not in defined and c not in INTENTIONAL)
     if missing:
-        bad[os.path.basename(page)] = missing
+        bad[os.path.relpath(page, ROOT)] = missing
 
 for page, missing in bad.items():
     print(f'{page}: {len(missing)} undefined class(es)')
