@@ -25,6 +25,9 @@ const PUT_CLASS = new Set([
   'CompleteMultipartUploadCommand',
   'ListObjectsV2Command',
   'ListObjectsCommand',
+  // Teardown lists VERSIONS to empty a versioned bucket. It is a LIST like the others, and it was missing
+  // here — so it fell through to the GET rate, the 12.5x understatement this set exists to prevent.
+  'ListObjectVersionsCommand',
   'ListMultipartUploadsCommand',
   'ListPartsCommand',
   'CreateBucketCommand',
@@ -46,7 +49,30 @@ const FREE = new Set([
 
 /** A fresh, zeroed tally. */
 function newTally() {
-  return { put: 0, get: 0, free: 0, bytesUp: 0, bytesDown: 0, byCommand: Object.create(null) };
+  return {
+    put: 0,
+    get: 0,
+    free: 0,
+    bytesUp: 0,
+    bytesDown: 0,
+    byCommand: Object.create(null),
+    reads: { whole: { n: 0, bytes: 0 }, suffix: { n: 0, bytes: 0 }, range: { n: 0, bytes: 0 } },
+  };
+}
+
+/**
+ * What kind of read a `GetObject` was, from its `Range` header.
+ *
+ * WHY THE SHAPE MATTERS. A single bytes-fetched figure conflated two different things. Measured request by
+ * request, one cold intersect of two ~1 MB segments was 2 whole-object reads of the pointer (158 B each), 2
+ * SUFFIX reads of the last 256 KiB of each generation — the reader grabs a generous tail so the footer and index
+ * come back in one round trip — and 200 explicit ranges of ~516 B, one per shared chunk. The payload was 4.9% of
+ * the objects, exactly the published 100-of-2,000; the tail reads were another 24.9%, and a combined "29.8%
+ * fetched" said neither thing. The shape separates them without having to know the file format.
+ */
+function rangeShape(range) {
+  if (range === undefined || range === null || range === '') return 'whole';
+  return /^bytes=-\d+$/.test(String(range)) ? 'suffix' : 'range';
 }
 
 /**
@@ -79,7 +105,14 @@ function meter(client) {
       if (typeof body?.byteLength === 'number') tally.bytesUp += body.byteLength;
       const result = await next(args);
       const len = Number(result?.output?.ContentLength);
-      if (Number.isFinite(len)) tally.bytesDown += len;
+      if (Number.isFinite(len)) {
+        tally.bytesDown += len;
+        if (name === 'GetObjectCommand') {
+          const shape = tally.reads[rangeShape(args?.input?.Range)];
+          shape.n += 1;
+          shape.bytes += len;
+        }
+      }
       return result;
     },
     // `initialize` sees the command before the SDK resolves it, which is where `context.commandName` is set
@@ -102,4 +135,4 @@ function priceTally(tally, pricing) {
   return { putUSD: put, getUSD: get, totalUSD: put + get };
 }
 
-module.exports = { meter, priceTally, classify, newTally, PUT_CLASS, FREE };
+module.exports = { meter, priceTally, classify, rangeShape, newTally, PUT_CLASS, FREE };

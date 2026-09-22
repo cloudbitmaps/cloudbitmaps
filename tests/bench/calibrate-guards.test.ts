@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,15 +15,41 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   parseCeiling: (raw: unknown) => number;
   resolveSize: (raw: unknown, fallback: number, label: string) => number;
   probeMeansAbsent: (err: unknown) => boolean;
-  projectOps: (i: { loads: number; reads: number; chunksPerRead: number; retryBound: number }) => {
-    put: number;
-    get: number;
-  };
+  projectOps: (i: {
+    loads: number;
+    reads: number;
+    chunksPerRead: number;
+    retryBound: number;
+    operandsPerRead?: number;
+    largeLoads?: number;
+    partsPerLargeLoad?: number;
+    fixedPuts?: number;
+    fixedGets?: number;
+  }) => { put: number; get: number };
   breached: (spent: number, ceiling: number) => boolean;
+  RETRY_BOUND: number;
+  CHUNK_SPAN: number;
+  DEFAULT_LAYOUT: { overlap: number; stride: number };
+  exceedsProjection: (
+    measured: { put: number; get: number },
+    projected: { put: number; get: number },
+  ) => string[];
+  planLayout: (i: { segments: number; idsPerSegment: number; overlap: number; stride: number }) => {
+    shared: number;
+    stride: number;
+    sharedChunks: number;
+    privateChunks: number;
+    chunksPerSegment: number;
+    bases: number[];
+    expected: { count: number; sum: number };
+  };
+  layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
+  maskAccount: (account: unknown) => string;
 };
 
 const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
   classify: (command: string) => 'put' | 'get' | 'free';
+  rangeShape: (range: unknown) => 'whole' | 'suffix' | 'range';
   priceTally: (
     t: { put: number; get: number },
     p: { storage: { putPerMillion: number; getPerMillion: number } },
@@ -173,6 +200,9 @@ describe('aws-meter classification', () => {
   // enumerating workload by 12.5x, and nothing downstream would notice.
   it('bills LIST at the PUT rate, not the GET rate', () => {
     expect(meterLib.classify('ListObjectsV2Command')).toBe('put');
+    // The one teardown uses to empty a versioned bucket; it once fell through to the GET rate.
+    expect(meterLib.classify('ListObjectVersionsCommand')).toBe('put');
+    expect(meterLib.classify('ListMultipartUploadsCommand')).toBe('put');
   });
 
   it('bills the multipart commands at the PUT rate', () => {
@@ -206,6 +236,15 @@ describe('aws-meter classification', () => {
     expect(meterLib.classify('SomeFutureCommand')).toBe('get');
   });
 
+  // One combined bytes-fetched figure hid a fixed 256 KiB tail read behind the chunk reads. The shape of the
+  // Range header is what separates the index read from the payload reads.
+  it('tells a suffix (tail) read from an explicit range and a whole-object read', () => {
+    expect(meterLib.rangeShape(undefined)).toBe('whole');
+    expect(meterLib.rangeShape('bytes=-262144')).toBe('suffix');
+    expect(meterLib.rangeShape('bytes=1024-1539')).toBe('range');
+    expect(meterLib.rangeShape('bytes=1024-')).toBe('range');
+  });
+
   it('prices a tally from the pricing profile rather than hardcoded rates', () => {
     const priced = meterLib.priceTally(
       { put: 1_000_000, get: 1_000_000 },
@@ -214,5 +253,148 @@ describe('aws-meter classification', () => {
     expect(priced.putUSD).toBeCloseTo(5, 10);
     expect(priced.getUSD).toBeCloseTo(0.4, 10);
     expect(priced.totalUSD).toBeCloseTo(5.4, 10);
+  });
+});
+
+describe('calibrate guards — found by the first real run', () => {
+  // The harness said RETRY_BOUND = 4 and called it "1 + DEFAULT_MAX_RETRIES". No such constant exists and the
+  // loop runs five attempts, so every load was projected one attempt short. Read the bound out of the source
+  // rather than retyping it, so the two cannot disagree silently again.
+  it('uses the same retry bound as publishGeneration actually loops', () => {
+    const src = readFileSync(
+      join(ROOT, 'packages', 'core', 'src', 'core', 'crbm-storage-source.ts'),
+      'utf8',
+    );
+    const body = src.slice(src.indexOf('export async function publishGeneration'));
+    const bound = /for \(let attempt = 0; attempt < (\d+); attempt\+\+\)/.exec(body);
+    expect(
+      bound,
+      'publishGeneration no longer has the attempt loop this test reads',
+    ).not.toBeNull();
+    expect(guards.RETRY_BOUND).toBe(Number(bound?.[1]));
+  });
+
+  // An intersect has two operands and each opens its own generation. Counting one per read halved the term.
+  it('projects every operand of a read, not one', () => {
+    const base = { loads: 0, reads: 40, chunksPerRead: 100, retryBound: 5 };
+    const one = guards.projectOps({ ...base, operandsPerRead: 1 });
+    const two = guards.projectOps({ ...base, operandsPerRead: 2 });
+    expect(two.get).toBe(2 * one.get);
+    expect(two.get).toBeGreaterThanOrEqual(40 * 2 * 100);
+  });
+
+  it('projects multipart parts for large loads', () => {
+    const base = { loads: 0, reads: 0, chunksPerRead: 0, retryBound: 5 };
+    const small = guards.projectOps({ ...base, largeLoads: 2, partsPerLargeLoad: 0 });
+    const big = guards.projectOps({ ...base, largeLoads: 2, partsPerLargeLoad: 3 });
+    expect(big.put - small.put).toBe(2 * 3);
+  });
+
+  it('flags a run that exceeded its projection, and only then', () => {
+    expect(guards.exceedsProjection({ put: 10, get: 10 }, { put: 10, get: 10 })).toEqual([]);
+    expect(guards.exceedsProjection({ put: 11, get: 10 }, { put: 10, get: 10 })).toHaveLength(1);
+    expect(guards.exceedsProjection({ put: 11, get: 99 }, { put: 10, get: 10 })).toHaveLength(2);
+  });
+
+  describe('planLayout', () => {
+    const params = { segments: 3, idsPerSegment: 4_000, overlap: 0.05, stride: 262 };
+    const L = guards.planLayout(params);
+    const seg = (i: number): number[] => [...guards.layoutIds(L, i, params.idsPerSegment)];
+
+    // The claim the harness asserts against a real object store is that ANY pair intersects in exactly
+    // `expected` — so check that claim here, in plain JS, over every pair.
+    it('intersects every pair in exactly the expected ids', () => {
+      for (const [a, b] of [
+        [0, 1],
+        [0, 2],
+        [1, 2],
+      ] as const) {
+        const other = new Set(seg(b));
+        const both = seg(a).filter((id) => other.has(id));
+        expect(both.length).toBe(L.expected.count);
+        expect(both.reduce((acc, id) => acc + id, 0)).toBe(L.expected.sum);
+      }
+    });
+
+    // Chunk-skipping fetches by KEY overlap — a chunk whose key exists in both operands is fetched from both,
+    // whether or not the payloads end up sharing an id. So the property that decides what a run measures is
+    // chunk overlap, not id overlap: two bands placed too close share chunks without sharing a single id,
+    // passing the exact-id check above while quietly adding fetches to the measurement.
+    it('shares exactly the planned chunks between every pair, and no more', () => {
+      const keys = (i: number) => new Set(seg(i).map((id) => id >>> 16));
+      for (const [a, b] of [
+        [0, 1],
+        [0, 2],
+        [1, 2],
+      ] as const) {
+        const kb = keys(b);
+        const common = [...keys(a)].filter((k) => kb.has(k));
+        expect(common.length).toBe(L.sharedChunks);
+      }
+    });
+
+    it('yields ascending u32 ids, as the loader expects', () => {
+      for (const i of [0, 1, 2]) {
+        const ids = seg(i);
+        expect(ids.length).toBe(params.idsPerSegment);
+        for (let k = 1; k < ids.length; k += 1) expect(ids[k]).toBeGreaterThan(ids[k - 1] ?? -1);
+        expect(ids[ids.length - 1]).toBeLessThanOrEqual(0xffff_ffff);
+      }
+    });
+
+    it('spans the chunk counts it reports', () => {
+      const chunks = new Set(seg(0).map((id) => id >>> 16));
+      expect(chunks.size).toBe(L.chunksPerSegment);
+    });
+
+    // The published figure is "100 of 2,000 chunks". A layout that packed the shared ids into a handful of
+    // chunks — the first real run's did, at a stride of 7 — is not evidence about that figure.
+    it('reproduces the published 100-of-2,000 shape at the harness defaults', () => {
+      const d = guards.planLayout({
+        segments: 10,
+        idsPerSegment: 500_000,
+        ...guards.DEFAULT_LAYOUT,
+      });
+      expect(d.sharedChunks).toBe(100);
+      expect(d.chunksPerSegment).toBeGreaterThanOrEqual(1_990);
+      expect(d.chunksPerSegment).toBeLessThanOrEqual(2_010);
+    });
+
+    it('refuses a layout that would wrap the 32-bit id space', () => {
+      expect(() =>
+        guards.planLayout({ segments: 100, idsPerSegment: 500_000, overlap: 0.05, stride: 262 }),
+      ).toThrow(/32-bit id space/);
+    });
+
+    it('refuses a layout that shares nothing, or puts every id in its own chunk', () => {
+      expect(() =>
+        guards.planLayout({ segments: 2, idsPerSegment: 10, overlap: 0.05, stride: 262 }),
+      ).toThrow(/shares nothing/);
+      expect(() =>
+        guards.planLayout({ segments: 2, idsPerSegment: 1_000, overlap: 0.05, stride: 65_536 }),
+      ).toThrow(/its own chunk/);
+    });
+  });
+
+  describe('maskAccount', () => {
+    // Built at runtime, never written as a literal. The leak scan's structural needles flag any 12-digit run and
+    // any ARN, and they cannot tell a fixture from a real account — which is the point of them. Allowlisting this
+    // whole file would blind the scanner to the one file a real id is most likely to be pasted into while
+    // debugging the pin, so the fixture changes instead: an all-zeros prefix is unmistakably not an account, and a
+    // real id pasted here as a literal is still caught.
+    const FAKE_ACCOUNT = '0'.repeat(8) + '4321';
+
+    it('shows the last four digits and nothing else', () => {
+      const masked = guards.maskAccount(FAKE_ACCOUNT);
+      expect(masked.endsWith('4321')).toBe(true);
+      expect(masked).not.toContain('00000000');
+    });
+
+    it('does not pretend to have verified something that is not an account id', () => {
+      expect(guards.maskAccount(undefined)).toBe('(unverified)');
+      // Contains an account id without being one — an ARN, a URI, a log line — must not be read as verified.
+      expect(guards.maskAccount(`${FAKE_ACCOUNT}:user/x`)).toBe('(unverified)');
+      expect(guards.maskAccount(`${FAKE_ACCOUNT}9`)).toBe('(unverified)');
+    });
   });
 });

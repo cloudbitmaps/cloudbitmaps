@@ -29,6 +29,22 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   `HeadBucket` 403 read as "absent" for a bucket the caller owned, which in `us-east-1` would have run the
   workload inside a real bucket and deleted it on teardown.
 
+  Its first real run was against a real account from a laptop, and it was more useful for what it exposed than
+  for its numbers. Every run now **measures its own distance to the region** and labels latency as in-region or
+  network-dominated, because from outside the region a p50 describes internet transit. Intersects are **cold** —
+  a fresh store each time, so no cache answers them — and each must return **exactly** the planned ids, count
+  and sum, or the run refuses to report a latency. The workload now reproduces the published shape (100 of
+  ~2,000 chunks per operand) instead of the three chunks the first run touched, and uploads two segments large
+  enough to go **multipart**, which the first run never did. Fetched bytes are split into chunk reads and the
+  reader's fixed 256 KiB tail read for the footer and index, which a single "fraction fetched" had merged into a
+  misleading 29.8%. `bash bench/calibrate-cloudshell.sh` runs all of it in-region against the published
+  packages.
+
+  Fixed before it could matter: **Ctrl-C did not stop a run.** The signal handler printed "tearing down" and
+  then did nothing, and since installing a handler replaces Node's default exit, the workload kept spending. It
+  now tears down, keeps partial results, and exits 130 — proven by interrupting runs mid-workload, twice in quick
+  succession during teardown, and inside the new 10-second abort window of a real run.
+
 ### Changed
 
 - **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run
