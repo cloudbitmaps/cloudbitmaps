@@ -7,21 +7,33 @@
  * current by construction.
  *
  * **No new dependencies.** It drives Chrome over the DevTools Protocol using the `WebSocket` that is global in
- * modern Node, rather than pulling in Playwright or Puppeteer (~300 MB of browser download) for four PNGs a
- * couple of times a year. Chrome's `--screenshot` CLI flag would have been simpler still, but it captures the
+ * modern Node, rather than pulling in Playwright or Puppeteer (~300 MB of browser download) for a set of PNGs
+ * regenerated a couple of times a year. Chrome's `--screenshot` CLI flag would have been simpler still, but it captures the
  * viewport only; a design brief needs the whole page, which needs `Page.getLayoutMetrics` and
  * `captureBeyondViewport`.
  *
  * Usage:  node scripts/site-screenshots.mjs [outDir]
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(process.argv[2] ?? `${ROOT}/.site-screenshots`);
-const PAGES = ['index', 'usage', 'architecture', 'benchmarks', 'flavors', 'flavors/roaring'];
+const SITE = `${ROOT}/site`;
+/**
+ * Every page under `site/`, derived from the directory — never a hand-kept list.
+ *
+ * It *was* a literal array, and it drifted the moment `demo.html` was added: the one page carrying the
+ * product's only animation became the one page no brief ever showed. A list beside the thing it lists goes
+ * stale silently, which is the whole failure this script was written to stop, so it walks the directory the
+ * way `site-figures.cjs` does rather than naming the files.
+ */
+const PAGES = readdirSync(SITE, { withFileTypes: true, recursive: true })
+  .filter((e) => e.isFile() && e.name.endsWith('.html'))
+  .map((e) => relative(SITE, join(e.parentPath ?? e.path, e.name)).replace(/\.html$/, ''))
+  .sort();
 /**
  * Both themes, every time.
  *
@@ -196,9 +208,13 @@ try {
     // add — and asking for both made `Page.captureScreenshot` hang on a tall page. Generous deadline because a
     // ~5,000px surface genuinely takes a few seconds to encode.
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, 60_000);
-    const file = `${OUT}/${page}-${theme}.png`;
+    // A nested page (`flavors/roaring`) flattens into the filename. Writing it as a path instead threw
+    // ENOENT on a directory nobody created, killing the run two captures from the end — which is why the
+    // `flavors-roaring-*.png` in the brief's attachment set predate the page being nested at all.
+    const label = `${page.replace(/\//g, '-')}-${theme}`;
+    const file = `${OUT}/${label}.png`;
     writeFileSync(file, Buffer.from(data, 'base64'));
-    console.log(`${`${page}-${theme}`.padEnd(24)} ${WIDTH}x${height}  →  ${file}`);
+    console.log(`${label.padEnd(24)} ${WIDTH}x${height}  →  ${file}`);
     cdp.close();
     await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
   }
