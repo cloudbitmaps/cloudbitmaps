@@ -559,8 +559,8 @@
                  made of. -->
             <span class="rl-note">
               Only the admin passes pay this — <span class="m">checkConsistency</span>,
-              <span class="m">retireExpired</span> and <span class="m">eraseSubject</span> enumerate the
-              registry before they do any work. <strong>No read verb enumerates</strong>:
+              <span class="m">retireExpired</span>, <span class="m">eraseSubject</span> and
+              <span class="m">subjectReport</span> enumerate the registry before they do any work. <strong>No read verb enumerates</strong>:
               <span class="m">has</span>, <span class="m">count</span>, <span class="m">iterate</span> and
               <span class="m">intersect</span> each address one segment. The retirement sweep can already skip
               the walk entirely (<span class="m">scan: 'index'</span> reads only the buckets that are due) or be
