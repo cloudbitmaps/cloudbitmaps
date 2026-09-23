@@ -245,6 +245,13 @@ describe('calibration reports are held to their evidence', () => {
         expect(refused).toBeUndefined();
       });
 
+      // Committed unedited: byte for byte the form the harness writes, so a formatter or an editor that touched it
+      // shows up here. `.prettierignore` keeps the pre-commit hook's formatter away from it.
+      it('is exactly the file the harness wrote', () => {
+        const raw = read(file);
+        expect(raw).toBe(`${JSON.stringify(JSON.parse(raw), null, 2)}\n`);
+      });
+
       it('its report states every headline figure', () => {
         const missing = (f?.anchors ?? []).filter(([, want]) => !report.includes(want));
         expect(missing, `${reportPath} does not state these`).toEqual([]);
