@@ -3,7 +3,7 @@
 How this project is built — the **canonical** record of our conventions and working process, for humans
 *and* for any AI tooling. (The agent operating manual, [`AGENTS.md`](AGENTS.md), embeds the engineering
 **principles** and the project's **hard correctness invariants**, and points here for the process below.
-`CLAUDE.md` is a symlink to it.)
+`CLAUDE.md` is a symlink to `AGENTS.md`.)
 
 > CloudBitmaps is pre-release and built in phases — see the roadmap (the
 > living source of project state).
@@ -203,7 +203,7 @@ root-level project files. What each one is, and when it must be updated:
 | `docs/guide/` | **users** | how to actually use it — accurate to what's shipped | a user-visible capability or public API ships |
 | `docs/guide/api-reference.md` | users | the complete callable surface — every export, every entry point | **CI-enforced**: `tests/docs/api-reference-sync.test.ts` fails the build if an export is undocumented |
 | `docs/ROADMAP.md` | **users** | what's shipped, the **validated envelope**, the path to `1.0`, and the explicit not-planned list | capabilities land, or the envelope changes |
-| `docs/benchmarks.md` | users | measured cost/latency + the methodology behind each number | a benchmark or calibration run lands |
+| `docs/benchmarks.md` | users | the published cost and memory figures, how each was measured or modelled, and what is still owed, in-region latency among them | a benchmark or calibration run lands |
 | `bench/` · `scripts/` · `site/` · `tests/` — each `README.md` | contributors | a row for every part of that directory — each file in `bench/` and `scripts/`; each page and top-level file in `site/`; each directory, top-level file and documentation gate in `tests/` — saying what it is and what runs it | a part there is added, removed or renamed — **CI-enforced**: `tests/docs/directory-readmes.test.ts` fails when a part has no row, or a row names a path that does not exist |
 | `CODE_OF_CONDUCT.md` · `.github/` | contributors | Contributor Covenant, PR template, issue forms | the gate or process changes |
 

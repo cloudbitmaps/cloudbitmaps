@@ -59,7 +59,7 @@ reader.
 
 | gate | fails when |
 |---|---|
-| `agents-md.test.ts` | `CLAUDE.md` stops being a symlink to `AGENTS.md`, in git's index as well as on disk — so a tool that writes its own `CLAUDE.md` cannot split the agent instructions in two. |
+| `agents-md.test.ts` | `CLAUDE.md` stops being a symlink to `AGENTS.md`, in git's index or on disk, or `AGENTS.md` stops being the regular file — so a save that replaces the link with a copy cannot split the agent instructions in two. The on-disk check is skipped on a checkout without symlink support. |
 | `api-reference-sync.test.ts` | `docs/guide/api-reference.md` and the exported surface disagree — in **either** direction. |
 | `audit-kinds-enumerated.test.ts` | `docs/guide/dashboards.md` or `site/architecture.html`, the two pages that list the audit event kinds, lists fewer than all of them. |
 | `calibration-reports.test.ts` | A real-cloud calibration run's report, or the benchmarks page's section on the latest run, leaves out a headline figure its evidence supports, or states a dollar amount, percentage, duration, byte size, bit rate or ratio, or a number written before the request, chunk, id, load or intersect it counts, that the evidence cannot account for at the precision it is written, or beside the words for another claim. Also when the evidence is not a complete, self-consistent real run, or more than one commit has touched it; when a bill's rows disagree with the run's derivation on cost or label; when a report's request ledger disagrees with the evidence on any request or its billing class; and when its table of cost by overlap does not follow from the request shape the run measured. |
