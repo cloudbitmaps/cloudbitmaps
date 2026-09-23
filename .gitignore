@@ -50,10 +50,12 @@ oom-*
 crash-*
 
 # Real-cloud calibration: a REHEARSAL against MinIO writes its own file, and it is not committed — it proves the
-# harness, not the figures. A real run writes `bench/calibrate-aws-results.json`, which IS committed with the run:
-# it is the evidence. `tests/bench/calibrate-guards.test.ts` asks git whether each is ignored, and checks that the
-# harness and the CloudShell script use the same names — so the rule, the harness and the script cannot drift apart.
+# harness, not the figures. A real run writes `bench/calibration/<runId>.json`, which IS committed with the run: it
+# is the evidence. A real run that did not finish writes `bench/calibration/<runId>.partial.json`, which is not.
+# `tests/bench/calibrate-guards.test.ts` asks git whether each is ignored, and checks that the harness and the
+# CloudShell script use the same names — so the rule, the harness and the script cannot drift apart.
 bench/calibrate-aws-rehearsal.json
+bench/calibration/*.partial.json
 
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
 # silently: the committed set still showed a tier removed two releases earlier.

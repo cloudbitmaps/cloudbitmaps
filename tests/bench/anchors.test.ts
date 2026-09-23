@@ -20,8 +20,9 @@ import { collect, loadedStore, seededStore } from '../helpers/loaded';
  * offline `pnpm bench`, too noisy for shared CI runners). A failing anchor is a build failure.
  *
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
- * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the storage requests
- * the engine actually issued.
+ * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the chunk GETs the
+ * engine actually issued for point reads — chunk reads only: a single-bucket store's pointer and tail reads are not
+ * counted by the metrics sink, and the estimator has no term for them yet.
  */
 
 const SECONDS_PER_MONTH = 730 * 3600; // matches the estimator's convention
@@ -98,7 +99,7 @@ describe('bench-as-test anchors', () => {
     expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
   });
 
-  it('the estimator never understates the storage requests the engine actually issued', async () => {
+  it('the estimator never understates the chunk GETs the engine issued for point reads', async () => {
     // The engine's only billable request on a read path is a storage GET of one chunk, and the sink counts them.
     // So the anchor is: price what the sink OBSERVED, then check the model — fed the same read rate and the
     // same observed cache posture — lands on it from above. That is what keeps the published crossover
@@ -132,7 +133,7 @@ describe('bench-as-test anchors', () => {
 
     expect(measuredUSD).toBeGreaterThan(0);
     expect(predicted).toBeGreaterThan(0);
-    // Direction first (the claim that matters: we never quote a cheaper bill than the engine incurs), then a
+    // Direction first (the claim that matters: we never quote fewer chunk reads than the engine makes), then a
     // ±20% band so an over-statement can't drift unbounded either.
     expect(predicted).toBeGreaterThanOrEqual(measuredUSD);
     expect(Math.abs(predicted - measuredUSD) / measuredUSD).toBeLessThanOrEqual(0.2);

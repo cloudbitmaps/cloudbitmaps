@@ -12,7 +12,7 @@
 > warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
 > Pre-1.0 on purpose — `1.0` is earned by real-cloud
-> cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
+> calibration (cost and in-region latency), real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
 > tests — unit, property-vs-oracle, a deterministic fault-injecting simulator, conformance suites run
 > against real backends (or a faithful emulator), coverage-guided fuzzing of the untrusted-`.crbm`
@@ -37,7 +37,8 @@
 > sink** (`IAuditSink` — publish / rewrite / dispose / crypto-shred events for an append-only audit log or SIEM,
 > a truthful GDPR Art. 30 erasure trail).
 > **Pre-1.0.** The public API and the `.crbm` on-disk format may still change before `1.0` — that version
-> is earned by real-cloud cost calibration, real adoption, and a format freeze, not by a date.
+> is earned by real-cloud calibration (cost and in-region latency), real adoption, and a format freeze, not by a
+> date.
 
 ## Why it exists
 
@@ -173,38 +174,41 @@ retried as transient); see the [getting-started guide](docs/guide/getting-starte
 
 ## What it costs — measured on real AWS
 
-Most libraries in this space quote a model. This one has a bill. Run `2026-07-25-60291` drove the real S3 storage
-driver — and a registry driver that no longer ships — against a real AWS account in `us-east-1`: 20 segments,
-20 segment publishes, 2,000 reads. The two figures a loaded store actually pays are:
+Most libraries in this space quote a model. This one has a bill. Run `2026-09-23-94416` drove the packages at
+`0.10.0`, built from source, against a real AWS account in `us-east-1`, with the pointer in the same bucket as the
+data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact. What each costs:
 
-| Operation | Measured cost | | Always-on Redis-HA |
+| Operation | Cost | Kind | Always-on Redis-HA |
 |---|---|---|---|
-| `count()` on a published segment | **$0.14 / million** | | **$346 / month**, standing |
-| Segment publish (one S3 PUT; the pointer write is **not** in this figure — see below) | **$5.88 / million** | | whether you send traffic or not |
-| 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | | |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing |
+| The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected | whether you send traffic or not |
+| Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices | |
+| `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | measured requests at list prices | |
+| 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | modelled | |
 
-That run kept the pointer in a NoSQL table, which the library no longer ships — the registry now lives in the
-same bucket as the data. The object-store figures still describe the paths a loaded store takes, but the
-pointer round trip is now an object request rather than a table one, so treat these as the object-store half
-rather than today's total. The [benchmarks page](docs/benchmarks.md) states exactly what was and was not
-measured.
+Each intersect requested 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
+rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
+about twice the load figure. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
+pointer in a NoSQL table the library no longer ships, so it is the object-store half of that shape. The
+[run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and the
+[benchmarks page](docs/benchmarks.md) states exactly what each run did and did not measure.
 
 Request counts are read off the AWS SDK layer, command by command — not estimated from sizes, and not taken
-from the library's own metrics, which cannot see a PUT. The same run also measured the things a cost model can
+from the library's own metrics, which cannot see a PUT. The older run also measured the things a cost model can
 only assume: **zero retry billing** (HTTP
 attempts equalled commands), **zero LIST calls** on the read path (LIST bills at 12.5× a GET — a stray
 list-per-read is this design's classic cost blowup), and **23 S3 GETs serving 2,000 reads** as the bounded
 cache did its job.
 
-That run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
-write-side line items and its grand total are not quoted here. Fresh loaded-store measurements against a real
-object store are the next benchmark pass; the benchmarks page keeps the list of
+The older run also exercised an incremental-write path that **no longer exists** (see *Status* below), so its
+write-side line items and its grand total are not quoted here. The loaded store's in-region latency and load
+throughput are the next benchmark pass; the benchmarks page keeps the list of
 [what is still owed](docs/benchmarks.md#what-is-still-owed).
 
-**On latency, the honest version:** that run's client sat ~96 ms of internet from the region (measured, not
-inferred), so its p50s are network transit — a read is one round trip. It calibrates **cost**, not in-region
-latency, and we don't publish an in-region latency figure until an in-region run happens. Full numbers, method,
-and an explicit list of what the run does *not* establish:
+**On latency, the honest version:** both runs were driven from outside the region — the newer one's client sat
+83 ms of internet from it, measured rather than inferred — so their timings are network transit. They calibrate
+**cost**, not in-region latency, and we don't publish an in-region latency figure until an in-region run happens.
+Full numbers, method, and an explicit list of what each run does *not* establish:
 **[benchmarks](docs/benchmarks.md#real-cloud-calibration--aws)**.
 
 ## Install & entry points
@@ -597,11 +601,12 @@ Shipped on the loaded store: a single-call `load()` with a guard against an upst
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
 keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
 than whichever generations were current as it ran, and a curated public surface. The loaded store's own
-benchmarks against a real object store are **owed, not shipped**; the benchmarks page lists
-[what is still owed](docs/benchmarks.md#what-is-still-owed). Until they exist the
-[benchmarks page](docs/benchmarks.md) quotes no loaded-store cloud measurement: its cloud figures are the S3-side
-ones of the July 2026 calibration run, its crossover chart is modelled, its at-scale table is a local-disk run,
-and its RSS ceiling comes from a local container under a hard memory limit — and it labels each as such. The
+benchmarks of in-region latency and load throughput are **owed, not shipped**; the benchmarks page lists
+[what is still owed](docs/benchmarks.md#what-is-still-owed). What the [benchmarks page](docs/benchmarks.md) does
+quote from the cloud is cost: the single-bucket bill of the September 2026 calibration run, pointer included, and
+the S3-side figures of the July 2026 run — both driven from outside the region, so neither carries a latency. Its
+crossover chart is modelled, its at-scale table is a local-disk run, and its RSS ceiling comes from a local
+container under a hard memory limit — and it labels each as such. The
 public roadmap tracks all of it: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The library ships as the **`@cloudbitmaps`** family — one shared engine, pluggable codecs, pluggable

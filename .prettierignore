@@ -6,6 +6,10 @@ node_modules
 .worktrees
 pnpm-lock.yaml
 
+# Calibration evidence is the harness's own output, committed unedited. A formatter rewriting one — which the
+# pre-commit hook would do without asking — would leave a file that is no longer the one the run wrote.
+bench/calibration/*.json
+
 # Markdown is hand-formatted (ASCII diagrams, alignment) — Prettier would mangle it.
 **/*.md
 

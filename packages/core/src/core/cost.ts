@@ -47,12 +47,20 @@ export const DEFAULT_PRICING: PricingProfile = AWS_US_EAST_1_ONDEMAND;
 
 /** Sustained access pattern. All rates default to 0; unspecified ⇒ that op contributes nothing. */
 export interface Workload {
-  /** Point reads (`has`) per second. Each cache miss is one object GET. */
+  /**
+   * Point reads (`has`) per second. Each cache miss is one object GET, once the segment's pointer and index are
+   * read.
+   */
   readonly readsPerSec?: number;
   readonly intersectsPerSec?: number;
   /** CACHE-cache hit rate in `[0, 1]` — hits are free; only misses cost. Default 0. */
   readonly cacheHitRate?: number;
-  /** Storage chunks fetched per intersection (the chunk-skipping survivors). Default 1. */
+  /**
+   * GETs one intersection makes, each priced at the GET rate. Default 1. Count all of them: the chunk-skipping
+   * survivors from every operand, and on a single-bucket store a pointer read and a tail read per operand too — a
+   * cold intersect of two segments sharing `k` chunks makes `4 + 2k` while each index fits the reader's tail read,
+   * which this model does not add for you yet.
+   */
   readonly chunksPerIntersect?: number;
   /**
    * Generations published per month across the modeled data — the write side of a loaded store. Default **0**
@@ -60,9 +68,14 @@ export interface Workload {
    */
   readonly loadsPerMonth?: number;
   /**
-   * PUT-class requests one load issues. Default **1** (a single-object PUT). A multipart load of `P` parts bills
-   * `P + 2` (initiate, the parts, complete) — set it when you know your object sizes. Still small money: at
-   * $5/million, a thousand 100-part loads a month is $0.51.
+   * PUT-class requests one load issues, each priced at the PUT rate. Default **1** (a single-object PUT). A
+   * multipart load of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your object
+   * sizes. On a single-bucket store a write and publish also PUTs the pointer and reads it three times, which this
+   * model does not add for you yet: count the pointer's PUT, and its GETs at the GET-to-PUT price ratio — `2.24`
+   * for a single-part write and publish at the default prices. `store.load()` also lists the segment twice and
+   * reads the pointer four more times: `4.56` on a segment's first load. A reload also reads the current index,
+   * `4.64`, and from the third load the collection pass reads the pointer once more before it deletes, `4.72`.
+   * Still small money: at $5/million, a thousand 100-part loads a month, pointer included, is about $0.52.
    */
   readonly requestsPerLoad?: number;
 }
@@ -87,7 +100,7 @@ export interface CostReport {
       readonly reads: number;
       readonly intersects: number;
       readonly storage: number;
-      /** Loads (object PUTs). 0 unless `loadsPerMonth` is set. */
+      /** Loads, at `requestsPerLoad` PUT-class requests each. 0 unless `loadsPerMonth` is set. */
       readonly loads: number;
     };
     readonly total: number;
@@ -95,8 +108,9 @@ export interface CostReport {
   /**
    * Sustained read rate at which the pay-per-use model's cost passes the flat Redis baseline (with every other
    * axis at 0), **evaluated at this report's `cacheHitRate`** — so a higher cache-hit rate raises it (cache hits
-   * are free). `Infinity` means it never crosses (a 100% cache-hit rate). The published anchor (~329 reads/s) is
-   * at `cacheHitRate: 0`.
+   * are free). `Infinity` means it never crosses (a 100% cache-hit rate) — in this model, which does not count
+   * the pointer refresh a live store still pays: at most one GET per segment per `cache.genTtlMs` while it is
+   * read. The published anchor (~329 reads/s) is at `cacheHitRate: 0`.
    */
   readonly redisCrossover: { readonly readsPerSec: number };
   readonly verdict: 'win-big' | 'win' | 'lose-zone';

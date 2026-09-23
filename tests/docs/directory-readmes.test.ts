@@ -122,35 +122,61 @@ function exists(token: string, roots: string[]): boolean {
 
 const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
+/** The READMEs checked below: each lists every file in its directory. */
+const DIRECTORIES = [
+  { dir: 'bench', minimum: 12, lib: true },
+  { dir: 'bench/calibration', minimum: 2, lib: false },
+  { dir: 'scripts', minimum: 20, lib: true },
+];
+
+/**
+ * The subdirectories of `dir` that are described by a README of their own — which means an entry of their own
+ * above. Derived from that list rather than kept beside it, so a subdirectory cannot be excused from its parent's
+ * rows without its own README being checked in their place.
+ */
+const describedApart = (dir: string): string[] =>
+  DIRECTORIES.map((d) => d.dir)
+    .filter((d) => d.startsWith(`${dir}/`) && !d.slice(dir.length + 1).includes('/'))
+    .map((d) => d.slice(dir.length + 1));
+
 describe('code-directory READMEs describe their directories, in both directions', () => {
-  describe.each([
-    { dir: 'bench', minimum: 12 },
-    { dir: 'scripts', minimum: 20 },
-  ])('$dir/README.md', ({ dir, minimum }) => {
-    const readme = read(`${dir}/README.md`);
-    const files = filesUnder(dir);
-    const { rows, refs, bad } = tableEntries(readme, new Set(files));
+  // A subdirectory with a README of its own is described by that README, and its parent gives it one row as a
+  // directory. `bench/calibration/` gains two files a run; a row for each in `bench/README.md` as well would be a
+  // second hand-kept copy of the same list.
+  describe.each(DIRECTORIES.map((d) => ({ ...d, own: describedApart(d.dir) })))(
+    '$dir/README.md',
+    ({ dir, minimum, lib, own }) => {
+      const readme = read(`${dir}/README.md`);
+      const files = filesUnder(dir).filter((f) => !own.some((sub) => f.startsWith(`${sub}/`)));
+      const { rows, refs, bad } = tableEntries(readme, new Set(files));
 
-    // Without this, a bad listing would make both checks below pass over an empty directory — and the `lib/`
-    // half is asserted separately, because a listing that skipped subdirectories would still clear the count.
-    it(`finds the directory's files (at least ${minimum}), lib/ included`, () => {
-      expect(files.length).toBeGreaterThanOrEqual(minimum);
-      expect(files.some((f) => f.startsWith('lib/'))).toBe(true);
-    });
+      // Without this, a bad listing would make both checks below pass over an empty directory — and the `lib/`
+      // half is asserted separately, because a listing that skipped subdirectories would still clear the count.
+      it(`finds the directory's files (at least ${minimum})${lib ? ', lib/ included' : ''}`, () => {
+        expect(files.length).toBeGreaterThanOrEqual(minimum);
+        if (lib) expect(files.some((f) => f.startsWith('lib/'))).toBe(true);
+      });
 
-    it('gives every file in the directory a row', () => {
-      expect(
-        files.filter((f) => !rows.has(f)),
-        `add a row for each of these to ${dir}/README.md`,
-      ).toEqual([]);
-    });
+      it('gives every file in the directory a row, and a directory with its own README one row', () => {
+        expect(
+          [...files, ...own.map((sub) => `${sub}/`)].filter((f) => !rows.has(f)),
+          `add a row for each of these to ${dir}/README.md`,
+        ).toEqual([]);
+        for (const sub of own) {
+          expect(
+            REPO_FILES,
+            `${dir}/${sub}/ is listed as a directory with a README of its own`,
+          ).toContain(`${dir}/${sub}/README.md`);
+        }
+      });
 
-    it('lists only files that exist, in a form it can read', () => {
-      expect(bad, `${dir}/README.md has paths this gate cannot read`).toEqual([]);
-      const ghosts = refs.filter((p) => !exists(p, [dir]));
-      expect(ghosts, `${dir}/README.md lists files that do not exist`).toEqual([]);
-    });
-  });
+      it('lists only files that exist, in a form it can read', () => {
+        expect(bad, `${dir}/README.md has paths this gate cannot read`).toEqual([]);
+        const ghosts = refs.filter((p) => !exists(p, [dir]));
+        expect(ghosts, `${dir}/README.md lists files that do not exist`).toEqual([]);
+      });
+    },
+  );
 
   describe('tests/README.md', () => {
     const readme = read('tests/README.md');

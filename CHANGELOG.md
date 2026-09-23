@@ -17,13 +17,53 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 
+- **The single-bucket bill, measured on AWS.** The calibration harness's first publishable run,
+  `2026-09-23-94416`, put the topology that ships on real S3 in `us-east-1` — the registry pointer in the same
+  bucket as the data — and the benchmarks page now publishes what it costs. The median cold intersect of two
+  500,000-id segments sharing 100 of 1,999 chunks made **206 GETs, $82.40 per million**; with each pointer read
+  once, as inside the region, it is expected at 204 GETs, $81.60 per million. Writing and publishing a segment is **2 PUTs and
+  3 GETs, $11.20 per million**, pointer included, and $26.20 per million multipart; `store.load()`, which also
+  lists and collects, is expected at about twice that, from a test that counts its requests. All 40 cold
+  intersects were exact, and each requested only the 100 shared chunks per segment: chunk-skipping, shown on real S3
+  at a shape that tests it. The run was driven from a laptop outside the region, so its latency and upload figures
+  measured the connection and are not published as the library's. The in-region run is still owed.
+
+  The run's evidence is committed unedited as `bench/calibration/2026-09-23-94416.json`, beside a report that
+  explains every figure with a diagram, labels each one measured, derived or expected, and says what the run does
+  not establish. A new gate, `tests/docs/calibration-reports.test.ts`, derives every figure from that evidence
+  through `bench/lib/calibration-figures.cjs` and holds the report and the benchmarks page's section to it in both
+  directions. A missing headline figure fails it, and so does any dollar amount, percentage, duration, byte size,
+  bit rate or ratio, or any number written before the request, chunk, id or load it counts, that the evidence cannot
+  account for at the precision it is written — or that stands beside the words for another claim, such as the
+  expected intersect's cost called measured. It refuses evidence that does not reconcile with itself or that more
+  than one commit has touched, and checks the report's bill, its request ledger and its table of cost by overlap
+  row by row. `bench/calibration/` has a README of its own, and the directory README gate now lets such a
+  subdirectory take one row in its parent's.
+
+  The figure this supersedes, $5.88 per million publishes, left the pointer out: it came from a run that kept the
+  pointer in a NoSQL table. The site, both READMEs, `llms.txt` and the roadmap now quote the single-bucket
+  figures. `scripts/site-figures.cjs` checks the dollar amounts in `llms.txt`, the READMEs, the roadmap and
+  `docs/benchmarks.md` as well as the site's pages, none of which was checked before, and every figure in any
+  paragraph, list item or table row on those pages that quotes the run, rates and counts included. It allows the superseded
+  figure only on the benchmarks page, which says it is superseded, and either July figure only beside the pointer
+  it leaves out. The home page's headline is now the measured cold intersect rather than the July `count()`
+  figure.
+
+  Checking the run against the code found that `estimateCost()` under-quotes both operations in this topology.
+  It prices a load as `requestsPerLoad` PUT-class requests, with no term for the pointer, and an intersect as
+  `chunksPerIntersect` GETs, with none for the pointer and tail reads, and it has no term for the pointer
+  refresh. The guide and the benchmarks page say what to pass until it counts them itself, which is owed. The
+  benchmarks page's claim for the estimator is narrowed to what its test proves: it never quotes fewer chunk
+  reads than the engine makes.
+
 - **A real-cloud calibration harness for the loaded store** — `pnpm calibrate:aws`. The previous one was
   deleted with the warm tier because it metered a write path through a NoSQL registry that no longer ships,
-  which is why load throughput, in-region intersect latency and the single-bucket bill are all listed as owed
+  which is why load throughput, in-region intersect latency and the single-bucket bill were all listed as owed
   on the benchmarks page. This is the tool that pays them.
 
-  It spends money, so it defaults to a projection that touches nothing, rehearses in full against MinIO for
-  free, and refuses a run that cannot state its region, its spend ceiling and its intent separately. The
+  It spends money, so it defaults to a projection that touches nothing, rehearses its workload against MinIO for
+  free (the money guards have nothing to guard there, so a rehearsal does not exercise them), and refuses a run
+  that cannot state its region, its spend ceiling and its intent separately. The
   guards are pure functions in `bench/lib/calibrate-guards.cjs` with a regression test each, because every one
   is a bug that actually happened — including a `NaN` spend ceiling that silently deleted the bound, and a
   `HeadBucket` 403 read as "absent" for a bucket the caller owned, which in `us-east-1` would have run the
@@ -60,6 +100,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
+  pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
+  each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
+  intersect, where the same intersect inside the region is expected to make 204, and that used up the projection's
+  whole allowance for an intersect. The projection now also allows every pointer read a load can make: three with
+  nothing racing it, and up to twelve if every publish attempt loses, where it had allowed one per attempt. Each load
+  records its object's size apart from what it uploaded: the harness had recorded the upload, the object plus its
+  pointer's 161-byte body, under the object's name.
+- **A run's evidence is its own file, and nothing replaces it.** A real run writes `bench/calibration/<runId>.json`,
+  where every run used to overwrite one results file. It refuses an id whose evidence exists before it reads any
+  credentials, and a run whose name is taken while it runs writes `<runId>.<start>.partial.json` beside it and says
+  so. A run that does not finish writes `<runId>.partial.json`, which git ignores and no gate reads. The run id is
+  checked before anything uses it, since it names both the bucket and the file: a real date, so that runs sort into
+  order, then a label, with none of the suffixes S3 reserves.
+- **A calibration run stops cleanly, and leaves nothing behind that it does not report.** A signal now stops the
+  workload's client and waits for the requests already sent, before teardown lists anything: teardown used to run
+  while loads were still writing, and in two of four rehearsals interrupted during their loads a PUT landed after
+  its listing and left the bucket behind. A hang-up, a closed terminal or a dropped session, now tears down like a
+  Ctrl-C, where it used to end the run with nothing removed; the harness opens its terminal streams at startup,
+  since on macOS Node opening one on a terminal that has hung up never returns. `calibrate-cloudshell.sh` runs the
+  harness as a job of its own and passes every signal on to it: a SIGTERM or a closed CloudShell tab used to stop
+  the script at once, delete the scratch directory under the harness mid-teardown and copy nothing, and a SIGTERM to
+  the script alone never reached the harness. Teardown now lists every upload and object before it touches any, and
+  refuses a bucket holding a key the harness did not write; its requests time out rather than hang; a signal during
+  `--cleanup` waits for it; and a workload is refused past 500 segments, the most one teardown listing reaches.
+  `--cleanup` checks the account pin; a real run is refused outside `us-east-1`, the one region it has prices for;
+  error text is printed and stored with ARNs removed and account ids masked; and a harness with uncommitted edits is
+  recorded as `-dirty`.
 - **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run
   to `bench/rss-gate-results.json`, and `docs/benchmarks.md` plus the benchmarks page state the ceiling a
   sustained read + combine + re-load workload over 400 segments survives: **384 MiB**, swap disabled, no
