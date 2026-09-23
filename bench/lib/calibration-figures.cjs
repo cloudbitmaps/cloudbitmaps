@@ -627,8 +627,17 @@ const WORDS = {
   dollar: /\bdollar\b|\bbuys?\b/gi,
   write: /\bwrit\w*|\bpublish\w*/gi,
   once: /\bonce\b|\binside the region\b|\bin-region\b|\bpinned\b|\bpins\b/gi,
+  object: /\bobjects?'?/gi,
+  storeLoad: /store\.load\(\)|\bloadSegment\b/g,
+  median: /\bmedian\b/gi,
 };
-const bind = (v, group, allow, require = true) => ({ v, group, allow, require });
+/**
+ * A bound value: the claim it makes is the nearest word of `group`'s families, which must be one `allow` names.
+ * `require` fails a value with none of the words near it; without it, only the wrong words fail. `also` holds more
+ * bindings the value must meet at once, for a value that can be misread two ways: the dollar's worth of cold
+ * intersects needs the words of buying, and must not stand beside "inside the region".
+ */
+const bind = (v, group, allow, require = true, also = []) => ({ v, group, allow, require, also });
 const MEASURED = ['measured', 'expected'];
 const SHARES = ['chunkShare', 'byteShare', 'getShare'];
 const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
@@ -695,7 +704,12 @@ function valuesOf(f, { withLatency }) {
       // store.load() is counted by a test, not measured: stated near "measured", it is wrong.
       ...Object.values(f.usd.storeLoad)
         .flatMap((v) => [v, 1e6 * v])
-        .map((v) => bind(v, MEASURED, ['expected'], false)),
+        .map((v) =>
+          // Nor is it the write and the publish, which the same pages price at about half.
+          bind(v, MEASURED, ['expected'], false, [
+            { group: ['write', 'storeLoad'], allow: ['storeLoad'], require: false },
+          ]),
+        ),
     ],
     pct: [
       1,
@@ -720,9 +734,10 @@ function valuesOf(f, { withLatency }) {
     min: ms.map((v) => v / 60_000),
     h: [f.secondsPerMonth / 3600],
     bytes: [
-      b.object,
+      // What an object holds, which is not what a load uploaded: the reverse of the upload's binding below.
+      bind(b.object, ['upload', 'object'], ['object'], false),
       b.multipartObject,
-      b.objects,
+      bind(b.objects, ['upload', 'object'], ['object'], false),
       b.chunkBytesPerRead,
       b.chunkBytes,
       b.tailBytes,
@@ -766,7 +781,8 @@ function valuesOf(f, { withLatency }) {
         f.putsPerSingle + f.getsPerLoad,
         f.putsPerMultipart + f.getsPerLoad,
         ...Object.values(sl).map((r) => r.put + r.get),
-        f.requestsDeep,
+        // The median's depth, with its pointer re-read, is not the depth with each pointer read once.
+        bind(f.requestsDeep, ['once'], [], false),
         // The depth without the pointer re-read: the median intersect, which re-read it, was a request deeper.
         bind(f.requestsDeepPinned, ['once'], ['once']),
       ],
@@ -796,16 +812,22 @@ function valuesOf(f, { withLatency }) {
       intersects: [
         f.intersects,
         f.parity.intersectsPerMonth,
-        f.parity.kTen.perMonth,
-        bind(Math.floor(1 / f.usd.measuredIntersect), ['dollar'], ['dollar']),
-        ...f.kRows.map((r) => 1 / r.usd),
+        // At ten shared chunks the table is expected throughout, so none of it is "as measured".
+        bind(f.parity.kTen.perMonth, MEASURED, ['expected'], false),
+        // Whole cold intersects a dollar buys: measured, and so not "inside the region".
+        bind(Math.floor(1 / f.usd.measuredIntersect), ['dollar'], ['dollar'], true, [
+          { group: MEASURED, allow: ['measured'], require: false },
+        ]),
+        // …and at each overlap in the table, expected, and whole ones: a dollar does not buy a fraction.
+        ...f.kRows.map((r) => bind(Math.floor(1 / r.usd), MEASURED, ['expected'], false)),
       ],
       segments: [f.workload.segments, f.workload.largeSegments, 1],
       pointerReads: [
         f.ledger.pointerReads,
         f.ledger.loadPointerReads,
         f.pointerReadsMeasured,
-        f.meanPointerReads,
+        // 3.8 an intersect is the mean; the median read 4.
+        bind(f.meanPointerReads, ['median'], [], false),
         f.getsPerLoad,
         2,
         1,
@@ -826,10 +848,17 @@ function valuesOf(f, { withLatency }) {
       intersects: [[f.intersects, f.intersects]],
     },
     shapes: f.shapes,
-    million: [f.parity.intersectsPerMonth, f.parity.loadsPerMonth, f.parity.kTen.perMonth].map(
-      (v) => v / 1e6,
-    ),
-    perSecond: [f.parity.intersectsPerSec, f.parity.kTen.perSec],
+    // The parity at ten shared chunks is from the table of cost by overlap, expected throughout, so it is never "as
+    // measured", in millions or a second.
+    million: [
+      f.parity.intersectsPerMonth / 1e6,
+      f.parity.loadsPerMonth / 1e6,
+      bind(f.parity.kTen.perMonth / 1e6, MEASURED, ['expected'], false),
+    ],
+    perSecond: [
+      f.parity.intersectsPerSec,
+      bind(f.parity.kTen.perSec, MEASURED, ['expected'], false),
+    ],
   };
 }
 
@@ -1097,6 +1126,10 @@ function accounted(token, candidates, { hedged = false, context } = {}) {
 
 /** Whether a bound value's words stand where it does. No context means no binding can be judged: it fails. */
 function boundHolds(c, context) {
+  return [c, ...(c.also ?? [])].every((b) => holdsOne(b, context));
+}
+
+function holdsOne(c, context) {
   if (context === undefined) return !c.require;
   const nearest = (text, at) => {
     let best = null;

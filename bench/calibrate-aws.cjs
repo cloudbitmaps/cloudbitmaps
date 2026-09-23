@@ -74,10 +74,14 @@ const {
   checkWorkload,
   STORE_PREFIX,
   foreignKeys,
+  MAX_LISTING_PAGES,
+  leftoversHint,
 } = require('./lib/calibrate-guards.cjs');
 const {
   interruptGate,
-  isInterruption,
+  failureOf,
+  stopThenTearDown,
+  exitCodeAfterSignal,
   holdTerminal,
   silenceTerminal,
   writeResultsFile,
@@ -206,6 +210,9 @@ async function identity(region) {
 // SIGINT handler replaces Node's default exit, so Ctrl-C left the workload running while claiming otherwise.
 let onInterrupt = async () => {};
 let interrupts = 0;
+// Set once the workload has finished. A signal after that interrupts only teardown, so the run keeps its own exit
+// code.
+let workFinished = false;
 // SIGHUP too: a closed terminal or a dropped CloudShell session sends it, and it used to kill a run with no
 // teardown and no results. The terminal's streams are opened first, while there is a terminal (`holdTerminal`).
 holdTerminal();
@@ -225,7 +232,9 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       .catch((err) =>
         console.error(`calibrate: teardown after ${sig} failed: ${redact(err.message)}`),
       )
-      .finally(() => process.exit(130));
+      .finally(() =>
+        process.exit(exitCodeAfterSignal({ finished: workFinished, code: process.exitCode })),
+      );
   });
 }
 
@@ -233,7 +242,9 @@ async function main() {
   // Everything that can be refused from the inputs alone is refused first, before the library is even imported, so a
   // refusal holds on a checkout that has not been built and costs nothing to test.
   try {
-    checkWorkload({ segments: SEGMENTS, largeSegments: LARGE, reads: READS });
+    // A cleanup loads nothing, so no workload setting can refuse it.
+    if (MODE !== 'cleanup')
+      checkWorkload({ segments: SEGMENTS, largeSegments: LARGE, reads: READS });
   } catch (err) {
     refuse(err.message);
   }
@@ -297,10 +308,19 @@ async function main() {
     }
   }
 
-  const { AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring');
-  const pricing = AWS_US_EAST_1_ONDEMAND;
-  const layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
-  const { ops, priced } = projection(pricing, layout);
+  // A cleanup needs neither the library nor a projection, so it also runs on a checkout that has not been built.
+  let pricing;
+  let VERSION;
+  let layout;
+  let ops;
+  let priced;
+  if (MODE !== 'cleanup') {
+    let AWS_US_EAST_1_ONDEMAND;
+    ({ AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring'));
+    pricing = AWS_US_EAST_1_ONDEMAND;
+    layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
+    ({ ops, priced } = projection(pricing, layout));
+  }
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
@@ -348,17 +368,68 @@ async function main() {
    * top-level catch — because they otherwise race, and a racing exit once killed an in-flight delete.
    */
   let teardownPromise;
-  const teardown = () => {
+  const teardown = ({ unanswered = false } = {}) => {
     teardownPromise ??= (async () => {
       const leftovers = [];
       // Set when the bucket holds keys the harness never writes: `--cleanup` would only refuse it again.
       let notOurs = false;
+      const listUploads = (marker = {}) =>
+        admin.send(new s3.ListMultipartUploadsCommand({ Bucket: bucket, ...marker }));
+      const listVersions = (marker = {}) =>
+        admin.send(new s3.ListObjectVersionsCommand({ Bucket: bucket, ...marker }));
+      const versionsOf = (page) =>
+        [...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])].map((o) => ({
+          Key: o.Key,
+          VersionId: o.VersionId,
+        }));
+      // Every page of a listing, from its first. A bucket this harness made fits one page, so the rest are read only
+      // for a bucket it did not make, and no more than MAX_LISTING_PAGES of them.
+      const allPages = async (first, list, after) => {
+        const pages = [first];
+        while (pages[pages.length - 1].IsTruncated) {
+          if (pages.length === MAX_LISTING_PAGES) {
+            throw new Error(
+              `its listing runs past ${MAX_LISTING_PAGES} pages, which no bucket this harness made does — ` +
+                'refusing to touch anything in it; inspect it by hand',
+            );
+          }
+          pages.push(await list(after(pages[pages.length - 1])));
+        }
+        return pages;
+      };
+      // A key the harness did not write means this is not the harness's bucket, whatever its name says.
+      const refuseForeign = (keys) => {
+        const foreign = foreignKeys(keys);
+        if (foreign.length === 0) return;
+        notOurs = true;
+        throw new Error(
+          `it holds ${foreign.length} key(s) outside ${STORE_PREFIX}/, which this harness never writes, such as ` +
+            `"${String(foreign[0])}" — refusing to touch anything in it; inspect it by hand`,
+        );
+      };
       try {
+        // Everything teardown would touch is listed, and checked, before anything is aborted or deleted: an upload
+        // may be someone else's as much as an object may. A foreign upload was once aborted before the objects were
+        // checked, and a foreign key on a later page was found only after a page of objects had gone.
+        const uploads = (
+          await allPages(await listUploads(), listUploads, (page) => ({
+            KeyMarker: page.NextKeyMarker,
+            UploadIdMarker: page.NextUploadIdMarker,
+          }))
+        ).flatMap((page) => page.Uploads ?? []);
+        const first = await listVersions();
+        const pages = await allPages(first, listVersions, (page) => ({
+          KeyMarker: page.NextKeyMarker,
+          VersionIdMarker: page.NextVersionIdMarker,
+        }));
+        refuseForeign([
+          ...uploads.map((u) => u.Key),
+          ...pages.flatMap(versionsOf).map((o) => o.Key),
+        ]);
         // Abort in-flight multipart uploads first: their parts are billed, and a real `DeleteBucket` fails while
         // they exist. MinIO cannot rehearse this on a real account's terms. An upload already gone — completed by
         // the workload meanwhile, or aborted by an attempt whose answer was lost — is done, not an error.
-        const uploads = await admin.send(new s3.ListMultipartUploadsCommand({ Bucket: bucket }));
-        for (const u of uploads.Uploads ?? []) {
+        for (const u of uploads) {
           try {
             await admin.send(
               new s3.AbortMultipartUploadCommand({
@@ -371,29 +442,20 @@ async function main() {
             if (!uploadIsGone(err)) throw err;
           }
         }
-        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket. Each pass
-        // lists what is left and deletes it, until nothing is listed. Bounded: a key that cannot be deleted is
-        // reported inside a 200, where no retry sees it, and must end in LEFTOVERS rather than in a listing loop.
+        // Versions, not just objects: `ListObjectsV2` + `DeleteObjects` cannot empty a versioned bucket. The first
+        // pass deletes what the first listing showed, and each later pass lists what is left, until nothing is.
+        // Bounded: a key that cannot be deleted is reported inside a 200, where no retry sees it, and must end in
+        // LEFTOVERS rather than in a listing loop.
+        let listing = first;
         for (let pass = 0; ; pass += 1) {
-          const v = await admin.send(new s3.ListObjectVersionsCommand({ Bucket: bucket }));
-          const objects = [...(v.Versions ?? []), ...(v.DeleteMarkers ?? [])].map((o) => ({
-            Key: o.Key,
-            VersionId: o.VersionId,
-          }));
+          if (pass > 0) listing = await listVersions();
+          const objects = versionsOf(listing);
           if (objects.length === 0) break;
-          // Every version of every key listed is deleted next, so a key the harness did not write means this is not
-          // the harness's bucket, whatever its name says. Refused and reported, never emptied.
-          const foreign = foreignKeys(objects.map((o) => o.Key));
-          if (foreign.length > 0) {
-            notOurs = true;
-            throw new Error(
-              `it holds ${foreign.length} key(s) outside ${STORE_PREFIX}/, which this harness never writes, such as ` +
-                `"${String(foreign[0])}" — refusing to delete anything in it; inspect it by hand`,
-            );
-          }
+          // Anything written since the first listing is held to the same rule.
+          refuseForeign(objects.map((o) => o.Key));
           if (pass === TEARDOWN_PASSES) {
             throw new Error(
-              `${objects.length}${v.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
+              `${objects.length}${listing.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
             );
           }
           // NOT spread into a plain object: a command carries `resolveMiddleware` on its prototype.
@@ -406,16 +468,20 @@ async function main() {
       } catch (err) {
         // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal. Only
         // S3's own NoSuchBucket says so: an abort's NoSuchUpload is also a 404, and was once read as this answer.
+        // Unless a request was still unanswered when teardown began: if that was the bucket's creation, the bucket
+        // can appear after teardown looked, and once did, with nothing said.
         if (!bucketIsGone(err)) leftovers.push(`${bucket}: ${redact(err.message)}`);
+        else if (unanswered) {
+          leftovers.push(
+            `${bucket}: not there when teardown looked, but a request was still unanswered; if it was the ` +
+              "bucket's creation, the bucket may exist now",
+          );
+        }
       }
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
-        console.error(
-          notOurs
-            ? '  --cleanup will not empty a bucket holding keys the harness did not write; inspect it by hand'
-            : `  remove them with: node bench/calibrate-aws.cjs${REHEARSE ? ' --rehearse' : ''} --cleanup ${runId}`,
-        );
+        console.error(leftoversHint({ notOurs, rehearse: REHEARSE, runId }));
         process.exitCode = 1;
       }
       return leftovers;
@@ -460,6 +526,11 @@ async function main() {
   }
 
   if (MODE === 'cleanup') {
+    // A signal waits for the cleanup it interrupts, which then reports what it left. The default handler exited at
+    // once, mid-delete, with every object still there and nothing said.
+    onInterrupt = async () => {
+      await teardown();
+    };
     log(`cleanup: removing resources for run ${runId}`);
     return (await teardown()).length === 0 ? 0 : 1;
   }
@@ -591,15 +662,16 @@ async function main() {
   try {
     // Armed BEFORE the bucket exists: an interrupt while `CreateBucket` is in flight used to meet the do-nothing
     // handler and exit with no teardown. Tearing down a bucket that was never made is a clean NoSuchBucket.
+    // Nothing may still be writing when teardown lists the bucket, and a CreateBucket in flight must land first.
     onInterrupt = async () => {
-      if (running) results.interrupted = true;
-      // Nothing may still be writing when teardown lists the bucket, and a CreateBucket in flight must land first.
-      gate.abort();
-      if (!(await gate.drained(DRAIN_MS))) {
-        log(`a request was still unanswered after ${DRAIN_MS / 1000} s — tearing down anyway`);
-      }
-      const left = await teardown();
-      if (left.length > 0) results.leftovers = left;
+      await stopThenTearDown({
+        gate,
+        drainMs: DRAIN_MS,
+        teardown,
+        results,
+        cutShort: running,
+        log,
+      });
       settle();
     };
     log(`creating ${bucket}`);
@@ -765,8 +837,9 @@ async function main() {
             payloadFraction: median(reads.map((r) => r.chunkBytes)) / (2 * objectBytes),
             // Reported apart, because it is a fixed cost per operand rather than a share of the data: the reader
             // takes a generous tail so the footer and index arrive in one round trip. On a ~1 MB segment it is a
-            // large fraction of the bytes; on a large one it is noise. S3 bills per request, not per byte, so it
-            // adds a request, not a meaningful cost.
+            // large fraction of the bytes; on a large one it is noise. Inside the region S3 bills a read by the
+            // request and not by the byte, so there it adds a request, not a meaningful cost; read from outside the
+            // region, its bytes are transfer out.
             tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
             pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
             medianGets: median(reads.map((r) => r.gets)),
@@ -784,30 +857,33 @@ async function main() {
     }
     results.partial = false;
     running = false;
+    workFinished = true;
   } catch (err) {
     running = false;
-    // A crashed run KEEPS what it already paid for. A run stopped by a signal is not a failure: the handler has said
-    // so, and the run is marked interrupted.
-    if (!gate.aborted && !isInterruption(err)) {
-      results.error = redact(err.message);
-      console.error(`calibrate: FAILED — ${results.error}`);
+    // A crashed run KEEPS what it already paid for. Only the gate refusing a send, because the run is stopping, is
+    // not a failure: the handler has said so, and the run is marked interrupted (`failureOf`).
+    const failure = failureOf(err);
+    if (failure !== null) {
+      results.error = failure;
+      console.error(`calibrate: FAILED — ${failure}`);
       process.exitCode = 1;
     }
   } finally {
     // The same order as an interrupt's: the work stops, and what it sent answers, before teardown lists anything.
-    gate.abort();
-    await gate.drained(DRAIN_MS);
-    const left = await teardown();
-    if (left.length > 0) results.leftovers = left;
+    await stopThenTearDown({ gate, drainMs: DRAIN_MS, teardown, results, cutShort: false, log });
     settle();
   }
   return process.exitCode ?? 0;
 }
 
-// An interrupted run exits 130 whichever path gets here first — the signal handler's, or main's own, once the request
-// that was in flight fails against a bucket the teardown has already removed.
+// A run a signal cut short exits 130 whichever path gets here first — the signal handler's, or main's own, once the
+// request that was in flight fails against a bucket the teardown has already removed. One whose workload had finished
+// keeps its own code (`exitCodeAfterSignal`).
 main().then(
-  (code) => process.exit(interrupts > 0 ? 130 : (code ?? 0)),
+  (code) =>
+    process.exit(
+      interrupts > 0 ? exitCodeAfterSignal({ finished: workFinished, code }) : (code ?? 0),
+    ),
   (err) => {
     console.error(`calibrate: ${redact(err.stack ?? err.message)}`);
     process.exit(interrupts > 0 ? 130 : 1);

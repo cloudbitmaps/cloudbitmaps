@@ -103,30 +103,31 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
   pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
-  intersect where the same intersect inside the region makes 204, which used up the projection's whole allowance
-  for an intersect. The projection now also allows every pointer read a load can make: three with nothing racing
-  it, and up to twelve if every publish attempt loses, where it had allowed one per attempt. A real run writes its
-  evidence to `bench/calibration/<runId>.json` and refuses to overwrite one that exists, before it reads any
-  credentials; a run that does not finish writes a `.partial.json` beside it, which git ignores and no gate reads.
-  The run id is validated first, since it names both the bucket and the file, and must start with a date so runs
-  sort into order.
-  Each load now records its object's size apart from what it uploaded: the harness had recorded the upload, the
-  object plus its pointer's 161-byte body, under the object's name.
-- **A calibration run stops cleanly, and leaves nothing behind that it did not say.** A signal now stops the
-  workload's client before teardown lists anything, and waits for the requests it already sent: teardown used to
-  run while loads were still writing, and in two of four rehearsals interrupted during their loads a PUT landed
-  after its listing and left the bucket behind. On macOS, Node opening its stderr on a terminal that has hung up
-  never returns, which a hang-up handler's first line of output could do before any teardown; the harness opens
-  both streams at startup and writes nothing to a terminal that has gone. `calibrate-cloudshell.sh` runs the
-  harness as a job of its own and passes every signal on to it, where a SIGTERM or a closed CloudShell tab had
-  stopped the script at once, deleted the scratch directory under the harness mid-teardown and copied nothing. A
-  run whose results file was taken while it ran writes them beside it rather than losing them; a workload is
-  refused past 500 segments, the most one teardown listing reaches; `--cleanup` checks the account pin and refuses
-  a bucket holding keys the harness did not write; a real run is refused outside `us-east-1`, the one region it has
-  prices for; error text is printed and stored with ARNs removed and account ids masked; and a harness with
-  uncommitted edits is recorded as `-dirty`. The figures library now pairs an upload rate with the bytes uploaded,
-  since paired with the object's size it refused every file the fixed harness writes, and orders a run without a
-  start time before a later one the same day.
+  intersect, where the same intersect inside the region is expected to make 204, and that used up the projection's
+  whole allowance for an intersect. The projection now also allows every pointer read a load can make: three with
+  nothing racing it, and up to twelve if every publish attempt loses, where it had allowed one per attempt. Each load
+  records its object's size apart from what it uploaded: the harness had recorded the upload, the object plus its
+  pointer's 161-byte body, under the object's name.
+- **A run's evidence is its own file, and nothing replaces it.** A real run writes `bench/calibration/<runId>.json`,
+  where every run used to overwrite one results file. It refuses an id whose evidence exists before it reads any
+  credentials, and a run whose name is taken while it runs writes `<runId>.<start>.partial.json` beside it and says
+  so. A run that does not finish writes `<runId>.partial.json`, which git ignores and no gate reads. The run id is
+  checked before anything uses it, since it names both the bucket and the file: a real date, so that runs sort into
+  order, then a label, with none of the suffixes S3 reserves.
+- **A calibration run stops cleanly, and leaves nothing behind that it does not report.** A signal now stops the
+  workload's client and waits for the requests already sent, before teardown lists anything: teardown used to run
+  while loads were still writing, and in two of four rehearsals interrupted during their loads a PUT landed after
+  its listing and left the bucket behind. A hang-up, a closed terminal or a dropped session, now tears down like a
+  Ctrl-C, where it used to end the run with nothing removed; the harness opens its terminal streams at startup,
+  since on macOS Node opening one on a terminal that has hung up never returns. `calibrate-cloudshell.sh` runs the
+  harness as a job of its own and passes every signal on to it: a SIGTERM or a closed CloudShell tab used to stop
+  the script at once, delete the scratch directory under the harness mid-teardown and copy nothing, and a SIGTERM to
+  the script alone never reached the harness. Teardown now lists every upload and object before it touches any, and
+  refuses a bucket holding a key the harness did not write; its requests time out rather than hang; a signal during
+  `--cleanup` waits for it; and a workload is refused past 500 segments, the most one teardown listing reaches.
+  `--cleanup` checks the account pin; a real run is refused outside `us-east-1`, the one region it has prices for;
+  error text is printed and stored with ARNs removed and account ids masked; and a harness with uncommitted edits is
+  recorded as `-dirty`.
 - **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run
   to `bench/rss-gate-results.json`, and `docs/benchmarks.md` plus the benchmarks page state the ceiling a
   sustained read + combine + re-load workload over 400 segments survives: **384 MiB**, swap disabled, no

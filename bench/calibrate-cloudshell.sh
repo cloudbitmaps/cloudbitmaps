@@ -32,12 +32,13 @@ else
   fi
 fi
 # Which harness ran is part of the result: the numbers mean nothing without the code that produced them. A clone
-# with uncommitted edits to the harness is marked -dirty, because the commit alone would name a harness that did not
-# run.
+# with uncommitted edits to the files this script runs is marked -dirty, because the commit alone would name a harness
+# that did not run. The packages are not among them: they come from npm.
 harness_ref() {
   local ref
   ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
-  if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib 2>/dev/null)" ]; then
+  if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib/aws-meter.cjs \
+    bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs 2>/dev/null)" ]; then
     ref="${ref}-dirty"
   fi
   echo "$ref"
@@ -55,6 +56,17 @@ refuse_committed_run_id() {
   fi
 }
 refuse_committed_run_id
+
+# The harness runs as a job in a process group of its own (see run_harness), and such a job may write to the terminal
+# only while `tostop` is off, as it is by default. With it on, the harness would stop at its first line of output and
+# this script would wait on it for ever, so a terminal with `tostop` set is refused before anything is installed.
+refuse_tostop() {
+  if { stty -a </dev/tty; } 2>/dev/null | grep -Eq '(^|[[:space:]])tostop([[:space:]]|$)'; then
+    echo "cloudshell: this terminal has tostop set, which stops a background job at its first line of output — run 'stty -tostop', then try again" >&2
+    exit 2
+  fi
+}
+refuse_tostop
 
 # The packages declare Node >= 22.12, and CloudShell's default Node may be older.
 node_ok() {
@@ -82,6 +94,8 @@ finish() {
   # is taken gets this run's copy beside it, stamped, since CloudShell keeps $HOME between sessions and not the
   # scratch directory; a copy that still fails leaves the scratch directory in place and says where.
   set +e
+  # A reader that has gone, such as a `tee` a Ctrl-C stopped, must fail an echo here rather than kill the copy.
+  trap '' PIPE
   local kept=0
   for f in "$WORK"/bench/calibration/*.json "$WORK/bench/calibrate-aws-rehearsal.json"; do
     [ -f "$f" ] || continue
@@ -89,7 +103,13 @@ finish() {
     name="$(basename "$f")"
     dest="$HOME/$name"
     if [ -e "$dest" ]; then
-      dest="$HOME/${name%.json}.$(date -u +%Y%m%dT%H%M%SZ).json"
+      # The stamp goes before `.partial.json`, so a copy of a partial file is still one git ignores.
+      local stamp
+      stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+      case "$name" in
+        *.partial.json) dest="$HOME/${name%.partial.json}.$stamp.partial.json" ;;
+        *) dest="$HOME/${name%.json}.$stamp.json" ;;
+      esac
       echo "cloudshell: ~/$name already exists and was left alone" >&2
     fi
     if [ ! -e "$dest" ] && cp "$f" "$dest"; then
@@ -110,14 +130,19 @@ trap finish EXIT
 # group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and not a second time from the
 # terminal.
 run_harness() {
+  # The traps come first: a signal in the moment before the harness has a pid is held, and passed on as soon as it
+  # has one, rather than killing this script with the harness left running unwatched.
+  HARNESS_PID=''
+  PENDING=''
+  for sig in INT TERM HUP; do
+    # shellcheck disable=SC2064 # the signal is fixed now; the pid is read when the trap fires
+    trap "FORWARDED=1; if [ -n \"\$HARNESS_PID\" ]; then kill -s $sig \"\$HARNESS_PID\" 2>/dev/null || true; else PENDING=$sig; fi" "$sig"
+  done
   set -m
   (cd "$WORK" && exec "$@") &
   HARNESS_PID=$!
   set +m
-  for sig in INT TERM HUP; do
-    # shellcheck disable=SC2064 # the signal is fixed now; the pid is read when the trap fires
-    trap "FORWARDED=1; kill -s $sig \"\$HARNESS_PID\" 2>/dev/null || true" "$sig"
-  done
+  if [ -n "$PENDING" ]; then kill -s "$PENDING" "$HARNESS_PID" 2>/dev/null || true; fi
   local rc=0
   while :; do
     FORWARDED=0
@@ -127,7 +152,7 @@ run_harness() {
     break
   done
   # From here the script only copies the results out, and a signal must not cut that short.
-  trap '' INT TERM HUP
+  trap '' INT TERM HUP PIPE
   return "$rc"
 }
 

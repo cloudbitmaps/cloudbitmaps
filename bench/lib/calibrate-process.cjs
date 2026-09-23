@@ -12,6 +12,8 @@ const { mkdirSync, writeFileSync } = require('node:fs');
 const { dirname } = require('node:path');
 const { clearTimeout, setTimeout } = require('node:timers');
 
+const { redact } = require('./calibrate-guards.cjs');
+
 const INTERRUPTED = 'CalibrationInterrupted';
 
 /** The error a stopped client's sends fail with. */
@@ -21,9 +23,23 @@ function interruption() {
   });
 }
 
-/** Whether an error is a send the gate refused, rather than a failure of the request itself. */
+/** Whether an error is a send the gate refused, rather than a failure of the request itself, however it was wrapped. */
 function isInterruption(err) {
-  return err?.name === INTERRUPTED;
+  for (let e = err, depth = 0; e != null && depth < 5; e = e.cause, depth += 1) {
+    if (e.name === INTERRUPTED) return true;
+  }
+  return false;
+}
+
+/**
+ * What a run's failure records: its message, redacted, or `null` when it is only the gate refusing a send because the
+ * run is stopping. A request that fails while the run is stopping is still a failure, and is recorded: one that
+ * answered 403 during the drain, the likeliest reason someone presses Ctrl-C on a run that looks stuck, was once
+ * discarded because the run was stopping.
+ */
+function failureOf(err) {
+  if (isInterruption(err)) return null;
+  return redact(err?.message ?? String(err));
 }
 
 /**
@@ -32,9 +48,10 @@ function isInterruption(err) {
  * A signal used to start teardown while the workload was still writing. Teardown listed the bucket, a load's PUT
  * landed after the listing, and the bucket was left behind: in two of four rehearsals interrupted during their
  * loads, one of them after printing that the bucket had been removed. And an interrupt while `CreateBucket` was in
- * flight would tear down a bucket that did not exist yet, and the create would land afterwards with nothing said. So a signal now stops the work before anything is deleted:
- * `abort()` makes every later send on the client fail at once, before it reaches the wire, and `drained()`
- * resolves once every send already made has answered. Teardown waits for both.
+ * flight would tear down a bucket that did not exist yet, and the create would land afterwards with nothing said.
+ * So a signal now stops the work before anything is deleted: `abort()` makes every later send on the client fail at
+ * once, before it reaches the wire, and `drained()` resolves once every send already made has answered. Teardown
+ * waits for both.
  *
  * It sits at `initialize` with high priority, outside the meter, so a send it refuses is not counted: it is not a
  * request, and it is not billed.
@@ -66,7 +83,10 @@ function interruptGate(client) {
     get inflight() {
       return inflight;
     },
-    /** True once nothing is in flight; false if `ms` pass first, so a request that never answers cannot hold a teardown. */
+    /**
+     * True once nothing is in flight; false if `ms` pass first, so that a request that never answers cannot hold
+     * a teardown.
+     */
     drained(ms) {
       if (inflight === 0) return Promise.resolve(true);
       return new Promise((resolve) => {
@@ -86,6 +106,33 @@ function interruptGate(client) {
 }
 
 /**
+ * The order both of a run's exits follow: stop the workload's client, wait for what it sent, then tear down.
+ *
+ * A signal handler and `main`'s `finally` each call this. `cutShort` is whether the workload was still running,
+ * which is what makes the run interrupted. A request that never answered within `drainMs` is passed on to teardown,
+ * which cannot then read "no such bucket" as done: the unanswered request may be the bucket's creation. What teardown
+ * left is recorded in the results, because after a hang-up there is no terminal to say it.
+ */
+async function stopThenTearDown({ gate, drainMs, teardown, results, cutShort, log }) {
+  if (cutShort) results.interrupted = true;
+  gate.abort();
+  const drained = await gate.drained(drainMs);
+  if (!drained)
+    log(`a request was still unanswered after ${drainMs / 1000} s — tearing down anyway`);
+  const left = await teardown({ unanswered: !drained });
+  if (left.length > 0) results.leftovers = left;
+  return left;
+}
+
+/**
+ * The exit code of a run that got a signal: 130 when the signal cut the work short, which includes the abort window
+ * before anything was made, and the run's own code when the workload had finished and only teardown remained.
+ */
+function exitCodeAfterSignal({ finished, code }) {
+  return finished ? (code ?? 0) : 130;
+}
+
+/**
  * Open the terminal's two streams now, while there is a terminal.
  *
  * Node creates `process.stdout` and `process.stderr` on first use, and on macOS creating one on a terminal that has
@@ -101,11 +148,15 @@ function holdTerminal() {
 }
 
 /**
- * Drop everything written after a hang-up. Nothing is left to read it, and the results file records what teardown
- * left behind. Safe only because {@link holdTerminal} ran first: this reaches both streams.
+ * Drop what would be written to a terminal after it has hung up. Nothing is left to read it there, and the results
+ * file records what teardown left behind. A stream that is a pipe or a file is left alone: a log, `tee` or CI still
+ * has a reader, and silencing those once lost the teardown and LEFTOVERS lines from `nohup … > run.log`. Safe only
+ * because {@link holdTerminal} ran first: this reaches both streams.
  */
 function silenceTerminal() {
-  for (const stream of [process.stdout, process.stderr]) stream.write = () => true;
+  for (const stream of [process.stdout, process.stderr]) {
+    if (stream.isTTY) stream.write = () => true;
+  }
 }
 
 /**
@@ -129,8 +180,17 @@ function writeResultsFile({ file, fallback, text, overwrite = false }) {
   return fallback;
 }
 
-/** The files that are the harness, as a run executes them. */
-const HARNESS_FILES = ['bench/calibrate-aws.cjs', 'bench/calibrate-cloudshell.sh', 'bench/lib'];
+/**
+ * The files a run from a checkout executes: the harness, the modules it loads, and the packages it loads, which are
+ * this checkout's. The figures library in `bench/lib` is not among them; it reads a run's file, and never runs one.
+ */
+const HARNESS_FILES = [
+  'bench/calibrate-aws.cjs',
+  'bench/lib/aws-meter.cjs',
+  'bench/lib/calibrate-guards.cjs',
+  'bench/lib/calibrate-process.cjs',
+  'packages',
+];
 
 /**
  * The commit the harness ran from, marked `-dirty` when its files had uncommitted edits.
@@ -158,6 +218,9 @@ function harnessRef(root, env = process.env) {
 module.exports = {
   interruptGate,
   isInterruption,
+  failureOf,
+  stopThenTearDown,
+  exitCodeAfterSignal,
   holdTerminal,
   silenceTerminal,
   writeResultsFile,

@@ -494,8 +494,12 @@ const RUN_TRIGGERS = [
   'cold intersects the Redis line buys a month',
   'loads the Redis line buys a month',
 ];
+// A request shape, "4 PUT-class + 7 GET", is the run's to state: a block that states one is about it, and the shape
+// must then be one the run has. The usage page's `store.load()` row carried a shape and none of the run's figures.
+const REQUEST_SHAPE = /\d+\s?PUTs?(?:-class)?(?:\s+requests?)?,?\s*(?:\+|and|plus)\s*\d+\s?GETs?/;
 function quotesTheRun(block) {
   if (singleBucket === null) return false;
+  if (REQUEST_SHAPE.test(calibration.normalize(block))) return true;
   // The run's layout is its own: a block that counts its 1,999 chunks is about it, whatever else it says.
   if (
     calibration.statesFigure(
@@ -642,9 +646,20 @@ for (const page of PAGES) {
   // row — rates, counts, shares and sizes as well as money — is held to the run, or to this page's other sources,
   // with the words that say which claim each makes (see calibration-figures.cjs).
   if (singleBucket !== null) {
+    // The run's own figures come from its values, bindings and all. Only the page's other sources join them, as plain
+    // values: the run's anchors, merged in plainly, once let "store.load() costs $11.20 per million" pass on every
+    // page here, because a plain value passes whatever words stand beside it.
+    const otherSources = anchors
+      .filter(
+        ([name, v, scope]) =>
+          v &&
+          !name.startsWith('single-bucket') &&
+          (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
+      )
+      .map(([, v]) => v);
     const values = calibration.mergeValues(
       singleBucket.pageValues,
-      calibration.valuesFromFigures([...allowed, ...alsoAllowed], {
+      calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
         perSecond: [results.readCrossoverPerSec],
       }),
     );

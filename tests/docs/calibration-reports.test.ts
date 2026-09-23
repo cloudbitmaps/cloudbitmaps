@@ -358,7 +358,7 @@ describe('calibration reports are held to their evidence', () => {
         '98% of the chunks were skipped.',
         'Each intersect read 10 chunks per operand.',
         "A segment's first store.load() costs $22.80 per million, as measured.",
-        // The second review's: two of the first round's own corrections, and two misreadings of a price.
+        // Two corrections that were themselves wrong, a depth and a price per dollar, and two misreadings of a price.
         "Of the two objects' bytes, 29.9% were fetched and 70.1% never left S3.",
         'The median cold intersect was about 15 requests deep.',
         'Each of its requests took about 194 ms.',
@@ -390,6 +390,48 @@ describe('calibration reports are held to their evidence', () => {
           'It fetched 100 of 1,999 chunks and skipped the other 4.9%; the payload fetched was 95.0% of the bytes.',
         ),
       ).not.toEqual([]);
+    });
+
+    // A binding in one direction only let the reverse claim through: the object's size called the upload's passed while
+    // the upload's size called the object's failed. Each value that can make two claims now fails both ways, and each
+    // wrong claim below sits beside an honest one with the same number.
+    it('binds both directions of a claim that two values can make', () => {
+      const report = read(join(DIR, '2026-09-23-94416.md'));
+      const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
+      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const plant = (sentence: string): string[] =>
+        figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
+      for (const [wrong, right] of [
+        ['The upload is 1,052,087 bytes.', 'The object itself is 1,052,087 bytes.'],
+        [
+          'With each pointer read once, the path is about 16 requests deep.',
+          'That puts about 16 requests in line.',
+        ],
+        [
+          'A write and publish is 2 PUT + 3 GET, $22.80 per million.',
+          "A segment's first store.load() is expected at $22.80 per million.",
+        ],
+        [
+          'A dollar buys 12,254 cold intersects as the run measured them.',
+          'At 100 shared chunks, a dollar buys 12,254 of them, expected.',
+        ],
+        [
+          'Inside the region, a dollar buys 12,135 cold intersects.',
+          'A dollar buys 12,135 of them.',
+        ],
+        [
+          'The median made 3.8 pointer reads.',
+          'It made 3.8 pointer reads an intersect on average.',
+        ],
+        [
+          'This run measured 36.0 million cold intersects a month at 10 shared chunks.',
+          'At 10 shared chunks it would buy 36.0 million cold intersects a month.',
+        ],
+      ] as const) {
+        expect(plant(wrong), wrong).not.toEqual([]);
+        expect(plant(right), right).toEqual([]);
+      }
     });
 
     it('states a figure only as a whole figure, outside comments', () => {
@@ -629,7 +671,8 @@ describe('calibration reports are held to their evidence', () => {
             int(want.gets),
             usd(want.usd, 7),
             usd(1e6 * want.usd, 2),
-            int(1 / want.usd),
+            // Whole intersects: a dollar does not buy a fraction of one, so the count is rounded down.
+            int(Math.floor(1 / want.usd)),
           ]);
         }
         // The run's own overlap and identical segments bound the table, so both must be in it.

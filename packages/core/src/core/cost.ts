@@ -73,8 +73,9 @@ export interface Workload {
    * sizes. On a single-bucket store a write and publish also PUTs the pointer and reads it three times, which this
    * model does not add for you yet: count the pointer's PUT, and its GETs at the GET-to-PUT price ratio — `2.24`
    * for a single-part write and publish at the default prices. `store.load()` also lists the segment twice and
-   * reads the pointer four or five more times: `4.56` on a segment's first load, `4.72` from its third. Still small
-   * money: at $5/million, a thousand 100-part loads a month, pointer included, is about $0.52.
+   * reads the pointer four more times: `4.56` on a segment's first load. A reload also reads the current index,
+   * `4.64`, and from the third load the collection pass reads the pointer once more before it deletes, `4.72`.
+   * Still small money: at $5/million, a thousand 100-part loads a month, pointer included, is about $0.52.
    */
   readonly requestsPerLoad?: number;
 }

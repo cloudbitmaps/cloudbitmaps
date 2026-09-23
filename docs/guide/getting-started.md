@@ -960,7 +960,8 @@ rate, so until it counts these itself:
 - pass `requestsPerLoad` as the load's PUT-class requests plus its GETs at the GET-to-PUT price ratio, 0.08 on the
   default profile. A single-part write and publish is 2 PUTs and 3 GETs, so `2.24`, which prices it at $11.20 per
   million; `store.load()` also lists the segment twice and reads the pointer four more times, so `4.56` for a
-  segment's first load, and `4.72` from its third, when the collection pass re-reads the pointer before it deletes;
+  segment's first load. A reload also reads the current index, so `4.64`, and from the third load the collection
+  pass reads the pointer once more before it deletes, so `4.72`;
 - pass every GET an intersect makes as `chunksPerIntersect`: `204` for two segments sharing 100 chunks.
 
 It has no term for the pointer refresh either. A live store re-reads each segment's pointer at most once per

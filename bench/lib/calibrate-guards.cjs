@@ -295,6 +295,18 @@ const WORK_ATTEMPTS = 1;
 const ADMIN_ATTEMPTS = 3;
 
 /**
+ * How long each of teardown's attempts may take. The SDK's HTTP handler waits for ever by default, and a teardown
+ * whose listing stopped answering once hung until it was killed, leaving the bucket and writing no results. A request
+ * timeout alone only logs a warning in this SDK; `throwOnRequestTimeout` makes it fail the attempt, which the client
+ * then retries.
+ */
+const ADMIN_TIMEOUTS = Object.freeze({
+  connectionTimeout: 5_000,
+  requestTimeout: 30_000,
+  throwOnRequestTimeout: true,
+});
+
+/**
  * Does a teardown error mean "the bucket is already gone"?
  *
  * Narrower than `probeMeansAbsent`, on purpose. Teardown once used that, which reads ANY 404 as absent — and
@@ -328,11 +340,15 @@ const TEARDOWN_PASSES = 3;
  */
 const TEARDOWN_PUTS = ADMIN_ATTEMPTS * (1 + TEARDOWN_PASSES + 1);
 
-/** The two clients' configurations, from the one a run resolved. `maxAttempts` last, so nothing in `base` wins. */
-function clientConfigs(base) {
+/**
+ * The two clients' configurations, from the one a run resolved. `maxAttempts` last, so nothing in `base` wins. The
+ * workload's client has no timeout of its own, since a timed request must not be cut short, and an interrupt waits
+ * for it only so long. Teardown's has one, so that it cannot hang.
+ */
+function clientConfigs(base, { adminTimeouts = ADMIN_TIMEOUTS } = {}) {
   return {
     work: { ...base, maxAttempts: WORK_ATTEMPTS },
-    admin: { ...base, maxAttempts: ADMIN_ATTEMPTS },
+    admin: { ...base, requestHandler: { ...adminTimeouts }, maxAttempts: ADMIN_ATTEMPTS },
   };
 }
 
@@ -519,6 +535,22 @@ function foreignKeys(keys) {
 }
 
 /**
+ * How many pages of a listing teardown reads before it touches anything. The harness's own bucket fits one; one that
+ * runs past this many is not a bucket it made, and is refused rather than read without end.
+ */
+const MAX_LISTING_PAGES = 10;
+
+/**
+ * The last line of a LEFTOVERS report: how to remove what is left, or, for a bucket that holds keys the harness did
+ * not write, that `--cleanup` will not.
+ */
+function leftoversHint({ notOurs, rehearse, runId }) {
+  return notOurs
+    ? '  --cleanup will not empty a bucket holding keys the harness did not write; inspect it by hand'
+    : `  remove them with: node bench/calibrate-aws.cjs${rehearse ? ' --rehearse' : ''} --cleanup ${runId}`;
+}
+
+/**
  * The one region this harness has prices for.
  *
  * It prices every run at `AWS_US_EAST_1_ONDEMAND`, so a run elsewhere would record the wrong bill and check its
@@ -561,6 +593,9 @@ module.exports = {
   MAX_SEGMENTS,
   STORE_PREFIX,
   foreignKeys,
+  MAX_LISTING_PAGES,
+  leftoversHint,
+  ADMIN_TIMEOUTS,
   PRICED_REGION,
   checkRunRegion,
   EVIDENCE_DIR,

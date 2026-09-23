@@ -29,6 +29,34 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(import.meta.url);
 
+/**
+ * Runs the harness where no AWS credential can be found and no run can be authorised, whatever the harness does.
+ *
+ * A test of a refusal has to stay safe when the refusal is broken, as a mutation run breaks it on purpose. The region
+ * test once spawned `--run` with the confirmation phrase set and no HOME, and the SDK then falls back to the real
+ * home directory's credentials: with the region refusal removed, every later check would have passed. Here the home
+ * is empty, the SDK's config and credentials files and the instance metadata service are out of reach, and no
+ * confirmation phrase is ever passed, so a broken refusal stops at the next one. A child that runs on is killed.
+ */
+const OFFLINE_HOME = mkdtempSync(join(tmpdir(), 'calib-no-aws-'));
+afterAll(() => rmSync(OFFLINE_HOME, { recursive: true, force: true }));
+function runHarness(args: string[], env: Record<string, string> = {}) {
+  if ('CR_CALIBRATE_CONFIRM' in env)
+    throw new Error('a test never authorises a run that spends money');
+  return spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs'), ...args], {
+    env: {
+      PATH: process.env.PATH ?? '',
+      HOME: OFFLINE_HOME,
+      AWS_CONFIG_FILE: join(OFFLINE_HOME, 'no-config'),
+      AWS_SHARED_CREDENTIALS_FILE: join(OFFLINE_HOME, 'no-credentials'),
+      AWS_EC2_METADATA_DISABLED: 'true',
+      ...env,
+    },
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+}
+
 const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   CONFIRM_PHRASE: string;
   parseCeiling: (raw: unknown) => number;
@@ -83,10 +111,21 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   STORE_PREFIX: string;
   PRICED_REGION: string;
   checkRunRegion: (region: unknown) => string;
+  leftoversHint: (i: { notOurs: boolean; rehearse: boolean; runId: string }) => string;
+  MAX_LISTING_PAGES: number;
   stampOf: (iso: string) => string;
   EVIDENCE_DIR: string;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
-  clientConfigs: (base: Record<string, unknown>) => {
+  clientConfigs: (
+    base: Record<string, unknown>,
+    options?: {
+      adminTimeouts?: {
+        connectionTimeout: number;
+        requestTimeout: number;
+        throwOnRequestTimeout: boolean;
+      };
+    },
+  ) => {
     work: Record<string, unknown>;
     admin: Record<string, unknown>;
   };
@@ -113,6 +152,16 @@ const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))
   }) => string;
   harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
   HARNESS_FILES: string[];
+  failureOf: (err: unknown) => string | null;
+  stopThenTearDown: (i: {
+    gate: { abort: () => void; drained: (ms: number) => Promise<boolean> };
+    drainMs: number;
+    teardown: (o: { unanswered: boolean }) => Promise<string[]>;
+    results: Record<string, unknown>;
+    cutShort: boolean;
+    log: (m: string) => void;
+  }) => Promise<string[]>;
+  exitCodeAfterSignal: (i: { finished: boolean; code?: number }) => number;
 };
 
 type Billed = { put: number; get: number };
@@ -704,10 +753,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   // Run, not read: pointing the check at the partial file instead of the evidence passed every source-text test here.
   // The refusal comes before the harness imports the library, so it holds on a checkout that has not been built.
   it('refuses a committed run id in projection mode, before it imports anything', () => {
-    const out = spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs')], {
-      env: { PATH: process.env.PATH ?? '', CR_CALIBRATE_RUN_ID: '2026-09-23-94416' },
-      encoding: 'utf8',
-    });
+    const out = runHarness([], { CR_CALIBRATE_RUN_ID: '2026-09-23-94416' });
     expect(out.status).toBe(2);
     expect(out.stderr).toMatch(/2026-09-23-94416\.json already exists/);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
@@ -717,23 +763,60 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     );
   });
 
+  // `--cleanup` deletes every version of every key in the bucket it is given, and the account pin once held only for
+  // the mode that creates. With no credentials to be had, a cleanup must stop at the identity check, before any
+  // request to S3; one that skipped it would go on to teardown and fail there. A cleanup loads nothing, so no
+  // workload setting refuses it, and it needs no built library.
+  it('checks who it is before a cleanup, and no workload setting can refuse one', () => {
+    const account = ['1234', '5678', '9012'].join('');
+    const out = runHarness(['--cleanup', '2026-09-23-gone'], {
+      CR_CALIBRATE_REGION: 'us-east-1',
+      CR_CALIBRATE_EXPECT_ACCOUNT: account,
+      CR_CALIBRATE_SEGMENTS: '600',
+    });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/could not verify credentials/);
+    expect(out.stderr).not.toMatch(/teardown|LEFTOVERS/);
+    expect(out.stderr).not.toContain(account);
+  });
+
+  // The large segments count: a workload of 499 and 2 leaves 1,002 versions, past the first listing.
+  it('counts the large segments against the workload bound, before it imports anything', () => {
+    const out = runHarness([], { CR_CALIBRATE_SEGMENTS: '499', CR_CALIBRATE_LARGE: '2' });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/teardown's first listing/);
+    expect(
+      runHarness([], {
+        CR_CALIBRATE_SEGMENTS: '498',
+        CR_CALIBRATE_LARGE: '2',
+        CR_CALIBRATE_READS: '0',
+      }).stderr,
+    ).not.toMatch(/teardown's first listing/);
+  });
+
+  // Every spawn of the harness goes through runHarness, so no test can hand it credentials or a confirmation.
+  it('spawns the harness only where no credential can be found', () => {
+    const self = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const spawns = self.match(/join\(ROOT, 'bench', 'calibrate-aws\.cjs'\), \.\.\.args\]/g) ?? [];
+    expect(spawns).toHaveLength(1);
+    expect(
+      self.match(/spawnSync\(process\.execPath, \[join\(ROOT, 'bench', 'calibrate-aws/g),
+    ).toHaveLength(1);
+  });
+
   // It prices every run at us-east-1's rates, so a run anywhere else would record the wrong bill and check its
-  // ceiling against the wrong one. Refused before anything reads a credential.
+  // ceiling against the wrong one. Refused before anything reads a credential, and before the confirmation phrase is
+  // even looked for, so this test can pass none: were the refusal broken, the missing phrase would stop the run.
   it('refuses a real run in a region it has no prices for', () => {
     expect(() => guards.checkRunRegion('eu-west-1')).toThrow(/us-east-1/);
     expect(guards.checkRunRegion('us-east-1')).toBe('us-east-1');
     expect(AWS_US_EAST_1_ONDEMAND.name).toContain(guards.PRICED_REGION);
-    const out = spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs'), '--run'], {
-      env: {
-        PATH: process.env.PATH ?? '',
-        CR_CALIBRATE_REGION: 'eu-west-1',
-        CR_CALIBRATE_CONFIRM: guards.CONFIRM_PHRASE,
-        CR_CALIBRATE_MAX_USD: '0.05',
-      },
-      encoding: 'utf8',
+    const out = runHarness(['--run'], {
+      CR_CALIBRATE_REGION: 'eu-west-1',
+      CR_CALIBRATE_MAX_USD: '0.05',
     });
     expect(out.status).toBe(2);
-    expect(out.stderr).toMatch(/us-east-1/);
+    expect(out.stderr).toMatch(/prices for us-east-1 only/);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('checkRunRegion(region)');
   });
@@ -848,8 +931,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       // The file already in $HOME is left alone, and this run's copy goes beside it under a stamped name: CloudShell
       // keeps $HOME between sessions and not the scratch directory, so a copy left there was as good as lost.
       expect(readFileSync(join(home, '2026-09-24-b.partial.json'), 'utf8')).toBe('an older copy');
+      // The stamp goes before `.partial.json`, so the copy is still a partial file, and one git ignores.
       const stamped = readdirSync(home).filter((f) =>
-        /^2026-09-24-b\.partial\.\d{8}T\d{6}Z\.json$/.test(f),
+        /^2026-09-24-b\.\d{8}T\d{6}Z\.partial\.json$/.test(f),
       );
       expect(stamped).toHaveLength(1);
       expect(readFileSync(join(home, stamped[0] ?? ''), 'utf8')).toBe('partial');
@@ -940,6 +1024,56 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       }
     }
 
+    // Once the harness has stopped, the script only copies its results out, and nothing may cut that short: not a
+    // second Ctrl-C, and not SIGPIPE from a `tee` the first one stopped, which killed the copy half-way.
+    it('ignores the signals that could cut the copy short, once the harness has exited', () => {
+      const out = spawnSync('bash', ['-c', `${runHarness}\nWORK=.\nrun_harness true\ntrap -p`], {
+        encoding: 'utf8',
+      });
+      for (const sig of ['INT', 'TERM', 'HUP', 'PIPE']) {
+        expect(out.stdout, sig).toMatch(new RegExp(`trap -- '' SIG${sig}\\b`));
+      }
+    });
+
+    // A job in a process group of its own is stopped by SIGTTOU at its first write while the terminal has `tostop`
+    // set, and the script then waits on it for ever. Refused before anything is installed. Run on a real
+    // pseudo-terminal, since only a terminal has the setting.
+    const tostop = /^refuse_tostop\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    const python = spawnSync('python3', ['--version']).status === 0;
+    it.skipIf(!python)('refuses a terminal with tostop set, before anything is installed', () => {
+      expect(tostop, 'the script no longer defines refuse_tostop').not.toBe('');
+      expect(sh.indexOf('\nrefuse_tostop\n')).toBeGreaterThan(-1);
+      expect(sh.indexOf('\nrefuse_tostop\n')).toBeLessThan(sh.indexOf('npm i '));
+      const onPty = (setting: string): string =>
+        spawnSync(
+          'python3',
+          [
+            '-c',
+            [
+              'import os, pty, sys',
+              'pid, fd = pty.fork()',
+              'if pid == 0:',
+              "    os.execvp('bash', ['bash', '-c', sys.argv[1]])",
+              "out = b''",
+              'while True:',
+              '    try:',
+              '        chunk = os.read(fd, 4096)',
+              '    except OSError:',
+              '        break',
+              '    if not chunk:',
+              '        break',
+              '    out += chunk',
+              '_, status = os.waitpid(pid, 0)',
+              "sys.stdout.write(out.decode(errors='replace') + ' exit=' + str(os.WEXITSTATUS(status)))",
+            ].join('\n'),
+            `stty ${setting}\n${tostop}\nrefuse_tostop\necho passed`,
+          ],
+          { encoding: 'utf8', timeout: 15_000 },
+        ).stdout;
+      expect(onPty('tostop')).toMatch(/tostop set[\s\S]*exit=2/);
+      expect(onPty('-tostop')).toMatch(/passed[\s\S]*exit=0/);
+    });
+
     it('defines the tail it runs, and runs the harness through it after arming the copy', () => {
       expect(finish, 'the script no longer defines finish').not.toBe('');
       expect(runHarness, 'the script no longer defines run_harness').not.toBe('');
@@ -1020,6 +1154,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       mkdirSync(join(repo, 'bench', 'lib'), { recursive: true });
       writeFileSync(join(repo, 'bench', 'calibrate-aws.cjs'), 'harness');
       writeFileSync(join(repo, 'bench', 'lib', 'calibrate-guards.cjs'), 'guards');
+      writeFileSync(join(repo, 'bench', 'lib', 'calibration-figures.cjs'), 'figures');
+      mkdirSync(join(repo, 'packages', 'core'), { recursive: true });
+      writeFileSync(join(repo, 'packages', 'core', 'index.ts'), 'library');
       writeFileSync(join(repo, 'README.md'), 'readme');
       git('add', '.');
       git('commit', '-q', '-m', 'x');
@@ -1027,13 +1164,22 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       expect(head).toMatch(/^[0-9a-f]{7,}$/);
       expect(processLib.harnessRef(repo, {})).toBe(head);
       expect(scriptRef()).toBe(head);
-      // An edit elsewhere is not the harness.
+      // An edit elsewhere is not the harness, and nor is the figures library, which reads a run and never runs one.
       writeFileSync(join(repo, 'README.md'), 'edited');
+      writeFileSync(join(repo, 'bench', 'lib', 'calibration-figures.cjs'), 'edited');
       expect(processLib.harnessRef(repo, {})).toBe(head);
       expect(scriptRef()).toBe(head);
-      writeFileSync(join(repo, 'bench', 'lib', 'calibrate-guards.cjs'), 'edited');
+      // The packages are what a run from a checkout loads; CloudShell loads them from npm instead.
+      writeFileSync(join(repo, 'packages', 'core', 'index.ts'), 'edited');
       expect(processLib.harnessRef(repo, {})).toBe(`${head}-dirty`);
-      expect(scriptRef()).toBe(`${head}-dirty`);
+      expect(scriptRef()).toBe(head);
+      git('add', '.');
+      git('commit', '-q', '-m', 'y');
+      const next = git('rev-parse', '--short', 'HEAD');
+      expect(processLib.harnessRef(repo, {})).toBe(next);
+      writeFileSync(join(repo, 'bench', 'lib', 'calibrate-guards.cjs'), 'edited');
+      expect(processLib.harnessRef(repo, {})).toBe(`${next}-dirty`);
+      expect(scriptRef()).toBe(`${next}-dirty`);
       // The ref the script passes in is taken as given: its copy of the harness is not a checkout.
       expect(processLib.harnessRef(repo, { CR_CALIBRATE_HARNESS_REF: 'abc1234-dirty' })).toBe(
         'abc1234-dirty',
@@ -1047,14 +1193,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   // is refused before the harness imports anything — run with no credentials and no confirmation, so even a broken
   // refusal cannot get past the next check.
   it('refuses --rehearse with --run before doing anything', () => {
-    const out = spawnSync(
-      process.execPath,
-      [join(ROOT, 'bench', 'calibrate-aws.cjs'), '--rehearse', '--run'],
-      {
-        env: { PATH: process.env.PATH ?? '' },
-        encoding: 'utf8',
-      },
-    );
+    const out = runHarness(['--rehearse', '--run']);
     expect(out.status).toBe(2);
     expect(out.stderr).toMatch(/exclusive/);
   });
@@ -1110,7 +1249,9 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     20_000,
   );
 
-  it('stops writing to the terminal on a hang-up, before it writes anything', () => {
+  // A pipe or a file still has a reader: `nohup … > run.log`, `tee`, CI. Silencing those once lost the teardown and
+  // LEFTOVERS lines from the log. Only a terminal is silenced; the closed-terminal test above covers that half.
+  it('stops writing to a terminal on a hang-up, and to nothing else, before it writes anything', () => {
     const out = spawnSync(
       process.execPath,
       [
@@ -1121,8 +1262,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       { encoding: 'utf8' },
     );
     expect(out.status).toBe(0);
-    expect(out.stdout).toBe('');
-    expect(out.stderr).toBe('');
+    expect(out.stdout).toBe('a\nc');
+    expect(out.stderr).toBe('b\nd');
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const handler = src.slice(src.indexOf("for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])"));
     expect(handler.indexOf("if (sig === 'SIGHUP') silenceTerminal();")).toBeGreaterThan(-1);
@@ -1264,6 +1405,36 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       await server.close();
     }
   });
+
+  // The SDK's HTTP handler waits for ever by default. A teardown whose listing stopped answering once hung until it was
+  // killed, leaving the bucket and no results; teardown's client now gives up, and says so.
+  it('the teardown client gives up on a request that never answers', async () => {
+    const server = createServer(() => {
+      // Never answers.
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    expect(guards.clientConfigs({}).admin.requestHandler).toEqual({
+      connectionTimeout: 5_000,
+      requestTimeout: 30_000,
+      throwOnRequestTimeout: true,
+    });
+    expect(guards.clientConfigs({}).work.requestHandler).toBeUndefined();
+    const client = new s3.S3Client(
+      guards.clientConfigs(baseFor(`http://127.0.0.1:${port}`), {
+        adminTimeouts: { connectionTimeout: 200, requestTimeout: 200, throwOnRequestTimeout: true },
+      }).admin,
+    );
+    const t0 = Date.now();
+    try {
+      await expect(client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toBeDefined();
+      expect(Date.now() - t0).toBeLessThan(10_000);
+    } finally {
+      client.destroy();
+      server.closeAllConnections();
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  }, 20_000);
 
   it('the harness builds exactly those two clients, meters both, and tears down with the retrying one', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
@@ -1521,7 +1692,7 @@ describe('what the harness does not measure: store.load()', () => {
 /** The harness's teardown function, comments stripped — what the structural checks below read. */
 function teardownSource(src: string): string {
   return src
-    .slice(src.indexOf('const teardown = () =>'), src.indexOf('return teardownPromise;'))
+    .slice(src.indexOf('const teardown = ('), src.indexOf('return teardownPromise;'))
     .replace(/\/\/.*$/gm, '');
 }
 
@@ -1610,19 +1781,85 @@ describe('a signal stops the workload before teardown starts', () => {
     expect(src).toContain('const gate = interruptGate(client)');
     expect(src).not.toContain('interruptGate(admin)');
     const main = src.indexOf('async function main');
-    const onInterrupt = src.slice(src.indexOf('onInterrupt = async', main));
-    const fin = src.slice(src.indexOf('} finally {', main));
+    const run = src.indexOf('let running = true', main);
+    const onInterrupt = src.slice(src.indexOf('onInterrupt = async', run));
+    const fin = src.slice(src.indexOf('} finally {', run));
     for (const [name, body] of [
       ['the interrupt handler', onInterrupt],
       ["main's finally", fin],
     ] as const) {
-      const teardownAt = body.indexOf('await teardown()');
-      expect(teardownAt, `${name} does not tear down`).toBeGreaterThan(-1);
-      expect(body.indexOf('gate.abort()'), `${name} does not stop the work`).toBeGreaterThan(-1);
-      expect(body.indexOf('gate.abort()')).toBeLessThan(teardownAt);
-      expect(body.indexOf('gate.drained(')).toBeGreaterThan(-1);
-      expect(body.indexOf('gate.drained(')).toBeLessThan(teardownAt);
+      const call = /await stopThenTearDown\(\{([\s\S]*?)\}\);/.exec(body);
+      expect(call, `${name} does not stop, drain and tear down`).not.toBeNull();
+      expect(call?.[1]).toMatch(/\bgate\b/);
+      expect(call?.[1]).toMatch(/\bteardown\b/);
+      expect(body.indexOf('settle()')).toBeGreaterThan(body.indexOf('stopThenTearDown'));
     }
+    expect(onInterrupt).toMatch(/cutShort: running/);
+    expect(fin).toMatch(/cutShort: false/);
+  });
+
+  // The order both exits follow, driven with stand-ins that record what happened when.
+  it('stops the work, waits for it, then tears down, and records what that left', async () => {
+    const order: string[] = [];
+    const gate = {
+      abort: () => order.push('abort'),
+      drained: async (ms: number) => {
+        order.push(`drain ${ms}`);
+        return false;
+      },
+    };
+    const results: Record<string, unknown> = {};
+    const notes: string[] = [];
+    const left = await processLib.stopThenTearDown({
+      gate,
+      drainMs: 30_000,
+      teardown: async ({ unanswered }) => {
+        order.push(`teardown unanswered=${unanswered}`);
+        return ['b: left'];
+      },
+      results,
+      cutShort: true,
+      log: (m) => notes.push(m),
+    });
+    expect(order).toEqual(['abort', 'drain 30000', 'teardown unanswered=true']);
+    expect(left).toEqual(['b: left']);
+    expect(results).toEqual({ interrupted: true, leftovers: ['b: left'] });
+    expect(notes.join(' ')).toMatch(/still unanswered/);
+    // A finished workload is not marked interrupted, and a clean teardown records nothing.
+    const clean: Record<string, unknown> = {};
+    await processLib.stopThenTearDown({
+      gate: { abort: () => undefined, drained: async () => true },
+      drainMs: 1,
+      teardown: async ({ unanswered }) => {
+        expect(unanswered).toBe(false);
+        return [];
+      },
+      results: clean,
+      cutShort: false,
+      log: () => undefined,
+    });
+    expect(clean).toEqual({});
+  });
+
+  // A request that fails while the run stops is still a failure: a 403 during the drain, the likeliest reason someone
+  // presses Ctrl-C on a run that looks stuck, was discarded because the run was stopping.
+  it('records every failure but the gate refusing a send, however the refusal was wrapped', () => {
+    const refused = Object.assign(new Error('no new requests'), { name: 'CalibrationInterrupted' });
+    expect(processLib.failureOf(refused)).toBeNull();
+    expect(processLib.failureOf(new Error('store: read failed', { cause: refused }))).toBeNull();
+    const denied = Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+    expect(processLib.failureOf(denied)).toBe('Access Denied');
+    expect(processLib.failureOf(new Error('put failed', { cause: denied }))).toBe('put failed');
+  });
+
+  it("exits 130 when a signal cut the work short, and keeps the run's own code when only teardown was left", () => {
+    expect(processLib.exitCodeAfterSignal({ finished: false, code: 0 })).toBe(130);
+    expect(processLib.exitCodeAfterSignal({ finished: true, code: 0 })).toBe(0);
+    expect(processLib.exitCodeAfterSignal({ finished: true, code: 1 })).toBe(1);
+    expect(processLib.exitCodeAfterSignal({ finished: true })).toBe(0);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src.match(/exitCodeAfterSignal\(\{ finished: workFinished/g)?.length).toBe(2);
+    expect(src).toMatch(/results\.partial = false;\s*running = false;\s*workFinished = true;/);
   });
 });
 
@@ -1691,8 +1928,24 @@ describe('teardown — what counts as done', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     const teardown = teardownSource(src);
     expect(teardown).toContain('foreignKeys(');
-    expect(teardown.indexOf('foreignKeys(')).toBeLessThan(teardown.indexOf('DeleteObjectsCommand'));
+    // Checked before anything is touched: an upload may be someone else's too, and was once aborted first.
+    const check = teardown.indexOf('refuseForeign([');
+    expect(check, 'teardown no longer checks uploads and objects together first').toBeGreaterThan(
+      -1,
+    );
+    expect(teardown.slice(check, teardown.indexOf(']);', check))).toMatch(/uploads\.map/);
+    expect(check).toBeLessThan(teardown.indexOf('new s3.AbortMultipartUploadCommand'));
+    expect(check).toBeLessThan(teardown.indexOf('new s3.DeleteObjectsCommand'));
+    expect(teardown).toContain('MAX_LISTING_PAGES');
     expect(src).toContain('prefix: STORE_PREFIX');
+    // What LEFTOVERS says last: how to remove them, unless --cleanup would only refuse again.
+    expect(guards.leftoversHint({ notOurs: false, rehearse: true, runId: '2026-09-23-a' })).toBe(
+      '  remove them with: node bench/calibrate-aws.cjs --rehearse --cleanup 2026-09-23-a',
+    );
+    expect(guards.leftoversHint({ notOurs: true, rehearse: false, runId: '2026-09-23-a' })).toMatch(
+      /inspect it by hand/,
+    );
+    expect(teardown).toContain('leftoversHint({ notOurs, rehearse: REHEARSE, runId })');
   });
 
   // The account pin held for a run and not for `--cleanup`, the mode that deletes.
