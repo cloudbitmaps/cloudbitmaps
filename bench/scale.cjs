@@ -57,16 +57,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const {
-  bulkLoadCrbmGeneration,
-  CrbmStorageChunkSource,
-  LocalFsStorage,
-  MemoryStorage,
-  CloudRoaring,
-  CountingMetricsSink,
-  collectWithinBudget,
-  excludingReservedRows,
-} = require('@cloudbitmaps/roaring');
+
+/**
+ * The built library, loaded only by the modes that measure. Rendering and checking the table read the committed
+ * results file and nothing else, so CI can check the table before anything is built.
+ */
+function library() {
+  return require('@cloudbitmaps/roaring');
+}
 
 // The library's own default scan ceiling. It used to arrive as `DEFAULT_MAX_SCAN_SEGMENTS`; curating core's
 // public surface made that constant internal, so the bench states the number it is measuring against rather
@@ -119,6 +117,13 @@ function rmTmp(dir) {
 
 // ── M1+M2+M4: one fleet size, measured in its own process ────────────────────────────────────────────
 async function measureFleet(n) {
+  const {
+    bulkLoadCrbmGeneration,
+    CrbmStorageChunkSource,
+    LocalFsStorage,
+    collectWithinBudget,
+    excludingReservedRows,
+  } = library();
   const dir = mkTmp(`fleet${n}`);
   try {
     const backend = new LocalFsStorage(dir, { now: () => Date.now() });
@@ -195,6 +200,7 @@ async function measureFleet(n) {
 
 // ── M3: intersection chunk-skipping on two large multi-chunk segments (ids-per-segment axis) ───────────
 async function measureIntersect() {
+  const { bulkLoadCrbmGeneration, MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
   const CHUNKS = int(process.env.SCALE_INTERSECT_CHUNKS, 2000);
   const DENSITY = int(process.env.SCALE_INTERSECT_DENSITY, 1000);
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
@@ -392,16 +398,24 @@ function render(r) {
 }
 
 // ── write / inject (same markers convention as bench/run.cjs) ─────────────────────────────────────────
+const SCALE_START = '<!-- BENCH:SCALE:START -->';
+const SCALE_END = '<!-- BENCH:SCALE:END -->';
+
+/** A page's text, split around its at-scale region: what comes before, the region itself, and what follows. */
+function scaleRegion(rel) {
+  const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const i = s.indexOf(SCALE_START);
+  const j = s.indexOf(SCALE_END);
+  if (i === -1 || j === -1 || j < i) throw new Error(`missing BENCH:SCALE markers in ${rel}`);
+  return {
+    before: s.slice(0, i + SCALE_START.length),
+    region: s.slice(i + SCALE_START.length, j),
+    after: s.slice(j),
+  };
+}
 function inject(rel, body) {
-  const file = path.join(ROOT, rel);
-  let s = fs.readFileSync(file, 'utf8');
-  const start = '<!-- BENCH:SCALE:START -->';
-  const end = '<!-- BENCH:SCALE:END -->';
-  const i = s.indexOf(start);
-  const j = s.indexOf(end);
-  if (i === -1 || j === -1) throw new Error(`missing BENCH:SCALE markers in ${rel}`);
-  s = s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
-  fs.writeFileSync(file, s);
+  const { before, after } = scaleRegion(rel);
+  fs.writeFileSync(path.join(ROOT, rel), before + '\n' + body + '\n' + after);
   log(rel);
 }
 function write(rel, body) {
@@ -428,9 +442,32 @@ function doInject() {
   inject('site/benchmarks.html', htmlTable);
 }
 
+// ── check-only: the published table is exactly what the committed results render ─────────────────────
+// The at-scale table is a measured figure on two pages, and for a while nothing held it to the file it was
+// rendered from: a hand edit to either page, or a new results file rendered into one page and not the other,
+// would have shipped. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
+// any difference, the way `site-replay.cjs --check` holds the demo's figures to the same file.
+function doCheck() {
+  const results = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/scale-results.json'), 'utf8'));
+  const { mdTable, htmlTable } = render(results);
+  const stale = [
+    ['docs/benchmarks.md', mdTable],
+    ['site/benchmarks.html', htmlTable],
+  ].filter(([rel, body]) => scaleRegion(rel).region !== '\n' + body + '\n');
+  if (stale.length > 0) {
+    console.error(
+      `bench:scale:check: the at-scale table in ${stale.map(([rel]) => rel).join(' and ')} is not what ` +
+        'bench/scale-results.json renders. Run `pnpm bench:scale:render` rather than editing it by hand.',
+    );
+    process.exit(1);
+  }
+  console.log('bench:scale:check: both at-scale tables are what bench/scale-results.json renders.');
+}
+
 // ── entry ────────────────────────────────────────────────────────────────────────────────────────────
 (async () => {
   if (process.env.SCALE_TASK === 'inject') doInject();
+  else if (process.env.SCALE_TASK === 'check') doCheck();
   else if (process.env.SCALE_TASK) await child();
   else await parent();
 })().catch((err) => {

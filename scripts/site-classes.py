@@ -7,6 +7,13 @@ design delivery, imported verbatim to diff against) are both deleted, along with
 This is the `.table` bug generalised: markup referencing a class the sheet never
 declares renders as bare HTML and nothing complains. Both instances of it on
 /demo were found by eye, in a screenshot, after shipping.
+
+The site's scripts are read too. A class a script adds at runtime is the same bug with no markup to find it in:
+/demo's stepper set `is-fetched` and `is-done` on its stage for as long as the page existed, and no rule in
+the sheet ever styled either, so the fetch and result beats never looked any different — and this check, which
+read only the markup, could not see it. A script's classes are the literal arguments of `classList.add`,
+`remove`, `toggle` and `contains`, and any string literal made only of `is-…` state classes, the site's naming
+convention for them.
 """
 import re, sys, glob, os
 
@@ -38,6 +45,22 @@ for page in pages:
     missing = sorted(c for c in used if c not in defined and c not in INTENTIONAL)
     if missing:
         bad[os.path.relpath(page, ROOT)] = missing
+
+# The scripts. Recursive, like the pages, and for the same reason.
+CLASSLIST = re.compile(r"""classList\.(?:add|remove|toggle|contains)\(\s*(['"])([\w-]+)\1""")
+STRING = re.compile(r"""(['"])([^'"\n]*)\1""")
+scripts = sorted(glob.glob(f'{ROOT}/**/*.js', recursive=True))
+for script in scripts:
+    js = re.sub(r'/\*.*?\*/', '', open(script).read(), flags=re.S)
+    js = re.sub(r'(?m)^\s*//.*$', '', js)
+    used = {m.group(2) for m in CLASSLIST.finditer(js)}
+    for m in STRING.finditer(js):
+        tokens = m.group(2).split()
+        if tokens and all(re.fullmatch(r'is-[\w-]+', t) for t in tokens):
+            used.update(tokens)
+    missing = sorted(c for c in used if c not in defined and c not in INTENTIONAL)
+    if missing:
+        bad[os.path.relpath(script, ROOT)] = missing
 
 for page, missing in bad.items():
     print(f'{page}: {len(missing)} undefined class(es)')

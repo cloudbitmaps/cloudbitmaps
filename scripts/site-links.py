@@ -232,4 +232,76 @@ else:
     else:
         print(f'site-links: all {len(listed)} sitemap URL(s) resolve to the page declaring them.')
 
+# ── 5 · nothing loads from another origin ─────────────────────────────────────────────────────────────────
+# The pages are self-contained: no CDN, no web fonts, no third-party scripts. That is a privacy property as much
+# as a performance one — a font from another origin tells that origin who read the page — and it was a rule in
+# the site README that nothing enforced. So every reference a browser FETCHES while rendering a page must be
+# relative: `src` and `srcset` on any element, `href` on a `<link>` that loads something (a stylesheet, an icon,
+# a preload, a manifest), and `url()` or `@import` in the stylesheet or in a page's own style. Anchors are links a
+# reader follows, not loads, and `<link rel="canonical">`, `alternate` and `me` name a URL without fetching it,
+# so those may be absolute; so may `<meta>` content, which a crawler reads and the page never loads.
+NOT_A_LOAD = {'canonical', 'alternate', 'me', 'author', 'license', 'help', 'search'}
+ABSOLUTE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:|//)', re.I)
+SAFE_SCHEME = re.compile(r'^\s*(?:data:|#)', re.I)
+
+
+def off_origin(target):
+    return bool(ABSOLUTE.match(target)) and not SAFE_SCHEME.match(target)
+
+
+loads = {}
+n_loads = 0
+for page in pages:
+    html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
+    for tag in re.finditer(r'<([a-z][a-z0-9-]*)\b[^>]*>', html, re.I):
+        text, name = tag.group(0), tag.group(1).lower()
+        for attr in ('src', 'srcset', 'poster', 'data'):
+            for m in re.finditer(r'\s' + attr + r'="([^"]*)"', text, re.I):
+                n_loads += 1
+                for part in m.group(1).split(',') if attr == 'srcset' else [m.group(1)]:
+                    target = part.strip().split(' ')[0]
+                    if off_origin(target):
+                        loads.setdefault(rel(page), []).append(f'<{name} {attr}="{target}">')
+        if name == 'link':
+            rel_attr = re.search(r'\srel="([^"]*)"', text, re.I)
+            rels = set((rel_attr.group(1) if rel_attr else '').lower().split())
+            href = re.search(r'\shref="([^"]*)"', text, re.I)
+            if href and not rels <= NOT_A_LOAD:
+                n_loads += 1
+                if off_origin(href.group(1)):
+                    loads.setdefault(rel(page), []).append(f'<link rel="{" ".join(sorted(rels))}" href="{href.group(1)}">')
+    for style in re.findall(r'<style\b[^>]*>(.*?)</style>|\sstyle="([^"]*)"', html, re.S | re.I):
+        for target in re.findall(r'url\(\s*[\'"]?([^\'")]+)', ''.join(style)):
+            n_loads += 1
+            if off_origin(target):
+                loads.setdefault(rel(page), []).append(f'url({target})')
+for sheet in sorted(glob.glob(f'{ROOT}/**/*.css', recursive=True)):
+    css = re.sub(r'/\*.*?\*/', '', open(sheet).read(), flags=re.S)
+    for target in re.findall(r'url\(\s*[\'"]?([^\'")]+)', css) + re.findall(r'@import\s+[\'"]([^\'"]+)', css):
+        n_loads += 1
+        if off_origin(target):
+            loads.setdefault(os.path.relpath(sheet, ROOT), []).append(f'url({target})')
+
+# The scripts: no URL at all. Neither script on the site fetches anything, and an absolute URL in one is the
+# first step to a script that does, whether through `fetch`, a dynamic `import` or a tracking pixel.
+for script in sorted(glob.glob(f'{ROOT}/**/*.js', recursive=True)):
+    js = re.sub(r'/\*.*?\*/', '', open(script).read(), flags=re.S)
+    js = re.sub(r'(?m)^\s*//.*$', '', js)
+    for m in re.finditer(r'''(['"`])((?:https?:)?//[^'"`\s]+)\1''', js):
+        loads.setdefault(os.path.relpath(script, ROOT), []).append(m.group(2))
+
+if loads:
+    failed = True
+    print(f'site-links: {sum(len(v) for v in loads.values())} reference(s) load from another origin')
+    for where, refs in sorted(loads.items()):
+        print(f'    {where}')
+        for r in refs:
+            print(f'        {r}')
+    print('\n    The pages load nothing from another origin: copy the asset into site/ and reference it relatively.')
+elif n_loads == 0:
+    failed = True
+    print('site-links: found no resource references at all — the origin check is measuring nothing')
+else:
+    print(f'site-links: all {n_loads} resource reference(s) load from this origin.')
+
 sys.exit(1 if failed else 0)
