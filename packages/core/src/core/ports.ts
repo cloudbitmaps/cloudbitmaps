@@ -48,6 +48,12 @@ export interface StorageChunkSource {
    */
   sizeOf?(ref: SegmentRef): Promise<SegmentSize | null>;
   /**
+   * Optional: how often this source re-reads a segment's pointer while the segment is being read, in ms, or 0 if
+   * it never does. The grounded `costReport()` prices the pointer refresh at this interval; a source that omits it
+   * is priced at the store's default.
+   */
+  readonly pointerRefreshMs?: number;
+  /**
    * Optional: the current generation's **per-chunk cardinality** (`chunkKey → count`), read from the
    * already-parsed `.crbm` index with **no payload reads**, or `null` if the segment has no Storage generation.
    * Powers the free `count()` — the engine sums the index instead of fetching a single chunk. A source with no

@@ -71,7 +71,7 @@ function readSources(root) {
   };
   const cost = read('packages/core/src/core/cost.ts');
   const format = read('packages/core/src/core/crbm/format.ts');
-  const source = read('packages/core/src/core/crbm-storage-source.ts');
+  const readerDefaults = read('packages/core/src/core/reader-defaults.ts');
   const engine = read('packages/core/src/core/engine.ts');
   const profile = need(
     /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},\s*redis:\s*\{\s*monthlyUSD:\s*(\d+)\s*\}/,
@@ -88,7 +88,7 @@ function readSources(root) {
   const preamble = need(/export const PREAMBLE_BYTES = (\d+);/, format, 'PREAMBLE_BYTES');
   const ttl = need(
     /const DEFAULT_CURRENT_GEN_TTL_MS = (\d+);/,
-    source,
+    readerDefaults,
     'DEFAULT_CURRENT_GEN_TTL_MS',
   );
   const fanOut = need(
