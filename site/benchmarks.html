@@ -588,7 +588,8 @@
 
            Injected by `pnpm bench:scale` (publish mode) — or re-rendered from the committed measurements
            without re-measuring via `pnpm bench:scale:render`, because the 100K run takes tens of minutes and
-           its wall-clock numbers are machine-dependent. Do not hand-edit inside the markers. -->
+           its wall-clock numbers are machine-dependent. Do not hand-edit inside the markers:
+           `pnpm bench:scale:check` fails if this copy is not what the committed results file renders. -->
       <section id="memory">
         <h2>A hundredfold more segments, the same memory</h2>
         <p class="lede">
@@ -674,8 +675,8 @@
               <span class="m">docs/benchmarks.md</span>, a calibration run's own results file, the soak's own
               results, the pricing profile itself —
               and the check also fails on a figure those sources <strong>cannot account for</strong>, so a
-              number cannot improve without evidence either. The at-scale table is the exception: nothing checks
-              it yet.
+              number cannot improve without evidence either. The at-scale table is held to the benchmark's own
+              results file too.
             </p>
           </div>
           <!-- The fourth card, which is also what makes the grid 2×2 rather than leaving a half-row. The

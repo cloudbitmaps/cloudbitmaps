@@ -289,7 +289,12 @@ function checkDriverCountEverywhere(want) {
     const COUNT = `(\\d+|${NUMBER_WORDS.join('|')})`;
     const ADJECTIVES = '(?:(?!of\\b|in\\b|for\\b|to\\b|storage\\b)[a-z-]+\\s+){0,2}';
     for (const m of text.matchAll(
-      new RegExp(`(\\bthe\\s+)?\\b${COUNT}\\s+${ADJECTIVES}(storage\\s+)?drivers\\b`, 'gi'),
+      // "backends" as well as "drivers": llms.txt said "Five storage backends", counting the in-memory pair the
+      // rest of the site leaves out, and the noun alone kept it out of this check.
+      new RegExp(
+        `(\\bthe\\s+)?\\b${COUNT}\\s+${ADJECTIVES}(storage\\s+)?(?:drivers|backends)\\b`,
+        'gi',
+      ),
     )) {
       // "the" excludes the phrase ONLY where the noun is bare. `the two drivers` is anaphoric — it names one
       // backend's storage and registry halves, which `S3Storage` configures together. `the four storage
@@ -1129,7 +1134,7 @@ const specAnchors = [];
   // way: the tally quietly fell by one while the run stayed green, because a statement that stops matching
   // looks identical to a statement that was deleted. A count that can only go up without a deliberate edit
   // turns both into failures.
-  const DRIVER_STATEMENT_FLOOR = 14;
+  const DRIVER_STATEMENT_FLOOR = 15;
   const alsoChecked = checkDriverCountEverywhere(backends.size);
   if (alsoChecked < DRIVER_STATEMENT_FLOOR) {
     fail(
