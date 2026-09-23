@@ -140,6 +140,22 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   actually is, why a JS-heap sample cannot see the roaring addon's off-heap allocations (and so cannot evidence
   the bounded-memory invariant), and why the published figure is a ceiling rather than a reading.
 
+### Fixed
+
+- **`estimateCost()` counts the pointer, the index and the pointer refresh, which it had left out.** On a
+  single-bucket store, the topology that ships, it under-quoted both operations it prices: a load as its object's
+  PUT-class requests alone, and an intersect as its chunk reads alone. A load now adds what `store.load()` makes
+  around the object's write — two listings and the pointer's write, and nine GETs — so a single-part load prices at
+  about $23.60 per million at the default rates, where it had been quoted at $5. A cold intersect adds a pointer read
+  and an index read for each operand (`operandsPerIntersect`, 2 by default), so two segments sharing k chunks price
+  at 4 + 2k GETs. A new term prices the pointer refresh: `hotSegments`, the segments a long-lived reader keeps
+  reading, each re-reading its pointer every `genTtlMs` (the store's `cache.genTtlMs`, 2 s by default), about $0.53 a
+  segment a month; it is reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken
+  out of the read crossover's baseline when it is. `chunksPerIntersect` and `requestsPerLoad` keep the meaning they
+  had in `0.10.0`, the chunks an intersect fetches and the object's own PUT-class requests: if you followed the
+  site's advice, between the single-bucket run's publication and this fix, to fold the pointer into them, pass the
+  plain counts again. Each count the estimator adds is held by a test to the requests the real engine makes.
+
 ## [0.10.0] — 2026-09-21
 
 > **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered

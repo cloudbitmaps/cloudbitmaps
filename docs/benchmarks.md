@@ -40,9 +40,13 @@ build:
   posture, is asserted against the rate this page prints, over the same $346 baseline.
 - **The estimator never quotes fewer chunk reads than the engine makes** — priced against the chunk GETs a metrics
   sink observed for a point-read workload on an in-memory store, the prediction must land on or above the measured
-  cost. That covers point reads' chunk GETs only. For an intersect the estimator prices whatever
-  `chunksPerIntersect` it is given, 1 by default, and it has no term yet for the pointer and tail reads a
-  single-bucket store adds, which [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416) measured.
+  cost. That covers point reads' chunk GETs.
+- **The estimator counts what the engine sends** — a cold intersect's pointer and index reads for each operand before
+  its chunks, what `store.load()` adds to a load's object write, and one pointer read per hot segment per
+  `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
+  the requests it makes. It still quotes low where it cannot see: an intersect slow enough to outlive
+  `cache.genTtlMs` re-reads its pointers, an operand whose index outgrows the tail read makes one more GET, and a
+  load that loses a publish race reads the pointer again.
 
 ## Real-cloud calibration — AWS
 
@@ -107,12 +111,12 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
   by a test, not measured.
 - **Other shapes**: more operands, other overlaps, `andNot` with an `exclude`, the `*Into` verbs.
 
-**`estimateCost()` does not count the pointer or the tail reads yet.** It prices a load as `requestsPerLoad`
-PUT-class requests (1 by default, which is $5 per million loads) and an intersect as `chunksPerIntersect` GETs (1 by
-default), and it has no term for the pointer refresh. Until it counts them itself, pass `requestsPerLoad: 2.24`,
-which prices a single-bucket write and publish at $11.20 per million, or `4.56` for a segment's first `store.load()`
-and `4.72` from its third, and pass every GET an intersect makes as `chunksPerIntersect`: `204` for a cold
-intersect of this shape. The fix is [owed](#what-is-still-owed).
+**`estimateCost()` now counts what this run's bill counted.** When the run was published it priced a load as its
+object's PUT-class requests alone and an intersect as its chunk reads alone, with no term for the pointer, the tail
+reads or the pointer refresh. It now adds each cold operand's pointer and tail read, which prices this run's
+intersect at 204 GETs (**expected**); what `store.load()` adds to its object's write; and the pointer refresh, for
+the segments a long-lived reader keeps reading. The
+[guide](guide/getting-started.md#what-each-term-counts) says what each term counts.
 
 ### The July 2026 run — `2026-07-25-60291`, the object-store half of a retired topology
 
@@ -330,10 +334,6 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a listing
   to choose the generation number and a collection pass after the publish. A test counts the requests that adds,
   which about doubles a load's bill; they are not yet measured on S3.
-- **An estimator that counts the pointer and the tail reads.** `estimateCost()` has no term for the pointer's
-  requests in a load or an intersect, none for an intersect's tail reads, and none for the pointer refresh, so it
-  under-quotes both operations in the single-bucket topology; see
-  [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416) for the figures to use until it does.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 
 **The harness is built, and has run for real from a laptop.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
@@ -347,7 +347,7 @@ below 30 ms — a line that keeps another continent out, not a neighbouring regi
 it for a reader who wants a stricter one. Its run `2026-09-23-94416`, from a laptop, paid the cost side above. A run
 from AWS CloudShell can pay the rows it measures: in-region intersect latency and load throughput. Point reads,
 `andNot` with a large `exclude`, `store.load()` itself, the `*Into` verbs, the sweep and the Lambda figure are not in it
-yet, and the estimator's fix is a library change.
+yet.
 How it guards against spending more than it says, and how to run it from inside the region:
 [`bench/README.md`](../bench/README.md#real-cloud-calibration).
 

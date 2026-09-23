@@ -485,15 +485,6 @@ function derive(run, src) {
       segmentMonth: monthUSD(object),
       multipartMonth: monthUSD(multipartObject),
       pointerRefreshMonth: pointerRefreshUSD,
-      // What `estimateCost()` charges a load by default: `requestsPerLoad` PUT-class requests, 1 unless set.
-      estimatorLoadDefault: putUSD,
-    },
-    // The requestsPerLoad values that make the estimator's PUT-only load term price each kind of load exactly.
-    estimatorRequestsPerLoad: {
-      writeAndPublish: putsPerSingle + (getsPerLoad * getUSD) / putUSD,
-      ...Object.fromEntries(
-        Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, r.put + (r.get * getUSD) / putUSD]),
-      ),
     },
     parity: {
       intersectsPerMonth: perMonth(measuredIntersectUSD),
@@ -689,8 +680,6 @@ function valuesOf(f, { withLatency }) {
       f.usd.segmentMonth,
       f.usd.multipartMonth,
       f.usd.pointerRefreshMonth,
-      f.usd.estimatorLoadDefault,
-      1e6 * f.usd.estimatorLoadDefault,
       bind(1e6 * f.usd.singleLoadPuts, ['puts', 'gets'], ['puts']),
       bind(1e6 * f.usd.loadGets, ['puts', 'gets'], ['gets']),
       bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),
