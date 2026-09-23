@@ -54,11 +54,12 @@ WORK="$(mktemp -d)"
 # Copy the results out on EVERY exit, including an interrupt: the harness writes them before it stops, and a
 # scratch directory deleted with them inside would throw away a run already paid for.
 finish() {
-  # A rehearsal writes its own file, so it can never be mistaken for a real run's evidence.
-  for f in calibrate-aws-results.json calibrate-aws-rehearsal.json; do
-    if [ -f "$WORK/bench/$f" ]; then
-      cp "$WORK/bench/$f" "$HOME/$f"
-      echo "cloudshell: results at ~/$f (Actions → Download file, or cat it)"
+  # A real run writes its evidence as bench/calibration/<runId>.json; a rehearsal writes a file of its own, so it can
+  # never be mistaken for a real run's evidence. Commit a real run's file at that same path.
+  for f in "$WORK"/bench/calibration/*.json "$WORK/bench/calibrate-aws-rehearsal.json"; do
+    if [ -f "$f" ]; then
+      cp "$f" "$HOME/"
+      echo "cloudshell: results at ~/$(basename "$f") (Actions → Download file, or cat it)"
     fi
   done
   rm -rf "$WORK"

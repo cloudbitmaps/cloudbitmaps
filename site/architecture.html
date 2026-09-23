@@ -284,8 +284,9 @@
               Data enters exactly one way: <span class="m">store.load</span> streams a set of ids
               into one immutable object, then <span class="m">publishGeneration</span> advances the pointer.
               There is no per-id write, so there is nothing to fold back in later and
-              <strong>no background job on the read path</strong>. A publish costs
-              <strong>$5.88 per million segments</strong>, so batch the refresh.
+              <strong>no background job on the read path</strong>. On S3 the write and the publish cost
+              <strong>$11.20 per million segments</strong>, pointer included — measured for those two steps;
+              <span class="m">store.load</span>'s listing and clean-up pass come on top — so batch the refresh.
             </p>
           </div>
           <div class="limit">

@@ -19,7 +19,7 @@
     <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
     <meta
       name="description"
-      content="Measured against real S3, with the request counts read off the AWS SDK rather than off our own arithmetic. $0.14 per million count() calls, $0.03/mo for 1.2 GiB at rest — and past 329.15 reads/s a flat Redis node is simply cheaper."
+      content="Measured against real S3, with the request counts read off the AWS SDK rather than off our own arithmetic. $81.60 per million cold intersects, $11.20 per million loads with the pointer included, $0.03/mo for 1.2 GiB at rest — and past 329.15 reads/s a flat Redis node is simply cheaper."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -119,7 +119,8 @@
               <span>1.2 GiB at rest, no traffic</span><span class="is-live">$0.03 /mo</span>
             </p>
             <p class="panel-row is-pair"><span>Share of a Redis node</span><span>0.008%</span></p>
-            <p class="panel-row is-pair"><span>1M segment publishes</span><span>$5.88</span></p>
+            <p class="panel-row is-pair"><span>1M cold A ∩ B, 100 chunks shared</span><span>$81.60</span></p>
+            <p class="panel-row is-pair"><span>1M loads, pointer included</span><span>$11.20</span></p>
             <p class="panel-row is-pair"><span>Read crossover</span><span>329.15 /s</span></p>
             <p class="link-row"><a href="usage.html#drivers">Estimate your own rates →</a></p>
           </aside>
@@ -133,8 +134,9 @@
 
            There is ONE crossover row here, not two, and the reason is structural rather than editorial: a
            loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
-           generation — one object PUT, a few when multipart — which `estimateCost` prices as
-           `loadsPerMonth × requestsPerLoad`, and that is the "1M segment publishes" row instead. -->
+           generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
+           instead. Its figure is the single-bucket run's, not the estimator's: `estimateCost` prices a load as
+           `loadsPerMonth × requestsPerLoad` PUT-class requests and has no term for the pointer yet. -->
       <section id="anchors">
         <h2>Cost anchors</h2>
         <p class="lede">
@@ -185,12 +187,22 @@
                   <td><span class="status is-shipped">Win big</span></td>
                 </tr>
                 <tr>
-                  <td>1M segment publishes</td>
-                  <td class="num">$5.88</td>
+                  <td>1M cold A ∩ B on real S3</td>
+                  <td class="num">$81.60</td>
                   <td class="from">
-                    A generation written once. The forward-only registry publish that makes it current was
-                    billed to a NoSQL registry that no longer ships, so it is not in this figure. The meter
-                    counts objects, not ids — so batch a refresh.
+                    Two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs each — a pointer and a tail
+                    read per operand, then the shared chunks — whatever the segments' size. Every one cold, and
+                    every one exact. <a href="#single-bucket">The run</a>.
+                  </td>
+                  <td><span class="status is-shipped">Win</span></td>
+                </tr>
+                <tr>
+                  <td>1M loads, pointer included</td>
+                  <td class="num">$11.20</td>
+                  <td class="from">
+                    A generation written once, then the pointer moved to it: 2 PUTs and 3 GETs, measured on real
+                    S3 with the pointer in the same bucket. The meter counts objects, not ids — so batch a
+                    refresh.
                   </td>
                   <td><span class="status is-coming">Batch it</span></td>
                 </tr>
@@ -228,8 +240,8 @@
             reserved-RAM baseline is an ElastiCache HA cluster — <strong>1 primary + 2 replicas</strong> on
             <span class="m">cache.m7g.large</span>, about $115/mo single-node. And one crossover rather than
             two: a segment changes only by publishing a whole new generation, so the write side is priced per
-            object PUT — <span class="m">loadsPerMonth × requestsPerLoad</span>, the publishes row — and a
-            writes-per-second threshold would put a rate on an operation the library cannot perform. Change an
+            object PUT and a pointer — the loads row — and a writes-per-second threshold would put a rate on an
+            operation the library cannot perform. Change an
             assumption and the read line moves; <a href="#crossover">four of them are how far</a>.
           </p>
         </div>
@@ -362,11 +374,12 @@
           <li>
             <span class="rl-mark">04</span>
             <span class="rl-what">And the write side crosses nothing at all</span>
-            <span class="rl-fig">$5.88 / 1M publishes</span>
+            <span class="rl-fig">$11.20 / 1M loads</span>
             <span class="rl-note">
               There is no writes-per-second line here because there is no per-id write: a set changes by loading
               a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
-              — one, or a handful when the object goes multipart — however many ids that generation carries.
+              — one, or a handful when the object goes multipart — plus the pointer's own PUT and reads, however
+              many ids that generation carries.
               Batching is the entire optimisation, and you make it at load time rather than at the meter.
               <a href="usage.html">How a generation is loaded</a>.
             </span>
@@ -455,9 +468,10 @@
       <section id="owed">
         <h2>The latency claim we do not make</h2>
         <p class="lede">
-          The loaded read path has never been timed inside a region, so no latency is published here at all.
-          Wall-clock throughput on shared runners is too noisy to gate; the first three rows below are what we
-          owe you instead of quoting it loosely. The fourth is a measured ceiling, marked as such.
+          The loaded read path has never been timed inside a region, so no latency is published here at all —
+          its bill is measured, its stopwatch is not. Wall-clock throughput on shared runners is too noisy to
+          gate; the first three rows below are what we owe you instead of quoting it loosely. The fourth is a
+          measured ceiling, marked as such.
         </p>
         <ul class="rowlist">
           <li>
@@ -465,9 +479,9 @@
             <span class="rl-what">In-region read latency</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              The calibration run was driven from a laptop <em>outside</em> <span class="m">us-east-1</span>, so
-              its wall-clock was dominated by internet transit and it calibrated the <strong>cost</strong> claim
-              only. No percentile for <span class="m">has</span>, <span class="m">count</span> or
+              Both calibration runs were driven from a laptop <em>outside</em> <span class="m">us-east-1</span>,
+              so their wall-clock was dominated by internet transit and they calibrated the <strong>cost</strong>
+              claim only. No percentile for <span class="m">has</span>, <span class="m">count</span> or
               <span class="m">intersect</span> is published, and the figures gate fails the build if such a
               row reappears in the benchmark record — so publishing one takes a run <em>and</em> a deliberate
               change to the gate that forbids it.
@@ -478,9 +492,10 @@
             <span class="rl-what">Load throughput</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Sustained <span class="m">bulkLoadCrbmGeneration</span> rate and cost against a real object store,
-              at the segment sizes a real refresh produces. The at-scale table's ~38&ndash;51 durable
-              segments/s is local disk and fsync-bound, and is <em>not</em> that number.
+              Sustained <span class="m">bulkLoadCrbmGeneration</span> rate against a real object store, from inside
+              the region, at the segment sizes a real refresh produces. Its <em>cost</em> is measured — the
+              loads row above — but the first run's upload speed was a laptop's uplink, and the at-scale table's
+              ~38&ndash;51 durable segments/s is local disk and fsync-bound. Neither is that number.
             </span>
           </li>
           <li>
@@ -490,7 +505,8 @@
             <span class="rl-note">
               In-region wall-clock for a chunk-skipping <span class="m">A ∩ B</span>, and for
               <span class="m">andNot</span> with a large <span class="m">exclude</span>, against a real object
-              store rather than local disk. The 24.6 ms below is one operation against the in-memory drivers.
+              store rather than local disk. Its request count and its bill are measured on real S3; its
+              wall-clock is not. The 24.6 ms below is one operation against the in-memory drivers.
             </span>
           </li>
           <li>
@@ -612,7 +628,8 @@
             <p>
               Every money figure and rate on this page is checked by a build gate against the source that
               produced it — <span class="m">bench/results.json</span>,
-              <span class="m">docs/benchmarks.md</span>, the soak's own results, the pricing profile itself —
+              <span class="m">docs/benchmarks.md</span>, a calibration run's own results file, the soak's own
+              results, the pricing profile itself —
               and the check also fails on a figure those sources <strong>cannot account for</strong>, so a
               number cannot improve without evidence either.
             </p>
@@ -630,6 +647,55 @@
               under-quote, which is the failure mode that would cost you money.
             </p>
           </div>
+        </div>
+
+        <!-- ── THE SINGLE-BUCKET BILL ───────────────────────────────────────
+             The bill for the topology that ships: the pointer in the same bucket as the data, so every pointer
+             read and write is an S3 request on it. Every figure comes out of the run's committed results file
+             through bench/lib/calibration-figures.cjs, which scripts/site-figures.cjs and the run's report
+             share. The run's latency and upload rates are deliberately absent: the client was a laptop outside
+             the region, and those numbers measured its connection. -->
+        <div class="tpanel" id="single-bucket">
+          <div class="tpanel-head">
+            <span class="label">What one bucket costs · measured</span>
+            <span class="label">2026-09-23 · us-east-1 · run 2026-09-23-94416</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operation</th>
+                  <th class="num">Requests</th>
+                  <th class="num">Per million</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Cold A ∩ B, 100 of 1,999 chunks shared</td>
+                  <td class="num">204 GETs</td>
+                  <td class="num">$81.60</td>
+                </tr>
+                <tr>
+                  <td>Load a segment, pointer included</td>
+                  <td class="num">2 PUT + 3 GET</td>
+                  <td class="num">$11.20</td>
+                </tr>
+                <tr>
+                  <td>Load a segment, multipart</td>
+                  <td class="num">5 PUT-class + 3 GET</td>
+                  <td class="num">$26.20</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <strong>Measured request counts at list prices.</strong> Every one of 40 cold intersects returned
+            exactly the planned ids, and each fetched 100 of 1,999 chunks per segment — the chunks the two share
+            and nothing else. The whole run, teardown included, cost <strong>$0.0034816</strong>. The client was
+            a laptop outside the region, so no latency or upload rate from this run is published: those numbers
+            measured its connection. The run's full report explains every figure, with a diagram for each, in
+            <span class="m">bench/calibration/2026-09-23-94416.md</span>.
+          </p>
         </div>
 
         <!-- ── THE CALIBRATION RECEIPT ──────────────────────────────────────
@@ -679,10 +745,10 @@
             of four, and a “total” over a subset is a number no run produced. The harness that produced the run,
             and its raw artifact, were removed along with the tier they were built to meter, so these two rows
             <em>are</em> the record. What is left is the object-store half — and the object store is now the
-            whole write path and the whole read path. The two unit figures in
-            <a href="#anchors">the cost anchors</a> above, <strong>$0.14</strong> per million
-            <span class="m">count()</span> calls and <strong>$5.88</strong> per million publishes, fall out of
-            this run and are paths the loaded store still takes.
+            whole write path and the whole read path. Its two unit figures, <strong>$0.14</strong> per million
+            <span class="m">count()</span> calls and <strong>$5.88</strong> per million publishes, left the pointer
+            out. The count figure is still the one in <a href="#anchors">the cost anchors</a>; the publish figure
+            is superseded by the single-bucket run above, which measured the pointer too.
           </p>
         </div>
       </section>
@@ -697,15 +763,14 @@
         <ul class="rowlist">
           <li>
             <span class="rl-mark">00</span>
-            <span class="rl-what">The registry it measured is not the registry that ships</span>
-            <span class="rl-fig">pointer cost unmeasured</span>
+            <span class="rl-what">The July figures predate the single-bucket design</span>
+            <span class="rl-fig">pointer measured since</span>
             <span class="rl-note">
-              Generation resolution ran against a NoSQL table in that run. The library now keeps the pointer in
-              the same bucket as the data, so the same operations additionally pay an object-store request for
-              it — a GET to resolve, a conditional PUT to advance — which is not in the figures above. How much
-              that adds depends on how often the resolution is served from the reader's cache rather than
-              re-fetched, and this run cannot tell you. Treat these as the object-store half of an older shape
-              rather than today's total.
+              Generation resolution ran against a NoSQL table in the July run, so its figures are the object-store
+              half of that shape. The library now keeps the pointer in the same bucket as the data, and the
+              September run measured what that adds: a load is 2 PUTs and 3 GETs, <strong>$11.20</strong> per
+              million, where the July figure could see <strong>$5.88</strong>. Its
+              <span class="m">count()</span> figure has not been re-measured; read it as the object-store half.
             </span>
           </li>
           <li>

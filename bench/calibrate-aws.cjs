@@ -36,8 +36,8 @@
  * reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those meet reality for the
  * first time on a real account, which is why the probe refuses anything but a clean 404.
  */
-const { writeFileSync } = require('node:fs');
-const { resolve } = require('node:path');
+const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
+const { dirname, resolve } = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -58,6 +58,8 @@ const {
   layoutIds,
   maskAccount,
   resultsFile,
+  checkRunId,
+  TIMED_STORE,
   clientConfigs,
   bucketIsGone,
   uploadIsGone,
@@ -74,7 +76,6 @@ const argv = process.argv.slice(2);
  * clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
-const OUT = resolve(ROOT, resultsFile(REHEARSE));
 const MODE = argv.includes('--cleanup')
   ? 'cleanup'
   : argv.includes('--run')
@@ -224,7 +225,7 @@ async function main() {
       `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
     );
     console.log(`  projected $  ${priced.totalUSD.toFixed(6)} at ${pricing.name}`);
-    console.log('\n  --rehearse   the whole harness against MinIO, free');
+    console.log('\n  --rehearse   the workload against MinIO, free — the money guards do not run');
     console.log('  --run        the real thing (needs region + ceiling + confirmation)');
     return 0;
   }
@@ -281,7 +282,23 @@ async function main() {
   if (MODE === 'cleanup' && (runId === undefined || runId.startsWith('--'))) {
     refuse('--cleanup needs a run id: node bench/calibrate-aws.cjs --cleanup 2026-09-22-ab12e');
   }
+  try {
+    checkRunId(runId);
+  } catch (err) {
+    refuse(err.message);
+  }
   const bucket = `cloudbitmaps-calib-${runId}`;
+  // One evidence file per real run, named by its id; a rehearsal's own file is ignored by git.
+  const out = resolve(ROOT, resultsFile(REHEARSE, runId));
+  // Evidence is write-once, like the generations it measures: a figure published from a run is checked against
+  // the file under that run's id, and a second run given the same id would otherwise replace it. Refused before
+  // the identity check, so nothing has been created and no credentials have been read.
+  if (MODE === 'run' && !REHEARSE && existsSync(out)) {
+    refuse(
+      `${out.replace(`${ROOT}/`, '')} already exists — that run's evidence is committed. Choose another ` +
+        'CR_CALIBRATE_RUN_ID, or leave it unset for a fresh one.',
+    );
+  }
 
   /**
    * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
@@ -431,8 +448,10 @@ async function main() {
   };
   const writeResults = () => {
     results.elapsedMs = Date.now() - started;
-    writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
-    log(`wrote ${OUT.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
+    // The evidence directory may not exist yet: CloudShell runs this from a scratch copy of `bench/`.
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, `${JSON.stringify(results, null, 2)}\n`);
+    log(`wrote ${out.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
   };
 
   /**
@@ -587,9 +606,9 @@ async function main() {
     for (let i = 0; i < READS; i += 1) {
       const a = `seg-${i % SEGMENTS}`;
       const b = `seg-${(i + 1) % SEGMENTS}`;
-      // `retry: false`: the store has a transient-read retry of its own, above the client, and it would re-run a
-      // failed read INSIDE the timed window — a second retry layer the client's one-attempt pin does not reach.
-      const store = new CloudRoaring({ storage, retry: false });
+      // No retry of the store's own inside the timed window, and each pointer read exactly once however long the
+      // intersect takes, so the request count describes the library rather than the network. `TIMED_STORE` says why.
+      const store = new CloudRoaring({ storage, ...TIMED_STORE });
       const before = snap();
       const t0 = process.hrtime.bigint();
       let n = 0;
@@ -651,6 +670,9 @@ async function main() {
             tailReadBytesPerOperand: median(reads.map((r) => r.tailBytes)) / 2,
             pointerReadsPerIntersect: median(reads.map((r) => r.pointerReads)),
             medianGets: median(reads.map((r) => r.gets)),
+            // How the timed stores were built, because the request count depends on it: on the default pointer
+            // refresh a slow intersect reads each pointer again.
+            timedStore: TIMED_STORE,
           };
     if (reads.length > 0) {
       const it = results.phases.intersect;

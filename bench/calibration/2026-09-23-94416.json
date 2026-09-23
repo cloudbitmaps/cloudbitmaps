@@ -1,0 +1,103 @@
+{
+  "note": "Written by bench/calibrate-aws.cjs. Regenerate with `pnpm calibrate:aws --run`.",
+  "runId": "2026-09-23-94416",
+  "mode": "run",
+  "target": "aws",
+  "region": "us-east-1",
+  "measured": {
+    "packageVersion": "0.10.0",
+    "harness": "e42c27f",
+    "node": "v24.18.1"
+  },
+  "pricing": "aws-us-east-1-ondemand",
+  "workload": {
+    "segments": 10,
+    "idsPerSegment": 500000,
+    "chunksPerSegment": 1999,
+    "sharedChunks": 100,
+    "largeSegments": 2,
+    "largeChunks": 1536,
+    "coldIntersects": 40
+  },
+  "projected": {
+    "put": 96,
+    "get": 8311
+  },
+  "partial": false,
+  "phases": {
+    "load": {
+      "singlePart": {
+        "runs": 10,
+        "medianIdsPerSec": 342617.36958946154,
+        "medianBytesPerSec": 721036.8838315435,
+        "medianObjectBytes": 1052248
+      },
+      "multipart": {
+        "runs": 2,
+        "medianIdsPerSec": 1401333.3595630145,
+        "medianBytesPerSec": 1405811.5769837028,
+        "medianObjectBytes": 12623123
+      }
+    },
+    "intersect": {
+      "runs": 40,
+      "cold": true,
+      "exact": true,
+      "p50ms": 2912.021166,
+      "p95ms": 4189.180917,
+      "p99ms": 4193.170667,
+      "chunksFetchedPerOperand": 100,
+      "chunksPerSegment": 1999,
+      "payloadFraction": 0.04903786939960922,
+      "tailReadBytesPerOperand": 262144,
+      "pointerReadsPerIntersect": 4,
+      "medianGets": 206
+    }
+  },
+  "network": {
+    "rttFloorMs": 83.122333,
+    "rttMedianMs": 103.972375,
+    "client": "REMOTE — latency below is network-dominated",
+    "inRegionThresholdMs": 30
+  },
+  "cost": {
+    "putUSD": 0.00017,
+    "getUSD": 0.0033116000000000005,
+    "totalUSD": 0.0034816000000000005,
+    "ops": {
+      "put": 34,
+      "get": 8279,
+      "free": 2,
+      "bytesUp": 35768726,
+      "bytesDown": 25123992,
+      "byCommand": {
+        "HeadBucketCommand": 11,
+        "CreateBucketCommand": 1,
+        "GetObjectCommand": 8268,
+        "PutObjectCommand": 22,
+        "CreateMultipartUploadCommand": 2,
+        "UploadPartCommand": 4,
+        "CompleteMultipartUploadCommand": 2,
+        "ListMultipartUploadsCommand": 1,
+        "ListObjectVersionsCommand": 2,
+        "DeleteObjectsCommand": 1,
+        "DeleteBucketCommand": 1
+      },
+      "reads": {
+        "whole": {
+          "n": 152,
+          "bytes": 24472
+        },
+        "suffix": {
+          "n": 80,
+          "bytes": 20971520
+        },
+        "range": {
+          "n": 8000,
+          "bytes": 4128000
+        }
+      }
+    }
+  },
+  "elapsedMs": 154231
+}

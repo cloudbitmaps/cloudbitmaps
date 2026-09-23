@@ -950,6 +950,13 @@ flat always-on baseline. It is not a ceiling on the library — it is a property
 Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month is
 about $0.51. The term exists so the report can say so rather than assume it.
 
+**The estimator does not count the pointer's requests yet.** Measured on real S3, a load makes its object's
+PUT-class requests plus the pointer's conditional PUT and three GETs of it, and a cold intersect of two segments
+sharing k chunks makes 4 + 2k GETs — a pointer read and a tail read per operand before the chunks. So pass every
+PUT-class request a load makes, the pointer's included, as `requestsPerLoad`, and every GET an intersect makes as
+`chunksPerIntersect`. The [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the
+measured request shapes, and the estimator's own fix is on its list of what is still owed.
+
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
 Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the
 numbers can never drift ahead of reality.

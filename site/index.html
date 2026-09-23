@@ -204,11 +204,13 @@
               1.2 GiB at rest, no traffic: <span class="is-live">$0.03/mo</span> — 0.008% of a Redis
               node
             </p>
-            <!-- The second row replaces the write figure this panel used to headline. A publish is the
+            <!-- The second row replaces the write figure this panel used to headline. A load is the
                  only way data enters a segment, so its price is the other half of the bill a reader
-                 pays — and it bills per OBJECT, which is why it reads per million rather than per id. -->
+                 pays — and it bills per OBJECT, which is why it reads per million rather than per id. It is
+                 the single-bucket run's figure, pointer included; the July figure it replaced left the pointer
+                 out. -->
             <p class="panel-row is-pair">
-              <span>Publishing a whole segment</span><span>$5.88 per 1M</span>
+              <span>Loading a whole segment, pointer included</span><span>$11.20 per 1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>

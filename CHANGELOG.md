@@ -17,6 +17,34 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Added
 
+- **The single-bucket bill, measured on AWS.** The calibration harness's first real run, `2026-09-23-94416`, put
+  the topology that ships on real S3 in `us-east-1` — the registry pointer in the same bucket as the data — and
+  the benchmarks page now publishes what it costs. A cold intersect of two 500,000-id segments sharing 100 of
+  1,999 chunks is **204 GETs, $81.60 per million**; a load is **2 PUTs and 3 GETs, $11.20 per million**, pointer
+  included; a multipart load is $26.20 per million. All 40 cold intersects were exact, and each fetched only the
+  100 shared chunks per segment: chunk-skipping, shown on real S3 for the first time. The run was driven from a
+  laptop outside the region, so its latency and upload figures measured the connection and are not published.
+  The in-region run is still owed.
+
+  The run's evidence is committed unedited as `bench/calibration/2026-09-23-94416.json`, beside a report that
+  explains every figure with a diagram, labels each one measured, derived or expected, and says what the run does
+  not establish. A new gate, `tests/docs/calibration-reports.test.ts`, derives every figure from that evidence
+  through `bench/lib/calibration-figures.cjs` and holds the report and the benchmarks page's section to it in both
+  directions. A missing headline figure fails it, and so does any dollar amount, percentage, duration or byte
+  size the evidence cannot account for. It refuses evidence that does not reconcile with itself, and checks the
+  report's request ledger request by request. `bench/calibration/` has a README of its own, and the directory
+  README gate now lets such a subdirectory take one row in its parent's.
+
+  The figure this supersedes, $5.88 per million publishes, left the pointer out: it came from a run that kept the
+  pointer in a NoSQL table. The site, both READMEs, `llms.txt` and the roadmap now quote the single-bucket
+  figures, and `scripts/site-figures.cjs` checks the dollar amounts in `llms.txt`, the READMEs and the roadmap as
+  well as the site's pages. None of them was checked before.
+
+  Checking the run against the code found that `estimateCost()` under-quotes both operations in this topology.
+  It prices a load as `requestsPerLoad` PUT-class requests, with no term for the pointer, and an intersect as
+  `chunksPerIntersect` GETs, with none for the pointer and tail reads. The guide and the benchmarks page say what
+  to pass until it counts them itself, which is owed.
+
 - **A real-cloud calibration harness for the loaded store** — `pnpm calibrate:aws`. The previous one was
   deleted with the warm tier because it metered a write path through a NoSQL registry that no longer ships,
   which is why load throughput, in-region intersect latency and the single-bucket bill are all listed as owed
@@ -60,6 +88,14 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
+- **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
+  pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
+  each pointer again, so the first real run — 83 ms from the region — counted 206 GETs an intersect where the same
+  intersect inside the region makes 204, and landed exactly on its own projection. The projection now also allows
+  every pointer read a load can make: three with nothing racing it, and up to twelve if every publish attempt
+  loses, where it had allowed one per attempt. A real run writes its evidence to `bench/calibration/<runId>.json`
+  and refuses to overwrite one that exists, and the run id is validated first, since it names both the bucket and
+  the file.
 - **The hard RSS ceiling is now a published figure rather than an owed one.** `pnpm rss-gate` records its run
   to `bench/rss-gate-results.json`, and `docs/benchmarks.md` plus the benchmarks page state the ceiling a
   sustained read + combine + re-load workload over 400 segments survives: **384 MiB**, swap disabled, no

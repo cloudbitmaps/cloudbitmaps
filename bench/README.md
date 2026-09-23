@@ -30,8 +30,8 @@ For what each published number means, how it was measured, and what it does *not
 | `scale.cjs` | A fleet of up to 100,000 segments on local disk: retained heap as the fleet grows (the memory bound), the `O(total)` cost of enumerating it, and chunk-skipping on two large segments. | `pnpm bench:scale` (heavy); `SCALE_FLEETS=1000,10000` for a quick pass | `scale-results.json`, and the at-scale table in `docs/benchmarks.md` and `site/benchmarks.html` | no — too slow and too machine-dependent |
 | `soak.cjs` | The loaded store under **sustained** mixed load — point reads, combines with `exclude` lists, and re-loads — watching post-GC heap *and* the addon's off-heap memory for creep over time. A run with no combines or no re-loads is reported inconclusive, never a pass. | `pnpm soak` (`SOAK_INJECT=1` to persist) | `soak-results.json` | yes, inside `pnpm rss-gate` (see `scripts/`) |
 | `encoding.cjs` | Encoded size of the same ids under roaring against a fixed array, a fixed bitset and a fixed run-length encoding — the evidence behind the site's claim that roaring's advantage is choosing a representation *per chunk*. | `pnpm bench:encoding` | `encoding-results.json` | no |
-| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | `calibrate-aws-results.json`; a rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts` |
-| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/calibrate-aws-results.json` in CloudShell | no |
+| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per real run, `calibration/<runId>.json`; a rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts` |
+| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/` | no |
 
 ## The results files, and what reads them
 
@@ -46,11 +46,10 @@ figure is published from it with no check behind it, the row says that too.
 | `soak-results.json` | `soak.cjs` | `scripts/site-figures.cjs`, against the combine count and native-memory creep `site/benchmarks.html` quotes |
 | `encoding-results.json` | `encoding.cjs` | `scripts/site-figures.cjs`, against the sizes `site/flavors/roaring.html` quotes |
 | `rss-gate-results.json` | `scripts/rss-gate.sh` | `scripts/site-figures.cjs` — the hard RSS ceiling on the benchmarks page |
+| `calibration/` | `calibrate-aws.cjs`: one evidence file per real run, beside that run's report. The directory has [its own README](calibration/README.md), which lists every run | `tests/docs/calibration-reports.test.ts`, against each run's report and the benchmarks page's section on the latest run; `scripts/site-figures.cjs`, against the site's single-bucket figures |
 
-`calibrate-aws.cjs` writes a seventh, `calibrate-aws-results.json`. It is not committed yet: it arrives with the
-first in-region run, together with the gate that checks the figures published from it. A rehearsal writes
-`calibrate-aws-rehearsal.json` instead, which git ignores — it has the same shape as a real run's file, so under
-the same name it would be one `git add` from being committed as the evidence.
+A rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores — it has the same shape as a real
+run's file, so under an evidence name it would be one `git add` from being committed as the evidence.
 
 ## Real-cloud calibration
 
@@ -58,11 +57,13 @@ the same name it would be one `git add` from being committed as the evidence.
 than local disk:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket, for objects that fit one PUT and objects large enough
-   to upload multipart.
+   to upload multipart. Still owed: it needs a run from inside the region.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
+   Still owed, for the same reason.
 3. **The single-bucket bill** — the registry pointer now lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. The published cost figures predate
-   that, and billed the pointer to a separate table.
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first real run,
+   [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop: cost does not depend on where the
+   client is.
 
 ### It spends money, so it is hard to run by accident
 
@@ -99,10 +100,16 @@ plants the bug it exists for. Every one of them was a real bug, either in this h
   as absent would run the workload inside a real bucket of yours and then delete it on teardown.
 - **The projection is a real upper bound, and every run checks it.** It counts both operands of an intersect, and
   its retry bound must match the loop in `publishGeneration`: a test reads the loop's number out of the source and
-  fails if they differ, because an earlier version retyped it wrong. The workload's client makes one attempt per
-  request, and every attempt teardown's client may make is allowed for, so no SDK retry can fall outside it either.
-  After teardown, the run compares what it actually issued against what it projected, and flags itself if it went
-  over.
+  fails if they differ, because an earlier version retyped it wrong. A load reads the pointer three times even with
+  nothing racing it (the loader, the publish, and the registry before its conditional write) and up to twelve if
+  every publish attempt loses, which a test drives through the real registry code; the projection once allowed
+  one read per attempt. The workload's client makes one attempt per request, and every attempt teardown's client
+  may make is allowed for, so no SDK retry can fall outside it either. After teardown, the run compares what it
+  actually issued against what it projected, and flags itself if it went over.
+- **Evidence is write-once.** A real run's results go to a file named by its run id, and the harness refuses —
+  before it reads any credentials — to overwrite one that exists: a second run under a published run's id would
+  replace the file its figures are checked against. The id is validated first, because it names the bucket and the
+  file.
 - **Only `NoSuchBucket` means teardown has nothing left to remove.** Teardown once read *any* 404 as "already
   gone" — and an abort retried after its first answer was lost gets back a 404 `NoSuchUpload`. It then skipped
   deleting the objects and the bucket, and reported nothing. An abort that finds its upload gone is now simply
@@ -133,7 +140,11 @@ teardown, each ending with the bucket gone and the cost recorded.
   case adds up to three SDK attempts for each of the store's four, with backoff. Teardown and `--cleanup` keep the
   SDK's retries, on a second client metered into the same bill: a transient failure there would otherwise leave
   the bucket behind.
-- **Cold reads only.** Each intersect gets a fresh store, so no cache can answer it.
+- **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
+  answer it, and the store's pointers are pinned for its lifetime (`cache.genTtlMs: 0`). On the default 2 s
+  refresh, an intersect slower than that reads each pointer again — the first real run, 83 ms from the region,
+  measured 206 GETs an intersect where the same intersect in-region makes 204 — so a count taken on the default
+  would describe the network. A test drives the real engine on a slow clock to prove the pin holds.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
 - **The published shape.** 500,000-id segments spanning ~2,000 chunks with 100 shared, so the run tests the "100
@@ -142,7 +153,8 @@ teardown, each ending with the bucket gone and the cost recorded.
   chunks per operand (about 516 bytes each) plus one 256 KiB read from the end of each object, which fetches the
   footer and index in a single round trip. They are reported apart: the chunk count is the proportional part and
   the tail read is a fixed cost per operand, and a single "fraction fetched" would describe neither.
-- **What it measured.** The package version, the harness commit and the Node version.
+- **What it measured.** The package version, the harness commit, the Node version, and how the timed stores were
+  built.
 
 ### Running it in the region
 
@@ -154,14 +166,18 @@ CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibr
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
-consumer installs, not a build of this checkout. Results land in `~/calibrate-aws-results.json` even if the run
-is interrupted. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script;
-its results land in `~/calibrate-aws-rehearsal.json`.
+consumer installs, not a build of this checkout. Results land in `~/<runId>.json` even if the run is interrupted;
+commit that file as `bench/calibration/<runId>.json`, with its report — [`calibration/`](calibration/README.md)
+says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
+results land in `~/calibrate-aws-rehearsal.json`.
 
 ### What it does not measure
 
 Its scope is the three debts above, on one workload shape. Also owed, and **not** in this harness yet:
 
+- **`store.load()` itself.** The load stage calls `bulkLoadCrbmGeneration` with the generation number given, so it
+  measures the write and the publish. `store.load()` also lists the segment to choose the number and runs a
+  collection pass after the publish; listings bill at the PUT rate, so its full count is its own figure.
 - **`andNot` with a large `exclude`**, and the `*Into` verbs, which publish their result as a new generation of
   a destination segment.
 - **Other shapes of intersect** — more than two operands, or a sweep of how many chunks the operands share. It
@@ -183,7 +199,8 @@ real run — which is why the probe refuses anything that is not a clean 404.
 | file | what it is |
 |---|---|
 | `lib/aws-meter.cjs` | Counts every request the AWS SDK sends, as middleware — every attempt, retries included, read from the attempt count the SDK's retry loop records, and including requests the library never reports, like a multipart upload's parts. Classifies by **billing class**, not HTTP verb (a `LIST` bills like a `PUT`, twelve and a half times a `GET`), and splits `GetObject` by the shape of its `Range` header so chunk reads and the tail read can be told apart. An unrecognised command is counted as a paid read, never as free. |
-| `lib/calibrate-guards.cjs` | The guards above, plus the planned id layout (`planLayout`, `layoutIds`), the account mask, which file each kind of run writes (`resultsFile`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`). Pure functions, so each can be tested against the bug it exists for. |
+| `lib/calibrate-guards.cjs` | The guards above, plus the planned id layout (`planLayout`, `layoutIds`), the account mask, which file each kind of run writes and what makes a usable run id (`resultsFile`, `EVIDENCE_DIR`, `checkRunId`), how the timed stores are built (`TIMED_STORE`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`). Pure functions, so each can be tested against the bug it exists for. |
+| `lib/calibration-figures.cjs` | Every figure a calibration run lets the project publish, derived from the run's evidence, the pricing profile and the library's own constants — and a refusal for evidence that does not reconcile with itself. `tests/docs/calibration-reports.test.ts` holds the run reports and the benchmarks page to it, and `scripts/site-figures.cjs` takes the site's single-bucket figures from it. |
 
 ## Adding a harness
 
@@ -193,6 +210,7 @@ real run — which is why the probe refuses anything that is not a clean 404.
   ceiling was measured on every pull request for months and listed as owed, because its numbers went to a
   container's stdout and nowhere else.
 - **Gate any figure you publish.** A number that reaches the site is checked against its results file by
-  `scripts/site-figures.cjs`; add it there, or the page can drift from the run.
+  `scripts/site-figures.cjs`; add it there, or the page can drift from the run. A calibration run's figures come
+  out of `lib/calibration-figures.cjs`, which the run's report, the benchmarks page and the site all share.
 - **List it here.** `tests/docs/directory-readmes.test.ts` fails if a file in this directory has no row in a
   table here, or if a row names a file that does not exist.

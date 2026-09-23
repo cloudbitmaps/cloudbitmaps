@@ -47,7 +47,7 @@ Where each piece sits today:
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
 | The live (warm) tier | **removed in two steps** ([above](#where-it-stands) — the lifecycle engine and non-AWS drivers, then the tier as a whole), archived at the git tag `archive/live-warm-tier` |
-| Loaded-store benchmarks — load throughput, intersect latency | **owed**. The [benchmarks page](benchmarks.md) carries no loaded-store *cloud* measurement; its cloud figures are the S3-side ones of the July 2026 calibration run. The **RSS ceiling** is measured and published — it is the one of the three that does not need a cloud account, because a cgroup limit is enforceable locally. The harness for the other two is built (`pnpm calibrate:aws`, its workload rehearsed against MinIO); its in-region run is still owed |
+| Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — a cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks is 204 GETs, $81.60 per million, and a load is $11.20 per million, pointer included — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has run once; its in-region run is still owed |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and the object it wrote is deleted again |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
 | No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
@@ -189,17 +189,18 @@ envelope**:
 | **Scale** | up to ~100K segments; tens of millions of IDs per segment | billions of IDs in one segment (wants the reserved 64-bit format + external-merge bulk load) |
 | **Backends** | S3 storage — the validated tier | every registry (S3, GCS, Azure Blob) and GCS/Azure Blob storage: conformance-passing and correctness-clean, but not envelope-validated — the calibration run kept its pointer in a NoSQL table that no longer ships, so no shipped registry has been through it |
 | **Tenancy / region** | single-tenant, single-region | multi-tenant isolation; multi-region active/active |
-| **Cost figures** | the **S3-side figures of the July 2026 calibration run** (`us-east-1`, 2026-07-25) — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself (a tagged Cost Explorer reconciliation follows each run); **in-region latency**, which no run has measured — the calibration run was driven from outside the region and calibrates cost only; and every loaded-store figure listed as owed below |
+| **Cost figures** | the **single-bucket bill of the September 2026 calibration run** (`us-east-1`, 2026-09-23: a cold intersect and a load, pointer included) and the **S3-side figures of the July 2026 run** — published prices applied to wire-metered requests — plus the estimator, all with published methodology | the invoice itself; **in-region latency**, which no run has measured — both calibration runs were driven from outside the region and calibrate cost only; what `store.load()` costs end to end; and every loaded-store figure listed as owed below |
 
-**Measured, not asserted — and measured on what.** The figures on the [benchmarks page](benchmarks.md) are the
-S3-side figures of the July 2026 calibration run: the cost of the object-store requests the engine actually
-issued. **They carry no latency figure** — that run was driven from a laptop outside the region, so its
-wall-clock numbers measured internet transit, and in-region latency is [owed](benchmarks.md#what-is-still-owed)
-rather than published. The read path the cost figures exercise — one chunk GET behind the cache — is
-unchanged, so they still describe a loaded-store read. The write-side figures of that run described
-the removed warm tier and are no longer quoted. What is **not** yet measured is the loaded store's own shape —
-load throughput, `intersect` and `*Into` latency, RSS under a soak — and those are owed before `1.0`; until they
-exist this page quotes no number for them. Benchmark numbers come with their methodology — we never publish a
+**Measured, not asserted — and measured on what.** The cloud figures on the [benchmarks page](benchmarks.md) are
+the cost of the requests the engine actually issued, from two runs. The September 2026 run measured the topology
+that ships, with the pointer in the same bucket as the data: what a cold intersect and a load cost, pointer
+included. The July 2026 run's S3-side figures are the object-store half of a retired topology; its write-side
+figures described the removed warm tier and are no longer quoted. **Neither carries a latency figure** — both were
+driven from a laptop outside the region, so their wall-clock numbers measured internet transit, and in-region
+latency is [owed](benchmarks.md#what-is-still-owed) rather than published. What is **not** yet measured is the
+rest of the loaded store's own shape — load throughput, `intersect` and `*Into` latency — and those are owed
+before `1.0`; until they exist this page quotes no number for them. RSS under a soak is measured and published
+as a ceiling. Benchmark numbers come with their methodology — we never publish a
 figure we haven't measured, and laptop/emulator numbers are labeled as such.
 
 ## On the way to 1.0
@@ -207,31 +208,30 @@ figure we haven't measured, and laptop/emulator numbers are labeled as such.
 `1.0` is a commitment to the on-disk format, so it waits for evidence rather than a date. What stands
 between here and there:
 
-1. **Real-cloud calibration — the cost side is half done.**
-   The [object-store half](benchmarks.md#real-cloud-calibration--aws) of the 2026-07-25 run is published: two S3
-   line items, and the unit economics that fall out of them (**$0.14 per million** `count()`s, **$5.88 per
-   million** publishes — the object-store half only; the measured run billed the pointer round trip to a
-   NoSQL registry that no longer ships). Its **total is deliberately not published** —
-   the other half metered the removed delta tier, and a total over two of four terms is a figure no run
-   produced. **No latency figure is published either**, from that run or any other: it was driven from a laptop
-   outside the region, so it calibrates cost only. What remains: an **in-region** run for read latency, a
-   **Lambda** run for the serverless figure with cold-start and init included, and the loaded-store benchmarks
-   below. **The harness for the in-region run is built:** `pnpm calibrate:aws` measures load throughput, cold
-   intersect latency and the single-bucket bill in one run against a real bucket, and its `--run` refuses to start
-   without an explicit region, a spend ceiling and a typed confirmation. Its workload has been rehearsed against
-   MinIO; the run itself is still owed, and the Lambda figure needs a run from inside a function, which it does not
-   do.
-   [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes it.
+1. **Real-cloud calibration — the single-bucket bill is measured; latency is not.**
+   The [single-bucket bill](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) of the 2026-09-23 run is
+   published: 40 of 40 cold intersects exact, each fetching 100 of 1,999 chunks per segment; 204 GETs a cold
+   intersect of that shape, **$81.60 per million**; a load **$11.20 per million**, pointer included. Its
+   [report](../bench/calibration/2026-09-23-94416.md) explains every figure, and a gate holds each one to the
+   run's committed results file. The July 2026 run's object-store half stays published as that run's record
+   (**$0.14 per million** `count()`s without the pointer), and its total is deliberately not published — the
+   other half metered the removed delta tier. **No latency figure is published**, from either run: both were
+   driven from a laptop outside the region, so they calibrate cost only. What remains: an **in-region** run for
+   latency and load throughput, which `bash bench/calibrate-cloudshell.sh` makes from AWS CloudShell; what
+   `store.load()` costs end to end, since the run measured the write and the publish; an estimator that counts the
+   pointer, since `estimateCost()` prices neither the pointer's requests in a load nor in an intersect; and a
+   **Lambda** run for the serverless figure with cold-start and init included, which needs a run from inside a
+   function. [`bench/README.md`](../bench/README.md#real-cloud-calibration) describes the harness.
 2. **Loaded-store benchmarks — partly owed.** Load throughput (ids/s and bytes/s into the bucket, single-part
    and multipart) and `intersect` / `*Into` latency by operand count and chunk overlap are still owed, both
-   against a real object store. The calibration harness above covers load throughput and a two-operand
-   `intersect` at one overlap; `*Into` latency, and the sweep over operand count and overlap, are not in it yet.
+   against a real object store from inside the region. The calibration harness above covers load throughput and a
+   two-operand `intersect` at one overlap; `*Into` latency, and the sweep over operand count and overlap, are not in
+   it yet.
    **The RSS soak is no longer owed:** `pnpm rss-gate` now records its run, and
    the measured ceiling — a sustained read + combine + re-load workload over 400 segments inside a hard
    384 MiB cgroup limit with swap off, no OOM — is published on the
    [benchmarks page](benchmarks.md#what-is-still-owed). Until they exist, the only cloud measurements on the
-   benchmarks page are the S3-side figures of the July 2026 calibration run, and this page says so wherever it
-   quotes one.
+   benchmarks page are the two calibration runs' costs, and this page says so wherever it quotes one.
 3. **The empty-load guard and `load()` — ✅ Shipped.** `load()` on the store with `allowEmpty` (an empty
    result is refused unless you say so), a `guard` over the result before it is published, and rollback of a
    refused load. It covers the `*Into` verbs too: a combine that comes out empty over a non-empty destination

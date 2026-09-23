@@ -43,11 +43,66 @@ build:
 
 ## Real-cloud calibration — AWS
 
+Two runs have been metered against real S3 in `us-east-1`. Both were driven from a laptop outside the region, so
+both calibrate **cost**, and neither publishes a latency:
+
+| Run | Topology | What it establishes |
+| --- | --- | --- |
+| `2026-09-23-94416` | the one that ships: the pointer lives in the same bucket as the data | the single-bucket bill for a cold intersect and a load, and chunk-skipping on real S3 |
+| `2026-07-25-60291` | a retired one: the pointer lived in a NoSQL table | the object-store half of that shape |
+
+### The single-bucket bill — run `2026-09-23-94416`
+
+> **Measured** against real S3 in `us-east-1` on 2026-09-23, from a laptop 83 ms from the region, with the
+> packages at `0.10.0`. The run's report explains every figure, with a diagram for each:
+> [`bench/calibration/2026-09-23-94416.md`](../bench/calibration/2026-09-23-94416.md). The evidence beside it is the
+> harness's own results file, and [`tests/docs/calibration-reports.test.ts`](../tests/docs/calibration-reports.test.ts)
+> checks every figure in this section and in the report against it, in both directions.
+
+**What it establishes:**
+
+- **Chunk-skipping works on real S3.** 40 of 40 cold intersects of two 500,000-id segments returned exactly the
+  planned ids. Each fetched 100 of 1,999 chunks per segment, the 100 the two share, and skipped the other 95.0%.
+- **A cold intersect of that shape is 204 GETs**: one pointer read and one 256 KiB tail read per operand, then one
+  GET per shared chunk per operand. That is 4 + 2k GETs for k shared chunks, whatever the segments' size, while
+  each index fits the tail read: about 26,000 chunks of this shape.
+- **A load is 2 PUTs and 3 GETs**: the generation, then the pointer. The loader, the publish step and the
+  registry each read the pointer first. A multipart load adds the upload's own requests.
+
+| Operation | Requests | One | Per million |
+| --- | --- | --- | --- |
+| Cold intersect, two 500,000-id segments sharing 100 of 1,999 chunks | 204 GET | $0.0000816 | **$81.60** |
+| Load a 1.05 MB segment with `bulkLoadCrbmGeneration`, pointer included | 2 PUT + 3 GET | $0.0000112 | **$11.20** |
+| Load a 12.6 MB segment, multipart | 5 PUT-class + 3 GET | $0.0000262 | **$26.20** |
+
+These are **derived**: measured request counts times the `aws-us-east-1-ondemand` list prices. The whole run was 34
+PUT-class and 8,279 GET-class requests, teardown included, and cost $0.0034816.
+
+**Against the $346-a-month Redis-HA line**, that is 4.2 million cold intersects of this shape a month, 1.6 every
+second, or 30.9 million loads. Every intersect in the run was cold on purpose; a long-lived reader answers a
+repeat from memory.
+
+**What it does not establish:**
+
+- **Latency or throughput.** The client was 83 ms from the region, so its intersect times and upload rates
+  measured the laptop's connection. The report records them with that explanation; they are not published here,
+  and the in-region run is [owed](#what-is-still-owed).
+- **What `store.load()` costs.** The run measured the write and the publish. `store.load()` also lists the
+  segment to choose a generation number and runs a collection pass afterwards, and its full count is owed.
+- **Other shapes**: more operands, other overlaps, `andNot` with an `exclude`, the `*Into` verbs.
+
+**`estimateCost()` does not count the pointer yet.** It prices a load as `requestsPerLoad` PUT-class requests (1
+by default, which is $5 per million loads) and an intersect as `chunksPerIntersect` GETs. Until it counts the
+pointer's requests itself, price a single-bucket load at $11.20 per million, and pass `chunksPerIntersect: 204`
+for a cold intersect of this shape. The fix is [owed](#what-is-still-owed).
+
+### The July 2026 run — the object-store half of a retired topology
+
 > ✅ **MEASURED** against real S3 + DynamoDB on **2026-07-25**, `us-east-1`, run id `2026-07-25-60291`.
 > The registry in that run was a NoSQL table. **CloudBitmaps no longer ships one** — the registry now lives in
 > the object store beside the data — so read the pointer-round-trip caveat below before reusing these numbers.
-> Everything else on this page is either the cost **model** (`estimateCost`) or a **local** run. This is the
-> section that reports what AWS actually charged.
+> Everything else on this page is the cost **model** (`estimateCost`), a **local** run, or the single-bucket run
+> above. This section and that one report what AWS actually charged.
 
 **This is half of a run.** The other half is DynamoDB's two line items, and they covered both of that
 topology's NoSQL uses: the delta tier the library no longer has, and the pointer round trip that resolved a
@@ -56,10 +111,10 @@ path you cannot take, and the second is priced differently now that the pointer 
 now the whole write path and the whole read path.
 
 The harness that produced the run, and its raw artifact, were removed along with the tier they were built to
-meter. The figures below are the record. Its replacement meters the topology that ships, and has not had its
-in-region run yet — see [What is still owed](#what-is-still-owed).
+meter. The figures below are the record. Its replacement meters the topology that ships, and its first run is
+[the single-bucket bill above](#the-single-bucket-bill--run-2026-09-23-94416).
 
-### What it cost
+#### What it cost
 
 | Term | Billed quantity | Rate (`us-east-1` on-demand) | Cost |
 | --- | --- | --- | --- |
@@ -88,7 +143,7 @@ the instance class and check us.
 "Redis" is the legible example of the axis, not the opponent: the axis is **reserved capacity vs metered
 requests**, and any always-on node crosses any per-request meter somewhere.
 
-### What this section is not
+#### What this section is not
 
 - **It is prices × wire-metered ops — not the invoice.** AWS billing lags hours and has no per-run granularity,
   so the run tagged its resources (`cloudbitmaps-calibration=<runId>`) and the Cost Explorer comparison followed
@@ -97,10 +152,9 @@ requests**, and any always-on node crosses any per-request meter somewhere.
   event — a known observability gap). That is why the meter sat at the AWS SDK layer instead. PUTs bill at 12.5×
   a GET, so an ingest-heavy workload priced without them is materially understated.
 - **The registry it measured is not the registry that ships.** Generation resolution ran against a NoSQL table
-  in that run; today the pointer is an object in the same bucket, so the same operations additionally pay an
-  object-store request for it (a GET to resolve, a conditional PUT to advance) that is not in the two rows
-  above. How much that adds depends on how often the resolution is served from the reader's cache rather than
-  re-fetched, which this run cannot tell you — it is [owed](#what-is-still-owed), not estimated here.
+  in that run; today the pointer is an object in the same bucket, so the same operations additionally pay
+  object-store requests for it (GETs to resolve, a conditional PUT to advance) that are not in the two rows
+  above. The September run measured them, in [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416).
 - **It says nothing about latency.** The run was driven from a laptop outside the region, so its wall-clock
   figures were dominated by internet transit and calibrated the **cost** claim only. In-region latency for the
   loaded read path is [owed](#what-is-still-owed), not published.
@@ -234,8 +288,8 @@ which is why none is published until an in-region run produces one.
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
   the at-scale table is _measured memory + wall-clock_ (real run on local disk, machine-dependent, never
   CI-gated — shared runners are too noisy); and the real-cloud section is _measured AWS cost_ (owner-run against
-  a real account, 2026-07-25). Only the third is cloud-calibrated, and even then the dollars are published prices
-  applied to wire-metered requests, not the invoice itself.
+  a real account, on 2026-07-25 and 2026-09-23). Only the third is cloud-calibrated, and even then the dollars are
+  published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
   repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the _ratios_ as the durable
   finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
@@ -243,29 +297,32 @@ which is why none is published until an in-region run produces one.
 
 ## What is still owed
 
-The loaded store's own measurements are the next benchmark pass, and none of them is published yet:
+The loaded store's own measurements are the next benchmark pass. The single-bucket bill is measured
+([above](#the-single-bucket-bill--run-2026-09-23-94416)); these are not published yet:
 
-- **Load throughput** — sustained `bulkLoadCrbmGeneration` rate and cost against a real object store, at the
-  segment sizes a real refresh produces. The at-scale table's seed rate is local disk, fsync-bound, and is not
-  that number.
+- **Load throughput** — sustained `bulkLoadCrbmGeneration` rate against a real object store, from inside the
+  region, at the segment sizes a real refresh produces. The first run's upload rates measured a laptop's uplink,
+  and the at-scale table's seed rate is local disk, fsync-bound; neither is that number.
 - **Intersect latency** — in-region wall-clock for a chunk-skipping `A ∩ B`, and for `andNot` with a large
   `exclude`, against a real object store rather than local disk.
-- **Single-bucket cost.** Every published cost figure was metered on a topology whose registry was a separate
-  NoSQL table. The shipped topology keeps the registry in the object store, which trades that table's cost for
-  object-store requests — a different bill, in both directions, and not yet measured. Until it is, treat the
-  figures above as the object-store half of an older shape rather than as today's total.
+- **What `store.load()` costs end to end.** The run measured a load's write and publish. `store.load()` adds a
+  listing to choose the generation number and a collection pass after the publish, which the code says should
+  roughly double a load's bill. That is not yet measured.
+- **An estimator that counts the pointer.** `estimateCost()` has no term for the pointer's requests in a load or
+  an intersect, so it under-quotes both in the single-bucket topology; see
+  [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416) for the figures to use until it does.
 
-**The harness for these is built; the run is not.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
+**The harness is built, and has run once, from a laptop.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
 (`pnpm calibrate:aws`) measures, in one run against a real bucket, load throughput single-part and multipart; cold
 `A ∩ B` latency for two 500,000-id operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the
 at-scale section reports, at a quarter of its density; and every request the single-bucket topology bills, pointer
 reads and conditional PUTs included, counted attempt by attempt. Each intersect must return exactly the planned ids
-or no latency is reported. Every run records its own round-trip floor to the region and labels its latency
-in-region only below 30 ms — a line that keeps another continent out, not a neighbouring region, so the raw floor
-is recorded with it for a reader who wants a stricter one. Its workload has been rehearsed against MinIO, which
-proves the mechanics and not the figures: MinIO is not S3, a local container says nothing about a region's latency,
-and a rehearsal never reaches the guards that stop a real run from spending. `andNot` with a large `exclude` is not
-in it yet. How it guards against spending more than it says, and how to run it from inside the region:
+or no latency is reported, and each pins its store's pointers, so a cold intersect's request count does not move
+with the network. Every run records its own round-trip floor to the region and labels its latency in-region only
+below 30 ms — a line that keeps another continent out, not a neighbouring region, so the raw floor is recorded with
+it for a reader who wants a stricter one. Its first run, from a laptop, paid the cost side above; the in-region run
+from AWS CloudShell pays the rest. `andNot` with a large `exclude`, and `store.load()` itself, are not in it yet.
+How it guards against spending more than it says, and how to run it from inside the region:
 [`bench/README.md`](../bench/README.md#real-cloud-calibration).
 
 Nothing above should be read as covering any of these.
@@ -279,7 +336,7 @@ Nothing above should be read as covering any of these.
 
 ```sh
 pnpm calibrate:aws            # projection only — touches nothing, needs no credentials
-pnpm calibrate:aws --rehearse # the whole harness against MinIO from docker-compose, free
+pnpm calibrate:aws --rehearse # the workload against MinIO from docker-compose, free — no money guards run
 bash bench/calibrate-cloudshell.sh   # from AWS CloudShell: in-region, against the PUBLISHED packages
 pnpm bench         # builds, then regenerates bench/crossover.svg, bench/results.json, and the cost table here + the site
 pnpm bench:scale   # HEAVY: builds a fleet up to 100K segments on local disk (fsync-bound), measures, rewrites the at-scale table

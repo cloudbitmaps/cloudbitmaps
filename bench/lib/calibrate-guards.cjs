@@ -121,14 +121,21 @@ function projectOps({
   if (!Number.isInteger(operandsPerRead) || operandsPerRead < 1) {
     throw new Error(`operandsPerRead must be a positive integer, got ${operandsPerRead}`);
   }
-  // A load: the generation PUT, then the pointer advance — a GET to read the row and a conditional PUT to move
-  // it, each attempt of which can lose the compare-and-swap and go round again.
+  // A load: the generation PUT, then the pointer advance — a conditional PUT, each attempt of which can lose the
+  // compare-and-swap and go round again. Its reads are more than one per attempt, and this once said one: the
+  // loader reads the row before it writes, each attempt reads it again and the registry reads it once more before
+  // its conditional write, and a publish that loses every attempt reads it a last time. So a load of a new segment
+  // makes three GETs even with nothing racing it — the first real run measured 36 across 12 loads — and twelve
+  // at worst. The harness is the only writer, so its loads never race; the bound still has to hold if one did.
   const putPerLoad = 1 + retryBound;
-  const getPerLoad = retryBound;
+  const getPerLoad = 2 + 2 * retryBound;
   // A multipart load: create + parts + complete for the object, then the same pointer advance.
   const putPerLargeLoad = 2 + partsPerLargeLoad + retryBound;
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
-  // Three fixed GETs is the generous reading of "open a generation"; the end-of-run check keeps it honest.
+  // Three fixed GETs is the generous reading of "open a generation": the pointer, the tail read, and a second read
+  // for an index longer than the tail. The pointer is read once only because the timed store pins it
+  // (`TIMED_STORE`) — on the default 2 s refresh, an intersect slower than that reads it again, and the first real
+  // run, from a laptop, landed exactly on this bound. The end-of-run check keeps it honest.
   const getPerOperand = 3 + chunksPerRead;
   const put = loads * putPerLoad + largeLoads * putPerLargeLoad + fixedPuts;
   const getForLoads = (loads + largeLoads) * getPerLoad;
@@ -316,13 +323,57 @@ function clientConfigs(base) {
 }
 
 /**
+ * How every timed intersect's store is built.
+ *
+ * `retry: false` — the store has a transient-read retry of its own, above the client, and it would re-run a
+ * failed read INSIDE the timed window: a second retry layer the client's one-attempt pin does not reach.
+ *
+ * `cache.genTtlMs: 0` — "pin for the store's lifetime". A store re-reads a segment's pointer once `genTtlMs`
+ * (2 s by default) has passed since it last read it, in the middle of an intersect too. The first real run was
+ * 83 ms from the region, its cold intersects took about 3 s, and each read both pointers twice: 206 GETs where the
+ * same intersect inside the region makes 204. A request count that moves with the network describes the network,
+ * and the projection had no term for it. Every timed intersect has a store of its own, so pinning costs nothing
+ * in coldness: each pointer is still read, exactly once. What the default refresh costs a long-lived reader is a
+ * separate figure — at most one pointer read per segment per `genTtlMs` while it is read — and the run report
+ * states it rather than this harness measuring it by accident.
+ */
+const TIMED_STORE = Object.freeze({ retry: false, cache: Object.freeze({ genTtlMs: 0 }) });
+
+/**
+ * Where real runs' evidence lives: one file per run, named by its id.
+ *
+ * One per run, not one file for "the latest run", because a figure is published from a particular run and cited
+ * by its id — a second run under the same name would replace the evidence behind numbers already on the page.
+ */
+const EVIDENCE_DIR = 'bench/calibration';
+
+/**
+ * A run id is part of the run's bucket name, `cloudbitmaps-calib-<id>`, and of its evidence file's name — so it
+ * must be valid as both. A bucket name is 3 to 63 lowercase letters, digits and hyphens that begin and end with a
+ * letter or digit; the 19-character prefix leaves 44 for the id. Nothing outside that set can reach a path either.
+ */
+const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,42}[a-z0-9])?$/;
+
+function checkRunId(runId) {
+  if (typeof runId !== 'string' || !RUN_ID.test(runId)) {
+    throw new Error(
+      `run id "${String(runId)}" is not usable: it names the bucket and the evidence file, so it must be 1 to 44 ` +
+        'lowercase letters, digits and hyphens, beginning and ending with a letter or digit',
+    );
+  }
+  return runId;
+}
+
+/**
  * Where a run's results are written, relative to the repository root.
  *
- * A rehearsal gets a file of its own, which git ignores. It writes the same shape as a real run, and under the
- * real run's name it sat one `git add` away from being committed as the evidence behind a published figure.
+ * A real run writes its own evidence file under {@link EVIDENCE_DIR}. A rehearsal gets a file of its own, which
+ * git ignores: it writes the same shape as a real run, and under the real run's name it sat one `git add` away
+ * from being committed as the evidence behind a published figure.
  */
-function resultsFile(rehearse) {
-  return rehearse ? 'bench/calibrate-aws-rehearsal.json' : 'bench/calibrate-aws-results.json';
+function resultsFile(rehearse, runId) {
+  if (rehearse) return 'bench/calibrate-aws-rehearsal.json';
+  return `${EVIDENCE_DIR}/${checkRunId(runId)}.json`;
 }
 
 module.exports = {
@@ -340,6 +391,9 @@ module.exports = {
   layoutIds,
   maskAccount,
   resultsFile,
+  checkRunId,
+  EVIDENCE_DIR,
+  TIMED_STORE,
   ADMIN_ATTEMPTS,
   clientConfigs,
   bucketIsGone,

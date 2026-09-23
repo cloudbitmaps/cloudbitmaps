@@ -5,6 +5,19 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  CloudRoaring,
+  MemoryStorage,
+  MemoryStorageDriver,
+  bulkLoadCrbmGeneration,
+  createBackend,
+} from '@/index';
+import { WriteConflictError } from '@/core/errors';
+import {
+  ObjectStoreRegistry,
+  type ObjectRegistryStore,
+  type ObjectRow,
+} from '@/drivers/_shared/object-registry';
 
 // Guards on a script that spends real money against a real cloud account. Every case below is a bug that
 // actually happened in the harness this replaces — the one that ran the July 2026 calibration and was deleted
@@ -48,7 +61,10 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   };
   layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
-  resultsFile: (rehearse: boolean) => string;
+  resultsFile: (rehearse: boolean, runId?: string) => string;
+  checkRunId: (runId: unknown) => string;
+  EVIDENCE_DIR: string;
+  TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
   clientConfigs: (base: Record<string, unknown>) => {
     work: Record<string, unknown>;
     admin: Record<string, unknown>;
@@ -307,6 +323,42 @@ describe('calibrate guards — found by the first real run', () => {
     expect(big.put - small.put).toBe(2 * 3);
   });
 
+  // The first real run's GETs did not add up until the loads were counted: 36 pointer reads that each answered 404,
+  // three per load of a new segment. The loader reads the row, the publish reads it again, and the registry reads
+  // it once more before its conditional write — and a publish that loses its race goes round again, up to the
+  // retry bound, then reads the row one last time. The projection allowed one read per attempt. That held only
+  // because nothing races the harness's loads, and a bound that holds only by luck is not a bound.
+  it('projects every pointer read a load can make, even when each publish attempt loses its race', async () => {
+    const load = async (lostRaces: number): Promise<{ reads: number; writes: number }> => {
+      const store = new CountingObjectStore(lostRaces);
+      const registry = new ObjectStoreRegistry(store, undefined, () => 0);
+      try {
+        await bulkLoadCrbmGeneration(
+          new MemoryStorageDriver(),
+          { segment: 's', generation: 0 },
+          [1, 2, 3],
+          { registry },
+        );
+      } catch (err) {
+        if (!(err instanceof WriteConflictError)) throw err;
+      }
+      return { reads: store.reads, writes: store.writes };
+    };
+    // Nothing racing: three reads and the one conditional write, as both real runs measured.
+    expect(await load(0)).toEqual({ reads: 3, writes: 1 });
+    const worst = await load(guards.RETRY_BOUND);
+    expect(worst.writes).toBe(guards.RETRY_BOUND);
+    const p = guards.projectOps({
+      loads: 1,
+      reads: 0,
+      chunksPerRead: 0,
+      retryBound: guards.RETRY_BOUND,
+    });
+    expect(p.get).toBeGreaterThanOrEqual(worst.reads);
+    // The generation's own PUT, then every attempt at the pointer.
+    expect(p.put).toBeGreaterThanOrEqual(1 + worst.writes);
+  });
+
   it('flags a run that exceeded its projection, and only then', () => {
     expect(guards.exceedsProjection({ put: 10, get: 10 }, { put: 10, get: 10 })).toEqual([]);
     expect(guards.exceedsProjection({ put: 11, get: 10 }, { put: 10, get: 10 })).toHaveLength(1);
@@ -433,8 +485,35 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(ignored(guards.resultsFile(true))).toBe(true);
   });
 
-  it('writes a real run to a file git does not ignore, so its evidence can be committed', () => {
-    expect(ignored(guards.resultsFile(false))).toBe(false);
+  // One file per run, named by its id, so a second run cannot overwrite the evidence behind a figure already
+  // published — the benchmarks page cites a run by id, and the file under that id is what its gate reads.
+  it('writes a real run to an evidence file of its own, which git does not ignore', () => {
+    const file = guards.resultsFile(false, '2026-09-23-94416');
+    expect(file).toBe(`${guards.EVIDENCE_DIR}/2026-09-23-94416.json`);
+    expect(ignored(file)).toBe(false);
+  });
+
+  // The id names the bucket AND the evidence file, so it has to be safe as both: a bucket name is lowercase
+  // letters, digits and hyphens, and anything else in a file name is a path it could escape into.
+  it('refuses a run id that would not make a bucket name and a file name', () => {
+    for (const ok of ['2026-09-23-94416', 'a', `a${'-'.repeat(42)}b`]) {
+      expect(guards.checkRunId(ok)).toBe(ok);
+    }
+    for (const bad of [
+      undefined,
+      '',
+      '../2026-09-23-94416',
+      'runs/2026',
+      '2026-09-23-94416.json',
+      'Run-1',
+      '-a',
+      'a-',
+      '--cleanup',
+      `a${'b'.repeat(44)}`, // 45 characters: the bucket name would pass 63
+    ]) {
+      expect(() => guards.checkRunId(bad), String(bad)).toThrow(/run id/);
+    }
+    expect(() => guards.resultsFile(false, '../x')).toThrow(/run id/);
   });
 
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
@@ -442,15 +521,27 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   // for — passed every test here.
   it('the harness takes its output path from resultsFile(), and names neither file itself', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE))');
-    expect(src).not.toMatch(/calibrate-aws-(?:results|rehearsal)\.json/);
+    expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE, runId))');
+    expect(src).not.toMatch(/calibrate-aws-(?:results|rehearsal)\.json|bench\/calibration/);
+  });
+
+  // Evidence is write-once, like the generations it measures. A run given the id of a published one — by
+  // CR_CALIBRATE_RUN_ID, which exists so a run can be named — would otherwise replace the file its figures are
+  // checked against, and the check would then pass against numbers the page never quoted.
+  it('refuses, before anything is created, to overwrite a run that already has evidence', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    const check = src.indexOf('existsSync(out)', main);
+    expect(check, 'the harness no longer checks for existing evidence').toBeGreaterThan(main);
+    expect(check).toBeLessThan(src.indexOf('await identity(', main));
+    expect(check).toBeLessThan(src.indexOf('new s3.CreateBucketCommand', main));
+    expect(src.indexOf('checkRunId(', main)).toBeLessThan(check);
   });
 
   it('the CloudShell script copies out whichever file the run wrote', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
-    for (const rehearse of [true, false]) {
-      expect(sh).toContain(guards.resultsFile(rehearse).split('/').pop());
-    }
+    expect(sh).toContain(`${guards.EVIDENCE_DIR}/*.json`);
+    expect(sh).toContain(guards.resultsFile(true));
   });
 });
 
@@ -595,10 +686,12 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
 
   // The store has a retry layer of its own, above the client's, and it re-runs a failed read INSIDE the timed
   // window. The client's one-attempt pin does not reach it, so the timed store turns it off.
-  it("the timed reads run with the store's own retry off", () => {
+  it("the timed reads run with the store's own retry off, and its pointer pinned", () => {
+    expect(guards.TIMED_STORE.retry).toBe(false);
+    expect(guards.TIMED_STORE.cache.genTtlMs).toBe(0);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src.match(/new CloudRoaring\(/g)?.length).toBe(1);
-    expect(src).toMatch(/new CloudRoaring\(\{\s*storage,\s*retry:\s*false\s*\}\)/);
+    expect(src).toMatch(/new CloudRoaring\(\{\s*storage,\s*\.\.\.TIMED_STORE\s*\}\)/);
   });
 
   it('counts a request that needed no retry exactly once', async () => {
@@ -613,6 +706,126 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
       client.destroy();
       await server.close();
     }
+  });
+});
+
+/**
+ * An object store for the registry protocol that counts its reads and writes, and loses the first `lostRaces`
+ * conditional writes the way a concurrent writer would make them lose. Its writes fence for real.
+ */
+class CountingObjectStore implements ObjectRegistryStore {
+  readonly label = 'counting';
+  reads = 0;
+  writes = 0;
+  private readonly objects = new Map<string, { bytes: Uint8Array; version: number }>();
+  private nextVersion = 1;
+
+  constructor(private lostRaces: number) {}
+
+  read(key: string): Promise<ObjectRow | null> {
+    this.reads += 1;
+    const found = this.objects.get(key);
+    return Promise.resolve(
+      found === undefined ? null : { bytes: found.bytes, version: String(found.version) },
+    );
+  }
+
+  write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void> {
+    this.writes += 1;
+    if (this.lostRaces > 0) {
+      this.lostRaces -= 1;
+      return Promise.reject(new WriteConflictError(`lost race: ${key}`));
+    }
+    const found = this.objects.get(key);
+    const holds =
+      expect === 'absent'
+        ? found === undefined
+        : found !== undefined && String(found.version) === expect.version;
+    if (!holds) return Promise.reject(new WriteConflictError(`precondition failed: ${key}`));
+    this.objects.set(key, { bytes: body, version: this.nextVersion++ });
+    return Promise.resolve();
+  }
+
+  async *listKeys(prefix: string): AsyncIterable<string> {
+    for (const key of this.objects.keys()) if (key.startsWith(prefix)) yield key;
+  }
+}
+
+// A store re-reads a segment's pointer once `cache.genTtlMs` (2 s by default) has passed since it last read it —
+// in the middle of an intersect, too. The first real run was 83 ms from the region, its cold intersects took about
+// 3 s, and each read both pointers twice: 206 GETs where the same intersect inside the region makes 204. A count
+// that moves with the network is not a property of the library, and the projection had no term for it. These drive
+// the real engine on a clock where every storage read takes three seconds.
+describe("a cold intersect's request count does not depend on the network", () => {
+  /** Wrap one method of `target` so `before` runs ahead of every call to it. */
+  function around<T extends object>(target: T, methods: string[], before: () => void): T {
+    return new Proxy(target, {
+      get(t, prop, receiver) {
+        const value: unknown = Reflect.get(t, prop, receiver);
+        if (typeof value !== 'function') return value;
+        const fn = value as (...args: unknown[]) => unknown;
+        if (!methods.includes(String(prop))) return fn.bind(t);
+        return (...args: unknown[]) => {
+          before();
+          return fn.apply(t, args);
+        };
+      },
+    });
+  }
+
+  it("resolves each operand's pointer once when the store is built the way the harness builds it", async () => {
+    const backend = new MemoryStorage();
+    // One shared id in each of chunks 0, 1 and 2, and a private chunk each: three chunk reads per operand.
+    const shared = [1, 65_537, 131_073];
+    for (const [segment, own] of [
+      ['a', 5 * 65_536],
+      ['b', 7 * 65_536],
+    ] as const) {
+      await bulkLoadCrbmGeneration(backend.storage, { segment, generation: 0 }, [...shared, own], {
+        registry: backend.registry,
+      });
+    }
+
+    let now = 0;
+    const clock = {
+      now: (): number => now,
+      sleep: (ms: number): Promise<void> => {
+        now += Math.max(0, ms);
+        return Promise.resolve();
+      },
+      yieldNow: (): Promise<void> => Promise.resolve(),
+    };
+    let pointerReads = 0;
+    const registry = around(backend.registry, ['get'], () => {
+      pointerReads += 1;
+    });
+    // Three seconds per storage read: longer than the default 2 s a store trusts a pointer for.
+    const storage = around(backend.storage, ['getRange', 'getTail'], () => {
+      now += 3_000;
+    });
+
+    const intersect = async (
+      options: Record<string, unknown>,
+    ): Promise<{ ids: number[]; pointerReads: number }> => {
+      pointerReads = 0;
+      const store = new CloudRoaring({
+        storage: createBackend({ storage, registry }),
+        ...options,
+        seams: { clock },
+      });
+      const ids: number[] = [];
+      for await (const id of store.segment('a').intersect([store.segment('b')])) ids.push(id);
+      return { ids, pointerReads };
+    };
+
+    const byDefault = await intersect({ retry: false });
+    const timed = await intersect(guards.TIMED_STORE);
+    expect(byDefault.ids).toEqual(shared);
+    expect(timed.ids).toEqual(shared);
+    // On the default TTL the slow link reads the pointers again part-way through: the network is in the count.
+    expect(byDefault.pointerReads).toBeGreaterThan(2);
+    // Pinned, it is two — one per operand — however long the intersect takes.
+    expect(timed.pointerReads).toBe(2);
   });
 });
 
