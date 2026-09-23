@@ -118,9 +118,11 @@ if (strayLatency) {
 //
 // It is also a NARROW claim, and the page has to say so. It used to read "never quotes a cheaper bill than the
 // engine incurs", which the single-bucket calibration run showed to be false as a claim about a bill: the
-// estimator has no term for the pointer's requests or an intersect's tail reads, so it under-quotes both of that
-// topology's operations. What the anchor test proves is chunk reads on an in-memory store, so what is gated is
-// that the page states it as a floor, and scopes it to chunk reads.
+// estimator then had no term for the pointer's requests or an intersect's tail reads. It counts those now, held to
+// the engine's request counts by tests/core/cost.test.ts, but "a cheaper bill" is still false: an intersect that
+// outlives the pointer TTL re-reads its pointers, which that run did from outside the region, and a load that
+// loses a publish race reads the pointer again. What the anchor test proves is chunk reads on an in-memory store,
+// so what is gated is that the page states it as a floor, and scopes it to chunk reads.
 if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
   fail(
     'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim ("never quotes fewer chunk ' +
@@ -130,7 +132,8 @@ if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
 if (/never quotes a cheaper bill/.test(doc)) {
   fail(
     'docs/benchmarks.md claims the estimator "never quotes a cheaper bill" — it under-quotes a single-bucket ' +
-      "store's pointer and tail reads; the anchor test proves chunk reads only",
+      'intersect that outlives the pointer TTL, or a load that loses a publish race; the anchor test proves chunk ' +
+      'reads only',
   );
 }
 if (/prediction lands within ±\d+%/.test(doc)) {
@@ -356,7 +359,7 @@ const anchors = [
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
   ['Redis-HA baseline', `$${results.redisBaselineUSD}`],
   // One crossover, because there is one metered axis: reads against a standing node. The write side is not a
-  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` × `requestsPerLoad` and a
+  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` of them and a
   // "writes per second" figure would describe an operation nobody performs.
   ['read crossover', `${results.readCrossoverPerSec}`],
   ['baseline topology', baselineTopology],

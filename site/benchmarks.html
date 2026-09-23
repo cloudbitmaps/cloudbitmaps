@@ -138,8 +138,8 @@
            There is ONE crossover row here, not two, and the reason is structural rather than editorial: a
            loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
            generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
-           instead. Its figure is the single-bucket run's, not the estimator's: `estimateCost` prices a load as
-           `loadsPerMonth × requestsPerLoad` PUT-class requests and has no term for the pointer yet. The two
+           instead. Its figure is the single-bucket run's, not the estimator's: the run measured a write and publish,
+           and the estimator prices `store.load()`, which also lists the segment and reads the pointer more. The two
            real-S3 rows quote the run as it measured it; what they would be inside the region, or through
            `store.load()`, is in the run's own panel below, labelled expected. -->
       <section id="anchors">
@@ -535,17 +535,6 @@
           </li>
           <li>
             <span class="rl-mark">05</span>
-            <span class="rl-what">An estimator that counts the pointer</span>
-            <span class="rl-fig">owed</span>
-            <span class="rl-note">
-              <span class="m">estimateCost()</span> has no term for the pointer's requests in a load or an
-              intersect, none for an intersect's tail reads, and none for the pointer refresh, so it under-quotes
-              both operations on a single-bucket store. Until it counts them, the measured figures on this page
-              are the ones to use.
-            </span>
-          </li>
-          <li>
-            <span class="rl-mark">06</span>
             <span class="rl-what">A Lambda figure</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
@@ -553,7 +542,7 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">07</span>
+            <span class="rl-mark">06</span>
             <span class="rl-what">RSS ceiling</span>
             <span class="rl-fig is-live">384m</span>
             <span class="rl-note">
@@ -681,17 +670,19 @@
           <!-- The fourth card, which is also what makes the grid 2×2 rather than leaving a half-row. The
                MODELLED numbers on the page come out of estimateCost(), so its accuracy is the claim they rest
                on — and the card says exactly how far that accuracy is proven, because the single-bucket run
-               found where it stops. The measured numbers come from runs, not from the estimator. -->
+               found where it stopped, and the fix is held to the engine's own request counts. The measured
+               numbers come from runs, not from the estimator. -->
           <div class="limit">
             <p class="label">And the estimator itself</p>
             <p>
               The modelled figures here come from <span class="m">estimateCost()</span>, so its accuracy is the
               claim they rest on. For point reads, priced against the chunk GETs a metrics sink observed, its
               prediction must land on or above what the engine incurred: it
-              <strong>never quotes fewer chunk reads</strong> than the engine makes. That is all it covers. For an
-              intersect it prices the <span class="m">chunksPerIntersect</span> you give it, 1 by default, and it
-              has no term yet for a single-bucket store's pointer and tail reads, so for a load or an intersect
-              there it under-quotes, and the measured figures below are the ones to use.
+              <strong>never quotes fewer chunk reads</strong> than the engine makes. For the rest it counts what
+              the engine is tested to send: each operand's pointer and index before an intersect's chunks, what
+              <span class="m">store.load()</span> adds to a load, and the pointer refresh for the segments you keep
+              reading. It still quotes low where it cannot see: an intersect that outlives the store's pointer
+              TTL, an index larger than the tail read, a load that loses a publish race.
             </p>
           </div>
         </div>
