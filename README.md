@@ -650,8 +650,8 @@ pnpm test:integration   # spins up every backend via `docker compose` — no clo
 
 **[`CONTRIBUTING.md`](CONTRIBUTING.md)** is the canonical record of how we work — branching & merge
 conventions, the per-phase build-with-tests + adversarial-review process, the documentation map, and code
-style. ([`CLAUDE.md`](CLAUDE.md) is the AI-agent operating manual; it embeds the engineering principles +
-hard correctness invariants and defers to `CONTRIBUTING.md` for the process.)
+style. ([`AGENTS.md`](AGENTS.md) is the AI-agent operating manual, and `CLAUDE.md` a symlink to it; it embeds
+the engineering principles + hard correctness invariants and defers to `CONTRIBUTING.md` for the process.)
 
 ## License
 

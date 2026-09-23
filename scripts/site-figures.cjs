@@ -988,19 +988,19 @@ const specAnchors = [];
   // commit, so gating it breaks CI for anyone who adds a test, and not gating it leaves it stale within a day.
   //
   // The invariant count is the stable number and the one the claim actually rests on, so the page states that
-  // instead. CLAUDE.md's "Hard correctness invariants" section is the only enumeration of them in the repo,
+  // instead. AGENTS.md's "Hard correctness invariants" section is the only enumeration of them in the repo,
   // which makes it the source.
-  const claudeMd = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
-  const invariantSection = /## Hard correctness invariants\n([\s\S]*?)(?=\n## |$)/.exec(claudeMd);
+  const agentsMd = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const invariantSection = /## Hard correctness invariants\n([\s\S]*?)(?=\n## |$)/.exec(agentsMd);
   const invariantCount = invariantSection
     ? (invariantSection[1].match(/^\d+\. \*\*/gm) || []).length
     : 0;
   if (!invariantSection) {
-    fail('CLAUDE.md no longer has a "## Hard correctness invariants" section to count');
+    fail('AGENTS.md no longer has a "## Hard correctness invariants" section to count');
   } else {
     if (invariantCount === 0) {
       fail(
-        "CLAUDE.md's invariants section parsed to 0 numbered items — its list formatting changed, so this " +
+        "AGENTS.md's invariants section parsed to 0 numbered items — its list formatting changed, so this " +
           'check is no longer measuring anything',
       );
     }
@@ -1013,7 +1013,7 @@ const specAnchors = [];
         fail("Home's correctness panel no longer states an invariant count");
       } else if (Number(stated[1]) !== invariantCount) {
         fail(
-          `Home says ${stated[1]} hard correctness invariants but CLAUDE.md enumerates ${invariantCount}`,
+          `Home says ${stated[1]} hard correctness invariants but AGENTS.md enumerates ${invariantCount}`,
         );
       } else {
         specAnchors.push(['Home · hard invariants', String(invariantCount)]);

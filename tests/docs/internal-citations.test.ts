@@ -87,7 +87,7 @@ const PRODUCT_IDS = /^(?:S3|R2|B2|V8|EC2|H[23]|TS\d+|ES\d+|AL\d+|C[01]|P\d{1,2})
  * Citation forms only. Each names a document that exists solely in the private corpus.
  *
  * Deliberately NOT matched, because each one IS resolvable by a reader:
- * - `hard invariant 5` / `invariant #7` — the seven invariants are enumerated in this repo's `CLAUDE.md`.
+ * - `hard invariant 5` / `invariant #7` — the seven invariants are enumerated in this repo's `AGENTS.md`.
  * - `§13.5` — a section of a public doc in `docs/guide/`.
  * - `(#76)` — a GitHub PR or issue on this repository, which GitHub itself resolves.
  * - `R2` — Cloudflare R2, the object store, which is a product name and not a decision id.

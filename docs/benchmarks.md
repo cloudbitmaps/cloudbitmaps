@@ -263,7 +263,7 @@ CloudBitmaps does its set arithmetic through `roaring-node`, a **native addon**.
 ```
 
 **A leak in the bitmap containers is invisible to a heap sample.** The heap graph stays flat while the process
-grows until the kernel kills it. Since ["bounded memory & cost, always"](../CLAUDE.md) is one of this project's
+grows until the kernel kills it. Since ["bounded memory & cost, always"](../AGENTS.md) is one of this project's
 hard invariants, a measurement that cannot see the allocator doing the most work would be evidence of nothing.
 
 RSS is the only figure that includes all of it. That is why the ceiling is expressed in RSS, and why

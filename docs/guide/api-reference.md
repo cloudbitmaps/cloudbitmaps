@@ -682,5 +682,5 @@ run on **one container alone**: compare-and-swap rides blob conditions (`ifNoneM
 - This page catalogs the surface; the tutorial-style walkthrough with runnable snippets lives in the
   [getting-started guide](../guide/getting-started.md). For _why_ the surface is shaped this way, read the module
   headers — each one states the decision it encodes and what the alternative cost — and the
-  [hard correctness invariants](../../CLAUDE.md#hard-correctness-invariants), which are the protocol rules the
+  [hard correctness invariants](../../AGENTS.md#hard-correctness-invariants), which are the protocol rules the
   shape follows from.
