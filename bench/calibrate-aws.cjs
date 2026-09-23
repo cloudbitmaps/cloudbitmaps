@@ -21,8 +21,10 @@
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
- * WHAT A RUN CAN AND CANNOT CLAIM. Cost is location-independent: a request costs the same from anywhere. LATENCY
- * is not: from outside the region it measures internet transit, which is why the July run's wall-clock was
+ * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores pin their
+ * pointers, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads it); what a
+ * client far from the region adds to the bill is transfer out, which this harness does not meter. LATENCY is
+ * location-dependent: from outside the region it measures internet transit, which is why the July run's wall-clock was
  * withheld and why the first run of this harness — from a laptop — produced a p50 of 112 ms that describes the
  * network, not the library. So every run now measures its own distance to the region (the round-trip floor of a
  * trivial request) and records it, and the results say whether the latency figures are in-region or not. A
@@ -65,6 +67,9 @@ const {
   uploadIsGone,
   TEARDOWN_PASSES,
   TEARDOWN_PUTS,
+  checkCleanupId,
+  evidenceConflict,
+  checkWorkload,
 } = require('./lib/calibrate-guards.cjs');
 
 const ROOT = resolve(__dirname, '..');
@@ -76,6 +81,14 @@ const argv = process.argv.slice(2);
  * clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
+// A rehearsal with `--run` used to run the real identity check — an STS call on whatever credentials were in the
+// environment — before doing its work against MinIO. A rehearsal touches no cloud account, so the pair is refused.
+if (REHEARSE && argv.includes('--run')) {
+  console.error(
+    'calibrate: --rehearse and --run are exclusive — a rehearsal touches no cloud account',
+  );
+  process.exit(2);
+}
 const MODE = argv.includes('--cleanup')
   ? 'cleanup'
   : argv.includes('--run')
@@ -170,7 +183,7 @@ function harnessRef() {
  * The first version caught EVERY error and reported "@aws-sdk/client-sts not installed", so an expired SSO
  * session or a wrong profile would have been blamed on a missing module. And because an account pin compared
  * against that placeholder text, setting `CR_CALIBRATE_EXPECT_ACCOUNT` could never succeed — so the pin went
- * unused, which is how the first real run went unpinned.
+ * unused, which is how this harness's first real run went unpinned.
  */
 async function identity(region) {
   let sts;
@@ -191,7 +204,9 @@ async function identity(region) {
 // SIGINT handler replaces Node's default exit, so Ctrl-C left the workload running while claiming otherwise.
 let onInterrupt = async () => {};
 let interrupts = 0;
-for (const sig of ['SIGINT', 'SIGTERM']) {
+// SIGHUP too: a closed terminal or a dropped CloudShell session sends it, and it used to kill a run with no
+// teardown and no results.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     interrupts += 1;
     if (interrupts > 1) {
@@ -210,8 +225,39 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 async function main() {
   const { AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring');
   const pricing = AWS_US_EAST_1_ONDEMAND;
+  try {
+    checkWorkload({ segments: SEGMENTS, reads: READS });
+  } catch (err) {
+    refuse(err.message);
+  }
   const layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
   const { ops, priced } = projection(pricing, layout);
+
+  // The run id first, and everything that depends only on it: a bad id, or one whose evidence is already committed,
+  // is refused in every mode, projection included, before anything reads a credential. `--cleanup` takes any id
+  // that names a legal bucket, because it writes no file.
+  const runId =
+    MODE === 'cleanup'
+      ? argv[argv.indexOf('--cleanup') + 1]
+      : (process.env.CR_CALIBRATE_RUN_ID ??
+        `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 5)}`);
+  if (MODE === 'cleanup' && (runId === undefined || runId.startsWith('--'))) {
+    refuse('--cleanup needs a run id: node bench/calibrate-aws.cjs --cleanup 2026-09-22-ab12e');
+  }
+  try {
+    if (MODE === 'cleanup') checkCleanupId(runId);
+    else checkRunId(runId);
+  } catch (err) {
+    refuse(err.message);
+  }
+  // One evidence file per real run, named by its id; a run that does not finish writes a partial file beside it,
+  // and a rehearsal writes its own. `resultsFile` says where each goes, and `.gitignore` ignores all but the first.
+  const out = MODE === 'cleanup' ? null : resolve(ROOT, resultsFile(REHEARSE, runId));
+  const outPartial =
+    MODE === 'cleanup' ? null : resolve(ROOT, resultsFile(REHEARSE, runId, { partial: true }));
+  const conflict =
+    out === null ? null : evidenceConflict({ rehearse: REHEARSE, file: out, exists: existsSync });
+  if (conflict !== null) refuse(conflict.replace(`${ROOT}/`, ''));
 
   if (MODE === 'project') {
     log('PROJECTION ONLY — nothing created, no credentials read.\n');
@@ -274,31 +320,7 @@ async function main() {
   const admin = new s3.S3Client(configs.admin);
   meter(admin, tally);
 
-  const runId =
-    MODE === 'cleanup'
-      ? argv[argv.indexOf('--cleanup') + 1]
-      : (process.env.CR_CALIBRATE_RUN_ID ??
-        `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 5)}`);
-  if (MODE === 'cleanup' && (runId === undefined || runId.startsWith('--'))) {
-    refuse('--cleanup needs a run id: node bench/calibrate-aws.cjs --cleanup 2026-09-22-ab12e');
-  }
-  try {
-    checkRunId(runId);
-  } catch (err) {
-    refuse(err.message);
-  }
   const bucket = `cloudbitmaps-calib-${runId}`;
-  // One evidence file per real run, named by its id; a rehearsal's own file is ignored by git.
-  const out = resolve(ROOT, resultsFile(REHEARSE, runId));
-  // Evidence is write-once, like the generations it measures: a figure published from a run is checked against
-  // the file under that run's id, and a second run given the same id would otherwise replace it. Refused before
-  // the identity check, so nothing has been created and no credentials have been read.
-  if (MODE === 'run' && !REHEARSE && existsSync(out)) {
-    refuse(
-      `${out.replace(`${ROOT}/`, '')} already exists — that run's evidence is committed. Choose another ` +
-        'CR_CALIBRATE_RUN_ID, or leave it unset for a fresh one.',
-    );
-  }
 
   /**
    * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
@@ -424,8 +446,10 @@ async function main() {
 
   const started = Date.now();
   const results = {
-    note: 'Written by bench/calibrate-aws.cjs. Regenerate with `pnpm calibrate:aws --run`.',
+    note: "Written by bench/calibrate-aws.cjs. A real run's evidence is write-once: a new run gets a new id.",
     runId,
+    // Run order, when two runs share a date: the id's suffix is random, so it cannot say which came later.
+    startedAt: new Date(started).toISOString(),
     mode: MODE,
     // A rehearsal's numbers must never be mistaken for a real run's. The MinIO client is configured with a region
     // only because the SDK requires one.
@@ -440,6 +464,7 @@ async function main() {
       sharedChunks: layout.sharedChunks,
       largeSegments: LARGE,
       largeChunks: LARGE_CHUNKS,
+      largeIdsPerSegment: LARGE_CHUNKS * LARGE_IDS_PER_CHUNK,
       coldIntersects: READS,
     },
     projected: ops,
@@ -448,10 +473,16 @@ async function main() {
   };
   const writeResults = () => {
     results.elapsedMs = Date.now() - started;
+    // Only a run that finished is evidence. One that did not goes to the partial file, which the figures gates skip.
+    const finished = results.partial === false && results.interrupted !== true;
+    const file = finished ? out : outPartial;
     // The evidence directory may not exist yet: CloudShell runs this from a scratch copy of `bench/`.
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, `${JSON.stringify(results, null, 2)}\n`);
-    log(`wrote ${out.replace(`${ROOT}/`, '')}${results.partial ? ' (partial: true)' : ''}`);
+    mkdirSync(dirname(file), { recursive: true });
+    // `wx` for evidence: the check before the run is not the last word, and two runs under one id must not both win.
+    writeFileSync(file, `${JSON.stringify(results, null, 2)}\n`, {
+      flag: finished && !REHEARSE ? 'wx' : 'w',
+    });
+    log(`wrote ${file.replace(`${ROOT}/`, '')}${finished ? '' : ' (partial: true)'}`);
   };
 
   /**
@@ -460,7 +491,11 @@ async function main() {
    * requests, which the old run could not see. Both exits call this, the `finally` and an interrupt: the
    * interrupt path once wrote its results without it, losing the one figure the run had already paid for.
    */
+  // Once only: both exits can reach it, the signal handler's and main's own, and the results are the same either way.
+  let settled = false;
   const settle = () => {
+    if (settled) return;
+    settled = true;
     results.cost = {
       ...priceTally(tally, pricing),
       ops: { ...tally, byCommand: { ...tally.byCommand } },
@@ -552,20 +587,27 @@ async function main() {
     const load = async (segment, ids, count) => {
       const before = snap();
       const t0 = process.hrtime.bigint();
-      await bulkLoadCrbmGeneration(storage.storage, { segment, generation: 0 }, ids, {
-        registry: storage.registry,
-      });
+      const { size } = await bulkLoadCrbmGeneration(
+        storage.storage,
+        { segment, generation: 0 },
+        ids,
+        { registry: storage.registry },
+      );
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
       const after = snap();
-      const bytes = after.up - before.up;
+      // Two different byte counts, kept apart. What went up is the object AND the pointer's body, since the meter
+      // counts every request; the object is what the store holds. This harness once recorded the first under the
+      // second's name, which put the pointer's 161 bytes into every figure derived from an object's size.
+      const uploaded = after.up - before.up;
       loads.push({
         segment,
         ids: count,
         ms,
-        bytes,
+        objectBytes: size,
+        uploadBytes: uploaded,
         multipart: after.parts > before.parts,
         idsPerSec: count / (ms / 1000),
-        bytesPerSec: bytes / (ms / 1000),
+        bytesPerSec: uploaded / (ms / 1000),
       });
       checkCeiling();
     };
@@ -581,7 +623,8 @@ async function main() {
             runs: xs.length,
             medianIdsPerSec: median(xs.map((l) => l.idsPerSec)),
             medianBytesPerSec: median(xs.map((l) => l.bytesPerSec)),
-            medianObjectBytes: median(xs.map((l) => l.bytes)),
+            medianObjectBytes: median(xs.map((l) => l.objectBytes)),
+            medianUploadBytes: median(xs.map((l) => l.uploadBytes)),
           };
     results.phases.load = {
       singlePart: summarise(loads.filter((l) => !l.multipart)),

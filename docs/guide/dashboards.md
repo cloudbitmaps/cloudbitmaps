@@ -123,7 +123,8 @@ the exact read rate where the economics flip *at this report's cache-hit rate* (
 default pricing profile it is about 329 reads/s; every cache hit moves it further out), so you can set the alarm
 threshold honestly rather than guessing — and `r.monthlyUSD.byOp` breaks the total into `reads` / `intersects` /
 `storage` / `loads` so you can see *what* pushed it over. Loads are modelled only when you pass
-`loadsPerMonth` (and `requestsPerLoad` for a multipart upload); `r.assumptions.notes` says so when they are not.
+`loadsPerMonth` (and `requestsPerLoad` for anything but a single PUT: a multipart upload, and on a single-bucket
+store the pointer's own requests); `r.assumptions.notes` says so when they are not.
 
 ---
 

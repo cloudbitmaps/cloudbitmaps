@@ -30,8 +30,8 @@ For what each published number means, how it was measured, and what it does *not
 | `scale.cjs` | A fleet of up to 100,000 segments on local disk: retained heap as the fleet grows (the memory bound), the `O(total)` cost of enumerating it, and chunk-skipping on two large segments. | `pnpm bench:scale` (heavy); `SCALE_FLEETS=1000,10000` for a quick pass | `scale-results.json`, and the at-scale table in `docs/benchmarks.md` and `site/benchmarks.html` | no — too slow and too machine-dependent |
 | `soak.cjs` | The loaded store under **sustained** mixed load — point reads, combines with `exclude` lists, and re-loads — watching post-GC heap *and* the addon's off-heap memory for creep over time. A run with no combines or no re-loads is reported inconclusive, never a pass. | `pnpm soak` (`SOAK_INJECT=1` to persist) | `soak-results.json` | yes, inside `pnpm rss-gate` (see `scripts/`) |
 | `encoding.cjs` | Encoded size of the same ids under roaring against a fixed array, a fixed bitset and a fixed run-length encoding — the evidence behind the site's claim that roaring's advantage is choosing a representation *per chunk*. | `pnpm bench:encoding` | `encoding-results.json` | no |
-| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per real run, `calibration/<runId>.json`; a rehearsal writes `calibrate-aws-rehearsal.json` instead, which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts` |
-| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/` | no |
+| `calibrate-aws.cjs` | Against a **real** object store: load throughput (single-part and multipart), cold intersect latency, and what a single-bucket topology actually costs per request. It spends money — see [below](#real-cloud-calibration). | `pnpm calibrate:aws` | one evidence file per finished real run, `calibration/<runId>.json`; a real run that does not finish writes `calibration/<runId>.partial.json`, and a rehearsal `calibrate-aws-rehearsal.json`, both of which git ignores | its guards, via `tests/bench/calibrate-guards.test.ts` |
+| `calibrate-cloudshell.sh` | The same calibration, run from AWS CloudShell inside the region, against the **published** packages installed from npm. | `bash bench/calibrate-cloudshell.sh` | `~/<runId>.json` in CloudShell, which belongs in `calibration/`, or `~/<runId>.partial.json` for a run that did not finish | no |
 
 ## The results files, and what reads them
 
@@ -53,17 +53,18 @@ run's file, so under an evidence name it would be one `git add` from being commi
 
 ## Real-cloud calibration
 
-`calibrate-aws.cjs` pays three debts listed on the benchmarks page, all of which need a real object store rather
-than local disk:
+`calibrate-aws.cjs` was built to pay three debts the benchmarks page listed, all of which need a real object store
+rather than local disk. It has paid one of them:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket, for objects that fit one PUT and objects large enough
    to upload multipart. Still owed: it needs a run from inside the region.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
    Still owed, for the same reason.
 3. **The single-bucket bill** — the registry pointer now lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first real run,
-   [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop: cost does not depend on where the
-   client is.
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first publishable
+   run, [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop. A request count, and so the bill,
+   does not depend on where the client is, with one exception that run found: an intersect slower than the
+   pointer refresh reads each pointer again. The harness now pins the pointer for each timed intersect.
 
 ### It spends money, so it is hard to run by accident
 
@@ -142,9 +143,9 @@ teardown, each ending with the bucket gone and the cost recorded.
   the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's pointers are pinned for its lifetime (`cache.genTtlMs: 0`). On the default 2 s
-  refresh, an intersect slower than that reads each pointer again — the first real run, 83 ms from the region,
-  measured 206 GETs an intersect where the same intersect in-region makes 204 — so a count taken on the default
-  would describe the network. A test drives the real engine on a slow clock to prove the pin holds.
+  refresh, an intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the
+  region, measured 206 GETs for its median intersect where the same intersect in-region makes 204 — so a count
+  taken on the default would describe the network. A test drives the real engine on a slow clock to prove the pin holds.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
 - **The published shape.** 500,000-id segments spanning ~2,000 chunks with 100 shared, so the run tests the "100
@@ -166,9 +167,9 @@ CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibr
 
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
-consumer installs, not a build of this checkout. Results land in `~/<runId>.json` even if the run is interrupted;
-commit that file as `bench/calibration/<runId>.json`, with its report — [`calibration/`](calibration/README.md)
-says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
+consumer installs, not a build of this checkout. A finished run's results land in `~/<runId>.json`, and an
+interrupted one's in `~/<runId>.partial.json`, which is not evidence. Commit a finished run's file as
+`bench/calibration/<runId>.json`, with its report — [`calibration/`](calibration/README.md) says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
 results land in `~/calibrate-aws-rehearsal.json`.
 
 ### What it does not measure

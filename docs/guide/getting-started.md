@@ -910,13 +910,13 @@ const report = CloudRoaring.estimateCost({
     readsPerSec: 200, // point reads; each cache miss is one GET
     cacheHitRate: 0.8, // hits are free
     intersectsPerSec: 1,
-    chunksPerIntersect: 10, // the chunk-skipping survivors
+    chunksPerIntersect: 24, // every GET: 2 operands × (pointer + tail + 10 shared chunks)
     loadsPerMonth: 30, // one refresh a day…
-    requestsPerLoad: 3, // …as a small multipart upload
+    requestsPerLoad: 2.24, // …one PUT, plus the pointer's PUT and 3 GETs at 0.08 of a PUT each
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈10.5, storage: ≈0.03, loads: ≈0.0005 }
-report.monthlyUSD.total; // ≈ 53 — vs $346 flat Redis-HA
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0003 }
+report.monthlyUSD.total; // ≈ 67 — vs $346 flat Redis-HA
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
 report.redisCrossover.readsPerSec; // ≈ 1,646 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
 ```
@@ -944,18 +944,28 @@ flat always-on baseline. It is not a ceiling on the library — it is a property
 
 | Input | Default | Change it and |
 | --- | --- | --- |
-| `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` (it never crosses). |
+| `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` in the model, which does not count the pointer refresh a live store still pays (below). |
 | `pricing.storage.getPerMillion` | `$0.40` | Your region's or your committed rate; the formula is the spec, the rate is yours. |
 
-Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month is
-about $0.51. The term exists so the report can say so rather than assume it.
+Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month,
+pointer included, is about $0.52. The term exists so the report can say so rather than assume it.
 
 **The estimator does not count the pointer's requests yet.** Measured on real S3, a load makes its object's
 PUT-class requests plus the pointer's conditional PUT and three GETs of it, and a cold intersect of two segments
-sharing k chunks makes 4 + 2k GETs — a pointer read and a tail read per operand before the chunks. So pass every
-PUT-class request a load makes, the pointer's included, as `requestsPerLoad`, and every GET an intersect makes as
-`chunksPerIntersect`. The [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the
-measured request shapes, and the estimator's own fix is on its list of what is still owed.
+sharing k chunks makes 4 + 2k GETs — a pointer read and a tail read per operand before the chunks. The estimator
+prices `requestsPerLoad` at the PUT rate and `chunksPerIntersect` at the GET rate, so until it counts these itself:
+
+- pass `requestsPerLoad` as the load's PUT-class requests plus its GETs at the GET-to-PUT price ratio, 0.08 on the
+  default profile. A single-part write and publish is 2 PUTs and 3 GETs, so `2.24`, which prices it at $11.20 per
+  million; `store.load()` also lists the segment twice and reads the pointer four more times, so `4.56` for a
+  segment's first load;
+- pass every GET an intersect makes as `chunksPerIntersect`: `204` for two segments sharing 100 chunks.
+
+It has no term for the pointer refresh either. A live store re-reads each segment's pointer at most once per
+`cache.genTtlMs` (2 s by default) while the segment is being read, so a segment read around the clock costs about
+$0.53 a month in pointer reads, whatever the cache hit rate. The
+[benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the measured request shapes,
+and the estimator's own fix is on its list of what is still owed.
 
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
 Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the

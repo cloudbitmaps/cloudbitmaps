@@ -17,9 +17,11 @@
  *   1. Every anchor value appears on the page, in the rendered form a reader sees.
  *   2. No unaccounted DOLLAR figure appears anywhere in the page's visible text — the inverse direction,
  *      without which a check can only catch a MISSING number and never a WRONG one added beside the right ones.
- *      Only `$` amounts are matched: a crossover rate is required on the page that owns it (1), but a wrong rate
- *      stated on another page is not caught here. (That hole was real: an earlier version of the /demo gate passed while the page
- *      said 41,208 instead of 100,000, because 100,000 still appeared elsewhere.)
+ *      Across a whole page only `$` amounts are matched: a crossover rate is required on the page that owns it
+ *      (1), but a wrong rate stated on another page is not caught here. (That hole was real: an earlier version
+ *      of the /demo gate passed while the page said 41,208 instead of 100,000, because 100,000 still appeared
+ *      elsewhere.) Inside the benchmarks page's panel on the latest calibration run, every unit is matched —
+ *      percentages, durations, byte sizes and counts too — and so are the panel's rows, one by one.
  *   3. The counts in Home's spec strip, derived from the source tree — checked in three directions: the page
  *      drifting from the source, the source drifting from the page, and the entry being deleted outright.
  *
@@ -107,16 +109,26 @@ if (strayLatency) {
 }
 
 // ── the estimator's own accuracy ───────────────────────────────────────────────────────────────────────────
-// This is the claim every other figure on the page rests on, since they all come out of estimateCost(). It used
-// to be a tolerance ("within ±N%") and is now a DIRECTION: priced against the storage GETs a metrics sink actually
-// observed, the prediction must land on or above the measured cost. The direction is the stronger claim — a
-// tolerance permits an under-quote of N%, and an estimator that under-quotes your bill is the one failure mode
-// that matters — so what is gated is that the page still states it, and states it as a floor rather than a band.
-const k3 = /never quotes a cheaper bill than the engine incurs/.test(doc);
-if (!k3) {
+// The claim the MODELLED figures on the page rest on, since they come out of estimateCost(). It used to be a
+// tolerance ("within ±N%") and is now a DIRECTION: priced against the chunk GETs a metrics sink actually observed,
+// the prediction must land on or above the measured cost. The direction is the stronger claim — a tolerance
+// permits an under-quote of N%, and an estimator that under-quotes your bill is the one failure mode that matters.
+//
+// It is also a NARROW claim, and the page has to say so. It used to read "never quotes a cheaper bill than the
+// engine incurs", which the single-bucket calibration run showed to be false as a claim about a bill: the
+// estimator has no term for the pointer's requests or an intersect's tail reads, so it under-quotes both of that
+// topology's operations. What the anchor test proves is chunk reads on an in-memory store, so what is gated is
+// that the page states it as a floor, and scopes it to chunk reads.
+if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
   fail(
-    'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim ("never quotes a cheaper ' +
-      'bill than the engine incurs")',
+    'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim ("never quotes fewer chunk ' +
+      'reads than the engine makes")',
+  );
+}
+if (/never quotes a cheaper bill/.test(doc)) {
+  fail(
+    'docs/benchmarks.md claims the estimator "never quotes a cheaper bill" — it under-quotes a single-bucket ' +
+      "store's pointer and tail reads; the anchor test proves chunk reads only",
   );
 }
 if (/prediction lands within ±\d+%/.test(doc)) {
@@ -127,8 +139,8 @@ if (/prediction lands within ±\d+%/.test(doc)) {
 }
 
 // ── the real-cloud calibration receipt ────────────────────────────────────────────────────────────────────
-// The only figures on the page that are what AWS ACTUALLY CHARGED rather than what the model predicts, so they
-// are also the only ones a reader has no way to sanity-check. Every line item, the total, the request count,
+// The July run's receipt: list prices over the requests that run metered, rather than what the model predicts —
+// which makes it, with the single-bucket run below, one of the only figures a reader has no way to sanity-check. Every line item, the total, the request count,
 // the date and the run id come out of the docs table. Transcribing a receipt by hand is exactly how a page ends
 // up quoting a number no run produced.
 const calDate = /MEASURED\*\* against real S3[^*]*on \*\*(\d{4}-\d{2}-\d{2})\*\*/.exec(july);
@@ -190,8 +202,14 @@ if (calibrationRuns.length === 0) {
     fail(err.message);
   }
 }
-const singleBucketFigure = (name) =>
-  singleBucket === null ? null : (singleBucket.anchors.find(([n]) => n === name)?.[1] ?? null);
+/** One of the run's anchors, by the name calibration-figures gives it. A name it no longer has is a failure. */
+const singleBucketFigure = (name) => {
+  if (singleBucket === null) return null;
+  const found = singleBucket.anchors.find(([n]) => n === name);
+  if (found === undefined)
+    fail(`bench/lib/calibration-figures.cjs derives no figure named "${name}"`);
+  return found?.[1] ?? null;
+};
 
 // ── every OTHER statement of the driver count, on every page ──────────────────────────────────────────────
 // Home's spec strip is anchored above. This catches the same number wherever else it is written: the
@@ -324,7 +342,13 @@ const anchors = [
   // The July run's two unit figures, both without the pointer. The publish one is kept as that run's record; the
   // single-bucket run below measured the pointer too, and its load figure is the one the cost tables now quote.
   ['July · 1M count() calls', countCost === null ? null : `$${countCost.toFixed(2)}`],
-  ['July · 1M segment publishes', publishCost === null ? null : `$${publishCost.toFixed(2)}`],
+  // Superseded, so it may appear only where the page says so: the July receipt, on the benchmarks page and in the
+  // doc it is parsed from. Anywhere else it would be quoted as the cost of a publish, which it no longer is.
+  [
+    'July · 1M segment publishes',
+    publishCost === null ? null : `$${publishCost.toFixed(2)}`,
+    { onlyOn: ['site/benchmarks.html', 'docs/benchmarks.md'] },
+  ],
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
@@ -352,10 +376,31 @@ const anchors = [
   // The single-bucket run. Every one is distinctive where it appears, which is what makes it worth anchoring.
   ['single-bucket run id', singleBucketFigure('run id')],
   ['single-bucket · chunks fetched', singleBucketFigure('chunks fetched')],
-  ['single-bucket · GETs per cold intersect', singleBucketFigure('GETs per cold intersect')],
-  ['single-bucket · 1M cold intersects', singleBucketFigure('per million cold intersects')],
-  ['single-bucket · 1M loads', singleBucketFigure('per million single-part loads')],
-  ['single-bucket · 1M multipart loads', singleBucketFigure('per million multipart loads')],
+  [
+    'single-bucket · GETs, the median measured',
+    singleBucketFigure('GETs the median cold intersect made'),
+  ],
+  [
+    'single-bucket · 1M cold intersects, measured',
+    singleBucketFigure('per million cold intersects, measured'),
+  ],
+  [
+    'single-bucket · GETs, each pointer read once',
+    singleBucketFigure('GETs a cold intersect makes with each pointer read once'),
+  ],
+  [
+    'single-bucket · 1M cold intersects, each pointer read once',
+    singleBucketFigure('per million cold intersects with each pointer read once'),
+  ],
+  [
+    'single-bucket · 1M writes and publishes',
+    singleBucketFigure('per million single-part write-and-publishes'),
+  ],
+  ['single-bucket · 1M multipart', singleBucketFigure('per million multipart write-and-publishes')],
+  [
+    'single-bucket · 1M first store.load()s',
+    singleBucketFigure("per million of a segment's first store.load()"),
+  ],
   ['single-bucket · the whole run', singleBucketFigure('the run')],
 ];
 
@@ -394,7 +439,16 @@ const PAGES = [
   { rel: 'README.md', requireAll: false },
   { rel: 'packages/roaring/README.md', requireAll: false },
   { rel: 'docs/ROADMAP.md', requireAll: false },
+  // The source the July receipt is parsed from is a page too: a wrong figure beside the parsed ones would
+  // otherwise be the one thing in it nothing reads.
+  { rel: 'docs/benchmarks.md', requireAll: false },
 ];
+
+// Figures that are only honest beside what they leave out. Both July unit figures were billed without the pointer
+// — its round trip went to a NoSQL table that no longer ships — so wherever one is stated, the pointer has to be
+// named within a sentence or two of it.
+const NEEDS_THE_POINTER = ['$0.14', '$5.88'];
+const NEAR = 280;
 
 for (const page of PAGES) {
   const PAGE_PATH = path.join(ROOT, page.rel);
@@ -428,12 +482,27 @@ for (const page of PAGES) {
     .map((m) => m[1])
     .join(' ');
 
-  const visible = html
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-    .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .concat(' ', metas);
+  // Structured data and a drawing's own labels are published text too; only the generated chart is set aside.
+  const jsonLd = [
+    ...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g),
+  ]
+    .map((m) => m[1])
+    .join(' ');
+  const svgText = svgs
+    .filter((svg) => !svg.includes('crossover'))
+    .flatMap((svg) => [...svg.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]))
+    .join(' ');
+  // A markdown or text file is not markup: stripping "tags" there would delete prose such as `<runId>`.
+  const isHtml = page.rel.endsWith('.html');
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, '');
+  const visible = isHtml
+    ? withoutComments
+        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
+        .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;|&#160;/gi, ' ')
+        .concat(' ', metas, ' ', jsonLd, ' ', svgText)
+    : withoutComments;
 
   // ── the chart, checked rather than exempted ──────────────────────────────────────────────────────────
   // Mirrors bench/run.cjs's own rounding: one decimal below 100/s, none above.
@@ -462,25 +531,106 @@ for (const page of PAGES) {
     }
   }
 
-  // 2 · and nothing else that looks like money or a rate may appear
-  const allowed = new Set(anchors.map(([, v]) => v).filter(Boolean));
-  // The page legitimately restates figures owned by other pages' gates; each is listed so that adding one is
-  // a deliberate act rather than a silent widening.
+  // 2 · and nothing else that looks like money may appear
+  const allowed = new Set(
+    anchors
+      .filter(
+        ([, v, scope]) => v && (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
+      )
+      .map(([, v]) => v),
+  );
+  // The page legitimately restates figures owned by other gates; each is listed so that adding one is a
+  // deliberate act rather than a silent widening.
   const alsoAllowed = new Set([
     '$0.03', // at-rest, the rounded form
-    '100', // chunks fetched — gated by site-replay.cjs
-    '2,000', // chunks per segment — same
-    '25.3 ms', // intersect wall time — same
-    '1,900', // chunks skipped per segment — same
     // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
-    '$0',
+    ...(page.rel === 'site/index.html' ? ['$0'] : []),
   ]);
+  // A figure the latest calibration run accounts for passes at the precision it is written, by the same matcher
+  // that holds the run's report to its evidence — `$82` for $82.40 as readily as the full figure. Its latency
+  // and upload values are not in this set when the run was driven from outside the region.
+  const byTheRun = (m) =>
+    singleBucket !== null && calibration.unaccounted(m, singleBucket.pageValues).length === 0;
   const money = visible.match(/\$[\d,]+(?:\.\d+)?/g) || [];
   for (const m of new Set(money)) {
-    if (!allowed.has(m) && !alsoAllowed.has(m)) {
+    if (!allowed.has(m) && !alsoAllowed.has(m) && !byTheRun(m)) {
       fail(`${page.rel} states ${m}, which no source accounts for`);
+    }
+  }
+
+  // 3 · the July figures, only beside the pointer they leave out
+  const flat = visible.replace(/\s+/g, ' ');
+  for (const figure of NEEDS_THE_POINTER) {
+    let at = flat.indexOf(figure);
+    while (at !== -1) {
+      const around = flat.slice(Math.max(0, at - NEAR), at + figure.length + NEAR);
+      if (!/pointer/i.test(around)) {
+        fail(
+          `${page.rel} states ${figure} with no mention of the pointer near it — that figure left the pointer ` +
+            'out, and read on its own it is the cost of a topology that no longer ships',
+        );
+      }
+      at = flat.indexOf(figure, at + figure.length);
+    }
+  }
+}
+
+// ── the benchmarks page's panel on the latest calibration run, every unit and every row ────────────────────
+// The whole-page check above reads money only. The panel is the one place the site restates the run in detail —
+// counts, shares, sizes — so inside it every figure is held to the evidence, and its rows to the derivation's.
+if (singleBucket !== null) {
+  const html = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
+  const open = html.indexOf('id="single-bucket"');
+  const close = open === -1 ? -1 : html.indexOf('</div>\n\n', open);
+  if (open === -1 || close === -1) {
+    fail('site/benchmarks.html no longer has its #single-bucket panel');
+  } else {
+    const panel = html.slice(open, close).replace(/<!--[\s\S]*?-->/g, '');
+    const text = panel.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ');
+    for (const figure of calibration.unaccounted(text, singleBucket.pageValues)) {
+      fail(
+        `site/benchmarks.html's #single-bucket panel states ${figure}, which the run does not account for`,
+      );
+    }
+    // Rows: Operation | Per million | Requests. A row that bills a GET or a PUT is one of the derivation's rows,
+    // with its cost, and says "expected" if the derivation labels it so; each derived row appears once.
+    const rows = [...panel.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
+      .map((m) =>
+        [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) =>
+          c[1]
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim(),
+        ),
+      )
+      .filter((cells) => cells.length === 3);
+    const seen = new Map();
+    for (const [operation, perMillion, requests] of rows) {
+      const key = requests.replace(/\b(GET|PUT)s\b/g, '$1');
+      const want = singleBucket.rows.find((r) => r.requests === key);
+      if (want === undefined) {
+        fail(`the #single-bucket panel bills "${requests}", which the run does not derive`);
+        continue;
+      }
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+      if (perMillion !== want.perMillion) {
+        fail(
+          `the #single-bucket panel prices "${requests}" at ${perMillion}, not ${want.perMillion}`,
+        );
+      }
+      if ((want.label === 'expected') !== /\bexpected\b/i.test(operation)) {
+        fail(`the #single-bucket panel's "${requests}" row must say "expected" exactly when it is`);
+      }
+    }
+    for (const r of singleBucket.rows) {
+      if ((seen.get(r.requests) ?? 0) !== 1) {
+        fail(
+          `the #single-bucket panel has the "${r.requests}" row ${seen.get(r.requests) ?? 0} times, not once`,
+        );
+      }
     }
   }
 }

@@ -5,7 +5,7 @@
  * These are pure functions with no I/O, for one reason: every one of them was a BUG in the harness this
  * replaces, and the only way to keep a guard honest is to be able to plant its defect in a test and watch it
  * fail. The harness that ran the July 2026 calibration was deleted with the warm tier, and its regression
- * suite went with it — so these are rebuilt from the recorded post-mortem rather than from memory.
+ * suite went with it — so each is rebuilt from what went wrong, which its comment below records.
  *
  * Read `RELEASING.md` for the release pipeline's guards; this file is the money-spending equivalent.
  */
@@ -95,7 +95,7 @@ function probeMeansAbsent(err) {
  * writes, so the read slot always breached first — and it was triggered by setting concurrency above the
  * segment count, which is exactly what someone does to make a run *cheaper*.
  *
- * AND ONE MORE, found by the first real run: it counted a single operand per read. An intersect has two, and
+ * AND ONE MORE, found by this harness's first real run: it counted a single operand per read. An intersect has two, and
  * each resolves its own pointer, reads its own index and fetches its own chunks — so the read term was half of
  * what the workload issues. `operandsPerRead` is now explicit, and the harness checks the measured counts
  * against this projection at the end of every run, so "it is an upper bound" is a checked property rather than
@@ -125,7 +125,7 @@ function projectOps({
   // compare-and-swap and go round again. Its reads are more than one per attempt, and this once said one: the
   // loader reads the row before it writes, each attempt reads it again and the registry reads it once more before
   // its conditional write, and a publish that loses every attempt reads it a last time. So a load of a new segment
-  // makes three GETs even with nothing racing it — the first real run measured 36 across 12 loads — and twelve
+  // makes three GETs even with nothing racing it — run 2026-09-23-94416 measured 36 across 12 loads — and twelve
   // at worst. The harness is the only writer, so its loads never race; the bound still has to hold if one did.
   const putPerLoad = 1 + retryBound;
   const getPerLoad = 2 + 2 * retryBound;
@@ -134,8 +134,9 @@ function projectOps({
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
   // Three fixed GETs is the generous reading of "open a generation": the pointer, the tail read, and a second read
   // for an index longer than the tail. The pointer is read once only because the timed store pins it
-  // (`TIMED_STORE`) — on the default 2 s refresh, an intersect slower than that reads it again, and the first real
-  // run, from a laptop, landed exactly on this bound. The end-of-run check keeps it honest.
+  // (`TIMED_STORE`) — on the default 2 s refresh, an intersect slower than that reads it again, and the median
+  // intersect of run 2026-09-23-94416, from a laptop, used exactly this allowance. The end-of-run check keeps it
+  // honest.
   const getPerOperand = 3 + chunksPerRead;
   const put = loads * putPerLoad + largeLoads * putPerLargeLoad + fixedPuts;
   const getForLoads = (loads + largeLoads) * getPerLoad;
@@ -196,7 +197,7 @@ const ID_SPACE_CHUNKS = 65_536;
  * published a confident p50 over zero work.
  *
  * The second shared a 5% core but packed it at a stride of 7, so 25,000 shared ids fitted in about THREE
- * chunks. The first real run showed it: 107 GETs across 40 intersects. The headline claim this measurement is
+ * chunks. This harness's first real run showed it: 107 GETs across 40 intersects. The headline claim this measurement is
  * meant to back is "100 of 2,000 chunks fetched", and a three-chunk workload is not evidence about it.
  *
  * So the layout is now derived from the shape it must reproduce. Every segment is `sharedChunks` chunks of a
@@ -329,9 +330,9 @@ function clientConfigs(base) {
  * failed read INSIDE the timed window: a second retry layer the client's one-attempt pin does not reach.
  *
  * `cache.genTtlMs: 0` — "pin for the store's lifetime". A store re-reads a segment's pointer once `genTtlMs`
- * (2 s by default) has passed since it last read it, in the middle of an intersect too. The first real run was
- * 83 ms from the region, its cold intersects took about 3 s, and each read both pointers twice: 206 GETs where the
- * same intersect inside the region makes 204. A request count that moves with the network describes the network,
+ * (2 s by default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was
+ * 83 ms from the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206
+ * GETs where the same intersect inside the region makes 204. A request count that moves with the network describes the network,
  * and the projection had no term for it. Every timed intersect has a store of its own, so pinning costs nothing
  * in coldness: each pointer is still read, exactly once. What the default refresh costs a long-lived reader is a
  * separate figure — at most one pointer read per segment per `genTtlMs` while it is read — and the run report
@@ -348,17 +349,43 @@ const TIMED_STORE = Object.freeze({ retry: false, cache: Object.freeze({ genTtlM
 const EVIDENCE_DIR = 'bench/calibration';
 
 /**
- * A run id is part of the run's bucket name, `cloudbitmaps-calib-<id>`, and of its evidence file's name — so it
- * must be valid as both. A bucket name is 3 to 63 lowercase letters, digits and hyphens that begin and end with a
- * letter or digit; the 19-character prefix leaves 44 for the id. Nothing outside that set can reach a path either.
+ * A run id names the run's bucket, `cloudbitmaps-calib-<id>`, and its evidence file, so it has to be valid as both,
+ * and it has to sort into run order. So it is a UTC date, then a label of lowercase letters, digits and hyphens that
+ * starts and ends with a letter or digit: 44 characters at most, which is what the 19-character prefix leaves of a
+ * bucket name's 63. A bucket name may also hold dots; an id does not, because it is a file name too. Nothing
+ * outside that set can reach a path, and the date prefix rules out every name Windows reserves.
+ *
+ * S3 also reserves some suffixes for its own bucket types, and refuses them at `CreateBucket` — after the abort
+ * window, when nothing has been created but the run has already been waited for. They are refused here first.
  */
-const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,42}[a-z0-9])?$/;
+const RUN_ID = /^\d{4}-\d{2}-\d{2}-[a-z0-9](?:[a-z0-9-]{0,31}[a-z0-9])?$/;
+const RESERVED_SUFFIX = /(?:-s3alias|--ol-s3|--x-s3)$/;
 
 function checkRunId(runId) {
-  if (typeof runId !== 'string' || !RUN_ID.test(runId)) {
+  if (typeof runId !== 'string' || !RUN_ID.test(runId) || RESERVED_SUFFIX.test(runId)) {
     throw new Error(
-      `run id "${String(runId)}" is not usable: it names the bucket and the evidence file, so it must be 1 to 44 ` +
-        'lowercase letters, digits and hyphens, beginning and ending with a letter or digit',
+      `run id "${String(runId)}" is not usable: it names the bucket and the evidence file and must sort into run ` +
+        'order, so it is a date and a label, YYYY-MM-DD-<label>, 44 characters at most, where the label is ' +
+        'lowercase letters, digits and hyphens beginning and ending with a letter or digit',
+    );
+  }
+  return runId;
+}
+
+/**
+ * The id `--cleanup` accepts: anything that makes a legal bucket name, because it writes no file.
+ *
+ * Narrower rules would strand buckets. Harnesses before the date prefix accepted any `CR_CALIBRATE_RUN_ID` and
+ * printed `--cleanup <id>` for their leftovers, and S3 allowed dots and a hyphen straight after the prefix, so an
+ * id like `v0.10.0-inregion` made a real bucket that `checkRunId` would now refuse to remove.
+ */
+const CLEANUP_ID = /^[a-z0-9.-]{0,43}[a-z0-9]$/;
+
+function checkCleanupId(runId) {
+  if (typeof runId !== 'string' || !CLEANUP_ID.test(runId) || runId.includes('..')) {
+    throw new Error(
+      `"${String(runId)}" cannot name a calibration bucket: 1 to 44 lowercase letters, digits, dots and hyphens, ` +
+        'ending with a letter or digit, and no two dots together',
     );
   }
   return runId;
@@ -367,13 +394,48 @@ function checkRunId(runId) {
 /**
  * Where a run's results are written, relative to the repository root.
  *
- * A real run writes its own evidence file under {@link EVIDENCE_DIR}. A rehearsal gets a file of its own, which
- * git ignores: it writes the same shape as a real run, and under the real run's name it sat one `git add` away
- * from being committed as the evidence behind a published figure.
+ * A real run that finished writes its evidence under {@link EVIDENCE_DIR}. One that did not — interrupted, failed
+ * part-way — writes `<id>.partial.json` beside it, which git ignores and the figures gates skip: it once went to the
+ * evidence name, where a single aborted run made both gates fail until someone deleted it. A rehearsal gets a file
+ * of its own, which git also ignores: it writes the same shape as a real run, and under the real run's name it sat
+ * one `git add` away from being committed as the evidence behind a published figure.
  */
-function resultsFile(rehearse, runId) {
+function resultsFile(rehearse, runId, { partial = false } = {}) {
   if (rehearse) return 'bench/calibrate-aws-rehearsal.json';
-  return `${EVIDENCE_DIR}/${checkRunId(runId)}.json`;
+  return `${EVIDENCE_DIR}/${checkRunId(runId)}${partial ? '.partial' : ''}.json`;
+}
+
+/**
+ * Whether a run would replace evidence that already exists, and what to say if so; `null` when it would not.
+ *
+ * Evidence is write-once, like the generations it measures. A figure published from a run is checked against the
+ * file under that run's id, and `CR_CALIBRATE_RUN_ID` exists so a run can be named — so a second run under a
+ * published run's id would replace the file its figures are checked against. A partial file does not count: it is
+ * not evidence, and a run that failed part-way can be retried under its own id.
+ */
+function evidenceConflict({ rehearse, file, exists }) {
+  if (rehearse || !exists(file)) return null;
+  return (
+    `${file} already exists — that run's evidence is committed. Choose another CR_CALIBRATE_RUN_ID, or leave ` +
+    'it unset for a fresh one.'
+  );
+}
+
+/**
+ * Refuse a workload that cannot measure what it claims to.
+ *
+ * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
+ * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — fetched
+ * all 1,999 chunks an intersect, failed its exactness check and overspent its projection before the ceiling
+ * check could see it.
+ */
+function checkWorkload({ segments, reads }) {
+  if (reads > 0 && segments < 2) {
+    throw new Error(
+      `${segments} segment(s) cannot make an intersect of two different segments; set CR_CALIBRATE_SEGMENTS to ` +
+        'at least 2, or CR_CALIBRATE_READS to 0',
+    );
+  }
 }
 
 module.exports = {
@@ -392,6 +454,9 @@ module.exports = {
   maskAccount,
   resultsFile,
   checkRunId,
+  checkCleanupId,
+  evidenceConflict,
+  checkWorkload,
   EVIDENCE_DIR,
   TIMED_STORE,
   ADMIN_ATTEMPTS,

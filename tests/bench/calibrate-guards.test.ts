@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { readFileSync } from 'node:fs';
@@ -21,8 +23,8 @@ import {
 
 // Guards on a script that spends real money against a real cloud account. Every case below is a bug that
 // actually happened in the harness this replaces — the one that ran the July 2026 calibration and was deleted
-// with the warm tier, taking its regression suite with it. Rebuilt from the recorded post-mortem, because a
-// guard nobody can plant a defect against is decoration.
+// with the warm tier, taking its regression suite with it. Each is rebuilt from what went wrong, which its test
+// below records, because a guard nobody can plant a defect against is decoration.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require_ = createRequire(import.meta.url);
 
@@ -61,8 +63,15 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   };
   layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
-  resultsFile: (rehearse: boolean, runId?: string) => string;
+  resultsFile: (rehearse: boolean, runId?: string, options?: { partial?: boolean }) => string;
   checkRunId: (runId: unknown) => string;
+  checkCleanupId: (runId: unknown) => string;
+  evidenceConflict: (i: {
+    rehearse: boolean;
+    file: string;
+    exists: (file: string) => boolean;
+  }) => string | null;
+  checkWorkload: (i: { segments: number; reads: number }) => void;
   EVIDENCE_DIR: string;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
   clientConfigs: (base: Record<string, unknown>) => {
@@ -74,6 +83,11 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   TEARDOWN_PUTS: number;
   bucketIsGone: (err: unknown) => boolean;
   uploadIsGone: (err: unknown) => boolean;
+};
+
+type Billed = { put: number; get: number };
+const calibrationFigures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) as {
+  STORE_LOAD_REQUESTS: { first: Billed; reload: Billed; collecting: Billed };
 };
 
 const meterLib = require_(join(ROOT, 'bench', 'lib', 'aws-meter.cjs')) as {
@@ -289,7 +303,7 @@ describe('aws-meter classification', () => {
   });
 });
 
-describe('calibrate guards — found by the first real run', () => {
+describe("calibrate guards — found by this harness's real runs", () => {
   // The harness said RETRY_BOUND = 4 and called it "1 + DEFAULT_MAX_RETRIES". No such constant exists and the
   // loop runs five attempts, so every load was projected one attempt short. Read the bound out of the source
   // rather than retyping it, so the two cannot disagree silently again.
@@ -323,7 +337,7 @@ describe('calibrate guards — found by the first real run', () => {
     expect(big.put - small.put).toBe(2 * 3);
   });
 
-  // The first real run's GETs did not add up until the loads were counted: 36 pointer reads that each answered 404,
+  // Run 2026-09-23-94416's GETs did not add up until the loads were counted: 36 pointer reads that each answered 404,
   // three per load of a new segment. The loader reads the row, the publish reads it again, and the registry reads
   // it once more before its conditional write — and a publish that loses its race goes round again, up to the
   // retry bound, then reads the row one last time. The projection allowed one read per attempt. That held only
@@ -417,7 +431,7 @@ describe('calibrate guards — found by the first real run', () => {
     });
 
     // The published figure is "100 of 2,000 chunks". A layout that packed the shared ids into a handful of
-    // chunks — the first real run's did, at a stride of 7 — is not evidence about that figure.
+    // chunks — this harness's first real run did, at a stride of 7 — is not evidence about that figure.
     it('reproduces the published 100-of-2,000 shape at the harness defaults', () => {
       const d = guards.planLayout({
         segments: 10,
@@ -493,55 +507,214 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(ignored(file)).toBe(false);
   });
 
-  // The id names the bucket AND the evidence file, so it has to be safe as both: a bucket name is lowercase
-  // letters, digits and hyphens, and anything else in a file name is a path it could escape into.
-  it('refuses a run id that would not make a bucket name and a file name', () => {
-    for (const ok of ['2026-09-23-94416', 'a', `a${'-'.repeat(42)}b`]) {
+  // A run that did not finish is not evidence. It once went to the evidence name, where one aborted run made both
+  // figures gates fail until someone deleted it.
+  it('writes a run that did not finish beside the evidence, under a name git ignores', () => {
+    const file = guards.resultsFile(false, '2026-09-23-94416', { partial: true });
+    expect(file).toBe(`${guards.EVIDENCE_DIR}/2026-09-23-94416.partial.json`);
+    expect(ignored(file)).toBe(true);
+    expect(guards.resultsFile(true, '2026-09-23-94416', { partial: true })).toBe(
+      guards.resultsFile(true),
+    );
+  });
+
+  // The id names the bucket AND the evidence file, and the gates read the latest run by its order — so it is a date,
+  // then a label that is safe in both a bucket name and a file name.
+  it('refuses a run id that would not make a bucket name, a file name, and run order', () => {
+    for (const ok of ['2026-09-23-94416', '2026-09-23-a', `2026-09-23-a${'-'.repeat(31)}b`]) {
       expect(guards.checkRunId(ok)).toBe(ok);
     }
     for (const bad of [
       undefined,
       '',
-      '../2026-09-23-94416',
-      'runs/2026',
+      '94416', // no date, so it would sort after every dated run
+      'inregion-1',
+      'crash-recovery-1', // no date — and a name the fuzzers' `crash-*` ignore rule would swallow
+      'con', // a name Windows reserves
+      '2026-09-23',
+      '2026-09-23-',
+      '2026-09-23-../x',
+      '2026-09-23-runs/1',
       '2026-09-23-94416.json',
-      'Run-1',
-      '-a',
-      'a-',
-      '--cleanup',
-      `a${'b'.repeat(44)}`, // 45 characters: the bucket name would pass 63
+      '2026-09-23-Run',
+      '2026-09-23--a',
+      '2026-09-23-a-',
+      '2026-09-23-x-s3alias', // S3 reserves the suffix, and would refuse it only after the abort window
+      `2026-09-23-a${'b'.repeat(33)}`, // 45 characters: the bucket name would pass 63
     ]) {
       expect(() => guards.checkRunId(bad), String(bad)).toThrow(/run id/);
     }
     expect(() => guards.resultsFile(false, '../x')).toThrow(/run id/);
   });
 
+  // `--cleanup` writes no file, so it takes any id that names a legal bucket. Older harnesses accepted any id and
+  // printed `--cleanup <id>` for their leftovers; the date rule would strand those buckets.
+  it('lets --cleanup remove any bucket an older harness could have made', () => {
+    for (const ok of ['v0.10.0-inregion', '-x', '2026-09-22-bfee0', 'inregion-1', 'a']) {
+      expect(guards.checkCleanupId(ok)).toBe(ok);
+    }
+    for (const bad of [
+      undefined,
+      '',
+      '../x',
+      'a/b',
+      'A',
+      'a..b',
+      'a.',
+      'a-',
+      `a${'b'.repeat(44)}`,
+    ]) {
+      expect(() => guards.checkCleanupId(bad), String(bad)).toThrow(/bucket/);
+    }
+  });
+
+  it('refuses a workload that pairs a segment with itself', () => {
+    expect(() => guards.checkWorkload({ segments: 1, reads: 40 })).toThrow(/at least 2/);
+    expect(() => guards.checkWorkload({ segments: 0, reads: 1 })).toThrow(/at least 2/);
+    expect(() => guards.checkWorkload({ segments: 1, reads: 0 })).not.toThrow();
+    expect(() => guards.checkWorkload({ segments: 2, reads: 40 })).not.toThrow();
+  });
+
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
   // Without them, putting the old hard-coded path back into the harness — the exact regression this block exists
   // for — passed every test here.
-  it('the harness takes its output path from resultsFile(), and names neither file itself', () => {
+  it('the harness takes its output paths from resultsFile(), and names no file itself', () => {
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
     expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE, runId))');
+    expect(src).toContain('resolve(ROOT, resultsFile(REHEARSE, runId, { partial: true }))');
     expect(src).not.toMatch(/calibrate-aws-(?:results|rehearsal)\.json|bench\/calibration/);
   });
 
   // Evidence is write-once, like the generations it measures. A run given the id of a published one — by
   // CR_CALIBRATE_RUN_ID, which exists so a run can be named — would otherwise replace the file its figures are
   // checked against, and the check would then pass against numbers the page never quoted.
-  it('refuses, before anything is created, to overwrite a run that already has evidence', () => {
-    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
-    const main = src.indexOf('async function main');
-    const check = src.indexOf('existsSync(out)', main);
-    expect(check, 'the harness no longer checks for existing evidence').toBeGreaterThan(main);
-    expect(check).toBeLessThan(src.indexOf('await identity(', main));
-    expect(check).toBeLessThan(src.indexOf('new s3.CreateBucketCommand', main));
-    expect(src.indexOf('checkRunId(', main)).toBeLessThan(check);
+  it('refuses to overwrite evidence, and only evidence', () => {
+    const exists = (file: string): boolean => file.endsWith('2026-09-23-94416.json');
+    const committed = `${guards.EVIDENCE_DIR}/2026-09-23-94416.json`;
+    expect(guards.evidenceConflict({ rehearse: false, file: committed, exists })).toMatch(
+      /already exists/,
+    );
+    // A new id, a rehearsal, and a retry after a partial run are all free to write.
+    expect(
+      guards.evidenceConflict({
+        rehearse: false,
+        file: `${guards.EVIDENCE_DIR}/2026-09-24-a.json`,
+        exists,
+      }),
+    ).toBeNull();
+    expect(guards.evidenceConflict({ rehearse: true, file: committed, exists })).toBeNull();
+    // A retry after a run that failed part-way: only its partial file exists, and the evidence path is free.
+    expect(
+      guards.evidenceConflict({
+        rehearse: false,
+        file: guards.resultsFile(false, '2026-09-25-a'),
+        exists: (f) => f === guards.resultsFile(false, '2026-09-25-a', { partial: true }),
+      }),
+    ).toBeNull();
   });
 
-  it('the CloudShell script copies out whichever file the run wrote', () => {
+  it('checks for existing evidence in every mode, before anything reads a credential', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    const check = src.indexOf('evidenceConflict(', main);
+    expect(check, 'the harness no longer checks for existing evidence').toBeGreaterThan(main);
+    // Before the projection-only return, so a dry run with a used id says so too.
+    expect(check).toBeLessThan(src.indexOf("if (MODE === 'project')", main));
+    expect(check).toBeLessThan(src.indexOf('await identity(', main));
+    expect(check).toBeLessThan(src.indexOf('new s3.CreateBucketCommand', main));
+    expect(src.indexOf('checkRunId(runId)', main)).toBeLessThan(check);
+  });
+
+  // The CloudShell script runs the harness from a scratch copy, where this clone's evidence is out of sight — so the
+  // write-once rule has to be applied by the script, before anything is installed or spent.
+  it('the CloudShell script refuses a run id whose evidence is committed', () => {
     const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
-    expect(sh).toContain(`${guards.EVIDENCE_DIR}/*.json`);
-    expect(sh).toContain(guards.resultsFile(true));
+    const fn = /^refuse_committed_run_id\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0];
+    expect(fn, 'the script no longer defines refuse_committed_run_id').toBeDefined();
+    // Called before the scratch directory exists, so a refusal leaves nothing behind.
+    expect(sh.indexOf('\nrefuse_committed_run_id\n')).toBeGreaterThan(-1);
+    expect(sh.indexOf('\nrefuse_committed_run_id\n')).toBeLessThan(
+      sh.indexOf('WORK="$(mktemp -d)"'),
+    );
+    const clone = mkdtempSync(join(tmpdir(), 'calib-clone-'));
+    try {
+      mkdirSync(join(clone, 'bench', 'calibration'), { recursive: true });
+      writeFileSync(join(clone, 'bench', 'calibration', '2026-09-23-94416.json'), '{}');
+      const run = (id: string): ReturnType<typeof spawnSync> =>
+        spawnSync('bash', ['-c', `${fn}\nrefuse_committed_run_id\necho ran`], {
+          cwd: clone,
+          env: { PATH: process.env.PATH ?? '', CR_CALIBRATE_RUN_ID: id },
+          encoding: 'utf8',
+        });
+      const committed = run('2026-09-23-94416');
+      expect(committed.status).toBe(2);
+      expect(committed.stderr).toMatch(/committed evidence/);
+      expect(run('2026-09-24-a').stdout).toContain('ran');
+    } finally {
+      rmSync(clone, { recursive: true, force: true });
+    }
+  });
+
+  // What `finish()` does on the way out decides whether a paid run's results survive, so it is run, not read.
+  it("the CloudShell script's exit copies every result out, overwrites nothing, and keeps what it cannot copy", () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = /^finish\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0];
+    expect(fn, 'the script no longer defines finish').toBeDefined();
+    const root = mkdtempSync(join(tmpdir(), 'calib-finish-'));
+    try {
+      const work = join(root, 'work');
+      const home = join(root, 'home');
+      mkdirSync(join(work, 'bench', 'calibration'), { recursive: true });
+      mkdirSync(home);
+      writeFileSync(join(work, 'bench', 'calibration', '2026-09-24-a.json'), 'evidence');
+      writeFileSync(join(work, 'bench', 'calibration', '2026-09-24-b.partial.json'), 'partial');
+      writeFileSync(
+        join(work, 'bench', guards.resultsFile(true).split('/').pop() ?? ''),
+        'rehearsal',
+      );
+      writeFileSync(join(home, '2026-09-24-b.partial.json'), 'an older copy');
+      const out = spawnSync('bash', ['-c', `set -euo pipefail\n${fn}\nfinish`], {
+        env: { PATH: process.env.PATH ?? '', WORK: work, HOME: home },
+        encoding: 'utf8',
+      });
+      expect(out.status).toBe(0);
+      expect(readFileSync(join(home, '2026-09-24-a.json'), 'utf8')).toBe('evidence');
+      expect(
+        readFileSync(join(home, guards.resultsFile(true).split('/').pop() ?? ''), 'utf8'),
+      ).toBe('rehearsal');
+      // The file already in $HOME is left alone, so the scratch directory holding this run's copy is kept.
+      expect(readFileSync(join(home, '2026-09-24-b.partial.json'), 'utf8')).toBe('an older copy');
+      expect(existsSync(join(work, 'bench', 'calibration', '2026-09-24-b.partial.json'))).toBe(
+        true,
+      );
+      expect(out.stderr).toMatch(/left alone/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A rehearsal with --run ran the real identity check against whatever credentials the environment held. The pair
+  // is refused before the harness imports anything — run with no credentials and no confirmation, so even a broken
+  // refusal cannot get past the next check.
+  it('refuses --rehearse with --run before doing anything', () => {
+    const out = spawnSync(
+      process.execPath,
+      [join(ROOT, 'bench', 'calibrate-aws.cjs'), '--rehearse', '--run'],
+      {
+        env: { PATH: process.env.PATH ?? '' },
+        encoding: 'utf8',
+      },
+    );
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/exclusive/);
+  });
+
+  it('tears down on a hang-up too, and records the object apart from the bytes a load uploaded', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain("for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])");
+    expect(src).toContain('objectBytes: size');
+    expect(src).toContain('medianObjectBytes: median(xs.map((l) => l.objectBytes))');
+    expect(src).toContain('medianUploadBytes: median(xs.map((l) => l.uploadBytes))');
   });
 });
 
@@ -752,8 +925,8 @@ class CountingObjectStore implements ObjectRegistryStore {
 }
 
 // A store re-reads a segment's pointer once `cache.genTtlMs` (2 s by default) has passed since it last read it —
-// in the middle of an intersect, too. The first real run was 83 ms from the region, its cold intersects took about
-// 3 s, and each read both pointers twice: 206 GETs where the same intersect inside the region makes 204. A count
+// in the middle of an intersect, too. Run 2026-09-23-94416 was 83 ms from the region, its cold intersects took about
+// 3 s, and the median one read both pointers twice: 206 GETs where the same intersect inside the region makes 204. A count
 // that moves with the network is not a property of the library, and the projection had no term for it. These drive
 // the real engine on a clock where every storage read takes three seconds.
 describe("a cold intersect's request count does not depend on the network", () => {
@@ -826,6 +999,100 @@ describe("a cold intersect's request count does not depend on the network", () =
     expect(byDefault.pointerReads).toBeGreaterThan(2);
     // Pinned, it is two — one per operand — however long the intersect takes.
     expect(timed.pointerReads).toBe(2);
+  });
+});
+
+/** `target`, with every call to each of its methods counted in `counts` under the method's name. */
+function counting<T extends object>(target: T, counts: Record<string, number>): T {
+  return new Proxy(target, {
+    get(t, prop, receiver) {
+      const value: unknown = Reflect.get(t, prop, receiver);
+      if (typeof value !== 'function') return value;
+      const fn = value as (...args: unknown[]) => unknown;
+      return (...args: unknown[]) => {
+        counts[String(prop)] = (counts[String(prop)] ?? 0) + 1;
+        return fn.apply(t, args);
+      };
+    },
+  });
+}
+
+// The harness times `bulkLoadCrbmGeneration` with the generation number given: a load's write and its publish.
+// `store.load()`, the one-call load the guide leads with, also works out the next generation from a listing, reads
+// the current one's cardinality to guard against a shrink, and collects superseded generations after the publish.
+// The benchmarks page says it should cost roughly twice as much, with no run behind the figure — so the requests it
+// adds are counted here, against local drivers and the real registry protocol. On S3 a listing bills at the PUT rate.
+describe('what the harness does not measure: store.load()', () => {
+  it('lists twice, and reads the pointer four more times, beyond a write and publish', async () => {
+    const storageCalls: Record<string, number> = {};
+    const pointer = new CountingObjectStore(0);
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counting(new MemoryStorageDriver(), storageCalls),
+        registry: new ObjectStoreRegistry(pointer, undefined, () => 0),
+      }),
+    });
+    const load = async (ids: number[]): Promise<Record<string, number>> => {
+      for (const k of Object.keys(storageCalls)) delete storageCalls[k];
+      pointer.reads = 0;
+      pointer.writes = 0;
+      const result = await store.load({ namespace: 'ns', segment: 's' }, ids);
+      expect(result.published).toBe(true);
+      return {
+        putImmutable: storageCalls.putImmutable ?? 0,
+        list: storageCalls.list ?? 0,
+        getTail: storageCalls.getTail ?? 0,
+        getRange: storageCalls.getRange ?? 0,
+        delete: storageCalls.delete ?? 0,
+        pointerReads: pointer.reads,
+        pointerWrites: pointer.writes,
+      };
+    };
+    // A write and publish alone is 1 object write, 1 pointer write and 3 pointer reads (the test above). A segment's
+    // first load through store.load() adds two listings and four pointer reads.
+    const first = await load([1, 2, 3]);
+    expect(first).toEqual({
+      putImmutable: 1,
+      list: 2,
+      getTail: 0,
+      getRange: 0,
+      delete: 0,
+      pointerReads: 7,
+      pointerWrites: 1,
+    });
+    // A reload also opens the current generation's index, to count what the load would replace.
+    const reload = await load([1, 2, 3, 4]);
+    expect(reload).toEqual({
+      putImmutable: 1,
+      list: 2,
+      getTail: 1,
+      getRange: 0,
+      delete: 0,
+      pointerReads: 7,
+      pointerWrites: 1,
+    });
+    // From the third load on, the collection pass has a generation to delete, and re-reads the pointer before it.
+    const collecting = await load([1, 2, 3, 4, 5]);
+    expect(collecting).toEqual({
+      putImmutable: 1,
+      list: 2,
+      getTail: 1,
+      getRange: 0,
+      delete: 1,
+      pointerReads: 8,
+      pointerWrites: 1,
+    });
+    // The published figures price these three, so they must be these three. In a single-bucket store on S3 the
+    // object, the listings and the pointer bill as PUT-class requests, every read as a GET, and a delete is free.
+    const billed = (c: Record<string, number>): { put: number; get: number } => ({
+      put: (c.putImmutable ?? 0) + (c.list ?? 0) + (c.pointerWrites ?? 0),
+      get: (c.pointerReads ?? 0) + (c.getTail ?? 0) + (c.getRange ?? 0),
+    });
+    expect({
+      first: billed(first),
+      reload: billed(reload),
+      collecting: billed(collecting),
+    }).toEqual(calibrationFigures.STORE_LOAD_REQUESTS);
   });
 });
 

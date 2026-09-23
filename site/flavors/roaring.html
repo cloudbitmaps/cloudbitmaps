@@ -385,12 +385,13 @@
           </p>
           <p class="tpanel-foot">
             <span class="label">What that costs</span> Two line items, and no third. A
-            <strong>read</strong> that misses the cache is one ranged GET; a
-            <strong>publish</strong> is one object PUT plus the pointer write. Storage is the
-            segment sitting there, which is the cheap part. Nothing bills per id, and nothing bills
-            while the segment is idle &mdash; which is the whole difference from a node you keep
-            standing. Rates are region-specific and the vendor's to change; every figure we publish
-            uses the default <span class="m">aws-us-east-1-ondemand</span> profile, and
+            <strong>read</strong> that misses the cache is one ranged GET, once the segment's
+            pointer and index are read; a <strong>publish</strong> is one object PUT plus the
+            pointer's own PUT and reads. Storage is the segment sitting there, which is the cheap
+            part. Nothing bills per id, and nothing bills while the segment is idle &mdash; which is
+            the whole difference from a node you keep standing. Rates are region-specific and the
+            vendor's to change; every figure we publish uses the default
+            <span class="m">aws-us-east-1-ondemand</span> profile, and
             <span class="call">estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">

@@ -221,8 +221,10 @@ root-level project files. What each one is, and when it must be updated:
 6. **Roadmap** — update [`docs/ROADMAP.md`](docs/ROADMAP.md) after any meaningful change, not only at
    milestones. It must **never lag reality**.
 
-Benchmark and cost claims carry their methodology, and are labelled **measured** or **modeled** — never
-presented as one when they are the other. See [`docs/benchmarks.md`](docs/benchmarks.md).
+Benchmark and cost claims carry their methodology, and are labelled for what they are: **measured** (read off a
+run), **derived** (measured counts times list prices), **expected** (what the code predicts for a case no run
+measured) or **modelled** (the estimator's output) — never presented as one when they are the other. See
+[`docs/benchmarks.md`](docs/benchmarks.md).
 
 **Nothing here may cite a document a reader cannot open.** This repository is public and its design
 discussion is not, so an id like `Phase 4e`, `gap #1`, `finding S2` or `test-strategy T3` points nowhere —

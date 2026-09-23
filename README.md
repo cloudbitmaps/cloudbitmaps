@@ -12,7 +12,7 @@
 > warm. Data enters by **loading a new generation**, never by mutating a stored one.
 
 > Pre-1.0 on purpose — `1.0` is earned by real-cloud
-> cost calibration, real adoption, and freezing the `.crbm` on-disk format, so until then the public API
+> calibration (cost and in-region latency), real adoption, and freezing the `.crbm` on-disk format, so until then the public API
 > and the on-disk format stay evolvable. Everything under *Works today* is implemented and covered by
 > tests — unit, property-vs-oracle, a deterministic fault-injecting simulator, conformance suites run
 > against real backends (or a faithful emulator), coverage-guided fuzzing of the untrusted-`.crbm`
@@ -37,7 +37,8 @@
 > sink** (`IAuditSink` — publish / rewrite / dispose / crypto-shred events for an append-only audit log or SIEM,
 > a truthful GDPR Art. 30 erasure trail).
 > **Pre-1.0.** The public API and the `.crbm` on-disk format may still change before `1.0` — that version
-> is earned by real-cloud cost calibration, real adoption, and a format freeze, not by a date.
+> is earned by real-cloud calibration (cost and in-region latency), real adoption, and a format freeze, not by a
+> date.
 
 ## Why it exists
 
@@ -173,19 +174,21 @@ retried as transient); see the [getting-started guide](docs/guide/getting-starte
 
 ## What it costs — measured on real AWS
 
-Most libraries in this space quote a model. This one has a bill. Run `2026-09-23-94416` drove the published
-packages against a real AWS account in `us-east-1`, with the pointer in the same bucket as the data — the
-topology that ships: 12 loads and 40 cold intersects, every one exact. What each costs:
+Most libraries in this space quote a model. This one has a bill. Run `2026-09-23-94416` drove the packages at
+`0.10.0`, built from source, against a real AWS account in `us-east-1`, with the pointer in the same bucket as the
+data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact. What each costs:
 
-| Operation | Measured cost | | Always-on Redis-HA |
+| Operation | Cost | | Always-on Redis-HA |
 |---|---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 204 GETs | **$81.60 / million** | | **$346 / month**, standing |
-| Loading a segment: the write and the publish, pointer included | **$11.20 / million** | | whether you send traffic or not |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median, measured | **$82.40 / million** | | **$346 / month**, standing |
+| The same inside the region, each pointer read once: 204 GETs, expected | $81.60 / million | | whether you send traffic or not |
+| Loading a segment: the write and the publish, pointer included, measured | **$11.20 / million** | | |
 | `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | | |
-| 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | | |
+| 1.2 GiB of segments at rest, no traffic, modelled | **$0.03 / month** | | |
 
 Each intersect fetched 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
-rest: chunk-skipping, on real S3. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
+rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
+about twice the load figure. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
 pointer in a NoSQL table the library no longer ships, so it is the object-store half of that shape. The
 [run's report](bench/calibration/2026-09-23-94416.md) explains every figure, and the
 [benchmarks page](docs/benchmarks.md) states exactly what each run did and did not measure.

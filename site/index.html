@@ -187,9 +187,9 @@
             <div class="bills-grid">
               <div class="bill is-win">
                 <span class="label">CloudBitmaps</span>
-                <span class="bill-fig">$0.14</span>
+                <span class="bill-fig">$82.40</span>
                 <span class="bill-cap"
-                  >per 1M count() calls<small>metered — nothing when idle</small></span
+                  >per 1M cold A&nbsp;∩&nbsp;B, measured on S3<small>metered — nothing when idle</small></span
                 >
               </div>
               <div class="bill is-compare">
@@ -204,13 +204,22 @@
               1.2 GiB at rest, no traffic: <span class="is-live">$0.03/mo</span> — 0.008% of a Redis
               node
             </p>
-            <!-- The second row replaces the write figure this panel used to headline. A load is the
-                 only way data enters a segment, so its price is the other half of the bill a reader
-                 pays — and it bills per OBJECT, which is why it reads per million rather than per id. It is
-                 the single-bucket run's figure, pointer included; the July figure it replaced left the pointer
-                 out. -->
+            <!-- The headline is the single-bucket run's cold intersect, as measured: the crown-jewel
+                 operation, on the topology that ships, with every request the pointer adds in it. It
+                 replaced the July run's count() figure, which left the pointer out. Its counter-case sits
+                 right under it, because a per-request bill against a standing one is only half a
+                 comparison without the rate at which they cross.
+
+                 The last row replaces the write figure this panel used to headline. A load is the only way
+                 data enters a segment, so its price is the other half of the bill a reader pays — and it
+                 bills per OBJECT, which is why it reads per million rather than per id. It is the write and
+                 the publish, pointer included; store.load()'s listings come on top. -->
+            <p class="panel-row">
+              $346 a month buys 4.2 million of those intersects — past 1.6 a second, sustained, the node is
+              cheaper
+            </p>
             <p class="panel-row is-pair">
-              <span>Loading a whole segment, pointer included</span><span>$11.20 per 1M</span>
+              <span>Writing and publishing a segment, pointer included</span><span>$11.20&nbsp;per&nbsp;1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>
@@ -306,7 +315,7 @@
 
                count() earns the last slot on merit. The usual way to count a huge distinct set cheaply is
                a probabilistic sketch, which buys the saving with an error bar; we read cardinality from
-               the metadata beside the chunk keys, so it is $0.14 per million AND exact. -->
+               the metadata beside the chunk keys, so it is cheap AND exact. -->
           <p class="tpanel-foot">
             <span class="label">Also fits</span> Fraud and abuse blocklists · batch deduplication, the
             “which of these have I already processed?” set · follower and social-graph edges · consent and

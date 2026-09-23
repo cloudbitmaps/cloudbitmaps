@@ -73,9 +73,10 @@ than streaming it to you, using the same write-once-then-publish protocol.
 ## Measured, not modeled
 
 Benchmarked against **real** S3 in `us-east-1`, not an emulator, with the pointer in the same bucket as the
-data: a cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks is **$81.60 per million**
-(204 GETs, fetching only the shared chunks), and a load is **$11.20 per million**, pointer included — against
-an always-on Redis-HA line of **$346/month, standing**, and **$0.03/month** for 1.2 GiB of segments at rest.
+data: the median cold `intersect` of two 500,000-id segments sharing 100 of their 1,999 chunks made 206 GETs,
+**$82.40 per million**, fetching only the shared chunks (204 GETs and $81.60 inside the region, expected), and
+writing and publishing a segment is **$11.20 per million**, pointer included — against an always-on Redis-HA line
+of **$346/month, standing**, and a modelled **$0.03/month** for 1.2 GiB of segments at rest.
 Request counts are read off the AWS SDK layer rather than estimated from sizes. `count()` on a published
 segment does **0 payload reads**; an older run, which kept the pointer in a NoSQL registry that no longer
 ships, measured it at **$0.14 per million** without the pointer.

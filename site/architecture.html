@@ -285,8 +285,9 @@
               into one immutable object, then <span class="m">publishGeneration</span> advances the pointer.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 the write and the publish cost
-              <strong>$11.20 per million segments</strong>, pointer included — measured for those two steps;
-              <span class="m">store.load</span>'s listing and clean-up pass come on top — so batch the refresh.
+              <strong>$11.20 per million loads</strong>, pointer included — measured for those two steps;
+              <span class="m">store.load</span>'s listings and clean-up pass come on top, about doubling it — so
+              batch the refresh.
             </p>
           </div>
           <div class="limit">
@@ -294,7 +295,8 @@
             <p>
               Cardinality per chunk is stored beside the chunk key, so <span class="m">count()</span> sums
               metadata and never opens a payload. It is <strong>exact, not estimated</strong> — no
-              HyperLogLog, no error bars. <strong>$0.14 per million</strong> counts.
+              HyperLogLog, no error bars. <strong>$0.14 per million</strong> counts in the July run, without the
+              pointer read that the single-bucket store now adds.
             </p>
           </div>
         </div>
@@ -598,8 +600,10 @@
             <span class="rl-what">A miss in the cache is a trip to object storage</span>
             <span class="rl-fig">one ranged GET</span>
             <span class="rl-note">
-              A membership check the LRU cannot answer costs exactly one ranged GET against your bucket —
-              there is no middle tier to answer it more cheaply. Object-store latency, in other words, and no
+              Once a store has read a segment's pointer and index, a membership check the LRU cannot answer
+              costs one ranged GET against your bucket — there is no middle tier to answer it more cheaply. The
+              first read of a segment also reads its pointer and its index, and the pointer is read again at
+              most once per <span class="m">cache.genTtlMs</span>. Object-store latency, in other words, and no
               in-region percentile for it is published: that run is
               <a href="benchmarks.html#owed">listed as owed</a>, not measured.
             </span>
