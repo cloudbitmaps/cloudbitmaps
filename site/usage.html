@@ -520,12 +520,11 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <p class="lede">
           Our published numbers are <span class="m">us-east-1</span> on-demand. Yours are not. Feed your own
           rates in and get your own crossover — the site's modelled figures call this same function, so they
-          cannot drift ahead of the library. It does not count the pointer yet — the object beside your data
-          that says which generation is current — so until it does, pass
-          <span class="m">requestsPerLoad: 4.56</span> for a segment's first <span class="m">store.load()</span>,
-          <span class="m">4.72</span> from its third, or <span class="m">2.24</span> for a bare write and publish,
-          and <span class="m">chunksPerIntersect</span> at every GET your intersect makes, pointer and tail reads
-          included.
+          cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
+          which generation is current — and each operand's index, so pass
+          <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, and
+          <span class="m">hotSegments</span> for the segments a long-lived reader keeps reading: each re-reads its
+          pointer every <span class="m">cache.genTtlMs</span>.
         </p>
         <div class="prov">
           <div class="tpanel">
@@ -537,7 +536,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
 
 <span class="k">const</span> bill = estimateCost({
   segments: [{ sizeBytes: <span class="n">60_000_000</span>, count: <span class="n">20</span> }],
-  workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span> },
+  workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span>, hotSegments: <span class="n">20</span> },
   pricing: myPricingProfile,  <span class="c">// or the AWS default</span>
 });
 bill.redisCrossover.readsPerSec;</code></pre>

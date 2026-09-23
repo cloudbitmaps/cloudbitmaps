@@ -128,8 +128,11 @@ interface Snapshot {
   readonly installedAtMs: number;
 }
 
-/** Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-publish read staleness. */
-const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
+/**
+ * Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-publish read staleness. Exported
+ * for the cost model, which prices the pointer refresh this sets; it is not part of the package's surface.
+ */
+export const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
 /**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
  * transient JS-side buffer to **~28 MB measured** irrespective of input size, while keeping batches large

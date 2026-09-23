@@ -54,6 +54,20 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     claim: new RegExp(g(String.raw`does \*\*not\*\* yet cover these verbs`), 'i'),
     why: 'the load guard covers the *Into verbs now',
   },
+  // estimateCost() once priced a load as its object's PUT alone and an intersect as its chunk reads alone, and the
+  // docs told a reader to fold the pointer's requests into requestsPerLoad and chunksPerIntersect by hand.
+  {
+    claim: new RegExp(g(String.raw`(?:does not|doesn't) count the pointer`), 'i'),
+    why: 'estimateCost() counts the pointer, the index and the pointer refresh now',
+  },
+  {
+    claim: new RegExp(g('has no term (?:yet )?for the pointer'), 'i'),
+    why: 'estimateCost() has a term for each of the pointer, the tail read and the refresh now',
+  },
+  {
+    claim: /requestsPerLoad: (?:2\.24|4\.56|4\.64|4\.72)\b/,
+    why: "requestsPerLoad is the object's own PUT-class requests again; the model adds what store.load() makes",
+  },
 ];
 
 /**
