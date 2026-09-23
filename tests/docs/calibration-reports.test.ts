@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +54,7 @@ interface Row {
   one: string;
   perMillion: string;
   label: string;
+  says: RegExp;
 }
 interface Figures {
   runId: string;
@@ -80,7 +90,12 @@ const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) 
   accounted: (token: string, candidates: number[], options?: { hedged?: boolean }) => boolean;
   statesFigure: (text: string, figure: string) => boolean;
   runSection: (doc: string, runId: string) => string | null;
-  paragraphsNaming: (doc: string, runId: string) => string;
+  paragraphsNaming: (doc: string, runId: string, aliases?: string[]) => string;
+  claimsAbout: (
+    doc: string,
+    runId: string,
+    aliases?: string[],
+  ) => { section: string | null; elsewhere: string };
   format: {
     int: (n: number) => string;
     usd: (n: number, dp: number) => string;
@@ -121,24 +136,45 @@ const leadingNumber = (cell: string): number =>
   Number((/^[$~]*([\d,.]+)/.exec(cell)?.[1] ?? 'NaN').replace(/,/g, ''));
 
 /**
- * A bill table's rows held to the derivation. Each row whose requests cell names a GET or a PUT is one of the
- * derivation's rows, with its cost and — where the table has one — its label; each of the derivation's rows appears
- * exactly once. A row naming no request (storage by the month) is held by the reverse check alone.
+ * A bill table's rows held to the derivation. Every row with a price per million is one of the derivation's rows:
+ * its requests, its cost, its label, and words in its operation that say which operation it is — so the measured and
+ * the expected intersect cannot trade places. Each of the derivation's rows appears exactly once. A row with no price
+ * per million is storage by the month, and must say so; the reverse check holds its figures.
  */
 function checkBill(
   rows: string[][],
   want: Row[],
-  cols: { requests: number; one: number; perMillion: number; label?: number },
+  cols: { operation: number; requests: number; one: number; perMillion: number; label?: number },
 ): string[] {
   const problems: string[] = [];
   const seen = new Map<string, number>();
+  const labels = new Set(want.map((w) => w.label));
   for (const row of rows) {
     const requests = row[cols.requests] ?? '';
-    if (!/\b(?:GET|PUT)/.test(requests)) continue;
+    const operation = row[cols.operation] ?? '';
+    if ((row[cols.perMillion] ?? '') === '') {
+      if (!/ a month$/.test(row[cols.one] ?? '')) {
+        problems.push(`the "${operation}" row prices nothing per million and nothing by the month`);
+      }
+      if (cols.label !== undefined && row[cols.label] !== 'derived') {
+        problems.push(`the "${operation}" row is labelled "${row[cols.label]}", not "derived"`);
+      }
+      continue;
+    }
+    if (cols.label !== undefined && !labels.has(row[cols.label] ?? '')) {
+      problems.push(
+        `the "${operation}" row is labelled "${row[cols.label]}", which the run does not use`,
+      );
+    }
     const match = want.find((w) => w.requests === requests);
     if (match === undefined) {
       problems.push(`a row bills "${requests}", which the run does not derive`);
       continue;
+    }
+    if (!match.says.test(operation)) {
+      problems.push(
+        `the "${requests}" row calls itself "${operation}", which does not say ${match.says}`,
+      );
     }
     seen.set(requests, (seen.get(requests) ?? 0) + 1);
     const got = {
@@ -287,9 +323,73 @@ describe('calibration reports are held to their evidence', () => {
         '$99M',
         '99 million',
         '99 every second',
+        '99 cold intersects a second',
+        '99 minutes',
+        '99 cents',
+        '99¢',
+        '99×',
+        '99 times',
+        '99M cold intersects',
+        '**99** ms',
+        '_99%_',
       ]) {
         expect(figures.unaccounted(spelled, values), spelled).toHaveLength(1);
       }
+    });
+
+    // Every wrong figure this gate exists because of, planted back into the real report one at a time. Each must
+    // fail it, however plausibly it is written: these are the errors that were made, not the ones imagined.
+    it("fails on every error the run's explanations actually made", () => {
+      const report = read(join(DIR, '2026-09-23-94416.md'));
+      const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      expect(evidence).toBeDefined();
+      if (evidence === undefined) return;
+      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const plant = (sentence: string): string[] =>
+        figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
+      expect(plant('')).toEqual([]);
+      for (const wrong of [
+        'A write and publish is 2 PUT + 1 GET, $10.40 per million.',
+        'An intersect fetched 4.9% of the chunks.',
+        'Identical segments share 2,000 chunks, so an intersect of them is 4,004 GETs.',
+        'The object itself is 1,052,248 bytes.',
+        'The median cold intersect made 204 GETs, $81.60 per million.',
+        'Inside the region the same intersect would make 206 GETs, $82.40 per million.',
+        '98% of the chunks were skipped.',
+        'Each intersect read 10 chunks per operand.',
+        "A segment's first store.load() costs $22.80 per million, as measured.",
+        // The second review's: two of the first round's own corrections, and two misreadings of a price.
+        "Of the two objects' bytes, 29.9% were fetched and 70.1% never left S3.",
+        'The median cold intersect was about 15 requests deep.',
+        'Each of its requests took about 194 ms.',
+        'A dollar buys 12,136 cold intersects.',
+        'Past 329.15 cold intersects a second, sustained, the node is cheaper.',
+        "A segment's store.load() costs $11.20 per million.",
+        'The two objects are 2,104,496 bytes, and the index is 20,152 bytes.',
+      ]) {
+        expect(plant(wrong), wrong).not.toEqual([]);
+      }
+    });
+
+    // A share is read by the words nearest it in its own clause. A byte share in the clause after a semicolon once stood
+    // nearer the chunk share before it than that clause's own chunks, and failed a sentence that was right.
+    it('reads each clause of a sentence apart, so neighbouring shares keep their own words', () => {
+      const report = read(join(DIR, '2026-09-23-94416.md'));
+      const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      if (evidence === undefined) throw new Error('no evidence for 2026-09-23-94416');
+      const f = figures.derive(JSON.parse(read(evidence)), SOURCES);
+      const plant = (sentence: string): string[] =>
+        figures.unaccounted(`${report}\n\n${sentence}\n`, f.values);
+      expect(
+        plant(
+          'It fetched 100 of 1,999 chunks and skipped the other 95.0%; the payload fetched was 4.9% of the bytes.',
+        ),
+      ).toEqual([]);
+      expect(
+        plant(
+          'It fetched 100 of 1,999 chunks and skipped the other 4.9%; the payload fetched was 95.0% of the bytes.',
+        ),
+      ).not.toEqual([]);
     });
 
     it('states a figure only as a whole figure, outside comments', () => {
@@ -333,6 +433,69 @@ describe('calibration reports are held to their evidence', () => {
       expect(figures.paragraphsNaming(list, '2026-09-23-94416')).toBe(
         '- run 2026-09-23-94416 cost $8',
       );
+    });
+  });
+
+  describe('evidence as a later harness writes it', () => {
+    // Run order is the time a run started. The committed run predates the field, and sorted by its date alone it came
+    // after every run started later the same day, since `T` sorts before `|`: a second run that day would never have
+    // become the latest, and the pages would have gone on being checked against the first.
+    it('puts a run without a start time before a later run the same day', () => {
+      const root = mkdtempSync(join(tmpdir(), 'calib-order-'));
+      try {
+        const dir = join(root, 'bench', 'calibration');
+        mkdirSync(dir, { recursive: true });
+        const put = (name: string, run: object): void =>
+          writeFileSync(join(dir, name), JSON.stringify(run));
+        put('2026-09-23-94416.json', { runId: '2026-09-23-94416' });
+        put('2026-09-23-zzzzz.json', { startedAt: '2026-09-23T10:00:00.000Z' });
+        put('2026-09-23-aaaaa.json', { startedAt: '2026-09-23T11:00:00.000Z' });
+        put('2026-09-22-bbbbb.json', { startedAt: '2026-09-22T23:00:00.000Z' });
+        put('2026-09-23-ccccc.partial.json', {});
+        put('2026-09-23-ddddd.20260923T120000000Z.partial.json', {});
+        expect(figures.evidenceFiles(root).map((f) => basename(f))).toEqual([
+          '2026-09-22-bbbbb.json',
+          '2026-09-23-94416.json',
+          '2026-09-23-zzzzz.json',
+          '2026-09-23-aaaaa.json',
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    // A later harness records the object's size apart from what a load uploaded, and a large segment's ids. Its file
+    // of this same run must derive the same figures. The derivation paired the object's size with an upload RATE,
+    // which is the object and its pointer's body a second, and so refused every file the fixed harness would write.
+    it("derives the same figures from a later harness's file of the same run", () => {
+      const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
+      expect(file).toBeDefined();
+      if (file === undefined) return;
+      const run = JSON.parse(read(file)) as {
+        startedAt?: string;
+        workload: Record<string, number>;
+        phases: {
+          load: Record<'singlePart' | 'multipart', Record<string, number>>;
+          intersect: Record<string, number>;
+        };
+      };
+      const later = structuredClone(run);
+      const POINTER_BODY = 161;
+      for (const kind of ['singlePart', 'multipart'] as const) {
+        const phase = later.phases.load[kind];
+        phase.medianUploadBytes = phase.medianObjectBytes ?? 0;
+        phase.medianObjectBytes = (phase.medianObjectBytes ?? 0) - POINTER_BODY;
+      }
+      later.phases.intersect.payloadFraction =
+        ((run.phases.intersect.payloadFraction ?? 0) *
+          (run.phases.load.singlePart.medianObjectBytes ?? 0)) /
+        (later.phases.load.singlePart.medianObjectBytes ?? 1);
+      later.workload.largeIdsPerSegment = 1_536 * 8_192;
+      later.startedAt = '2026-09-23T03:00:00.000Z';
+      const before = figures.derive(run, SOURCES);
+      const after = figures.derive(later, SOURCES);
+      expect(after.anchors).toEqual(before.anchors);
+      expect(after.rows).toEqual(before.rows);
     });
   });
 
@@ -403,9 +566,9 @@ describe('calibration reports are held to their evidence', () => {
           /^\|\s*operation\s*\|\s*requests\s*\|\s*each\s*\|\s*per million\s*\|\s*label\s*\|/,
         );
         expect(rows.length, `${reportPath} has no bill`).toBeGreaterThan(0);
-        expect(checkBill(rows, f.rows, { requests: 1, one: 2, perMillion: 3, label: 4 })).toEqual(
-          [],
-        );
+        expect(
+          checkBill(rows, f.rows, { operation: 0, requests: 1, one: 2, perMillion: 3, label: 4 }),
+        ).toEqual([]);
       });
 
       it("its request ledger matches the evidence, every request and each one's billing class", () => {
@@ -483,7 +646,11 @@ describe('calibration reports are held to their evidence', () => {
     const run = latest === undefined ? undefined : JSON.parse(read(latest));
     const f = run === undefined ? undefined : figures.derive(run, SOURCES);
     const doc = read(join('docs', 'benchmarks.md'));
-    const section = f === undefined ? null : figures.runSection(doc, f.runId);
+    // What the page calls the run besides its id. A paragraph that names it either way is a claim about it; one
+    // inside another run's section is not.
+    const ALIASES = ['September run', 'September 2026', 'single-bucket run', 'single-bucket bill'];
+    const claims = f === undefined ? null : figures.claimsAbout(doc, f.runId, ALIASES);
+    const section = claims?.section ?? null;
     const REQUIRED = [
       'run id',
       'exact cold intersects',
@@ -515,8 +682,9 @@ describe('calibration reports are held to their evidence', () => {
       expect(f).toBeDefined();
       expect(section).not.toBeNull();
       if (f === undefined || section === null) return;
-      const naming = figures.paragraphsNaming(doc.replace(section, ''), f.runId);
-      expect(figures.unaccounted(`${section}\n\n${naming}`, f.pageValues)).toEqual([]);
+      expect(figures.unaccounted(`${section}\n\n${claims?.elsewhere ?? ''}`, f.pageValues)).toEqual(
+        [],
+      );
     });
 
     it('bills each operation as the derivation does', () => {
@@ -527,7 +695,9 @@ describe('calibration reports are held to their evidence', () => {
         /^\|\s*Operation\s*\|\s*Requests\s*\|\s*One\s*\|\s*Per million\s*\|\s*Label\s*\|/,
       );
       expect(rows.length, 'the section has no bill').toBeGreaterThan(0);
-      expect(checkBill(rows, f.rows, { requests: 1, one: 2, perMillion: 3, label: 4 })).toEqual([]);
+      expect(
+        checkBill(rows, f.rows, { operation: 0, requests: 1, one: 2, perMillion: 3, label: 4 }),
+      ).toEqual([]);
     });
   });
 });

@@ -7,7 +7,9 @@ by its run id:
   by command and by kind of read, the bytes, the timings, the workload and the code it ran. A figure published from
   a run is checked against this file, so the file is never regenerated or hand-edited once a figure cites it. The
   harness writes each run under a new id, and refuses to overwrite a run that already has one; a run that does not
-  finish writes `<runId>.partial.json` instead, which is not evidence and which git ignores.
+  finish writes `<runId>.partial.json` instead, which is not evidence and which git ignores. Nothing is ever
+  replaced: a run whose name was taken while it ran writes `<runId>.<start>.partial.json`, ignored the same way, and
+  says so. That file records the run and what it spent. It is not evidence, since its id is another run's.
 - **`<runId>.md`, the report.** What the run lets the project publish, each figure labelled measured, derived or
   expected, with what it means and what the run does not establish.
 
@@ -21,7 +23,7 @@ report's tables row by row, and fails if more than one commit has touched an evi
 page's section on the latest run to the same evidence. [`scripts/site-figures.cjs`](../../scripts/site-figures.cjs)
 takes the site's single-bucket figures from the latest run the same way, through
 [`lib/calibration-figures.cjs`](../lib/calibration-figures.cjs), so the site, the benchmarks page and the report
-cannot disagree about a run's numbers.
+take a run's numbers from one derivation, and hold them to it with one matcher.
 
 ## Runs
 
@@ -37,9 +39,10 @@ The July 2026 run predates this directory. Its harness and raw file were removed
 1. **Run it**, with `pnpm calibrate:aws --run` or, for latency that means anything, from AWS CloudShell with
    `bash bench/calibrate-cloudshell.sh`. [`bench/README.md`](../README.md#real-cloud-calibration) describes both.
    A run from CloudShell leaves the file in the shell's home directory; it belongs here under the same name. A
-   `.partial.json` is a run that did not finish, and is not evidence.
-2. **Check the file for anything identifying before committing it**: no account id, no ARN, no bucket URI.
-   `pnpm leak-scan` fails on them.
+   `.partial.json` is a run that did not finish, or one whose name was taken, and is not evidence.
+2. **Check the file for anything identifying before committing it**: no account id, no ARN, no bucket URI. The
+   harness writes none. CI's leak scan looks for all three; `pnpm leak-scan` looks for them locally only with the
+   same extra patterns set in `LEAK_SCAN_EXTRA`, and reads only files git tracks, so stage the file first.
 3. **Write its report.** The existing one is the template. The gate lists the headline figures a report must state
    and any figure in it the evidence cannot account for, so run it until it passes.
 4. **Give it a row above.** If it is the latest run, move the benchmarks page's section onto it. The site's gate

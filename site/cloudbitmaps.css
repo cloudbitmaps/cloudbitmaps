@@ -2146,6 +2146,12 @@ section > .lede {
   background: var(--cb-surface);
 }
 
+/* Two panels in a row sat flush, two hairlines touching and reading as one frame — the fault `.matters` below
+   already had. The same 28px block rhythm separates them. */
+.tpanel + .tpanel {
+  margin-top: 28px;
+}
+
 /* ── the generated crossover chart ────────────────────────────────────────────
    The svg is injected INLINE by `pnpm bench` (not linked as an <img>) for one reason: inline, its
    `var(--cb-surface)` / `var(--cb-ink)` / `var(--cb-cyan)` fills resolve against this sheet, so the chart

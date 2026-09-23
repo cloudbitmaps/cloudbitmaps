@@ -38,10 +38,9 @@
  * reproduce `us-east-1` answering 200 OK to `CreateBucket` on a bucket you already own. Those meet reality for the
  * first time on a real account, which is why the probe refuses anything but a clean 404.
  */
-const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
-const { dirname, resolve } = require('node:path');
+const { existsSync } = require('node:fs');
+const { resolve } = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { execFileSync } = require('node:child_process');
 const { setTimeout: sleep } = require('node:timers/promises');
 
 const { meter, priceTally } = require('./lib/aws-meter.cjs');
@@ -59,8 +58,11 @@ const {
   planLayout,
   layoutIds,
   maskAccount,
+  redact,
   resultsFile,
+  stampOf,
   checkRunId,
+  checkRunRegion,
   TIMED_STORE,
   clientConfigs,
   bucketIsGone,
@@ -70,7 +72,17 @@ const {
   checkCleanupId,
   evidenceConflict,
   checkWorkload,
+  STORE_PREFIX,
+  foreignKeys,
 } = require('./lib/calibrate-guards.cjs');
+const {
+  interruptGate,
+  isInterruption,
+  holdTerminal,
+  silenceTerminal,
+  writeResultsFile,
+  harnessRef,
+} = require('./lib/calibrate-process.cjs');
 
 const ROOT = resolve(__dirname, '..');
 
@@ -114,6 +126,12 @@ const LARGE_IDS_PER_CHUNK = 8_192; // above roaring's 4,096 array→bitmap thres
 const PART_SIZE = 8 * 1024 * 1024; // the S3 driver's default part size
 /** Trivial requests timed to find this client's round-trip floor to the region. */
 const RTT_SAMPLES = 10;
+/**
+ * How long an interrupted run waits for the requests it already sent before tearing down anyway. A request that
+ * never answers must not hold the teardown forever; one that answers later than this can still land in the bucket,
+ * and teardown's listings are what find it.
+ */
+const DRAIN_MS = 30_000;
 /**
  * Below this floor the client is treated as in-region. An in-region S3 request is single-digit to low-tens of
  * milliseconds; a client on another continent cannot get under ~60 ms. The raw floor is recorded regardless, so
@@ -162,22 +180,6 @@ function projection(pricing, layout) {
 }
 
 /**
- * The commit the harness ran from, recorded in the results. `calibrate-cloudshell.sh` passes it in, because the
- * copy it runs sits in a scratch directory that is not a git checkout.
- */
-function harnessRef() {
-  if (process.env.CR_CALIBRATE_HARNESS_REF) return process.env.CR_CALIBRATE_HARNESS_REF;
-  try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-      cwd: ROOT,
-      encoding: 'utf8',
-    }).trim();
-  } catch {
-    return '(unknown)';
-  }
-}
-
-/**
  * Verify the caller's identity — and tell the two kinds of failure apart.
  *
  * The first version caught EVERY error and reported "@aws-sdk/client-sts not installed", so an expired SSO
@@ -205,9 +207,12 @@ async function identity(region) {
 let onInterrupt = async () => {};
 let interrupts = 0;
 // SIGHUP too: a closed terminal or a dropped CloudShell session sends it, and it used to kill a run with no
-// teardown and no results.
+// teardown and no results. The terminal's streams are opened first, while there is a terminal (`holdTerminal`).
+holdTerminal();
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
+    // Nothing reads the terminal after a hang-up, so nothing more is written to it.
+    if (sig === 'SIGHUP') silenceTerminal();
     interrupts += 1;
     if (interrupts > 1) {
       // A second signal during teardown used to kill the process mid-delete, leaking the bucket. Warn instead.
@@ -217,25 +222,25 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     console.error(`\ncalibrate: ${sig} — stopping`);
     Promise.resolve()
       .then(() => onInterrupt())
-      .catch((err) => console.error(`calibrate: teardown after ${sig} failed: ${err.message}`))
+      .catch((err) =>
+        console.error(`calibrate: teardown after ${sig} failed: ${redact(err.message)}`),
+      )
       .finally(() => process.exit(130));
   });
 }
 
 async function main() {
-  const { AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring');
-  const pricing = AWS_US_EAST_1_ONDEMAND;
+  // Everything that can be refused from the inputs alone is refused first, before the library is even imported, so a
+  // refusal holds on a checkout that has not been built and costs nothing to test.
   try {
-    checkWorkload({ segments: SEGMENTS, reads: READS });
+    checkWorkload({ segments: SEGMENTS, largeSegments: LARGE, reads: READS });
   } catch (err) {
     refuse(err.message);
   }
-  const layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
-  const { ops, priced } = projection(pricing, layout);
 
-  // The run id first, and everything that depends only on it: a bad id, or one whose evidence is already committed,
-  // is refused in every mode, projection included, before anything reads a credential. `--cleanup` takes any id
-  // that names a legal bucket, because it writes no file.
+  // The run id, and everything that depends only on it: a bad id, or one whose evidence is already committed, is
+  // refused in every mode, projection included, before anything reads a credential. `--cleanup` takes any id that
+  // names a legal bucket, because it writes no file.
   const runId =
     MODE === 'cleanup'
       ? argv[argv.indexOf('--cleanup') + 1]
@@ -259,23 +264,6 @@ async function main() {
     out === null ? null : evidenceConflict({ rehearse: REHEARSE, file: out, exists: existsSync });
   if (conflict !== null) refuse(conflict.replace(`${ROOT}/`, ''));
 
-  if (MODE === 'project') {
-    log('PROJECTION ONLY — nothing created, no credentials read.\n');
-    console.log(
-      `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)`,
-    );
-    console.log(
-      `               + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks, ${READS} cold intersects`,
-    );
-    console.log(
-      `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
-    );
-    console.log(`  projected $  ${priced.totalUSD.toFixed(6)} at ${pricing.name}`);
-    console.log('\n  --rehearse   the workload against MinIO, free — the money guards do not run');
-    console.log('  --run        the real thing (needs region + ceiling + confirmation)');
-    return 0;
-  }
-
   let ceiling = Number.POSITIVE_INFINITY;
   let region = 'us-east-1';
   let clientOpts = {
@@ -294,6 +282,11 @@ async function main() {
     clientOpts = { region };
   }
   if (MODE === 'run') {
+    try {
+      checkRunRegion(region);
+    } catch (err) {
+      refuse(err.message);
+    }
     if (process.env.CR_CALIBRATE_CONFIRM !== CONFIRM_PHRASE) {
       refuse(`set CR_CALIBRATE_CONFIRM=${CONFIRM_PHRASE} to authorise a run that spends money`);
     }
@@ -302,6 +295,31 @@ async function main() {
     } catch (err) {
       refuse(err.message);
     }
+  }
+
+  const { AWS_US_EAST_1_ONDEMAND, VERSION } = await import('@cloudbitmaps/roaring');
+  const pricing = AWS_US_EAST_1_ONDEMAND;
+  const layout = planLayout({ segments: SEGMENTS, idsPerSegment: IDS, ...DEFAULT_LAYOUT });
+  const { ops, priced } = projection(pricing, layout);
+
+  if (MODE === 'project') {
+    log('PROJECTION ONLY — nothing created, no credentials read.\n');
+    console.log(
+      `  workload     ${SEGMENTS} x ${IDS} ids (${layout.chunksPerSegment} chunks each, ${layout.sharedChunks} shared)`,
+    );
+    console.log(
+      `               + ${LARGE} multipart segments of ${LARGE_CHUNKS} dense chunks, ${READS} cold intersects`,
+    );
+    console.log(
+      `  projected    ${ops.put} PUT-class, ${ops.get} GET-class — an upper bound, checked after the run`,
+    );
+    console.log(`  projected $  ${priced.totalUSD.toFixed(6)} at ${pricing.name}`);
+    console.log('\n  --rehearse   the workload against MinIO, free — the money guards do not run');
+    console.log('  --run        the real thing (needs region + ceiling + confirmation)');
+    return 0;
+  }
+
+  if (MODE === 'run') {
     // The projection is an upper bound, so refusing here means the run genuinely cannot fit the ceiling.
     if (breached(priced.totalUSD, ceiling)) {
       refuse(
@@ -317,6 +335,9 @@ async function main() {
   const configs = clientConfigs(clientOpts);
   const client = new s3.S3Client(configs.work);
   const tally = meter(client);
+  // A signal stops the workload's client before teardown lists anything: `interruptGate` says why. Teardown's own
+  // client is never gated.
+  const gate = interruptGate(client);
   const admin = new s3.S3Client(configs.admin);
   meter(admin, tally);
 
@@ -330,6 +351,8 @@ async function main() {
   const teardown = () => {
     teardownPromise ??= (async () => {
       const leftovers = [];
+      // Set when the bucket holds keys the harness never writes: `--cleanup` would only refuse it again.
+      let notOurs = false;
       try {
         // Abort in-flight multipart uploads first: their parts are billed, and a real `DeleteBucket` fails while
         // they exist. MinIO cannot rehearse this on a real account's terms. An upload already gone — completed by
@@ -358,6 +381,16 @@ async function main() {
             VersionId: o.VersionId,
           }));
           if (objects.length === 0) break;
+          // Every version of every key listed is deleted next, so a key the harness did not write means this is not
+          // the harness's bucket, whatever its name says. Refused and reported, never emptied.
+          const foreign = foreignKeys(objects.map((o) => o.Key));
+          if (foreign.length > 0) {
+            notOurs = true;
+            throw new Error(
+              `it holds ${foreign.length} key(s) outside ${STORE_PREFIX}/, which this harness never writes, such as ` +
+                `"${String(foreign[0])}" — refusing to delete anything in it; inspect it by hand`,
+            );
+          }
           if (pass === TEARDOWN_PASSES) {
             throw new Error(
               `${objects.length}${v.IsTruncated ? '+' : ''} object versions still listed after ${pass} delete passes`,
@@ -373,13 +406,15 @@ async function main() {
       } catch (err) {
         // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal. Only
         // S3's own NoSuchBucket says so: an abort's NoSuchUpload is also a 404, and was once read as this answer.
-        if (!bucketIsGone(err)) leftovers.push(`${bucket}: ${err.message}`);
+        if (!bucketIsGone(err)) leftovers.push(`${bucket}: ${redact(err.message)}`);
       }
       if (leftovers.length > 0) {
         console.error('calibrate: LEFTOVERS — these still exist and may cost money:');
         for (const l of leftovers) console.error(`  ${l}`);
         console.error(
-          `  remove them with: node bench/calibrate-aws.cjs${REHEARSE ? ' --rehearse' : ''} --cleanup ${runId}`,
+          notOurs
+            ? '  --cleanup will not empty a bucket holding keys the harness did not write; inspect it by hand'
+            : `  remove them with: node bench/calibrate-aws.cjs${REHEARSE ? ' --rehearse' : ''} --cleanup ${runId}`,
         );
         process.exitCode = 1;
       }
@@ -388,21 +423,18 @@ async function main() {
     return teardownPromise;
   };
 
-  if (MODE === 'cleanup') {
-    log(`cleanup: removing resources for run ${runId}`);
-    return (await teardown()).length === 0 ? 0 : 1;
-  }
-
-  // ---- identity, before anything is created -------------------------------------------------------------------
-  if (MODE === 'run') {
+  // ---- identity, before anything is created or deleted -------------------------------------------------------------
+  // A cleanup is checked too: it permanently deletes every version of every key in the bucket it is given, and the
+  // account pin once held only for the mode that creates.
+  if (!REHEARSE && (MODE === 'run' || MODE === 'cleanup')) {
     const expected = process.env.CR_CALIBRATE_EXPECT_ACCOUNT ?? '';
     let who;
     try {
       who = await identity(region);
     } catch (err) {
       refuse(
-        `could not verify credentials (${err.name ?? 'error'}: ${err.message}) — every later request would fail ` +
-          'the same way. Check the profile or re-authenticate, then run again.',
+        `could not verify credentials (${err.name ?? 'error'}: ${redact(err.message)}) — every later request ` +
+          'would fail the same way. Check the profile or re-authenticate, then run again.',
       );
     }
     if (!who.verified && expected !== '') {
@@ -420,9 +452,16 @@ async function main() {
       `identity: account ${who.verified ? maskAccount(who.account) : '(not verified — install @aws-sdk/client-sts)'}` +
         `, region ${region}${expected !== '' ? ', matches CR_CALIBRATE_EXPECT_ACCOUNT' : ''}`,
     );
-    // A human check that works even without a pin. Confirm the last four digits are the account you meant.
-    log('Ctrl-C within 10 s to abort — nothing has been created yet.');
-    await sleep(10_000);
+    if (MODE === 'run') {
+      // A human check that works even without a pin. Confirm the last four digits are the account you meant.
+      log('Ctrl-C within 10 s to abort — nothing has been created yet.');
+      await sleep(10_000);
+    }
+  }
+
+  if (MODE === 'cleanup') {
+    log(`cleanup: removing resources for run ${runId}`);
+    return (await teardown()).length === 0 ? 0 : 1;
   }
 
   // ---- probe BEFORE create --------------------------------------------------------------------------------------
@@ -439,7 +478,7 @@ async function main() {
     refuse(`${bucket} already exists — refusing to touch a pre-existing bucket`);
   if (!probeMeansAbsent(probeErr)) {
     refuse(
-      `could not prove ${bucket} is absent (${probeErr.name ?? probeErr.message}) — refusing rather than ` +
+      `could not prove ${bucket} is absent (${probeErr.name ?? redact(probeErr.message)}) — refusing rather than ` +
         'guessing. A 403 means a bucket you own but cannot list.',
     );
   }
@@ -455,7 +494,7 @@ async function main() {
     // only because the SDK requires one.
     target: REHEARSE ? 'minio (rehearsal — NOT a real cloud measurement)' : 'aws',
     region: REHEARSE ? 'n/a (local container)' : region,
-    measured: { packageVersion: VERSION, harness: harnessRef(), node: process.version },
+    measured: { packageVersion: VERSION, harness: harnessRef(ROOT), node: process.version },
     pricing: pricing.name,
     workload: {
       segments: SEGMENTS,
@@ -476,13 +515,25 @@ async function main() {
     // Only a run that finished is evidence. One that did not goes to the partial file, which the figures gates skip.
     const finished = results.partial === false && results.interrupted !== true;
     const file = finished ? out : outPartial;
-    // The evidence directory may not exist yet: CloudShell runs this from a scratch copy of `bench/`.
-    mkdirSync(dirname(file), { recursive: true });
-    // `wx` for evidence: the check before the run is not the last word, and two runs under one id must not both win.
-    writeFileSync(file, `${JSON.stringify(results, null, 2)}\n`, {
-      flag: finished && !REHEARSE ? 'wx' : 'w',
+    // Nothing is replaced: the check before the run is not the last word, and two runs under one id must not both
+    // win. A run whose name was taken meanwhile goes beside it, under a name carrying its start (`writeResultsFile`).
+    const fallback = REHEARSE
+      ? undefined
+      : resolve(ROOT, resultsFile(false, runId, { stamp: stampOf(results.startedAt) }));
+    const rel = (f) => f.replace(`${ROOT}/`, '');
+    const wrote = writeResultsFile({
+      file,
+      fallback,
+      text: `${JSON.stringify(results, null, 2)}\n`,
+      overwrite: REHEARSE,
     });
-    log(`wrote ${file.replace(`${ROOT}/`, '')}${finished ? '' : ' (partial: true)'}`);
+    if (wrote !== file) {
+      console.error(
+        `calibrate: ${rel(file)} already exists, so this run's results went to ${rel(wrote)} — nothing was replaced`,
+      );
+      process.exitCode = 1;
+    }
+    log(`wrote ${rel(wrote)}${finished ? '' : ' (partial: true)'}`);
   };
 
   /**
@@ -542,7 +593,13 @@ async function main() {
     // handler and exit with no teardown. Tearing down a bucket that was never made is a clean NoSuchBucket.
     onInterrupt = async () => {
       if (running) results.interrupted = true;
-      await teardown();
+      // Nothing may still be writing when teardown lists the bucket, and a CreateBucket in flight must land first.
+      gate.abort();
+      if (!(await gate.drained(DRAIN_MS))) {
+        log(`a request was still unanswered after ${DRAIN_MS / 1000} s — tearing down anyway`);
+      }
+      const left = await teardown();
+      if (left.length > 0) results.leftovers = left;
       settle();
     };
     log(`creating ${bucket}`);
@@ -573,7 +630,7 @@ async function main() {
 
     const { S3Storage } = await import('@cloudbitmaps/s3');
     const { CloudRoaring, bulkLoadCrbmGeneration } = await import('@cloudbitmaps/roaring');
-    const storage = new S3Storage({ client, bucket, prefix: 'calib' });
+    const storage = new S3Storage({ client, bucket, prefix: STORE_PREFIX });
 
     /** Re-check the ceiling DURING a stage, not only at its end — loads have no fixed op count. */
     const checkCeiling = () => {
@@ -729,12 +786,19 @@ async function main() {
     running = false;
   } catch (err) {
     running = false;
-    // A crashed run KEEPS what it already paid for.
-    results.error = err.message;
-    console.error(`calibrate: FAILED — ${err.message}`);
-    process.exitCode = 1;
+    // A crashed run KEEPS what it already paid for. A run stopped by a signal is not a failure: the handler has said
+    // so, and the run is marked interrupted.
+    if (!gate.aborted && !isInterruption(err)) {
+      results.error = redact(err.message);
+      console.error(`calibrate: FAILED — ${results.error}`);
+      process.exitCode = 1;
+    }
   } finally {
-    await teardown();
+    // The same order as an interrupt's: the work stops, and what it sent answers, before teardown lists anything.
+    gate.abort();
+    await gate.drained(DRAIN_MS);
+    const left = await teardown();
+    if (left.length > 0) results.leftovers = left;
     settle();
   }
   return process.exitCode ?? 0;
@@ -745,7 +809,7 @@ async function main() {
 main().then(
   (code) => process.exit(interrupts > 0 ? 130 : (code ?? 0)),
   (err) => {
-    console.error(`calibrate: ${err.stack ?? err.message}`);
+    console.error(`calibrate: ${redact(err.stack ?? err.message)}`);
     process.exit(interrupts > 0 ? 130 : 1);
   },
 );

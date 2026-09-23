@@ -57,8 +57,9 @@ export interface Workload {
   readonly cacheHitRate?: number;
   /**
    * GETs one intersection makes, each priced at the GET rate. Default 1. Count all of them: the chunk-skipping
-   * survivors from every operand, and on a single-bucket store a pointer read and a tail read per operand too —
-   * a cold intersect of two segments sharing `k` chunks makes `4 + 2k`, which this model does not add for you yet.
+   * survivors from every operand, and on a single-bucket store a pointer read and a tail read per operand too — a
+   * cold intersect of two segments sharing `k` chunks makes `4 + 2k` while each index fits the reader's tail read,
+   * which this model does not add for you yet.
    */
   readonly chunksPerIntersect?: number;
   /**
@@ -69,10 +70,11 @@ export interface Workload {
   /**
    * PUT-class requests one load issues, each priced at the PUT rate. Default **1** (a single-object PUT). A
    * multipart load of `P` parts bills `P + 2` (initiate, the parts, complete) — set it when you know your object
-   * sizes. On a single-bucket store a load also PUTs the pointer and reads it three times, which this model does
-   * not add for you yet: count the pointer's PUT, and its GETs at the GET-to-PUT price ratio — `2.24` for a
-   * single-part write and publish at the default prices. Still small money: at $5/million, a thousand 100-part
-   * loads a month, pointer included, is about $0.52.
+   * sizes. On a single-bucket store a write and publish also PUTs the pointer and reads it three times, which this
+   * model does not add for you yet: count the pointer's PUT, and its GETs at the GET-to-PUT price ratio — `2.24`
+   * for a single-part write and publish at the default prices. `store.load()` also lists the segment twice and
+   * reads the pointer four or five more times: `4.56` on a segment's first load, `4.72` from its third. Still small
+   * money: at $5/million, a thousand 100-part loads a month, pointer included, is about $0.52.
    */
   readonly requestsPerLoad?: number;
 }

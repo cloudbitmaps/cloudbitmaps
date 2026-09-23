@@ -73,12 +73,12 @@ rather than local disk. It has paid one of them:
 | `pnpm calibrate:aws` | **Projection only.** Prints the worst-case request count and dollar cost. Touches nothing, reads no credentials. |
 | `pnpm calibrate:aws --rehearse` | The workload, the metering, teardown and signal handling, against the MinIO in `docker-compose.yml` (`docker compose up -d minio`). Free — and so none of the money guards run. |
 | `pnpm calibrate:aws --run` | The real thing. Refuses unless the region, a spend ceiling and a typed confirmation are each set. |
-| `pnpm calibrate:aws [--rehearse] --cleanup <runId>` | Removes a run's bucket after a kill that nothing could catch. |
+| `pnpm calibrate:aws [--rehearse] --cleanup <runId>` | Removes a run's bucket after a kill that nothing could catch. It checks the account pin as a run does, and refuses a bucket holding anything the harness did not write. |
 
 A real run needs, separately:
 
 ```
-CR_CALIBRATE_REGION=us-east-1          # never guessed
+CR_CALIBRATE_REGION=us-east-1          # never guessed, and us-east-1 only: the one region it has prices for
 CR_CALIBRATE_MAX_USD=0.25              # checked before the run AND during it
 CR_CALIBRATE_CONFIRM=yes-spend-money   # a typo must not spend money
 CR_CALIBRATE_EXPECT_ACCOUNT=<12 digits> # optional: refuses to run in any other account
@@ -108,9 +108,24 @@ plants the bug it exists for. Every one of them was a real bug, either in this h
   may make is allowed for, so no SDK retry can fall outside it either. After teardown, the run compares what it
   actually issued against what it projected, and flags itself if it went over.
 - **Evidence is write-once.** A real run's results go to a file named by its run id, and the harness refuses —
-  before it reads any credentials — to overwrite one that exists: a second run under a published run's id would
-  replace the file its figures are checked against. The id is validated first, because it names the bucket and the
-  file.
+  before it reads any credentials, and before it even loads the library — to overwrite one that exists: a second
+  run under a published run's id would replace the file its figures are checked against. The id is validated
+  first, because it names the bucket and the file: a date that exists (`9999-99-99` once passed) and no suffix S3
+  keeps for its own kinds of bucket. Nothing is replaced at the end either. A run whose file appeared while it ran,
+  or a retry whose partial name is taken, writes `<runId>.<start>.partial.json` beside it and says so; the check
+  that followed a lost race used to take the results down with it.
+- **The workload fits one teardown listing.** Teardown lists 1,000 object versions a pass and each segment leaves
+  two, so a run loads at most 500 segments. A rehearsal of 1,510 passed every guard and left 20 versions behind.
+- **Teardown empties only a bucket the harness made.** It deletes every version of every key it lists, and
+  `--cleanup` points it at a bucket by name, so a bucket holding any key outside `calib/`, the store's prefix, is
+  refused and reported, not emptied. `--cleanup` checks `CR_CALIBRATE_EXPECT_ACCOUNT` as a run does; the pin once
+  held only for the mode that creates.
+- **It runs only where it has prices.** Every run is priced at `us-east-1`'s rates, so a run anywhere else would
+  record the wrong bill and check its ceiling against the wrong one. It is refused until a pricing profile for that
+  region exists.
+- **Error text is redacted.** AWS puts the caller's ARN, account id and all, in an AccessDenied message, and the
+  harness printed and stored error text as it came. ARNs are now removed and account ids masked in everything it
+  prints and records.
 - **Only `NoSuchBucket` means teardown has nothing left to remove.** Teardown once read *any* 404 as "already
   gone" — and an abort retried after its first answer was lost gets back a 404 `NoSuchUpload`. It then skipped
   deleting the objects and the bucket, and reported nothing. An abort that finds its upload gone is now simply
@@ -119,13 +134,25 @@ plants the bug it exists for. Every one of them was a real bug, either in this h
   retry sees it, so a key that can never be deleted kept the listing loop running — and billing. After three
   passes, what is left is reported as a leftover, and the projection covers every listing those passes make.
 
-**Ctrl-C tears down** — and this one lives in the harness itself, not in the pure functions, so it has no unit
-test. A signal handler replaces Node's default exit, so a handler that only logs leaves the workload running, and
-the first version did exactly that. This one tears down, writes the results — every phase it had finished, and the
-cost — marked `interrupted`, and exits 130. A second signal during teardown warns instead of killing the process
-mid-delete, and the handler is armed before the bucket is created, so an interrupt during creation tears down too.
-It is proven by interrupting rehearsals: mid-load, mid-intersect, and twice in quick succession during
-teardown, each ending with the bucket gone and the cost recorded.
+**Ctrl-C stops the work, then tears down.** A signal handler replaces Node's default exit, so a handler that only
+logs leaves the workload running, and the first version did exactly that. This one first stops the workload's
+client, so every later request fails before it is sent, and waits up to 30 s for the requests already sent to
+answer (`interruptGate`, in [`lib/calibrate-process.cjs`](lib/calibrate-process.cjs)). Only then does it tear
+down. The version before listed the bucket while loads were still writing, and a PUT that landed after the listing
+left the bucket behind: in two of four rehearsals interrupted during their loads, one of them after printing that
+it had been removed. None of eleven interrupted the same way since has. Waiting also lets a `CreateBucket` still in flight land before
+teardown looks for the bucket. The handler then writes the results, every phase it had finished and the cost,
+marked `interrupted`, with anything teardown left under `leftovers`, and exits 130. A second signal warns instead
+of killing the process mid-delete. The handler is armed before the bucket is created, so an interrupt during
+creation tears down too.
+
+A hang-up (a closed terminal, a dropped session) is handled the same way, with one more step. Node opens its
+stdout and stderr on first use, and on macOS opening one on a terminal that has hung up never returns. A handler
+whose first line of output was stderr's first use blocked there, before any teardown, so the harness opens both
+streams at startup and writes nothing more to the terminal once it hangs up. The gate is tested against a local
+server that answers slowly, the hang-up on a real pseudo-terminal that is then closed, and the whole path by
+interrupting rehearsals: during the loads, during the intersects, by SIGTERM, and by closing the terminal. Each
+ended with the bucket gone and the results written.
 
 ### What a run records, so its numbers cannot be misread
 
@@ -144,7 +171,7 @@ teardown, each ending with the bucket gone and the cost recorded.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
   answer it, and the store's pointers are pinned for its lifetime (`cache.genTtlMs: 0`). On the default 2 s
   refresh, an intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the
-  region, measured 206 GETs for its median intersect where the same intersect in-region makes 204 — so a count
+  region, measured 206 GETs for its median intersect where the same intersect in-region would make 204 — so a count
   taken on the default would describe the network. A test drives the real engine on a slow clock to prove the pin holds.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
@@ -154,8 +181,9 @@ teardown, each ending with the bucket gone and the cost recorded.
   chunks per operand (about 516 bytes each) plus one 256 KiB read from the end of each object, which fetches the
   footer and index in a single round trip. They are reported apart: the chunk count is the proportional part and
   the tail read is a fixed cost per operand, and a single "fraction fetched" would describe neither.
-- **What it measured.** The package version, the harness commit, the Node version, and how the timed stores were
-  built.
+- **What it measured.** The package version, the harness commit (marked `-dirty` when the harness had uncommitted
+  edits, since the commit alone would name a harness that did not run), the Node version, and how the timed stores
+  were built.
 
 ### Running it in the region
 
@@ -168,7 +196,12 @@ CR_CALIBRATE_CONFIRM=yes-spend-money CR_CALIBRATE_MAX_USD=0.25 bash bench/calibr
 The script installs Node 22 if CloudShell's is older, installs the **published** `@cloudbitmaps/roaring` and
 `@cloudbitmaps/s3` into a scratch directory, and runs the harness against those — so the figures describe what a
 consumer installs, not a build of this checkout. A finished run's results land in `~/<runId>.json`, and an
-interrupted one's in `~/<runId>.partial.json`, which is not evidence. Commit a finished run's file as
+interrupted one's in `~/<runId>.partial.json`, which is not evidence. A name already taken in `~` is left alone,
+and this run's copy goes beside it with a timestamp. The script runs the harness as a job of its own and passes on
+every signal that would stop it: a Ctrl-C, a closed CloudShell tab or a `kill` reaches the harness exactly once,
+and the results are copied out only after it has stopped. Run in the foreground, a SIGTERM or a hang-up stopped the
+script at once, deleted the scratch directory under the harness mid-teardown and copied nothing; a SIGTERM to the
+script alone never reached the harness at all. Commit a finished run's file as
 `bench/calibration/<runId>.json`, with its report — [`calibration/`](calibration/README.md) says how. `CR_CALIBRATE_REHEARSE=1` runs the same install path against local MinIO, to test the script; its
 results land in `~/calibrate-aws-rehearsal.json`.
 
@@ -200,7 +233,8 @@ real run — which is why the probe refuses anything that is not a clean 404.
 | file | what it is |
 |---|---|
 | `lib/aws-meter.cjs` | Counts every request the AWS SDK sends, as middleware — every attempt, retries included, read from the attempt count the SDK's retry loop records, and including requests the library never reports, like a multipart upload's parts. Classifies by **billing class**, not HTTP verb (a `LIST` bills like a `PUT`, twelve and a half times a `GET`), and splits `GetObject` by the shape of its `Range` header so chunk reads and the tail read can be told apart. An unrecognised command is counted as a paid read, never as free. |
-| `lib/calibrate-guards.cjs` | The guards above, plus the planned id layout (`planLayout`, `layoutIds`), the account mask, which file each kind of run writes and what makes a usable run id (`resultsFile`, `EVIDENCE_DIR`, `checkRunId`), how the timed stores are built (`TIMED_STORE`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`). Pure functions, so each can be tested against the bug it exists for. |
+| `lib/calibrate-guards.cjs` | The guards above, plus the planned id layout (`planLayout`, `layoutIds`), the account mask and the redaction of error text (`maskAccount`, `redact`), which file each kind of run writes and what makes a usable run id (`resultsFile`, `stampOf`, `EVIDENCE_DIR`, `checkRunId`, `checkCleanupId`), the workload's bounds and the one priced region (`checkWorkload`, `MAX_SEGMENTS`, `checkRunRegion`), how the timed stores are built (`TIMED_STORE`, `STORE_PREFIX`), how many attempts each of the two S3 clients makes (`clientConfigs`), and what teardown counts as done and what it refuses (`bucketIsGone`, `uploadIsGone`, `TEARDOWN_PASSES`, `foreignKeys`). Pure functions, so each can be tested against the bug it exists for. |
+| `lib/calibrate-process.cjs` | How a run stops and what it leaves behind: the gate that stops the workload's client and waits for what it sent before teardown (`interruptGate`), the terminal's streams opened at startup and silenced on a hang-up (`holdTerminal`, `silenceTerminal`), results written without ever replacing a file (`writeResultsFile`), and the harness commit, marked when dirty (`harnessRef`). Kept apart from the pure guards so each can be driven in a test. |
 | `lib/calibration-figures.cjs` | Every figure a calibration run lets the project publish, derived from the run's evidence, the pricing profile and the library's own constants — and a refusal for evidence that does not reconcile with itself. `tests/docs/calibration-reports.test.ts` holds the run reports and the benchmarks page to it, and `scripts/site-figures.cjs` takes the site's single-bucket figures from it. |
 
 ## Adding a harness

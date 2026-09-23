@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Gates the published figures on the site's pages — the `PAGES` list below: six site pages, `llms.txt`, and the two
- * READMEs and the roadmap, which quote the same figures — against their sources.
+ * Gates the published figures on the site's pages — the `PAGES` list below: six site pages, `llms.txt`, the two
+ * READMEs, the roadmap and `docs/benchmarks.md`, which quote the same figures — against their sources.
  *
  * WHY THIS SCRIPT EXISTS
  *
@@ -20,8 +20,10 @@
  *      Across a whole page only `$` amounts are matched: a crossover rate is required on the page that owns it
  *      (1), but a wrong rate stated on another page is not caught here. (That hole was real: an earlier version
  *      of the /demo gate passed while the page said 41,208 instead of 100,000, because 100,000 still appeared
- *      elsewhere.) Inside the benchmarks page's panel on the latest calibration run, every unit is matched —
- *      percentages, durations, byte sizes and counts too — and so are the panel's rows, one by one.
+ *      elsewhere.) Wherever a page quotes the latest calibration run — a paragraph, list item or table row that
+ *      names the run or states one of its headline figures — every unit is matched there, rates and counts
+ *      included, through the matcher the run's report is held to, and so are the rows of the benchmarks page's
+ *      panel on the run, one by one.
  *   3. The counts in Home's spec strip, derived from the source tree — checked in three directions: the page
  *      drifting from the source, the source drifting from the page, and the entry being deleted outright.
  *
@@ -184,7 +186,7 @@ if (calRows.some((r) => /Dynamo/i.test(r.term))) {
 // ── the single-bucket calibration run ─────────────────────────────────────────────────────────────────────
 // The bill for the topology that ships: the pointer in the same bucket as the data. Its figures are DERIVED from
 // the run's committed evidence by the module that also holds the run's report to it, so the site and the report
-// cannot disagree about a run, and a figure cannot be retyped here without the evidence to back it.
+// take a run's numbers from one place, and a figure cannot be retyped here without the evidence to back it.
 const calibration = require('../bench/lib/calibration-figures.cjs');
 const calibrationRuns = calibration.evidenceFiles(ROOT);
 let singleBucket = null;
@@ -428,21 +430,86 @@ const anchors = [
 // quoted verbatim by an assistant, the root and npm READMEs are the most-read pages the project has, and the roadmap
 // quotes the calibration's figures where it says what is measured; each quoted the published cost figures with
 // nothing checking them.
+const MEASURED_1M = 'per million cold intersects, measured';
+const EXPECTED_1M = 'per million cold intersects with each pointer read once';
+const WRITE_1M = 'per million single-part write-and-publishes';
 const PAGES = [
+  // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
+  // the estimator's $5 — fails even where the replacement is a value some source accounts for.
   { rel: 'site/benchmarks.html', requireAll: true },
-  { rel: 'site/index.html', requireAll: false },
-  { rel: 'site/architecture.html', requireAll: false },
+  { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },
   { rel: 'site/usage.html', requireAll: false },
-  { rel: 'site/flavors.html', requireAll: false },
+  { rel: 'site/flavors.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: 'site/flavors/roaring.html', requireAll: false },
-  { rel: 'site/llms.txt', requireAll: false },
-  { rel: 'README.md', requireAll: false },
-  { rel: 'packages/roaring/README.md', requireAll: false },
-  { rel: 'docs/ROADMAP.md', requireAll: false },
+  { rel: 'site/llms.txt', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: 'README.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  {
+    rel: 'packages/roaring/README.md',
+    requireAll: false,
+    mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
+  },
+  { rel: 'docs/ROADMAP.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
   // The source the July receipt is parsed from is a page too: a wrong figure beside the parsed ones would
   // otherwise be the one thing in it nothing reads.
   { rel: 'docs/benchmarks.md', requireAll: false },
 ];
+
+/**
+ * A page's blocks, each one a claim's worth of text: an HTML page's paragraphs, list items, headings, captions and
+ * table rows, and its meta descriptions; a markdown or text page's paragraphs, list items and table rows.
+ */
+function blocksOf(text, isHtml, metas) {
+  const body = text.replace(/<!--[\s\S]*?-->/g, '');
+  if (!isHtml) {
+    return body
+      .split(/\n\s*\n/)
+      .flatMap((b) => b.split(/\n(?=\s*(?:[-*+]|\d+\.) |\s*\|)/))
+      .filter((b) => b.trim() !== '');
+  }
+  const html = body
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
+    .replace(/<svg[\s\S]*?<\/svg>/g, ' ');
+  return [
+    ...html
+      .split(/<\/(?:p|li|tr|h[1-6]|figcaption|dd|dt|caption|blockquote)>|<br\s*\/?>/i)
+      .map((b) => b.replace(/<[^>]+>/g, ' ')),
+    ...metas.split(/\s{2,}/),
+  ].filter((b) => b.trim() !== '');
+}
+
+/** The latest run's headline figures that mark a block as quoting it: its id, its prices and its counts. */
+const RUN_TRIGGERS = [
+  'run id',
+  'chunks fetched',
+  'GETs the median cold intersect made',
+  'a cold intersect, measured',
+  'per million cold intersects, measured',
+  'GETs a cold intersect makes with each pointer read once',
+  'per million cold intersects with each pointer read once',
+  'per million single-part write-and-publishes',
+  'per million multipart write-and-publishes',
+  "per million of a segment's first store.load()",
+  'the run',
+  'cold intersects the Redis line buys a month',
+  'loads the Redis line buys a month',
+];
+function quotesTheRun(block) {
+  if (singleBucket === null) return false;
+  // The run's layout is its own: a block that counts its 1,999 chunks is about it, whatever else it says.
+  if (
+    calibration.statesFigure(
+      block,
+      `${singleBucket.chunksPerSegment.toLocaleString('en-US')} chunks`,
+    )
+  ) {
+    return true;
+  }
+  return RUN_TRIGGERS.some((name) => {
+    const figure = singleBucketFigure(name);
+    return figure !== null && calibration.statesFigure(block, figure);
+  });
+}
 
 // Figures that are only honest beside what they leave out. Both July unit figures were billed without the pointer
 // — its round trip went to a NoSQL table that no longer ships — so wherever one is stated, the pointer has to be
@@ -523,7 +590,13 @@ for (const page of PAGES) {
     }
   }
 
-  // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them
+  // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them — and each page's own
+  for (const name of page.mustState ?? []) {
+    const want = singleBucketFigure(name);
+    if (want !== null && !calibration.statesFigure(visible, want)) {
+      fail(`${page.rel} no longer states ${name} (${want}), which it quotes from the latest run`);
+    }
+  }
   if (page.requireAll) {
     for (const [name, want] of anchors) {
       if (want === null) continue;
@@ -551,12 +624,38 @@ for (const page of PAGES) {
   // A figure the latest calibration run accounts for passes at the precision it is written, by the same matcher
   // that holds the run's report to its evidence — `$82` for $82.40 as readily as the full figure. Its latency
   // and upload values are not in this set when the run was driven from outside the region.
+  // Bindings aside: which claim a figure makes is judged in its sentence, by the per-block check below.
   const byTheRun = (m) =>
-    singleBucket !== null && calibration.unaccounted(m, singleBucket.pageValues).length === 0;
-  const money = visible.match(/\$[\d,]+(?:\.\d+)?/g) || [];
+    singleBucket !== null &&
+    calibration.unaccounted(m, calibration.unbound(singleBucket.pageValues)).length === 0;
+  // Read through the matcher's spellings first: `&#36;8.24` and `$ 8.24` are dollar amounts too, and the entity is
+  // the usual way to keep a markdown renderer from reading `$…$` as mathematics.
+  const plainText = calibration.normalize(visible);
+  const money = (plainText.match(/\$\s?[\d,]+(?:\.\d+)?/g) || []).map((m) => m.replace(/\s/g, ''));
   for (const m of new Set(money)) {
     if (!allowed.has(m) && !alsoAllowed.has(m) && !byTheRun(m)) {
       fail(`${page.rel} states ${m}, which no source accounts for`);
+    }
+  }
+
+  // 2b · and where the page quotes the latest calibration run, every figure in that paragraph, list item or table
+  // row — rates, counts, shares and sizes as well as money — is held to the run, or to this page's other sources,
+  // with the words that say which claim each makes (see calibration-figures.cjs).
+  if (singleBucket !== null) {
+    const values = calibration.mergeValues(
+      singleBucket.pageValues,
+      calibration.valuesFromFigures([...allowed, ...alsoAllowed], {
+        perSecond: [results.readCrossoverPerSec],
+      }),
+    );
+    for (const block of blocksOf(html, isHtml, metas)) {
+      if (!quotesTheRun(block)) continue;
+      for (const figure of calibration.unaccounted(block, values)) {
+        fail(
+          `${page.rel} states "${figure}" where it quotes run ${singleBucket.runId}, and nothing accounts for it: ` +
+            `"${calibration.normalize(block).slice(0, 140)}…"`,
+        );
+      }
     }
   }
 
@@ -596,19 +695,23 @@ if (singleBucket !== null) {
     }
     // Rows: Operation | Per million | Requests. A row that bills a GET or a PUT is one of the derivation's rows,
     // with its cost, and says "expected" if the derivation labels it so; each derived row appears once.
-    const rows = [...panel.matchAll(/<tr>([\s\S]*?)<\/tr>/g)]
-      .map((m) =>
-        [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) =>
-          c[1]
-            .replace(/<[^>]+>/g, '')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim(),
-        ),
-      )
-      .filter((cells) => cells.length === 3);
+    const body = /<tbody\b[^>]*>([\s\S]*?)<\/tbody>/.exec(panel)?.[1] ?? '';
+    if (body === '') fail("site/benchmarks.html's #single-bucket panel has no table body");
+    const rows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
+      [...m[1].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/g)].map((c) =>
+        calibration.normalize(c[1].replace(/<[^>]+>/g, '')).trim(),
+      ),
+    );
     const seen = new Map();
-    for (const [operation, perMillion, requests] of rows) {
+    for (const cells of rows) {
+      // A row of another shape is not skipped: a row the check cannot read is a row it does not check.
+      if (cells.length !== 3) {
+        fail(
+          `the #single-bucket panel has a row of ${cells.length} cells, not 3: ${cells.join(' | ')}`,
+        );
+        continue;
+      }
+      const [operation, perMillion, requests] = cells;
       const key = requests.replace(/\b(GET|PUT)s\b/g, '$1');
       const want = singleBucket.rows.find((r) => r.requests === key);
       if (want === undefined) {

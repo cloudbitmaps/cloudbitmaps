@@ -271,6 +271,19 @@ function maskAccount(account) {
 }
 
 /**
+ * Error text with its ARNs removed and its account ids masked, for a terminal or a file.
+ *
+ * AWS puts the caller's ARN, account id and all, in an AccessDenied message ("User: <the caller's ARN> is not
+ * authorized to perform …"). The harness printed error text as it came in four places and stored it in the partial
+ * results, so the one id it masks everywhere else reached a scrollback, a log, or a message asking for help.
+ */
+function redact(text) {
+  return String(text ?? '')
+    .replace(/\barn:aws[a-z-]*:[^\s"',)]*/g, 'arn:(redacted)')
+    .replace(/\b\d{12}\b/g, (id) => maskAccount(id));
+}
+
+/**
  * How many attempts each of the harness's two S3 clients makes per request.
  *
  * The WORKLOAD's client makes one. The projection has no term for its retries, and a retry's backoff would sit
@@ -332,7 +345,7 @@ function clientConfigs(base) {
  * `cache.genTtlMs: 0` — "pin for the store's lifetime". A store re-reads a segment's pointer once `genTtlMs`
  * (2 s by default) has passed since it last read it, in the middle of an intersect too. Run 2026-09-23-94416 was
  * 83 ms from the region, its cold intersects took about 3 s, and the median one read both pointers twice: 206
- * GETs where the same intersect inside the region makes 204. A request count that moves with the network describes the network,
+ * GETs where the same intersect inside the region would make 204. A request count that moves with the network describes the network,
  * and the projection had no term for it. Every timed intersect has a store of its own, so pinning costs nothing
  * in coldness: each pointer is still read, exactly once. What the default refresh costs a long-lived reader is a
  * separate figure — at most one pointer read per segment per `genTtlMs` while it is read — and the run report
@@ -350,23 +363,41 @@ const EVIDENCE_DIR = 'bench/calibration';
 
 /**
  * A run id names the run's bucket, `cloudbitmaps-calib-<id>`, and its evidence file, so it has to be valid as both,
- * and it has to sort into run order. So it is a UTC date, then a label of lowercase letters, digits and hyphens that
- * starts and ends with a letter or digit: 44 characters at most, which is what the 19-character prefix leaves of a
- * bucket name's 63. A bucket name may also hold dots; an id does not, because it is a file name too. Nothing
- * outside that set can reach a path, and the date prefix rules out every name Windows reserves.
- *
- * S3 also reserves some suffixes for its own bucket types, and refuses them at `CreateBucket` — after the abort
- * window, when nothing has been created but the run has already been waited for. They are refused here first.
+ * and it has to sort into run order. So it is a UTC date, a day that exists, then a label of lowercase letters,
+ * digits and hyphens that starts and ends with a letter or digit: 44 characters at most, which is what the
+ * 19-character prefix leaves of a bucket name's 63. A bucket name may also hold dots; an id does not, because it is
+ * a file name too. Nothing outside that set can reach a path, and the date prefix rules out every name Windows
+ * reserves.
  */
 const RUN_ID = /^\d{4}-\d{2}-\d{2}-[a-z0-9](?:[a-z0-9-]{0,31}[a-z0-9])?$/;
-const RESERVED_SUFFIX = /(?:-s3alias|--ol-s3|--x-s3)$/;
+
+/**
+ * The bucket-name suffixes S3 keeps for its own kinds of bucket and access point: an access point alias, an Object
+ * Lambda access point, a Multi-Region Access Point, a directory bucket and a table bucket. `CreateBucket` refuses
+ * them only after the abort window, when the run has already been waited for. And a name ending in one may not be a
+ * bucket at all but S3's name for someone else's, which `--cleanup`, emptying everything it finds, must never be
+ * pointed at. So both kinds of id refuse them.
+ */
+const RESERVED_SUFFIX = /(?:-s3alias|--ol-s3|\.mrap|--x-s3|--table-s3)$/;
+
+/** Whether `YYYY-MM-DD` is a day on the calendar, not only the shape of one: `9999-99-99` has the shape. */
+function isCalendarDay(day) {
+  const t = Date.parse(`${day}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === day;
+}
 
 function checkRunId(runId) {
-  if (typeof runId !== 'string' || !RUN_ID.test(runId) || RESERVED_SUFFIX.test(runId)) {
+  if (
+    typeof runId !== 'string' ||
+    !RUN_ID.test(runId) ||
+    !isCalendarDay(runId.slice(0, 10)) ||
+    RESERVED_SUFFIX.test(runId)
+  ) {
     throw new Error(
       `run id "${String(runId)}" is not usable: it names the bucket and the evidence file and must sort into run ` +
-        'order, so it is a date and a label, YYYY-MM-DD-<label>, 44 characters at most, where the label is ' +
-        'lowercase letters, digits and hyphens beginning and ending with a letter or digit',
+        'order, so it is a date and a label, YYYY-MM-DD-<label>, 44 characters at most, where the date is a real ' +
+        'day and the label is lowercase letters, digits and hyphens beginning and ending with a letter or digit, ' +
+        'and not ending in a suffix S3 reserves',
     );
   }
   return runId;
@@ -382,10 +413,15 @@ function checkRunId(runId) {
 const CLEANUP_ID = /^[a-z0-9.-]{0,43}[a-z0-9]$/;
 
 function checkCleanupId(runId) {
-  if (typeof runId !== 'string' || !CLEANUP_ID.test(runId) || runId.includes('..')) {
+  if (
+    typeof runId !== 'string' ||
+    !CLEANUP_ID.test(runId) ||
+    runId.includes('..') ||
+    RESERVED_SUFFIX.test(runId)
+  ) {
     throw new Error(
       `"${String(runId)}" cannot name a calibration bucket: 1 to 44 lowercase letters, digits, dots and hyphens, ` +
-        'ending with a letter or digit, and no two dots together',
+        'ending with a letter or digit, with no two dots together and no suffix S3 reserves',
     );
   }
   return runId;
@@ -400,9 +436,20 @@ function checkCleanupId(runId) {
  * of its own, which git also ignores: it writes the same shape as a real run, and under the real run's name it sat
  * one `git add` away from being committed as the evidence behind a published figure.
  */
-function resultsFile(rehearse, runId, { partial = false } = {}) {
+function resultsFile(rehearse, runId, { partial = false, stamp } = {}) {
   if (rehearse) return 'bench/calibrate-aws-rehearsal.json';
-  return `${EVIDENCE_DIR}/${checkRunId(runId)}${partial ? '.partial' : ''}.json`;
+  const id = checkRunId(runId);
+  if (stamp !== undefined) {
+    // Where a run goes whose own name was taken while it ran: named for its start, which only it can have.
+    if (!/^\d{8}T\d{9}Z$/.test(stamp)) throw new Error(`"${stamp}" is not a run's start stamp`);
+    return `${EVIDENCE_DIR}/${id}.${stamp}.partial.json`;
+  }
+  return `${EVIDENCE_DIR}/${id}${partial ? '.partial' : ''}.json`;
+}
+
+/** A run's start as a file-name stamp: `2026-09-23T05:01:02.345Z` is `20260923T050102345Z`. */
+function stampOf(iso) {
+  return String(iso).replace(/[-:.]/g, '');
 }
 
 /**
@@ -422,20 +469,72 @@ function evidenceConflict({ rehearse, file, exists }) {
 }
 
 /**
- * Refuse a workload that cannot measure what it claims to.
+ * The most segments a run may load: what one teardown listing can hold.
+ *
+ * `ListObjectVersions` returns at most 1,000 versions a page, and teardown lists one page a pass. Each segment leaves
+ * two versions, its generation and its pointer. A rehearsal of 1,510 segments passed every guard and left 20
+ * versions behind after teardown's three passes. At 500 segments the whole bucket fits in the first listing, and the other
+ * passes are left for what a concurrent write or a refused delete leaves behind.
+ */
+const MAX_SEGMENTS = 1000 / 2;
+
+/**
+ * Refuse a workload that cannot measure what it claims to, or that teardown could not remove.
  *
  * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
  * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — fetched
  * all 1,999 chunks an intersect, failed its exactness check and overspent its projection before the ceiling
  * check could see it.
  */
-function checkWorkload({ segments, reads }) {
+function checkWorkload({ segments, largeSegments = 0, reads }) {
   if (reads > 0 && segments < 2) {
     throw new Error(
       `${segments} segment(s) cannot make an intersect of two different segments; set CR_CALIBRATE_SEGMENTS to ` +
         'at least 2, or CR_CALIBRATE_READS to 0',
     );
   }
+  if (segments + largeSegments > MAX_SEGMENTS) {
+    throw new Error(
+      `${segments + largeSegments} segments would leave more object versions than teardown's first listing reaches; ` +
+        `load at most ${MAX_SEGMENTS}, counting CR_CALIBRATE_LARGE`,
+    );
+  }
+}
+
+/**
+ * The prefix the harness gives its store, under which everything it writes lives: generations and the registry
+ * pointer alike.
+ */
+const STORE_PREFIX = 'calib';
+
+/**
+ * Keys in a calibration bucket that the harness did not write.
+ *
+ * Teardown deletes every version of every key it lists, and `--cleanup` points it at a bucket by the name it was
+ * given. A key outside {@link STORE_PREFIX} means the bucket is not what its name says, so teardown refuses to
+ * empty it and reports it instead.
+ */
+function foreignKeys(keys) {
+  return keys.filter((k) => typeof k !== 'string' || !k.startsWith(`${STORE_PREFIX}/`));
+}
+
+/**
+ * The one region this harness has prices for.
+ *
+ * It prices every run at `AWS_US_EAST_1_ONDEMAND`, so a run elsewhere would record the wrong bill and check its
+ * ceiling against the wrong one: too low, in every region that costs more. A run anywhere else is refused until a
+ * pricing profile for that region exists. `--cleanup` is not refused, because it spends almost nothing.
+ */
+const PRICED_REGION = 'us-east-1';
+
+function checkRunRegion(region) {
+  if (region !== PRICED_REGION) {
+    throw new Error(
+      `this harness has prices for ${PRICED_REGION} only, and a run in ${String(region)} would record the wrong ` +
+        `bill and check the wrong ceiling — run it in ${PRICED_REGION}`,
+    );
+  }
+  return region;
 }
 
 module.exports = {
@@ -452,11 +551,18 @@ module.exports = {
   planLayout,
   layoutIds,
   maskAccount,
+  redact,
   resultsFile,
+  stampOf,
   checkRunId,
   checkCleanupId,
   evidenceConflict,
   checkWorkload,
+  MAX_SEGMENTS,
+  STORE_PREFIX,
+  foreignKeys,
+  PRICED_REGION,
+  checkRunRegion,
   EVIDENCE_DIR,
   TIMED_STORE,
   ADMIN_ATTEMPTS,

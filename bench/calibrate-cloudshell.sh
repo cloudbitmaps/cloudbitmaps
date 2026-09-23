@@ -31,8 +31,18 @@ else
     exit 2
   fi
 fi
-# Which harness ran is part of the result: the numbers mean nothing without the code that produced them.
-CR_CALIBRATE_HARNESS_REF="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Which harness ran is part of the result: the numbers mean nothing without the code that produced them. A clone
+# with uncommitted edits to the harness is marked -dirty, because the commit alone would name a harness that did not
+# run.
+harness_ref() {
+  local ref
+  ref="$(git rev-parse --short HEAD 2>/dev/null)" || { echo unknown; return; }
+  if [ -n "$(git status --porcelain -- bench/calibrate-aws.cjs bench/calibrate-cloudshell.sh bench/lib 2>/dev/null)" ]; then
+    ref="${ref}-dirty"
+  fi
+  echo "$ref"
+}
+CR_CALIBRATE_HARNESS_REF="$(harness_ref)"
 export CR_CALIBRATE_HARNESS_REF
 
 # Evidence is write-once, and the harness cannot see this clone's evidence from the scratch copy it runs in below —
@@ -64,21 +74,26 @@ fi
 WORK="$(mktemp -d)"
 # Copy the results out on EVERY exit, including an interrupt: the harness writes them before it stops, and a
 # scratch directory deleted with them inside would throw away a run already paid for.
+# shellcheck disable=SC2329 # called by the EXIT trap below
 finish() {
   # A real run writes its evidence as bench/calibration/<runId>.json, or <runId>.partial.json if it did not finish;
   # a rehearsal writes a file of its own, so it can never be mistaken for a real run's evidence. Commit a finished
-  # run's file at that same path. Nothing here may abort the trap or overwrite a file already in $HOME: a copy that
-  # fails leaves the scratch directory in place and says where, because deleting it would delete the results too.
+  # run's file at that same path. Nothing here may abort the trap or overwrite a file already in $HOME. A name that
+  # is taken gets this run's copy beside it, stamped, since CloudShell keeps $HOME between sessions and not the
+  # scratch directory; a copy that still fails leaves the scratch directory in place and says where.
+  set +e
   local kept=0
   for f in "$WORK"/bench/calibration/*.json "$WORK/bench/calibrate-aws-rehearsal.json"; do
     [ -f "$f" ] || continue
-    local dest
-    dest="$HOME/$(basename "$f")"
+    local name dest
+    name="$(basename "$f")"
+    dest="$HOME/$name"
     if [ -e "$dest" ]; then
-      echo "cloudshell: ~/$(basename "$f") already exists and was left alone — this run's copy is at $f" >&2
-      kept=1
-    elif cp "$f" "$dest"; then
-      echo "cloudshell: results at ~/$(basename "$f") (Actions → Download file, or cat it)"
+      dest="$HOME/${name%.json}.$(date -u +%Y%m%dT%H%M%SZ).json"
+      echo "cloudshell: ~/$name already exists and was left alone" >&2
+    fi
+    if [ ! -e "$dest" ] && cp "$f" "$dest"; then
+      echo "cloudshell: results at ~/$(basename "$dest") (Actions → Download file, or cat it)"
     else
       echo "cloudshell: could not copy the results — they are at $f" >&2
       kept=1
@@ -88,9 +103,37 @@ finish() {
 }
 trap finish EXIT
 
+# Runs the harness as a job of its own, passes on every signal that would stop this script, and returns only once
+# the harness has exited. Run in the foreground, a SIGTERM or a hang-up stopped the script at once: the exit trap
+# ran while the harness was still tearing down, copied nothing, and deleted the scratch directory under it. And a
+# SIGTERM to the script alone never reached the harness, which went on to run the whole paid workload. A process
+# group of its own (`set -m`) means a Ctrl-C reaches the harness once, from here, and not a second time from the
+# terminal.
+run_harness() {
+  set -m
+  (cd "$WORK" && exec "$@") &
+  HARNESS_PID=$!
+  set +m
+  for sig in INT TERM HUP; do
+    # shellcheck disable=SC2064 # the signal is fixed now; the pid is read when the trap fires
+    trap "FORWARDED=1; kill -s $sig \"\$HARNESS_PID\" 2>/dev/null || true" "$sig"
+  done
+  local rc=0
+  while :; do
+    FORWARDED=0
+    if wait "$HARNESS_PID"; then rc=0; else rc=$?; fi
+    # A signal ends `wait` early, with the harness still stopping: wait for it again.
+    if [ "$FORWARDED" -eq 1 ] && kill -0 "$HARNESS_PID" 2>/dev/null; then continue; fi
+    break
+  done
+  # From here the script only copies the results out, and a signal must not cut that short.
+  trap '' INT TERM HUP
+  return "$rc"
+}
+
 mkdir -p "$WORK/bench/lib"
 cp bench/calibrate-aws.cjs "$WORK/bench/"
-cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs "$WORK/bench/lib/"
+cp bench/lib/aws-meter.cjs bench/lib/calibrate-guards.cjs bench/lib/calibrate-process.cjs "$WORK/bench/lib/"
 echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 (
   cd "$WORK"
@@ -101,5 +144,5 @@ echo "cloudshell: installing the published packages at ${PKG_VERSION}"
 )
 
 rc=0
-(cd "$WORK" && node bench/calibrate-aws.cjs "$MODE_FLAG") || rc=$?
+run_harness node bench/calibrate-aws.cjs "$MODE_FLAG" || rc=$?
 exit "$rc"

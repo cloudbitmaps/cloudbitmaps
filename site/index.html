@@ -189,7 +189,9 @@
                 <span class="label">CloudBitmaps</span>
                 <span class="bill-fig">$82.40</span>
                 <span class="bill-cap"
-                  >per 1M cold A&nbsp;∩&nbsp;B, measured on S3<small>metered — nothing when idle</small></span
+                  >per 1M cold A&nbsp;∩&nbsp;B sharing 100 chunks, from a run on S3<small
+                    >cold: nothing cached · metered — nothing when idle</small
+                  ></span
                 >
               </div>
               <div class="bill is-compare">
@@ -219,7 +221,8 @@
               cheaper
             </p>
             <p class="panel-row is-pair">
-              <span>Writing and publishing a segment, pointer included</span><span>$11.20&nbsp;per&nbsp;1M</span>
+              <span>Writing and publishing a segment, pointer included; <span class="m">store.load()</span> about
+                twice</span><span>$11.20&nbsp;per&nbsp;1M</span>
             </p>
             <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
           </aside>

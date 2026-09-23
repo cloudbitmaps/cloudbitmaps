@@ -285,9 +285,9 @@
               into one immutable object, then <span class="m">publishGeneration</span> advances the pointer.
               There is no per-id write, so there is nothing to fold back in later and
               <strong>no background job on the read path</strong>. On S3 the write and the publish cost
-              <strong>$11.20 per million loads</strong>, pointer included — measured for those two steps;
-              <span class="m">store.load</span>'s listings and clean-up pass come on top, about doubling it — so
-              batch the refresh.
+              <strong>$11.20 per million loads</strong>, pointer included — measured request counts at list
+              prices, for those two steps; <span class="m">store.load</span>'s listings and clean-up pass come on
+              top, about doubling it — so batch the refresh.
             </p>
           </div>
           <div class="limit">
@@ -603,7 +603,7 @@
               Once a store has read a segment's pointer and index, a membership check the LRU cannot answer
               costs one ranged GET against your bucket — there is no middle tier to answer it more cheaply. The
               first read of a segment also reads its pointer and its index, and the pointer is read again at
-              most once per <span class="m">cache.genTtlMs</span>. Object-store latency, in other words, and no
+              most once per <span class="m">cache.genTtlMs</span>, 2 s by default. Object-store latency, in other words, and no
               in-region percentile for it is published: that run is
               <a href="benchmarks.html#owed">listed as owed</a>, not measured.
             </span>

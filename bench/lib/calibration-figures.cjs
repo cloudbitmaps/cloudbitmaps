@@ -6,9 +6,9 @@
  * WHY THIS EXISTS. A run report is the one document whose numbers a reader cannot check for themselves: they come
  * from a bill for a run nobody else saw. So the report, and every page that quotes the run, is held to the evidence
  * by `tests/docs/calibration-reports.test.ts` in both directions: each headline figure must appear, and no money,
- * percentage, duration, byte size, bit rate or count may appear that this module cannot derive. The tables are
- * checked row by row, so right numbers on the wrong rows fail too. `scripts/site-figures.cjs` uses the same
- * derivation, so the site and the report cannot disagree about a run's numbers.
+ * percentage, duration, byte size, bit rate, ratio or count may appear that this module cannot derive. The tables
+ * are checked row by row, so right numbers on the wrong rows fail too. `scripts/site-figures.cjs` takes the site's
+ * figures from the same derivation and checks them with the same matcher.
  *
  * THREE KINDS OF FIGURE, and the report labels each.
  *   measured  straight from the evidence: request counts by command, bytes, chunk counts, timings.
@@ -20,14 +20,23 @@
  * AND IT REFUSES EVIDENCE THAT DOES NOT ADD UP. Before anything is derived, the file must be a complete, cold and
  * exact real run whose parts reconcile: the per-command counts sum to the billed classes, each class's price
  * reproduces its recorded cost, the chunk and tail reads match the planned layout and the library's tail size, the
- * bytes read back sum to the three kinds of read, and the uncategorised reads divide evenly across the loads. A
- * figure derived from a file that fails any of those would be about a run that did not happen the way it says.
+ * median intersect's GETs are its chunk, tail and pointer reads, the bytes read back and sent up sum to their
+ * parts, and the uncategorised reads divide evenly across the loads. A figure derived from a file that fails any of
+ * those would be about a run that did not happen the way it says.
+ *
+ * WHAT THE REVERSE CHECK CAN AND CANNOT SEE. It reads a figure by its unit, or by the noun it counts, and accepts it
+ * only at the precision it is written. A value the evidence holds is not enough where the same number could make
+ * two claims: the measured and the expected intersect, a byte share and a chunk share, what a load uploaded and
+ * what the object holds. Those values are BOUND to the words that must be nearest them in the same clause (see
+ * `WORDS`), and a request shape ("2 PUT + 3 GET") must be one the run has. What it cannot see: a number written as a
+ * word, a figure with no unit or counted noun beside it, and a claim bound to nothing that happens to state a value
+ * the evidence holds.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 
 const { classify } = require('./aws-meter.cjs');
-const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR } = require('./calibrate-guards.cjs');
+const { planLayout, DEFAULT_LAYOUT, EVIDENCE_DIR, CHUNK_SPAN } = require('./calibrate-guards.cjs');
 
 /**
  * What `store.load()` bills, in requests, as `tests/bench/calibrate-guards.test.ts` counts them against local
@@ -45,6 +54,8 @@ const STORE_LOAD_REQUESTS = Object.freeze({
 
 /** Roaring's portable format stores a chunk of at most this many ids as an array: a header, then 2 bytes an id. */
 const ARRAY_CONTAINER_MAX = 4096;
+/** A roaring bitmap container: one bit for each of a chunk's ids. */
+const BITMAP_CONTAINER_BYTES = CHUNK_SPAN / 8;
 
 /**
  * The library constants a run's figures depend on, read out of the source rather than restated, so a change to one
@@ -105,7 +116,9 @@ function readSources(root) {
 /**
  * Every committed run, oldest first. A partial file — a run that did not finish — is not evidence and is skipped.
  * Order is the time a run started where its file records one, and its id otherwise: the id starts with the date,
- * but two runs on one date differ only by a random suffix, which says nothing about which came later.
+ * but two runs on one date differ only by a random suffix, which says nothing about which came later. A file from
+ * before the start was recorded counts as starting at the beginning of its date. Its bare date once sorted after
+ * every later run started the same day, because `T` sorts before `|`.
  */
 function evidenceFiles(root) {
   const dir = path.join(root, EVIDENCE_DIR);
@@ -121,7 +134,7 @@ function evidenceFiles(root) {
       } catch {
         // An unreadable file sorts by name; the gate that reads it reports why.
       }
-      return { rel, key: `${startedAt || f.slice(0, 10)}|${f}` };
+      return { rel, key: `${startedAt || `${f.slice(0, 10)}T00:00:00.000Z`}|${f}` };
     });
   return runs.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map((r) => r.rel);
 }
@@ -144,6 +157,11 @@ function derive(run, src) {
   const check = (ok, what) => {
     if (!ok) problems.push(what);
   };
+  const refuseIfAny = () => {
+    if (problems.length > 0) {
+      throw new Error(`calibration evidence ${run.runId}: ${problems.join('; ')}`);
+    }
+  };
   const it = run.phases?.intersect ?? {};
   check(run.mode === 'run' && run.target === 'aws', 'it is not a real run against AWS');
   check(
@@ -156,9 +174,7 @@ function derive(run, src) {
     run.pricing === src.pricing.name,
     `it was priced with "${run.pricing}", which is not the library's profile "${src.pricing.name}"`,
   );
-  if (problems.length > 0) {
-    throw new Error(`calibration evidence ${run.runId}: ${problems.join('; ')}`);
-  }
+  refuseIfAny();
 
   const w = run.workload;
   const single = run.phases.load.singlePart;
@@ -212,9 +228,30 @@ function derive(run, src) {
       rd.suffix.bytes === rd.suffix.n * src.tailBytes,
     `its tail reads are not one of the library's ${src.tailBytes} bytes per operand`,
   );
+  // The headline count, held to the ledger: an intersect's GETs are its chunk reads, its tail reads and its pointer
+  // reads, and it reads each operand's pointer at least once.
+  const chunkReadsPerIntersect = rd.range.n / it.runs;
+  const tailReadsPerIntersect = rd.suffix.n / it.runs;
+  check(
+    Number.isInteger(it.pointerReadsPerIntersect) &&
+      it.pointerReadsPerIntersect >= 2 &&
+      rd.whole.n >= 2 * it.runs &&
+      it.medianGets ===
+        chunkReadsPerIntersect + tailReadsPerIntersect + it.pointerReadsPerIntersect,
+    `its median intersect's ${it.medianGets} GETs are not its chunk, tail and pointer reads ` +
+      `(${chunkReadsPerIntersect} + ${tailReadsPerIntersect} + ${it.pointerReadsPerIntersect})`,
+  );
   check(
     ops.bytesDown === rd.whole.bytes + rd.suffix.bytes + rd.range.bytes,
     'the bytes it read back are not the sum of its pointer, tail and chunk reads',
+  );
+  // What went up is the loads' uploads. The file records medians, so the sum is checked to a thousandth: tight
+  // enough to catch an edit, loose enough for loads of one kind that differ by a byte or two.
+  const uploadOf = (phase) => phase.medianUploadBytes ?? phase.medianObjectBytes;
+  const uploaded = single.runs * uploadOf(single) + multi.runs * uploadOf(multi);
+  check(
+    Math.abs(ops.bytesUp - uploaded) <= ops.bytesUp / 1000,
+    `the ${ops.bytesUp} bytes it sent up are not its loads' uploads (${uploaded})`,
   );
   const loads = single.runs + multi.runs;
   const loadGets = n('GetObjectCommand') - (rd.whole.n + rd.suffix.n + rd.range.n);
@@ -234,9 +271,7 @@ function derive(run, src) {
     Math.abs(rd.range.bytes / it.runs / (2 * single.medianObjectBytes) - it.payloadFraction) < 1e-9,
     'its payload fraction is not its chunk bytes over the two objects',
   );
-  if (problems.length > 0) {
-    throw new Error(`calibration evidence ${run.runId}: ${problems.join('; ')}`);
-  }
+  refuseIfAny();
 
   // ── requests ────────────────────────────────────────────────────────────────────────────────────────────────
   const getsPerLoad = loadGets / loads;
@@ -254,8 +289,11 @@ function derive(run, src) {
   const meanPointerReads = rd.whole.n / it.runs;
   // Expected, from the engine: an intersect resolves each operand's pointer, then reads its tail, both operands at
   // once; then it keeps `DEFAULT_INTERSECT_CONCURRENCY` shared chunks in flight, each read from both operands at
-  // once. So its requests queue this many deep — and the rest of a slow intersect is each one taking longer.
-  const requestsDeep = 2 + Math.ceil(chunksPerOperand / src.intersectConcurrency);
+  // once. So its requests queue this many deep. A pointer refresh part-way through holds every chunk read that
+  // starts while it is in flight, so each one the median intersect made adds one more.
+  const refreshes = (measuredGets - expectedGets) / 2;
+  const requestsDeepPinned = 2 + Math.ceil(chunksPerOperand / src.intersectConcurrency);
+  const requestsDeep = requestsDeepPinned + refreshes;
 
   // ── bytes ───────────────────────────────────────────────────────────────────────────────────────────────────
   // What an object holds. Harnesses up to e42c27f recorded the bytes a load UPLOADED under `medianObjectBytes`:
@@ -273,11 +311,15 @@ function derive(run, src) {
   const chunkBytes = rd.range.bytes / it.runs;
   const tailBytes = rd.suffix.bytes / it.runs;
   const pointerBytes = rd.whole.bytes / it.runs;
-  const fetched = chunkBytes + tailBytes + pointerBytes;
-  const fetchedPinned = chunkBytes + tailBytes + 2 * pointerBytesPerRead;
+  // What left the two objects: chunk and tail reads, which do not overlap in this layout (the shared chunks sit at
+  // the front of each object, the tail at its end). A pointer is an object of its own, so its bytes are not a share
+  // of these two.
+  const fetched = chunkBytes + tailBytes;
   // A large segment's ids. A later harness records them; for an earlier file they come back from its two rates —
-  // ids a second over bytes a second, times the bytes — which is exact to well under one id, and is checked.
-  const idsFromRates = (multi.medianObjectBytes * multi.medianIdsPerSec) / multi.medianBytesPerSec;
+  // ids a second over bytes a second, times the bytes — which is exact to well under one id, and is checked. The
+  // rate is of what went UP, the object and its pointer's body, so it is paired with the upload and not with the
+  // object: paired with the object, it refused every file a harness recording the two apart would write.
+  const idsFromRates = (uploadOf(multi) * multi.medianIdsPerSec) / multi.medianBytesPerSec;
   const multipartIds = w.largeIdsPerSegment ?? Math.round(idsFromRates);
   if (Math.abs(idsFromRates - multipartIds) > 0.5) {
     throw new Error(
@@ -299,6 +341,11 @@ function derive(run, src) {
   const indexPerChunk = index === null ? null : index / w.chunksPerSegment;
   const tailHoldsChunks =
     indexPerChunk === null ? null : Math.floor((src.tailBytes - src.footerBytes) / indexPerChunk);
+  // On a segment this small the tail read reaches back past the index into the payload: bytes of chunks the
+  // intersect never requested, downloaded with the index and never decoded.
+  const tailPayloadBytes = index === null ? null : src.tailBytes - src.footerBytes - index;
+  const tailPayloadChunks =
+    tailPayloadBytes === null ? null : tailPayloadBytes / (payload / w.chunksPerSegment);
 
   // ── money ───────────────────────────────────────────────────────────────────────────────────────────────────
   const cost = (gets, puts = 0) => gets * getUSD + puts * putUSD;
@@ -343,7 +390,9 @@ function derive(run, src) {
     measuredGets,
     meanPointerReads,
     pointerReadsMeasured: it.pointerReadsPerIntersect,
+    refreshes,
     requestsDeep,
+    requestsDeepPinned,
     intersectConcurrency: src.intersectConcurrency,
     projected: { ...run.projected },
     getsPerLoad,
@@ -373,14 +422,14 @@ function derive(run, src) {
       pointerBytesPerRead,
       pointerBytes,
       fetched,
-      fetchedPinned,
       // What a single-part load uploaded, which earlier harnesses recorded under the object's name.
-      uploadPerLoad: single.medianUploadBytes ?? single.medianObjectBytes,
+      uploadPerLoad: uploadOf(single),
       down: ops.bytesDown,
       up: ops.bytesUp,
       payload,
       index,
       indexPerChunk,
+      tailPayloadBytes,
       chunkBytesPerOperand: rd.range.bytes / operandReads,
       arrayHeader: HEADER,
       arrayPerId: PER_ID,
@@ -390,6 +439,7 @@ function derive(run, src) {
     multipartIds,
     largeIdsPerChunk: multipartIds / w.largeChunks,
     tailHoldsChunks,
+    tailPayloadChunks,
     network: {
       rttFloorMs: run.network.rttFloorMs,
       rttMedianMs: run.network.rttMedianMs,
@@ -438,8 +488,13 @@ function derive(run, src) {
       // What `estimateCost()` charges a load by default: `requestsPerLoad` PUT-class requests, 1 unless set.
       estimatorLoadDefault: putUSD,
     },
-    // The requestsPerLoad that makes the estimator's PUT-only load term price a write and publish exactly.
-    estimatorRequestsPerLoad: putsPerSingle + (getsPerLoad * getUSD) / putUSD,
+    // The requestsPerLoad values that make the estimator's PUT-only load term price each kind of load exactly.
+    estimatorRequestsPerLoad: {
+      writeAndPublish: putsPerSingle + (getsPerLoad * getUSD) / putUSD,
+      ...Object.fromEntries(
+        Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, r.put + (r.get * getUSD) / putUSD]),
+      ),
+    },
     parity: {
       intersectsPerMonth: perMonth(measuredIntersectUSD),
       intersectsPerSec: perSec(measuredIntersectUSD),
@@ -450,6 +505,7 @@ function derive(run, src) {
   };
   f.anchors = anchorsOf(f);
   f.rows = rowsOf(f);
+  f.shapes = shapesOf(f);
   f.values = valuesOf(f, { withLatency: true });
   // What a page other than the report may state: a remote run's timings measured its client, and the report is
   // the one place they are recorded, beside the reason they are not the library's.
@@ -494,8 +550,9 @@ function anchorsOf(f) {
 }
 
 /**
- * The cells a table of the run's operations must hold, keyed by the requests cell. The operation's own wording is
- * free; its numbers are not, and neither is the label the report gives it.
+ * The cells a table of the run's operations must hold, keyed by the requests cell, with the words the operation's
+ * own cell must carry to say which intersect it is. The rest of its wording is free; its numbers are not, and
+ * neither is the label the report gives it.
  */
 function rowsOf(f) {
   const put = (n) => (n === 2 ? `${n} PUT` : `${n} PUT-class`);
@@ -505,33 +562,77 @@ function rowsOf(f) {
       one: usd(f.usd.measuredIntersect, 7),
       perMillion: usd(1e6 * f.usd.measuredIntersect, 2),
       label: 'derived',
+      says: /\bmedian\b|\bmeasured\b/i,
     },
     {
       requests: `${int(f.expectedGets)} GET`,
       one: usd(f.usd.expectedIntersect, 7),
       perMillion: usd(1e6 * f.usd.expectedIntersect, 2),
       label: 'expected',
+      says: /\bonce\b|\bexpected\b|\binside the region\b/i,
     },
     {
       requests: `${put(f.putsPerSingle)} + ${f.getsPerLoad} GET`,
       one: usd(f.usd.singleLoad, 7),
       perMillion: usd(1e6 * f.usd.singleLoad, 2),
       label: 'derived',
+      says: /\bpublish/i,
     },
     {
       requests: `${put(f.putsPerMultipart)} + ${f.getsPerLoad} GET`,
       one: usd(f.usd.multipartLoad, 7),
       perMillion: usd(1e6 * f.usd.multipartLoad, 2),
       label: 'derived',
+      says: /\bmultipart\b/i,
     },
     {
       requests: `${put(f.storeLoad.first.put)} + ${f.storeLoad.first.get} GET`,
       one: usd(f.usd.storeLoad.first, 7),
       perMillion: usd(1e6 * f.usd.storeLoad.first, 2),
       label: 'expected',
+      says: /store\.load\(\)/,
     },
   ];
 }
+
+/** Every request shape the run has, as `[PUT-class, GET]`: a stated "N PUT + M GET" must be one of them. */
+function shapesOf(f) {
+  return [
+    [f.putsPerSingle, f.getsPerLoad],
+    [f.putsPerMultipart, f.getsPerLoad],
+    ...Object.values(f.storeLoad).map((r) => [r.put, r.get]),
+  ];
+}
+
+// ── claim bindings ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The words that say which claim a number makes. A bound value passes only where the nearest of its group's words,
+ * in the same clause, table row or diagram line, is one of the words it allows: 206 GETs is the measured median,
+ * so "the median made 204 GETs" fails, and 4.9% is a share of bytes, so "4.9% of the chunks" fails. A table row with
+ * none of the words takes them from its table's caption and header.
+ */
+const WORDS = {
+  measured: /\bmedian\b|\bmeasured\b|\bthis run\b|\bas the run\b|\blaptop\b/gi,
+  expected:
+    /\bexpected\b|\bread once\b|\binside the region\b|\bin-region\b|\bpinned\b|\bpins\b|\bwould\b|\bshould\b/gi,
+  chunkShare: /\bchunks?\b|\bby count\b|\bof them\b/gi,
+  byteShare: /\bobjects?'?|\bbytes?\b|\bpayload\b|\btail\b|\bMB\b|\bKB\b|\bKiB\b|\bleft S3\b/gi,
+  getShare: /\bGETs?\b|\bbill\b|\brequests?\b/gi,
+  upload: /\buploa\w*/gi,
+  overlap: /\bshar\w*|\boverlap\w*|\bidentical\b|\bk = /gi,
+  puts: /\bPUTs?\b|\bPUT-class\b/g,
+  gets: /\bGETs?\b|\bpointer reads?\b/g,
+  rereads: /\bre-?reads?\b|\bfold\w*|\bsave\w*/gi,
+  dollar: /\bdollar\b|\bbuys?\b/gi,
+  write: /\bwrit\w*|\bpublish\w*/gi,
+  once: /\bonce\b|\binside the region\b|\bin-region\b|\bpinned\b|\bpins\b/gi,
+};
+const bind = (v, group, allow, require = true) => ({ v, group, allow, require });
+const MEASURED = ['measured', 'expected'];
+const SHARES = ['chunkShare', 'byteShare', 'getShare'];
+const measuredValue = (v) => bind(v, MEASURED, ['measured'], false);
+const expectedValue = (v) => bind(v, MEASURED, ['expected']);
 
 /** Every value a page may state for this run, by unit and by counted noun — what the reverse check accepts. */
 function valuesOf(f, { withLatency }) {
@@ -544,17 +645,17 @@ function valuesOf(f, { withLatency }) {
   }
   const sl = f.storeLoad;
   const get = [
-    // Per operand: one pointer read, one tail read, the shared chunks. Per intersect: their sums, cold, with the
-    // pointer read once (expected) or as measured; and with one or both indexes too large for the tail read.
+    // Per operand: one pointer read, one tail read, the shared chunks. Per intersect: their sums, with one or both
+    // indexes too large for the tail read; the median as measured, and each pointer read once, expected.
     1,
     f.chunksPerOperand,
     2 * f.chunksPerOperand,
     f.fixedGets,
     f.fixedGets + 1,
     f.fixedGets + 2,
-    f.expectedGets,
-    f.measuredGets,
-    ...f.kRows.map((r) => r.gets),
+    measuredValue(f.measuredGets),
+    // The table of cost by overlap is expected throughout; its row for the run's overlap is the expected intersect.
+    ...f.kRows.map((r) => expectedValue(r.gets)),
     // Per load, as measured; per store.load(), as counted; the run's totals, and what it projected.
     f.getsPerLoad,
     sl.first.get,
@@ -581,36 +682,42 @@ function valuesOf(f, { withLatency }) {
       f.usd.pointerRefreshMonth,
       f.usd.estimatorLoadDefault,
       1e6 * f.usd.estimatorLoadDefault,
-      1e6 * f.usd.singleLoadPuts,
-      1e6 * f.usd.loadGets,
-      1e6 * f.usd.loadRereads,
-      ...[
-        f.usd.measuredIntersect,
-        f.usd.expectedIntersect,
-        f.usd.singleLoad,
-        f.usd.multipartLoad,
-        ...Object.values(f.usd.storeLoad),
-      ].flatMap((v) => [v, 1e6 * v]),
-      ...f.kRows.flatMap((r) => [r.usd, 1e6 * r.usd]),
+      bind(1e6 * f.usd.singleLoadPuts, ['puts', 'gets'], ['puts']),
+      bind(1e6 * f.usd.loadGets, ['puts', 'gets'], ['gets']),
+      bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),
+      ...[f.usd.measuredIntersect, 1e6 * f.usd.measuredIntersect].map(measuredValue),
+      ...f.kRows.flatMap((r) => [r.usd, 1e6 * r.usd]).map(expectedValue),
+      // The write and the publish, which is not store.load(): the same pages price that at about twice, so a load's
+      // price stated without either word reads as store.load()'s.
+      ...[f.usd.singleLoad, f.usd.multipartLoad]
+        .flatMap((v) => [v, 1e6 * v])
+        .map((v) => bind(v, ['write'], ['write'])),
+      // store.load() is counted by a test, not measured: stated near "measured", it is wrong.
+      ...Object.values(f.usd.storeLoad)
+        .flatMap((v) => [v, 1e6 * v])
+        .map((v) => bind(v, MEASURED, ['expected'], false)),
     ],
     pct: [
       1,
       f.workload.overlap,
-      f.shareFetched,
-      1 - f.shareFetched,
-      f.payloadFraction,
-      1 - f.payloadFraction,
-      b.tailBytes / b.objects,
-      b.fetched / b.objects,
-      1 - b.fetched / b.objects,
-      b.fetchedPinned / b.objects,
-      1 - b.fetchedPinned / b.objects,
-      (2 * f.chunksPerOperand) / f.measuredGets,
-      (2 * f.chunksPerOperand) / f.expectedGets,
-      (f.getsPerLoad * f.price.getUSD) / f.usd.singleLoad,
+      bind(f.shareFetched, SHARES, ['chunkShare']),
+      bind(1 - f.shareFetched, SHARES, ['chunkShare']),
+      ...[
+        f.payloadFraction,
+        1 - f.payloadFraction,
+        b.tailBytes / b.objects,
+        b.fetched / b.objects,
+        1 - b.fetched / b.objects,
+      ].map((v) => bind(v, SHARES, ['byteShare'])),
+      ...[
+        (2 * f.chunksPerOperand) / f.measuredGets,
+        (2 * f.chunksPerOperand) / f.expectedGets,
+        (f.getsPerLoad * f.price.getUSD) / f.usd.singleLoad,
+      ].map((v) => bind(v, SHARES, ['getShare'])),
     ],
     ms,
     s: [...ms.map((v) => v / 1000), f.secondsPerMonth],
+    min: ms.map((v) => v / 60_000),
     h: [f.secondsPerMonth / 3600],
     bytes: [
       b.object,
@@ -623,10 +730,8 @@ function valuesOf(f, { withLatency }) {
       b.pointerBytesPerRead,
       b.pointerBytes,
       b.fetched,
-      b.fetchedPinned,
       b.objects - b.fetched,
-      b.objects - b.fetchedPinned,
-      b.uploadPerLoad,
+      bind(b.uploadPerLoad, ['upload'], ['upload']),
       f.preambleBytes,
       f.footerBytes,
       b.down,
@@ -638,9 +743,18 @@ function valuesOf(f, { withLatency }) {
       ...(withLatency ? [f.upload.singleBytesPerSec, f.upload.multipartBytesPerSec] : []),
       ...(b.index === null
         ? []
-        : [b.payload, b.index, b.indexPerChunk, b.arrayHeader, b.arrayPerId]),
+        : [b.payload, b.index, b.indexPerChunk, b.arrayHeader, b.arrayPerId, b.tailPayloadBytes]),
     ],
     bits: withLatency ? [8 * f.upload.singleBytesPerSec, 8 * f.upload.multipartBytesPerSec] : [],
+    ratio: [
+      2, // two operands
+      f.price.putPerMillion / f.price.getPerMillion,
+      b.multipartObject / b.object,
+      f.usd.storeLoad.first / f.usd.singleLoad,
+      ...(withLatency
+        ? [f.latency.overFloor, f.latency.perRequestOnPath / f.network.rttFloorMs]
+        : []),
+    ],
     counts: {
       get,
       put,
@@ -653,6 +767,8 @@ function valuesOf(f, { withLatency }) {
         f.putsPerMultipart + f.getsPerLoad,
         ...Object.values(sl).map((r) => r.put + r.get),
         f.requestsDeep,
+        // The depth without the pointer re-read: the median intersect, which re-read it, was a request deeper.
+        bind(f.requestsDeepPinned, ['once'], ['once']),
       ],
       chunks: [
         f.chunksPerOperand,
@@ -660,9 +776,11 @@ function valuesOf(f, { withLatency }) {
         f.chunksPerSegment,
         f.workload.largeChunks,
         f.intersectConcurrency,
-        ...f.kRows.map((r) => r.k),
+        // The table's overlaps: a count of chunks the two segments SHARE, and nothing else.
+        ...f.kRows.map((r) => bind(r.k, ['overlap'], ['overlap'])),
         Math.round(f.chunksPerSegment / 100), // the chunk-skipping diagram's scale: a hundred squares
         ...(f.tailHoldsChunks === null ? [] : [f.tailHoldsChunks]),
+        ...(f.tailPayloadChunks === null ? [] : [f.tailPayloadChunks]),
       ],
       ids: [
         f.workload.idsPerSegment,
@@ -670,10 +788,18 @@ function valuesOf(f, { withLatency }) {
         f.multipartIds,
         f.largeIdsPerChunk,
         ARRAY_CONTAINER_MAX,
+        CHUNK_SPAN,
       ],
       loads: [f.loads, f.workload.segments, f.workload.largeSegments],
-      // The run's count, and how many cold intersects a dollar buys, measured and at each overlap in the table.
-      intersects: [f.intersects, 1 / f.usd.measuredIntersect, ...f.kRows.map((r) => 1 / r.usd)],
+      // The run's count, the parity figures, and how many cold intersects a dollar buys: whole ones, measured, and
+      // at each overlap in the table as a rate.
+      intersects: [
+        f.intersects,
+        f.parity.intersectsPerMonth,
+        f.parity.kTen.perMonth,
+        bind(Math.floor(1 / f.usd.measuredIntersect), ['dollar'], ['dollar']),
+        ...f.kRows.map((r) => 1 / r.usd),
+      ],
       segments: [f.workload.segments, f.workload.largeSegments, 1],
       pointerReads: [
         f.ledger.pointerReads,
@@ -686,11 +812,20 @@ function valuesOf(f, { withLatency }) {
       ],
       tailReads: [f.ledger.tailReads, 2, 1],
       chunkReads: [f.ledger.chunkReads, 2 * f.chunksPerOperand, f.chunksPerOperand],
+      getObjects: [
+        f.byCommand.GetObjectCommand,
+        f.ledger.loadPointerReads,
+        f.ledger.pointerReads,
+        f.ledger.tailReads,
+        f.ledger.chunkReads,
+      ],
+      putObjects: [f.byCommand.PutObjectCommand, f.workload.segments, f.loads],
     },
     pairs: {
       chunks: [[f.chunksPerOperand, f.chunksPerSegment]],
       intersects: [[f.intersects, f.intersects]],
     },
+    shapes: f.shapes,
     million: [f.parity.intersectsPerMonth, f.parity.loadsPerMonth, f.parity.kTen.perMonth].map(
       (v) => v / 1e6,
     ),
@@ -698,31 +833,94 @@ function valuesOf(f, { withLatency }) {
   };
 }
 
-/** A roaring bitmap container: one bit for each of a chunk's 65,536 ids. */
-const BITMAP_CONTAINER_BYTES = 65_536 / 8;
+/**
+ * Values another source accounts for, in the shape `valuesOf` returns, read out of the figures that source states:
+ * `$346` is 346 dollars, `1.2 GiB` is its bytes. `scripts/site-figures.cjs` merges these with a run's, so a block of
+ * a page that quotes the run and the estimator together is checked against both.
+ */
+function valuesFromFigures(figures, extra = {}) {
+  const out = { counts: {}, pairs: {}, shapes: [] };
+  const add = (key, v) => {
+    out[key] = [...(out[key] ?? []), v];
+  };
+  for (const figure of figures) {
+    const t = normalize(figure);
+    for (const { re, key, scale } of CLASSES) {
+      re.lastIndex = 0;
+      for (const m of t.matchAll(re)) {
+        if (key === 'counts') continue;
+        const x = Number((numberOf(m, key) ?? '').replace(/,/g, ''));
+        if (Number.isFinite(x)) add(key, x * scale(m));
+      }
+    }
+  }
+  for (const [key, vs] of Object.entries(extra)) for (const v of vs) add(key, v);
+  return out;
+}
+
+/**
+ * The same values with their bindings dropped: what a figure may be, wherever it stands. For a check that reads a
+ * figure without the sentence around it; the sentence is then checked on its own, with its words.
+ */
+function unbound(values) {
+  const plain = (list) => list.map((c) => (typeof c === 'number' ? c : c.v));
+  const out = { ...values, counts: {} };
+  for (const [key, list] of Object.entries(values)) {
+    if (Array.isArray(list) && key !== 'shapes') out[key] = plain(list);
+  }
+  for (const [noun, list] of Object.entries(values.counts)) out.counts[noun] = plain(list);
+  return out;
+}
+
+/** Two value sets as one: every unit's and every noun's values from both. */
+function mergeValues(a, b) {
+  const out = { ...a, counts: { ...a.counts }, pairs: { ...a.pairs } };
+  for (const [key, vs] of Object.entries(b)) {
+    if (key === 'counts' || key === 'pairs') {
+      for (const [k, list] of Object.entries(vs)) out[key][k] = [...(out[key][k] ?? []), ...list];
+    } else if (key === 'shapes') {
+      out.shapes = [...(out.shapes ?? []), ...vs];
+    } else {
+      out[key] = [...(out[key] ?? []), ...vs];
+    }
+  }
+  return out;
+}
 
 // ── the reverse check, shared by the report gate and the site gate ─────────────────────────────────────────────
 
-/** The same text with the spellings a figure can hide behind made plain: entities, emphasis, runs of spaces. */
+/**
+ * The same text with the spellings a figure can hide behind made plain: entities, emphasis and code marks around a
+ * number, inline tags, link targets and titles, and every run of whitespace, line breaks included — a figure
+ * wrapped across two lines is still one figure.
+ */
 function normalize(text) {
   return (
     text
-      // A link's target and an element's id name a place, not a figure: `#3-bytes-on-the-wire` is not 3 bytes.
-      .replace(/\]\([^)\s]*\)/g, ']')
-      .replace(/\s(?:href|id|src|class|for|name|aria-labelledby|aria-describedby)="[^"]*"/g, '')
+      // A link's target and title, and an element's id, name a place, not a figure: `#3-bytes-on-the-wire` is not
+      // 3 bytes, and a tooltip is not the text a reader is given.
+      .replace(/\]\([^)]*\)/g, ']')
+      .replace(
+        /\s(?:href|id|src|class|for|name|title|alt|aria-labelledby|aria-describedby)="[^"]*"/g,
+        '',
+      )
+      .replace(/<\/?(?:strong|b|em|i|span|code|mark|sup|sub|small|abbr)\b[^>]*>/gi, '')
       .replace(/&#0*36;|&#x0*24;|&dollar;/gi, '$')
       .replace(/&#0*37;|&#x0*25;|&percnt;/gi, '%')
       .replace(/&#0*8776;|&#x2248;|&asymp;|&thickapprox;/gi, '≈')
+      .replace(/&times;|&#0*215;|&#xd7;/gi, '×')
+      .replace(/&cent;|&#0*162;|&#xa2;/gi, '¢')
       .replace(
         /&nbsp;|&#0*160;|&#xa0;|&#x202f;|&thinsp;|&#8201;|&ensp;|&emsp;|\u00a0|\u202f|\u2009|\u2002|\u2003/gi,
         ' ',
       )
       .replace(/&#0*44;|&#x2c;/gi, ',')
-      .replace(
-        /(US\$|USD|\$)\s*(?:\*\*|__|\*|_|<\/?(?:strong|b|em|i|span|code|mark)\b[^>]*>)+\s*(?=[\d.])/g,
-        '$1',
-      )
-      .replace(/[ \t]+/g, ' ')
+      .replace(/`/g, '')
+      // Emphasis that opens before a number, or closes after one: `**25.6** KiB`, `_99.5%_`, `$**82**`.
+      .replace(/(^|[^\w])(?:\*\*|__|\*|_)+(?=[$\d.])/g, '$1')
+      .replace(/([\d%])(?:\*\*|__|\*|_)+(?=[^\w]|$)/g, '$1')
+      .replace(/(US\$|USD|\$)\s*(?:\*\*|__|\*|_)+\s*(?=[\d.])/g, '$1')
+      .replace(/\s+/g, ' ')
   );
 }
 
@@ -765,6 +963,8 @@ const COUNTED = [
   ['tail reads?|tail GETs?', 'tailReads'],
   ['chunk reads?|chunk GETs?', 'chunkReads'],
   ['cold intersects?|intersects?', 'intersects'],
+  ['GetObjects?', 'getObjects'],
+  ['PutObjects?', 'putObjects'],
   ['GET-class|GETs?', 'get'],
   ['PUT-class|PUTs?', 'put'],
   ['requests?', 'requests'],
@@ -773,10 +973,15 @@ const COUNTED = [
   ['loads?', 'loads'],
   ['segments?', 'segments'],
 ];
+/** Words that may stand between a count and its noun without changing what it counts. */
+const COUNT_ADJECTIVES = String.raw`(?:(?:shared|cold|single-part|multipart|dense|new|planned|private|uncategorised|more|other)\s)?`;
 
 /**
- * The classes of figure the reverse check reads: a pattern, the value set it is checked against, and the factor that
- * turns its written unit into that set's (`256 KiB` is 262,144 bytes). Money may carry a multiplier (`$4.2M`).
+ * The classes of figure the reverse check reads, in the order they claim a number — a number one class has read,
+ * another does not read again, so "1.6 cold intersects a second" is a rate, not a count of 1.6 intersects. Each has
+ * the value set it is checked against, and the factor that turns its written unit into that set's (`256 KiB` is
+ * 262,144 bytes). Money may carry a multiplier (`$4.2M`), and a count a million (`4.2M intersects`) — not a
+ * thousand, since `4 + 2k GETs` is a formula, not two thousand GETs.
  */
 const CLASSES = [
   {
@@ -793,6 +998,11 @@ const CLASSES = [
     scale: () => 1,
   },
   {
+    re: new RegExp(String.raw`${HEDGE}${NUM}\s?(?:¢|cents?\b)`, 'g'),
+    key: 'usd',
+    scale: () => 0.01,
+  },
+  {
     re: new RegExp(String.raw`${HEDGE}${NUM}\s?(?:%|percent\b|per cent\b)`, 'g'),
     key: 'pct',
     scale: () => 0.01,
@@ -805,6 +1015,11 @@ const CLASSES = [
   {
     re: new RegExp(String.raw`${HEDGE}${NUM}(?:[\s-]?(?:sec|secs|seconds?)|[\s-]s)\b`, 'g'),
     key: 's',
+    scale: () => 1,
+  },
+  {
+    re: new RegExp(String.raw`${HEDGE}${NUM}[\s-]?(?:min|mins|minutes?)\b`, 'g'),
+    key: 'min',
     scale: () => 1,
   },
   {
@@ -828,73 +1043,227 @@ const CLASSES = [
   { re: new RegExp(String.raw`${HEDGE}${NUM}[\s-]million\b`, 'g'), key: 'million', scale: () => 1 },
   {
     re: new RegExp(
-      String.raw`${HEDGE}${NUM} (?:a|every|per|each) second\b|${HEDGE}${NUM}\s?/\s?s\b`,
+      String.raw`${HEDGE}${NUM} (?:[^\s.,;:]+ ){0,3}?(?:a|every|per|each) second\b|${HEDGE}${NUM}\s?(?:[^\s/.,;:]+\s?){0,3}?/\s?s\b`,
       'g',
     ),
     key: 'perSecond',
     scale: () => 1,
   },
   {
+    re: new RegExp(String.raw`${HEDGE}${NUM}\s?(?:×|x\b)|${HEDGE}${NUM} times\b`, 'g'),
+    key: 'ratio',
+    scale: () => 1,
+  },
+  {
     re: new RegExp(
-      String.raw`${HEDGE}${NUM}[\s-](${COUNTED.map(([alt]) => alt).join('|')})\b`,
+      String.raw`${HEDGE}${NUM}(?:\s?(M)\b)?[\s-]${COUNT_ADJECTIVES}(${COUNTED.map(([alt]) => alt).join('|')})\b`,
       'g',
     ),
     key: 'counts',
-    scale: () => 1,
+    scale: (m) => MULTIPLIER[m[3]] ?? 1,
   },
 ];
+
+/** The hedge and the number a class's match captured: the per-second and ratio patterns have two alternatives. */
+function hedgeOf(m, key) {
+  return key === 'perSecond' || key === 'ratio' ? (m[1] ?? m[3]) : m[1];
+}
+function numberOf(m, key) {
+  return key === 'perSecond' || key === 'ratio' ? (m[2] ?? m[4]) : m[2];
+}
 
 /**
  * Does a stated number round-match one the evidence supports? It must be that value at the precision it is written
  * to — `$0.0000816`, `$0.000082` and `$82` all state 0.0000816 at their own precision — and within 5% of it, so a
  * precision too coarse to mean anything (`$0`, `$0.0001`) cannot pass on a technicality. An integer that ends in
  * zeros may stand for a rounding to its last non-zero digit only when a hedge says so: "about 26,000" for 26,204,
- * but not "2,000 chunks" for 1,999.
+ * but not "2,000 chunks" for 1,999. A bound candidate also needs its words (see `WORDS`) where it stands.
  */
-function accounted(token, candidates, { hedged = false } = {}) {
+function accounted(token, candidates, { hedged = false, context } = {}) {
   const plain = token.replace(/,/g, '');
   const x = Number(plain);
   if (!Number.isFinite(x)) return false;
   const dp = plain.includes('.') ? (plain.split('.')[1] ?? '').length : 0;
   const zeros = dp === 0 && hedged ? (/0+$/.exec(plain)?.[0].length ?? 0) : 0;
-  return candidates.some((v) => {
+  return candidates.some((c) => {
+    const v = typeof c === 'number' ? c : c.v;
     if (!(v > 0) || Math.abs(x - v) / v > 0.05) return false;
-    if (v.toFixed(dp) === x.toFixed(dp)) return true;
-    for (let z = 1; z <= zeros; z += 1) if (Math.round(v / 10 ** z) * 10 ** z === x) return true;
-    return false;
+    let matches = v.toFixed(dp) === x.toFixed(dp);
+    for (let z = 1; !matches && z <= zeros; z += 1)
+      matches = Math.round(v / 10 ** z) * 10 ** z === x;
+    return matches && (typeof c === 'number' || boundHolds(c, context));
   });
 }
 
-/** Every figure in `text` that `values` cannot account for, as written. */
-function unaccounted(text, values) {
-  const t = normalize(text);
-  const out = [];
-  for (const { re, key, scale } of CLASSES) {
-    for (const m of t.matchAll(re)) {
-      // The per-second pattern has two alternatives, each with its own hedge and number.
-      const hedge = m[1] ?? (key === 'perSecond' ? m[3] : undefined);
-      const token = key === 'perSecond' ? (m[2] ?? m[4]) : m[2];
-      let candidates;
-      if (key === 'counts') {
-        const noun = COUNTED.find(([alt]) => new RegExp(`^(?:${alt})$`).test(m[3]))?.[1];
-        candidates = values.counts[noun] ?? [];
-      } else {
-        const s = scale(m);
-        candidates = (values[key] ?? []).map((v) => v / s);
+/** Whether a bound value's words stand where it does. No context means no binding can be judged: it fails. */
+function boundHolds(c, context) {
+  if (context === undefined) return !c.require;
+  const nearest = (text, at) => {
+    let best = null;
+    for (const family of c.group) {
+      for (const m of text.matchAll(WORDS[family])) {
+        const d = m.index >= at ? m.index - at : at - (m.index + m[0].length);
+        if (best === null || d < best.d) best = { d, family };
       }
-      if (!accounted(token ?? '', candidates, { hedged: hedge !== undefined }))
-        out.push(m[0].trim());
     }
-  }
-  // "N of M chunks" and "N of M intersects": the two numbers, together.
-  for (const [re, pairs] of [
-    [/(\d[\d,]*) of (?:the |its |their |all )?(\d[\d,]*) chunks\b/g, values.pairs.chunks],
-    [/(\d[\d,]*) of (?:the |all )?(\d[\d,]*) (?:cold )?intersects\b/g, values.pairs.intersects],
+    return best;
+  };
+  const found = nearest(context.text, context.at) ?? nearest(context.caption ?? '', 0);
+  if (found === null) return !c.require;
+  return c.allow.includes(found.family);
+}
+
+// ── the units a figure is read in ──────────────────────────────────────────────────────────────────────────────
+
+const cellsOf = (row) =>
+  row
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .map((c) => c.trim());
+/** The unit a table's column header gives its bare numbers: a `GETs` column's `204` is 204 GETs. */
+function unitOfHeader(header) {
+  const h = header.replace(/\*\*|`/g, '');
+  for (const [re, unit] of [
+    [/\bGETs?\b/, 'GETs'],
+    [/\bPUTs?\b/, 'PUTs'],
+    [/\bchunks?\b/, 'chunks'],
+    [/\bids?\b/, 'ids'],
+    [/\bms\b/, 'ms'],
+    [/\bbytes\b/, 'bytes'],
   ]) {
-    for (const m of t.matchAll(re)) {
-      const a = Number(m[1].replace(/,/g, ''));
-      const b = Number(m[2].replace(/,/g, ''));
-      if (!pairs.some(([x, y]) => x === a && y === b)) out.push(m[0]);
+    if (re.test(h)) return unit;
+  }
+  return null;
+}
+function withHeaderUnits(row, headers) {
+  const cells = cellsOf(row);
+  return `| ${cells
+    .map((cell, i) => {
+      const unit = unitOfHeader(headers[i] ?? '');
+      const bare = cell.replace(/\*\*/g, '').trim();
+      return unit !== null && /^[\d,.]+$/.test(bare) ? `${bare} ${unit}` : cell;
+    })
+    .join(' | ')} |`;
+}
+
+/**
+ * A text's units of meaning: each sentence of a paragraph or list item, each row of a table — which carries its
+ * table's caption and header, for a binding the row's own words do not settle — and each line of a diagram.
+ */
+function unitsOf(text) {
+  const out = [];
+  const lines = text.split('\n');
+  let fence = false;
+  let block = [];
+  let lastProse = '';
+  const flush = () => {
+    if (block.length === 0) return;
+    const joined = block.join(' ');
+    lastProse = joined;
+    // A sentence, or a clause after a semicolon: each makes a claim of its own, so a byte share in the next clause
+    // cannot stand nearer a chunk share than the chunks its own clause names.
+    for (const s of joined.split(/(?<=[.!?])\s+(?=[A-Z0-9*$(["“'])|(?<=;)\s+/)) {
+      out.push({ text: s, caption: '' });
+    }
+    block = [];
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      flush();
+      fence = !fence;
+      continue;
+    }
+    if (fence) {
+      if (line.trim() !== '') out.push({ text: line, caption: '' });
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      flush();
+      const table = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i] ?? '')) table.push(lines[i++] ?? '');
+      i -= 1;
+      const isTable = table.length >= 2 && /^\s*\|[\s:|-]+\|\s*$/.test(table[1] ?? '');
+      const header = isTable ? (table[0] ?? '') : '';
+      const headers = isTable ? cellsOf(header) : [];
+      for (const row of isTable ? table.slice(2) : table) {
+        out.push({ text: withHeaderUnits(row, headers), caption: `${lastProse} ${header}` });
+      }
+      continue;
+    }
+    if (/^\s*$/.test(line)) {
+      flush();
+      continue;
+    }
+    if (/^\s*#{1,6}\s/.test(line)) {
+      flush();
+      out.push({ text: line, caption: '' });
+      lastProse = line;
+      continue;
+    }
+    if (/^\s*(?:[-*+]|\d+\.)\s/.test(line)) flush();
+    block.push(line.trim());
+  }
+  flush();
+  return out;
+}
+
+/** Every figure in `text` that `values` cannot account for, as written, with the words beside it. */
+function unaccounted(text, values) {
+  const out = [];
+  for (const unit of unitsOf(text)) {
+    const t = normalize(unit.text);
+    const caption = normalize(unit.caption);
+    const claimed = new Set();
+    for (const { re, key, scale } of CLASSES) {
+      for (const m of t.matchAll(re)) {
+        const token = numberOf(m, key) ?? '';
+        const at = m.index + m[0].indexOf(token);
+        if (claimed.has(at)) continue;
+        claimed.add(at);
+        // "1M loads" is the unit a price is quoted per — "$11.20 / 1M loads" — not a count of a million loads.
+        if (key === 'counts' && m[3] === 'M' && token === '1') continue;
+        let candidates;
+        if (key === 'counts') {
+          const noun = COUNTED.find(([alt]) => new RegExp(`^(?:${alt})$`).test(m[4] ?? ''))?.[1];
+          const s = scale(m);
+          candidates = (values.counts[noun] ?? []).map((c) =>
+            typeof c === 'number' ? c / s : { ...c, v: c.v / s },
+          );
+        } else {
+          const s = scale(m);
+          candidates = (values[key] ?? []).map((c) =>
+            typeof c === 'number' ? c / s : { ...c, v: c.v / s },
+          );
+        }
+        const context = { text: t, at, caption };
+        if (!accounted(token, candidates, { hedged: hedgeOf(m, key) !== undefined, context })) {
+          out.push(m[0].trim());
+        }
+      }
+    }
+    // "N of M chunks" and "N of M intersects": the two numbers, together.
+    for (const [re, pairs] of [
+      [/(\d[\d,]*) of (?:the |its |their |all )?(\d[\d,]*) chunks\b/g, values.pairs.chunks ?? []],
+      [
+        /(\d[\d,]*) of (?:the |all )?(\d[\d,]*) (?:cold )?intersects\b/g,
+        values.pairs.intersects ?? [],
+      ],
+    ]) {
+      for (const m of t.matchAll(re)) {
+        const a = Number(m[1].replace(/,/g, ''));
+        const b = Number(m[2].replace(/,/g, ''));
+        if (!pairs.some(([x, y]) => x === a && y === b)) out.push(m[0]);
+      }
+    }
+    // "N PUT + M GET": a request shape the run has, both halves together.
+    for (const m of t.matchAll(
+      /(\d+)\s?PUTs?(?:-class)?(?:\s+requests?)?,?\s*(?:\+|and|plus)\s*(\d+)\s?GETs?\b/g,
+    )) {
+      const p = Number(m[1]);
+      const g = Number(m[2]);
+      if (!(values.shapes ?? []).some(([x, y]) => x === p && y === g)) out.push(m[0]);
     }
   }
   return out;
@@ -902,7 +1271,7 @@ function unaccounted(text, values) {
 
 /** Whether `text` states `figure` as a whole figure — not inside a longer number, as `5.0%` is inside `95.0%`. */
 function statesFigure(text, figure) {
-  const escaped = figure.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = normalize(figure).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?<![\\d.,])${escaped}(?![\\d])`).test(normalize(visible(text)));
 }
 
@@ -930,15 +1299,41 @@ function runSection(doc, runId) {
 }
 
 /**
- * Every paragraph of `doc` that names the run, a list item counting as a paragraph of its own: a figure beside a
- * run's id is a claim about that run, and the other items of a list it sits in are not.
+ * Every paragraph of `doc` that names the run — by its id in the text a reader sees, a link's target aside, or by
+ * one of the names a page calls it — a list item counting as a paragraph of its own. A figure beside a run's name is
+ * a claim about that run, and the other items of a list it sits in are not.
  */
-function paragraphsNaming(doc, runId) {
+function paragraphsNaming(doc, runId, aliases = []) {
+  const names = (block) => {
+    const seen = visible(block).replace(/\]\([^)]*\)/g, ']');
+    return seen.includes(runId) || aliases.some((a) => seen.includes(a));
+  };
   return doc
     .split(/\n\s*\n/)
     .flatMap((block) => block.split(/\n(?=\s*(?:[-*+]|\d+\.) )/))
-    .filter((p) => p.includes(runId))
+    .filter(names)
     .join('\n\n');
+}
+
+/**
+ * What a markdown page says about a run: its section, and every other paragraph that names it, other runs'
+ * sections aside — a paragraph about the July run that mentions the September one is still about July.
+ */
+function claimsAbout(doc, runId, aliases = []) {
+  const section = runSection(doc, runId);
+  let rest = section === null ? doc : doc.replace(section, '');
+  const others = new Set(
+    doc
+      .split('\n')
+      .filter((l) => /^#{1,6} /.test(l))
+      .flatMap((l) => l.match(RUN_ID_IN_TEXT) ?? [])
+      .filter((id) => id !== runId),
+  );
+  for (const other of others) {
+    const theirs = runSection(rest, other);
+    if (theirs !== null) rest = rest.replace(theirs, '');
+  }
+  return { section, elsewhere: paragraphsNaming(rest, runId, aliases) };
 }
 
 module.exports = {
@@ -950,8 +1345,13 @@ module.exports = {
   statesFigure,
   normalize,
   visible,
+  unitsOf,
   runSection,
   paragraphsNaming,
+  claimsAbout,
+  valuesFromFigures,
+  mergeValues,
+  unbound,
   STORE_LOAD_REQUESTS,
   format: { int, fixed, usd, pct },
 };

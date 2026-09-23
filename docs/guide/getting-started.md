@@ -911,11 +911,11 @@ const report = CloudRoaring.estimateCost({
     cacheHitRate: 0.8, // hits are free
     intersectsPerSec: 1,
     chunksPerIntersect: 24, // every GET: 2 operands × (pointer + tail + 10 shared chunks)
-    loadsPerMonth: 30, // one refresh a day…
-    requestsPerLoad: 2.24, // …one PUT, plus the pointer's PUT and 3 GETs at 0.08 of a PUT each
+    loadsPerMonth: 30, // one refresh a day, through store.load()…
+    requestsPerLoad: 4.72, // …4 PUT-class, plus 9 GETs at 0.08 of a PUT each
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0003 }
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0007 }
 report.monthlyUSD.total; // ≈ 67 — vs $346 flat Redis-HA
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
 report.redisCrossover.readsPerSec; // ≈ 1,646 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
@@ -950,15 +950,17 @@ flat always-on baseline. It is not a ceiling on the library — it is a property
 Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month,
 pointer included, is about $0.52. The term exists so the report can say so rather than assume it.
 
-**The estimator does not count the pointer's requests yet.** Measured on real S3, a load makes its object's
-PUT-class requests plus the pointer's conditional PUT and three GETs of it, and a cold intersect of two segments
-sharing k chunks makes 4 + 2k GETs — a pointer read and a tail read per operand before the chunks. The estimator
-prices `requestsPerLoad` at the PUT rate and `chunksPerIntersect` at the GET rate, so until it counts these itself:
+**The estimator does not count the pointer's requests yet.** Measured on real S3, a write and publish makes its
+object's PUT-class requests plus the pointer's conditional PUT and three GETs of it. A cold intersect of two segments
+sharing k chunks is expected to make 4 + 2k GETs while each index fits the reader's tail read — a pointer read and a
+tail read per operand before the chunks; the run measured 206 for k = 100, because from outside the region each
+pointer was read twice. The estimator prices `requestsPerLoad` at the PUT rate and `chunksPerIntersect` at the GET
+rate, so until it counts these itself:
 
 - pass `requestsPerLoad` as the load's PUT-class requests plus its GETs at the GET-to-PUT price ratio, 0.08 on the
   default profile. A single-part write and publish is 2 PUTs and 3 GETs, so `2.24`, which prices it at $11.20 per
   million; `store.load()` also lists the segment twice and reads the pointer four more times, so `4.56` for a
-  segment's first load;
+  segment's first load, and `4.72` from its third, when the collection pass re-reads the pointer before it deletes;
 - pass every GET an intersect makes as `chunksPerIntersect`: `204` for two segments sharing 100 chunks.
 
 It has no term for the pointer refresh either. A live store re-reads each segment's pointer at most once per

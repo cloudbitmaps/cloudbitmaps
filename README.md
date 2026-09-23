@@ -178,15 +178,15 @@ Most libraries in this space quote a model. This one has a bill. Run `2026-09-23
 `0.10.0`, built from source, against a real AWS account in `us-east-1`, with the pointer in the same bucket as the
 data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact. What each costs:
 
-| Operation | Cost | | Always-on Redis-HA |
+| Operation | Cost | Kind | Always-on Redis-HA |
 |---|---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median, measured | **$82.40 / million** | | **$346 / month**, standing |
-| The same inside the region, each pointer read once: 204 GETs, expected | $81.60 / million | | whether you send traffic or not |
-| Loading a segment: the write and the publish, pointer included, measured | **$11.20 / million** | | |
-| `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | | |
-| 1.2 GiB of segments at rest, no traffic, modelled | **$0.03 / month** | | |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing |
+| The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected | whether you send traffic or not |
+| Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices | |
+| `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | measured requests at list prices | |
+| 1.2 GiB of segments at rest, no traffic | **$0.03 / month** | modelled | |
 
-Each intersect fetched 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
+Each intersect requested 100 of the 1,999 chunks per segment — the ones the two share — and never requested the
 rest: chunk-skipping, on real S3. `store.load()`, which also lists the segment and collects old generations, is
 about twice the load figure. The `count()` figure comes from an older run, `2026-07-25-60291`, which kept the
 pointer in a NoSQL table the library no longer ships, so it is the object-store half of that shape. The

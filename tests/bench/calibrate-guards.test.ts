@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  AWS_US_EAST_1_ONDEMAND,
   CloudRoaring,
   MemoryStorage,
   MemoryStorageDriver,
@@ -63,7 +64,11 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   };
   layoutIds: (layout: unknown, i: number, idsPerSegment: number) => Iterable<number>;
   maskAccount: (account: unknown) => string;
-  resultsFile: (rehearse: boolean, runId?: string, options?: { partial?: boolean }) => string;
+  resultsFile: (
+    rehearse: boolean,
+    runId?: string,
+    options?: { partial?: boolean; stamp?: string },
+  ) => string;
   checkRunId: (runId: unknown) => string;
   checkCleanupId: (runId: unknown) => string;
   evidenceConflict: (i: {
@@ -71,7 +76,14 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
     file: string;
     exists: (file: string) => boolean;
   }) => string | null;
-  checkWorkload: (i: { segments: number; reads: number }) => void;
+  checkWorkload: (i: { segments: number; largeSegments?: number; reads: number }) => void;
+  MAX_SEGMENTS: number;
+  redact: (text: unknown) => string;
+  foreignKeys: (keys: unknown[]) => unknown[];
+  STORE_PREFIX: string;
+  PRICED_REGION: string;
+  checkRunRegion: (region: unknown) => string;
+  stampOf: (iso: string) => string;
   EVIDENCE_DIR: string;
   TIMED_STORE: { retry: false; cache: { genTtlMs: number } };
   clientConfigs: (base: Record<string, unknown>) => {
@@ -83,6 +95,24 @@ const guards = require_(join(ROOT, 'bench', 'lib', 'calibrate-guards.cjs')) as {
   TEARDOWN_PUTS: number;
   bucketIsGone: (err: unknown) => boolean;
   uploadIsGone: (err: unknown) => boolean;
+};
+
+const processLib = require_(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs')) as {
+  interruptGate: (client: unknown) => {
+    abort: () => void;
+    readonly aborted: boolean;
+    readonly inflight: number;
+    drained: (ms: number) => Promise<boolean>;
+  };
+  isInterruption: (err: unknown) => boolean;
+  writeResultsFile: (i: {
+    file: string;
+    fallback?: string;
+    text: string;
+    overwrite?: boolean;
+  }) => string;
+  harnessRef: (root: string, env?: Record<string, string | undefined>) => string;
+  HARNESS_FILES: string[];
 };
 
 type Billed = { put: number; get: number };
@@ -459,6 +489,31 @@ describe("calibrate guards — found by this harness's real runs", () => {
     });
   });
 
+  // AWS puts the caller's ARN, account id and all, in an AccessDenied message, and the harness printed and stored
+  // error text as it came.
+  describe('redact', () => {
+    it('masks account ids and removes ARNs, and leaves everything else', () => {
+      // Built from parts, so that this file holds no account id or ARN for the leak scan to find.
+      const account = ['1234', '5678', '9012'].join('');
+      const arn = (service: string, rest: string): string =>
+        ['arn', 'aws', service, '', rest].join(':');
+      const text =
+        `User: ${arn('sts', `${account}:assumed-role/Admin/me`)} is not authorized to perform: ` +
+        `s3:ListBucket on resource: "${arn('s3', ':cloudbitmaps-calib-2026-09-23-94416')}" in account ${account}.`;
+      expect(text).toContain(account);
+      const out = guards.redact(text);
+      expect(out).not.toContain(account);
+      expect(out).not.toContain(arn('', '').slice(0, 7));
+      expect(out).toContain('is not authorized to perform: s3:ListBucket');
+      expect(out).toContain('in account ••••••••9012.');
+      expect(guards.redact('cloudbitmaps-calib-2026-09-23-94416: BucketNotEmpty')).toBe(
+        'cloudbitmaps-calib-2026-09-23-94416: BucketNotEmpty',
+      );
+      const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+      expect(src).not.toMatch(/\$\{err\.message\}|\$\{err\.stack|results\.error = err\.message/);
+    });
+  });
+
   describe('maskAccount', () => {
     // Built at runtime, never written as a literal. The leak scan's structural needles flag any 12-digit run and
     // any ARN, and they cannot tell a fixture from a real account — which is the point of them. Allowlisting this
@@ -547,6 +602,20 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     expect(() => guards.resultsFile(false, '../x')).toThrow(/run id/);
   });
 
+  // The date orders runs and says when one was made, so it has to be a day that exists: `9999-99-99-zz` passed.
+  it('refuses a run id whose date is not a day on the calendar', () => {
+    for (const ok of ['2024-02-29-a', '2026-12-31-a']) expect(guards.checkRunId(ok)).toBe(ok);
+    for (const bad of [
+      '9999-99-99-zz',
+      '2026-13-01-a',
+      '2026-02-30-a',
+      '2025-02-29-a',
+      '2026-00-10-a',
+    ]) {
+      expect(() => guards.checkRunId(bad), bad).toThrow(/run id/);
+    }
+  });
+
   // `--cleanup` writes no file, so it takes any id that names a legal bucket. Older harnesses accepted any id and
   // printed `--cleanup <id>` for their leftovers; the date rule would strand those buckets.
   it('lets --cleanup remove any bucket an older harness could have made', () => {
@@ -568,11 +637,105 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
+  // A name ending in one of these may not be a bucket at all, but S3's name for someone else's — and `--cleanup`
+  // deletes every version of every key it finds. `--table-s3` was missing from the run ids' list too.
+  it('refuses any id ending in a suffix S3 reserves, for a run and for a cleanup', () => {
+    for (const suffix of ['-s3alias', '--ol-s3', '.mrap', '--x-s3', '--table-s3']) {
+      expect(() => guards.checkCleanupId(`x${suffix}`), suffix).toThrow(/bucket/);
+      if (!suffix.includes('.')) {
+        expect(() => guards.checkRunId(`2026-09-23-x${suffix}`), suffix).toThrow(/run id/);
+      }
+    }
+  });
+
   it('refuses a workload that pairs a segment with itself', () => {
     expect(() => guards.checkWorkload({ segments: 1, reads: 40 })).toThrow(/at least 2/);
     expect(() => guards.checkWorkload({ segments: 0, reads: 1 })).toThrow(/at least 2/);
     expect(() => guards.checkWorkload({ segments: 1, reads: 0 })).not.toThrow();
     expect(() => guards.checkWorkload({ segments: 2, reads: 40 })).not.toThrow();
+  });
+
+  // Teardown lists 1,000 object versions a pass, and each segment leaves two: its generation and its pointer. A
+  // workload of 1,510 segments left 20 versions behind after three passes. The bound keeps the whole bucket inside
+  // the first listing, so the other passes are spare.
+  it('refuses a workload with more segments than one teardown listing reaches', () => {
+    expect(guards.MAX_SEGMENTS).toBe(500);
+    expect(() =>
+      guards.checkWorkload({ segments: 498, largeSegments: 2, reads: 40 }),
+    ).not.toThrow();
+    expect(() => guards.checkWorkload({ segments: 499, largeSegments: 2, reads: 40 })).toThrow(
+      /teardown/,
+    );
+    expect(() => guards.checkWorkload({ segments: 1510, reads: 0 })).toThrow(/teardown/);
+  });
+
+  // A run whose evidence name was taken while it ran, or whose partial name a retry already used, must not lose its
+  // results. They go to a name carrying the run's start, which git ignores like any partial file.
+  it('writes a run whose name was taken beside it, under a name git ignores', () => {
+    const stamp = guards.stampOf('2026-09-23T05:01:02.345Z');
+    expect(stamp).toBe('20260923T050102345Z');
+    const file = guards.resultsFile(false, '2026-09-23-94416', { stamp });
+    expect(file).toBe(`${guards.EVIDENCE_DIR}/2026-09-23-94416.20260923T050102345Z.partial.json`);
+    expect(ignored(file)).toBe(true);
+    expect(() => guards.resultsFile(false, '2026-09-23-94416', { stamp: '../x' })).toThrow();
+  });
+
+  it('never replaces a results file, and keeps a run whose name was taken', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'calib-write-'));
+    try {
+      const file = join(dir, 'calibration', 'r.json');
+      const fallback = join(dir, 'calibration', 'r.stamp.partial.json');
+      expect(processLib.writeResultsFile({ file, fallback, text: 'first' })).toBe(file);
+      expect(processLib.writeResultsFile({ file, fallback, text: 'second' })).toBe(fallback);
+      expect(readFileSync(file, 'utf8')).toBe('first');
+      expect(readFileSync(fallback, 'utf8')).toBe('second');
+      // Nothing is ever replaced: with both names taken, the write fails rather than choosing one to overwrite.
+      expect(() => processLib.writeResultsFile({ file, fallback, text: 'third' })).toThrow(
+        /EEXIST/,
+      );
+      // A rehearsal's file is scratch.
+      expect(processLib.writeResultsFile({ file, text: 'again', overwrite: true })).toBe(file);
+      expect(readFileSync(file, 'utf8')).toBe('again');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Run, not read: pointing the check at the partial file instead of the evidence passed every source-text test here.
+  // The refusal comes before the harness imports the library, so it holds on a checkout that has not been built.
+  it('refuses a committed run id in projection mode, before it imports anything', () => {
+    const out = spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs')], {
+      env: { PATH: process.env.PATH ?? '', CR_CALIBRATE_RUN_ID: '2026-09-23-94416' },
+      encoding: 'utf8',
+    });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/2026-09-23-94416\.json already exists/);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    expect(src.indexOf('evidenceConflict(', main)).toBeLessThan(
+      src.indexOf("await import('@cloudbitmaps/roaring')", main),
+    );
+  });
+
+  // It prices every run at us-east-1's rates, so a run anywhere else would record the wrong bill and check its
+  // ceiling against the wrong one. Refused before anything reads a credential.
+  it('refuses a real run in a region it has no prices for', () => {
+    expect(() => guards.checkRunRegion('eu-west-1')).toThrow(/us-east-1/);
+    expect(guards.checkRunRegion('us-east-1')).toBe('us-east-1');
+    expect(AWS_US_EAST_1_ONDEMAND.name).toContain(guards.PRICED_REGION);
+    const out = spawnSync(process.execPath, [join(ROOT, 'bench', 'calibrate-aws.cjs'), '--run'], {
+      env: {
+        PATH: process.env.PATH ?? '',
+        CR_CALIBRATE_REGION: 'eu-west-1',
+        CR_CALIBRATE_CONFIRM: guards.CONFIRM_PHRASE,
+        CR_CALIBRATE_MAX_USD: '0.05',
+      },
+      encoding: 'utf8',
+    });
+    expect(out.status).toBe(2);
+    expect(out.stderr).toMatch(/us-east-1/);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('checkRunRegion(region)');
   });
 
   // The two tests above tie `.gitignore` to `resultsFile()`; these tie the harness and the CloudShell script to it.
@@ -682,14 +845,201 @@ describe('a rehearsal cannot be committed as the evidence', () => {
       expect(
         readFileSync(join(home, guards.resultsFile(true).split('/').pop() ?? ''), 'utf8'),
       ).toBe('rehearsal');
-      // The file already in $HOME is left alone, so the scratch directory holding this run's copy is kept.
+      // The file already in $HOME is left alone, and this run's copy goes beside it under a stamped name: CloudShell
+      // keeps $HOME between sessions and not the scratch directory, so a copy left there was as good as lost.
       expect(readFileSync(join(home, '2026-09-24-b.partial.json'), 'utf8')).toBe('an older copy');
-      expect(existsSync(join(work, 'bench', 'calibration', '2026-09-24-b.partial.json'))).toBe(
-        true,
+      const stamped = readdirSync(home).filter((f) =>
+        /^2026-09-24-b\.partial\.\d{8}T\d{6}Z\.json$/.test(f),
       );
+      expect(stamped).toHaveLength(1);
+      expect(readFileSync(join(home, stamped[0] ?? ''), 'utf8')).toBe('partial');
       expect(out.stderr).toMatch(/left alone/);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The script's tail, run around a stand-in harness that tears down slowly: signalled the way a closed terminal, a
+  // Ctrl-C or a `kill` would, the harness must get the signal exactly once, and the script must wait for it before
+  // copying anything. Run in the foreground, a SIGTERM or a hang-up stopped the script at once: its exit trap copied
+  // nothing and deleted the scratch directory under the harness mid-teardown; and a SIGTERM to the script alone
+  // never reached the harness at all, which ran the whole paid workload on its own.
+  describe('the CloudShell script passes every signal on to the harness', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const finish = /^finish\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    const runHarness = /^run_harness\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0] ?? '';
+    const STANDIN = [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      'let n = 0;',
+      "process.on('exit', () => fs.writeFileSync(path.join(process.env.HOME, 'signals'), String(n)));",
+      "for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {",
+      '  process.on(sig, () => {',
+      '    n += 1;',
+      '    if (n > 1) return;',
+      '    setTimeout(() => {',
+      "      const dir = path.join(process.cwd(), 'bench', 'calibration');",
+      '      fs.mkdirSync(dir, { recursive: true });',
+      "      fs.writeFileSync(path.join(dir, '2026-09-24-a.partial.json'), sig);",
+      '      setTimeout(() => process.exit(130), 100);',
+      '    }, 400);',
+      '  });',
+      '}',
+      "fs.writeFileSync(path.join(process.cwd(), 'ready'), '');",
+      'setTimeout(() => process.exit(3), 8000);',
+      'setInterval(() => {}, 1000);',
+    ].join('\n');
+
+    async function stop(target: 'script' | 'group', signal: NodeJS.Signals) {
+      const root = mkdtempSync(join(tmpdir(), 'calib-signal-'));
+      const work = join(root, 'work');
+      const home = join(root, 'home');
+      mkdirSync(work);
+      mkdirSync(home);
+      writeFileSync(join(root, 'standin.cjs'), STANDIN);
+      const script = [
+        'set -euo pipefail',
+        finish,
+        runHarness,
+        'trap finish EXIT',
+        'rc=0',
+        'run_harness node "$STANDIN" || rc=$?',
+        'exit "$rc"',
+      ].join('\n');
+      // Its own process group, as a script run from a terminal has, so the group can be signalled as a terminal does.
+      const child = spawn('bash', ['-c', script], {
+        env: {
+          PATH: process.env.PATH ?? '',
+          WORK: work,
+          HOME: home,
+          STANDIN: join(root, 'standin.cjs'),
+        },
+        detached: true,
+        stdio: 'ignore',
+      });
+      const exited = new Promise<number | string | null>((done) =>
+        child.on('exit', (code, sig) => done(code ?? sig)),
+      );
+      try {
+        for (let i = 0; i < 200 && !existsSync(join(work, 'ready')); i += 1) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        expect(existsSync(join(work, 'ready')), 'the stand-in harness never started').toBe(true);
+        process.kill(target === 'group' ? -(child.pid ?? 0) : (child.pid ?? 0), signal);
+        const code = await exited;
+        const copied = join(home, '2026-09-24-a.partial.json');
+        return {
+          code,
+          results: existsSync(copied) ? readFileSync(copied, 'utf8') : null,
+          signals: existsSync(join(home, 'signals'))
+            ? readFileSync(join(home, 'signals'), 'utf8')
+            : null,
+        };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    it('defines the tail it runs, and runs the harness through it after arming the copy', () => {
+      expect(finish, 'the script no longer defines finish').not.toBe('');
+      expect(runHarness, 'the script no longer defines run_harness').not.toBe('');
+      expect(sh).toMatch(
+        /^run_harness node bench\/calibrate-aws\.cjs "\$MODE_FLAG" \|\| rc=\$\?$/m,
+      );
+      expect(sh.indexOf('\ntrap finish EXIT\n')).toBeLessThan(sh.indexOf('\nrun_harness node'));
+    });
+
+    it.each([
+      ['a kill of the script alone', 'script', 'SIGTERM'],
+      ['a closed terminal', 'group', 'SIGHUP'],
+      ['a Ctrl-C', 'group', 'SIGINT'],
+    ] as const)(
+      '%s: the harness stops once, and its results are copied out',
+      async (_, target, signal) => {
+        const out = await stop(target, signal);
+        expect(out.results, 'the results were not copied out').toBe(signal);
+        expect(out.signals, 'the harness did not get the signal exactly once').toBe('1');
+        expect(out.code).toBe(130);
+      },
+      20_000,
+    );
+  });
+
+  // The script copies the harness into a scratch directory by name. A module the harness requires and the copy
+  // leaves out fails only there, in CloudShell, on the run that spends money.
+  it('the CloudShell script copies every module the harness requires', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const line = /^cp ((?:bench\/lib\/[\w.-]+\.cjs ?)+) "\$WORK\/bench\/lib\/"$/m.exec(sh)?.[1];
+    expect(line, 'the script no longer copies bench/lib by name').toBeDefined();
+    const copied = new Set((line ?? '').trim().split(/\s+/));
+    const needed = new Set<string>();
+    const visit = (rel: string): void => {
+      const src = readFileSync(join(ROOT, rel), 'utf8');
+      for (const m of src.matchAll(/require\('(\.\.?\/[^']+)'\)/g)) {
+        const dep = join(dirname(rel), m[1] ?? '');
+        if (!needed.has(dep)) {
+          needed.add(dep);
+          visit(dep);
+        }
+      }
+    };
+    visit('bench/calibrate-aws.cjs');
+    expect(needed.size).toBeGreaterThanOrEqual(3);
+    for (const dep of needed)
+      expect(copied.has(dep), `${dep} is required and not copied`).toBe(true);
+  });
+
+  // Evidence names the harness that ran. A bare commit named one that had not, whenever its files had been edited.
+  it('records a harness with uncommitted edits as dirty, from a checkout and from the CloudShell script', () => {
+    const sh = readFileSync(join(ROOT, 'bench', 'calibrate-cloudshell.sh'), 'utf8');
+    const fn = /^harness_ref\(\) \{[\s\S]*?^\}/m.exec(sh)?.[0];
+    expect(fn, 'the script no longer defines harness_ref').toBeDefined();
+    expect(sh).toContain('CR_CALIBRATE_HARNESS_REF="$(harness_ref)"');
+    const repo = mkdtempSync(join(tmpdir(), 'calib-ref-'));
+    const git = (...args: string[]): string =>
+      spawnSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'commit.gpgsign=false',
+          ...args,
+        ],
+        { cwd: repo, encoding: 'utf8' },
+      ).stdout.trim();
+    const scriptRef = (): string =>
+      spawnSync('bash', ['-c', `${fn}\nharness_ref`], {
+        cwd: repo,
+        encoding: 'utf8',
+      }).stdout.trim();
+    try {
+      git('init', '-q');
+      mkdirSync(join(repo, 'bench', 'lib'), { recursive: true });
+      writeFileSync(join(repo, 'bench', 'calibrate-aws.cjs'), 'harness');
+      writeFileSync(join(repo, 'bench', 'lib', 'calibrate-guards.cjs'), 'guards');
+      writeFileSync(join(repo, 'README.md'), 'readme');
+      git('add', '.');
+      git('commit', '-q', '-m', 'x');
+      const head = git('rev-parse', '--short', 'HEAD');
+      expect(head).toMatch(/^[0-9a-f]{7,}$/);
+      expect(processLib.harnessRef(repo, {})).toBe(head);
+      expect(scriptRef()).toBe(head);
+      // An edit elsewhere is not the harness.
+      writeFileSync(join(repo, 'README.md'), 'edited');
+      expect(processLib.harnessRef(repo, {})).toBe(head);
+      expect(scriptRef()).toBe(head);
+      writeFileSync(join(repo, 'bench', 'lib', 'calibrate-guards.cjs'), 'edited');
+      expect(processLib.harnessRef(repo, {})).toBe(`${head}-dirty`);
+      expect(scriptRef()).toBe(`${head}-dirty`);
+      // The ref the script passes in is taken as given: its copy of the harness is not a checkout.
+      expect(processLib.harnessRef(repo, { CR_CALIBRATE_HARNESS_REF: 'abc1234-dirty' })).toBe(
+        'abc1234-dirty',
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 
@@ -707,6 +1057,78 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     );
     expect(out.status).toBe(2);
     expect(out.stderr).toMatch(/exclusive/);
+  });
+
+  // Node creates stdout and stderr on first use, and on macOS creating one on a terminal that has hung up never
+  // returns. A hang-up handler whose first output was stderr's first use blocked there: no teardown, no results. A fix
+  // that only silenced the terminal blocked the same way, since reaching `process.stderr` created it. Run on a real
+  // pseudo-terminal that is then closed. Linux never blocked, so on CI this passes either way; on a Mac it is the check.
+  const python = spawnSync('python3', ['--version']).status === 0;
+  it.skipIf(!python)(
+    'finishes after its terminal hangs up, because its streams were opened first',
+    () => {
+      const standin = [
+        `const proc = require(${JSON.stringify(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))});`,
+        'proc.holdTerminal();',
+        "process.on('SIGHUP', () => {",
+        '  proc.silenceTerminal();',
+        "  console.error('calibrate: SIGHUP — stopping');",
+        '  setTimeout(() => process.exit(130), 200);',
+        '});',
+        "console.log('calibrate: running');",
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      const driver = [
+        'import os, pty, sys, time, signal',
+        'pid, fd = pty.fork()',
+        'if pid == 0:',
+        "    os.execvp(sys.argv[1], [sys.argv[1], '-e', sys.argv[2]])",
+        'time.sleep(1.0)',
+        'os.read(fd, 1000)',
+        'os.close(fd)',
+        'for _ in range(40):',
+        '    done, status = os.waitpid(pid, os.WNOHANG)',
+        '    if done:',
+        "        print('exited', os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1)",
+        '        sys.exit(0)',
+        '    time.sleep(0.1)',
+        'os.kill(pid, signal.SIGKILL)',
+        'os.waitpid(pid, 0)',
+        "print('hung')",
+      ].join('\n');
+      const out = spawnSync('python3', ['-c', driver, process.execPath, standin], {
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      expect(out.stdout.trim()).toBe('exited 130');
+      const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+      expect(src.indexOf('\nholdTerminal();\n')).toBeGreaterThan(-1);
+      expect(src.indexOf('\nholdTerminal();\n')).toBeLessThan(
+        src.indexOf("for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])"),
+      );
+    },
+    20_000,
+  );
+
+  it('stops writing to the terminal on a hang-up, before it writes anything', () => {
+    const out = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `require(${JSON.stringify(join(ROOT, 'bench', 'lib', 'calibrate-process.cjs'))}).silenceTerminal();` +
+          "console.log('a'); console.error('b'); process.stdout.write('c'); process.stderr.write('d');",
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(out.status).toBe(0);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toBe('');
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const handler = src.slice(src.indexOf("for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])"));
+    expect(handler.indexOf("if (sig === 'SIGHUP') silenceTerminal();")).toBeGreaterThan(-1);
+    expect(handler.indexOf("if (sig === 'SIGHUP') silenceTerminal();")).toBeLessThan(
+      handler.indexOf('console.error('),
+    );
   });
 
   it('tears down on a hang-up too, and records the object apart from the bytes a load uploaded', () => {
@@ -1103,6 +1525,107 @@ function teardownSource(src: string): string {
     .replace(/\/\/.*$/gm, '');
 }
 
+// A signal used to start teardown while the workload was still writing. A load's PUT landed after teardown's listing
+// and the bucket was left behind, in two of four rehearsals interrupted during their loads; and a signal during
+// CreateBucket would tear down a bucket that did not exist yet, which the create then made. So the work stops first.
+describe('a signal stops the workload before teardown starts', () => {
+  const s3 = require_('@aws-sdk/client-s3') as {
+    S3Client: new (cfg: Record<string, unknown>) => {
+      send: (c: unknown) => Promise<unknown>;
+      destroy: () => void;
+    };
+    HeadBucketCommand: new (i: { Bucket: string }) => unknown;
+  };
+
+  /** A stand-in S3 that answers every request, after `delayMs`. */
+  async function slowS3(delayMs: number) {
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits += 1;
+      setTimeout(() => {
+        res.writeHead(200, { 'content-length': '0' });
+        res.end();
+      }, delayMs);
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    return {
+      client: new s3.S3Client(
+        guards.clientConfigs({
+          endpoint: `http://127.0.0.1:${port}`,
+          region: 'us-east-1',
+          forcePathStyle: true,
+          credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+        }).work,
+      ),
+      hits: () => hits,
+      close: () => new Promise<void>((done) => server.close(() => done())),
+    };
+  }
+
+  it('refuses every send once stopped, unbilled, and waits for the ones already sent', async () => {
+    const s = await slowS3(300);
+    const tally = meterLib.meter(s.client);
+    const gate = processLib.interruptGate(s.client);
+    try {
+      const first = s.client.send(new s3.HeadBucketCommand({ Bucket: 'b' }));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(gate.inflight).toBe(1);
+      gate.abort();
+      await expect(s.client.send(new s3.HeadBucketCommand({ Bucket: 'b' }))).rejects.toSatisfy(
+        processLib.isInterruption,
+      );
+      const t0 = Date.now();
+      expect(await gate.drained(5_000)).toBe(true);
+      expect(Date.now() - t0, 'it did not wait for the answer still on its way').toBeGreaterThan(
+        150,
+      );
+      await first;
+      expect(s.hits()).toBe(1);
+      expect(tally.get).toBe(1);
+    } finally {
+      s.client.destroy();
+      await s.close();
+    }
+  });
+
+  it('gives up waiting for a request that does not answer, so teardown still runs', async () => {
+    const s = await slowS3(1_500);
+    const gate = processLib.interruptGate(s.client);
+    try {
+      const first = s.client.send(new s3.HeadBucketCommand({ Bucket: 'b' })).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 50));
+      gate.abort();
+      expect(await gate.drained(100)).toBe(false);
+      await first;
+      expect(await gate.drained(100)).toBe(true);
+    } finally {
+      s.client.destroy();
+      await s.close();
+    }
+  });
+
+  it('the harness gates its workload client, and every exit stops and drains it before tearing down', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    expect(src).toContain('const gate = interruptGate(client)');
+    expect(src).not.toContain('interruptGate(admin)');
+    const main = src.indexOf('async function main');
+    const onInterrupt = src.slice(src.indexOf('onInterrupt = async', main));
+    const fin = src.slice(src.indexOf('} finally {', main));
+    for (const [name, body] of [
+      ['the interrupt handler', onInterrupt],
+      ["main's finally", fin],
+    ] as const) {
+      const teardownAt = body.indexOf('await teardown()');
+      expect(teardownAt, `${name} does not tear down`).toBeGreaterThan(-1);
+      expect(body.indexOf('gate.abort()'), `${name} does not stop the work`).toBeGreaterThan(-1);
+      expect(body.indexOf('gate.abort()')).toBeLessThan(teardownAt);
+      expect(body.indexOf('gate.drained(')).toBeGreaterThan(-1);
+      expect(body.indexOf('gate.drained(')).toBeLessThan(teardownAt);
+    }
+  });
+});
+
 // Teardown is the one path whose failure leaves money on the table, so what counts as "done" is spelled out here.
 // Each rule below is a bug a fault-injecting proxy in front of MinIO reproduced: a lost-answer abort whose retry
 // got 404 NoSuchUpload made teardown skip the deletes and report nothing; and a key that could never be deleted
@@ -1153,6 +1676,32 @@ describe('teardown — what counts as done', () => {
     expect(teardown).toContain('uploadIsGone(');
     expect(teardown).toContain('TEARDOWN_PASSES');
     expect(src).toMatch(/fixedPuts:\s*1 \/\* CreateBucket \*\/ \+ TEARDOWN_PUTS/);
+  });
+
+  // Teardown deletes every version of every key it lists, and `--cleanup` points it at a name it was given. So it
+  // refuses a bucket holding anything the harness did not write, rather than empty it.
+  it('refuses to empty a bucket holding keys the harness did not write', () => {
+    expect(guards.STORE_PREFIX).toBe('calib');
+    expect(guards.foreignKeys(['calib/a', 'calib/registry/x', 'calib/'])).toEqual([]);
+    expect(guards.foreignKeys(['calib/a', 'other/b', 'calibx/c', 'calib'])).toEqual([
+      'other/b',
+      'calibx/c',
+      'calib',
+    ]);
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const teardown = teardownSource(src);
+    expect(teardown).toContain('foreignKeys(');
+    expect(teardown.indexOf('foreignKeys(')).toBeLessThan(teardown.indexOf('DeleteObjectsCommand'));
+    expect(src).toContain('prefix: STORE_PREFIX');
+  });
+
+  // The account pin held for a run and not for `--cleanup`, the mode that deletes.
+  it('checks the account pin before a cleanup too', () => {
+    const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');
+    const main = src.indexOf('async function main');
+    const identityAt = src.indexOf('await identity(', main);
+    expect(identityAt).toBeGreaterThan(-1);
+    expect(identityAt).toBeLessThan(src.indexOf("if (MODE === 'cleanup') {", main));
   });
 
   // An interrupt while CreateBucket is in flight used to meet the do-nothing handler, and exit without teardown.
