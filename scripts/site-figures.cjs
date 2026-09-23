@@ -438,7 +438,7 @@ const EXPECTED_1M = 'per million cold intersects with each pointer read once';
 const WRITE_1M = 'per million single-part write-and-publishes';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
-  // the estimator's $5 — fails even where the replacement is a value some source accounts for.
+  // the per-PUT $5 the estimator once quoted — fails even where the replacement is a value some source accounts for.
   { rel: 'site/benchmarks.html', requireAll: true },
   { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },

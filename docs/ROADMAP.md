@@ -148,8 +148,9 @@ is a dependency of both and is never installed directly. The storage drivers are
   emitting compliance state changes. Nothing is sent anywhere by default; there is no phone-home.
 - **Honest cost tooling** — `estimateCost` for planning and a grounded per-segment `costReport` from the
   segment's measured size, with a pluggable pricing profile that will tell you when CloudBitmaps *loses* to flat
-  Redis. The crossover is a **read rate** at a given cache-hit rate, plus a loads term you size yourself. The
-  published crossover chart is in [Benchmarks](benchmarks.md).
+  Redis. The crossover is a **read rate** at a given cache-hit rate, net of storage and the pointer refresh a
+  long-lived reader pays, with a loads term that counts what `store.load()` sends. Each request count is held to
+  the engine by a test. The published crossover chart is in [Benchmarks](benchmarks.md).
 - **An exit path.** `exportSegments` and the `export-segments` CLI dump every segment to portable
   `roaring` / `ndjson` that is readable **without** this library, with per-segment fault isolation. If the
   project vanished tomorrow, nothing of yours is locked up.

@@ -301,7 +301,8 @@ before/after table is in [`MIGRATING.md`](../../MIGRATING.md).
 `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `AuditEventKind`
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
-`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth }, redis: { monthlyUSD } }`;
+`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
+redis: { monthlyUSD } }`, where `requestsPerSizedRead` is 1 on S3 and 2 on GCS and Azure Blob;
 `Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
 loadsPerMonth?, requestsPerLoad?, hotSegments?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
 `{ reads, intersects, storage, loads, pointerRefresh }`, and `redisCrossover.readsPerSec` is the sustained read rate at

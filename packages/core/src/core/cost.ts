@@ -25,9 +25,15 @@
  * ships. The estimator once priced a load as the object's PUT alone and an intersect as its chunk reads alone,
  * which a real-cloud run showed under-quoted a load by more than half and left out a pointer read and an index
  * read for every operand.
+ *
+ * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
+ * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which
+ * {@link PricingProfile} carries as `requestsPerSizedRead`. A fleet of reader processes pays the pointer refresh
+ * once per process. Where the model still quotes low is listed on {@link Workload.hotSegments} and
+ * {@link Workload.chunksPerIntersect}.
  */
-import { DEFAULT_CURRENT_GEN_TTL_MS } from './crbm-storage-source';
 import { ValidationError } from './errors';
+import { DEFAULT_CURRENT_GEN_TTL_MS, DEFAULT_MAX_OPEN_SEGMENTS } from './reader-defaults';
 
 /** Pluggable rate card. Rates differ by cloud/region/term and drift over time; the formulas don't. */
 export interface PricingProfile {
@@ -38,6 +44,12 @@ export interface PricingProfile {
     /** Object PUT (per million) — what a load pays, per request. */
     readonly putPerMillion: number;
     readonly storagePerGiBMonth: number;
+    /**
+     * Requests one read costs when it needs the object's size first: a pointer read, and a segment's tail read.
+     * Default **1**, S3's, whose suffix-range GET returns the size with the bytes. **2** on GCS and Azure Blob,
+     * which read the metadata and then the bytes. A chunk read knows its range, and is one request everywhere.
+     */
+    readonly requestsPerSizedRead?: number;
   };
   /** The always-on baseline to compare against (e.g. an ElastiCache HA cluster). */
   readonly redis: { readonly monthlyUSD: number };
@@ -68,14 +80,17 @@ export interface Workload {
   /**
    * Storage chunks one intersection fetches, summed over its operands: the chunk-skipping survivors. Default 1.
    * Two segments sharing `k` chunks fetch `2k`. The model adds each operand's pointer and index reads itself (see
-   * {@link operandsPerIntersect}), so count chunks only. One more GET per operand whose index outgrows the reader's
-   * tail read (256 KiB by default), which then reads the index whole, belongs here too.
+   * {@link Workload.operandsPerIntersect}), so count chunks only. One more GET per operand whose index outgrows
+   * the reader's tail read (256 KiB by default), which then reads the index whole, belongs here too, and so does a
+   * pointer re-read by an intersect slow enough to outlive {@link Workload.genTtlMs}.
    */
   readonly chunksPerIntersect?: number;
   /**
-   * Segments each intersection reads. Default 2. An intersection is priced **cold**: before its chunks, each
-   * operand's pointer is read, then its index, in one read of the object's tail — 2 GETs an operand, so a cold
-   * intersect of two segments sharing `k` chunks is `4 + 2k` GETs. `cacheHitRate` does not apply to intersections.
+   * Segments each intersection reads, `exclude` operands included; at least 1. Default 2. An intersection is priced
+   * **cold**: before its chunks, each operand's pointer is read, then its index, in one read of the object's tail —
+   * 2 GETs an operand, so a cold intersect of two segments sharing `k` chunks is `4 + 2k` GETs. `cacheHitRate`
+   * does not apply to intersections, so a long-lived reader that answers a repeat from its cache pays less. Other
+   * combines read their operands the same way and can be priced here too, with the chunks they fetch.
    */
   readonly operandsPerIntersect?: number;
   /**
@@ -89,18 +104,29 @@ export interface Workload {
    * object sizes. The model adds what `store.load()` does around the write: two listings and the pointer's write,
    * PUT-class on S3, and nine GETs, the pointer read eight times and the current generation's index once. That is
    * a segment with two generations behind it; its first load makes two fewer GETs, and its second one fewer. On
-   * S3 at the default prices a single-part `store.load()` is then about $23.60 per million.
+   * S3 at the default prices a single-part `store.load()` is then about $23.60 per million. A segment whose index
+   * outgrows the tail read makes one more GET, and a publish that loses a race to another writer reads the
+   * pointer again.
    */
   readonly requestsPerLoad?: number;
   /**
-   * Segments a long-lived reader reads at least once every {@link genTtlMs}. Each re-reads its pointer once per
-   * `genTtlMs` while it is read: at the default 2 s, 1,314,000 GETs a month a segment. Default **0** ⇒ the refresh
-   * is not modeled, and the report *discloses* the omission when there are reads or intersections to refresh for.
+   * Segments a long-lived reader keeps reading, **counted once per reader process**: ten processes reading the
+   * same hundred segments is 1,000. A reader re-reads a segment's pointer when it reads the segment after
+   * {@link Workload.genTtlMs} has passed, so each costs at most one GET per `genTtlMs`, and the whole term at most
+   * one GET per point read (`readsPerSec`): 1,314,000 GETs a month a segment at the default 2 s. Intersections are
+   * priced cold and pay their own pointer reads. Default **0** ⇒ the refresh is not modeled, and the report
+   * *discloses* the omission when there are reads to refresh for.
+   *
+   * It assumes each hot segment stays open in the reader's cache (`cache.readerMax`, 1,024 segments by default,
+   * and `cache.readerMaxBytes`, 64 MiB of parsed index). A read of a segment the cache evicted opens it again, a
+   * pointer read and a tail read, which is not priced here, and neither is the re-open every reader makes after
+   * each load, for the new generation's index. Size those caches to keep the hot set open.
    */
   readonly hotSegments?: number;
   /**
    * How long the reader trusts a pointer, in ms: the store's `cache.genTtlMs`. Default 2000, the store's own
-   * default. `0` pins each pointer, which is then read once and never refreshed.
+   * default; `segment.costReport()` uses the store's. `0` pins each pointer for as long as the reader keeps the
+   * segment open, which is then not refreshed.
    */
   readonly genTtlMs?: number;
 }
@@ -138,9 +164,9 @@ export interface CostReport {
   /**
    * Sustained read rate at which the pay-per-use model's cost passes the flat Redis baseline, **evaluated at this
    * report's `cacheHitRate`** — so a higher cache-hit rate raises it (cache hits are free) — with the other
-   * request axes at 0 and the fixed monthly costs, storage and the pointer refresh, taken out of the baseline
-   * first. `Infinity` means it never crosses (a 100% cache-hit rate). The published anchor (~329 reads/s) is at
-   * `cacheHitRate: 0` with no refresh modeled.
+   * request axes at 0, and with what keeping the data readable costs taken out of the baseline first: storage, and
+   * this report's pointer refresh. Loads, the write side, are left out of it. `Infinity` means it never crosses (a
+   * 100% cache-hit rate). The published anchor (~329 reads/s) is at `cacheHitRate: 0` with no refresh modeled.
    */
   readonly redisCrossover: { readonly readsPerSec: number };
   readonly verdict: 'win-big' | 'win' | 'lose-zone';
@@ -157,17 +183,21 @@ export interface CostReport {
 const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
 const GIB = 1024 ** 3;
 
-/** A cold intersection's GETs for each operand before its chunks: the pointer, then the index in one tail read. */
-const GETS_PER_COLD_OPERAND = 2;
+/**
+ * A cold intersection's reads for each operand before its chunks: the pointer, then the index in one tail read.
+ * Both need the object's size, so each costs `requestsPerSizedRead` requests.
+ */
+const SIZED_READS_PER_COLD_OPERAND = 2;
 
 /**
  * What `store.load()` adds to its object's write, as the engine makes the requests on a segment with two
  * generations behind it: PUT-class, two listings (one to number the generation, one to collect after the publish)
- * and the pointer's write; GETs, eight pointer reads and the current generation's index. The same test that holds
- * these to the engine counts a segment's first load at seven GETs and its second at eight.
+ * and the pointer's write; reads, eight of the pointer and one of the current generation's index, each a sized
+ * read. `tests/core/cost.test.ts` holds these to the engine, and counts a segment's first load at seven reads and
+ * its second at eight.
  */
 const STORE_LOAD_PUT_CLASS = 3;
-const STORE_LOAD_GETS = 9;
+const STORE_LOAD_SIZED_READS = 9;
 
 /** Fail-fast at the boundary: reject non-finite / negative inputs rather than leak NaN into the report. */
 function requireFiniteNonNeg(n: number, field: string): number {
@@ -208,6 +238,10 @@ function buildReport(input: {
   requireFiniteNonNeg(storage.putPerMillion, 'pricing.storage.putPerMillion');
   requireFiniteNonNeg(storage.storagePerGiBMonth, 'pricing.storage.storagePerGiBMonth');
   requireFiniteNonNeg(redis.monthlyUSD, 'pricing.redis.monthlyUSD');
+  const sizedRead = requireFiniteNonNeg(
+    storage.requestsPerSizedRead ?? 1,
+    'pricing.storage.requestsPerSizedRead',
+  );
 
   const storageBytes = requireFiniteNonNeg(input.storageBytes, 'storageBytes');
   const cacheHitRate = clamp01(
@@ -231,6 +265,11 @@ function buildReport(input: {
     input.workload.operandsPerIntersect ?? 2,
     'operandsPerIntersect',
   );
+  if (operandsPerIntersect < 1) {
+    throw new ValidationError(
+      `operandsPerIntersect must be at least 1, since an intersection reads its operands; got ${operandsPerIntersect}`,
+    );
+  }
   const hotSegments = requireFiniteNonNeg(input.workload.hotSegments ?? 0, 'hotSegments');
   const genTtlMs = requireFiniteNonNeg(
     input.workload.genTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS,
@@ -246,17 +285,20 @@ function buildReport(input: {
   const readMisses = readsPerSec * S * missFraction;
   const intersects = intersectsPerSec * S;
 
-  // A pinned pointer (`genTtlMs: 0`) is read once and never refreshed.
-  const refreshesPerSegment = genTtlMs > 0 ? (S * 1000) / genTtlMs : 0;
+  // A reader re-reads a pointer only when it reads the segment after the TTL has lapsed, so the refresh is at most
+  // one per hot segment per TTL, and at most one per point read. A pinned pointer (`genTtlMs: 0`) is not refreshed.
+  const refreshes =
+    genTtlMs > 0 ? Math.min((hotSegments * S * 1000) / genTtlMs, readsPerSec * S) : 0;
 
   const storageUSD = (storageBytes / GIB) * storage.storagePerGiBMonth;
   const readsUSD = readMisses * storageGetUSD;
-  const intersectGets = chunksPerIntersect + GETS_PER_COLD_OPERAND * operandsPerIntersect;
+  const intersectGets =
+    chunksPerIntersect + SIZED_READS_PER_COLD_OPERAND * operandsPerIntersect * sizedRead;
   const intersectsUSD = intersects * intersectGets * storageGetUSD;
+  const loadGets = STORE_LOAD_SIZED_READS * sizedRead;
   const loadsUSD =
-    loadsPerMonth *
-    ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + STORE_LOAD_GETS * storageGetUSD);
-  const refreshUSD = hotSegments * refreshesPerSegment * storageGetUSD;
+    loadsPerMonth * ((requestsPerLoad + STORE_LOAD_PUT_CLASS) * putUSD + loadGets * storageGetUSD);
+  const refreshUSD = refreshes * sizedRead * storageGetUSD;
   const total = readsUSD + intersectsUSD + storageUSD + loadsUSD + refreshUSD;
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
@@ -290,21 +332,30 @@ function buildReport(input: {
     'Request cost is from the supplied workload rates (live-metrics-derived request cost is a later phase).',
     loadsPerMonth > 0
       ? `Loads modeled: ${loadsPerMonth}/mo, each ${requestsPerLoad} PUT-class request(s) for the object plus ` +
-        `${STORE_LOAD_PUT_CLASS} PUT-class and ${STORE_LOAD_GETS} GETs that store.load() adds (listings, pointer, index).`
+        `${STORE_LOAD_PUT_CLASS} PUT-class and ${loadGets} GETs that store.load() adds (listings, pointer, index).`
       : 'Loads are NOT modeled — set workload.loadsPerMonth (+ requestsPerLoad for multipart) to include them.',
     ...(intersects > 0
       ? [
-          `Intersections priced cold: ${intersectGets} GETs each, ${GETS_PER_COLD_OPERAND} for each of ` +
-            `${operandsPerIntersect} operand(s) plus ${chunksPerIntersect} chunk read(s); cacheHitRate does not apply.`,
+          `Intersections priced cold: ${intersectGets} GETs each, ` +
+            `${SIZED_READS_PER_COLD_OPERAND * sizedRead} for each of ${operandsPerIntersect} operand(s) plus ` +
+            `${chunksPerIntersect} chunk read(s); cacheHitRate does not apply.`,
         ]
       : []),
     hotSegments > 0
-      ? `Pointer refresh modeled: ${hotSegments} segment(s) re-reading the pointer ` +
-        (genTtlMs > 0 ? `every ${genTtlMs} ms.` : 'never (genTtlMs 0 pins it).')
-      : readsPerSec > 0 || intersects > 0
+      ? genTtlMs > 0
+        ? `Pointer refresh modeled: ${hotSegments} hot segment(s) in one reader process, each re-reading its ` +
+          `pointer at most every ${genTtlMs} ms, and at most once a point read. A fleet of reader processes ` +
+          'pays it once each.'
+        : 'Pointer refresh: none — genTtlMs 0 pins each pointer while the reader keeps the segment open.'
+      : readsPerSec > 0
         ? 'The pointer refresh is NOT modeled — set workload.hotSegments to the segments a long-lived reader ' +
-          'keeps reading.'
+          'keeps reading, once per reader process.'
         : null,
+    hotSegments > DEFAULT_MAX_OPEN_SEGMENTS
+      ? `More hot segments than a store keeps open by default (${DEFAULT_MAX_OPEN_SEGMENTS}): a read of a segment ` +
+        'the reader evicted opens it again, a pointer and a tail read, which this does not price. Raise ' +
+        'cache.readerMax, and cache.readerMaxBytes, to keep them open.'
+      : null,
     ...(input.extraNotes ?? []),
   ].filter((n): n is string => n !== null);
 
