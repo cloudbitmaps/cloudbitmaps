@@ -523,8 +523,8 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
           which generation is current — and each operand's index, so pass
           <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, and
-          <span class="m">hotSegments</span> for the segments a long-lived reader keeps reading: each re-reads its
-          pointer every <span class="m">cache.genTtlMs</span>.
+          <span class="m">hotSegments</span> for the segments a long-lived reader keeps reading, once per reader
+          process: each re-reads its pointer every <span class="m">cache.genTtlMs</span>.
         </p>
         <div class="prov">
           <div class="tpanel">

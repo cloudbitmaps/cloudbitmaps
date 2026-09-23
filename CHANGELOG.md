@@ -49,12 +49,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   it leaves out. The home page's headline is now the measured cold intersect rather than the July `count()`
   figure.
 
-  Checking the run against the code found that `estimateCost()` under-quotes both operations in this topology.
-  It prices a load as `requestsPerLoad` PUT-class requests, with no term for the pointer, and an intersect as
-  `chunksPerIntersect` GETs, with none for the pointer and tail reads, and it has no term for the pointer
-  refresh. The guide and the benchmarks page say what to pass until it counts them itself, which is owed. The
-  benchmarks page's claim for the estimator is narrowed to what its test proves: it never quotes fewer chunk
-  reads than the engine makes.
+  Checking the run against the code found that `estimateCost()` under-quoted both operations in this topology;
+  it now counts what they send, as the entry under **Fixed** below says. The benchmarks page's claim for the
+  estimator is narrowed to what its tests prove: it never quotes fewer chunk reads than the engine makes, and its
+  other request counts are held to the engine's.
 
 - **A real-cloud calibration harness for the loaded store** — `pnpm calibrate:aws`. The previous one was
   deleted with the warm tier because it metered a write path through a NoSQL registry that no longer ships,
@@ -144,17 +142,28 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - **`estimateCost()` counts the pointer, the index and the pointer refresh, which it had left out.** On a
   single-bucket store, the topology that ships, it under-quoted both operations it prices: a load as its object's
-  PUT-class requests alone, and an intersect as its chunk reads alone. A load now adds what `store.load()` makes
-  around the object's write — two listings and the pointer's write, and nine GETs — so a single-part load prices at
-  about $23.60 per million at the default rates, where it had been quoted at $5. A cold intersect adds a pointer read
-  and an index read for each operand (`operandsPerIntersect`, 2 by default), so two segments sharing k chunks price
-  at 4 + 2k GETs. A new term prices the pointer refresh: `hotSegments`, the segments a long-lived reader keeps
-  reading, each re-reading its pointer every `genTtlMs` (the store's `cache.genTtlMs`, 2 s by default), about $0.53 a
-  segment a month; it is reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken
-  out of the read crossover's baseline when it is. `chunksPerIntersect` and `requestsPerLoad` keep the meaning they
-  had in `0.10.0`, the chunks an intersect fetches and the object's own PUT-class requests: if you followed the
-  site's advice, between the single-bucket run's publication and this fix, to fold the pointer into them, pass the
-  plain counts again. Each count the estimator adds is held by a test to the requests the real engine makes.
+  PUT-class requests alone, and an intersect as its chunk reads alone.
+  - **A load** now adds what `store.load()` makes around the object's write — two listings and the pointer's
+    write, and nine GETs — so a single-part load prices at about $23.60 per million at the default rates, where it
+    had been quoted at $5.
+  - **A cold intersect** adds a pointer read and an index read for each operand (`operandsPerIntersect`, 2 by
+    default, `exclude` operands included), so two segments sharing k chunks price at 4 + 2k GETs.
+  - **A new term prices the pointer refresh**: `hotSegments`, the segments a long-lived reader keeps reading,
+    counted once per reader process, each re-reading its pointer at most every `genTtlMs` (the store's
+    `cache.genTtlMs`, 2 s by default), and the term at most once a point read: about $0.53 a segment a month. It is
+    reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken out of the read
+    crossover's baseline when it is. `segment.costReport()` prices it at the store's own TTL.
+  - **GCS and Azure Blob** read an object's metadata before its bytes, so a pointer read or a tail read is two
+    requests there, where it is one on S3. A pricing profile's new `storage.requestsPerSizedRead` (1 by default,
+    2 for those two) doubles those reads.
+
+  `chunksPerIntersect` and `requestsPerLoad` keep the meaning they had in `0.10.0`, the chunks an intersect fetches
+  and the object's own PUT-class requests: if you followed the docs' and the site's advice, between the
+  single-bucket run's publication and this fix, to fold the pointer into them, pass the plain counts again. Each
+  count the estimator adds is held by a test to the requests the real engine makes. **Type and text changes:**
+  `CostReport.monthlyUSD.byOp` gains the required `pointerRefresh`, so a `CostReport` you build yourself must set
+  it; `operandsPerIntersect` below 1 is refused; the rationale names intersections, loads and the refresh in new
+  words; and the notes gain lines for intersections, the refresh and a hot set larger than the reader cache.
 
 ## [0.10.0] — 2026-09-21
 

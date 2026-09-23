@@ -7,6 +7,11 @@
  * built from bitmaps, in memory or streamed), `bulkLoadCrbmGeneration` is the load path over them, and
  * `publishGeneration` is the forward-only pointer advance every write ends with.
  */
+import {
+  DEFAULT_CURRENT_GEN_TTL_MS,
+  DEFAULT_MAX_OPEN_INDEX_BYTES,
+  DEFAULT_MAX_OPEN_SEGMENTS,
+} from './reader-defaults';
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';
 import {
   IntegrityError,
@@ -129,11 +134,6 @@ interface Snapshot {
 }
 
 /**
- * Default TTL (ms) for re-resolving a segment's `currentGen` — the bound on post-publish read staleness. Exported
- * for the cost model, which prices the pointer refresh this sets; it is not part of the package's surface.
- */
-export const DEFAULT_CURRENT_GEN_TTL_MS = 2000;
-/**
  * How many buffered remainders bulk-load holds before flushing them into their chunk bitmaps. Bounds the
  * transient JS-side buffer to **~28 MB measured** irrespective of input size, while keeping batches large
  * enough that the per-id JS↔native crossing is amortised away.
@@ -146,12 +146,6 @@ const BULK_FLUSH_IDS = 1 << 20;
  * ~220 ns/id, so the resulting stretch stays a few ms there and well under 1 ms on a plain array.
  */
 const YIELD_EVERY_IDS = 1 << 14;
-
-/** Default ceiling on cached segment readers (each holds a parsed `.crbm` index) — the steady-state count bound. */
-const DEFAULT_MAX_OPEN_SEGMENTS = 1024;
-
-/** Default aggregate ceiling (bytes) on resident parsed indices in the reader cache — the steady-state byte bound. */
-const DEFAULT_MAX_OPEN_INDEX_BYTES = 64 * 1024 * 1024;
 
 export class CrbmStorageChunkSource implements StorageChunkSource {
   /**
@@ -285,6 +279,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   private now(): number {
     return this.clock ? this.clock.now() : 0;
+  }
+
+  /**
+   * How often this source re-reads a segment's pointer while the segment is being read, in ms: its TTL, or 0 when
+   * it never refreshes (no clock, no registry, or a TTL of 0). The grounded cost report prices the refresh at this.
+   */
+  get pointerRefreshMs(): number {
+    return this.clock !== undefined && this.registry !== undefined ? this.currentGenTtlMs : 0;
   }
 
   private expired(installedAtMs: number): boolean {

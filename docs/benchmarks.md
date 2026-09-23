@@ -28,8 +28,8 @@ rather than as a rate. Reads are the axis where a flat, always-on node competes.
 ## How these stay honest
 
 Every number above is turned into a **deterministic, build-breaking CI assertion** in
-[`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts) — a regression or an overclaim fails the
-build:
+[`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts), and the estimator's request counts in
+[`tests/core/cost.test.ts`](../tests/core/cost.test.ts) — a regression or an overclaim fails the build:
 
 - **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, summing cardinality
   straight from the `.crbm` index.
@@ -42,11 +42,14 @@ build:
   sink observed for a point-read workload on an in-memory store, the prediction must land on or above the measured
   cost. That covers point reads' chunk GETs.
 - **The estimator counts what the engine sends** — a cold intersect's pointer and index reads for each operand before
-  its chunks, what `store.load()` adds to a load's object write, and one pointer read per hot segment per
+  its chunks, what `store.load()` adds to a load's object write, and at most one pointer read per hot segment per
   `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
-  the requests it makes. It still quotes low where it cannot see: an intersect slow enough to outlive
-  `cache.genTtlMs` re-reads its pointers, an operand whose index outgrows the tail read makes one more GET, and a
-  load that loses a publish race reads the pointer again.
+  the requests it makes, on S3's request shape; GCS and Azure Blob make two requests for a pointer or a tail read,
+  which the pricing profile's `requestsPerSizedRead` carries. It prices one reader process, so a fleet passes
+  `hotSegments` once per process. And it still quotes low where it cannot see: more hot segments than a reader
+  keeps open (1,024 by default), which re-opens them as it reads them; the index every reader opens again after
+  each load; an intersect slow enough to outlive `cache.genTtlMs`, which re-reads its pointers; an operand whose
+  index outgrows the tail read, one more GET; and a load that loses a publish race, which reads the pointer again.
 
 ## Real-cloud calibration — AWS
 
