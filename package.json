@@ -34,6 +34,8 @@
     "lint:arch": "vitest run tests/arch",
     "bench": "pnpm run build && node bench/run.cjs",
     "bench:scale": "pnpm run build && node --expose-gc bench/scale.cjs",
+    "bench:sizing": "pnpm run build && node bench/sizing.cjs",
+    "bench:sizing:check": "node bench/sizing.cjs --check",
     "bench:scale:render": "SCALE_TASK=inject node bench/scale.cjs",
     "bench:scale:check": "SCALE_TASK=check node bench/scale.cjs",
     "soak": "pnpm run build && node --expose-gc bench/soak.cjs",

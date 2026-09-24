@@ -211,6 +211,10 @@ throughput are the next benchmark pass; the benchmarks page keeps the list of
 Full numbers, method, and an explicit list of what each run does *not* establish:
 **[benchmarks](docs/benchmarks.md#real-cloud-calibration--aws)**.
 
+**At your size:** [what it costs](docs/guide/sizing.md) prices a small, a medium and a large deployment with the
+library's own estimator, term by term — the large one's bill comes to more than one Redis-HA cluster's price,
+though one cluster could not hold its data — and says where a standing cache still wins.
+
 ## Install & entry points
 
 ```bash

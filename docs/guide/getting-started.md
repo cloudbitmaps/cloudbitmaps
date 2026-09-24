@@ -990,6 +990,9 @@ the drivers' own tests pin the two requests GCS and Azure make, so the model mov
 [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
 on real S3.
 
+**See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
+with this function, term by term, and says where a standing cache still wins.
+
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
 Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the
 numbers can never drift ahead of reality.
