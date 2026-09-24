@@ -289,10 +289,12 @@ function checkDriverCountEverywhere(want) {
     const COUNT = `(\\d+|${NUMBER_WORDS.join('|')})`;
     const ADJECTIVES = '(?:(?!of\\b|in\\b|for\\b|to\\b|storage\\b)[a-z-]+\\s+){0,2}';
     for (const m of text.matchAll(
-      // "backends" as well as "drivers": llms.txt said "Five storage backends", counting the in-memory pair the
-      // rest of the site leaves out, and the noun alone kept it out of this check.
+      // "storage backends" as well as "drivers": llms.txt said "Five storage backends", counting the in-memory
+      // pair the rest of the site leaves out, and the noun alone kept it out of this check. Only with "storage":
+      // "three cloud backends" is a true count of part of what ships, and a gate that flagged it would be routed
+      // around.
       new RegExp(
-        `(\\bthe\\s+)?\\b${COUNT}\\s+${ADJECTIVES}(storage\\s+)?(?:drivers|backends)\\b`,
+        `(\\bthe\\s+)?\\b${COUNT}\\s+${ADJECTIVES}(?:(storage\\s+)?drivers|(storage\\s+)backends)\\b`,
         'gi',
       ),
     )) {
@@ -300,7 +302,7 @@ function checkDriverCountEverywhere(want) {
       // backend's storage and registry halves, which `S3Storage` configures together. `the four storage
       // drivers` is a count of what ships, and saying "storage" is what distinguishes them. An unconditional
       // `the` exclusion dropped that one silently, which the floor below is what caught.
-      if (m[1] && !m[3]) continue;
+      if (m[1] && !m[3] && !m[4]) continue;
       checked++;
       const token = (m[2] ?? '').toLowerCase();
       const stated = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS.indexOf(token);

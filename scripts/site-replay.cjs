@@ -113,7 +113,7 @@ for (const [name, measured, derived, why] of checks) {
   if (measured !== derived) {
     fail(
       `${name}: benchmark reports ${measured}, construction implies ${derived} (${why}).\n` +
-        `  The benchmark and this generator disagree. Do not "fix" this by editing the expected value —\n` +
+        `  The benchmark and this check disagree. Do not "fix" this by editing the expected value —\n` +
         `  one of the two is wrong, and the /demo page must not claim to replay a run it cannot explain.`,
     );
   }

@@ -21,6 +21,10 @@ Two checks, from the same premise: a page nobody linked and a page nobody listed
 
 import re, sys, glob, os
 
+# The shared reader, imported without leaving a `__pycache__/` in the tree for the directory-README gate to find.
+sys.dont_write_bytecode = True
+import site_markup  # noqa: E402
+
 ROOT = 'site'
 # Recursive: the site is no longer flat. `site/flavors/roaring.html` exists so that the `/flavors/roaring` URL
 # the page has always declared as its canonical actually resolves, and a depth-one glob would have quietly
@@ -236,13 +240,25 @@ else:
 # The pages are self-contained: no CDN, no web fonts, no third-party scripts. That is a privacy property as much
 # as a performance one — a font from another origin tells that origin who read the page — and it was a rule in
 # the site README that nothing enforced. So every reference a browser FETCHES while rendering a page must be
-# relative: `src` and `srcset` on any element, `href` on a `<link>` that loads something (a stylesheet, an icon,
-# a preload, a manifest), and `url()` or `@import` in the stylesheet or in a page's own style. Anchors are links a
-# reader follows, not loads, and `<link rel="canonical">`, `alternate` and `me` name a URL without fetching it,
-# so those may be absolute; so may `<meta>` content, which a crawler reads and the page never loads.
-NOT_A_LOAD = {'canonical', 'alternate', 'me', 'author', 'license', 'help', 'search'}
+# relative:
+#   - `src`, `srcset`, `poster` and `data` on any element;
+#   - `href` on a `<link>` that loads something (a stylesheet, an icon, a preload, a preconnect, a manifest), on
+#     `<base>`, which re-points every relative load on the page, and on SVG's `<image>`, `<use>` and `<feImage>`;
+#   - any absolute URL in the stylesheet, a page's `<style>` or a `style` attribute: `url()`, `@import`, `image-set`;
+#   - any absolute URL string in a script, the `.js` files and each page's inline scripts alike, which is how
+#     `fetch`, a dynamic `import` or an injected tag reaches another origin.
+# Anchors are links a reader follows, not loads, and `<link rel="canonical">`, `alternate`, `me`, `author`,
+# `license` and `help` name a URL without fetching it, so those may be absolute; so may `<meta>` content, which
+# a crawler reads and the page never loads. Markup is read through `site_markup.py`, so a single-quoted or
+# unquoted attribute, a `>` inside a value and an inline script are read like any other.
+NOT_A_LOAD = {'canonical', 'alternate', 'me', 'author', 'license', 'help'}
 ABSOLUTE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:|//)', re.I)
-SAFE_SCHEME = re.compile(r'^\s*(?:data:|#)', re.I)
+SAFE_SCHEME = re.compile(r'^\s*(?:data:|about:|blob:|#)', re.I)
+# An XML namespace names a vocabulary, and nothing fetches it: `createElementNS` takes one.
+NAMESPACES = {'http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml', 'http://www.w3.org/1999/xlink'}
+SVG_HREF = {'image', 'use', 'feimage'}
+CSS_URL = re.compile(r"""(?:https?|wss?):|url\(\s*['"]?\s*//|@import\s+['"]\s*//""", re.I)
+JS_URL = re.compile(r'^(?:(?:https?|wss?):|//[a-z0-9])', re.I)
 
 
 def off_origin(target):
@@ -252,43 +268,45 @@ def off_origin(target):
 loads = {}
 n_loads = 0
 for page in pages:
-    html = re.sub(r'<!--.*?-->', '', open(page).read(), flags=re.S)
-    for tag in re.finditer(r'<([a-z][a-z0-9-]*)\b[^>]*>', html, re.I):
-        text, name = tag.group(0), tag.group(1).lower()
+    html = open(page).read()
+    where = rel(page)
+    for name, attrs in site_markup.tags(html):
         for attr in ('src', 'srcset', 'poster', 'data'):
-            for m in re.finditer(r'\s' + attr + r'="([^"]*)"', text, re.I):
-                n_loads += 1
-                for part in m.group(1).split(',') if attr == 'srcset' else [m.group(1)]:
-                    target = part.strip().split(' ')[0]
-                    if off_origin(target):
-                        loads.setdefault(rel(page), []).append(f'<{name} {attr}="{target}">')
-        if name == 'link':
-            rel_attr = re.search(r'\srel="([^"]*)"', text, re.I)
-            rels = set((rel_attr.group(1) if rel_attr else '').lower().split())
-            href = re.search(r'\shref="([^"]*)"', text, re.I)
-            if href and not rels <= NOT_A_LOAD:
-                n_loads += 1
-                if off_origin(href.group(1)):
-                    loads.setdefault(rel(page), []).append(f'<link rel="{" ".join(sorted(rels))}" href="{href.group(1)}">')
-    for style in re.findall(r'<style\b[^>]*>(.*?)</style>|\sstyle="([^"]*)"', html, re.S | re.I):
-        for target in re.findall(r'url\(\s*[\'"]?([^\'")]+)', ''.join(style)):
+            if attr not in attrs:
+                continue
             n_loads += 1
-            if off_origin(target):
-                loads.setdefault(rel(page), []).append(f'url({target})')
-for sheet in sorted(glob.glob(f'{ROOT}/**/*.css', recursive=True)):
-    css = re.sub(r'/\*.*?\*/', '', open(sheet).read(), flags=re.S)
-    for target in re.findall(r'url\(\s*[\'"]?([^\'")]+)', css) + re.findall(r'@import\s+[\'"]([^\'"]+)', css):
+            for part in attrs[attr].split(',') if attr == 'srcset' else [attrs[attr]]:
+                target = part.strip().split(' ')[0]
+                if off_origin(target):
+                    loads.setdefault(where, []).append(f'<{name} {attr}="{target}">')
+        hrefs = [attrs[a] for a in ('href', 'xlink:href') if a in attrs]
+        if not hrefs:
+            continue
+        rels = set(attrs.get('rel', '').lower().split())
+        # A `<link>` loads unless every one of its rels only names a URL; one with no rel at all is read as a load.
+        if (name == 'link' and not (rels and rels <= NOT_A_LOAD)) or name == 'base' or name in SVG_HREF:
+            for target in hrefs:
+                n_loads += 1
+                if off_origin(target):
+                    loads.setdefault(where, []).append(f'<{name} href="{target}">')
+    for css in site_markup.inline_styles(html):
         n_loads += 1
-        if off_origin(target):
-            loads.setdefault(os.path.relpath(sheet, ROOT), []).append(f'url({target})')
+        for m in CSS_URL.finditer(site_markup.css_code(css)):
+            loads.setdefault(where, []).append(f'style: {css.strip()[:80]}')
+            break
+for sheet in sorted(glob.glob(f'{ROOT}/**/*.css', recursive=True)):
+    css = site_markup.css_code(open(sheet).read())
+    n_loads += 1
+    for line in css.splitlines():
+        if CSS_URL.search(line):
+            loads.setdefault(os.path.relpath(sheet, ROOT), []).append(line.strip()[:100])
 
-# The scripts: no URL at all. Neither script on the site fetches anything, and an absolute URL in one is the
-# first step to a script that does, whether through `fetch`, a dynamic `import` or a tracking pixel.
-for script in sorted(glob.glob(f'{ROOT}/**/*.js', recursive=True)):
-    js = re.sub(r'/\*.*?\*/', '', open(script).read(), flags=re.S)
-    js = re.sub(r'(?m)^\s*//.*$', '', js)
-    for m in re.finditer(r'''(['"`])((?:https?:)?//[^'"`\s]+)\1''', js):
-        loads.setdefault(os.path.relpath(script, ROOT), []).append(m.group(2))
+# The scripts: no URL at all, apart from an XML namespace. Neither script on the site fetches anything, and an
+# absolute URL in one is the first step to a script that does.
+for where, source in site_markup.site_scripts(ROOT, pages):
+    for literal in site_markup.js_strings(site_markup.js_code(source)):
+        if JS_URL.match(literal) and literal not in NAMESPACES:
+            loads.setdefault(where, []).append(literal)
 
 if loads:
     failed = True

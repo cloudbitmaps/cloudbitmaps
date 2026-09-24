@@ -18,8 +18,7 @@ both and is never installed directly; it contains no cloud SDK at all. Four stor
 (`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
 Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real rather
 than as an optional peer, plus the local filesystem in core's main entry, beside the in-memory drivers for
-development and tests. There are no
-driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
+development and tests. There are no driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
 and the registry, so a deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which
