@@ -971,7 +971,8 @@ it is a property of three inputs:
 - **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
   `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the
   default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments
-  you keep reading, **once per reader process**: ten processes reading the same hundred segments is 1,000.
+  each reader keeps reading, and **`readerProcesses`** for how many readers keep them: each refreshes on its own,
+  so ten processes reading the same hundred segments pay ten times one's refresh.
   `segment.costReport()` prices it at the store's own `cache.genTtlMs`. Raising the TTL lowers it, at the price of
   a new load taking longer to become visible; `0` pins each pointer for as long as the reader keeps the segment
   open.

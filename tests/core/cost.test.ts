@@ -422,9 +422,39 @@ describe('pointer refresh cost term', () => {
     });
     expect(minute.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(525.6 / 30, 6);
     expect(minute.assumptions.notes).toContain(
-      'Pointer refresh modeled: 1000 hot segment(s) in one reader process, each re-reading its pointer at most ' +
-        'every 60000 ms, and at most once a point read. A fleet of reader processes pays it once each.',
+      'Pointer refresh modeled: 1000 hot segment(s) in each of 1 reader process(es), each re-reading its pointer ' +
+        'at most every 60000 ms, and at most once a point read.',
     );
+  });
+
+  it('multiplies by the reader processes, each of which refreshes on its own', () => {
+    const one = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { hotSegments: 100, readsPerSec: 10_000, cacheHitRate: 1 },
+    });
+    const fleet = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { hotSegments: 100, readsPerSec: 10_000, cacheHitRate: 1, readerProcesses: 10 },
+    });
+    expect(fleet.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(
+      10 * one.monthlyUSD.byOp.pointerRefresh,
+      9,
+    );
+    expect(fleet.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(525.6, 6);
+    // …and a fleet's reads are still the bound: ten processes cannot refresh more often than they read.
+    const sparse = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { hotSegments: 100, readsPerSec: 10, readerProcesses: 10 },
+    });
+    expect(sparse.monthlyUSD.byOp.pointerRefresh).toBeCloseTo(10 * SECONDS_PER_MONTH * getUSD, 9);
+    for (const readerProcesses of [0, 0.5, -1, NaN]) {
+      expect(() =>
+        estimateCost({
+          segments: [{ sizeBytes: 0 }],
+          workload: { hotSegments: 1, readerProcesses },
+        }),
+      ).toThrow(ValidationError);
+    }
   });
 
   it('never bills more refreshes than there are point reads to make them', () => {
@@ -455,7 +485,7 @@ describe('pointer refresh cost term', () => {
     );
   });
 
-  it('warns when the hot set is larger than a store keeps open by default', () => {
+  it("warns when one reader's hot set is larger than a store keeps open by default", () => {
     const fits = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { hotSegments: 1024, readsPerSec: 10 },
@@ -468,6 +498,12 @@ describe('pointer refresh cost term', () => {
     expect(spills.assumptions.notes.some((n) => /keeps open by default \(1024\)/.test(n))).toBe(
       true,
     );
+    // Per reader: a fleet of processes that each keep 1,000 open fits, however large the fleet.
+    const fleet = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { hotSegments: 1000, readerProcesses: 20, readsPerSec: 10 },
+    });
+    expect(fleet.assumptions.notes.some((n) => /keeps open by default/.test(n))).toBe(false);
   });
 
   it('lowers the read crossover by what the refresh already spends', () => {
