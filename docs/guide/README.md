@@ -12,6 +12,8 @@ grown one capability per phase (so it never describes vapor).
 - [**Migrating from 0.9.x**](../../MIGRATING.md) — the cloud drivers became their own packages
   (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), the packages are ESM-only on Node ≥ 22.12, and two
   constructors changed.
+- [**What it costs at your size**](sizing.md) — a small, a medium and a large deployment priced by `estimateCost()`,
+  term by term, the levers that move the large one's bill, and where a standing cache still wins.
 - [**Dashboards**](dashboards.md) — wiring the metrics + audit sinks into your observability stack.
 - [**Disaster recovery**](disaster-recovery.md) — what to back up, the coordinated-restore procedure, RPO/RTO,
   and the `checkConsistency()` torn-restore check.
