@@ -148,8 +148,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
     had been quoted at $5.
   - **A cold intersect** adds a pointer read and an index read for each operand (`operandsPerIntersect`, 2 by
     default, `exclude` operands included), so two segments sharing k chunks price at 4 + 2k GETs.
-  - **A new term prices the pointer refresh**: `hotSegments`, the segments a long-lived reader keeps reading,
-    counted once per reader process, each re-reading its pointer at most every `genTtlMs` (the store's
+  - **A new term prices the pointer refresh**: `hotSegments`, the segments each long-lived reader keeps reading,
+    in each of `readerProcesses` readers, each re-reading its pointer at most every `genTtlMs` (the store's
     `cache.genTtlMs`, 2 s by default), and the term at most once a point read: about $0.53 a segment a month. It is
     reported as `byOp.pointerRefresh`, disclosed in the notes when it is not modeled, and taken out of the read
     crossover's baseline when it is. `segment.costReport()` prices it at the store's own TTL.

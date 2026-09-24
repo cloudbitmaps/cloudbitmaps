@@ -336,7 +336,8 @@
                     The second set in our favour. A long-lived reader re-reads the pointer of each segment it
                     keeps reading once every <span class="m">cache.genTtlMs</span>, and that is taken out of the
                     baseline before the division, like storage; publishing none hands it to the read axis too.
-                    Pass <span class="m">hotSegments</span>, once per reader process, to take it back.
+                    Pass <span class="m">hotSegments</span> and <span class="m">readerProcesses</span> to take it
+                    back.
                   </td>
                 </tr>
                 <tr>
@@ -693,8 +694,8 @@
               <strong>never quotes fewer chunk reads</strong> than the engine makes. For the rest it counts what
               the engine is tested to send: each operand's pointer and index before an intersect's chunks, what
               <span class="m">store.load()</span> adds to a load, and the pointer refresh for the segments you keep
-              reading, on S3's request shape. It prices one reader: pass <span class="m">hotSegments</span> once
-              per reader process. And it still quotes low where it cannot see: more hot segments than a reader
+              reading, on S3's request shape, in as many reader processes as you pass it. And it still quotes low
+              where it cannot see: more hot segments than a reader
               keeps open, the index every reader opens again after each load, an intersect that outlives the
               pointer TTL, an index larger than the tail read, a load that loses a publish race.
             </p>

@@ -29,8 +29,8 @@
  * The counts are S3's, and one reader process's. On GCS and Azure Blob a read that needs the object's size — a
  * pointer read, and a segment's tail read — is two requests, the metadata and then the bytes, which
  * {@link PricingProfile} carries as `requestsPerSizedRead`. A fleet of reader processes pays the pointer refresh
- * once per process. Where the model still quotes low is listed on {@link Workload.hotSegments} and
- * {@link Workload.chunksPerIntersect}.
+ * once per process, which {@link Workload.readerProcesses} carries. Where the model still quotes low is listed on
+ * {@link Workload.hotSegments} and {@link Workload.chunksPerIntersect}.
  */
 import { ValidationError } from './errors';
 import { DEFAULT_CURRENT_GEN_TTL_MS, DEFAULT_MAX_OPEN_SEGMENTS } from './reader-defaults';
@@ -110,19 +110,25 @@ export interface Workload {
    */
   readonly requestsPerLoad?: number;
   /**
-   * Segments a long-lived reader keeps reading, **counted once per reader process**: ten processes reading the
-   * same hundred segments is 1,000. A reader re-reads a segment's pointer when it reads the segment after
-   * {@link Workload.genTtlMs} has passed, so each costs at most one GET per `genTtlMs`, and the whole term at most
-   * one GET per point read (`readsPerSec`): 1,314,000 GETs a month a segment at the default 2 s. Intersections are
-   * priced cold and pay their own pointer reads. Default **0** ⇒ the refresh is not modeled, and the report
-   * *discloses* the omission when there are reads to refresh for.
+   * Segments each long-lived reader process keeps reading. A reader re-reads a segment's pointer when it reads the
+   * segment after {@link Workload.genTtlMs} has passed, so each costs at most one GET per `genTtlMs` in each process
+   * that reads it — 1,314,000 GETs a month at the default 2 s — and the whole term at most one GET per point read
+   * (`readsPerSec`, across the fleet). Intersections are priced cold and pay their own pointer reads. Default **0**
+   * ⇒ the refresh is not modeled, and the report *discloses* the omission when there are reads to refresh for.
    *
    * It assumes each hot segment stays open in the reader's cache (`cache.readerMax`, 1,024 segments by default,
    * and `cache.readerMaxBytes`, 64 MiB of parsed index). A read of a segment the cache evicted opens it again, a
    * pointer read and a tail read, which is not priced here, and neither is the re-open every reader makes after
-   * each load, for the new generation's index. Size those caches to keep the hot set open.
+   * each load, for the new generation's index. Size those caches to keep the hot set open; the report says so when
+   * `hotSegments` is more than a store keeps open by default.
    */
   readonly hotSegments?: number;
+  /**
+   * Long-lived reader processes, each keeping its own {@link Workload.hotSegments} open and refreshing their
+   * pointers on its own: ten processes reading the same hundred segments pay ten times one process's refresh.
+   * At least 1. Default 1.
+   */
+  readonly readerProcesses?: number;
   /**
    * How long the reader trusts a pointer, in ms: the store's `cache.genTtlMs`. Default 2000, the store's own
    * default; `segment.costReport()` uses the store's. `0` pins each pointer for as long as the reader keeps the
@@ -271,6 +277,13 @@ function buildReport(input: {
     );
   }
   const hotSegments = requireFiniteNonNeg(input.workload.hotSegments ?? 0, 'hotSegments');
+  const readerProcesses = requireFiniteNonNeg(
+    input.workload.readerProcesses ?? 1,
+    'readerProcesses',
+  );
+  if (readerProcesses < 1) {
+    throw new ValidationError(`readerProcesses must be at least 1; got ${readerProcesses}`);
+  }
   const genTtlMs = requireFiniteNonNeg(
     input.workload.genTtlMs ?? DEFAULT_CURRENT_GEN_TTL_MS,
     'genTtlMs',
@@ -288,7 +301,9 @@ function buildReport(input: {
   // A reader re-reads a pointer only when it reads the segment after the TTL has lapsed, so the refresh is at most
   // one per hot segment per TTL, and at most one per point read. A pinned pointer (`genTtlMs: 0`) is not refreshed.
   const refreshes =
-    genTtlMs > 0 ? Math.min((hotSegments * S * 1000) / genTtlMs, readsPerSec * S) : 0;
+    genTtlMs > 0
+      ? Math.min((readerProcesses * hotSegments * S * 1000) / genTtlMs, readsPerSec * S)
+      : 0;
 
   const storageUSD = (storageBytes / GIB) * storage.storagePerGiBMonth;
   const readsUSD = readMisses * storageGetUSD;
@@ -343,16 +358,15 @@ function buildReport(input: {
       : []),
     hotSegments > 0
       ? genTtlMs > 0
-        ? `Pointer refresh modeled: ${hotSegments} hot segment(s) in one reader process, each re-reading its ` +
-          `pointer at most every ${genTtlMs} ms, and at most once a point read. A fleet of reader processes ` +
-          'pays it once each.'
+        ? `Pointer refresh modeled: ${hotSegments} hot segment(s) in each of ${readerProcesses} reader ` +
+          `process(es), each re-reading its pointer at most every ${genTtlMs} ms, and at most once a point read.`
         : 'Pointer refresh: none — genTtlMs 0 pins each pointer while the reader keeps the segment open.'
       : readsPerSec > 0
-        ? 'The pointer refresh is NOT modeled — set workload.hotSegments to the segments a long-lived reader ' +
-          'keeps reading, once per reader process.'
+        ? 'The pointer refresh is NOT modeled — set workload.hotSegments to the segments each long-lived reader ' +
+          'keeps reading, and workload.readerProcesses to how many readers there are.'
         : null,
     hotSegments > DEFAULT_MAX_OPEN_SEGMENTS
-      ? `More hot segments than a store keeps open by default (${DEFAULT_MAX_OPEN_SEGMENTS}): a read of a segment ` +
+      ? `More hot segments in a reader than a store keeps open by default (${DEFAULT_MAX_OPEN_SEGMENTS}): a read of a segment ` +
         'the reader evicted opens it again, a pointer and a tail read, which this does not price. Raise ' +
         'cache.readerMax, and cache.readerMaxBytes, to keep them open.'
       : null,
