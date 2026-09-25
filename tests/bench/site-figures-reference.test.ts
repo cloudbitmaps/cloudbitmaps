@@ -72,4 +72,35 @@ describe("site:figures holds the reference set's Redis to bench/results.json", (
     expect(r.code, r.out).toBe(1);
     expect(r.out).toContain(`never states reference set · ${name}`);
   });
+
+  describe('and leaves exactly the SIZING regions bench/sizing.cjs writes to it', () => {
+    const README = 'README.md';
+    const readme = readFileSync(join(ROOT, README), 'utf8');
+    const before = (text: string): string =>
+      readme.replace('## Your data stays yours', () => `${text}\n\n## Your data stays yours`);
+
+    it.each([
+      '<!-- SIZING:NOPE:START -->\n<!-- SIZING:NOPE:END -->',
+      '<!--SIZING:NOPE:START-->\n<!--SIZING:NOPE:END-->',
+      '<!-- SIZING:NOPE2:START -->\n<!-- SIZING:NOPE2:END -->',
+    ])('refuses a marker the page is not given, however it is spelled: %s', (marker) => {
+      const r = siteFigures({ [README]: before(marker) });
+      expect(r.code, r.out).toBe(1);
+      expect(r.out).toMatch(/README\.md(?: holds a SIZING:NOPE2? region|: malformed marker)/);
+    });
+
+    it.each(['', 'Between `<!-- SIZING:WHY_SIZES:START -->` and its end. '])(
+      'reads the prose around an owned region, however the page quotes its marker: "%s"',
+      (quote) => {
+        const r = siteFigures({
+          [README]: readme.replace(
+            'What it costs at three',
+            () => `${quote}It saves $99,999 a month.\n\nWhat it costs at three`,
+          ),
+        });
+        expect(r.code, r.out).toBe(1);
+        expect(r.out).toContain('README.md states $99,999');
+      },
+    );
+  });
 });

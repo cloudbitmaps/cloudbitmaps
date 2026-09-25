@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 470" width="760" height="470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" role="img" aria-label="The monthly bill as the data grows, on log scales: the Redis that holds the data climbs in steps from $35.04 a month at 100 MB to $268,531 at 20 TB, while CloudBitmaps at one cold intersect a second goes from $214 to $643. They cross near 2.5 GB.">
+<title>The monthly bill as the data grows</title>
+<rect x="1" y="1" width="758" height="468" fill="#ffffff" stroke="#e4e8ed"/>
+<text x="28" y="36" font-size="17" font-weight="700" fill="#15181e">The monthly bill as the data grows</text>
+<text x="28" y="58" font-size="12.5" fill="#69737f">aws-us-east-1-ondemand · Redis: the cheapest on-demand Redis OSS cluster that holds the data</text>
+<text x="28" y="75" font-size="12.5" fill="#69737f">CloudBitmaps: one cold intersect a second, of two 2,000-chunk segments sharing 100</text>
+<line x1="92" y1="112" x2="92" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="92" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">100 MB</text>
+<line x1="211.2" y1="112" x2="211.2" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="211.2" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">1 GB</text>
+<line x1="330.4" y1="112" x2="330.4" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="330.4" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">10 GB</text>
+<line x1="449.7" y1="112" x2="449.7" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="449.7" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">100 GB</text>
+<line x1="568.9" y1="112" x2="568.9" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="568.9" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">1 TB</text>
+<line x1="688.1" y1="112" x2="688.1" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<line x1="724" y1="112" x2="724" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="724" y="422" font-size="11.5" fill="#69737f" text-anchor="middle">20 TB</text>
+<line x1="92" y1="404" x2="724" y2="404" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="408" font-size="11.5" fill="#69737f" text-anchor="end">$10</text>
+<line x1="92" y1="345.6" x2="724" y2="345.6" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="349.6" font-size="11.5" fill="#69737f" text-anchor="end">$100</text>
+<line x1="92" y1="287.2" x2="724" y2="287.2" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="291.2" font-size="11.5" fill="#69737f" text-anchor="end">$1K</text>
+<line x1="92" y1="228.8" x2="724" y2="228.8" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="232.8" font-size="11.5" fill="#69737f" text-anchor="end">$10K</text>
+<line x1="92" y1="170.4" x2="724" y2="170.4" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="174.4" font-size="11.5" fill="#69737f" text-anchor="end">$100K</text>
+<line x1="92" y1="112" x2="724" y2="112" stroke="#e4e8ed" stroke-width="1"/>
+<text x="84" y="116" font-size="11.5" fill="#69737f" text-anchor="end">$1M</text>
+<text x="408" y="446" font-size="12.5" fill="#3c4450" text-anchor="middle">data stored, log scale</text>
+<text x="28" y="96" font-size="12.5" fill="#3c4450">a month, log scale</text>
+<polyline points="92,372.2 163.6,372.2 164.2,354.6 216.3,354.6 216.8,336.6 257.9,336.6 258.4,315.6 295.8,315.6 296.3,307.4 332.7,307.4 333.2,289.9 369,289.9 369.6,279.5 389.6,279.5 390.1,273.6 462.2,273.6 462.8,256 498.1,256 498.6,245.7 519.1,245.7 519.7,238.5 533.9,238.5 534.4,232.8 545.5,232.8 546,228.2 554.9,228.2 555.5,224.2 562.8,224.2 563.4,220.9 569.7,220.9 570.2,217.9 576,217.9 576.5,215.2 581.3,215.2 581.8,212.8 586.5,212.8 587.1,210.6 590.8,210.6 591.3,208.5 595,208.5 595.5,206.7 598.7,206.7 599.2,204.9 602.3,204.9 602.9,203.3 606,203.3 606.6,201.7 608.7,201.7 609.2,200.3 611.8,200.3 612.3,198.9 614.5,198.9 615,197.6 617.6,197.6 618.1,196.4 619.7,196.4 620.2,195.2 622.4,195.2 622.9,194.1 626.6,193 627.1,191.9 628.7,191.9 631.3,190 635,189.1 638.7,186.5 641.8,185.7 646.6,182.7 650.8,181.4 656.1,178.2 662.9,175.4 724,145.3" fill="none" stroke="#d9480f" stroke-width="2" stroke-linejoin="round"/>
+<text x="720" y="137.3" font-size="12.5" font-weight="600" fill="#15181e" text-anchor="end">the Redis that holds it</text>
+<polyline points="92,326.3 451.2,326 519.7,325.3 568.1,323.9 613.9,320.8 652.4,316 688.2,308.7 724,298.4" fill="none" stroke="#3f44b0" stroke-width="2" stroke-linejoin="round"/>
+<text x="387.3" y="343.2" font-size="12.5" font-weight="600" fill="#15181e">CloudBitmaps, one cold intersect a second</text>
+<circle cx="258.4" cy="326.2" r="5" fill="#15181e" stroke="#ffffff" stroke-width="2"/>
+<text x="248.4" y="316.2" font-size="12" fill="#15181e" text-anchor="end">they cross near 2.5 GB</text>
+</svg>
