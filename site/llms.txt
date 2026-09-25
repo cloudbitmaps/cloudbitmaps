@@ -59,7 +59,7 @@ run, which kept the pointer in a NoSQL registry that no longer ships, measured $
 without the pointer. For comparison: an always-on Redis-HA line of $346/month standing, and a modelled
 $0.03/month for 1.2 GiB of segments at rest. Those runs were driven from outside the region, so no latency is
 published. One crossover is published, in GETs: past 329.15 sustained GETs a second, with every read missing the
-cache, metered GETs pass the standing node — a warmer cache moves that line up. For cold intersects of the shape
+cache, metered GETs pass the standing cluster — a warmer cache moves that line up. For cold intersects of the shape
 above, at 206 GETs each, that line is 1.6 intersects a second.
 
 ## Coming from Redis bitmaps

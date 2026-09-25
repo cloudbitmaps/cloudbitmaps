@@ -84,6 +84,14 @@ export class RetryingStorageChunkSource implements StorageChunkSource {
   readonly exists?: (ref: SegmentRef) => Promise<boolean>;
   readonly currentVersion?: (ref: SegmentRef) => Promise<string | null>;
 
+  /**
+   * Forwarded, not retried: a property, with no request behind it. Without it the grounded cost report priced a
+   * retrying store's refresh at the default TTL whatever the store was configured with.
+   */
+  get pointerRefreshMs(): number | undefined {
+    return this.inner.pointerRefreshMs;
+  }
+
   constructor(inner: StorageChunkSource, opts: RetryingOptions) {
     this.inner = inner;
     const r = toRetry(opts);

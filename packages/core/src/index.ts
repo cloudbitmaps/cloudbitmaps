@@ -256,9 +256,17 @@ export type { IMetricsSink, MetricEvent, MetricOpName, MetricsSnapshot } from '.
 
 // Cost model & estimator: pure `estimateCost` planning + grounded `segment.costReport()`; the pluggable pricing
 // profile + the honest `CostReport` verdict (never hides the lose-zone).
-export { estimateCost, DEFAULT_PRICING, AWS_US_EAST_1_ONDEMAND } from './core/cost';
+export {
+  estimateCost,
+  DEFAULT_PRICING,
+  AWS_US_EAST_1_ONDEMAND,
+  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
+  ONE_REDIS_HA_CLUSTER,
+} from './core/cost';
 export type {
   PricingProfile,
+  RedisNodeType,
+  RedisSizing,
   CostReport,
   Workload,
   SegmentSizing,

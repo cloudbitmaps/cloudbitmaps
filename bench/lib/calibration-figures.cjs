@@ -71,14 +71,26 @@ function readSources(root) {
   };
   const cost = read('packages/core/src/core/cost.ts');
   const format = read('packages/core/src/core/crbm/format.ts');
-  const source = read('packages/core/src/core/crbm-storage-source.ts');
+  const readerDefaults = read('packages/core/src/core/reader-defaults.ts');
   const engine = read('packages/core/src/core/engine.ts');
   const profile = need(
-    /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},\s*redis:\s*\{\s*monthlyUSD:\s*(\d+)\s*\}/,
+    /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},/,
     cost,
     'the default pricing profile in packages/core/src/core/cost.ts',
   );
-  const month = need(/const SECONDS_PER_MONTH = (\d+) \* (\d+);/, cost, 'SECONDS_PER_MONTH');
+  // A run's crossover is against one Redis-HA cluster, whatever the data size; the default profile sizes Redis
+  // to the data instead, which is the estimator's verdict and not a run's.
+  const cluster = need(
+    /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}/,
+    cost,
+    'ONE_REDIS_HA_CLUSTER in packages/core/src/core/cost.ts',
+  );
+  const hours = need(/const HOURS_PER_MONTH = (\d+);/, cost, 'HOURS_PER_MONTH');
+  const month = need(
+    /const SECONDS_PER_MONTH = HOURS_PER_MONTH \* (\d+);/,
+    cost,
+    'SECONDS_PER_MONTH',
+  );
   const tail = need(
     /export const DEFAULT_TAIL_BYTES = (\d+) \* (\d+);/,
     format,
@@ -88,7 +100,7 @@ function readSources(root) {
   const preamble = need(/export const PREAMBLE_BYTES = (\d+);/, format, 'PREAMBLE_BYTES');
   const ttl = need(
     /const DEFAULT_CURRENT_GEN_TTL_MS = (\d+);/,
-    source,
+    readerDefaults,
     'DEFAULT_CURRENT_GEN_TTL_MS',
   );
   const fanOut = need(
@@ -102,9 +114,9 @@ function readSources(root) {
       getPerMillion: Number(profile[2]),
       putPerMillion: Number(profile[3]),
       storagePerGiBMonth: Number(profile[4]),
-      redisMonthlyUSD: Number(profile[5]),
+      redisMonthlyUSD: Number(cluster[1]),
     },
-    secondsPerMonth: Number(month[1]) * Number(month[2]),
+    secondsPerMonth: Number(hours[1]) * Number(month[1]),
     tailBytes: Number(tail[1]) * Number(tail[2]),
     footerBytes: Number(footer[1]),
     preambleBytes: Number(preamble[1]),
@@ -485,15 +497,6 @@ function derive(run, src) {
       segmentMonth: monthUSD(object),
       multipartMonth: monthUSD(multipartObject),
       pointerRefreshMonth: pointerRefreshUSD,
-      // What `estimateCost()` charges a load by default: `requestsPerLoad` PUT-class requests, 1 unless set.
-      estimatorLoadDefault: putUSD,
-    },
-    // The requestsPerLoad values that make the estimator's PUT-only load term price each kind of load exactly.
-    estimatorRequestsPerLoad: {
-      writeAndPublish: putsPerSingle + (getsPerLoad * getUSD) / putUSD,
-      ...Object.fromEntries(
-        Object.entries(STORE_LOAD_REQUESTS).map(([k, r]) => [k, r.put + (r.get * getUSD) / putUSD]),
-      ),
     },
     parity: {
       intersectsPerMonth: perMonth(measuredIntersectUSD),
@@ -689,8 +692,6 @@ function valuesOf(f, { withLatency }) {
       f.usd.segmentMonth,
       f.usd.multipartMonth,
       f.usd.pointerRefreshMonth,
-      f.usd.estimatorLoadDefault,
-      1e6 * f.usd.estimatorLoadDefault,
       bind(1e6 * f.usd.singleLoadPuts, ['puts', 'gets'], ['puts']),
       bind(1e6 * f.usd.loadGets, ['puts', 'gets'], ['gets']),
       bind(1e6 * f.usd.loadRereads, ['rereads'], ['rereads']),

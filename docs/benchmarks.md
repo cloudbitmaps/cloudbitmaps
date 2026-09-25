@@ -1,48 +1,59 @@
 # CloudBitmaps — benchmarks & the Redis crossover
 
 > **Generated, not hand-written.** The chart and table below are produced by `pnpm bench` from the shipped
-> `estimateCost()` + the default `aws-us-east-1-ondemand` pricing, so they can never drift from the
-> library's own numbers. The polished, shareable version lives on the [site](../site/benchmarks.html)
+> `estimateCost()` at the default `aws-us-east-1-ondemand` rates: the line against one three-node Redis-HA cluster,
+> `ONE_REDIS_HA_CLUSTER`, whatever the data size, and the table's last row against the Redis the default profile
+> sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the library's own numbers. The
+> polished, shareable version lives on the [site](../site/benchmarks.html)
 
-CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
-sustained read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
+CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
+sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
 
 There is **one** crossover, not two, because a loaded store has no per-id write to plot: data enters as a whole
 generation — one object PUT, a few when multipart, then the pointer — which the estimator prices as `loadsPerMonth`
-rather than as a rate. Reads are the axis where a flat, always-on node competes.
+rather than as a rate. Reads are the axis where a flat, always-on cluster competes.
 
 ## The crossover chart
 
 <!-- BENCH:CHART:START -->
-![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)
+![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)
 <!-- BENCH:CHART:END -->
 
 <!-- BENCH:STATS:START -->
 | Scenario | Value | Basis | Verdict |
 | --- | --- | --- | --- |
-| At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of Redis | win-big |
-| Read crossover | **329.15 reads/s** | object GETs, cache off | past here a flat tier is cheaper |
-| Redis-HA baseline | **$346/mo** | flat | the comparison line |
+| At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of the $346 cluster | win-big |
+| Read crossover | **329.15 reads/s** | object GETs, cache off | past here the cluster is cheaper |
+| Redis-HA baseline | **$346/mo** | one cluster, whatever the data size | the comparison line |
+| The Redis the default prices for the 1.2 GiB set | **$142.35/mo** | 3 × cache.t4g.medium, the cheapest cluster in the catalogue that holds it | the line would sit at 135.42 reads/s |
 <!-- BENCH:STATS:END -->
 
 ## How these stay honest
 
 Every number above is turned into a **deterministic, build-breaking CI assertion** in
-[`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts) — a regression or an overclaim fails the
-build:
+[`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts), and the estimator's request counts in
+[`tests/core/cost.test.ts`](../tests/core/cost.test.ts); `pnpm bench:check` holds the chart, the table and
+`bench/results.json` to the same estimator — a regression or an overclaim fails the build:
 
 - **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, summing cardinality
   straight from the `.crbm` index.
 - **Chunk-skipping works** — the chunks a 5%-overlap intersection fetches come to ≤ 10% of the bytes of a full
   two-segment download (measured through the metrics sink, which counts chunk reads).
-- **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of a Redis-HA node.
+- **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of the $346 cluster.
 - **The published crossover is the modelled one** — the estimator's read crossover, at the pessimal cache
   posture, is asserted against the rate this page prints, over the same $346 baseline.
 - **The estimator never quotes fewer chunk reads than the engine makes** — priced against the chunk GETs a metrics
   sink observed for a point-read workload on an in-memory store, the prediction must land on or above the measured
-  cost. That covers point reads' chunk GETs only. For an intersect the estimator prices whatever
-  `chunksPerIntersect` it is given, 1 by default, and it has no term yet for the pointer and tail reads a
-  single-bucket store adds, which [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416) measured.
+  cost. That covers point reads' chunk GETs.
+- **The estimator counts what the engine sends** — a cold intersect's pointer and index reads for each operand before
+  its chunks, what `store.load()` adds to a load's object write, and at most one pointer read per hot segment per
+  `cache.genTtlMs`. A test drives the real engine over the single-bucket registry protocol and holds each count to
+  the requests it makes, on S3's request shape; GCS and Azure Blob make two requests for a pointer or a tail read,
+  which the pricing profile's `requestsPerSizedRead` carries. A fleet of readers pays the refresh once per reader,
+  which `readerProcesses` carries. And it still quotes low where it cannot see: more hot segments than a reader
+  keeps open (1,024 by default), which re-opens them as it reads them; the index every reader opens again after
+  each load; an intersect slow enough to outlive `cache.genTtlMs`, which re-reads its pointers; an operand whose
+  index outgrows the tail read, one more GET; and a load that loses a publish race, which reads the pointer again.
 
 ## Real-cloud calibration — AWS
 
@@ -107,12 +118,12 @@ instead for the pointer refresh: at most one GET per segment every 2 s while the
   by a test, not measured.
 - **Other shapes**: more operands, other overlaps, `andNot` with an `exclude`, the `*Into` verbs.
 
-**`estimateCost()` does not count the pointer or the tail reads yet.** It prices a load as `requestsPerLoad`
-PUT-class requests (1 by default, which is $5 per million loads) and an intersect as `chunksPerIntersect` GETs (1 by
-default), and it has no term for the pointer refresh. Until it counts them itself, pass `requestsPerLoad: 2.24`,
-which prices a single-bucket write and publish at $11.20 per million, or `4.56` for a segment's first `store.load()`
-and `4.72` from its third, and pass every GET an intersect makes as `chunksPerIntersect`: `204` for a cold
-intersect of this shape. The fix is [owed](#what-is-still-owed).
+**`estimateCost()` now counts what this run's bill counted.** When the run was published it priced a load as its
+object's PUT-class requests alone and an intersect as its chunk reads alone, with no term for the pointer, the tail
+reads or the pointer refresh. It now adds each cold operand's pointer and tail read, which prices this run's
+intersect at 204 GETs (**expected**); what `store.load()` adds to its object's write; and the pointer refresh, for
+the segments a long-lived reader keeps reading. The
+[guide](guide/getting-started.md#what-each-term-counts) says what each term counts.
 
 ### The July 2026 run — `2026-07-25-60291`, the object-store half of a retired topology
 
@@ -299,8 +310,10 @@ which is why none is published until an in-region run produces one.
 
 ## Caveats
 
-- **Default pricing** (`aws-us-east-1-ondemand`, cache off). Your region, cloud, committed term and cache-hit
-  rate all move the crossover — feed your own `PricingProfile` and workload to `estimateCost()`.
+- **Default rates, one cluster** (`aws-us-east-1-ondemand` against `ONE_REDIS_HA_CLUSTER`, cache off). Your
+  region, cloud, committed term and cache-hit rate all move the crossover, and so does your data's size: the
+  estimator's default prices the Redis that would hold it, which [what it costs at your size](guide/sizing.md)
+  works through. Feed your own `PricingProfile` and workload to `estimateCost()`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);
@@ -309,7 +322,9 @@ which is why none is published until an in-region run produces one.
   a real account, on 2026-07-25 and 2026-09-23). Only the third is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
-  repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the _ratios_ as the durable
+  default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
+  `ONE_REDIS_HA_CLUSTER`, and the stats table's last row against the Redis the default profile sizes for the
+  reference set. Treat the _ratios_ as the durable
   finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
   `PricingProfile` so you can plug your real rates in rather than trusting ours.
 
@@ -330,10 +345,6 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 - **What `store.load()` costs on S3.** The run measured a load's write and publish. `store.load()` adds a listing
   to choose the generation number and a collection pass after the publish. A test counts the requests that adds,
   which about doubles a load's bill; they are not yet measured on S3.
-- **An estimator that counts the pointer and the tail reads.** `estimateCost()` has no term for the pointer's
-  requests in a load or an intersect, none for an intersect's tail reads, and none for the pointer refresh, so it
-  under-quotes both operations in the single-bucket topology; see
-  [the single-bucket bill](#the-single-bucket-bill--run-2026-09-23-94416) for the figures to use until it does.
 - **A Lambda figure** — a function's cold start and initialisation against a real store, from inside one.
 
 **The harness is built, and has run for real from a laptop.** [`bench/calibrate-aws.cjs`](../bench/calibrate-aws.cjs)
@@ -347,7 +358,7 @@ below 30 ms — a line that keeps another continent out, not a neighbouring regi
 it for a reader who wants a stricter one. Its run `2026-09-23-94416`, from a laptop, paid the cost side above. A run
 from AWS CloudShell can pay the rows it measures: in-region intersect latency and load throughput. Point reads,
 `andNot` with a large `exclude`, `store.load()` itself, the `*Into` verbs, the sweep and the Lambda figure are not in it
-yet, and the estimator's fix is a library change.
+yet.
 How it guards against spending more than it says, and how to run it from inside the region:
 [`bench/README.md`](../bench/README.md#real-cloud-calibration).
 

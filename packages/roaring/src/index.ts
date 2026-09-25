@@ -2028,7 +2028,9 @@ export class Segment {
   /**
    * Grounded cost report for this segment: storage cost from its **real** `.crbm` size (exact, no payload
    * reads); request cost from the supplied `workload` rates. A segment with no Storage generation reports zero
-   * storage. See {@link CostReport} — it always includes a verdict (incl. the lose-zone).
+   * storage. The pointer refresh is priced at the store's own `cache.genTtlMs`, or at none when the store never
+   * refreshes, unless the workload sets `genTtlMs`. See {@link CostReport} — it always includes a verdict (incl.
+   * the lose-zone).
    */
   async costReport(options?: {
     pricing?: PricingProfile;
@@ -2036,10 +2038,15 @@ export class Segment {
   }): Promise<CostReport> {
     const canMeasure = this.engine.supportsStorageSize;
     const size = canMeasure ? await this.engine.segmentSize(this.ref) : null;
+    const refreshMs = this.engine.pointerRefreshMs;
+    const workload =
+      refreshMs === undefined || options?.workload?.genTtlMs !== undefined
+        ? options?.workload
+        : { ...options?.workload, genTtlMs: refreshMs };
     return groundedReport({
       storageBytes: size?.sizeBytes ?? 0,
       grounded: canMeasure,
-      workload: options?.workload,
+      workload,
       pricing: options?.pricing,
       extraNotes: canMeasure
         ? undefined

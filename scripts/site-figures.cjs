@@ -118,9 +118,11 @@ if (strayLatency) {
 //
 // It is also a NARROW claim, and the page has to say so. It used to read "never quotes a cheaper bill than the
 // engine incurs", which the single-bucket calibration run showed to be false as a claim about a bill: the
-// estimator has no term for the pointer's requests or an intersect's tail reads, so it under-quotes both of that
-// topology's operations. What the anchor test proves is chunk reads on an in-memory store, so what is gated is
-// that the page states it as a floor, and scopes it to chunk reads.
+// estimator then had no term for the pointer's requests or an intersect's tail reads. It counts those now, held to
+// the engine's request counts by tests/core/cost.test.ts, but "a cheaper bill" is still false: an intersect that
+// outlives the pointer TTL re-reads its pointers, which that run did from outside the region, and a load that
+// loses a publish race reads the pointer again. What the anchor test proves is chunk reads on an in-memory store,
+// so what is gated is that the page states it as a floor, and scopes it to chunk reads.
 if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
   fail(
     'docs/benchmarks.md no longer states the estimator\'s no-under-quote claim ("never quotes fewer chunk ' +
@@ -130,7 +132,8 @@ if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
 if (/never quotes a cheaper bill/.test(doc)) {
   fail(
     'docs/benchmarks.md claims the estimator "never quotes a cheaper bill" — it under-quotes a single-bucket ' +
-      "store's pointer and tail reads; the anchor test proves chunk reads only",
+      'intersect that outlives the pointer TTL, or a load that loses a publish race; the anchor test proves chunk ' +
+      'reads only',
   );
 }
 if (/prediction lands within ±\d+%/.test(doc)) {
@@ -315,11 +318,12 @@ function checkDriverCountEverywhere(want) {
 // load-bearing comparison on the page unauditable: a reader could not tell whether the node was sized for this
 // dataset or several times larger than it. The spec is now published, so it gets gated like every other claim.
 //
-// Source is the pricing profile's own trailing comment in core/cost.ts — the same literal the $346 comes from,
-// so the prose cannot drift from the number it describes. Parsed, not transcribed.
+// Source is the one-cluster anchor's own trailing comment in core/cost.ts — the same literal the $346 comes from,
+// so the prose cannot drift from the number it describes. Parsed, not transcribed. The site's $346 is that one
+// cluster, which the crossover is drawn against; the estimator's default verdict sizes Redis to the data instead.
 const COST = path.join(ROOT, 'packages', 'core', 'src', 'core', 'cost.ts');
 const baseline =
-  /redis:\s*\{\s*monthlyUSD:\s*(\d+)\s*\}\s*,?\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
+  /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}\)?;\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
     fs.readFileSync(COST, 'utf8'),
   );
 if (!baseline) {
@@ -356,9 +360,15 @@ const anchors = [
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
   ['Redis-HA baseline', `$${results.redisBaselineUSD}`],
   // One crossover, because there is one metered axis: reads against a standing node. The write side is not a
-  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` × `requestsPerLoad` and a
+  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` of them and a
   // "writes per second" figure would describe an operation nobody performs.
   ['read crossover', `${results.readCrossoverPerSec}`],
+  // The Redis the estimator's default prices for the reference set, which is smaller than the one cluster the line is
+  // drawn against: the benchmarks page discloses it, and where the line would sit against it.
+  // Written with cents, as bench/run.cjs prints it: $153.30, never $153.3.
+  ['reference set · the Redis that holds it', `$${results.referenceRedis.monthlyUSD.toFixed(2)}`],
+  ['reference set · its cluster', results.referenceRedis.cluster],
+  ['reference set · the line against it', `${results.referenceRedis.readCrossoverPerSec}`],
   ['baseline topology', baselineTopology],
   ['baseline instance class', baselineInstance],
   ['baseline single-node', baseline ? `$${baseline[3]}` : null],
@@ -435,7 +445,7 @@ const EXPECTED_1M = 'per million cold intersects with each pointer read once';
 const WRITE_1M = 'per million single-part write-and-publishes';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
-  // the estimator's $5 — fails even where the replacement is a value some source accounts for.
+  // the per-PUT $5 the estimator once quoted — fails even where the replacement is a value some source accounts for.
   { rel: 'site/benchmarks.html', requireAll: true },
   { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },
@@ -660,7 +670,7 @@ for (const page of PAGES) {
     const values = calibration.mergeValues(
       singleBucket.pageValues,
       calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
-        perSecond: [results.readCrossoverPerSec],
+        perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
       }),
     );
     for (const block of blocksOf(html, isHtml, metas)) {
