@@ -1,8 +1,9 @@
 # Contributing to CloudBitmaps
 
 How this project is built — the **canonical** record of our conventions and working process, for humans
-*and* for any AI tooling. (The agent operating manual, [`CLAUDE.md`](CLAUDE.md), embeds the engineering
-**principles** and the project's **hard correctness invariants**, and points here for the process below.)
+*and* for any AI tooling. (The agent operating manual, [`AGENTS.md`](AGENTS.md), embeds the engineering
+**principles** and the project's **hard correctness invariants**, and points here for the process below.
+`CLAUDE.md` is a symlink to `AGENTS.md`.)
 
 > CloudBitmaps is pre-release and built in phases — see the roadmap (the
 > living source of project state).
@@ -114,9 +115,8 @@ stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 p
 
 ## Branching & merge conventions
 
-- **Branch off `main`** for all code. Prefix by intent: **`feature/<slug>`**, **`fix/<slug>`**,
+- **Branch off `main`** for every change, docs included: nothing goes straight to `main`. Prefix by intent: **`feature/<slug>`**, **`fix/<slug>`**,
   **`chore/<slug>`** (setup/tooling/deps) — spelled in full; `feat/`, `bug/` and `wip/` are not the set.
-  **Docs-only** changes may go straight to `main`.
 - **The slug names the change, not the area it lives in.** Lowercase `kebab-case`, about three to six
   words, readable off `git branch` months later by someone who wasn't there:
   `feature/roll-segment-pointer-back-to-older-generation`, not `feature/rollback`. A one-word slug names a
@@ -128,7 +128,8 @@ stashes the unstaged hunks, formats the staged ones, restores) is worth its 21 p
 - **Squash-merge** every PR into `main` (one commit per PR → linear, readable history).
 - **After merge, delete the branch — remote *and* local** (`git push origin --delete <branch>` +
   `git branch -d <branch>`). Don't let merged branches linger.
-- **Code PRs wait for an explicit per-PR approval** before merging; docs-only PRs may merge once green.
+- **Every PR waits for an explicit per-PR approval** before merging, a docs-only one included; green CI is
+  necessary, not sufficient.
 - **Never** `git commit --no-verify` / `git push --no-verify`; never `Co-Authored-By` trailers.
 
 ## Decisions: ask before building the consequential ones
@@ -152,9 +153,9 @@ When in doubt about whether something is "important," ask. This applies to **all
 The roadmap is built in phases. A **sub-phase** is any meaningful increment / PR within a phase — the gate
 below runs after sub-phases too, not just whole phases. For each, in order:
 
-1. **Branch off `main`** per the conventions above. **Docs-only** changes may go straight to `main`.
+1. **Branch off `main`** per the conventions above, docs-only changes included.
 2. **Build with tests, not after.** No untested code — new behavior ships with tests in the same commit.
-   The [correctness invariants](CLAUDE.md#hard-correctness-invariants) each get named tests, including
+   The [correctness invariants](AGENTS.md#hard-correctness-invariants) each get named tests, including
    property tests over loaded generations and crash/race tests for the write-then-publish path.
 3. **Run the full local gate — and it must be green.** Before review or merge, run every gate command and
    confirm each passes: `pnpm lint` · `pnpm lint:arch` · `pnpm format:check` · **`pnpm typecheck`** ·
@@ -175,7 +176,7 @@ below runs after sub-phases too, not just whole phases. For each, in order:
    - **testing quality** — are the invariants + edge cases actually covered? property/oracle adequacy,
      determinism, no flaky/slow tests,
    - **docs & spec fidelity** — does the code match its own doc-comments and the
-     [hard invariants](CLAUDE.md#hard-correctness-invariants)? are the roadmap/guide/changelog current?
+     [hard invariants](AGENTS.md#hard-correctness-invariants)? are the roadmap/guide/changelog current?
    - **anything else** the domain suggests.
 
    Triage → fix the real ones in the same change, or record them in the PR
@@ -202,7 +203,7 @@ root-level project files. What each one is, and when it must be updated:
 | `docs/guide/` | **users** | how to actually use it — accurate to what's shipped | a user-visible capability or public API ships |
 | `docs/guide/api-reference.md` | users | the complete callable surface — every export, every entry point | **CI-enforced**: `tests/docs/api-reference-sync.test.ts` fails the build if an export is undocumented |
 | `docs/ROADMAP.md` | **users** | what's shipped, the **validated envelope**, the path to `1.0`, and the explicit not-planned list | capabilities land, or the envelope changes |
-| `docs/benchmarks.md` | users | measured cost/latency + the methodology behind each number | a benchmark or calibration run lands |
+| `docs/benchmarks.md` | users | the published cost and memory figures, how each was measured or modelled, and what is still owed, in-region latency among them | a benchmark or calibration run lands |
 | `bench/` · `scripts/` · `site/` · `tests/` — each `README.md` | contributors | a row for every part of that directory — each file in `bench/` and `scripts/`; each page and top-level file in `site/`; each directory, top-level file and documentation gate in `tests/` — saying what it is and what runs it | a part there is added, removed or renamed — **CI-enforced**: `tests/docs/directory-readmes.test.ts` fails when a part has no row, or a row names a path that does not exist |
 | `CODE_OF_CONDUCT.md` · `.github/` | contributors | Contributor Covenant, PR template, issue forms | the gate or process changes |
 
@@ -237,7 +238,7 @@ This applies to code comments as much as prose: a doc-comment reaches users on h
 inside the published `.d.ts` and sourcemaps. **CI-enforced** by
 [`tests/docs/internal-citations.test.ts`](tests/docs/internal-citations.test.ts), which scans every tracked
 text file. Ids a reader *can* resolve are fine and stay: the seven hard invariants in
-[`CLAUDE.md`](CLAUDE.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
+[`AGENTS.md`](AGENTS.md), a `§` section of a public guide, and a `#123` issue or PR on this repository.
 
 ## Code style
 
@@ -252,6 +253,6 @@ text file. Ids a reader *can* resolve are fine and stay: the seven hard invarian
   ([`packages/roaring/src/testing/conformance.ts`](packages/roaring/src/testing/conformance.ts)) every driver
   (incl. community ones) must pass.
 - The engineering **principles** (SOLID/DRY/KISS/YAGNI, fail-fast, security-by-default, determinism,
-  boy-scout) are in [`CLAUDE.md`](CLAUDE.md#principles); the **hard correctness invariants** (tombstones,
+  boy-scout) are in [`AGENTS.md`](AGENTS.md#principles); the **hard correctness invariants** (tombstones,
   generation fencing, untrusted bytes, bounded memory, storage-agnostic core) are in
-  [`CLAUDE.md`](CLAUDE.md#hard-correctness-invariants).
+  [`AGENTS.md`](AGENTS.md#hard-correctness-invariants).

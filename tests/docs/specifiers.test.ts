@@ -41,7 +41,7 @@ function publicFacingFiles(): string[] {
   const out: string[] = [
     'README.md',
     'CONTRIBUTING.md',
-    'CLAUDE.md',
+    'AGENTS.md',
     'SECURITY.md',
     'PRIVACY.md',
     'MIGRATING.md',

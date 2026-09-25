@@ -1666,7 +1666,7 @@ test that fails without its fix, verified by re-introducing the bug (`tests/core
   contributors to an `internal/` tree that is not here, `README.md` claimed the specs and decision log "live
   under `docs/`", and the API reference and this changelog deferred *why* to the decision log. Each now points at
   where the reasoning actually is — the module headers, which lead with the decision they encode and what the
-  alternative cost, and the [hard correctness invariants](CLAUDE.md#hard-correctness-invariants) — and
+  alternative cost, and the [hard correctness invariants](AGENTS.md#hard-correctness-invariants) — and
   `docs/README.md` says plainly that the design corpus is maintained privately and that nothing here should send
   you to it. A doc that promises a reader something the repo does not have is worse than one that says less.
 

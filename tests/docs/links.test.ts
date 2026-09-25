@@ -32,6 +32,7 @@ const SKIP_DIRS = new Set([
 const NAMED_FILES = [
   'README.md',
   'CONTRIBUTING.md',
+  'AGENTS.md',
   'CLAUDE.md',
   'SECURITY.md',
   'PRIVACY.md',
