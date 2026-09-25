@@ -297,18 +297,23 @@ before/after table is in [`MIGRATING.md`](../../MIGRATING.md).
 
 ### Cost & observability
 
-`CostReport` · `PricingProfile` · `Workload` · `SegmentSizing` · `EstimateInput` · `IMetricsSink` · `MetricEvent` ·
-`MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `AuditEventKind`
+`CostReport` · `PricingProfile` · `RedisSizing` · `RedisNodeType` · `Workload` · `SegmentSizing` · `EstimateInput` ·
+`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `AuditEventKind`
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
 `PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
-redis: { monthlyUSD } }`, where `requestsPerSizedRead` is 1 on S3 and 2 on GCS and Azure Blob;
+redis }`, where `requestsPerSizedRead` is 1 on S3 and 2 on GCS and Azure Blob, and `redis` is either
+`{ sizedToData: RedisSizing }`, the default's, which prices the cheapest cluster that holds the report's stored bytes,
+or `{ monthlyUSD }`, one cluster whatever the data size. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
+reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;
 `Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
 loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
-`{ reads, intersects, storage, loads, pointerRefresh }`, and `redisCrossover.readsPerSec` is the sustained read rate at
-which pay-per-use passes the flat baseline, net of storage and the pointer refresh (≈329 reads/s at the default
-profile with a 0% cache-hit rate). What each term counts is in the
-[guide](getting-started.md#what-each-term-counts). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
+`{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ monthlyUSD, basis: 'sized-to-data' |
+'fixed', cluster?: { nodeType, shards, nodes } }`, the Redis the verdict compares against; and
+`redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
+refresh (≈329 reads/s against `ONE_REDIS_HA_CLUSTER` with a 0% cache-hit rate). What each term counts is in the
+[guide](getting-started.md#what-each-term-counts), and what the verdict compares against
+[beside it](getting-started.md#what-it-compares-against). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
 `MetricsSnapshot` is `{ storage, cache, retries: { transient }, intersect, ops }`.
 
 ### The storage interfaces (used to type `storage` / `registry`)
@@ -589,7 +594,7 @@ or `segmentKey` from core will find each one there.
 `retireExpired` · `excludingReservedRows` · `DEFAULT_RETRY_POLICY` · `RetryingStorageDriver` ·
 `RetryingRegistryDriver` · `RetryingStorageChunkSource` · `CrbmReader` · `BufferReader` ·
 `CountingMetricsSink` · `NOOP_METRICS` · `RecordingAuditSink` · `estimateCost` · `DEFAULT_PRICING` ·
-`AWS_US_EAST_1_ONDEMAND` · `runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` ·
+`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1` · `ONE_REDIS_HA_CLUSTER` · `runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `TimeoutError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`
@@ -612,8 +617,8 @@ or `segmentKey` from core will find each one there.
 `InProcessKeystoreOptions` · `EraseDeps` · `DropDeps` · `DestroyResult` · `DropResult` · `RetentionPolicy` ·
 `RetentionDeps` · `SetRetentionResult` · `RetireExpiredOptions` · `RetireExpiredResult` · `RetireEntry` ·
 `RetryPolicy` · `RetryDeps` · `RetryingOptions` · `CrbmReaderOptions` · `BlobReader` · `BlobSink` ·
-`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `CostReport` ·
-`Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `AuditEventKind` · `Clock` ·
+`IMetricsSink` · `MetricEvent` · `MetricOpName` · `MetricsSnapshot` · `PricingProfile` · `RedisSizing` ·
+`RedisNodeType` · `CostReport` · `Workload` · `SegmentSizing` · `EstimateInput` · `IAuditSink` · `AuditEvent` · `AuditEventKind` · `Clock` ·
 `Rng` · `Budget` · `BudgetOption` · `ConsistencyReport` · `ConsistencyIssue` · `ConsistencyErrorEntry` ·
 `CodecInterface` · `CodecBitmap` · `EngineDeps` · `Token`
 
