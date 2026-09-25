@@ -2,10 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CloudRoaring,
   CrbmStorageChunkSource,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
+  createBackend,
 } from '@/index';
 import { SafeBitmap } from '@/roaring-codec';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
@@ -83,6 +85,39 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     const source = new CrbmStorageChunkSource(storage, { registry });
     await expect(source.currentGeneration(SEG)).resolves.toBe(1);
   });
+
+  it('currentVersion, which the engine calls before every read, heals the same race', async () => {
+    const storage = freshStorage();
+    const inner = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+
+    const registry = sweepingRegistry(inner, async () => {
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: inner,
+      });
+      await storage.delete({ ...SEG, generation: 0 });
+    });
+
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    // Generation 1's version, of the one incarnation there is: `<generation>:<row token>`.
+    await expect(source.currentVersion(SEG)).resolves.toMatch(/^1:/);
+  });
+
+  it('so a cold has() racing a publish and a keep: 0 sweep answers, rather than failing the read', async () => {
+    const storage = freshStorage();
+    const inner = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+
+    const registry = sweepingRegistry(inner, async () => {
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: inner,
+      });
+      await storage.delete({ ...SEG, generation: 0 });
+    });
+
+    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    await expect(store.segment('s').has(3)).resolves.toBe(true); // generation 1 holds it
+  });
 });
 
 /**
@@ -139,6 +174,13 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
     const c = await tornSegment();
     const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
     await expect(source.currentGeneration(SEG)).rejects.toThrow(/no such generation/);
+    expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
+  });
+
+  it('currentVersion against a permanently absent generation: two attempts, then propagate', async () => {
+    const c = await tornSegment();
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
+    await expect(source.currentVersion(SEG)).rejects.toThrow(/no such generation/);
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
 

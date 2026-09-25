@@ -422,8 +422,12 @@ eventually-consistent**: after a load publishes a new generation, a reader may s
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
 registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
-`intersect` — the generation is resolved **once** and every chunk comes from it, so a load landing mid-call cannot
-tear the result. Without a registry the generation is pinned for the source's lifetime (single-process/local use).
+`intersect` — the generation is resolved **once**, before any chunk is fetched, and every chunk is a whole,
+checksum-verified chunk of one generation, so a load landing mid-call never tears a chunk. A long call can still
+read its later chunks from the newer generation, if it straddles a TTL boundary or the reader cache evicts the
+segment mid-call, and its answer then describes two instants
+([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one. Without a registry
+the generation is pinned for the source's lifetime (single-process/local use).
 
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:

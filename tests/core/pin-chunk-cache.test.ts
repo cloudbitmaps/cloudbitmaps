@@ -1,24 +1,17 @@
 import {
   MemoryStorage,
   CloudRoaring,
-  SafeBitmap,
+  CrbmStorageChunkSource,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
 } from '@/index';
-import type {
-  CacheOptions,
-  Clock,
-  IMetricsSink,
-  Segment,
-  SegmentRef,
-  StorageChunkSource,
-} from '@/index';
+import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
 
 /**
- * A decoded chunk must be cached under the version of the generation that SERVED its bytes.
+ * A pinned handle must only ever be handed chunks of the generation it pinned.
  *
  * `SegmentEngine` resolves a segment's version once per op (`cacheVersion`) and caches every chunk the op
  * fetches under that version. `CrbmStorageChunkSource.getChunk` does not serve "that version", though: it reads
@@ -33,6 +26,11 @@ import { roaringCodec } from '@/roaring-codec';
  * it is handed the newer generation's chunk. The one handle that exists to describe a single instant then
  * returns a torn read: some chunks from the generation it pinned and some from the next, while its `count()`,
  * served from the pinned generation's index rather than from the cache, still reports the pinned total.
+ *
+ * So a pin keys its chunks in a space of its own (`PinnedStorageChunkSource.currentVersion`), which no live read
+ * writes, and fills it only from its own generation. The live entry may still hold the newer chunk under the
+ * older version, which is harmless: later live reads resolve the newer version and never look it up. Nothing on
+ * the live path checks anything after a fetch, so a live read pays nothing for the pin's safety.
  *
  * Every case below ends with the same check: dropping the store's derived state (`invalidate`) makes the pin
  * read correctly again, because the bytes in the bucket were never wrong — only the cache entry was.
@@ -105,7 +103,7 @@ async function pinnedViews(
   return { pinned, afterInvalidate };
 }
 
-describe('the decoded-chunk cache is keyed by the generation that served the bytes', () => {
+describe('a pin is never handed a chunk a live read fetched across a change of generation', () => {
   it('iterate: a live read straddling a publish and cache.genTtlMs hands the pin generation 1 chunks', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     const snap = await w.store.segment('s').pin(); // generation 0: the instant this handle must describe
@@ -238,52 +236,86 @@ describe('the decoded-chunk cache is keyed by the generation that served the byt
         (v) => v,
         () => 'threw',
       );
+    // Every chunk the live read fetched after the sweep is probed, chunk 1 as well as chunk 2.
     expect({
       count: await settle(snap.count()),
+      chunk1Gen0Id: await settle(snap.has(C + 10)),
+      chunk1Gen1Id: await settle(snap.has(C + 20)),
       hasGen0Id: await settle(snap.has(2 * C + 30)),
       hasGen1Id: await settle(snap.has(2 * C + 40)),
-    }).toEqual({ count: 'threw', hasGen0Id: 'threw', hasGen1Id: 'threw' });
+    }).toEqual({
+      count: 'threw',
+      chunk1Gen0Id: 'threw',
+      chunk1Gen1Id: 'threw',
+      hasGen0Id: 'threw',
+      hasGen1Id: 'threw',
+    });
   });
 });
 
-describe('the check that admits a chunk to the cache', () => {
-  /**
-   * A source that serves one chunk and reports version `v1`, except that its answer to the engine's check after
-   * each fetch — every second call — fails, as re-resolving an evicted segment can.
-   */
-  function flakySource(failChecks: number) {
-    const bytes = SafeBitmap.fromValues([1, 2, 3]).serialize();
-    let versionCalls = 0;
-    const counts = { gets: 0 };
-    const source: StorageChunkSource = {
-      getChunk: async () => {
-        counts.gets += 1;
-        return bytes;
+describe('a pin keeps entries of its own, and no other read pays for them', () => {
+  /** A source that records the name of every method the engine calls on it, in order. */
+  function recording(inner: CrbmStorageChunkSource): {
+    source: CrbmStorageChunkSource;
+    calls: string[];
+  } {
+    const calls: string[] = [];
+    const source = new Proxy(inner, {
+      get(target, prop, receiver) {
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          calls.push(String(prop));
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
       },
-      listChunkKeys: async () => [0],
-      currentVersion: async () => {
-        versionCalls += 1;
-        // Odd calls resolve the op; even calls are the check after a fetch.
-        if (versionCalls % 2 === 0 && versionCalls / 2 <= failChecks)
-          throw new Error('re-resolve failed');
-        return 'v1';
-      },
-    };
-    return { source, counts };
+    });
+    return { source, calls };
   }
 
-  it('returns the chunk it fetched when the check cannot answer, and does not cache it', async () => {
-    const { source, counts } = flakySource(1);
+  /** A cold read of every id in `s`, on a fresh source over one bucket, with or without a chunk cache. */
+  async function coldReadCalls(withCache: boolean): Promise<string[]> {
+    const { storage, registry } = new MemoryStorage();
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
+    const { source, calls } = recording(new CrbmStorageChunkSource(storage, { registry }));
     const engine = new SegmentEngine({
       storage: source,
       codec: roaringCodec,
-      cache: new BoundedLru({ maxEntries: 8, clock: { now: () => 0 } }),
+      ...(withCache
+        ? { cache: new BoundedLru<string, never>({ maxEntries: 64, clock: { now: () => 0 } }) }
+        : {}),
     });
-    expect(await engine.has(REF, 2)).toBe(true); // fetched; the check failed, so not cached
-    expect(counts.gets).toBe(1);
-    expect(await engine.has(REF, 2)).toBe(true); // fetched again; the check passed, so cached now
-    expect(counts.gets).toBe(2);
-    expect(await engine.has(REF, 3)).toBe(true); // a hit
-    expect(counts.gets).toBe(2);
+    const ids: number[] = [];
+    for await (const id of engine.iterate(REF)) ids.push(id);
+    expect(ids).toEqual(GEN0);
+    return calls;
+  }
+
+  it('a live read makes the same calls on its source with a chunk cache as without one', async () => {
+    // Deciding whether to cache a fetched chunk costs no call at all — in particular no re-resolve, which, for a
+    // segment the reader cache evicted mid-read, would be a registry read and a reopen.
+    const withCache = await coldReadCalls(true);
+    expect(withCache).toEqual(await coldReadCalls(false));
+    expect(withCache.filter((c) => c === 'getChunk')).toHaveLength(3); // one fetch for each chunk
+  });
+
+  it("costs a pin one GET for a chunk a live read of its version cached, and hands it the pin's own bytes", async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const live = w.store.segment('s');
+    const snap = await live.pin();
+    let reads = 0;
+    const inner = w.storage.getRange.bind(w.storage);
+    w.storage.getRange = (key, offset, length) => {
+      reads += 1;
+      return inner(key, offset, length);
+    };
+
+    expect(await live.has(2 * C + 30)).toBe(true); // the live read caches chunk 2 at generation 0's version
+    const afterLive = reads;
+    expect(await snap.has(2 * C + 30)).toBe(true); // the pin's own entry: one more read of the bucket
+    expect(reads).toBe(afterLive + 1);
+    expect(await snap.has(2 * C + 31)).toBe(true); // and a hit after that
+    expect(await live.has(2 * C + 31)).toBe(true); // as the live read's entry still is
+    expect(reads).toBe(afterLive + 1);
   });
 });

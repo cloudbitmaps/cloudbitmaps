@@ -111,9 +111,9 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
   };
 }
 
-/** The generation target `resolveTarget` produces: which generation is current + its DEK wrappings (if encrypted). */
 /**
- * A resolved read target. `lineage` is the registry row's OCC token — the identity that survives a delete,
+ * A resolved read target, as `resolveTarget` produces it: which generation is current, and its DEK wrappings if it
+ * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete,
  * because `IRegistryDriver.delete` tombstones rather than unlinks ("a later `create` still gets a fresh,
  * greater token"). It is what separates two *incarnations* of one name, which a generation number cannot:
  * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
@@ -121,6 +121,14 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
  * row and therefore no incarnation to confuse.
  */
 type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly WrappedDek[] };
+
+/**
+ * The version of one generation of one incarnation: `<generation>`, or `<generation>:<row token>` where there is
+ * a row. One spelling, for the live lookup and for what a pin holds.
+ */
+function versionOf(generation: number, lineage: unknown): string {
+  return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
+}
 
 /** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh. */
 interface Snapshot {
@@ -301,11 +309,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
    *
-   * Heals a swept generation exactly like {@link withFreshSnapshot} — the engine calls this **once per op**,
-   * before any chunk fetch, so an unhealed miss here fails the whole operation rather than one chunk. It is
-   * spelled out rather than delegated because this is the hottest call in the library: once per operand of
-   * every `has`/`count`/`iterate`/`intersect`, and almost always served from the cached snapshot with no
-   * backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
+   * Heals a swept generation exactly like {@link withFreshSnapshot}: a caller that resolves the generation once
+   * per op, before any chunk fetch, would otherwise fail the whole operation rather than one chunk. The engine
+   * keys by {@link currentVersion} instead, which heals the same way, and falls back to this for a source that
+   * cannot report a version. It is spelled out rather than delegated because a lookup like this runs once per
+   * operand of every `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with
+   * no backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
    * frame, a per-call closure, and an `await` on a plain number) for a race that fires only during a
    * concurrent sweep. One retry, then propagate — same contract, same eviction rule.
    */
@@ -341,26 +350,28 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
-   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
-   * both of which are names somebody deliberately created. Without a registry there is no registration to
-   * consult, so the honest answer is whether the bucket holds any generation of it.
-   *
-   * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
-   * tell apart.
-   */
-  /**
    * `<generation>` for a registry-less source (no row, so no incarnation to confuse), or
    * `<generation>:<row token>` with one. The token moves on every row write, so an unrelated write (a
    * `setRetention`) costs the segment's decoded chunks once — bounded, and on an admin path. Exactness in the
    * direction that matters: two incarnations can never share a version string.
+   *
+   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
+   * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
+   * racing a publish and a `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race
+   * on a chunk fetch heals. Spelled out rather than delegated for the reason `currentGeneration` gives: it is
+   * almost always served from the cached snapshot with no backend call at all. One retry, then propagate.
    */
   async currentVersion(ref: SegmentRef): Promise<string | null> {
-    const reader = await this.resolvedReader(ref);
-    if (reader === null) return null;
-    return reader.lineage === undefined
-      ? String(reader.generation)
-      : `${reader.generation}:${String(reader.lineage)}`;
+    const pending = this.resolvedReader(ref);
+    let reader: CrbmReader | null;
+    try {
+      reader = await pending;
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      this.dropStale(segmentKey(ref), pending);
+      reader = await this.resolvedReader(ref); // a second miss propagates
+    }
+    return reader === null ? null : versionOf(reader.generation, reader.lineage);
   }
 
   /**
@@ -375,11 +386,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // store return the first generation that store had ever read.
     const target = await this.resolveTarget(ref);
     if (target === null) return null;
-    const version =
-      target.lineage === undefined
-        ? String(target.generation)
-        : `${target.generation}:${String(target.lineage)}`;
-    return { generation: target.generation, version };
+    return { generation: target.generation, version: versionOf(target.generation, target.lineage) };
   }
 
   /**
@@ -454,6 +461,15 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
 
+  /**
+   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
+   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
+   * both of which are names somebody deliberately created. Without a registry there is no registration to
+   * consult, so the honest answer is whether the bucket holds any generation of it.
+   *
+   * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
+   * tell apart.
+   */
   async exists(ref: SegmentRef): Promise<boolean> {
     if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
     for await (const key of this.driver.list(ref)) {
