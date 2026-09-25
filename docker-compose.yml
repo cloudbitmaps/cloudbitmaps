@@ -10,8 +10,8 @@ name: cloud-roaring
 # REGISTRIES: everything that can avoid Docker Hub does. GitHub-hosted runners share an IP pool that sits
 # permanently over Docker Hub's anonymous pull limit, so pulling nine images from there failed the integration
 # job with HTTP 429 on every run. `public.ecr.aws/docker/library/*` is AWS's official mirror of the same Docker
-# Official Images (same content, no auth, no rate limit); minio publishes to quay.io and azurite to mcr, both
-# first-party. `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous pull
+# Official Images (same content, no auth, no rate limit); azurite comes from mcr, first-party, and MinIO from
+# Chainguard's build of it (below). `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous pull
 # is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one to deal with, either by
 # authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
 services:
@@ -20,7 +20,14 @@ services:
     # pulls whatever MinIO shipped that morning, and the write-once semantics this suite asserts are exactly
     # what a MinIO release could change — producing a red integration job with nothing in our diff to point
     # at. Bump deliberately, and re-run `pnpm test:integration` when you do.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    #
+    # FROM CHAINGUARD, because MinIO's own image can no longer be pulled without a login: quay.io/minio/minio
+    # began answering `unauthorized` to anonymous pulls in late September 2026 (this job passed on 2026-09-23 and
+    # failed on every run from 2026-09-25), and the tag pinned here was never on Docker Hub. cgr.dev/chainguard/minio is MinIO itself, built from source by Chainguard, and pulls without a
+    # login. Its free tier serves only `latest`, so this pins the multi-arch index DIGEST that `latest` was on
+    # 2026-09-25 (MinIO RELEASE.2026-09-22T19-25-18Z). If a pull by this digest ever fails, re-pin to the
+    # current `latest` digest and re-run the integration suite; do not switch to `:latest` itself.
+    image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     container_name: cloud-roaring-minio
     ports:
       - '9000:9000'
@@ -33,8 +40,18 @@ services:
     # which for an object store is tens of milliseconds before it accepts a connection. ci.yml already
     # justifies its `--wait-timeout` as protection against "a backend that never goes healthy" — a condition
     # that could not arise while nothing defined health. These make that true.
+    #
+    # The image has bash but no curl, so bash's /dev/tcp asks the liveness endpoint the same question curl did:
+    # does GET /minio/health/live answer 200. `$$` is compose's escape for a literal `$`.
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /minio/health/live HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3 &&
+          read -r status <&3 && [[ $$status == *' 200 '* ]]
       interval: 2s
       timeout: 3s
       retries: 15
