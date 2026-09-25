@@ -1,5 +1,21 @@
-import { MemoryStorage, CloudRoaring, bulkLoadCrbmGeneration, gcOrphanGenerations } from '@/index';
-import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
+import {
+  MemoryStorage,
+  CloudRoaring,
+  SafeBitmap,
+  bulkLoadCrbmGeneration,
+  gcOrphanGenerations,
+} from '@/index';
+import type {
+  CacheOptions,
+  Clock,
+  IMetricsSink,
+  Segment,
+  SegmentRef,
+  StorageChunkSource,
+} from '@/index';
+import { SegmentEngine } from '@/core/engine';
+import { BoundedLru } from '@/core/lru';
+import { roaringCodec } from '@/roaring-codec';
 
 /**
  * A decoded chunk must be cached under the version of the generation that SERVED its bytes.
@@ -227,5 +243,47 @@ describe('the decoded-chunk cache is keyed by the generation that served the byt
       hasGen0Id: await settle(snap.has(2 * C + 30)),
       hasGen1Id: await settle(snap.has(2 * C + 40)),
     }).toEqual({ count: 'threw', hasGen0Id: 'threw', hasGen1Id: 'threw' });
+  });
+});
+
+describe('the check that admits a chunk to the cache', () => {
+  /**
+   * A source that serves one chunk and reports version `v1`, except that its answer to the engine's check after
+   * each fetch — every second call — fails, as re-resolving an evicted segment can.
+   */
+  function flakySource(failChecks: number) {
+    const bytes = SafeBitmap.fromValues([1, 2, 3]).serialize();
+    let versionCalls = 0;
+    const counts = { gets: 0 };
+    const source: StorageChunkSource = {
+      getChunk: async () => {
+        counts.gets += 1;
+        return bytes;
+      },
+      listChunkKeys: async () => [0],
+      currentVersion: async () => {
+        versionCalls += 1;
+        // Odd calls resolve the op; even calls are the check after a fetch.
+        if (versionCalls % 2 === 0 && versionCalls / 2 <= failChecks)
+          throw new Error('re-resolve failed');
+        return 'v1';
+      },
+    };
+    return { source, counts };
+  }
+
+  it('returns the chunk it fetched when the check cannot answer, and does not cache it', async () => {
+    const { source, counts } = flakySource(1);
+    const engine = new SegmentEngine({
+      storage: source,
+      codec: roaringCodec,
+      cache: new BoundedLru({ maxEntries: 8, clock: { now: () => 0 } }),
+    });
+    expect(await engine.has(REF, 2)).toBe(true); // fetched; the check failed, so not cached
+    expect(counts.gets).toBe(1);
+    expect(await engine.has(REF, 2)).toBe(true); // fetched again; the check passed, so cached now
+    expect(counts.gets).toBe(2);
+    expect(await engine.has(REF, 3)).toBe(true); // a hit
+    expect(counts.gets).toBe(2);
   });
 });

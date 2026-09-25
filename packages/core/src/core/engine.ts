@@ -568,7 +568,28 @@ export class SegmentEngine {
     if (!bytes) return null;
     const bitmap = this.codec.safeDeserialize(bytes, this.maxBitmapBytes);
     this.assertChunkPayloadInRange(bitmap, ref.chunkKey);
-    this.cache?.set(cacheKey, bitmap);
+    // Cache the chunk only under the version that served it. The key is the op's version, resolved before the
+    // fetch, but the source serves whatever its snapshot holds when the fetch lands: after a publish and a lapsed
+    // `cache.genTtlMs`, after the reader cache evicted the segment, or after a sweep made it heal forward, that is
+    // a newer generation. Invariant 3 lets the call itself see the newer bytes; caching them under the older
+    // version would hand them to every read of that version, and a handle pinned there would return a torn read.
+    // Every way a source serves a newer generation installs it as the snapshot, and a version never comes back
+    // (a rollback or a new incarnation changes the row's token), so a version that still matches after the fetch
+    // is the one that served it. On the miss path only, just after a GET: a hit pays nothing. The check decides
+    // only whether to cache: if it cannot answer — the segment was evicted and re-resolving it failed — the chunk
+    // is not cached, and the read, whose fetch succeeded, still returns it.
+    if (this.cache && (gen === undefined || (await this.servedBy(ref, gen)))) {
+      this.cache.set(cacheKey, bitmap);
+    }
     return bitmap;
+  }
+
+  /** Whether the segment still resolves to `gen`, the version the op keyed its fetch by; `false` if unknown. */
+  private async servedBy(ref: SegmentRef, gen: string | number): Promise<boolean> {
+    try {
+      return (await this.cacheVersion(ref)) === gen;
+    } catch {
+      return false;
+    }
   }
 }

@@ -691,8 +691,9 @@ consistent. A **long** call is the one shape where the generation can move under
 is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
 resolve even sooner — so a long `intersect` across a publish may read its later chunks from the newer
 generation: every chunk whole, immutable and checksum-verified, never torn, but the answer describing two
-instants rather than one, with nothing in the result saying so. That is what a snapshot handle is for, and it
-is [on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
+instants rather than one, with nothing in the result saying so. That is what a snapshot handle is for:
+`seg.pin()` holds a segment at the generation current when you call it, for the life of the handle it returns
+([API reference](api-reference.md#the-segment-verbs-the-90-of-daily-use)), so a long export or reconciliation describes one instant.
 
 ### Sizing `keep`
 

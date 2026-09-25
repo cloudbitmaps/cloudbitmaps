@@ -140,6 +140,21 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   actually is, why a JS-heap sample cannot see the roaring addon's off-heap allocations (and so cannot evidence
   the bounded-memory invariant), and why the published figure is a ceiling rather than a reading.
 
+### Fixed
+
+- **A pinned handle could read chunks of a later generation than the one it pinned.** A live read of the same
+  segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,
+  before the fetch, a publish had landed and `cache.genTtlMs` had lapsed, or the reader cache had evicted the
+  segment, or a sweep had made the read heal forward, the chunk came from the newer generation, and was cached under
+  the older one's key. A handle pinned at the older generation reads that same key, so it was handed the newer
+  generation's chunk: a torn read — its `iterate()` mixed two generations while its `count()` still reported the
+  pinned one's total — and, after a sweep had collected its generation, a pinned `has()` answered from the newer one
+  where it should have failed. A chunk is now cached only when the segment still resolves to the version the read
+  keyed it by, so it is cached under the generation that served it; the check runs only after a fetch that missed
+  the cache, and a hit pays nothing. Unpinned reads were not affected: every way a read serves a newer generation
+  also makes it the one later reads resolve. Five tests reproduce it, one for each way the generation can move, and
+  failed before the fix.
+
 ## [0.10.0] — 2026-09-21
 
 > **Read [`MIGRATING.md`](MIGRATING.md) first if you are upgrading.** It is the authoritative, ordered
