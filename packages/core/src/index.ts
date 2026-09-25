@@ -260,7 +260,7 @@ export {
   estimateCost,
   DEFAULT_PRICING,
   AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1,
+  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
 } from './core/cost';
 export type {

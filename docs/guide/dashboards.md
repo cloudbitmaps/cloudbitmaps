@@ -96,17 +96,22 @@ gauge. Because the library owns the objects, the grounded report uses each segme
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
+import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@cloudbitmaps/roaring';
 
 const meter = otel.getMeter('cloud-roaring');
 const monthlyUsd = meter.createObservableGauge('cloudroaring.cost.monthly_usd');
 // verdict is a 3-state enum → map to an ordinal so you can alert on it: 0 win-big, 1 win, 2 lose-zone.
 const VERDICT_RANK = { 'win-big': 0, win: 1, 'lose-zone': 2 } as const;
 const verdictRank = meter.createObservableGauge('cloudroaring.cost.verdict_rank');
+// The Redis you would run for the whole store, fixed. Sized to one segment instead, the baseline would step up as
+// the segment grew past a node's memory, and move the verdict with no change in traffic.
+const pricing = { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER };
 
 meter.addBatchObservableCallback(
   async (obs) => {
     for (const name of ['active-us', 'active-eu']) {
       const r = await store.segment(name).costReport({
+        pricing,
         workload: { readsPerSec: 200, cacheHitRate: 0.8, loadsPerMonth: 30 },
       });
       obs.observe(monthlyUsd, r.monthlyUSD.total, { segment: name });
@@ -118,7 +123,9 @@ meter.addBatchObservableCallback(
 ```
 
 Alert when `verdict_rank` hits `2` — the segment has drifted into the **lose-zone** (pay-per-use now exceeds the
-Redis that would hold it, `r.redisBaseline`), usually because read volume outgrew the cache hit rate.
+Redis in `pricing`, `r.redisBaseline`), usually because read volume outgrew the cache hit rate. Leave `pricing` out
+and each report sizes Redis to its own segment, a cluster holding that segment alone: right for a look at one
+segment, wrong for an alarm.
 `r.redisCrossover.readsPerSec` gives the exact read rate where the economics flip *at this report's cache-hit rate*
 (with the cache off, against one $346 cluster it is about 329 reads/s; every cache hit moves it further out, and every
 hot segment's pointer refresh moves it in), so you can set the alarm

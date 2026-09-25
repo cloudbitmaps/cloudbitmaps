@@ -105,21 +105,38 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Changed
 
-- **`estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The default
-  verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that holds
-  the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25% of
-  each node's memory reserved, at AWS's us-east-1 on-demand prices of 2026-09-14. One cluster was the wrong size in
-  both directions: 200 MB fits three `cache.t4g.micro` nodes at about $35 a month, and 2 TB does not fit it at all
-  — three `cache.r6gd.16xlarge` data-tiering nodes hold it, at about $27,325. The report names what it priced in the
-  new `redisBaseline`, `{ monthlyUSD, basis, cluster }`, and in its notes. It is the least Redis could cost: a
-  native Redis bitmap is sized by its highest id, so sparse data takes more memory than the compressed size.
+- **BREAKING — `estimateCost()` compares with the Redis that would hold your data, not one $346 cluster.** The
+  default verdict, rationale and read crossover are now against the cheapest ElastiCache for Redis OSS cluster that
+  holds the report's stored bytes at their compressed size: enough shards, each a primary and two replicas, with 25%
+  of each node's memory reserved, at AWS's us-east-1 on-demand prices from its price list of 2026-09-14, and the
+  burstable `t4g` nodes priced only as one shard. One cluster was the wrong size in both directions: 200 MB fits
+  three `cache.t4g.micro` nodes at $35.04 a month, and 2 TB does not fit it at all — three `cache.r6gd.16xlarge`
+  data-tiering nodes hold it, at about $27,325. The report names what it priced in the new `redisBaseline`,
+  `{ basis: 'fixed', monthlyUSD }` or `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes,
+  dataTiering } }`, and in the last of its notes. It is the cheapest cluster of one kind, not the least Redis could
+  cost: the compressed size is a floor on the memory Redis needs, since a native Redis bitmap is sized by its
+  highest id, but reserved nodes, one replica a shard, or ElastiCache for Valkey all cost less than it prices.
 
-  **What changes for you.** A default report on data that is not about 2.3 to 4.8 GiB now has a different
-  crossover, and can have a different verdict. `pricing.redis` accepts `{ sizedToData: RedisSizing }`, the
-  default's, or `{ monthlyUSD }` as before, which still compares with that one figure whatever the size;
-  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page charts, and `ELASTICACHE_REDIS_US_EAST_1` the
-  catalogue the default sizes from. A profile you built by spreading `AWS_US_EAST_1_ONDEMAND` and reading
-  `redis.monthlyUSD` from it now finds `redis.sizedToData` there instead.
+  **To keep the old comparison**, pass `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER }`.
+  `ONE_REDIS_HA_CLUSTER` is the $346 cluster the benchmarks page still charts. What else changes:
+
+  - A default report has a different baseline at every data size, so a different crossover, and it can have a
+    different verdict.
+  - `pricing.redis` must be exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and a profile
+    carrying both is refused with a `ValidationError`. So is `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`,
+    the way to override the price before, since the spread now carries the default's `sizedToData` too; it is
+    refused rather than read one way.
+  - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
+    `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
+    cluster. TypeScript flags the read as possibly undefined.
+  - A hand-built `CostReport` must carry `redisBaseline`, which is required.
+  - `segment.costReport()` sizes the Redis to that one segment, so per-segment verdicts move the most, and the
+    baselines of a store's segments do not add up to the store's. For an alarm, pass a fixed `pricing.redis`, as
+    the cost gauge in the dashboards guide now does; to judge a store, price all its segments in one
+    `estimateCost()`.
+  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It
+    and `ONE_REDIS_HA_CLUSTER` are frozen, so a caller that changes one throws instead of changing every other
+    caller's estimates.
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
   pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median

@@ -81,7 +81,7 @@ function readSources(root) {
   // A run's crossover is against one Redis-HA cluster, whatever the data size; the default profile sizes Redis
   // to the data instead, which is the estimator's verdict and not a run's.
   const cluster = need(
-    /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*\{\s*monthlyUSD:\s*(\d+)\s*\}/,
+    /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}/,
     cost,
     'ONE_REDIS_HA_CLUSTER in packages/core/src/core/cost.ts',
   );

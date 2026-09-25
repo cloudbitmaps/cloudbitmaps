@@ -903,6 +903,7 @@ count is one the engine is tested to make.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
+<!-- SIZING:GUIDE_EXAMPLE:START -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
@@ -917,12 +918,13 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0007, pointerRefresh: ≈1.05 }
-report.monthlyUSD.total; // ≈ 68
-report.redisBaseline; // ≈ $142.35 a month: the cheapest Redis that holds 1.12 GiB, 3 cache.t4g.medium nodes
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000708, pointerRefresh: ≈1.05 }
+report.monthlyUSD.total; // ≈68.4
+report.redisBaseline; // $142.35 a month: the cheapest Redis that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
 report.redisCrossover.readsPerSec; // ≈ 672 sustained reads/s at THIS report's 80% cache-hit rate (≈ 134 at 0%)
 ```
+<!-- SIZING:GUIDE_EXAMPLE:END -->
 
 **Grounded** (real sizes from the `.crbm` index — exact, no payload reads):
 
@@ -943,21 +945,31 @@ rather than silently under-counted).
 
 ### What it compares against
 
-The verdict compares the bill with **the Redis that would hold the data**: the cheapest ElastiCache cluster whose
-memory fits the report's stored bytes, which `report.redisBaseline` names — its monthly price, the node type, the
-shards, and the nodes. Every shard is a primary and two replicas, AWS's best practice, with ElastiCache's default
-25% of each node's memory reserved, at AWS's us-east-1 on-demand prices (`ELASTICACHE_REDIS_US_EAST_1`).
+The verdict compares the bill with **the Redis that would hold the data**: the cheapest ElastiCache cluster that
+holds the report's stored bytes, in memory or, on a data-tiering node, in memory and SSD. `report.redisBaseline`
+names it: its monthly price, the node type, the shards, the nodes, and whether they tier to SSD. Every shard is a primary and two replicas, AWS's best practice, with ElastiCache's default
+25% of each node's memory reserved, at AWS's us-east-1 on-demand prices (`ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`).
 <!-- SIZING:COMPARES:START -->
-So 200 MB is priced as three `cache.t4g.micro` nodes at about $35.04 a month, 20 GB as three `cache.r7g.xlarge` nodes at about $957 a month, and 2 TB as three `cache.r6gd.16xlarge` nodes at about $27,325 a month: a data-tiering node, which keeps the values read least on its SSD.
+So 200 MB is priced as three `cache.t4g.micro` nodes at $35.04 a month, 20 GB as three `cache.r6g.xlarge` nodes at $900 a month, and 2 TB as three `cache.r6gd.16xlarge` nodes at $27,325 a month: a data-tiering node, which keeps the values read least recently on its SSD.
 <!-- SIZING:COMPARES:END -->
 
-It is the least Redis could cost, never more. The data is held at its compressed size, where a native Redis bitmap
-is sized by its highest id rather than by how many ids it holds; burstable `t4g` nodes are priced only as one shard;
-and among node types the cheapest fit wins. Two ways to compare differently:
+It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward
+Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id rather than
+by how many ids it holds, and among node types the cheapest fit wins, a data-tiering node counting its SSD with its
+memory. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and
+burstable `t4g` nodes are priced only as one shard. It prices nodes, not quotas: a cluster of more than 90 nodes
+needs AWS to raise ElastiCache's
+[default quota](https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache), which
+goes up to 500 nodes a cluster, and data that needs more is several clusters, at the same price a node.
+
+A report on one segment sizes its Redis to that segment alone, so the baselines of a store's segments do not add up
+to the store's. To judge a store, price all its segments in one `estimateCost()`; to alarm on a segment, pass the
+Redis you would run for the store as a fixed baseline, as [the cost gauge](dashboards.md#2-cost-gauge-costreport--a-scheduled-sample)
+does. Two ways to compare differently:
 
 - **One cluster you name**, whatever the data size: `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: { monthlyUSD } }`.
   <!-- SIZING:ONE_CLUSTER:START -->
-  `ONE_REDIS_HA_CLUSTER` is the one the benchmarks page charts, a primary and two replicas of `cache.m7g.large` at $346 a month, which is the cheapest cluster for only about 2.32 to 4.78 GiB of data.
+  `ONE_REDIS_HA_CLUSTER` is the one the benchmarks page charts: a primary and two replicas of `cache.m7g.large`, $346 a month. The catalogue leaves that node type out, since three `cache.m6g.large` with the same memory cost $326, so it is a fixed point to compare with, not a price the estimator picks.
   <!-- SIZING:ONE_CLUSTER:END -->
 - **Your own prices**: `redis: { sizedToData: { source, nodeTypes, replicasPerShard, reservedMemoryFraction } }`,
   each node type `{ name, memoryGiB, hourlyUSD }` with `ssdGiB` for a data-tiering node and `maxShards` to cap it.
@@ -1017,9 +1029,9 @@ on real S3.
 **See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
 with this function, term by term, and says where a standing cache still wins.
 
-**See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one flat
-Redis-HA node, `ONE_REDIS_HA_CLUSTER` — drawn from this same `estimateCost()` and turned into build-breaking CI
-assertions, so the numbers can never drift ahead of reality.
+**See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA
+cluster, `ONE_REDIS_HA_CLUSTER`, whatever the data size — drawn from this same `estimateCost()` and turned into
+build-breaking CI assertions, so the numbers can never drift ahead of reality.
 
 ## 12. Audit trail: security & compliance events
 

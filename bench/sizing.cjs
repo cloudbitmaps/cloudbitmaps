@@ -15,12 +15,13 @@
  * `require()` loads @cloudbitmaps/roaring, which ships ESM only, through Node's `require(esm)`, as bench/run.cjs does.
  */
 'use strict';
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
-  ELASTICACHE_REDIS_US_EAST_1,
+  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
 } = require('@cloudbitmaps/roaring');
 
@@ -41,10 +42,10 @@ const DOCS = {
     'PREFIX',
     'SAMPLE',
   ],
-  'docs/guide/getting-started.md': ['COMPARES', 'ONE_CLUSTER'],
+  'docs/guide/getting-started.md': ['GUIDE_EXAMPLE', 'COMPARES', 'ONE_CLUSTER'],
 };
 const P = AWS_US_EAST_1_ONDEMAND;
-const CATALOGUE = ELASTICACHE_REDIS_US_EAST_1;
+const CATALOGUE = ELASTICACHE_REDIS_US_EAST_1_ONDEMAND;
 /** The same Redis without its data-tiering nodes: every byte held in memory. */
 const IN_MEMORY = {
   ...P,
@@ -55,7 +56,6 @@ const IN_MEMORY = {
     },
   },
 };
-const SECONDS_PER_MONTH = 730 * 3600; // the estimator's convention
 const MB = 1_000_000;
 const MIB = 1024 * 1024;
 const GIB = 1024 ** 3;
@@ -93,6 +93,9 @@ const CACHE_MAX_CHUNKS = sourceConstant(
   'DEFAULT_CACHE_MAX_CHUNKS',
 );
 const S3_PART_BYTES = sourceConstant('packages/s3/src/storage.ts', 'S3_PART_BYTES');
+/** The estimator's month, read from it: AWS's 730 hours. */
+const HOURS_PER_MONTH = sourceConstant('packages/core/src/core/cost.ts', 'HOURS_PER_MONTH');
+const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600;
 
 /** PUT-class requests one object write makes on S3: one PUT, or initiate + the parts + complete. */
 function writeRequests(objectBytes) {
@@ -102,6 +105,8 @@ function writeRequests(objectBytes) {
 
 /** AWS's documented request rate per partitioned prefix, for GETs: at least this many a second. Not ours to check. */
 const S3_PREFIX_GETS_PER_SEC = 5500;
+/** ElastiCache's default quota of nodes in one cluster, which AWS raises on request up to 500. Not ours to check. */
+const DEFAULT_NODES_PER_CLUSTER = 90;
 
 /**
  * The shape every segment has: the calibration run's, about 2,000 chunks, and each cold intersect sharing 100 of them
@@ -180,6 +185,20 @@ function price(p, options = {}) {
 /** The Redis each profile is priced against: the cheapest cluster that holds its data, whatever its workload. */
 const redisOf = (p, pricing) => price(p, { pricing }).redisBaseline;
 
+/**
+ * The GETs one cold intersect makes when its operands share `k` chunks: the estimator's own count, read back out of
+ * the bill it gives one intersect a second, rather than restated here.
+ */
+function intersectGets(k) {
+  const r = estimateCost({
+    segments: [],
+    workload: { intersectsPerSec: 1, chunksPerIntersect: 2 * k },
+  });
+  return Math.round(
+    r.monthlyUSD.byOp.intersects / ((SECONDS_PER_MONTH * P.storage.getPerMillion) / 1e6),
+  );
+}
+
 /** The cold-intersect rate at which a profile's bill meets its Redis, every other term held where it is. */
 function breakEvenRate(p) {
   const idle = price({ ...p, intersectsPerMonth: 0 }).monthlyUSD.total;
@@ -211,19 +230,25 @@ const bytes = (n) =>
   n >= 1e12 ? `${int(n / 1e12)} TB` : n >= 1e9 ? `${int(n / 1e9)} GB` : `${int(n / 1e6)} MB`;
 const mib = (n) => `${int(n / MIB)} MiB`;
 const pct = (x) => `${Math.round(x * 100)}%`;
+/** A share to two significant figures, for the small ones a whole percent would round to nothing. */
+const share = (x) => (x >= 1 ? '100%' : `${Number((x * 100).toPrecision(2))}%`);
 /** How a bill compares with the Redis that holds the same data. */
 const versus = (total, redis) =>
   total < redis
     ? `${Math.round((1 - total / redis) * 100)}% less`
     : `${(total / redis).toFixed(1)}× more`;
-/** "3 × r7g.xlarge", or "24 × r7g.12xlarge, 8 shards". */
+/** "3 × r6g.xlarge", or "285 × r6g.xlarge, 95 shards". */
 function clusterLabel(b) {
   const { nodeType, shards, nodes } = b.cluster;
   const node = nodeType.replace(/^cache\./, '');
   return shards === 1 ? `${nodes} × ${node}` : `${nodes} × ${node}, ${shards} shards`;
 }
-const isTiered = (b) =>
-  CATALOGUE.nodeTypes.find((n) => n.name === b.cluster.nodeType)?.ssdGiB !== undefined;
+/** "1 shard of 3 cache.r6g.xlarge nodes", or "95 shards, 285 cache.r6g.xlarge nodes", as the estimator says it. */
+function clusterWords(b) {
+  const { nodeType, shards, nodes } = b.cluster;
+  const all = `${int(nodes)} ${nodeType} node${nodes === 1 ? '' : 's'}`;
+  return shards === 1 ? `1 shard of ${all}` : `${int(shards)} shards, ${all}`;
+}
 /** A rate a second, to two significant figures below one, and one decimal below ten. */
 const rate = (n) => (n < 1 ? n.toPrecision(2) : n < 10 ? n.toFixed(1) : int(n));
 const secs = (s) => (s % 60 === 0 && s >= 60 ? `${s / 60} min` : `${int(s)} s`);
@@ -245,8 +270,8 @@ function render() {
   ];
 
   const readers = [
-    `| | index a reader holds open | against the default \`cache.readerMaxBytes\` (${mib(READER_MAX_BYTES)}) | chunks in its hot set | what they hold | against the default \`cache.maxChunks\` (${int(CACHE_MAX_CHUNKS)}) |`,
-    '|---|---:|---|---:|---:|---|',
+    `| | index a reader holds open, at ${int(INDEX_BYTES_PER_CHUNK)} B a chunk | against the default \`cache.readerMaxBytes\` (${mib(READER_MAX_BYTES)}) | chunks in its hot set | what they hold | against the default \`cache.maxChunks\` (${int(CACHE_MAX_CHUNKS)}) | reads it answers, spread evenly |`,
+    '|---|---:|---|---:|---:|---|---:|',
     ...PROFILES.map((p) => {
       const index = p.hotPerProcess * CHUNKS_PER_SEGMENT * INDEX_BYTES_PER_CHUNK;
       const fits =
@@ -260,7 +285,8 @@ function render() {
       const chunks = p.hotPerProcess * CHUNKS_PER_SEGMENT;
       return (
         `| **${p.name}** | ${mib(index)} | ${fits} | ${int(chunks)} | ` +
-        `${bytes(p.hotPerProcess * p.segmentBytes)} | ${int(Math.round(chunks / CACHE_MAX_CHUNKS))}× it |`
+        `${bytes(p.hotPerProcess * p.segmentBytes)} | ${int(Math.round(chunks / CACHE_MAX_CHUNKS))}× it | ` +
+        `${share(CACHE_MAX_CHUNKS / chunks)} |`
       );
     }),
   ];
@@ -281,7 +307,7 @@ function render() {
   ];
 
   // What the Redis column priced, and what the tiered one would be all in memory.
-  const tieredProfiles = PROFILES.filter((p) => isTiered(redisOf(p)));
+  const tieredProfiles = PROFILES.filter((p) => redisOf(p).cluster.dataTiering);
   const redis =
     `Each deployment's Redis is the cheapest cluster that holds its data at its compressed size, at the prices ` +
     `the estimator ships (${CATALOGUE.source}): every shard a primary and ${int(CATALOGUE.replicasPerShard)} ` +
@@ -290,9 +316,14 @@ function render() {
     tieredProfiles
       .map((p) => {
         const m = redisOf(p, IN_MEMORY);
+        const quota =
+          m.cluster.nodes > DEFAULT_NODES_PER_CLUSTER
+            ? `, past ElastiCache's default quota of ${DEFAULT_NODES_PER_CLUSTER} nodes a cluster`
+            : '';
         return (
-          `The ${p.id} deployment's is a data-tiering cluster, which keeps the values read least on SSD; kept all ` +
-          `in memory it would be **${usd(m.monthlyUSD)}** a month (${clusterLabel(m)}), and CloudBitmaps ` +
+          `The ${p.id} deployment's is a data-tiering cluster, which keeps the values read least recently on its ` +
+          'SSD, and which AWS recommends for workloads that regularly read up to 20% of their data. Kept all in ' +
+          `memory it would be **${usd(m.monthlyUSD)}** a month (${clusterLabel(m)}${quota}), and CloudBitmaps ` +
           `**${versus(price(p).monthlyUSD.total, m.monthlyUSD)}**.`
         );
       })
@@ -317,7 +348,7 @@ function render() {
         const r = price(byId(id), { shared: k });
         return `${usd(r.monthlyUSD.total)} | ${versus(r.monthlyUSD.total, r.redisBaseline.monthlyUSD)}`;
       });
-      return `| ${int(k)}${k === SHARED_CHUNKS ? ' (the tables above)' : ''} | ${int(4 + 2 * k)} | ${cells.join(' | ')} |`;
+      return `| ${int(k)}${k === SHARED_CHUNKS ? ' (the tables above)' : ''} | ${int(intersectGets(k))} | ${cells.join(' | ')} |`;
     }),
   ];
   const [evenMedium, evenLarge] = ['medium', 'large'].map((id) => breakEvenShared(byId(id)));
@@ -363,9 +394,11 @@ function render() {
   ];
 
   // The large deployment's GETs a second on its one data prefix: every chunk and tail read, and the point reads
-  // that miss the cache. Pointer reads go to the registry's own prefix, beside it.
+  // that miss the cache. Pointer reads, one an operand, go to the registry's own prefix beside it: an intersect
+  // that shares no chunks makes only its operands' pointer and tail reads, so half of those are pointer reads.
+  const pointerGets = intersectGets(0) / 2;
   const dataGets =
-    (large.intersectsPerMonth / SECONDS_PER_MONTH) * (2 * SHARED_CHUNKS + 2) +
+    (large.intersectsPerMonth / SECONDS_PER_MONTH) * (intersectGets(SHARED_CHUNKS) - pointerGets) +
     large.readsPerSec * (1 - large.cacheHitRate);
   const prefix =
     `The large deployment's reads average **${int(dataGets)} GETs a second** on its one data prefix, ` +
@@ -390,7 +423,7 @@ function render() {
     "  // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.",
     '});',
     `report.monthlyUSD.total; // ${usd(price(medium).monthlyUSD.total)}, the medium deployment above`,
-    `report.redisBaseline; // ${usd(redisOf(medium).monthlyUSD)} a month: ${redisOf(medium).cluster.nodes} ${redisOf(medium).cluster.nodeType} nodes in ${redisOf(medium).cluster.shards} shard`,
+    `report.redisBaseline; // ${usd(redisOf(medium).monthlyUSD)} a month: ${clusterWords(redisOf(medium))}`,
     'report.assumptions.notes; // what it modeled, and what it did not',
     '```',
   ];
@@ -398,22 +431,69 @@ function render() {
   // The guide's examples of what the default prices: three data sizes, alone, with no workload.
   const at = (sizeBytes) => estimateCost({ segments: [{ sizeBytes }] }).redisBaseline;
   const example = (label, b) =>
-    `${label} as ${words(b.cluster.nodes)} \`${b.cluster.nodeType}\` nodes at about ${usd(b.monthlyUSD)} a month`;
+    `${label} as ${words(b.cluster.nodes)} \`${b.cluster.nodeType}\` nodes at ${usd(b.monthlyUSD)} a month`;
   const [s200, m20, l2] = [200 * MB, 20e9, 2e12].map(at);
   const compares =
     `So ${example('200 MB is priced', s200)}, ${example('20 GB', m20)}, and ${example('2 TB', l2)}` +
-    (isTiered(l2) ? ': a data-tiering node, which keeps the values read least on its SSD.' : '.');
-  // Where one cache.m7g.large cluster is the cheapest that holds the data: scanned, in steps of 0.01 GiB.
-  const band = [];
-  for (let gib = 0.01; gib <= 20; gib += 0.01) {
-    if (at(gib * GIB).cluster.nodeType === 'cache.m7g.large') band.push(gib);
-  }
+    (l2.cluster.dataTiering
+      ? ': a data-tiering node, which keeps the values read least recently on its SSD.'
+      : '.');
+  // The one cluster the benchmarks page charts, beside the catalogue's node with the same memory.
+  const m6g = CATALOGUE.nodeTypes.find((n) => n.name === 'cache.m6g.large');
+  if (m6g === undefined)
+    throw new Error('sizing: the catalogue has no cache.m6g.large — rewrite ONE_CLUSTER');
+  const shardNodes = 1 + CATALOGUE.replicasPerShard;
   const oneCluster =
-    '`ONE_REDIS_HA_CLUSTER` is the one the benchmarks page charts, a primary and two replicas of ' +
-    `\`cache.m7g.large\` at $${int(ONE_REDIS_HA_CLUSTER.monthlyUSD)} a month, which is the cheapest cluster for only ` +
-    `about ${band[0].toFixed(2)} to ${band[band.length - 1].toFixed(2)} GiB of data.`;
+    '`ONE_REDIS_HA_CLUSTER` is the one the benchmarks page charts: a primary and two replicas of ' +
+    `\`cache.m7g.large\`, $${int(ONE_REDIS_HA_CLUSTER.monthlyUSD)} a month. The catalogue leaves that node type ` +
+    `out, since ${words(shardNodes)} \`cache.m6g.large\` with the same memory cost ` +
+    `${usd(shardNodes * m6g.hourlyUSD * HOURS_PER_MONTH)}, so it is a fixed point to compare with, not a price ` +
+    'the estimator picks.';
+
+  // The guide's planning example: its inputs are the guide's, and every figure in its comments is the estimator's.
+  const guide = {
+    segments: [{ sizeBytes: 6e8, count: 2 }],
+    workload: {
+      readsPerSec: 200,
+      cacheHitRate: 0.8,
+      intersectsPerSec: 1,
+      chunksPerIntersect: 20,
+      loadsPerMonth: 30,
+      hotSegments: 2,
+    },
+  };
+  const g = estimateCost(guide);
+  const uncached = estimateCost({ ...guide, workload: { ...guide.workload, cacheHitRate: 0 } });
+  const w = guide.workload;
+  const [seg] = guide.segments;
+  const approx = (n) => `≈${Number(n.toPrecision(3))}`;
+  const o = g.monthlyUSD.byOp;
+  const stored = (seg.sizeBytes * seg.count) / GIB;
+  const guideExample = [
+    '```ts',
+    "import { CloudRoaring } from '@cloudbitmaps/roaring';",
+    '',
+    'const report = CloudRoaring.estimateCost({',
+    `  segments: [{ sizeBytes: ${seg.sizeBytes.toExponential().replace('e+', 'e')}, count: ${seg.count} }], // or { cardinality }`,
+    '  workload: {',
+    `    readsPerSec: ${w.readsPerSec}, // point reads; each cache miss is one GET`,
+    `    cacheHitRate: ${w.cacheHitRate}, // hits are free`,
+    `    intersectsPerSec: ${w.intersectsPerSec}, // priced cold: each operand's pointer and index are read too`,
+    `    chunksPerIntersect: ${w.chunksPerIntersect}, // the chunks it fetches: 2 operands × ${w.chunksPerIntersect / 2} shared chunks`,
+    `    loadsPerMonth: ${w.loadsPerMonth}, // one store.load() a day, single-part`,
+    `    hotSegments: ${w.hotSegments}, // segments a long-lived reader keeps reading: each refreshes its pointer every ${ttlLabel(GEN_TTL_MS)}`,
+    '  },',
+    '});',
+    `report.monthlyUSD.byOp; // { reads: ${approx(o.reads)}, intersects: ${approx(o.intersects)}, storage: ${approx(o.storage)}, loads: ${approx(o.loads)}, pointerRefresh: ${approx(o.pointerRefresh)} }`,
+    `report.monthlyUSD.total; // ${approx(g.monthlyUSD.total)}`,
+    `report.redisBaseline; // $${g.redisBaseline.monthlyUSD.toFixed(2)} a month: the cheapest Redis that holds ${stored.toFixed(2)} GiB, ${clusterWords(g.redisBaseline)}`,
+    `report.verdict; // '${g.verdict}' — 'win-big' | 'win' | 'lose-zone', never hides the lose case`,
+    `report.redisCrossover.readsPerSec; // ≈ ${int(g.redisCrossover.readsPerSec)} sustained reads/s at THIS report's ${pct(w.cacheHitRate)} cache-hit rate (≈ ${int(uncached.redisCrossover.readsPerSec)} at 0%)`,
+    '```',
+  ];
 
   return {
+    GUIDE_EXAMPLE: guideExample.join('\n'),
     COMPARES: compares,
     ONE_CLUSTER: oneCluster,
     SHAPE: shape,
@@ -432,31 +512,52 @@ function render() {
 }
 
 // ── write / check ────────────────────────────────────────────────────────────────────────────────────
+/** Any comment that opens with SIZING, however it is cased or spaced. Only the strict form is ever written. */
+const ANY_MARKER = /<!--\s*sizing\b[\s\S]*?-->/gi;
+const MARKER = /^<!-- SIZING:([A-Z][A-Z0-9_]*):(START|END) -->$/;
+
+/** A page's markers, in order. A malformed one throws: no check would ever compare the region it meant. */
+function markersOf(doc, text) {
+  return [...text.matchAll(ANY_MARKER)].map((m) => {
+    const strict = MARKER.exec(m[0]);
+    if (strict === null) {
+      throw new Error(
+        `${doc}: malformed marker ${JSON.stringify(m[0])} — write <!-- SIZING:NAME:START --> or ` +
+          '<!-- SIZING:NAME:END --> exactly',
+      );
+    }
+    return { name: strict[1], edge: strict[2], at: m.index, end: m.index + m[0].length };
+  });
+}
+
 function regionsOf(doc, text, names) {
+  const markers = markersOf(doc, text);
   const out = {};
-  for (const name of names) {
-    const start = `<!-- SIZING:${name}:START -->`;
-    const end = `<!-- SIZING:${name}:END -->`;
-    const i = text.indexOf(start);
-    const j = text.indexOf(end);
+  // Markers pair up in order, a START and then the END of the same name: a region inside another, or two that
+  // overlap, would be written one over the other.
+  for (let n = 0; n < markers.length; n += 2) {
+    const open = markers[n];
+    const close = markers[n + 1];
+    if (open.edge !== 'START' || close?.edge !== 'END' || close.name !== open.name) {
+      throw new Error(
+        `${doc}: SIZING markers must pair up in order, each START with the END of its name, never nested or ` +
+          `overlapping (at SIZING:${open.name}:${open.edge})`,
+      );
+    }
+    if (!names.includes(open.name)) {
+      throw new Error(`${doc} holds a SIZING:${open.name} region nothing writes`);
+    }
     // Exactly one of each: a second copy is one this check would never compare.
-    if (
-      i === -1 ||
-      j === -1 ||
-      j < i ||
-      text.indexOf(start, i + 1) !== -1 ||
-      text.indexOf(end, j + 1) !== -1
-    ) {
-      throw new Error(`${doc} must hold exactly one SIZING:${name} region`);
+    if (out[open.name] !== undefined) {
+      throw new Error(`${doc} must hold exactly one SIZING:${open.name} region`);
     }
     // A region inside a list item is indented with it; the table must be too, or it ends the list.
-    const indent = text.slice(text.lastIndexOf('\n', i) + 1, i);
-    out[name] = { i: i + start.length, j, indent };
+    const indent = text.slice(text.lastIndexOf('\n', open.at) + 1, open.at);
+    out[open.name] = { i: open.end, j: close.at, indent };
   }
-  // A region this script does not write for this page would never be compared either.
-  for (const m of text.matchAll(/<!-- SIZING:([A-Z_]+):START -->/g)) {
-    if (!names.includes(m[1]))
-      throw new Error(`${doc} holds a SIZING:${m[1]} region nothing writes`);
+  for (const name of names) {
+    if (out[name] === undefined)
+      throw new Error(`${doc} must hold exactly one SIZING:${name} region`);
   }
   return out;
 }
@@ -481,6 +582,24 @@ const claimed = Object.values(DOCS).flat();
 for (const name of Object.keys(rendered)) {
   if (claimed.filter((n) => n === name).length !== 1) {
     throw new Error(`sizing: region ${name} must be written into exactly one page in DOCS`);
+  }
+}
+for (const name of claimed) {
+  if (rendered[name] === undefined)
+    throw new Error(`sizing: DOCS lists ${name}, which nothing renders`);
+}
+// A region in a page DOCS does not list would never be written or checked: every tracked page is looked at.
+const tracked = execFileSync('git', ['ls-files', '-z', '--', '*.md', '*.html'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+})
+  .split('\0')
+  .filter((doc) => doc !== '' && DOCS[doc] === undefined && fs.existsSync(path.join(ROOT, doc)));
+for (const doc of tracked) {
+  if (markersOf(doc, fs.readFileSync(path.join(ROOT, doc), 'utf8')).length > 0) {
+    throw new Error(
+      `sizing: ${doc} holds SIZING regions, but DOCS does not list it, so nothing writes them`,
+    );
   }
 }
 const check = process.argv.includes('--check');
