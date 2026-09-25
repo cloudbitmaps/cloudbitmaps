@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AWS_US_EAST_1_ONDEMAND } from '@/index';
+import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@/index';
 import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/format';
 
 /**
@@ -78,6 +78,7 @@ const figures = require_(join(ROOT, 'bench', 'lib', 'calibration-figures.cjs')) 
       storagePerGiBMonth: number;
       redisMonthlyUSD: number;
     };
+    secondsPerMonth: number;
     tailBytes: number;
     footerBytes: number;
     preambleBytes: number;
@@ -207,8 +208,10 @@ describe('calibration reports are held to their evidence', () => {
       getPerMillion: AWS_US_EAST_1_ONDEMAND.storage.getPerMillion,
       putPerMillion: AWS_US_EAST_1_ONDEMAND.storage.putPerMillion,
       storagePerGiBMonth: AWS_US_EAST_1_ONDEMAND.storage.storagePerGiBMonth,
-      redisMonthlyUSD: AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD,
+      // A run's crossover is against one cluster; the default profile sizes Redis to the data instead.
+      redisMonthlyUSD: ONE_REDIS_HA_CLUSTER.monthlyUSD,
     });
+    expect(SOURCES.secondsPerMonth).toBe(730 * 3600);
     expect(SOURCES.tailBytes).toBe(DEFAULT_TAIL_BYTES);
     expect(SOURCES.footerBytes).toBe(FOOTER_BYTES);
     expect(SOURCES.preambleBytes).toBe(PREAMBLE_BYTES);

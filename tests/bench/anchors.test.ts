@@ -7,6 +7,7 @@ import {
   writeCrbmGeneration,
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
+  ONE_REDIS_HA_CLUSTER,
   type MetricsSnapshot,
   type PricingProfile,
 } from '@/index';
@@ -78,11 +79,10 @@ describe('bench-as-test anchors', () => {
     // Reference: ~1.2 GiB total at rest, no traffic.
     const report = estimateCost({
       segments: [{ sizeBytes: 1.2 * 1024 ** 3, count: 1 }],
+      pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER },
     });
     expect(report.verdict).toBe('win-big');
-    expect(report.monthlyUSD.total).toBeLessThanOrEqual(
-      AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD * 0.1,
-    );
+    expect(report.monthlyUSD.total).toBeLessThanOrEqual(ONE_REDIS_HA_CLUSTER.monthlyUSD * 0.1);
     // Pin the exact storage cost too, so a units regression (GiB↔GB, a mispriced tier, a dropped /GIB) can't
     // hide under the generous 10% bar: 1.2 GiB × $0.023/GiB-mo.
     expect(report.monthlyUSD.total).toBeCloseTo(1.2 * 0.023, 4);
@@ -94,8 +94,9 @@ describe('bench-as-test anchors', () => {
     const report = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { cacheHitRate: 0 },
+      pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER },
     });
-    expect(AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD).toBe(346);
+    expect(ONE_REDIS_HA_CLUSTER.monthlyUSD).toBe(346);
     expect(report.redisCrossover.readsPerSec).toBeGreaterThanOrEqual(329);
     expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
   });

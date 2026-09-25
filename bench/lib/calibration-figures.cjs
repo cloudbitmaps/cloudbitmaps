@@ -74,11 +74,23 @@ function readSources(root) {
   const readerDefaults = read('packages/core/src/core/reader-defaults.ts');
   const engine = read('packages/core/src/core/engine.ts');
   const profile = need(
-    /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},\s*redis:\s*\{\s*monthlyUSD:\s*(\d+)\s*\}/,
+    /name:\s*'([\w-]+)',\s*storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\},/,
     cost,
     'the default pricing profile in packages/core/src/core/cost.ts',
   );
-  const month = need(/const SECONDS_PER_MONTH = (\d+) \* (\d+);/, cost, 'SECONDS_PER_MONTH');
+  // A run's crossover is against one Redis-HA cluster, whatever the data size; the default profile sizes Redis
+  // to the data instead, which is the estimator's verdict and not a run's.
+  const cluster = need(
+    /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*\{\s*monthlyUSD:\s*(\d+)\s*\}/,
+    cost,
+    'ONE_REDIS_HA_CLUSTER in packages/core/src/core/cost.ts',
+  );
+  const hours = need(/const HOURS_PER_MONTH = (\d+);/, cost, 'HOURS_PER_MONTH');
+  const month = need(
+    /const SECONDS_PER_MONTH = HOURS_PER_MONTH \* (\d+);/,
+    cost,
+    'SECONDS_PER_MONTH',
+  );
   const tail = need(
     /export const DEFAULT_TAIL_BYTES = (\d+) \* (\d+);/,
     format,
@@ -102,9 +114,9 @@ function readSources(root) {
       getPerMillion: Number(profile[2]),
       putPerMillion: Number(profile[3]),
       storagePerGiBMonth: Number(profile[4]),
-      redisMonthlyUSD: Number(profile[5]),
+      redisMonthlyUSD: Number(cluster[1]),
     },
-    secondsPerMonth: Number(month[1]) * Number(month[2]),
+    secondsPerMonth: Number(hours[1]) * Number(month[1]),
     tailBytes: Number(tail[1]) * Number(tail[2]),
     footerBytes: Number(footer[1]),
     preambleBytes: Number(preamble[1]),

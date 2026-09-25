@@ -1,7 +1,7 @@
 # What it costs at your size
 
 Three illustrative deployments, small, medium and large, priced by the library's own `estimateCost()` at AWS
-`us-east-1` on-demand rates.
+`us-east-1` on-demand rates, and set against the Redis that would hold each one's data.
 
 **The workloads are made up; the arithmetic is not.** Each workload is a guess at what a typical deployment of
 that size looks like, not anyone's measured system. Every figure below that comes from the model, the prices or the
@@ -19,6 +19,7 @@ it on the list of what is owed.
 - [The three workloads](#the-three-workloads)
 - [What each reader holds](#what-each-reader-holds)
 - [The monthly bill](#the-monthly-bill)
+- [How much room each has](#how-much-room-each-has)
 - [How much the overlap matters](#how-much-the-overlap-matters)
 - [What moves the large bill](#what-moves-the-large-bill)
 - [Where a standing cache still wins](#where-a-standing-cache-still-wins)
@@ -45,41 +46,63 @@ The bill below assumes each reader keeps its hot segments open and answers its p
 rates above. Both take memory, and the defaults hold less than the larger deployments need:
 
 <!-- SIZING:READERS:START -->
-| | index a reader holds open | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | against the default `cache.maxChunks` (1,024) |
-|---|---:|---|---:|---|
-| **Small** | 6 MiB | fits | 40,000 | 39× it |
-| **Medium** | 61 MiB | at the limit: raise it | 400,000 | 391× it |
-| **Large** | 305 MiB | 4.8× it: raise it, or 209 stay open | 2,000,000 | 1,953× it |
+| | index a reader holds open | against the default `cache.readerMaxBytes` (64 MiB) | chunks in its hot set | what they hold | against the default `cache.maxChunks` (1,024) |
+|---|---:|---|---:|---:|---|
+| **Small** | 6 MiB | fits | 40,000 | 20 MB | 39× it |
+| **Medium** | 61 MiB | at the limit: raise it | 400,000 | 800 MB | 391× it |
+| **Large** | 305 MiB | 4.8× it: raise it, or 209 stay open | 2,000,000 | 10 GB | 1,953× it |
 <!-- SIZING:READERS:END -->
 
 A reader past `cache.readerMaxBytes` evicts segments and opens them again as it reads them, a pointer read and a tail
 read each, which **neither the bill below nor the estimator's report prices**: the report warns only when there are
-more hot segments than `cache.readerMax`, since it cannot see how large each index is. And a hit rate like the large
-deployment's needs a chunk cache many times the default. Raising both is the price of those figures, paid in each
-reader's memory.
+more hot segments than `cache.readerMax`, since it cannot see how large each index is. Two more things about these
+columns:
+
+- **The index column is the reader's own count, and a floor.** The reader weighs each index entry at a fixed
+  estimate that has not been measured against the heap, so leave room above it.
+- **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes. Spread
+  evenly over the hot set, a default chunk cache would answer far less than 1% of the reads, so the hit rates above
+  hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that size.
+
+Raising both caches is the price of these figures, paid in each reader's memory.
 
 ## The monthly bill
 
 <!-- SIZING:BILL:START -->
-| | cold intersects | point reads | pointer refresh | loads | storage | **a month** | against one $346 Redis-HA cluster |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| **Small** | $1.63 | $0.53 | $1.05 | $0.14 | under $0.01 | **$3.35** | <1% |
-| **Medium** | $214 | $10.51 | $52.56 | $3.54 | $0.43 | **$281** | 81% |
-| **Large** | $4,289 | $105 | $2,102 | $232 | $42.84 | **$6,771** | 19.6× |
+| | cold intersects | point reads | pointer refresh | loads | storage | **a month** | the Redis that holds it | **against it** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Small** | $1.63 | $0.53 | $1.05 | $0.14 | under $0.01 | **$3.35** | $35.04 (3 × t4g.micro) | **90% less** |
+| **Medium** | $214 | $10.51 | $52.56 | $3.54 | $0.43 | **$281** | $957 (3 × r7g.xlarge) | **71% less** |
+| **Large** | $4,289 | $105 | $2,102 | $232 | $42.84 | **$6,771** | $27,325 (3 × r6gd.16xlarge) | **75% less** |
 <!-- SIZING:BILL:END -->
 
-**How to read the last column.** It is the estimator's verdict, against one Redis-HA cluster: a primary and two
-replicas on `cache.m7g.large`, at its on-demand price. It is the wrong size for every one of these deployments, and
-in both directions (inferred from the instance class, not checked by anything here):
+<!-- SIZING:REDIS:START -->
+Each deployment's Redis is the cheapest cluster that holds its data at its compressed size, at the prices the estimator ships (ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list of 2026-09-14): every shard a primary and 2 replicas, with 25% of each node's memory reserved, as ElastiCache does by default. The large deployment's is a data-tiering cluster, which keeps the values read least on SSD; kept all in memory it would be **$90,918** a month (285 × r7g.xlarge, 95 shards), and CloudBitmaps **93% less**.
+<!-- SIZING:REDIS:END -->
 
-- the small deployment's data would fit a far smaller node, so the comparison is kind to CloudBitmaps there, though
-  its bill stays small either way;
-- the medium and large deployments' data would not fit in one cluster's memory at all: holding gigabytes or
-  terabytes of bitmaps in RAM takes many such clusters, and the estimator prices only the one. There the comparison
-  is kind to Redis.
+**Why the Redis grows and the bill barely does.** Redis keeps every byte in memory, on a primary and its replicas,
+around the clock, so its price follows the data. CloudBitmaps keeps the data in object storage, which is cheap to
+keep, and pays per request, so its bill follows the queries. That is why the gap widens with size.
 
-The large deployment's verdict is a **lose-zone**, and it is meant: pay-per-use costs many times the one cluster.
-Pass `pricing.redis.monthlyUSD` for the cluster that would actually hold your data, and the verdict changes with it.
+**It is the least Redis could cost.** The estimator prices the data at its compressed size. A native Redis bitmap is
+sized by its highest id rather than by how many ids it holds, so sparse data takes more memory than this, never
+less. To compare with one cluster you name instead, pass `pricing.redis: { monthlyUSD }`.
+
+## How much room each has
+
+How many cold intersects a second each deployment could run before its bill meets its Redis, with every other term
+held where it is:
+
+<!-- SIZING:HEADROOM:START -->
+| | cold intersects a second | where the bill meets its Redis | headroom |
+|---|---:|---:|---:|
+| **Small** | 0.0076 | 0.16 | 20× |
+| **Medium** | 1.0 | 4.2 | 4× |
+| **Large** | 20 | 116 | 6× |
+<!-- SIZING:HEADROOM:END -->
+
+An extra cold intersect a second of this shape costs the same at any data size, so the room grows with the data:
+the Redis it is measured against does.
 
 ## How much the overlap matters
 
@@ -88,15 +111,15 @@ their size. The tables above use the calibration run's overlap. Segments that ar
 the same audience can share most of their chunks:
 
 <!-- SIZING:OVERLAP:START -->
-| shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | Large, a month |
-|---:|---:|---:|---:|
-| 100 (the tables above) | 204 | $281 (81%) | $6,771 (19.6×) |
-| 1,000 | 2,004 | $2,174 (6.3×) | $44,614 (128.9×) |
-| 2,000 | 4,004 | $4,276 (12.4×) | $86,662 (250.5×) |
+| shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | against its Redis | Large, a month | against its Redis |
+|---:|---:|---:|---:|---:|---:|
+| 100 (the tables above) | 204 | $281 | 71% less | $6,771 | 75% less |
+| 1,000 | 2,004 | $2,174 | 2.3× more | $44,614 | 1.6× more |
+| 2,000 | 4,004 | $4,276 | 4.5× more | $86,662 | 3.2× more |
 <!-- SIZING:OVERLAP:END -->
 
 <!-- SIZING:OVERLAP_NOTE:START -->
-The medium deployment's bill passes the cluster's price at **131 shared chunks**, about 7% of a segment's.
+The medium deployment's bill passes its Redis at **422 shared chunks**, about 21% of a segment's, and the large one's at **589**, about 29%.
 <!-- SIZING:OVERLAP_NOTE:END -->
 Know your overlap before you trust a verdict: it is the one input that moves these bills most.
 
@@ -110,11 +133,11 @@ big lines have a lever:
 <!-- SIZING:REFRESH:END -->
 
   <!-- SIZING:LEVERS:START -->
-  | `cache.genTtlMs` | pointer refresh | **a month** |
-  |---|---:|---:|
-  | 2 s, the default | $2,102 | **$6,771** |
-  | 1 minute | $350 | **$5,019** |
-  | 5 minutes | $70.08 | **$4,739** |
+  | `cache.genTtlMs` | pointer refresh | **a month** | against its Redis |
+  |---|---:|---:|---:|
+  | 2 s, the default | $2,102 | **$6,771** | 75% less |
+  | 1 minute | $350 | **$5,019** | 82% less |
+  | 5 minutes | $70.08 | **$4,739** | 83% less |
   <!-- SIZING:LEVERS:END -->
 
 - **The cold intersects**, which are priced as if every one started from an empty cache. A reader that serves a
@@ -163,14 +186,15 @@ const report = estimateCost({
   // pricing: your region's rates; on GCS or Azure Blob, set storage.requestsPerSizedRead to 2.
 });
 report.monthlyUSD.total; // $281, the medium deployment above
+report.redisBaseline; // $957 a month: 3 cache.r7g.xlarge nodes in 1 shard
 report.assumptions.notes; // what it modeled, and what it did not
 ```
 <!-- SIZING:SAMPLE:END -->
 
-Every report says what it modeled and what it left out: loads or the refresh when you did not size them, and more hot
-segments than a reader keeps open. [§11 of the guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the
-whole model, and `segment.costReport()` prices a real segment at its measured size and the store's own
-`cache.genTtlMs`.
+Every report says what it modeled and what it left out: which Redis it priced and why, loads or the refresh when you
+did not size them, and more hot segments than a reader keeps open. [§11 of the
+guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the whole model, and `segment.costReport()` prices a
+real segment at its measured size and the store's own `cache.genTtlMs`.
 
 ## What this page does not establish
 
@@ -181,4 +205,5 @@ whole model, and `segment.costReport()` prices a real segment at its measured si
   out of the region is not modeled.
 - **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and read a pointer or a tail
   in two requests; set both in your own pricing profile.
-- **Redis sized to the data.** The comparison is with one cluster, whatever the data size.
+- **What running Redis takes besides its price.** The comparison is what each costs to hold the data and answer the
+  workload, not the operations, the failovers or the speed of either.

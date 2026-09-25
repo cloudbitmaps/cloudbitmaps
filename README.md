@@ -212,9 +212,8 @@ Full numbers, method, and an explicit list of what each run does *not* establish
 **[benchmarks](docs/benchmarks.md#real-cloud-calibration--aws)**.
 
 **At your size:** [what it costs](docs/guide/sizing.md) prices a small, a medium and a large deployment with the
-library's own estimator, term by term — the large one's bill is many times one Redis-HA cluster's price, though
-one cluster could not hold its data — says how much the chunk overlap moves each bill, and where a standing cache
-still wins.
+library's own estimator, term by term, against the Redis that would hold each one's data, and says how much the chunk
+overlap moves each bill, and where a standing cache still wins.
 
 ## Install & entry points
 

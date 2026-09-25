@@ -51,18 +51,96 @@ export interface PricingProfile {
      */
     readonly requestsPerSizedRead?: number;
   };
-  /** The always-on baseline to compare against (e.g. an ElastiCache HA cluster). */
-  readonly redis: { readonly monthlyUSD: number };
+  /**
+   * The always-on Redis the verdict compares against. `sizedToData`, the default's, prices the cheapest cluster
+   * that holds the report's stored bytes; `monthlyUSD` is one cluster you name, whatever the data size.
+   */
+  readonly redis: { readonly monthlyUSD: number } | { readonly sizedToData: RedisSizing };
+}
+
+/** One node type a Redis cluster can be built from, as its cloud prices it. */
+export interface RedisNodeType {
+  readonly name: string;
+  /** Memory, in GiB, as the cloud publishes it for the node type. */
+  readonly memoryGiB: number;
+  /**
+   * SSD, in GiB, on a data-tiering node (ElastiCache's `r6gd`): keys stay in memory, and the values read least
+   * recently move to the SSD. Counted as holding data at its full size, which AWS does not document either way.
+   */
+  readonly ssdGiB?: number;
+  /** On-demand price per node-hour, in USD. */
+  readonly hourlyUSD: number;
+  /**
+   * The most shards a cluster of this type is priced at. Burstable nodes are priced as one shard: a cluster
+   * sharded across them is not how data anyone queries is held. Default: no limit.
+   */
+  readonly maxShards?: number;
 }
 
 /**
- * Default profile — **AWS us-east-1, on-demand**, mid-2026, from the fact-checked
- * published pricing rather than copied from a blog post. Override it for your region, cloud, or committed term.
+ * Redis sized to hold the data: enough shards for the bytes, each a primary and its replicas, on whichever node
+ * type makes that cheapest, with fewer nodes breaking a tie. The data is held at its stored, compressed size,
+ * which is the least RAM Redis could take for it: a native Redis bitmap is sized by its highest id, not by how
+ * many ids it holds.
+ */
+export interface RedisSizing {
+  /** Where the prices come from, and when; the report's notes quote it. */
+  readonly source: string;
+  readonly nodeTypes: readonly RedisNodeType[];
+  /** Replicas per shard. AWS's best practice is 2; Multi-AZ needs at least 1. */
+  readonly replicasPerShard: number;
+  /** The share of each node's memory kept back from data: ElastiCache's `reserved-memory-percent`, 25% by default. */
+  readonly reservedMemoryFraction: number;
+}
+
+/**
+ * **ElastiCache for Redis OSS in us-east-1, on-demand**, from AWS's public price list of 2026-09-14 (prices effective
+ * 2026-09-01) and the memory AWS publishes for each node type. It lists only types that can be the cheapest fit for
+ * some size of data: every m7g but the large has less memory than an r7g that costs less. Each shard is a primary
+ * and two replicas, AWS's best practice, with ElastiCache's default 25% of memory reserved. ElastiCache for Valkey,
+ * also Redis-compatible, is 20% cheaper a node; to compare against it, pass its prices.
+ */
+export const ELASTICACHE_REDIS_US_EAST_1: RedisSizing = {
+  source: 'ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list of 2026-09-14',
+  replicasPerShard: 2,
+  reservedMemoryFraction: 0.25,
+  nodeTypes: [
+    { name: 'cache.t4g.micro', memoryGiB: 0.5, hourlyUSD: 0.016, maxShards: 1 },
+    { name: 'cache.t4g.small', memoryGiB: 1.37, hourlyUSD: 0.032, maxShards: 1 },
+    { name: 'cache.t4g.medium', memoryGiB: 3.09, hourlyUSD: 0.065, maxShards: 1 },
+    { name: 'cache.m7g.large', memoryGiB: 6.38, hourlyUSD: 0.158 },
+    { name: 'cache.r7g.large', memoryGiB: 13.07, hourlyUSD: 0.219 },
+    { name: 'cache.r7g.xlarge', memoryGiB: 26.32, hourlyUSD: 0.437 },
+    { name: 'cache.r7g.2xlarge', memoryGiB: 52.82, hourlyUSD: 0.873 },
+    { name: 'cache.r7g.4xlarge', memoryGiB: 105.81, hourlyUSD: 1.745 },
+    { name: 'cache.r7g.8xlarge', memoryGiB: 209.55, hourlyUSD: 3.491 },
+    { name: 'cache.r7g.12xlarge', memoryGiB: 317.77, hourlyUSD: 5.235 },
+    { name: 'cache.r7g.16xlarge', memoryGiB: 419.09, hourlyUSD: 6.981 },
+    { name: 'cache.r6gd.xlarge', memoryGiB: 26.32, ssdGiB: 99.33, hourlyUSD: 0.781 },
+    { name: 'cache.r6gd.2xlarge', memoryGiB: 52.82, ssdGiB: 199.07, hourlyUSD: 1.56 },
+    { name: 'cache.r6gd.4xlarge', memoryGiB: 105.81, ssdGiB: 398.14, hourlyUSD: 3.12 },
+    { name: 'cache.r6gd.8xlarge', memoryGiB: 209.55, ssdGiB: 796.28, hourlyUSD: 6.24 },
+    { name: 'cache.r6gd.12xlarge', memoryGiB: 317.77, ssdGiB: 1194.42, hourlyUSD: 9.358 },
+    { name: 'cache.r6gd.16xlarge', memoryGiB: 419.09, ssdGiB: 1592.56, hourlyUSD: 12.477 },
+  ],
+};
+
+/**
+ * One ElastiCache HA cluster of the smallest general-purpose node, a primary and two replicas of cache.m7g.large:
+ * 3 × 730 h × $0.158 = $346.02, published to the dollar. The per-request crossovers on the benchmarks page are
+ * against this one cluster. Pass it as `pricing.redis` to compare against it whatever the data size; it is the
+ * cheapest cluster in {@link ELASTICACHE_REDIS_US_EAST_1} only for about 2.3 to 4.8 GiB of data.
+ */
+export const ONE_REDIS_HA_CLUSTER: { readonly monthlyUSD: number } = { monthlyUSD: 346 }; // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
+
+/**
+ * Default profile — **AWS us-east-1, on-demand**, mid-2026, from the fact-checked published pricing rather than
+ * copied from a blog post, with Redis sized to the data. Override it for your region, cloud, or committed term.
  */
 export const AWS_US_EAST_1_ONDEMAND: PricingProfile = {
   name: 'aws-us-east-1-ondemand',
   storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
-  redis: { monthlyUSD: 346 }, // ElastiCache HA: 1 primary + 2 replicas (cache.m7g.large); ~$115 single-node
+  redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1 },
 };
 
 export const DEFAULT_PRICING: PricingProfile = AWS_US_EAST_1_ONDEMAND;
@@ -168,11 +246,27 @@ export interface CostReport {
     readonly total: number;
   };
   /**
-   * Sustained read rate at which the pay-per-use model's cost passes the flat Redis baseline, **evaluated at this
-   * report's `cacheHitRate`** — so a higher cache-hit rate raises it (cache hits are free) — with the other
+   * The Redis the verdict compares against. Sized, the default, it is the cheapest cluster in
+   * `pricing.redis.sizedToData` that holds this report's stored bytes; fixed, it is `pricing.redis.monthlyUSD` as
+   * given.
+   */
+  readonly redisBaseline: {
+    readonly monthlyUSD: number;
+    readonly basis: 'sized-to-data' | 'fixed';
+    /** When sized: the node type, the shards, and the nodes, every shard's primary and replicas. */
+    readonly cluster?: {
+      readonly nodeType: string;
+      readonly shards: number;
+      readonly nodes: number;
+    };
+  };
+  /**
+   * Sustained read rate at which the pay-per-use model's cost passes {@link CostReport.redisBaseline}, **evaluated
+   * at this report's `cacheHitRate`** — so a higher cache-hit rate raises it (cache hits are free) — with the other
    * request axes at 0, and with what keeping the data readable costs taken out of the baseline first: storage, and
    * this report's pointer refresh. Loads, the write side, are left out of it. `Infinity` means it never crosses (a
-   * 100% cache-hit rate). The published anchor (~329 reads/s) is at `cacheHitRate: 0` with no refresh modeled.
+   * 100% cache-hit rate). The published anchor (~329 reads/s) is against {@link ONE_REDIS_HA_CLUSTER}, at
+   * `cacheHitRate: 0` with no refresh modeled.
    */
   readonly redisCrossover: { readonly readsPerSec: number };
   readonly verdict: 'win-big' | 'win' | 'lose-zone';
@@ -186,7 +280,8 @@ export interface CostReport {
   };
 }
 
-const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
+const HOURS_PER_MONTH = 730; // AWS's own convention: 365 days × 24 hours ÷ 12 months
+const SECONDS_PER_MONTH = HOURS_PER_MONTH * 3600; // 2,628,000
 const GIB = 1024 ** 3;
 
 /**
@@ -217,6 +312,85 @@ function clamp01(n: number): number {
   return n < 0 ? 0 : n > 1 ? 1 : n;
 }
 
+interface SizedCluster {
+  readonly nodeType: RedisNodeType;
+  readonly shards: number;
+  readonly nodes: number;
+  readonly monthlyUSD: number;
+}
+
+/** Fail-fast on a caller-supplied catalogue: a bad row would otherwise win on NaN, or never fit anything. */
+function validateSizing(sizing: RedisSizing): void {
+  const at = 'pricing.redis.sizedToData';
+  if (typeof sizing.source !== 'string') {
+    throw new ValidationError(`${at}.source must say where the prices come from`);
+  }
+  if (!Array.isArray(sizing.nodeTypes) || sizing.nodeTypes.length === 0) {
+    throw new ValidationError(`${at}.nodeTypes must list at least one node type`);
+  }
+  if (!Number.isInteger(sizing.replicasPerShard) || sizing.replicasPerShard < 0) {
+    throw new ValidationError(
+      `${at}.replicasPerShard must be an integer >= 0; got ${sizing.replicasPerShard}`,
+    );
+  }
+  const reserved = requireFiniteNonNeg(
+    sizing.reservedMemoryFraction,
+    `${at}.reservedMemoryFraction`,
+  );
+  if (reserved >= 1) {
+    throw new ValidationError(`${at}.reservedMemoryFraction must be below 1; got ${reserved}`);
+  }
+  for (const n of sizing.nodeTypes) {
+    if (typeof n.name !== 'string' || n.name === '') {
+      throw new ValidationError(`${at}.nodeTypes: every node type needs a name`);
+    }
+    const row = `${at}.nodeTypes[${JSON.stringify(n.name)}]`;
+    if (!(requireFiniteNonNeg(n.memoryGiB, `${row}.memoryGiB`) > 0)) {
+      throw new ValidationError(`${row}.memoryGiB must be above 0`);
+    }
+    requireFiniteNonNeg(n.ssdGiB ?? 0, `${row}.ssdGiB`);
+    requireFiniteNonNeg(n.hourlyUSD, `${row}.hourlyUSD`);
+    if (n.maxShards !== undefined && (!Number.isInteger(n.maxShards) || n.maxShards < 1)) {
+      throw new ValidationError(`${row}.maxShards must be an integer >= 1; got ${n.maxShards}`);
+    }
+  }
+}
+
+/**
+ * The cheapest cluster in `sizing` that holds `dataGiB`, with fewer nodes breaking a tie: for each node type,
+ * enough shards for the data in what each node leaves free, every shard a primary and its replicas.
+ */
+function cheapestCluster(sizing: RedisSizing, dataGiB: number): SizedCluster {
+  let best: SizedCluster | undefined;
+  for (const nodeType of sizing.nodeTypes) {
+    const usableGiB =
+      nodeType.memoryGiB * (1 - sizing.reservedMemoryFraction) + (nodeType.ssdGiB ?? 0);
+    const shards = Math.max(1, Math.ceil(dataGiB / usableGiB));
+    if (nodeType.maxShards !== undefined && shards > nodeType.maxShards) continue;
+    const nodes = shards * (1 + sizing.replicasPerShard);
+    const monthlyUSD = nodes * nodeType.hourlyUSD * HOURS_PER_MONTH;
+    if (
+      best === undefined ||
+      monthlyUSD < best.monthlyUSD ||
+      (monthlyUSD === best.monthlyUSD && nodes < best.nodes)
+    ) {
+      best = { nodeType, shards, nodes, monthlyUSD };
+    }
+  }
+  if (best === undefined) {
+    throw new ValidationError(
+      `no node type in pricing.redis.sizedToData.nodeTypes holds ${dataGiB.toFixed(2)} GiB within its maxShards`,
+    );
+  }
+  return best;
+}
+
+/** "1 shard of 3 cache.r7g.xlarge nodes", or "8 shards, 24 cache.r7g.12xlarge nodes". */
+function clusterWords(c: SizedCluster): string {
+  const nodes = `${c.nodes} ${c.nodeType.name} node${c.nodes === 1 ? '' : 's'}`;
+  return c.shards === 1 ? `1 shard of ${nodes}` : `${c.shards} shards, ${nodes}`;
+}
+
 /** Rough bytes for a segment when only cardinality is known: 2 B/value (array-container upper bound). */
 function sizingBytes(spec: SegmentSizing): number {
   if (spec.sizeBytes !== undefined) return requireFiniteNonNeg(spec.sizeBytes, 'segment.sizeBytes');
@@ -243,13 +417,27 @@ function buildReport(input: {
   requireFiniteNonNeg(storage.getPerMillion, 'pricing.storage.getPerMillion');
   requireFiniteNonNeg(storage.putPerMillion, 'pricing.storage.putPerMillion');
   requireFiniteNonNeg(storage.storagePerGiBMonth, 'pricing.storage.storagePerGiBMonth');
-  requireFiniteNonNeg(redis.monthlyUSD, 'pricing.redis.monthlyUSD');
   const sizedRead = requireFiniteNonNeg(
     storage.requestsPerSizedRead ?? 1,
     'pricing.storage.requestsPerSizedRead',
   );
 
   const storageBytes = requireFiniteNonNeg(input.storageBytes, 'storageBytes');
+  const storedGiB = storageBytes / GIB;
+
+  // The Redis to compare against: the cheapest cluster that holds the stored bytes, or the one cluster named.
+  let sizing: RedisSizing | undefined;
+  let sized: SizedCluster | undefined;
+  let baselineUSD: number;
+  if ('sizedToData' in redis) {
+    sizing = redis.sizedToData;
+    validateSizing(sizing);
+    sized = cheapestCluster(sizing, storedGiB);
+    baselineUSD = sized.monthlyUSD;
+  } else {
+    baselineUSD = requireFiniteNonNeg(redis.monthlyUSD, 'pricing.redis.monthlyUSD');
+  }
+
   const cacheHitRate = clamp01(
     requireFiniteNonNeg(input.workload.cacheHitRate ?? 0, 'cacheHitRate'),
   );
@@ -305,7 +493,7 @@ function buildReport(input: {
       ? Math.min((readerProcesses * hotSegments * S * 1000) / genTtlMs, readsPerSec * S)
       : 0;
 
-  const storageUSD = (storageBytes / GIB) * storage.storagePerGiBMonth;
+  const storageUSD = storedGiB * storage.storagePerGiBMonth;
   const readsUSD = readMisses * storageGetUSD;
   const intersectGets =
     chunksPerIntersect + SIZED_READS_PER_COLD_OPERAND * operandsPerIntersect * sizedRead;
@@ -318,14 +506,14 @@ function buildReport(input: {
 
   // Crossover: the sustained read rate (other axes 0) where request cost alone passes the baseline less the fixed
   // monthly costs (storage and the pointer refresh), evaluated at this report's cache posture (misses).
-  const headroom = Math.max(0, redis.monthlyUSD - storageUSD - refreshUSD);
+  const headroom = Math.max(0, baselineUSD - storageUSD - refreshUSD);
   const readsCross =
     storageGetUSD > 0 && missFraction > 0
       ? headroom / (S * storageGetUSD * missFraction)
       : Infinity;
 
   const verdict: CostReport['verdict'] =
-    total <= redis.monthlyUSD * 0.1 ? 'win-big' : total < redis.monthlyUSD ? 'win' : 'lose-zone';
+    total <= baselineUSD * 0.1 ? 'win-big' : total < baselineUSD ? 'win' : 'lose-zone';
 
   const dominant = Math.max(readsUSD, intersectsUSD, storageUSD, loadsUSD, refreshUSD);
   let driver = 'storage';
@@ -335,14 +523,34 @@ function buildReport(input: {
   } else if (dominant === loadsUSD && loadsUSD > 0)
     driver = 'loads (object, listing and pointer requests)';
   else if (dominant === refreshUSD && refreshUSD > 0) driver = 'the pointer refresh (object GETs)';
+  // A fixed baseline keeps the words it always had; a sized one says what it priced.
+  const baseline =
+    sized === undefined
+      ? `$${baselineUSD}/mo flat baseline`
+      : `$${baselineUSD.toFixed(2)}/mo Redis that would hold ${storedGiB.toFixed(2)} GiB ` +
+        `(${clusterWords(sized)})`;
   const rationale =
     verdict === 'lose-zone'
-      ? `pay-per-use total $${total.toFixed(2)}/mo exceeds the $${redis.monthlyUSD}/mo flat baseline; dominated by ${driver}`
+      ? `pay-per-use total $${total.toFixed(2)}/mo exceeds the ${baseline}; dominated by ${driver}`
       : verdict === 'win-big'
-        ? `$${total.toFixed(2)}/mo — ≤10% of the $${redis.monthlyUSD}/mo baseline; dominated by ${driver}`
-        : `$${total.toFixed(2)}/mo, under the $${redis.monthlyUSD}/mo baseline; dominated by ${driver}`;
+        ? `$${total.toFixed(2)}/mo — ≤10% of the ${baseline}; dominated by ${driver}`
+        : `$${total.toFixed(2)}/mo, under the ${baseline}; dominated by ${driver}`;
+
+  const redisNote =
+    sizing === undefined || sized === undefined
+      ? `Redis priced at the fixed $${baselineUSD}/mo given, whatever the data size.`
+      : `Redis priced at the cheapest cluster that holds the ${storedGiB.toFixed(2)} GiB stored: ` +
+        `${clusterWords(sized)}, each shard a primary and ${sizing.replicasPerShard} replica(s), ` +
+        `${Math.round(sizing.reservedMemoryFraction * 100)}% of memory reserved (${sizing.source}). ` +
+        'It holds the data at its compressed size, the least Redis could: a ' +
+        'native Redis bitmap is sized by its highest id, so sparse ids take more.' +
+        (sized.nodeType.ssdGiB !== undefined && sized.nodeType.ssdGiB > 0
+          ? ` ${sized.nodeType.name} is a data-tiering node, priced as if its SSD holds data at its full ` +
+            'size and the data read often fits in its memory.'
+          : '');
 
   const notes = [
+    redisNote,
     'Same-region egress treated as free; internet egress is not modeled.',
     'Request cost is from the supplied workload rates (live-metrics-derived request cost is a later phase).',
     loadsPerMonth > 0
@@ -384,6 +592,14 @@ function buildReport(input: {
       },
       total,
     },
+    redisBaseline:
+      sized === undefined
+        ? { monthlyUSD: baselineUSD, basis: 'fixed' }
+        : {
+            monthlyUSD: baselineUSD,
+            basis: 'sized-to-data',
+            cluster: { nodeType: sized.nodeType.name, shards: sized.shards, nodes: sized.nodes },
+          },
     redisCrossover: { readsPerSec: readsCross },
     verdict,
     rationale,
