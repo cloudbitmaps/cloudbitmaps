@@ -75,7 +75,7 @@ describe('bench-as-test anchors', () => {
     expect(snap.storage.bytes).toBeLessThanOrEqual(fullBytes * 0.1);
   });
 
-  it('at-rest, the reference set costs ≤10% of a flat Redis-HA node', () => {
+  it('at-rest, the reference set costs ≤10% of the one Redis-HA cluster', () => {
     // Reference: ~1.2 GiB total at rest, no traffic.
     const report = estimateCost({
       segments: [{ sizeBytes: 1.2 * 1024 ** 3, count: 1 }],
@@ -99,6 +99,29 @@ describe('bench-as-test anchors', () => {
     expect(ONE_REDIS_HA_CLUSTER.monthlyUSD).toBe(346);
     expect(report.redisCrossover.readsPerSec).toBeGreaterThanOrEqual(329);
     expect(report.redisCrossover.readsPerSec).toBeLessThan(330);
+  });
+
+  it('the Redis the default prices for the reference set, and where the line would sit against it', () => {
+    // The benchmarks page discloses that its line is drawn against a larger Redis than its own reference set needs:
+    // the default profile prices the cluster that holds 1.2 GiB. Both figures the page states are gated here, and
+    // `pnpm bench:check` holds the page and bench/results.json to the same estimator.
+    const sized = estimateCost({ segments: [{ sizeBytes: 1.2 * GIB }] }).redisBaseline;
+    expect(sized).toMatchObject({
+      basis: 'sized-to-data',
+      cluster: { nodeType: 'cache.t4g.medium', shards: 1, nodes: 3 },
+    });
+    expect(sized.monthlyUSD).toBeCloseTo(3 * 0.065 * 730, 9); // $142.35
+    // On the line's own basis, with no stored bytes: 142.35 / (2,628,000 s × $0.40 a million) = 135.42 a second.
+    const line = estimateCost({
+      segments: [{ sizeBytes: 0 }],
+      workload: { cacheHitRate: 0 },
+      pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: { monthlyUSD: sized.monthlyUSD } },
+    });
+    expect(line.redisCrossover.readsPerSec).toBeCloseTo(
+      sized.monthlyUSD / (SECONDS_PER_MONTH * 0.4e-6),
+      6,
+    );
+    expect(Math.round(line.redisCrossover.readsPerSec * 100) / 100).toBe(135.42);
   });
 
   it('the estimator never understates the chunk GETs the engine issued for point reads', async () => {

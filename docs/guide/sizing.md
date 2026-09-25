@@ -59,7 +59,8 @@ more hot segments than `cache.readerMax`, since it cannot see how large each ind
 columns:
 
 - **The index column is the reader's own count, an estimate.** The reader counts each chunk's index entry at the
-  fixed size in the column's heading, which has not been measured against the heap, so leave room above it.
+  fixed size in the column's heading, an estimate reasoned from V8's object layout rather than measured on the heap,
+  so leave room above it.
 - **The hit rates assume the reads are skewed.** The fifth column is what holding a hot set whole takes, and the
   last is the share of reads a default chunk cache would answer if they were spread evenly over the hot set. The hit
   rates above hold only where most reads fall on a small part of it, or where the chunk cache is raised toward that
@@ -78,22 +79,18 @@ Raising both caches is the price of these figures, paid in each reader's memory.
 <!-- SIZING:BILL:END -->
 
 <!-- SIZING:REDIS:START -->
-Each deployment's Redis is the cheapest cluster that holds its data at its compressed size, at the prices the estimator ships (ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714): every shard a primary and 2 replicas, with 25% of each node's memory reserved, as ElastiCache does by default. The large deployment's is a data-tiering cluster, which keeps the values read least recently on its SSD, and which AWS recommends for workloads that regularly read up to 20% of their data. Kept all in memory it would be **$85,509** a month (285 × r6g.xlarge, 95 shards, past ElastiCache's default quota of 90 nodes a cluster), and CloudBitmaps **92% less**.
+Each deployment's Redis is the cheapest cluster that holds its data at its compressed size, at the prices the estimator ships (ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714): every shard a primary and two replicas, each node keeping back the 25% of its memory ElastiCache reserves by default. The large deployment's is a data-tiering cluster, which keeps the values read least recently on its SSD, and which AWS recommends for workloads that regularly read up to 20% of their data. Kept all in memory it would be **$85,509** a month (285 × r6g.xlarge, 95 shards, past ElastiCache's default quota of 90 nodes a cluster), and CloudBitmaps **92% less**.
 <!-- SIZING:REDIS:END -->
 
-**Why the Redis grows and the bill barely does.** Redis holds all the data on nodes billed by the hour, a primary
+**Why the Redis follows the data and the bill follows the queries.** Redis holds all the data on nodes billed by the hour, a primary
 and its replicas, around the clock: in memory, or on a data-tiering node's SSD for the values read least recently.
 So its price follows the data. CloudBitmaps keeps the data in object storage, which is cheap to keep, and pays per
 request, so its bill follows the queries. Which of the two is smaller turns on how hard the data is queried, not on
 its size alone.
 
-**Which way the Redis price leans.** It is the cheapest cluster of one kind, not the least Redis could cost, and its
-choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized
-by its highest id, so sparse ids take more memory than this; and among node types the cheapest fit wins. Toward
-CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable nodes are
-priced only as one shard. Reserved nodes, one replica a shard, or ElastiCache for Valkey, which AWS prices 20% lower
-a node, each cost less, and against them the saving is smaller. To compare with one cluster you name, pass
-`pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.
+<!-- SIZING:LEANINGS:START -->
+**Which way the Redis price leans.** It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller. To compare with one cluster you name, pass `pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.
+<!-- SIZING:LEANINGS:END -->
 
 ## How much room each has
 
@@ -115,9 +112,9 @@ cross, not a capacity: how many requests a second S3 serves is a limit of its ow
 
 ## How much the overlap matters
 
-A cold intersect costs 4 + 2k GETs for k shared chunks, so what two segments share sets the price, far more than
-their size. The tables above use the calibration run's overlap. Segments that are filters over the same catalogue or
-the same audience can share most of their chunks:
+<!-- SIZING:OVERLAP_INTRO:START -->
+A cold intersect costs 4 + 2k GETs for k shared chunks, so what two segments share sets the price, far more than their size. The tables above use the calibration run's overlap. Segments that are filters over the same catalogue or the same audience can share most of their chunks:
+<!-- SIZING:OVERLAP_INTRO:END -->
 
 <!-- SIZING:OVERLAP:START -->
 | shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | against its Redis | Large, a month | against its Redis |
@@ -161,12 +158,9 @@ The estimator will say "lose-zone" and mean it. A single hot path that runs hund
 against the same few segments pays per request for every one of them, while a node in front costs the same however
 hard it is used. So does a workload whose whole dataset fits in one small node and is read constantly.
 
-And S3 has a rate of its own. AWS documents
-[at least 5,500 GET requests a second per partitioned prefix](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html),
-and scales a prefix's partitions as its request rate grows, answering `503 Slow Down` while it does. A namespace's
-segments share one data prefix, with their pointers under another beside it:
-
 <!-- SIZING:PREFIX:START -->
+And S3 has a rate of its own. AWS documents [at least 5,500 GET requests a second per partitioned prefix](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html), and scales a prefix's partitions as its request rate grows, answering `503 Slow Down` while it does. A namespace's segments share one data prefix, with their pointers under another beside it.
+
 The large deployment's reads average **4,140 GETs a second** on its one data prefix, **75%** of that documented rate, before any peak.
 <!-- SIZING:PREFIX:END -->
 Spread a deployment like that across namespaces, which give it more prefixes, and expect throttling at peaks until S3
@@ -214,5 +208,6 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
   out of the region is not modeled.
 - **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and read a pointer or a tail
   in two requests; set both in your own pricing profile.
-- **What running Redis takes besides its price.** The comparison is what each costs to hold the data and answer the
-  workload, not the operations, the failovers or the speed of either.
+- **What running Redis takes besides its price.** The comparison is CloudBitmaps' bill for the workload against a
+  Redis sized to hold the data, not to its request rate; nor does it price the operations, the failovers or the speed
+  of either.
