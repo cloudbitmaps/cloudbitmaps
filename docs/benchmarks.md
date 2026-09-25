@@ -1,43 +1,45 @@
 # CloudBitmaps — benchmarks & the Redis crossover
 
 > **Generated, not hand-written.** The chart and table below are produced by `pnpm bench` from the shipped
-> `estimateCost()`, at the default `aws-us-east-1-ondemand` rates against one Redis-HA cluster,
-> `ONE_REDIS_HA_CLUSTER`, so they can never drift from the library's own numbers. The polished, shareable
-> version lives on the [site](../site/benchmarks.html)
+> `estimateCost()` at the default `aws-us-east-1-ondemand` rates: the line against one three-node Redis-HA cluster,
+> `ONE_REDIS_HA_CLUSTER`, whatever the data size, and the table's last row against the Redis the default profile
+> sizes for the reference set. `pnpm bench:check` fails CI when either drifts from the library's own numbers. The
+> polished, shareable version lives on the [site](../site/benchmarks.html)
 
-CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
-sustained read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
+CloudBitmaps bills per request and per byte; a Redis-HA cluster bills a flat monthly rate. Below a certain
+sustained read rate, pay-per-use is far cheaper; above it, the cluster wins. This is that crossover.
 
 There is **one** crossover, not two, because a loaded store has no per-id write to plot: data enters as a whole
 generation — one object PUT, a few when multipart, then the pointer — which the estimator prices as `loadsPerMonth`
-rather than as a rate. Reads are the axis where a flat, always-on node competes.
+rather than as a rate. Reads are the axis where a flat, always-on cluster competes.
 
 ## The crossover chart
 
 <!-- BENCH:CHART:START -->
-![CloudBitmaps vs flat Redis-HA cost crossover](../bench/crossover.svg)
+![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)
 <!-- BENCH:CHART:END -->
 
 <!-- BENCH:STATS:START -->
 | Scenario | Value | Basis | Verdict |
 | --- | --- | --- | --- |
-| At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of Redis | win-big |
-| Read crossover | **329.15 reads/s** | object GETs, cache off | past here a flat tier is cheaper |
-| Redis-HA baseline | **$346/mo** | flat | the comparison line |
-| The Redis the 1.2 GiB set needs | **$142.35/mo** | 3 × cache.t4g.medium, the estimator's default | the line would sit at 135.39 reads/s |
+| At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of the $346 cluster | win-big |
+| Read crossover | **329.15 reads/s** | object GETs, cache off | past here the cluster is cheaper |
+| Redis-HA baseline | **$346/mo** | one cluster, whatever the data size | the comparison line |
+| The Redis the default prices for the 1.2 GiB set | **$142.35/mo** | 3 × cache.t4g.medium, the cheapest cluster in the catalogue that holds it | the line would sit at 135.42 reads/s |
 <!-- BENCH:STATS:END -->
 
 ## How these stay honest
 
 Every number above is turned into a **deterministic, build-breaking CI assertion** in
 [`tests/bench/anchors.test.ts`](../tests/bench/anchors.test.ts), and the estimator's request counts in
-[`tests/core/cost.test.ts`](../tests/core/cost.test.ts) — a regression or an overclaim fails the build:
+[`tests/core/cost.test.ts`](../tests/core/cost.test.ts); `pnpm bench:check` holds the chart, the table and
+`bench/results.json` to the same estimator — a regression or an overclaim fails the build:
 
 - **Counting is free** — `count()` on a loaded segment performs **0 payload reads**, summing cardinality
   straight from the `.crbm` index.
 - **Chunk-skipping works** — the chunks a 5%-overlap intersection fetches come to ≤ 10% of the bytes of a full
   two-segment download (measured through the metrics sink, which counts chunk reads).
-- **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of a Redis-HA node.
+- **Cheap at rest** — the reference ~1.2 GiB set with no traffic costs ≤ 10% of the $346 cluster.
 - **The published crossover is the modelled one** — the estimator's read crossover, at the pessimal cache
   posture, is asserted against the rate this page prints, over the same $346 baseline.
 - **The estimator never quotes fewer chunk reads than the engine makes** — priced against the chunk GETs a metrics
@@ -320,7 +322,9 @@ which is why none is published until an in-region run produces one.
   a real account, on 2026-07-25 and 2026-09-23). Only the third is cloud-calibrated, and even then the dollars are
   published prices applied to wire-metered requests, not the invoice itself.
 - **Rates are the vendor's to change, and are region-specific.** Every dollar figure in this document uses the
-  repo's default `aws-us-east-1-ondemand` profile, dated where it was measured. Treat the _ratios_ as the durable
+  default `aws-us-east-1-ondemand` rates, dated where it was measured; the crossover is drawn against
+  `ONE_REDIS_HA_CLUSTER`, and the stats table's last row against the Redis the default profile sizes for the
+  reference set. Treat the _ratios_ as the durable
   finding and re-derive any absolute figure from your own region and contract — `estimateCost()` takes a
   `PricingProfile` so you can plug your real rates in rather than trusting ours.
 

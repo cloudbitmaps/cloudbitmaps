@@ -54,9 +54,9 @@ export interface CrbmIndexEntry {
  * ({@link CrbmReader.retainedIndexBytes}). In V8 an entry costs: a `Map` slot (~48–64 B: two pointer slots +
  * hash chaining), the {@link CrbmIndexEntry} object (~40–56 B: header + 5 fields, where `offset`/`crc32c`
  * routinely exceed the 2³¹ SMI range and box as heap doubles, +16 B each), and one `orderedKeys` array slot
- * (~8 B) — realistically ~130–160 B. Rounded UP to 160 so the bound **over-counts** (a configured N-byte
- * ceiling pins ≤ N of real heap, never more), keeping the aggregate memory guarantee on the safe side. A
- * stable upper proxy, not an exact figure.
+ * (~8 B) — realistically ~130–160 B, and rounded up to 160. It is reasoned from V8's object layout, not measured
+ * on the heap, so the bound it gives is a proxy: it can count the real heap high or low, and a measurement is owed
+ * before it is called exact.
  */
 const RETAINED_BYTES_PER_INDEX_ENTRY = 160;
 

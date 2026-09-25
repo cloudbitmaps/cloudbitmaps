@@ -365,7 +365,8 @@ const anchors = [
   ['read crossover', `${results.readCrossoverPerSec}`],
   // The Redis the estimator's default prices for the reference set, which is smaller than the one cluster the line is
   // drawn against: the benchmarks page discloses it, and where the line would sit against it.
-  ['reference set · the Redis that holds it', `$${results.referenceRedis.monthlyUSD}`],
+  // Written with cents, as bench/run.cjs prints it: $153.30, never $153.3.
+  ['reference set · the Redis that holds it', `$${results.referenceRedis.monthlyUSD.toFixed(2)}`],
   ['reference set · its cluster', results.referenceRedis.cluster],
   ['reference set · the line against it', `${results.referenceRedis.readCrossoverPerSec}`],
   ['baseline topology', baselineTopology],
@@ -669,7 +670,7 @@ for (const page of PAGES) {
     const values = calibration.mergeValues(
       singleBucket.pageValues,
       calibration.valuesFromFigures([...otherSources, ...alsoAllowed], {
-        perSecond: [results.readCrossoverPerSec],
+        perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
       }),
     );
     for (const block of blocksOf(html, isHtml, metas)) {

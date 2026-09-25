@@ -37,6 +37,7 @@
     "bench:scale": "pnpm run build && node --expose-gc bench/scale.cjs",
     "bench:sizing": "pnpm run build && node bench/sizing.cjs",
     "bench:sizing:check": "node bench/sizing.cjs --check",
+    "bench:check": "node bench/run.cjs --check",
     "bench:scale:render": "SCALE_TASK=inject node bench/scale.cjs",
     "soak": "pnpm run build && node --expose-gc bench/soak.cjs",
     "dr-drill": "vitest run tests/dr-drill.test.ts",

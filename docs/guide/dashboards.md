@@ -96,44 +96,43 @@ gauge. Because the library owns the objects, the grounded report uses each segme
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
-import { AWS_US_EAST_1_ONDEMAND, ONE_REDIS_HA_CLUSTER } from '@cloudbitmaps/roaring';
 
 const meter = otel.getMeter('cloud-roaring');
 const monthlyUsd = meter.createObservableGauge('cloudroaring.cost.monthly_usd');
-// verdict is a 3-state enum → map to an ordinal so you can alert on it: 0 win-big, 1 win, 2 lose-zone.
-const VERDICT_RANK = { 'win-big': 0, win: 1, 'lose-zone': 2 } as const;
-const verdictRank = meter.createObservableGauge('cloudroaring.cost.verdict_rank');
-// The Redis you would run for the whole store, fixed. Sized to one segment instead, the baseline would step up as
-// the segment grew past a node's memory, and move the verdict with no change in traffic.
-const pricing = { ...AWS_US_EAST_1_ONDEMAND, redis: ONE_REDIS_HA_CLUSTER };
+const shareOfRedis = meter.createObservableGauge('cloudroaring.cost.share_of_redis');
+// What the Redis you would otherwise run for this store costs a month: your figure, not the library's.
+const STORE_REDIS_USD = 900;
+const SEGMENTS = ['active-us', 'active-eu'];
 
 meter.addBatchObservableCallback(
   async (obs) => {
-    for (const name of ['active-us', 'active-eu']) {
+    let storeUsd = 0;
+    for (const name of SEGMENTS) {
       const r = await store.segment(name).costReport({
-        pricing,
         workload: { readsPerSec: 200, cacheHitRate: 0.8, loadsPerMonth: 30 },
       });
       obs.observe(monthlyUsd, r.monthlyUSD.total, { segment: name });
-      obs.observe(verdictRank, VERDICT_RANK[r.verdict], { segment: name });
+      storeUsd += r.monthlyUSD.total;
     }
+    // One figure for the store: its pay-per-use bill as a share of the Redis that would replace all of it.
+    obs.observe(shareOfRedis, storeUsd / STORE_REDIS_USD);
   },
-  [monthlyUsd, verdictRank],
+  [monthlyUsd, shareOfRedis],
 );
 ```
 
-Alert when `verdict_rank` hits `2` — the segment has drifted into the **lose-zone** (pay-per-use now exceeds the
-Redis in `pricing`, `r.redisBaseline`), usually because read volume outgrew the cache hit rate. Leave `pricing` out
-and each report sizes Redis to its own segment, a cluster holding that segment alone: right for a look at one
-segment, wrong for an alarm.
-`r.redisCrossover.readsPerSec` gives the exact read rate where the economics flip *at this report's cache-hit rate*
-(with the cache off, against one $346 cluster it is about 329 reads/s; every cache hit moves it further out, and every
-hot segment's pointer refresh moves it in), so you can set the alarm
-threshold honestly rather than guessing — and `r.monthlyUSD.byOp` breaks the total into `reads` / `intersects` /
-`storage` / `loads` / `pointerRefresh` so you can see *what* pushed it over. Loads are modelled only when you pass
-`loadsPerMonth` (and `requestsPerLoad` for a multipart write; what `store.load()` adds around the object is counted
-for you), and the pointer refresh only when you pass `hotSegments`; `r.assumptions.notes` says so when either is
-not.
+Alert when `share_of_redis` passes `1`: the store's pay-per-use bill now exceeds the Redis you would run instead,
+usually because read volume outgrew the cache hit rate. Price the store, not each segment. A segment's own
+`r.verdict` compares it with a Redis sized to that segment alone (`r.redisBaseline`), and a verdict against the
+whole store's Redis would fire only when one segment alone cost more than all of it.
+
+`r.monthlyUSD.byOp` breaks each segment's total into `reads` / `intersects` / `storage` / `loads` /
+`pointerRefresh`, so you can see *what* pushed the store over. `r.redisCrossover.readsPerSec` is the read rate at
+which one segment's economics flip against its own Redis, *at this report's cache-hit rate* (with the cache off,
+against one $346 cluster it is about 329 reads/s; every cache hit moves it further out, and every hot segment's
+pointer refresh moves it in). Loads are modelled only when you pass `loadsPerMonth` (and `requestsPerLoad` for a
+multipart write; what `store.load()` adds around the object is counted for you), and the pointer refresh only when
+you pass `hotSegments`; `r.assumptions.notes` says so when either is not.
 
 ---
 

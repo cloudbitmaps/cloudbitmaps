@@ -146,7 +146,7 @@
         <h2>Cost anchors</h2>
         <p class="lede">
           Published rates applied to wire-metered operation counts. The last row is the crossover, in GETs and
-          in cold intersects — past it a flat node is simply cheaper.
+          in cold intersects — past it the cluster is simply cheaper.
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
@@ -178,7 +178,7 @@
                   <td>1.2 GiB at rest, no traffic</td>
                   <td class="num">$0.03 /mo</td>
                   <td class="from">
-                    0.008% of a Redis-HA node. Nothing is billed while nobody is asking.
+                    0.008% of the $346 cluster. Nothing is billed while nobody is asking.
                   </td>
                   <td><span class="status is-shipped">Win big</span></td>
                 </tr>
@@ -226,7 +226,7 @@
                   <td class="num">329.15 /s<br />1.6 A&nbsp;∩&nbsp;B/s</td>
                   <td class="from">
                     Object GETs with the cache off — the pessimal posture, chosen deliberately — against a
-                    standing Redis-HA node at $346 /mo. The same line, for cold intersects of the run's shape at
+                    standing three-node Redis-HA cluster at $346 /mo. The same line, for cold intersects of the run's shape at
                     206 GETs each, is 1.6 a second. <a href="#crossover">What moves this line</a>.
                   </td>
                   <td><span class="status is-counter">Use a flat tier</span></td>
@@ -239,7 +239,7 @@
                the site without ever saying what it buys, which makes it unauditable — a reader cannot tell
                whether the node is sized for this dataset or five times larger than it.
 
-               The instance class and node count come from the pricing profile's own comment in
+               The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
                core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
                rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
           <p class="tpanel-foot">
@@ -348,10 +348,10 @@
                     The third: three nodes rather than one, and more than the reference 1.2 GiB set needs. The
                     line scales with whatever price you compare against — a single-node baseline at about
                     $115/mo lowers it in the same ratio — and the estimator's own default compares with the
-                    cheapest Redis that holds the data, which for that set is <strong>$142.35 /mo</strong>,
-                    <span class="m">3 × cache.t4g.medium</span>: against it the line sits at
-                    <strong>135.39</strong> reads a second. Feed <span class="m">estimateCost()</span> the node
-                    you would actually run.
+                    cheapest cluster in its catalogue that holds the data, which for that set is
+                    <strong>$142.35 /mo</strong>, <span class="m">3 × cache.t4g.medium</span>: against it the line
+                    would sit at <strong>135.42</strong> reads a second. Feed
+                    <span class="m">estimateCost()</span> the Redis you would actually run.
                   </td>
                 </tr>
               </tbody>
@@ -439,11 +439,11 @@
         </p>
         <figure class="chart">
           <!-- BENCH:CHART:START -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 396" width="760" height="396" font-family="var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)" role="img" aria-label="CloudBitmaps vs flat Redis-HA cost crossover chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 396" width="760" height="396" font-family="var(--cb-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: where the cost crosses">
 <rect x="1" y="1" width="758" height="394" rx="0" fill="var(--cb-surface, #ffffff)" stroke="var(--cb-rule, #e4e8ed)"/>
-<text x="28" y="34" font-size="17" font-weight="700" fill="var(--cb-ink, #15181e)">Where pay-per-use crosses a flat Redis-HA node</text>
-<text x="28" y="56" font-size="12.5" fill="var(--cb-faint, #69737f)">aws-us-east-1-ondemand · cache off · flat Redis-HA = $346/mo</text>
-<line x1="28" y1="78" x2="44" y2="78" stroke="var(--cb-cyan, #34378f)" stroke-width="3"/><text x="50" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">CloudBitmaps (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">Redis HA (flat)</text>
+<text x="28" y="34" font-size="17" font-weight="700" fill="var(--cb-ink, #15181e)">Where pay-per-use crosses one Redis-HA cluster</text>
+<text x="28" y="56" font-size="12.5" fill="var(--cb-faint, #69737f)">aws-us-east-1-ondemand · cache off · one Redis-HA cluster = $346/mo, whatever the data size</text>
+<line x1="28" y1="78" x2="44" y2="78" stroke="var(--cb-cyan, #34378f)" stroke-width="3"/><text x="50" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">CloudBitmaps (pay-per-use)</text><line x1="239.79999999999998" y1="78" x2="255.79999999999998" y2="78" stroke="#d9480f" stroke-width="3"/><text x="261.79999999999995" y="82" font-size="12" fill="var(--cb-muted, #3c4450)">Redis HA cluster (flat)</text>
 <g>
 <text x="66" y="122" font-size="13.5" font-weight="600" fill="var(--cb-ink, #15181e)">Sustained point reads (object GETs, cache off)</text>
 <rect x="66" y="142" width="439.7" height="200" fill="var(--cb-ok, #1e7a52)" opacity="0.06"/>

@@ -67,9 +67,14 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      # docs/guide/sizing.md prices three deployments with the shipped estimator. This fails if its tables are not
-      # what the built estimator prices — after a change to the model, the prices or a profile, regenerate them.
+      # bench/sizing.cjs writes the generated regions of the sizing guide and of §11 of the getting-started guide.
+      # This fails if any is not what the built estimator prices, and on a SIZING marker it would not check — after
+      # a change to the model, the prices or a profile, regenerate them with `pnpm bench:sizing`.
       - run: pnpm bench:sizing:check
+      # And bench/run.cjs writes the crossover chart, bench/results.json and the benchmarks pages' BENCH regions,
+      # which scripts/site-figures.cjs then treats as a source: without this, a stale results.json would vouch for
+      # the site. Regenerate with `pnpm bench`.
+      - run: pnpm bench:check
       # The built package must import cleanly under BOTH module systems (guards the roaring CJS→ESM interop).
       - run: node scripts/smoke.cjs
       # Both secret scanners, HERE and not only in the release workflow.

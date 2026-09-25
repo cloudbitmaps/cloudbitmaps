@@ -310,7 +310,7 @@ reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGi
 loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
 `{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
 `{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes, dataTiering } }`, the Redis the verdict
-compares against, whose last note says how it was priced; and
+compares against, with the last of `assumptions.notes` saying how it was priced; and
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
 refresh (≈329 reads/s against `ONE_REDIS_HA_CLUSTER` with a 0% cache-hit rate). What each term counts is in the
 [guide](getting-started.md#what-each-term-counts), and what the verdict compares against

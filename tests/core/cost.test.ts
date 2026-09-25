@@ -147,7 +147,13 @@ describe('Redis sized to the data', () => {
     });
     // Frozen all the way down: a caller who mutates the shared default would move every other caller's verdicts.
     expect(Object.isFrozen(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes[0])).toBe(true);
+    expect(Object.isFrozen(AWS_US_EAST_1_ONDEMAND)).toBe(true);
+    expect(Object.isFrozen(AWS_US_EAST_1_ONDEMAND.storage)).toBe(true);
     expect(Object.isFrozen(AWS_US_EAST_1_ONDEMAND.redis)).toBe(true);
+    // This file is an ES module, so strict: the change throws rather than landing.
+    expect(() => {
+      (AWS_US_EAST_1_ONDEMAND as { redis: unknown }).redis = { monthlyUSD: 1 };
+    }).toThrow(TypeError);
   });
 
   it('keeps the one-cluster anchor fixed at $346, which is not what the catalogue prices', () => {
@@ -190,6 +196,11 @@ describe('Redis sized to the data', () => {
       dataTiering: false,
     });
     expect(b.monthlyUSD).toBeCloseTo(MONTH(285, 0.411), 9);
+    // Past a thousand, the words carry separators, as every page that quotes them does.
+    // 50 TB all in memory is 587 shards of r6g.4xlarge: 46,566 GiB over the 79.36 GiB each leaves free.
+    expect(redisNote(report(50e12, inMemory))).toContain(
+      '587 shards, 1,761 cache.r6g.4xlarge nodes',
+    );
   });
 
   it('is the cheapest in the catalogue that holds the data, and does hold it', () => {
@@ -215,7 +226,7 @@ describe('Redis sized to the data', () => {
       if (row === undefined)
         throw new Error(`priced a node type not in the catalogue: ${cluster.nodeType}`);
       const usable = row.memoryGiB * (1 - reservedMemoryFraction) + (row.ssdGiB ?? 0);
-      expect(cluster.shards * usable).toBeGreaterThanOrEqual(gib);
+      expect(cluster.shards * usable).toBeGreaterThanOrEqual(gib - 1e-9);
       expect(cluster.nodes).toBe(cluster.shards * (1 + replicasPerShard));
       expect(cluster.dataTiering).toBe(row.ssdGiB !== undefined);
       // Brute force: no row, at any shard count that holds the data, is cheaper.
@@ -308,7 +319,7 @@ describe('Redis sized to the data', () => {
     ]) {
       expect(note).toContain(words);
     }
-    expect(note).not.toMatch(/data-tiering|cardinality|No bytes/);
+    expect(note).not.toMatch(/data-tiering|cardinality|no bytes are counted/);
     const tiered = redisNote(report(2e12));
     expect(tiered).toContain('cache.r6gd.16xlarge is a data-tiering node');
     expect(tiered).toContain('regularly read up to 20% of their data');
@@ -341,6 +352,13 @@ describe('Redis sized to the data', () => {
     expect(note(0.5, single)).toContain('1 shard of 1 plain node,');
   });
 
+  it('says a reserve in the precision it was given', () => {
+    const pricing = catalogue([{ name: 'n', memoryGiB: 1, hourlyUSD: 1 }], {
+      reservedMemoryFraction: 0.004,
+    });
+    expect(redisNote(report(1e6, pricing))).toContain('0.4% of memory reserved');
+  });
+
   it('says when a size came from cardinality, which can overstate the Redis', () => {
     const fromCardinality = redisNote(estimateCost({ segments: [{ cardinality: 1_000_000 }] }));
     expect(fromCardinality).toContain('holds the 1.91 MiB stored');
@@ -352,18 +370,35 @@ describe('Redis sized to the data', () => {
       estimateCost({ segments: [{ sizeBytes: 2e6 }, { cardinality: 1e6, count: 0 }] }),
     );
     expect(uncounted).not.toContain('cardinality');
+    // Nor can a cardinality of zero, which sizes nothing either.
+    expect(redisNote(estimateCost({ segments: [{ cardinality: 0 }] }))).not.toContain(
+      'cardinality',
+    );
   });
 
-  it('says when it had no bytes to size to', () => {
-    expect(redisNote(report(0))).toContain(
-      'No bytes are counted, because nothing is stored or nothing was measured, so this is the smallest cluster',
+  it('says when it had no bytes to size to, in the rationale as well as the note', () => {
+    const none = report(0, undefined, { readsPerSec: readsFor(100) });
+    expect(redisNote(none)).toContain(
+      'as no bytes are counted, because nothing is stored or nothing was measured',
     );
-    expect(redisNote(report(1))).not.toContain('No bytes');
-    // Sizes a GiB would print as nothing are said in the unit they fill.
-    expect(redisNote(report(20))).toContain('holds the 20 bytes stored');
-    expect(redisNote(report(2e12))).toContain('holds the 1.82 TiB stored');
+    // Not "the Redis that would hold 0 bytes", as if that were a measurement.
+    expect(none.rationale).toContain(
+      'exceeds the $35.04/mo cheapest Redis cluster in the catalogue, as no bytes are counted',
+    );
+    expect(none.rationale).not.toContain('would hold');
+    // Less than a byte rounds to none, and says so; a byte does not.
+    expect(redisNote(report(0.4))).toContain('as no bytes are counted');
+    expect(redisNote(report(1))).not.toContain('no bytes are counted');
     // A fixed baseline was not sized to anything, so it has nothing to say about the bytes.
-    expect(redisNote(report(0, FLAT))).not.toContain('No bytes');
+    expect(redisNote(report(0, FLAT))).not.toContain('no bytes are counted');
+  });
+
+  it('says a size in the unit it fills, rounded before the unit is chosen', () => {
+    expect(redisNote(report(1))).toContain('holds the 1 byte stored');
+    expect(redisNote(report(20))).toContain('holds the 20 bytes stored');
+    expect(redisNote(report(1023.6))).toContain('holds the 1.00 KiB stored');
+    expect(redisNote(report(1_048_575))).toContain('holds the 1.00 MiB stored');
+    expect(redisNote(report(2e12))).toContain('holds the 1.82 TiB stored');
   });
 
   it('keeps a fixed baseline as given, whatever the data size, in the words it always had', () => {
@@ -389,6 +424,9 @@ describe('Redis sized to the data', () => {
         { name: 'burst', memoryGiB: 1.37, hourlyUSD: 0.032, ...(maxShards ? { maxShards } : {}) },
       ]);
     expect(() => baselineFor(2 * GIB, burst(1))).toThrow(/no node type .* holds 2\.00 GiB/);
+    // A size too small for GiB is said in the unit it fills here too.
+    const tiny = catalogue([{ name: 'tiny', memoryGiB: 1e-6, hourlyUSD: 1, maxShards: 1 }]);
+    expect(() => baselineFor(1e6, tiny)).toThrow(/holds 976\.56 KiB within its maxShards/);
     expect(clusterOf(baselineFor(2 * GIB, burst()))).toEqual({
       nodeType: 'burst',
       shards: 2,
@@ -428,26 +466,92 @@ describe('Redis sized to the data', () => {
       { replicasPerShard: 0, reservedMemoryFraction: 0 },
     );
     expect(clusterOf(baselineFor(3 * GIB, rounded)).nodeType).toBe('whole');
+    // A chain of near-ties is judged against the cheapest, not against whichever row led so far: A is the cheapest,
+    // B is within a millionth of a dollar of it with fewer nodes, and C is just past the tolerance.
+    const A = { name: 'A', memoryGiB: 1, hourlyUSD: 100 / (6 * HOURS) };
+    const B = { name: 'B', memoryGiB: 2, hourlyUSD: 100.0000009 / (3 * HOURS) };
+    const C = { name: 'C', memoryGiB: 6, hourlyUSD: 100.0000018 / HOURS };
+    const orders = [
+      [A, B, C],
+      [A, C, B],
+      [B, A, C],
+      [B, C, A],
+      [C, A, B],
+      [C, B, A],
+    ];
+    for (const rows of orders) {
+      const flat = catalogue(rows, { replicasPerShard: 0, reservedMemoryFraction: 0 });
+      expect(clusterOf(baselineFor(6 * GIB, flat)).nodeType).toBe('B');
+    }
+    // An exact tie in price and nodes goes by name, so whether the answer tiers to SSD does not depend on the order.
+    const plain = { name: 'plain', memoryGiB: 10, hourlyUSD: 1 };
+    const tiered = { name: 'tiered', memoryGiB: 2, ssdGiB: 8, hourlyUSD: 1 };
+    for (const rows of [
+      [plain, tiered],
+      [tiered, plain],
+    ]) {
+      const flat = catalogue(rows, { replicasPerShard: 0, reservedMemoryFraction: 0 });
+      expect(clusterOf(baselineFor(5 * GIB, flat))).toMatchObject({
+        nodeType: 'plain',
+        dataTiering: false,
+      });
+    }
+  });
+
+  it('prices the catalogue it validated, reading each value once', () => {
+    // A row whose price reads valid for validation and negative afterwards would price a cluster below zero.
+    let reads = 0;
+    const shifty = {
+      name: 'shifty',
+      memoryGiB: 10,
+      get hourlyUSD() {
+        reads += 1;
+        return reads === 1 ? 1 : -5;
+      },
+    };
+    const b = baselineFor(1e6, catalogue([shifty], { replicasPerShard: 0 }));
+    expect(b.monthlyUSD).toBeCloseTo(MONTH(1, 1), 9);
+    expect(reads).toBe(1);
+  });
+
+  it('reads a shape wherever its value comes from', () => {
+    // A price reached through a getter, a prototype or a Proxy is given, and so is one beside an undefined sizedToData.
+    const shapes = [
+      new (class {
+        get monthlyUSD() {
+          return 346;
+        }
+      })(),
+      Object.create(ONE_REDIS_HA_CLUSTER) as { monthlyUSD: number },
+      new Proxy({}, { get: (_t, key) => (key === 'monthlyUSD' ? 346 : undefined) }),
+      { monthlyUSD: 346, sizedToData: undefined },
+    ];
+    for (const redis of shapes) {
+      const pricing = { ...P, redis } as unknown as PricingProfile;
+      expect(baselineFor(5e9, pricing)).toStrictEqual({ basis: 'fixed', monthlyUSD: 346 });
+    }
   });
 
   it('refuses a Redis given both ways, or neither, rather than silently dropping a figure', () => {
     // The idiom for "compare with my cluster" before sizing: spread the default's redis and set a price.
     const both = { ...P, redis: { ...P.redis, monthlyUSD: 500 } } as PricingProfile;
     expect(() => baselineFor(20e9, both)).toThrow(
-      /exactly one of \{ monthlyUSD \} and \{ sizedToData \}, not both: a spread of the default profile keeps its sizedToData/,
+      /exactly one of \{ monthlyUSD \} and \{ sizedToData \}, not both: spreading AWS_US_EAST_1_ONDEMAND\.redis keeps its sizedToData, so pass redis: \{ monthlyUSD \} alone/,
     );
     for (const redis of [{}, null, 346]) {
       const neither = { ...P, redis } as unknown as PricingProfile;
       expect(() => baselineFor(20e9, neither)).toThrow(ValidationError);
     }
-    // Present but undefined is still the key: it says which shape was meant, and that shape is refused whole.
-    const undefinedSizing = {
-      ...P,
-      redis: { sizedToData: undefined },
-    } as unknown as PricingProfile;
-    expect(() => baselineFor(1e6, undefinedSizing)).toThrow(/sizedToData must be a RedisSizing/);
-    const undefinedPrice = { ...P, redis: { monthlyUSD: undefined } } as unknown as PricingProfile;
-    expect(() => baselineFor(1e6, undefinedPrice)).toThrow(/monthlyUSD must be a finite number/);
+    // A key set to undefined gives nothing, so a Redis made only of such keys is neither shape.
+    for (const redis of [{ sizedToData: undefined }, { monthlyUSD: undefined }]) {
+      const pricing = { ...P, redis } as unknown as PricingProfile;
+      expect(() => baselineFor(1e6, pricing)).toThrow(
+        /exactly one of \{ monthlyUSD \} and \{ sizedToData \}$/,
+      );
+    }
+    // A price that is there but is not a number is refused as the price it claims to be.
+    const nullPrice = { ...P, redis: { monthlyUSD: null } } as unknown as PricingProfile;
+    expect(() => baselineFor(1e6, nullPrice)).toThrow(/monthlyUSD must be a finite number/);
   });
 
   it('refuses a catalogue it cannot price honestly, each bad row by name', () => {
@@ -605,9 +709,9 @@ describe('costReport (grounded)', () => {
     expect(r.assumptions.grounded).toBe(false); // storage was NOT measured — don't claim a confident $0
     expect(r.monthlyUSD.byOp.storage).toBe(0);
     expect(r.assumptions.notes.some((n) => n.includes('sizeOf'))).toBe(true);
-    // Nor a confident Redis: sized to no bytes, it is the smallest cluster there is, and the report says so.
+    // Nor a confident Redis: sized to no bytes, it is the cheapest cluster there is, and the report says so.
     expect(r.assumptions.notes.at(-1)).toContain(
-      'nothing was measured, so this is the smallest cluster',
+      'because nothing is stored or nothing was measured',
     );
   });
 

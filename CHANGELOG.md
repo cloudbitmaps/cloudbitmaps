@@ -122,21 +122,31 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
   - A default report has a different baseline at every data size, so a different crossover, and it can have a
     different verdict.
-  - `pricing.redis` must be exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and a profile
-    carrying both is refused with a `ValidationError`. So is `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`,
-    the way to override the price before, since the spread now carries the default's `sizedToData` too; it is
-    refused rather than read one way.
+  - `pricing.redis` must give exactly one of `{ monthlyUSD }` and `{ sizedToData: RedisSizing }`, and one giving
+    both is refused with a `ValidationError`, where a key set to `undefined` gives nothing. So is a spread of the
+    default's `redis` with a price, `{ ...AWS_US_EAST_1_ONDEMAND.redis, monthlyUSD: 500 }`, since the spread now
+    carries the default's `sizedToData` too; it is refused rather than read one way.
   - JavaScript that reads `AWS_US_EAST_1_ONDEMAND.redis.monthlyUSD` gets `undefined`, and a ratio built on it is
     `NaN`. Read `report.redisBaseline.monthlyUSD` instead, or `ONE_REDIS_HA_CLUSTER.monthlyUSD` for the one
-    cluster. TypeScript flags the read as possibly undefined.
+    cluster. TypeScript types it `number | undefined`, so under `strictNullChecks` a ratio built on it does not
+    compile.
   - A hand-built `CostReport` must carry `redisBaseline`, which is required.
-  - `segment.costReport()` sizes the Redis to that one segment, so per-segment verdicts move the most, and the
-    baselines of a store's segments do not add up to the store's. For an alarm, pass a fixed `pricing.redis`, as
-    the cost gauge in the dashboards guide now does; to judge a store, price all its segments in one
-    `estimateCost()`.
-  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It
-    and `ONE_REDIS_HA_CLUSTER` are frozen, so a caller that changes one throws instead of changing every other
-    caller's estimates.
+  - `segment.costReport()` sizes the Redis to that one segment — $35.04 for any segment up to 384 MiB, a tenth of
+    $346 — so per-segment verdicts move toward the lose-zone, and the baselines of a store's segments do not add up
+    to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm, sum the segments'
+    totals and compare the sum with the Redis you would run for the store, as the cost gauge in the dashboards
+    guide now does: a per-segment verdict against that whole price fires only when one segment alone costs more than
+    all of it.
+  - The catalogue is `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`, with the types `RedisSizing` and `RedisNodeType`. It,
+    `ONE_REDIS_HA_CLUSTER` and the default profile are frozen, so a caller that changes one no longer changes every
+    other caller's estimates: the change throws in strict mode, as in every ES module, and is ignored in a
+    sloppy-mode script.
+  - A report with no bytes to size to — nothing stored, or a storage source that cannot measure — compares with the
+    catalogue's cheapest cluster, and its rationale and notes say that no bytes were counted.
+  - The benchmarks page's line is still drawn against the $346 cluster, and now says that this is 2.4 times the
+    $142.35 Redis the default prices for its 1.2 GiB reference set, against which the line would sit at 135.42 reads
+    a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
+    estimator.
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
   pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
