@@ -287,7 +287,8 @@ move it up.
   built to favour it, a flat bitset comes out **2%** ahead, while Roaring wins the other shapes by 543×, 63× and
   1.88×. The genuine advantage a flat bitset has is random access — one shift-and-mask against a container
   lookup, worth 7–77× in CRoaring's own benchmarks — but that is roughly **20 nanoseconds** inside an operation
-  where we spend **5 milliseconds** reaching storage. It would have been a plausible wrong turn: chosen for dense
+  that waits on object storage, where AWS puts the median small read in the
+  [tens of milliseconds](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance-design-patterns.html). It would have been a plausible wrong turn: chosen for dense
   ids, which is exactly where Roaring has already become the same bitset. The codec seam stays; nothing is queued
   to fill it.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
@@ -299,7 +300,26 @@ move it up.
   cookie (`SERIAL_COOKIE` rather than `SERIAL_COOKIE_NO_RUNCONTAINER`). Every maintained Roaring
   implementation reads both; a hand-rolled or cut-down reader may only have been tested against the cookie our
   objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
-- **Cheaper reads** — coalesced GETs for adjacent chunks, scoped so they can't tax the hot path.
+- **The weaknesses, and a direction for each** — the [what it saves](guide/why-cloudbitmaps.md#what-is-planned-for-each-weakness)
+  page has them side by side. None is built; each that changes the public API is agreed before it is.
+  - **Coalesced reads**, the largest lever. Fetch neighbouring chunks, or a small segment whole, in one ranged GET,
+    and check each chunk's checksum inside it, as today. A cold intersect's requests, and its rounds of them, would
+    stop growing with the chunks it shares. Designed first and benchmarked on a layout that spreads the shared
+    chunks, since the calibration run's puts them side by side, which flatters coalescing.
+  - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
+    the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and
+    keeping what the index read already brought in, lets a repeat intersect read no chunks however small they are.
+  - **A shared cache tier, by composition** — a port that a Valkey, Redis or local-disk adapter package implements,
+    holding the hot set's immutable bytes for a fleet of stateless readers, with nothing added to a store that does
+    not use it.
+  - **Push invalidation for the pointer refresh** — object-store events telling readers a segment changed, with the
+    refresh kept as a longer backstop, and an `expire(ref)` that costs one lookup where `invalidate` scans the cache.
+  - **Retrying at one layer.** The SDKs retry throttling and the library retries it again, so one slow request can
+    become a dozen; throttling belongs to the SDK's retry alone.
+  - **An exact bound on reader memory** — the index's weight measured against the heap rather than estimated, and
+    the index held compactly.
+  - **One request per pointer read on GCS and Azure**, and a one-request tail read on GCS, which accepts a suffix
+    range, so their reads cost what S3's do.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
   remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
   the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own

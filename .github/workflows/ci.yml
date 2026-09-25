@@ -67,9 +67,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      # bench/sizing.cjs writes the generated regions of the sizing guide and of §11 of the getting-started guide.
-      # This fails if any is not what the built estimator prices, and on a SIZING marker it would not check — after
-      # a change to the model, the prices or a profile, regenerate them with `pnpm bench:sizing`.
+      # bench/sizing.cjs writes the generated regions of the sizing guide, §11 of the getting-started guide, the
+      # explainer and the README's Why section, and the explainer's charts in both themes. This fails if any is not
+      # what the built estimator gives, on a SIZING marker it would not check, and on a figure typed outside a region
+      # of a page that says its figures are generated — after a change to the model, the prices or a profile,
+      # regenerate them with `pnpm bench:sizing`.
       - run: pnpm bench:sizing:check
       # And bench/run.cjs writes the crossover chart, bench/results.json and the benchmarks pages' BENCH regions,
       # which scripts/site-figures.cjs then treats as a source: without this, a stale results.json would vouch for
