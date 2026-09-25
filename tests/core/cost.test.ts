@@ -3,7 +3,7 @@ import {
   estimateCost,
   AWS_US_EAST_1_ONDEMAND,
   DEFAULT_PRICING,
-  ELASTICACHE_REDIS_US_EAST_1,
+  ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
   ONE_REDIS_HA_CLUSTER,
   MemoryStorageDriver,
   CrbmStorageChunkSource,
@@ -11,7 +11,9 @@ import {
   writeCrbmGeneration,
   SafeBitmap,
   ValidationError,
+  type CostReport,
   type PricingProfile,
+  type RedisSizing,
   type StorageChunkSource,
   type Workload,
 } from '@/index';
@@ -48,9 +50,11 @@ describe('DEFAULT_PRICING', () => {
     expect(DEFAULT_PRICING).toEqual({
       name: 'aws-us-east-1-ondemand',
       storage: { getPerMillion: 0.4, putPerMillion: 5.0, storagePerGiBMonth: 0.023 },
-      redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1 },
+      redis: { sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND },
     });
-    expect(AWS_US_EAST_1_ONDEMAND.redis).toEqual({ sizedToData: ELASTICACHE_REDIS_US_EAST_1 });
+    expect(AWS_US_EAST_1_ONDEMAND.redis).toEqual({
+      sizedToData: ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
+    });
   });
 
   it('is the profile `estimateCost` falls back to, and the fallback is not vacuous', () => {
@@ -81,27 +85,58 @@ const ONE_CHUNK_BYTES = SafeBitmap.fromValues(ONE_CHUNK_IDS).serialize().length;
 describe('Redis sized to the data', () => {
   const HOURS = 730;
   const MONTH = (nodes: number, hourlyUSD: number): number => nodes * hourlyUSD * HOURS;
+  const GET_USD = P.storage.getPerMillion / 1e6;
+  /** The point-read rate whose GETs cost `usd` a month, with no cache. */
+  const readsFor = (usd: number): number => usd / (SECONDS_PER_MONTH * GET_USD);
+  const report = (sizeBytes: number, pricing?: PricingProfile, workload?: Workload) =>
+    estimateCost({
+      segments: [{ sizeBytes }],
+      ...(pricing ? { pricing } : {}),
+      ...(workload ? { workload } : {}),
+    });
   const baselineFor = (sizeBytes: number, pricing?: PricingProfile) =>
-    estimateCost({ segments: [{ sizeBytes }], ...(pricing ? { pricing } : {}) }).redisBaseline;
+    report(sizeBytes, pricing).redisBaseline;
+  /** The cluster a sized baseline priced. A fixed one has none, and that is a failure here. */
+  const clusterOf = (b: CostReport['redisBaseline']) => {
+    if (b.basis !== 'sized-to-data') throw new Error(`expected a sized baseline, got ${b.basis}`);
+    return b.cluster;
+  };
+  /** The Redis note, which comes last so the notes a report already carried keep their places. */
+  const redisNote = (r: CostReport): string => r.assumptions.notes.at(-1) ?? '';
+  const catalogue = (
+    nodeTypes: RedisSizing['nodeTypes'],
+    over: Partial<RedisSizing> = {},
+  ): PricingProfile => ({
+    ...P,
+    redis: {
+      sizedToData: {
+        source: 'test',
+        replicasPerShard: 2,
+        reservedMemoryFraction: 0.25,
+        nodeTypes,
+        ...over,
+      },
+    },
+  });
 
   it('is the exact sourced catalogue, every row pinned', () => {
     // Hand-maintained from AWS's price list: a fat-fingered price moves every verdict while everything else passes.
-    expect(ELASTICACHE_REDIS_US_EAST_1).toEqual({
-      source: 'ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list of 2026-09-14',
+    expect(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND).toEqual({
+      source: 'ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714',
       replicasPerShard: 2,
       reservedMemoryFraction: 0.25,
       nodeTypes: [
         { name: 'cache.t4g.micro', memoryGiB: 0.5, hourlyUSD: 0.016, maxShards: 1 },
         { name: 'cache.t4g.small', memoryGiB: 1.37, hourlyUSD: 0.032, maxShards: 1 },
         { name: 'cache.t4g.medium', memoryGiB: 3.09, hourlyUSD: 0.065, maxShards: 1 },
-        { name: 'cache.m7g.large', memoryGiB: 6.38, hourlyUSD: 0.158 },
-        { name: 'cache.r7g.large', memoryGiB: 13.07, hourlyUSD: 0.219 },
-        { name: 'cache.r7g.xlarge', memoryGiB: 26.32, hourlyUSD: 0.437 },
-        { name: 'cache.r7g.2xlarge', memoryGiB: 52.82, hourlyUSD: 0.873 },
-        { name: 'cache.r7g.4xlarge', memoryGiB: 105.81, hourlyUSD: 1.745 },
-        { name: 'cache.r7g.8xlarge', memoryGiB: 209.55, hourlyUSD: 3.491 },
-        { name: 'cache.r7g.12xlarge', memoryGiB: 317.77, hourlyUSD: 5.235 },
-        { name: 'cache.r7g.16xlarge', memoryGiB: 419.09, hourlyUSD: 6.981 },
+        { name: 'cache.m6g.large', memoryGiB: 6.38, hourlyUSD: 0.149 },
+        { name: 'cache.r6g.large', memoryGiB: 13.07, hourlyUSD: 0.206 },
+        { name: 'cache.r6g.xlarge', memoryGiB: 26.32, hourlyUSD: 0.411 },
+        { name: 'cache.r6g.2xlarge', memoryGiB: 52.82, hourlyUSD: 0.821 },
+        { name: 'cache.r6g.4xlarge', memoryGiB: 105.81, hourlyUSD: 1.642 },
+        { name: 'cache.r6g.8xlarge', memoryGiB: 209.55, hourlyUSD: 3.284 },
+        { name: 'cache.r6g.12xlarge', memoryGiB: 317.77, hourlyUSD: 4.925 },
+        { name: 'cache.r6g.16xlarge', memoryGiB: 419.09, hourlyUSD: 6.567 },
         { name: 'cache.r6gd.xlarge', memoryGiB: 26.32, ssdGiB: 99.33, hourlyUSD: 0.781 },
         { name: 'cache.r6gd.2xlarge', memoryGiB: 52.82, ssdGiB: 199.07, hourlyUSD: 1.56 },
         { name: 'cache.r6gd.4xlarge', memoryGiB: 105.81, ssdGiB: 398.14, hourlyUSD: 3.12 },
@@ -110,33 +145,56 @@ describe('Redis sized to the data', () => {
         { name: 'cache.r6gd.16xlarge', memoryGiB: 419.09, ssdGiB: 1592.56, hourlyUSD: 12.477 },
       ],
     });
+    // Frozen all the way down: a caller who mutates the shared default would move every other caller's verdicts.
+    expect(Object.isFrozen(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes[0])).toBe(true);
+    expect(Object.isFrozen(AWS_US_EAST_1_ONDEMAND.redis)).toBe(true);
   });
 
-  it('keeps the one-cluster anchor the catalogue’s own cache.m7g.large, to the dollar', () => {
-    const m7g = ELASTICACHE_REDIS_US_EAST_1.nodeTypes.find((n) => n.name === 'cache.m7g.large');
-    expect(m7g).toBeDefined();
-    expect(Math.round(MONTH(3, m7g?.hourlyUSD ?? NaN))).toBe(ONE_REDIS_HA_CLUSTER.monthlyUSD);
+  it('keeps the one-cluster anchor fixed at $346, which is not what the catalogue prices', () => {
+    // 3 × cache.m7g.large at $0.158 an hour: the cluster behind the published crossover and the calibration.
     expect(ONE_REDIS_HA_CLUSTER).toEqual({ monthlyUSD: 346 });
+    expect(Math.round(MONTH(3, 0.158))).toBe(346);
+    // At 5 GB, which that cluster holds, the catalogue finds a cheaper one.
+    expect(baselineFor(5e9).monthlyUSD).toBeLessThan(346);
   });
 
   it.each([
     // [label, bytes, node type, shards, nodes, hourly] — worked by hand: usable = memory × 0.75 (+ SSD).
-    ['200 MB fits one burstable micro', 200e6, 'cache.t4g.micro', 1, 3, 0.016],
+    ['an empty store at the smallest cluster, not at none', 0, 'cache.t4g.micro', 1, 3, 0.016],
+    ['200 MB on one burstable micro', 200e6, 'cache.t4g.micro', 1, 3, 0.016],
     // 1.2 GiB is more than a t4g.small leaves free (1.03 GiB), and a burstable node is priced as one shard.
-    ['1.2 GiB takes a t4g.medium', 1.2 * GIB, 'cache.t4g.medium', 1, 3, 0.065],
-    ['5 GB is the one-cluster anchor', 5e9, 'cache.m7g.large', 1, 3, 0.158],
-    ['20 GB fits one r7g.xlarge shard', 20e9, 'cache.r7g.xlarge', 1, 3, 0.437],
-    // 2 TB is 1,862.6 GiB: all in memory it would be 8 shards of r7g.12xlarge at $91,717; data tiering holds it in one.
-    ['2 TB fits one data-tiering shard', 2e12, 'cache.r6gd.16xlarge', 1, 3, 12.477],
-  ])('%s', (_label, bytes, nodeType, shards, nodes, hourly) => {
+    ['1.2 GiB on a t4g.medium', 1.2 * GIB, 'cache.t4g.medium', 1, 3, 0.065],
+    // 4.66 GiB fits the 4.79 GiB an m6g.large leaves free.
+    ['5 GB on an m6g.large', 5e9, 'cache.m6g.large', 1, 3, 0.149],
+    // 18.63 GiB fits the 19.74 GiB of one r6g.xlarge; two shards of r6g.large would be $902.28, $2.19 more.
+    ['20 GB on one r6g.xlarge shard', 20e9, 'cache.r6g.xlarge', 1, 3, 0.411],
+    // 1,862.6 GiB fits one r6gd.16xlarge shard's 1,906.9 GiB of memory and SSD.
+    ['2 TB on one data-tiering shard', 2e12, 'cache.r6gd.16xlarge', 1, 3, 12.477],
+  ])('prices %s', (_label, bytes, nodeType, shards, nodes, hourly) => {
     const b = baselineFor(bytes);
-    expect(b.basis).toBe('sized-to-data');
-    expect(b.cluster).toEqual({ nodeType, shards, nodes });
+    expect(clusterOf(b)).toEqual({ nodeType, shards, nodes, dataTiering: /r6gd/.test(nodeType) });
     expect(b.monthlyUSD).toBeCloseTo(MONTH(nodes, hourly), 9);
   });
 
+  it('prices 2 TB all in memory at 95 shards of r6g.xlarge, when the catalogue has no data tiering', () => {
+    const inMemory = catalogue(
+      ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes.filter((n) => n.ssdGiB === undefined),
+    );
+    const b = baselineFor(2e12, inMemory);
+    // 1,862.6 GiB over 19.74 GiB a shard is 94.4, so 95 shards and 285 nodes: $85,508.55, where eight shards of
+    // r6g.12xlarge would be $86,286.00.
+    expect(clusterOf(b)).toEqual({
+      nodeType: 'cache.r6g.xlarge',
+      shards: 95,
+      nodes: 285,
+      dataTiering: false,
+    });
+    expect(b.monthlyUSD).toBeCloseTo(MONTH(285, 0.411), 9);
+  });
+
   it('is the cheapest in the catalogue that holds the data, and does hold it', () => {
-    const { nodeTypes, reservedMemoryFraction, replicasPerShard } = ELASTICACHE_REDIS_US_EAST_1;
+    const { nodeTypes, reservedMemoryFraction, replicasPerShard } =
+      ELASTICACHE_REDIS_US_EAST_1_ONDEMAND;
     const sizes = [
       0,
       1e6,
@@ -152,11 +210,14 @@ describe('Redis sized to the data', () => {
     for (const bytes of sizes) {
       const gib = bytes / GIB;
       const b = baselineFor(bytes);
-      const row = nodeTypes.find((n) => n.name === b.cluster?.nodeType);
-      if (row === undefined || b.cluster === undefined) throw new Error('sized without a cluster');
+      const cluster = clusterOf(b);
+      const row = nodeTypes.find((n) => n.name === cluster.nodeType);
+      if (row === undefined)
+        throw new Error(`priced a node type not in the catalogue: ${cluster.nodeType}`);
       const usable = row.memoryGiB * (1 - reservedMemoryFraction) + (row.ssdGiB ?? 0);
-      expect(b.cluster.shards * usable).toBeGreaterThanOrEqual(gib);
-      expect(b.cluster.nodes).toBe(b.cluster.shards * (1 + replicasPerShard));
+      expect(cluster.shards * usable).toBeGreaterThanOrEqual(gib);
+      expect(cluster.nodes).toBe(cluster.shards * (1 + replicasPerShard));
+      expect(cluster.dataTiering).toBe(row.ssdGiB !== undefined);
       // Brute force: no row, at any shard count that holds the data, is cheaper.
       for (const n of nodeTypes) {
         const u = n.memoryGiB * (1 - reservedMemoryFraction) + (n.ssdGiB ?? 0);
@@ -178,6 +239,17 @@ describe('Redis sized to the data', () => {
     }
   });
 
+  it('does not charge a shard to rounding when the data is an exact multiple of what a node holds', () => {
+    // 0.6 GiB less a quarter is 0.45 GiB, and 2.25 GiB is five of those — which floating point divides to
+    // 5.000000000000001, and a plain ceiling rounds to six.
+    const pricing = catalogue([{ name: 'n', memoryGiB: 0.6, hourlyUSD: 1 }], {
+      replicasPerShard: 0,
+    });
+    expect(clusterOf(baselineFor(2.25 * GIB, pricing))).toMatchObject({ shards: 5, nodes: 5 });
+    // A byte more does need the sixth.
+    expect(clusterOf(baselineFor(2.25 * GIB + 1, pricing))).toMatchObject({ shards: 6, nodes: 6 });
+  });
+
   it('is what the verdict, the rationale and the crossover are measured against', () => {
     // The medium deployment of the sizing guide: 20 GB, one cold intersect a second, and the rest.
     const r = estimateCost({
@@ -192,130 +264,243 @@ describe('Redis sized to the data', () => {
         readerProcesses: 3,
       },
     });
-    expect(r.redisBaseline.monthlyUSD).toBeCloseTo(MONTH(3, 0.437), 9);
-    expect(r.verdict).toBe('win'); // $281 against $957, where one $346 cluster made it 81%
-    expect(r.rationale).toContain('$957.03/mo Redis that would hold 18.63 GiB');
-    expect(r.rationale).toContain('1 shard of 3 cache.r7g.xlarge nodes');
+    expect(r.redisBaseline.monthlyUSD).toBeCloseTo(MONTH(3, 0.411), 9);
+    expect(r.verdict).toBe('win'); // $281 against $900, where one $346 cluster made it 81%
+    expect(r.rationale).toContain(
+      'under the $900.09/mo Redis that would hold 18.63 GiB (1 shard of 3 cache.r6g.xlarge nodes)',
+    );
     // Where the two baselines disagree: 2 TB at rest is 12% of one cluster, but 0.16% of the Redis that holds it.
-    const atRest = (pricing?: PricingProfile) =>
-      estimateCost({ segments: [{ sizeBytes: 2e12 }], ...(pricing ? { pricing } : {}) }).verdict;
-    expect(atRest()).toBe('win-big');
-    expect(atRest(FLAT)).toBe('win');
-    const getUSD = P.storage.getPerMillion / 1e6;
+    expect(report(2e12).verdict).toBe('win-big');
+    expect(report(2e12, FLAT).verdict).toBe('win');
     const fixedCosts = r.monthlyUSD.byOp.storage + r.monthlyUSD.byOp.pointerRefresh;
     expect(r.redisCrossover.readsPerSec).toBeCloseTo(
-      (MONTH(3, 0.437) - fixedCosts) / (SECONDS_PER_MONTH * getUSD * 0.2),
+      (MONTH(3, 0.411) - fixedCosts) / (SECONDS_PER_MONTH * GET_USD * 0.2),
       6,
     );
   });
 
-  it('says what it priced, and when it priced a data-tiering node', () => {
-    const inMemory = estimateCost({ segments: [{ sizeBytes: 20e9 }] });
-    const note = inMemory.assumptions.notes[0] ?? '';
+  it('draws the win / lose-zone line at the sized Redis, in both directions', () => {
+    // 20 GB: its Redis is $900.09. $500 of reads is a win against it, and a lose-zone against one cluster.
+    const mid = { readsPerSec: readsFor(500) };
+    expect(report(20e9, undefined, mid).verdict).toBe('win');
+    expect(report(20e9, FLAT, mid).verdict).toBe('lose-zone');
+    // 200 MB: its Redis is $35.04. $100 of reads is a lose-zone against it, and a win against one cluster.
+    const small = { readsPerSec: readsFor(100) };
+    const r = report(200e6, undefined, small);
+    expect(r.verdict).toBe('lose-zone');
+    expect(r.rationale).toContain(
+      'exceeds the $35.04/mo Redis that would hold 190.73 MiB (1 shard of 3 cache.t4g.micro nodes)',
+    );
+    expect(report(200e6, FLAT, small).verdict).toBe('win');
+  });
+
+  it('says what it priced, how, and which way the pricing leans', () => {
+    const note = redisNote(report(20e9));
     for (const words of [
-      'cheapest cluster that holds the 18.63 GiB stored',
-      '1 shard of 3 cache.r7g.xlarge nodes',
-      'a primary and 2 replica(s)',
+      'cheapest cluster in the catalogue that holds the 18.63 GiB stored',
+      '1 shard of 3 cache.r6g.xlarge nodes',
+      'each shard a primary and 2 replica(s)',
       '25% of memory reserved',
-      'AWS price list of 2026-09-14',
-      'the least Redis could',
+      '(ElastiCache for Redis OSS, us-east-1 on-demand, AWS price list 20260914063714)',
+      // Two leanings, one each way: the bytes are a floor on Redis's memory, and the price a ceiling on its bill.
+      'a floor on the memory Redis needs',
+      'can cost less than the catalogue prices it',
     ]) {
       expect(note).toContain(words);
     }
-    expect(note).not.toMatch(/data-tiering/);
-    const tiered = estimateCost({ segments: [{ sizeBytes: 2e12 }] });
-    expect(tiered.assumptions.notes[0]).toMatch(/cache\.r6gd\.16xlarge is a data-tiering node/);
+    expect(note).not.toMatch(/data-tiering|cardinality|No bytes/);
+    const tiered = redisNote(report(2e12));
+    expect(tiered).toContain('cache.r6gd.16xlarge is a data-tiering node');
+    expect(tiered).toContain('regularly read up to 20% of their data');
+  });
+
+  it("describes a caller's own catalogue in its own terms", () => {
+    const sizedToData: RedisSizing = {
+      source: 'my rates',
+      replicasPerShard: 1,
+      reservedMemoryFraction: 0.1,
+      nodeTypes: [
+        { name: 'plain', memoryGiB: 1, ssdGiB: 0, hourlyUSD: 1 },
+        { name: 'tiered', memoryGiB: 1, ssdGiB: 10, hourlyUSD: 5 },
+      ],
+    };
+    const pricing: PricingProfile = { ...P, redis: { sizedToData } };
+    const note = (gib: number, p = pricing): string => redisNote(report(gib * GIB, p));
+    // 2 GiB: plain leaves 0.9 GiB a node, so 3 shards and 6 nodes at $4,380; tiered would be 2 nodes at $7,300.
+    const two = note(2);
+    expect(two).toContain('3 shards, 6 plain nodes');
+    expect(two).toContain('a primary and 1 replica(s), 10% of memory reserved (my rates)');
+    expect(two).not.toMatch(/data-tiering/); // ssdGiB: 0 is not a data-tiering node
+    expect(clusterOf(report(2 * GIB, pricing).redisBaseline).dataTiering).toBe(false);
+    // 20 GiB: plain needs 46 nodes ($33,580); tiered holds 10.9 GiB a node, so 2 shards and 4 nodes ($14,600).
+    expect(note(20)).toContain('tiered is a data-tiering node');
+    const single: PricingProfile = {
+      ...P,
+      redis: { sizedToData: { ...sizedToData, replicasPerShard: 0 } },
+    };
+    expect(note(0.5, single)).toContain('1 shard of 1 plain node,');
+  });
+
+  it('says when a size came from cardinality, which can overstate the Redis', () => {
+    const fromCardinality = redisNote(estimateCost({ segments: [{ cardinality: 1_000_000 }] }));
+    expect(fromCardinality).toContain('holds the 1.91 MiB stored');
+    expect(fromCardinality).toContain('Some segment sizes came from cardinality, at 2 bytes an id');
+    const measured = redisNote(estimateCost({ segments: [{ sizeBytes: 2e6 }] }));
+    expect(measured).not.toContain('cardinality');
+    // A spec counted zero times sizes nothing, so it cannot have overstated anything.
+    const uncounted = redisNote(
+      estimateCost({ segments: [{ sizeBytes: 2e6 }, { cardinality: 1e6, count: 0 }] }),
+    );
+    expect(uncounted).not.toContain('cardinality');
+  });
+
+  it('says when it had no bytes to size to', () => {
+    expect(redisNote(report(0))).toContain(
+      'No bytes are counted, because nothing is stored or nothing was measured, so this is the smallest cluster',
+    );
+    expect(redisNote(report(1))).not.toContain('No bytes');
+    // Sizes a GiB would print as nothing are said in the unit they fill.
+    expect(redisNote(report(20))).toContain('holds the 20 bytes stored');
+    expect(redisNote(report(2e12))).toContain('holds the 1.82 TiB stored');
+    // A fixed baseline was not sized to anything, so it has nothing to say about the bytes.
+    expect(redisNote(report(0, FLAT))).not.toContain('No bytes');
   });
 
   it('keeps a fixed baseline as given, whatever the data size, in the words it always had', () => {
     for (const bytes of [0, 20e9, 2e12]) {
-      const r = estimateCost({ segments: [{ sizeBytes: bytes }], pricing: FLAT });
-      expect(r.redisBaseline).toEqual({ monthlyUSD: 346, basis: 'fixed' });
+      expect(baselineFor(bytes, FLAT)).toStrictEqual({ basis: 'fixed', monthlyUSD: 346 });
     }
-    const r = estimateCost({ segments: [{ sizeBytes: 0 }], pricing: FLAT });
-    expect(r.rationale).toContain('the $346/mo flat baseline');
-    expect(r.assumptions.notes[0]).toBe(
-      'Redis priced at the fixed $346/mo given, whatever the data size.',
+    expect(report(0, FLAT).rationale).toContain('≤10% of the $346/mo baseline');
+    const own: PricingProfile = { ...P, redis: { monthlyUSD: 1000 } };
+    const r = report(0, own, { readsPerSec: readsFor(500) });
+    expect(r.redisBaseline).toStrictEqual({ basis: 'fixed', monthlyUSD: 1000 });
+    expect(r.verdict).toBe('win'); // $500 against $1,000, where it is a lose-zone against $346
+    expect(r.redisCrossover.readsPerSec).toBeCloseTo(readsFor(1000), 6);
+    expect(r.rationale).toContain('under the $1000/mo baseline');
+    expect(report(0, own, { readsPerSec: readsFor(1500) }).rationale).toContain(
+      'exceeds the $1000/mo flat baseline',
     );
+    expect(redisNote(r)).toBe('Redis priced at the fixed $1000/mo given, whatever the data size.');
   });
 
   it('prices a burstable node as one shard, and says so when nothing in the catalogue holds the data', () => {
-    const only = (maxShards?: number): PricingProfile => ({
-      ...P,
-      redis: {
-        sizedToData: {
-          source: 'test',
-          replicasPerShard: 2,
-          reservedMemoryFraction: 0.25,
-          nodeTypes: [
-            {
-              name: 'burst',
-              memoryGiB: 1.37,
-              hourlyUSD: 0.032,
-              ...(maxShards ? { maxShards } : {}),
-            },
-          ],
-        },
-      },
-    });
-    expect(() => baselineFor(2 * GIB, only(1))).toThrow(/no node type .* holds 2\.00 GiB/);
-    expect(baselineFor(2 * GIB, only()).cluster).toEqual({
+    const burst = (maxShards?: number) =>
+      catalogue([
+        { name: 'burst', memoryGiB: 1.37, hourlyUSD: 0.032, ...(maxShards ? { maxShards } : {}) },
+      ]);
+    expect(() => baselineFor(2 * GIB, burst(1))).toThrow(/no node type .* holds 2\.00 GiB/);
+    expect(clusterOf(baselineFor(2 * GIB, burst()))).toEqual({
       nodeType: 'burst',
       shards: 2,
       nodes: 6,
+      dataTiering: false,
     });
   });
 
-  it('breaks a tie on price with fewer nodes, and builds each shard from replicasPerShard', () => {
-    const sizing = (replicasPerShard: number): PricingProfile => ({
+  it('breaks a price tie on nodes whatever order the catalogue lists the rows in', () => {
+    const one = { name: 'one-gib', memoryGiB: 1, hourlyUSD: 1 };
+    const two = { name: 'two-gib', memoryGiB: 2, hourlyUSD: 2 };
+    for (const nodeTypes of [
+      [one, two],
+      [two, one],
+    ]) {
+      for (const replicasPerShard of [0, 1]) {
+        // Two shards of one-gib or one of two-gib: the same price, and fewer nodes wins it.
+        const b = baselineFor(
+          2 * GIB,
+          catalogue(nodeTypes, { replicasPerShard, reservedMemoryFraction: 0 }),
+        );
+        expect(clusterOf(b)).toEqual({
+          nodeType: 'two-gib',
+          shards: 1,
+          nodes: 1 + replicasPerShard,
+          dataTiering: false,
+        });
+        expect(b.monthlyUSD).toBeCloseTo(MONTH(1 + replicasPerShard, 2), 9);
+      }
+    }
+    // A tie reached by different roundings is still a tie: 0.1 × 3 is not 0.3 in floating point.
+    const rounded = catalogue(
+      [
+        { name: 'thirds', memoryGiB: 1, hourlyUSD: 0.1 },
+        { name: 'whole', memoryGiB: 3, hourlyUSD: 0.3 },
+      ],
+      { replicasPerShard: 0, reservedMemoryFraction: 0 },
+    );
+    expect(clusterOf(baselineFor(3 * GIB, rounded)).nodeType).toBe('whole');
+  });
+
+  it('refuses a Redis given both ways, or neither, rather than silently dropping a figure', () => {
+    // The idiom for "compare with my cluster" before sizing: spread the default's redis and set a price.
+    const both = { ...P, redis: { ...P.redis, monthlyUSD: 500 } } as PricingProfile;
+    expect(() => baselineFor(20e9, both)).toThrow(
+      /exactly one of \{ monthlyUSD \} and \{ sizedToData \}, not both: a spread of the default profile keeps its sizedToData/,
+    );
+    for (const redis of [{}, null, 346]) {
+      const neither = { ...P, redis } as unknown as PricingProfile;
+      expect(() => baselineFor(20e9, neither)).toThrow(ValidationError);
+    }
+    // Present but undefined is still the key: it says which shape was meant, and that shape is refused whole.
+    const undefinedSizing = {
       ...P,
-      redis: {
-        sizedToData: {
-          source: 'test',
-          replicasPerShard,
-          reservedMemoryFraction: 0,
-          nodeTypes: [
-            { name: 'one-gib', memoryGiB: 1, hourlyUSD: 1 },
-            { name: 'two-gib', memoryGiB: 2, hourlyUSD: 2 },
-          ],
-        },
-      },
-    });
-    // Two shards of one-gib or one of two-gib: the same price, and fewer nodes wins.
-    expect(baselineFor(2 * GIB, sizing(0)).cluster).toEqual({
-      nodeType: 'two-gib',
-      shards: 1,
-      nodes: 1,
-    });
-    expect(baselineFor(2 * GIB, sizing(1)).cluster).toEqual({
-      nodeType: 'two-gib',
-      shards: 1,
-      nodes: 2,
-    });
-    expect(baselineFor(2 * GIB, sizing(1)).monthlyUSD).toBeCloseTo(MONTH(2, 2), 9);
+      redis: { sizedToData: undefined },
+    } as unknown as PricingProfile;
+    expect(() => baselineFor(1e6, undefinedSizing)).toThrow(/sizedToData must be a RedisSizing/);
+    const undefinedPrice = { ...P, redis: { monthlyUSD: undefined } } as unknown as PricingProfile;
+    expect(() => baselineFor(1e6, undefinedPrice)).toThrow(/monthlyUSD must be a finite number/);
   });
 
-  it('refuses a catalogue it cannot price honestly', () => {
-    const base = ELASTICACHE_REDIS_US_EAST_1;
-    const row = { name: 'x', memoryGiB: 1, hourlyUSD: 1 };
-    const bad = [
-      { ...base, nodeTypes: [] },
-      { ...base, replicasPerShard: -1 },
-      { ...base, replicasPerShard: 1.5 },
-      { ...base, reservedMemoryFraction: 1 },
-      { ...base, reservedMemoryFraction: -0.1 },
-      { ...base, reservedMemoryFraction: NaN },
-      { ...base, source: undefined as unknown as string },
-      { ...base, nodeTypes: [{ ...row, name: '' }] },
-      { ...base, nodeTypes: [{ ...row, memoryGiB: 0 }] },
-      { ...base, nodeTypes: [{ ...row, memoryGiB: Infinity }] },
-      { ...base, nodeTypes: [{ ...row, ssdGiB: -1 }] },
-      { ...base, nodeTypes: [{ ...row, hourlyUSD: NaN }] },
-      { ...base, nodeTypes: [{ ...row, maxShards: 0 }] },
-      { ...base, nodeTypes: [{ ...row, maxShards: 1.5 }] },
+  it('refuses a catalogue it cannot price honestly, each bad row by name', () => {
+    const base = ELASTICACHE_REDIS_US_EAST_1_ONDEMAND;
+    const good = { name: 'good', memoryGiB: 1, hourlyUSD: 1 };
+    const cases: Array<[unknown, RegExp]> = [
+      [null, /sizedToData must be a RedisSizing/],
+      [{ ...base, source: '' }, /source must say where the prices come from/],
+      [{ ...base, source: undefined }, /source must say where the prices come from/],
+      [{ ...base, nodeTypes: [] }, /nodeTypes must list at least one node type/],
+      [{ ...base, nodeTypes: undefined }, /nodeTypes must list at least one node type/],
+      [{ ...base, replicasPerShard: -1 }, /replicasPerShard must be an integer >= 0/],
+      [{ ...base, replicasPerShard: 1.5 }, /replicasPerShard must be an integer >= 0/],
+      [{ ...base, reservedMemoryFraction: 1 }, /reservedMemoryFraction must be below 1/],
+      [{ ...base, reservedMemoryFraction: -0.1 }, /reservedMemoryFraction must be a finite/],
+      [{ ...base, reservedMemoryFraction: NaN }, /reservedMemoryFraction must be a finite/],
+      // A bad row beside a good one: refused for itself, not only when nothing is left to price.
+      [{ ...base, nodeTypes: [good, { ...good, name: '' }] }, /every node type needs a name/],
+      [{ ...base, nodeTypes: [good, { ...good, name: 7 }] }, /every node type needs a name/],
+      [{ ...base, nodeTypes: [good, good] }, /\["good"\] is listed twice/],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', memoryGiB: 0 }] },
+        /\["z"\]\.memoryGiB must be above 0/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', memoryGiB: Infinity }] },
+        /\["z"\]\.memoryGiB must be a finite/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', ssdGiB: -1 }] },
+        /\["z"\]\.ssdGiB must be a finite/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', hourlyUSD: NaN }] },
+        /\["z"\]\.hourlyUSD must be a finite/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', maxShards: 0 }] },
+        /\["z"\]\.maxShards must be an integer >= 1/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', maxShards: 1.5 }] },
+        /\["z"\]\.maxShards must be an integer >= 1/,
+      ],
+      [
+        { ...base, nodeTypes: [good, { ...good, name: 'z', maxShards: -1 }] },
+        /\["z"\]\.maxShards must be an integer >= 1/,
+      ],
     ];
-    for (const sizedToData of bad) {
-      expect(() => baselineFor(1e6, { ...P, redis: { sizedToData } })).toThrow(ValidationError);
+    for (const [sizedToData, message] of cases) {
+      const pricing = { ...P, redis: { sizedToData } } as unknown as PricingProfile;
+      expect(() => baselineFor(1e6, pricing)).toThrow(ValidationError);
+      expect(() => baselineFor(1e6, pricing)).toThrow(message);
     }
   });
 
@@ -323,7 +508,7 @@ describe('Redis sized to the data', () => {
     const { store } = seededStore({ s: ONE_CHUNK_IDS });
     const r = await store.segment('s').costReport();
     expect(r.redisBaseline).toEqual(baselineFor(ONE_CHUNK_BYTES));
-    expect(r.redisBaseline.cluster?.nodeType).toBe('cache.t4g.micro');
+    expect(clusterOf(r.redisBaseline).nodeType).toBe('cache.t4g.micro');
   });
 });
 
@@ -420,6 +605,10 @@ describe('costReport (grounded)', () => {
     expect(r.assumptions.grounded).toBe(false); // storage was NOT measured — don't claim a confident $0
     expect(r.monthlyUSD.byOp.storage).toBe(0);
     expect(r.assumptions.notes.some((n) => n.includes('sizeOf'))).toBe(true);
+    // Nor a confident Redis: sized to no bytes, it is the smallest cluster there is, and the report says so.
+    expect(r.assumptions.notes.at(-1)).toContain(
+      'nothing was measured, so this is the smallest cluster',
+    );
   });
 
   it('grounded size flows through CrbmStorageChunkSource from the .crbm index', async () => {

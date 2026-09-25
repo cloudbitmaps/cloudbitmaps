@@ -323,7 +323,7 @@ function checkDriverCountEverywhere(want) {
 // cluster, which the crossover is drawn against; the estimator's default verdict sizes Redis to the data instead.
 const COST = path.join(ROOT, 'packages', 'core', 'src', 'core', 'cost.ts');
 const baseline =
-  /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*\{\s*monthlyUSD:\s*(\d+)\s*\};\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
+  /export const ONE_REDIS_HA_CLUSTER\b[^=]*=\s*(?:deepFreeze\()?\{\s*monthlyUSD:\s*(\d+)\s*\}\)?;\s*\/\/\s*ElastiCache HA:\s*([^;]+);\s*~\$(\d+) single-node/.exec(
     fs.readFileSync(COST, 'utf8'),
   );
 if (!baseline) {
@@ -363,6 +363,11 @@ const anchors = [
   // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` of them and a
   // "writes per second" figure would describe an operation nobody performs.
   ['read crossover', `${results.readCrossoverPerSec}`],
+  // The Redis the estimator's default prices for the reference set, which is smaller than the one cluster the line is
+  // drawn against: the benchmarks page discloses it, and where the line would sit against it.
+  ['reference set · the Redis that holds it', `$${results.referenceRedis.monthlyUSD}`],
+  ['reference set · its cluster', results.referenceRedis.cluster],
+  ['reference set · the line against it', `${results.referenceRedis.readCrossoverPerSec}`],
   ['baseline topology', baselineTopology],
   ['baseline instance class', baselineInstance],
   ['baseline single-node', baseline ? `$${baseline[3]}` : null],

@@ -304,12 +304,13 @@ The cost model has no per-id write term — data arrives as generations, and a g
 `PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
 redis }`, where `requestsPerSizedRead` is 1 on S3 and 2 on GCS and Azure Blob, and `redis` is either
 `{ sizedToData: RedisSizing }`, the default's, which prices the cheapest cluster that holds the report's stored bytes,
-or `{ monthlyUSD }`, one cluster whatever the data size. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
+or `{ monthlyUSD }`, one cluster whatever the data size — exactly one of the two, or it is refused. `RedisSizing` is `{ source, nodeTypes, replicasPerShard,
 reservedMemoryFraction }`, and each `RedisNodeType` is `{ name, memoryGiB, ssdGiB?, hourlyUSD, maxShards? }`;
 `Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
 loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
-`{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ monthlyUSD, basis: 'sized-to-data' |
-'fixed', cluster?: { nodeType, shards, nodes } }`, the Redis the verdict compares against; and
+`{ reads, intersects, storage, loads, pointerRefresh }`; `redisBaseline` is `{ basis: 'fixed', monthlyUSD }` or
+`{ basis: 'sized-to-data', monthlyUSD, cluster: { nodeType, shards, nodes, dataTiering } }`, the Redis the verdict
+compares against, whose last note says how it was priced; and
 `redisCrossover.readsPerSec` is the sustained read rate at which pay-per-use passes it, net of storage and the pointer
 refresh (≈329 reads/s against `ONE_REDIS_HA_CLUSTER` with a 0% cache-hit rate). What each term counts is in the
 [guide](getting-started.md#what-each-term-counts), and what the verdict compares against
@@ -594,7 +595,7 @@ or `segmentKey` from core will find each one there.
 `retireExpired` · `excludingReservedRows` · `DEFAULT_RETRY_POLICY` · `RetryingStorageDriver` ·
 `RetryingRegistryDriver` · `RetryingStorageChunkSource` · `CrbmReader` · `BufferReader` ·
 `CountingMetricsSink` · `NOOP_METRICS` · `RecordingAuditSink` · `estimateCost` · `DEFAULT_PRICING` ·
-`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1` · `ONE_REDIS_HA_CLUSTER` · `runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` ·
+`AWS_US_EAST_1_ONDEMAND` · `ELASTICACHE_REDIS_US_EAST_1_ONDEMAND` · `ONE_REDIS_HA_CLUSTER` · `runConsistencyCheck` · `DEFAULT_BUDGET` · `CloudRoaringError` ·
 `ValidationError` · `WriteConflictError` · `IntegrityError` · `NotFoundError` · `UnsupportedError` ·
 `CapabilityError` · `TransientError` · `TimeoutError` · `KeyUnavailableError` · `BudgetExceededError` ·
 `isCloudRoaringError` · `isWriteConflictError` · `isTransientError` · `isNotFoundError` · `isIntegrityError`

@@ -1,8 +1,9 @@
 # CloudBitmaps — benchmarks & the Redis crossover
 
 > **Generated, not hand-written.** The chart and table below are produced by `pnpm bench` from the shipped
-> `estimateCost()` + the default `aws-us-east-1-ondemand` pricing, so they can never drift from the
-> library's own numbers. The polished, shareable version lives on the [site](../site/benchmarks.html)
+> `estimateCost()`, at the default `aws-us-east-1-ondemand` rates against one Redis-HA cluster,
+> `ONE_REDIS_HA_CLUSTER`, so they can never drift from the library's own numbers. The polished, shareable
+> version lives on the [site](../site/benchmarks.html)
 
 CloudBitmaps bills per request and per byte; a Redis-HA node bills a flat monthly rate. Below a certain
 sustained read rate, pay-per-use is far cheaper; above it, the flat node wins. This is that crossover.
@@ -23,6 +24,7 @@ rather than as a rate. Reads are the axis where a flat, always-on node competes.
 | At-rest (1.2 GiB, no traffic) | **$0.03/mo** | 0.008% of Redis | win-big |
 | Read crossover | **329.15 reads/s** | object GETs, cache off | past here a flat tier is cheaper |
 | Redis-HA baseline | **$346/mo** | flat | the comparison line |
+| The Redis the 1.2 GiB set needs | **$142.35/mo** | 3 × cache.t4g.medium, the estimator's default | the line would sit at 135.39 reads/s |
 <!-- BENCH:STATS:END -->
 
 ## How these stay honest
@@ -306,8 +308,10 @@ which is why none is published until an in-region run produces one.
 
 ## Caveats
 
-- **Default pricing** (`aws-us-east-1-ondemand`, cache off). Your region, cloud, committed term and cache-hit
-  rate all move the crossover — feed your own `PricingProfile` and workload to `estimateCost()`.
+- **Default rates, one cluster** (`aws-us-east-1-ondemand` against `ONE_REDIS_HA_CLUSTER`, cache off). Your
+  region, cloud, committed term and cache-hit rate all move the crossover, and so does your data's size: the
+  estimator's default prices the Redis that would hold it, which [what it costs at your size](guide/sizing.md)
+  works through. Feed your own `PricingProfile` and workload to `estimateCost()`.
 - **Model, not a cloud bill** — the dollars in the crossover chart come from the cost formulas + published
   rates. Measured AWS dollars live in [Real-cloud calibration](#real-cloud-calibration--aws).
 - **Three kinds of number here.** The crossover chart is _modeled money_ (estimator, deterministic, CI-gated);

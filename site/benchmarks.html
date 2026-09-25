@@ -262,7 +262,8 @@
            than implying all five are pessimal. Two are (cache off; on-demand GET rates). Three are set in OUR
            favour and are declared as such: the stored-bytes term is zero and so is the pointer refresh, which
            together hand the whole baseline to the read axis as headroom, and the baseline is a three-node HA
-           cluster rather than a single node.
+           cluster rather than a single node, and larger than the reference set needs: the estimator's own
+           default prices the Redis that holds that set lower, and the row says where the line would sit.
 
            Two of the four can remove the crossover altogether, and this is the estimator's own arithmetic
            (core/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
@@ -344,9 +345,13 @@
                   <td>The baseline itself</td>
                   <td class="num">$346 /mo</td>
                   <td class="from">
-                    The third: three nodes rather than one, and the line scales with whatever price you
-                    compare against — a single-node baseline at about $115/mo lowers it in the same ratio. Feed
-                    <span class="m">estimateCost()</span> the node you would actually run.
+                    The third: three nodes rather than one, and more than the reference 1.2 GiB set needs. The
+                    line scales with whatever price you compare against — a single-node baseline at about
+                    $115/mo lowers it in the same ratio — and the estimator's own default compares with the
+                    cheapest Redis that holds the data, which for that set is <strong>$142.35 /mo</strong>,
+                    <span class="m">3 × cache.t4g.medium</span>: against it the line sits at
+                    <strong>135.39</strong> reads a second. Feed <span class="m">estimateCost()</span> the node
+                    you would actually run.
                   </td>
                 </tr>
               </tbody>
