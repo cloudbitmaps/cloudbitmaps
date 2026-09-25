@@ -16,11 +16,8 @@ import {
   createBackend,
 } from '@/index';
 import { WriteConflictError } from '@/core/errors';
-import {
-  ObjectStoreRegistry,
-  type ObjectRegistryStore,
-  type ObjectRow,
-} from '@/drivers/_shared/object-registry';
+import { ObjectStoreRegistry } from '@/drivers/_shared/object-registry';
+import { CountingObjectStore, counting } from '../helpers/counting';
 
 // Guards on a script that spends real money against a real cloud account. Every case below is a bug that
 // actually happened in the harness this replaces — the one that ran the July 2026 calibration and was deleted
@@ -1475,48 +1472,6 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
   });
 });
 
-/**
- * An object store for the registry protocol that counts its reads and writes, and loses the first `lostRaces`
- * conditional writes the way a concurrent writer would make them lose. Its writes fence for real.
- */
-class CountingObjectStore implements ObjectRegistryStore {
-  readonly label = 'counting';
-  reads = 0;
-  writes = 0;
-  private readonly objects = new Map<string, { bytes: Uint8Array; version: number }>();
-  private nextVersion = 1;
-
-  constructor(private lostRaces: number) {}
-
-  read(key: string): Promise<ObjectRow | null> {
-    this.reads += 1;
-    const found = this.objects.get(key);
-    return Promise.resolve(
-      found === undefined ? null : { bytes: found.bytes, version: String(found.version) },
-    );
-  }
-
-  write(key: string, body: Uint8Array, expect: 'absent' | { version: string }): Promise<void> {
-    this.writes += 1;
-    if (this.lostRaces > 0) {
-      this.lostRaces -= 1;
-      return Promise.reject(new WriteConflictError(`lost race: ${key}`));
-    }
-    const found = this.objects.get(key);
-    const holds =
-      expect === 'absent'
-        ? found === undefined
-        : found !== undefined && String(found.version) === expect.version;
-    if (!holds) return Promise.reject(new WriteConflictError(`precondition failed: ${key}`));
-    this.objects.set(key, { bytes: body, version: this.nextVersion++ });
-    return Promise.resolve();
-  }
-
-  async *listKeys(prefix: string): AsyncIterable<string> {
-    for (const key of this.objects.keys()) if (key.startsWith(prefix)) yield key;
-  }
-}
-
 // A store re-reads a segment's pointer once `cache.genTtlMs` (2 s by default) has passed since it last read it —
 // in the middle of an intersect, too. Run 2026-09-23-94416 was 83 ms from the region, its cold intersects took about
 // 3 s, and the median one read both pointers twice: 206 GETs where the same intersect inside the region makes 204. A count
@@ -1594,21 +1549,6 @@ describe("a cold intersect's request count does not depend on the network", () =
     expect(timed.pointerReads).toBe(2);
   });
 });
-
-/** `target`, with every call to each of its methods counted in `counts` under the method's name. */
-function counting<T extends object>(target: T, counts: Record<string, number>): T {
-  return new Proxy(target, {
-    get(t, prop, receiver) {
-      const value: unknown = Reflect.get(t, prop, receiver);
-      if (typeof value !== 'function') return value;
-      const fn = value as (...args: unknown[]) => unknown;
-      return (...args: unknown[]) => {
-        counts[String(prop)] = (counts[String(prop)] ?? 0) + 1;
-        return fn.apply(t, args);
-      };
-    },
-  });
-}
 
 // The harness times `bulkLoadCrbmGeneration` with the generation number given: a load's write and its publish.
 // `store.load()`, the one-call load the guide leads with, also works out the next generation from a listing, reads

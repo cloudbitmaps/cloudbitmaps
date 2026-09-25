@@ -138,8 +138,8 @@
            There is ONE crossover row here, not two, and the reason is structural rather than editorial: a
            loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
            generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
-           instead. Its figure is the single-bucket run's, not the estimator's: `estimateCost` prices a load as
-           `loadsPerMonth × requestsPerLoad` PUT-class requests and has no term for the pointer yet. The two
+           instead. Its figure is the single-bucket run's, not the estimator's: the run measured a write and publish,
+           and the estimator prices `store.load()`, which also lists the segment and reads the pointer more. The two
            real-S3 rows quote the run as it measured it; what they would be inside the region, or through
            `store.load()`, is in the run's own panel below, labelled expected. -->
       <section id="anchors">
@@ -258,10 +258,11 @@
       <!-- ── PAST THE CROSSOVER ──────────────────────────────────────────────
            This section exists because the page was publishing a threshold and calling it a verdict.
 
-           Four inputs produce the 329.15 figure, and the table below says which way each one was set rather
-           than implying all four are pessimal. Two are (cache off; on-demand GET rates). Two are set in OUR
-           favour and are declared as such: the stored-bytes term is zero, which hands the whole baseline to the
-           read axis as headroom, and the baseline is a three-node HA cluster rather than a single node.
+           Five inputs produce the 329.15 figure, and the table below says which way each one was set rather
+           than implying all five are pessimal. Two are (cache off; on-demand GET rates). Three are set in OUR
+           favour and are declared as such: the stored-bytes term is zero and so is the pointer refresh, which
+           together hand the whole baseline to the read axis as headroom, and the baseline is a three-node HA
+           cluster rather than a single node.
 
            Two of the four can remove the crossover altogether, and this is the estimator's own arithmetic
            (core/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
@@ -278,14 +279,14 @@
         <h2>Past the crossover</h2>
         <p class="lede">
           That row is a threshold on <em>one axis</em> — sustained reads — and that axis is the only one where a
-          flat node competes, because the write side is not a rate at all. Two of the four inputs behind it are
-          set to their worst plausible value on purpose; the other two are set in our favour, and this table
+          flat node competes, because the write side is not a rate at all. Two of the five inputs behind it are
+          set to their worst plausible value on purpose; the other three are set in our favour, and this table
           says which is which. Two of them can remove the crossover entirely.
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
             <span class="label">What moves this line</span>
-            <span class="label">All four are inputs, not constants</span>
+            <span class="label">All five are inputs, not constants</span>
           </div>
           <div class="tscroll">
             <table>
@@ -322,17 +323,28 @@
                   <td>Stored bytes</td>
                   <td class="num">zero</td>
                   <td class="from">
-                    The first of the two set in <em>our</em> favour, so it is stated: storage is subtracted
+                    The first of the three set in <em>our</em> favour, so it is stated: storage is subtracted
                     from the baseline before the division, and publishing it at zero hands the whole node price
                     to the read axis as headroom. The reference corpus — <strong>$0.03 /mo</strong>, or
                     <strong>0.008%</strong> of the node — is how much that flatters us.
                   </td>
                 </tr>
                 <tr>
+                  <td>Hot segments</td>
+                  <td class="num">none</td>
+                  <td class="from">
+                    The second set in our favour. A long-lived reader re-reads the pointer of each segment it
+                    keeps reading once every <span class="m">cache.genTtlMs</span>, and that is taken out of the
+                    baseline before the division, like storage; publishing none hands it to the read axis too.
+                    Pass <span class="m">hotSegments</span> and <span class="m">readerProcesses</span> to take it
+                    back.
+                  </td>
+                </tr>
+                <tr>
                   <td>The baseline itself</td>
                   <td class="num">$346 /mo</td>
                   <td class="from">
-                    The second: three nodes rather than one, and the line scales with whatever price you
+                    The third: three nodes rather than one, and the line scales with whatever price you
                     compare against — a single-node baseline at about $115/mo lowers it in the same ratio. Feed
                     <span class="m">estimateCost()</span> the node you would actually run.
                   </td>
@@ -343,8 +355,9 @@
           <p class="tpanel-foot">
             The estimator will also tell you this itself: every report carries back the cache posture and
             pricing profile it used, and names the term that dominates the bill — <em>dominated by point reads
-            (object GETs)</em>. Leave <span class="m">loadsPerMonth</span> unset and it says so in its notes
-            rather than quietly reporting a month with no write side at all.
+            (object GETs)</em>. Leave <span class="m">loadsPerMonth</span> or
+            <span class="m">hotSegments</span> unset and it says so in its notes, rather than quietly reporting
+            a month with no write side or no pointer refresh at all.
           </p>
         </div>
 
@@ -481,7 +494,7 @@
           The loaded read path has never been timed inside a region, so no latency is published here as the
           library's. The bill of a cold intersect and of a load is measured; their stopwatch is not, and neither
           is everything a load or a read can cost. Wall-clock throughput on shared runners is too noisy to gate.
-          The first six rows below are what is still owed, latency and throughput first; the seventh is a
+          The first five rows below are what is still owed, latency and throughput first; the sixth is a
           measured ceiling, marked as such.
         </p>
         <ul class="rowlist">
@@ -535,17 +548,6 @@
           </li>
           <li>
             <span class="rl-mark">05</span>
-            <span class="rl-what">An estimator that counts the pointer</span>
-            <span class="rl-fig">owed</span>
-            <span class="rl-note">
-              <span class="m">estimateCost()</span> has no term for the pointer's requests in a load or an
-              intersect, none for an intersect's tail reads, and none for the pointer refresh, so it under-quotes
-              both operations on a single-bucket store. Until it counts them, the measured figures on this page
-              are the ones to use.
-            </span>
-          </li>
-          <li>
-            <span class="rl-mark">06</span>
             <span class="rl-what">A Lambda figure</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
@@ -553,7 +555,7 @@
             </span>
           </li>
           <li>
-            <span class="rl-mark">07</span>
+            <span class="rl-mark">06</span>
             <span class="rl-what">RSS ceiling</span>
             <span class="rl-fig is-live">384m</span>
             <span class="rl-note">
@@ -681,17 +683,21 @@
           <!-- The fourth card, which is also what makes the grid 2×2 rather than leaving a half-row. The
                MODELLED numbers on the page come out of estimateCost(), so its accuracy is the claim they rest
                on — and the card says exactly how far that accuracy is proven, because the single-bucket run
-               found where it stops. The measured numbers come from runs, not from the estimator. -->
+               found where it stopped, and the fix is held to the engine's own request counts. The measured
+               numbers come from runs, not from the estimator. -->
           <div class="limit">
             <p class="label">And the estimator itself</p>
             <p>
               The modelled figures here come from <span class="m">estimateCost()</span>, so its accuracy is the
               claim they rest on. For point reads, priced against the chunk GETs a metrics sink observed, its
               prediction must land on or above what the engine incurred: it
-              <strong>never quotes fewer chunk reads</strong> than the engine makes. That is all it covers. For an
-              intersect it prices the <span class="m">chunksPerIntersect</span> you give it, 1 by default, and it
-              has no term yet for a single-bucket store's pointer and tail reads, so for a load or an intersect
-              there it under-quotes, and the measured figures below are the ones to use.
+              <strong>never quotes fewer chunk reads</strong> than the engine makes. For the rest it counts what
+              the engine is tested to send: each operand's pointer and index before an intersect's chunks, what
+              <span class="m">store.load()</span> adds to a load, and the pointer refresh for the segments you keep
+              reading, on S3's request shape, in as many reader processes as you pass it. And it still quotes low
+              where it cannot see: more hot segments than a reader
+              keeps open, the index every reader opens again after each load, an intersect that outlives the
+              pointer TTL, an index larger than the tail read, a load that loses a publish race.
             </p>
           </div>
         </div>

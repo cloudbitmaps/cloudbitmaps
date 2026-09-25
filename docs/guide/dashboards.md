@@ -120,11 +120,13 @@ meter.addBatchObservableCallback(
 Alert when `verdict_rank` hits `2` — the segment has drifted into the **lose-zone** (pay-per-use now exceeds a
 flat Redis node), usually because read volume outgrew the cache hit rate. `r.redisCrossover.readsPerSec` gives
 the exact read rate where the economics flip *at this report's cache-hit rate* (with the cache off and the
-default pricing profile it is about 329 reads/s; every cache hit moves it further out), so you can set the alarm
+default pricing profile it is about 329 reads/s; every cache hit moves it further out, and every hot segment's
+pointer refresh moves it in), so you can set the alarm
 threshold honestly rather than guessing — and `r.monthlyUSD.byOp` breaks the total into `reads` / `intersects` /
-`storage` / `loads` so you can see *what* pushed it over. Loads are modelled only when you pass
-`loadsPerMonth` (and `requestsPerLoad` for anything but a single PUT: a multipart upload, and on a single-bucket
-store the pointer's own requests); `r.assumptions.notes` says so when they are not.
+`storage` / `loads` / `pointerRefresh` so you can see *what* pushed it over. Loads are modelled only when you pass
+`loadsPerMonth` (and `requestsPerLoad` for a multipart write; what `store.load()` adds around the object is counted
+for you), and the pointer refresh only when you pass `hotSegments`; `r.assumptions.notes` says so when either is
+not.
 
 ---
 

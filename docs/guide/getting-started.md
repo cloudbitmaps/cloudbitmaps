@@ -896,8 +896,10 @@ A sink that throws can never break a read — its exceptions are swallowed (best
 
 CloudBitmaps can tell you what a workload *will* cost — and, uniquely, what your **real** segments *are*
 costing — because the library owns the storage + cache, so it can ground estimates no external calculator can.
-The model has four terms and no per-id write: object-store **GETs** for point reads and for intersection chunk
-fetches, object-store **PUTs** for loads, and **storage**.
+The model has five terms and no per-id write: object-store **GETs** for point reads; GETs for **intersections**,
+each operand's pointer and index as well as its chunks; the requests of a **load**, the object's write and what
+`store.load()` does around it; the **pointer refresh** a long-lived reader pays; and **storage**. Each request
+count is one the engine is tested to make.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
@@ -905,20 +907,20 @@ fetches, object-store **PUTs** for loads, and **storage**.
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
 const report = CloudRoaring.estimateCost({
-  segments: [{ sizeBytes: 1.2e9 }], // or { cardinality } / { count }
+  segments: [{ sizeBytes: 6e8, count: 2 }], // or { cardinality }
   workload: {
     readsPerSec: 200, // point reads; each cache miss is one GET
     cacheHitRate: 0.8, // hits are free
-    intersectsPerSec: 1,
-    chunksPerIntersect: 24, // every GET: 2 operands × (pointer + tail + 10 shared chunks)
-    loadsPerMonth: 30, // one refresh a day, through store.load()…
-    requestsPerLoad: 4.72, // …4 PUT-class, plus 9 GETs at 0.08 of a PUT each
+    intersectsPerSec: 1, // priced cold: each operand's pointer and index are read too
+    chunksPerIntersect: 20, // the chunks it fetches: 2 operands × 10 shared chunks
+    loadsPerMonth: 30, // one store.load() a day, single-part
+    hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0007 }
-report.monthlyUSD.total; // ≈ 67 — vs $346 flat Redis-HA
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0007, pointerRefresh: ≈1.05 }
+report.monthlyUSD.total; // ≈ 68 — vs $346 flat Redis-HA
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
-report.redisCrossover.readsPerSec; // ≈ 1,646 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
+report.redisCrossover.readsPerSec; // ≈ 1,641 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
 ```
 
 **Grounded** (real sizes from the `.crbm` index — exact, no payload reads):
@@ -934,41 +936,59 @@ Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, pu
 redis: { monthlyUSD } }`, default `aws-us-east-1-ondemand` from the fact-checked published pricing; override it
 for your region/cloud. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
 lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
-deriving it from live metrics is a later refinement; and, when you leave `loadsPerMonth` unset, that **loads are
-not modeled** — disclosed rather than silently under-counted).
+deriving it from live metrics is a later refinement; how many GETs each intersection was priced at; and, when you
+leave `loadsPerMonth` or `hotSegments` unset, that **loads** or **the pointer refresh are not modeled** — disclosed
+rather than silently under-counted).
 
 ### The read crossover
 
-`redisCrossover.readsPerSec` is the sustained point-read rate at which pay-per-use GETs alone cost more than the
-flat always-on baseline. It is not a ceiling on the library — it is a property of two inputs:
+`redisCrossover.readsPerSec` is the sustained point-read rate at which pay-per-use GETs cost more than the flat
+always-on baseline, once storage and the pointer refresh are taken out of it. It is not a ceiling on the library —
+it is a property of three inputs:
 
 | Input | Default | Change it and |
 | --- | --- | --- |
-| `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity` in the model, which does not count the pointer refresh a live store still pays (below). |
+| `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity`. |
+| `hotSegments` | `0` | The pointer refresh comes out of the baseline before any read is priced, like storage: a hundred hot segments at the default refresh spend about $53 of the $346. |
 | `pricing.storage.getPerMillion` | `$0.40` | Your region's or your committed rate; the formula is the spec, the rate is yours. |
 
-Loads are cheap by construction: at $5/million PUT-class requests, a thousand 100-part multipart loads a month,
-pointer included, is about $0.52. The term exists so the report can say so rather than assume it.
+### What each term counts
 
-**The estimator does not count the pointer's requests yet.** Measured on real S3, a write and publish makes its
-object's PUT-class requests plus the pointer's conditional PUT and three GETs of it. A cold intersect of two segments
-sharing k chunks is expected to make 4 + 2k GETs while each index fits the reader's tail read — a pointer read and a
-tail read per operand before the chunks; the run measured 206 for k = 100, because from outside the region each
-pointer was read twice. The estimator prices `requestsPerLoad` at the PUT rate and `chunksPerIntersect` at the GET
-rate, so until it counts these itself:
+- **An intersection is priced cold**: 2 reads for each operand (`operandsPerIntersect`, 2 by default, `exclude`
+  operands included), its pointer and then its index in one read of the object's tail, before the chunks it
+  fetches (`chunksPerIntersect`). Two segments sharing k chunks make 4 + 2k GETs: $81.60 per million for k = 100 at
+  the default GET price. An operand whose index outgrows the reader's 256 KiB tail read makes one more GET, to read
+  it whole, and an intersect slow enough to outlive `cache.genTtlMs` reads its pointers again; add either to
+  `chunksPerIntersect`. `cacheHitRate` does not apply to intersections, so a long-lived reader that answers
+  repeats from its cache pays less than the report says, and pays the pointer refresh instead.
+- **A load** is `requestsPerLoad` PUT-class requests for the object (1 by default; a multipart write of P parts is
+  P + 2), plus what `store.load()` adds: two listings and the pointer's write, PUT-class on S3, and nine GETs, eight
+  pointer reads and one read of the current index. That is a segment with two generations behind it, and about
+  $23.60 per million single-part loads at the default prices; a segment's first load makes two fewer GETs, and its
+  second one fewer. A segment whose index outgrows the tail read makes one more, and a publish that loses a race to
+  another writer reads the pointer again. Loads are cheap by construction: a thousand 100-part loads a month is
+  about $0.53.
+- **The pointer refresh**: a long-lived reader re-reads a segment's pointer when it reads the segment after
+  `cache.genTtlMs` has passed. So each hot segment costs at most one GET per `genTtlMs`, 1,314,000 a month at the
+  default 2 s, about $0.53, and the whole term at most one GET per point read. Pass `hotSegments` for the segments
+  each reader keeps reading, and **`readerProcesses`** for how many readers keep them: each refreshes on its own,
+  so ten processes reading the same hundred segments pay ten times one's refresh.
+  `segment.costReport()` prices it at the store's own `cache.genTtlMs`. Raising the TTL lowers it, at the price of
+  a new load taking longer to become visible; `0` pins each pointer for as long as the reader keeps the segment
+  open.
 
-- pass `requestsPerLoad` as the load's PUT-class requests plus its GETs at the GET-to-PUT price ratio, 0.08 on the
-  default profile. A single-part write and publish is 2 PUTs and 3 GETs, so `2.24`, which prices it at $11.20 per
-  million; `store.load()` also lists the segment twice and reads the pointer four more times, so `4.56` for a
-  segment's first load. A reload also reads the current index, so `4.64`, and from the third load the collection
-  pass reads the pointer once more before it deletes, so `4.72`;
-- pass every GET an intersect makes as `chunksPerIntersect`: `204` for two segments sharing 100 chunks.
+  It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
+  64 MiB of parsed index (`cache.readerMaxBytes`). A read of a segment the cache evicted opens it again, a pointer
+  read and a tail read, which the model does not price, and the report says so when `hotSegments` is past 1,024.
+  Nor does it price the index each reader opens again after every load. Size the caches to keep the hot set open.
 
-It has no term for the pointer refresh either. A live store re-reads each segment's pointer at most once per
-`cache.genTtlMs` (2 s by default) while the segment is being read, so a segment read around the clock costs about
-$0.53 a month in pointer reads, whatever the cache hit rate. The
-[benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the measured request shapes,
-and the estimator's own fix is on its list of what is still owed.
+**On GCS and Azure Blob**, a read that needs the object's size — a pointer read, and a segment's tail read — is two
+requests, the metadata and then the bytes, where S3's suffix-range GET is one. Set
+`storage.requestsPerSizedRead: 2` in your pricing profile and the model doubles those reads; chunk reads stay one
+request each. Each count above is held to the engine by a test that counts its requests, on S3's request shape, and
+the drivers' own tests pin the two requests GCS and Azure make, so the model moves when the engine does. The
+[benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
+on real S3.
 
 **See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
 Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the

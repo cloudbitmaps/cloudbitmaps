@@ -301,11 +301,14 @@ before/after table is in [`MIGRATING.md`](../../MIGRATING.md).
 `MetricOpName` · `MetricsSnapshot` · `IAuditSink` · `AuditEvent` · `AuditEventKind`
 
 The cost model has no per-id write term — data arrives as generations, and a generation is a load.
-`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth }, redis: { monthlyUSD } }`;
-`Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, loadsPerMonth?, requestsPerLoad? }`;
-`CostReport.monthlyUSD.byOp` is `{ reads, intersects, storage, loads }`, and `redisCrossover.readsPerSec` is the
-sustained read rate at which pay-per-use passes the flat baseline (≈329 reads/s at the default profile with a 0%
-cache-hit rate). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
+`PricingProfile` is `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth, requestsPerSizedRead? },
+redis: { monthlyUSD } }`, where `requestsPerSizedRead` is 1 on S3 and 2 on GCS and Azure Blob;
+`Workload` is `{ readsPerSec?, intersectsPerSec?, cacheHitRate?, chunksPerIntersect?, operandsPerIntersect?,
+loadsPerMonth?, requestsPerLoad?, hotSegments?, readerProcesses?, genTtlMs? }`; `CostReport.monthlyUSD.byOp` is
+`{ reads, intersects, storage, loads, pointerRefresh }`, and `redisCrossover.readsPerSec` is the sustained read rate at
+which pay-per-use passes the flat baseline, net of storage and the pointer refresh (≈329 reads/s at the default
+profile with a 0% cache-hit rate). What each term counts is in the
+[guide](getting-started.md#what-each-term-counts). `MetricOpName` is `'has' | 'count' | 'intersectInto' | 'unionInto' | 'andNotInto'`;
 `MetricsSnapshot` is `{ storage, cache, retries: { transient }, intersect, ops }`.
 
 ### The storage interfaces (used to type `storage` / `registry`)
