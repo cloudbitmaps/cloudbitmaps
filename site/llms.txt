@@ -14,11 +14,11 @@ and `count()` on a published segment does zero payload reads.
 Install two packages: a codec and a storage — `pnpm add @cloudbitmaps/roaring @cloudbitmaps/s3`
 (or `npm i` the same two).
 `@cloudbitmaps/core` (the codec-agnostic engine, the `.crbm` format and the driver ports) is a dependency of
-both and is never installed directly; it contains no cloud SDK at all. Five storage backends: S3
+both and is never installed directly; it contains no cloud SDK at all. Four storage drivers: S3
 (`@cloudbitmaps/s3`, which also serves R2, MinIO, Ceph, Wasabi and B2), GCS (`@cloudbitmaps/gcs`) and Azure
 Blob (`@cloudbitmaps/azure-blob`) as packages of their own, each depending on its cloud SDK for real rather
-than as an optional peer, plus the in-memory and local-filesystem backends in core's main entry. There are no
-driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
+than as an optional peer, plus the local filesystem in core's main entry, beside the in-memory drivers for
+development and tests. There are no driver subpaths and nothing is an optional peer. Each of the three clouds hosts both the storage generations
 and the registry, so a deployment needs exactly one cloud account.
 
 A store is wired with ONE backend object — `new CloudRoaring({ storage: new S3Storage({ bucket }) })` — which

@@ -182,7 +182,8 @@ requests**, and any always-on node crosses any per-request meter somewhere.
 
 > **Measured, not modeled.** Unlike the cost curve above (which comes from the estimator), the numbers here are
 > wall-clock + memory from a real run of `pnpm bench:scale` that builds a fleet of up to 100K segments on local
-> disk and reads across all of it. They're machine-dependent — a point-in-time snapshot, **not** a CI gate.
+> disk and reads across all of it. They're machine-dependent — a point-in-time snapshot, **not** a CI gate. What CI
+> does check is that the table below is what the committed results file renders.
 
 The production-readiness audit flagged three scale risks — an unbounded `.crbm` reader cache, an `O(total)`
 fleet-wide registry scan, and intersection unproven under load. This is the measured evidence at fleet scale:

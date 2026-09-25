@@ -29,8 +29,9 @@
  * the baseline is sampled after a forced GC.
  *
  * Run: `pnpm bench:scale` (builds first). HEAVY + machine-dependent (wall-clock + RSS) — so, exactly like
- * bench/run.cjs, it is NOT a CI gate; measured numbers live here, the deterministic claims are gated in
- * tests/bench/anchors.test.ts. With SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND
+ * bench/run.cjs, the MEASUREMENT is not a CI gate; measured numbers live here, the deterministic claims are gated
+ * in tests/bench/anchors.test.ts. What CI does check is the published table: `pnpm bench:scale:check`
+ * (`SCALE_TASK=check`) re-renders it from the committed results and fails if either page's copy differs. With SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND
  * injects the table into docs/benchmarks.md + site/benchmarks.html (between BENCH:SCALE markers); a plain run is
  * a dry-run that only prints (so a quick small-scale validation can't clobber the committed 100K results).
  *
@@ -50,23 +51,22 @@
  *   SCALE_FLEETS=1000,10000,100000   fleet sizes to measure       SCALE_CAP=1024        maxOpenSegments
  *   SCALE_IDS_PER_SEG=256            ids seeded per segment        SCALE_INTERSECT_CHUNKS=2000
  *   SCALE_INTERSECT_DENSITY=1000     ids per 65,536-id chunk       SCALE_INTERSECT_OVERLAP=0.05
- *   SCALE_INJECT=1                   inject into docs/site         SCALE_TASK / SCALE_N   (internal: child mode)
+ *   SCALE_INJECT=1                   inject into docs/site         SCALE_TASK=inject|check   render or verify only
+ *                                                                  SCALE_TASK=fleet|intersect, SCALE_N (internal)
  */
 'use strict';
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const {
-  bulkLoadCrbmGeneration,
-  CrbmStorageChunkSource,
-  LocalFsStorage,
-  MemoryStorage,
-  CloudRoaring,
-  CountingMetricsSink,
-  collectWithinBudget,
-  excludingReservedRows,
-} = require('@cloudbitmaps/roaring');
+
+/**
+ * The built library, loaded only by the modes that measure. Rendering and checking the table read the committed
+ * results file and nothing else, so CI can check the table before anything is built.
+ */
+function library() {
+  return require('@cloudbitmaps/roaring');
+}
 
 // The library's own default scan ceiling. It used to arrive as `DEFAULT_MAX_SCAN_SEGMENTS`; curating core's
 // public surface made that constant internal, so the bench states the number it is measuring against rather
@@ -119,6 +119,13 @@ function rmTmp(dir) {
 
 // ── M1+M2+M4: one fleet size, measured in its own process ────────────────────────────────────────────
 async function measureFleet(n) {
+  const {
+    bulkLoadCrbmGeneration,
+    CrbmStorageChunkSource,
+    LocalFsStorage,
+    collectWithinBudget,
+    excludingReservedRows,
+  } = library();
   const dir = mkTmp(`fleet${n}`);
   try {
     const backend = new LocalFsStorage(dir, { now: () => Date.now() });
@@ -195,6 +202,7 @@ async function measureFleet(n) {
 
 // ── M3: intersection chunk-skipping on two large multi-chunk segments (ids-per-segment axis) ───────────
 async function measureIntersect() {
+  const { bulkLoadCrbmGeneration, MemoryStorage, CloudRoaring, CountingMetricsSink } = library();
   const CHUNKS = int(process.env.SCALE_INTERSECT_CHUNKS, 2000);
   const DENSITY = int(process.env.SCALE_INTERSECT_DENSITY, 1000);
   const OVERLAP = Number(process.env.SCALE_INTERSECT_OVERLAP || '0.05');
@@ -303,7 +311,7 @@ async function parent() {
 // ── rendering ──────────────────────────────────────────────────────────────────────────────────────
 function render(r) {
   const memFlat = r.fleets
-    .map((f) => `${f.heapRetainedMiB} MiB @ ${f.n.toLocaleString()}`)
+    .map((f) => `${f.heapRetainedMiB} MiB @ ${f.n.toLocaleString('en-US')}`)
     .join(' · ');
 
   // The claim the table cannot make about itself, computed rather than asserted: how far the heap moved while
@@ -320,10 +328,10 @@ function render(r) {
   // the tabular alignment that is the entire reason those columns are right-aligned.
   const mib = (n) => `${n.toFixed(1)} MiB`;
   const rows = r.fleets.map((f) => [
-    f.n.toLocaleString() + ' segments',
+    f.n.toLocaleString('en-US') + ' segments',
     mib(f.heapRetainedMiB),
     mib(f.rssPeakMiB),
-    `${f.discoveryMs.toLocaleString()} ms`,
+    `${f.discoveryMs.toLocaleString('en-US')} ms`,
   ]);
   // "Retained heap" rather than "Live heap": it matches the `heapRetainedMiB` field it comes from AND the
   // word the site's own prose uses beside the table. Three names for one column is how a legend stops
@@ -331,12 +339,12 @@ function render(r) {
   const header = ['Fleet', 'Retained heap (cap ' + r.cap + ')', 'Peak RSS', 'Discovery scan'];
   const seedLo = Math.min(...r.fleets.map((f) => f.seedPerSec));
   const seedHi = Math.max(...r.fleets.map((f) => f.seedPerSec));
-  const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString()} chunks per segment`;
+  const perSeg = `fetched only ${r.intersect.fetchedChunks} of the ${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks per segment`;
   const mdTable =
     `| ${header.join(' | ')} |\n| ${header.map(() => '---').join(' | ')} |\n` +
     rows.map((row) => `| ${row.join(' | ')} |`).join('\n') +
-    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString()}-id segments ` +
-    `(${r.intersect.chunksPerSegment.toLocaleString()} chunks each, ${r.intersect.sharedChunks} shared): ` +
+    `\n\nIntersection of two ${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
+    `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared): ` +
     `**${perSeg}** — the shared keys; the rest skipped by key alignment — in ${r.intersect.intersectMs} ms.\n\n` +
     `_Measured on ${r.env.cpu} (${r.env.arch}, node ${r.env.node}). **The bound is the retained heap** (post-GC), ` +
     `flat at ${memFlat} — the reader cache holds bounded live data regardless of fleet. Process **peak RSS** ` +
@@ -365,15 +373,15 @@ function render(r) {
     // The cap is already in the heap column's own header, where it qualifies the column it applies to —
     // repeating it here said "1024" twice on one panel. The head carries the axis instead.
     `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
-    `<span class="label">Measured &middot; ${fleetLo.toLocaleString()} &rarr; ` +
-    `${fleetHi.toLocaleString()} segments</span></div>` +
+    `<span class="label">Measured &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
+    `${fleetHi.toLocaleString('en-US')} segments</span></div>` +
     `<div class="tscroll"><table><thead><tr>` +
     header.map((h, i) => `<th${i > 0 ? ' class="num"' : ''}>${esc(h)}</th>`).join('') +
     `</tr></thead><tbody>${htmlRows}</tbody></table></div>` +
     `<p class="tpanel-foot">A <strong>${fleetFactor}&times;</strong> larger fleet moved retained heap by ` +
     `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
-    `${r.intersect.idsPerSegment.toLocaleString()}-id segments ` +
-    `(${r.intersect.chunksPerSegment.toLocaleString()} chunks each, ${r.intersect.sharedChunks} shared) ` +
+    `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
+    `(${r.intersect.chunksPerSegment.toLocaleString('en-US')} chunks each, ${r.intersect.sharedChunks} shared) ` +
     `<strong>${perSeg}</strong>, in ${r.intersect.intersectMs} ms. Fleet seeded at ~${seedLo}&ndash;${seedHi} ` +
     `durable segments/s (fsync-bound). Measured on ${esc(r.env.cpu)} (${r.env.arch}, node ` +
     `${r.env.node}) &mdash; discovery is filesystem-bound here, so the ` +
@@ -392,16 +400,28 @@ function render(r) {
 }
 
 // ── write / inject (same markers convention as bench/run.cjs) ─────────────────────────────────────────
+const SCALE_START = '<!-- BENCH:SCALE:START -->';
+const SCALE_END = '<!-- BENCH:SCALE:END -->';
+
+/** A page's text, split around its at-scale region: what comes before, the region itself, and what follows. */
+function scaleRegion(rel) {
+  const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const i = s.indexOf(SCALE_START);
+  const j = s.indexOf(SCALE_END);
+  if (i === -1 || j === -1 || j < i) throw new Error(`missing BENCH:SCALE markers in ${rel}`);
+  // Exactly one region: a second copy would be one the check never compared.
+  if (s.indexOf(SCALE_START, i + 1) !== -1 || s.indexOf(SCALE_END, j + 1) !== -1) {
+    throw new Error(`more than one BENCH:SCALE region in ${rel}`);
+  }
+  return {
+    before: s.slice(0, i + SCALE_START.length),
+    region: s.slice(i + SCALE_START.length, j),
+    after: s.slice(j),
+  };
+}
 function inject(rel, body) {
-  const file = path.join(ROOT, rel);
-  let s = fs.readFileSync(file, 'utf8');
-  const start = '<!-- BENCH:SCALE:START -->';
-  const end = '<!-- BENCH:SCALE:END -->';
-  const i = s.indexOf(start);
-  const j = s.indexOf(end);
-  if (i === -1 || j === -1) throw new Error(`missing BENCH:SCALE markers in ${rel}`);
-  s = s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
-  fs.writeFileSync(file, s);
+  const { before, after } = scaleRegion(rel);
+  fs.writeFileSync(path.join(ROOT, rel), before + '\n' + body + '\n' + after);
   log(rel);
 }
 function write(rel, body) {
@@ -428,9 +448,32 @@ function doInject() {
   inject('site/benchmarks.html', htmlTable);
 }
 
+// ── check-only: the published table is exactly what the committed results render ─────────────────────
+// The at-scale table is a measured figure on two pages, and for a while nothing held it to the file it was
+// rendered from: a hand edit to either page, or a new results file rendered into one page and not the other,
+// would have shipped. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
+// any difference, the way `site-replay.cjs --check` holds the demo's figures to the same file.
+function doCheck() {
+  const results = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/scale-results.json'), 'utf8'));
+  const { mdTable, htmlTable } = render(results);
+  const stale = [
+    ['docs/benchmarks.md', mdTable],
+    ['site/benchmarks.html', htmlTable],
+  ].filter(([rel, body]) => scaleRegion(rel).region !== '\n' + body + '\n');
+  if (stale.length > 0) {
+    console.error(
+      `bench:scale:check: the at-scale table in ${stale.map(([rel]) => rel).join(' and ')} is not what ` +
+        'bench/scale-results.json renders. Run `pnpm bench:scale:render` rather than editing it by hand.',
+    );
+    process.exit(1);
+  }
+  console.log('bench:scale:check: both at-scale tables are what bench/scale-results.json renders.');
+}
+
 // ── entry ────────────────────────────────────────────────────────────────────────────────────────────
 (async () => {
   if (process.env.SCALE_TASK === 'inject') doInject();
+  else if (process.env.SCALE_TASK === 'check') doCheck();
   else if (process.env.SCALE_TASK) await child();
   else await parent();
 })().catch((err) => {
