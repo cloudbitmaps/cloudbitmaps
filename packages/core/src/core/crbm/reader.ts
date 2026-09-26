@@ -87,16 +87,26 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
   );
 }
 
+/** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
+const sizePart = (size: number): string => `${size}:`;
+const fingerprintFor = (size: number, footerCrc: number): string => `${sizePart(size)}${footerCrc}`;
+
+/**
+ * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
+ * is not would turn off every bounds check an open makes against it.
+ */
+function checkSize(tail: Uint8Array, size: number): void {
+  if (!Number.isSafeInteger(size) || size < tail.length) {
+    throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
+  }
+}
+
 /** The footer at the end of `tail`, once its size, magic and CRC hold, with its view and its CRC. */
 function checkedFooter(
   tail: Uint8Array,
   size: number,
 ): { footer: Uint8Array; fview: DataView; storedFooterCrc: number } {
-  // The size is the tier's word too: one that is not a whole byte count its own tail fits in would turn off every
-  // bounds check an open makes against it.
-  if (!Number.isSafeInteger(size) || size < tail.length) {
-    throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
-  }
+  checkSize(tail, size);
   if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
     throw new IntegrityError(`.crbm too small: ${size}B`);
   }
@@ -145,7 +155,7 @@ export class CrbmReader {
    * the object it reopens is the one it pinned, since a purged and reloaded name reuses the generation number.
    */
   get fingerprint(): string {
-    return `${this.objectSize}:${this.footerCrc}`;
+    return fingerprintFor(this.objectSize, this.footerCrc);
   }
 
   /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
@@ -170,13 +180,18 @@ export class CrbmReader {
   }
 
   /**
-   * The {@link fingerprint} of the object behind `blob`, from its footer alone: one tail read of a footer's worth,
-   * with no key and no index, since the footer is stored in the clear and checked by its own CRC. What a pin compares
-   * to tell the object it opened from one that has since been stored under its key, whoever wrote it.
+   * Whether the object behind `blob` is the one `fingerprint` names ({@link fingerprint}), from one tail read of a
+   * footer's worth, with no key and no index, since the footer is stored in the clear and checked by its own CRC.
+   * Another size is another object, whatever its bytes hold: a short one that is no `.crbm` at all is not the one
+   * pinned. At the same size the footer's CRC says, and a footer that fails its own checks says nothing about which
+   * object is there, so this throws, as an open would. What a pin asks, to tell the object it opened from one that
+   * has since been stored under its key, whoever wrote it.
    */
-  static async fingerprintOf(blob: BlobReader): Promise<string> {
+  static async sameObject(blob: BlobReader, fingerprint: string): Promise<boolean> {
     const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
-    return `${size}:${checkedFooter(tail, size).storedFooterCrc}`;
+    checkSize(tail, size);
+    if (!fingerprint.startsWith(sizePart(size))) return false;
+    return fingerprintFor(size, checkedFooter(tail, size).storedFooterCrc) === fingerprint;
   }
 
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {

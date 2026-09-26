@@ -131,8 +131,8 @@ type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly Wrap
 
 /**
  * What a pin holds of the object it pinned: the version its cache entries are keyed by, and the object's
- * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one;
- * a pin built by hand without it is checked by version only.
+ * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one.
+ * A pin built by hand without one is not checked: it reads whatever object is under its generation's key.
  */
 export interface PinnedObject {
   readonly version: string;
@@ -196,13 +196,18 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   private readonly snapshots: BoundedLru<string, Snapshot>;
   /**
-   * Pinned keys ({@link pinnedKey}) whose object has been found replaced, or gone from its key. A write-once key
-   * never holds the pinned object again, so the verdict is kept, through an eviction or an invalidation, and bounded
-   * as the readers are: a pin's later chunk reads, and any reopen, fail at once rather than pay for the check again.
-   * A reader still memoised keeps answering from the index it holds, so the pin's `count()` does.
+   * Pins ({@link heldKey}) whose object has been found replaced: another object is under its generation's key. Kept,
+   * and bounded as the readers are, so that a pin's later chunk reads and any reopen fail at once rather than pay for
+   * the check again. A replacement can be undone, by a restore that puts the pinned object back, so
+   * {@link invalidate} forgets the segment's, and a pin taken of an object forgets the one against it. An object
+   * found gone is not kept: that is the open's own `NotFoundError`, and a 404 can pass. A reader still memoised keeps
+   * answering from the index it holds, so the pin's `count()` does.
    */
   private readonly replacedPins: BoundedLru<string, true>;
-  /** A check of a pinned object still under way, by pinned key, so the reads that ask at once share one footer read. */
+  /**
+   * A check of a pinned object still under way, by {@link heldKey}, so the reads that ask at once share one footer
+   * read. One forgotten before it ends, by {@link invalidate} or a pin, keeps nothing it finds.
+   */
   private readonly checking = new Map<string, Promise<boolean>>();
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
@@ -368,13 +373,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
 
   /**
    * Forget everything derived from `ref`: the resolved snapshot and the open reader behind it (and with the
-   * reader, the DEK it unwrapped at open time). The next read resolves `currentGen` from the registry again.
+   * reader, the DEK it unwrapped at open time), and what its pins' objects were found to be. The next read
+   * resolves the segment again.
    *
    * Needed because the TTL refresh only ever answers "has the pointer moved?", and every *destructive* verb —
    * an erasure that deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement —
    * leaves the pointer's answer unchanged from this source's point of view while making the snapshot wrong.
    * Until this is called the source keeps serving that snapshot with no backend read at all, so nothing on the
-   * storage side can close the window; with `cache.genTtlMs: 0` or no clock, nothing bounds it at all.
+   * storage side can close the window; with no registry, no clock or `cache.genTtlMs: 0`, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
     const key = segmentKey(ref);
@@ -384,6 +390,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // reader that does not re-resolve on its own, so it is the one that most needs to be told.
     const pinnedPrefix = `${key}@`;
     this.snapshots.deleteWhere((k) => k.startsWith(pinnedPrefix));
+    // …and what its pins' objects were found to be, and any check still finding out: an object restored under its
+    // key is its pin's again, and a restore is what an operator invalidates for.
+    this.replacedPins.deleteWhere((k) => k.startsWith(pinnedPrefix));
+    for (const k of this.checking.keys()) if (k.startsWith(pinnedPrefix)) this.checking.delete(k);
   }
 
   /**
@@ -463,6 +473,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // resolves no generation now, so this pin pins nothing, as one taken a moment later would.
       if (reader === null) return null;
     }
+    // The object under the key is this one now, whatever was found there before: a restore puts back what a
+    // replacement took, and a verdict kept against it would fail this pin's reads.
+    const held = this.heldKey(ref, version, reader.fingerprint);
+    this.replacedPins.delete(held);
+    this.checking.delete(held);
     return { generation: target.generation, version, fingerprint: reader.fingerprint };
   }
 
@@ -473,8 +488,18 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    */
   private pinnedKey(ref: SegmentRef, version: string, fingerprint?: string): string {
     return this.registry === undefined && fingerprint !== undefined
-      ? `${segmentKey(ref)}@${version}#${fingerprint}`
+      ? this.heldKey(ref, version, fingerprint)
       : `${segmentKey(ref)}@${version}`;
+  }
+
+  /**
+   * One pin's hold on one segment: its version, and the fingerprint of the object it pinned. A check of that object
+   * is shared under it, and what the check finds is kept under it, with a registry or without one: pins of one
+   * version can hold different objects, since a pin built by hand can name any, and an object replaced from outside
+   * the store leaves the row, and so the version, as it was.
+   */
+  private heldKey(ref: SegmentRef, version: string, fingerprint: string): string {
+    return `${segmentKey(ref)}@${version}#${fingerprint}`;
   }
 
   /**
@@ -509,12 +534,17 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     version?: string,
     fingerprint?: string,
   ): Promise<CrbmReader | null> {
-    const key = this.pinnedKey(ref, version ?? String(generation), fingerprint);
+    const at = version ?? String(generation);
+    const key = this.pinnedKey(ref, at, fingerprint);
     let entry = this.snapshots.get(key);
+    const opening = entry === undefined;
     if (entry === undefined) {
       // An object already found replaced is not opened again: the open would pay a row read and a key unwrap for
       // an object that is not the pin's.
-      if (fingerprint !== undefined && this.replacedPins.get(key) !== undefined)
+      if (
+        fingerprint !== undefined &&
+        this.replacedPins.get(this.heldKey(ref, at, fingerprint)) !== undefined
+      )
         throw notThePinned(ref, generation);
       entry = this.install(key, this.openAt(ref, generation));
     }
@@ -522,10 +552,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     try {
       reader = await entry.reader;
     } catch (err) {
-      // An open can fail on an object that is not the pinned one: written under a key this store lacks, stored in
-      // the clear where encryption is required, or gone. Its footer says which, with no key and no row.
-      if (fingerprint === undefined || isTransientError(err)) throw err;
-      await this.throwIfReplaced(ref, generation, key, fingerprint);
+      // An open can fail on an object that is not the pinned one: written under a key this store lacks, or stored in
+      // the clear where encryption is required. Its footer says which, with no key and no row. One that is gone needs
+      // no footer read to say so: that is this NotFoundError.
+      if (fingerprint === undefined || isTransientError(err) || isNotFoundError(err)) throw err;
+      await this.throwIfReplaced(ref, generation, at, fingerprint);
       throw err;
     }
     // A pin's read fails where a bare read of a generation reads nothing: a pin describes one instant, and one that
@@ -538,7 +569,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       );
     }
     if (fingerprint !== undefined && reader.fingerprint !== fingerprint) {
-      this.replacedPins.set(key, true);
+      // Kept only while what this read opened is still installed: an invalidation since forgot the segment's
+      // verdicts, as after a restore, and this one is from before it. What this read opened is the object now under
+      // the key, which is not the pin's: left memoised under the pin's key, it would hold a place in the reader
+      // cache, and the key it unwrapped, for reads that can only fail.
+      if (this.snapshots.peek(key) === entry) {
+        this.replacedPins.set(this.heldKey(ref, at, fingerprint), true);
+        if (opening) this.snapshots.delete(key);
+      }
       throw notThePinned(ref, generation);
     }
     return reader;
@@ -571,11 +609,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     if (reader === null) return null;
     const fingerprint = held?.fingerprint;
-    const key =
-      held === undefined || fingerprint === undefined
-        ? undefined
-        : this.pinnedKey(ref, held.version, fingerprint);
-    if (key !== undefined && this.replacedPins.get(key) !== undefined)
+    if (
+      held !== undefined &&
+      fingerprint !== undefined &&
+      this.replacedPins.get(this.heldKey(ref, held.version, fingerprint)) !== undefined
+    )
       throw notThePinned(ref, generation);
     try {
       return await reader.getChunk(ref.chunkKey);
@@ -586,48 +624,54 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // it was: replaced, which is a pin's NotFoundError, or not, and the error stands. Only these two errors pay
       // for the footer read. Told apart by their brands, not `instanceof`: the range error is a driver package's,
       // which may carry a copy of core of its own.
-      if (key === undefined || fingerprint === undefined) throw err;
+      if (held === undefined || fingerprint === undefined) throw err;
       if (!(isIntegrityError(err) || isValidationError(err))) throw err;
-      await this.throwIfReplaced(ref, generation, key, fingerprint);
+      await this.throwIfReplaced(ref, generation, held.version, fingerprint);
       throw err;
     }
   }
 
   /**
    * Throws the pin's NotFoundError if the object under `generation`'s key is no longer the one the pin holds. Its
-   * footer's fingerprint says, read with no key and no row, so an object written under a key this store lacks
-   * answers the same way; one gone from its key is replaced too, as a write-once key never holds it again. A
-   * verdict of "replaced" is kept ({@link replacedPins}), and a check under way is shared by the reads that ask at
-   * once; "the same" is not kept, since the object could be replaced after. A transient fault is rethrown, for the
-   * store's retries to see for what it is. A footer that cannot be read otherwise says nothing about which object is
-   * there, so this returns, and the caller's own error stands.
+   * footer says, read with no key and no row ({@link CrbmReader.sameObject}), so an object written under a key this
+   * store lacks answers the same way, and so does one gone from its key. A replacement is kept
+   * ({@link replacedPins}), and a check under way is shared by the reads that ask at once; neither "gone" nor "the
+   * same" is kept, since either can change. A transient fault is rethrown, for the store's retries to see for what it
+   * is. A footer that cannot be read otherwise says nothing about which object is there, so this returns, and the
+   * caller's own error stands.
    */
   private async throwIfReplaced(
     ref: SegmentRef,
     generation: number,
-    key: string,
+    version: string,
     fingerprint: string,
   ): Promise<void> {
-    if (this.replacedPins.get(key) !== undefined) throw notThePinned(ref, generation);
-    let check = this.checking.get(key);
+    const held = this.heldKey(ref, version, fingerprint);
+    if (this.replacedPins.get(held) !== undefined) throw notThePinned(ref, generation);
+    let check = this.checking.get(held);
     if (check === undefined) {
       const at: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
-      check = CrbmReader.fingerprintOf(storageBlobReader(this.driver, at))
-        .then(
-          (now) => now !== fingerprint,
-          (err: unknown) => {
-            if (isNotFoundError(err)) return true;
-            throw err;
-          },
-        )
-        .then((replaced) => {
-          if (replaced) this.replacedPins.set(key, true);
-          return replaced;
-        })
-        .finally(() => {
-          this.checking.delete(key);
-        });
-      this.checking.set(key, check);
+      // Whether this check is still the one asked for as it ends, which it then stops being. One forgotten before it
+      // ends (see checking) keeps nothing it finds, and leaves in place the one asked for since.
+      const ended = (): boolean =>
+        this.checking.get(held) === started && this.checking.delete(held);
+      // True when the object under the key is not the pin's: another one, or none.
+      const started: Promise<boolean> = CrbmReader.sameObject(
+        storageBlobReader(this.driver, at),
+        fingerprint,
+      ).then(
+        (same) => {
+          if (ended() && !same) this.replacedPins.set(held, true);
+          return !same;
+        },
+        (err: unknown) => {
+          ended();
+          if (isNotFoundError(err)) return true;
+          throw err;
+        },
+      );
+      this.checking.set(held, started);
+      check = started;
     }
     let replaced: boolean;
     try {

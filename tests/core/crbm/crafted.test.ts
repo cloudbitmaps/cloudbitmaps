@@ -235,7 +235,7 @@ describe('crafted (hostile) index — reader-side guards', () => {
     expect(reader.chunkKeys()).toEqual([0]);
   });
 
-  // The footer is checked before anything in it is trusted, by an open and by the fingerprint a pin compares alike.
+  // The footer is checked before anything in it is trusted, by an open and by the check a pin makes alike.
   const flipped = (at: number): Uint8Array => {
     const bytes = Uint8Array.from(wellFormed({}));
     bytes[bytes.length - FOOTER_BYTES + at]! ^= 0xff;
@@ -248,34 +248,50 @@ describe('crafted (hostile) index — reader-side guards', () => {
     ['the first field its CRC covers', 0, /footer CRC mismatch/],
   ])('refuses a footer with a byte flipped in %s', async (_where, at, message) => {
     await expect(open(flipped(at))).rejects.toThrow(message);
-    await expect(CrbmReader.fingerprintOf(new BufferReader(flipped(at)))).rejects.toThrow(message);
+    // At the object's own size only the footer can say which object it is, and a footer that fails its check cannot.
+    const pinned = (await open(wellFormed({}))).fingerprint;
+    await expect(CrbmReader.sameObject(new BufferReader(flipped(at)), pinned)).rejects.toThrow(
+      message,
+    );
   });
 
   it('refuses a footer alone, with no preamble before it, as too small', async () => {
     const whole = wellFormed({});
     const footerOnly = whole.slice(whole.length - FOOTER_BYTES);
     await expect(open(footerOnly)).rejects.toThrow(/too small/);
-    await expect(CrbmReader.fingerprintOf(new BufferReader(footerOnly))).rejects.toThrow(
-      /too small/,
+  });
+
+  it.each([
+    ['a footer alone', (whole: Uint8Array) => whole.slice(whole.length - FOOTER_BYTES)],
+    ['fifty bytes that are no .crbm at all', () => new Uint8Array(50)],
+  ])('says %s is not the object a fingerprint names, by its size alone', async (_what, make) => {
+    const whole = wellFormed({});
+    const pinned = (await open(whole)).fingerprint;
+    expect(await CrbmReader.sameObject(new BufferReader(make(whole)), pinned)).toBe(false);
+  });
+
+  it.each([
+    ['NaN', () => Number.NaN],
+    ['Infinity', () => Number.POSITIVE_INFINITY],
+    ['10, less than its own tail', () => 10],
+    ['half a byte past its length', (length: number) => length + 0.5],
+    ['past 2^53, where a count stops being exact', () => 2 ** 53 + 2],
+  ])('refuses a size of %s, which is not a byte count the tail fits in', async (_what, sizeOf) => {
+    const bytes = wellFormed({});
+    const inner = new BufferReader(bytes);
+    const size = sizeOf(bytes.length);
+    const blob = {
+      getRange: (offset: number, length: number) => inner.getRange(offset, length),
+      getTail: async (maxBytes: number) => ({ ...(await inner.getTail(maxBytes)), size }),
+    };
+    await expect(CrbmReader.open(blob)).rejects.toThrow(/not a byte count its tail fits in/);
+    const pinned = (await open(bytes)).fingerprint;
+    await expect(CrbmReader.sameObject(blob, pinned)).rejects.toThrow(
+      /not a byte count its tail fits in/,
     );
   });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, 10])(
-    'refuses a size of %s, which is not a byte count the tail fits in',
-    async (size) => {
-      const inner = new BufferReader(wellFormed({}));
-      const blob = {
-        getRange: (offset: number, length: number) => inner.getRange(offset, length),
-        getTail: async (maxBytes: number) => ({ ...(await inner.getTail(maxBytes)), size }),
-      };
-      await expect(CrbmReader.open(blob)).rejects.toThrow(/not a byte count its tail fits in/);
-      await expect(CrbmReader.fingerprintOf(blob)).rejects.toThrow(
-        /not a byte count its tail fits in/,
-      );
-    },
-  );
-
-  it("gives an object's fingerprint from a footer's worth of its bytes, as an open gives it", async () => {
+  it("knows an object by its fingerprint from a footer's worth of its bytes, and another of its size by its CRC", async () => {
     const bytes = wellFormed({});
     const inner = new BufferReader(bytes);
     const asked: number[] = [];
@@ -286,7 +302,10 @@ describe('crafted (hostile) index — reader-side guards', () => {
         return inner.getTail(maxBytes);
       },
     };
-    expect(await CrbmReader.fingerprintOf(blob)).toBe((await open(bytes)).fingerprint);
+    expect(await CrbmReader.sameObject(blob, (await open(bytes)).fingerprint)).toBe(true);
     expect(asked).toEqual([FOOTER_BYTES]);
+    const other = wellFormed({ generation: 2 }); // the same size, and a footer that says another generation
+    expect(other.length).toBe(bytes.length);
+    expect(await CrbmReader.sameObject(blob, (await open(other)).fingerprint)).toBe(false);
   });
 });

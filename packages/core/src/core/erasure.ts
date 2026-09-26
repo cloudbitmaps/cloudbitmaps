@@ -262,8 +262,8 @@ export interface DropResult {
  * cache for a window. A fresh store, or any reader that had not touched the segment, sees empty at once.
  *
  * That window is bounded by `cache.genTtlMs` (default 2 s) **only for a reader whose storage source has both a clock
- * and a registry and a positive TTL** — expiry needs all three. A source built without a clock, or with
- * `cache.genTtlMs: 0`, has no timed refresh: it notices the drop only when a read has to fetch from a deleted
+ * and a registry and a positive TTL** — expiry needs all three. A source built without a clock or a registry, or
+ * with `cache.genTtlMs: 0`, has no timed refresh: it notices the drop only when a read has to fetch from a deleted
  * generation or its reader cache evicts the segment. Because a cache-LRU hit never reaches Storage, such a reader
  * can answer `true` for a dropped segment **indefinitely**, and must be invalidated or restarted. This is the *same* caching that makes the delete-bytes-first ordering fail intermittently rather
  * than loudly — it cuts both ways.

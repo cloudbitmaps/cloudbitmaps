@@ -23,7 +23,7 @@ const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
 describe('CloudRoaring constructor — one config shape (storage: raw driver | source)', () => {
-  it('wraps a raw IStorageDriver and pins the registry currentGen (not the max on disk)', async () => {
+  it("wraps a raw IStorageDriver and reads the registry's currentGen (not the max on disk)", async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     // gen 0 published to the registry…

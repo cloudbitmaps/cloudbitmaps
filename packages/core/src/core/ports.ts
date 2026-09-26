@@ -73,7 +73,7 @@ export interface StorageChunkSource {
    * deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement. After one of those
    * a source that had already resolved the segment keeps answering from memory — with no backend read at all,
    * so no storage-side control can close the window — until its TTL lapses, and with no bound at all if it has
-   * no clock or `cache.genTtlMs: 0`.
+   * no registry, no clock or `cache.genTtlMs: 0`.
    *
    * Callers that destroy or retire a segment must call this. It is synchronous and best-effort: dropping
    * memoized state cannot fail, and a source that memoizes nothing may omit the method entirely.

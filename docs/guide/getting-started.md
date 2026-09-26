@@ -692,9 +692,9 @@ Who calls it today:
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
-**Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
-generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
-stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
+**Read staleness, restated for the whole picture.** With a registry and a `cache.genTtlMs` above 0, a store
+notices a new generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never
+serves a stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
 consistent. A **long** call is the one shape where the generation can move underneath you. A resolved snapshot
 is re-checked once the TTL elapses, and three things force a fresh resolve even sooner: the reader cache evicting
 an operand mid-call, a sweep collecting the generation the call was reading, and an invalidation (this store's own
@@ -718,12 +718,12 @@ pathological (GC outrunning resolution) and propagates rather than fabricating a
 that answers empty instead of throwing is a segment with no generation left to serve at all — dropped or
 crypto-shredded, where reading empty is the documented outcome.
 
-**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every
-`cache.genTtlMs`, so at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
-read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
-`intersect` does not need a sixty-second window. The exception is a source with no timed refresh — no clock
-injected, no registry, or `cache: { genTtlMs: 0 }` — whose snapshot lasts until an eviction, a read that finds its
-generation swept, or an invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
+**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so
+at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses — **one**,
+at the 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second
+window. The exception is a store with no timed refresh — no registry, `cache: { genTtlMs: 0 }`, or a storage source
+built with no clock — whose snapshot lasts until an eviction, a read that finds its generation swept, or an
+invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
 mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
@@ -1118,9 +1118,9 @@ happen to point at the same bucket.
 |---|---|
 | storage | on return — the generation holding it is deleted |
 | the store that performed the erasure | on return, and its pins then fail |
-| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s) |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
-| another store with **no clock**, **no registry** (a bare `IStorageDriver`), or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
+| another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
 immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
@@ -1289,11 +1289,11 @@ Two limits worth knowing before you automate it:
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
   `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
   tombstone (below), or use a fresh dated name — which is the pattern anyway.
-- **"Reads as empty" needs a clock.** The `cache.genTtlMs` bound applies to a reader whose storage source has a
-  clock, a registry, *and* a positive TTL. Built without a clock, or with `cache: { genTtlMs: 0 }`, a reader has no
-  timed refresh: it notices the drop only when a read has to fetch from a deleted generation or its reader cache
-  evicts the segment, and can answer `true` from its cache for a dropped segment indefinitely — call
-  `store.invalidate(ref)` on it, or restart it.
+- **"Reads as empty" needs a timed refresh.** The `cache.genTtlMs` bound applies to a reader with a registry *and* a
+  positive TTL, on a storage source with a clock, which every source a store builds for itself has. With no registry
+  (a bare `IStorageDriver`), or with `cache: { genTtlMs: 0 }`, a reader has no timed refresh: it notices the drop only
+  when a read has to fetch from a deleted generation or its reader cache evicts the segment, and can answer `true`
+  from its cache for a dropped segment indefinitely — call `store.invalidate(ref)` on it, or restart it.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
 > the registry still points at them, which is exactly the state

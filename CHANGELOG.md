@@ -36,10 +36,11 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
 
 ### Added
 
-- **What a pin holds is public.** `PinnedAt` gains an optional `fingerprint`: the pinned object's size and footer
-  checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it. `CrbmReader`
-  gains `fingerprint`, and `CrbmReader.fingerprintOf(blob)`, which reads one footer's worth and needs no key. A
-  fingerprint is opaque: compare two for equality, and do not parse one.
+- **`PinnedAt` names the object a pin holds.** It gains an optional `fingerprint`: the pinned object's size and
+  footer checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it.
+  `CrbmReader` gains `fingerprint`, and `CrbmReader.sameObject(blob, fingerprint)`, which says from one footer's
+  worth, with no key, whether the object behind `blob` is the one a fingerprint names. A fingerprint is opaque:
+  compare two for equality, and do not parse one.
 - **The single-bucket bill, measured on AWS.** The calibration harness's first publishable run,
   `2026-09-23-94416`, put the topology that ships on real S3 in `us-east-1` — the registry pointer in the same
   bucket as the data — and the benchmarks page now publishes what it costs. The median cold intersect of two
@@ -203,22 +204,26 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. A pin tells a replacement
   from damage by reading the object's footer, which needs no key. A replacement written under a key the store lacks
   is therefore found too, including after the pin's reader was dropped. The reads that ask at once share that
-  footer read, and once found, a replacement costs later reads no request. Two pins of one generation number in two
-  incarnations never share a reader or a cached chunk, with a registry or without one.
+  footer read, and once found, a replacement costs later reads no request until the pin's store is invalidated,
+  which forgets it: once a restore puts its object back, an invalidated pin reads it again, and a pin taken after the
+  restore reads the object then under its key. An object found gone is not remembered, since a 404 can pass. Two pins
+  of one generation number in two incarnations never share a reader or a cached chunk, with a registry or without
+  one.
 - **A pin whose segment was dropped or destroyed went empty part-way through a read.** A pinned `iterate()` that
   straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
   `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now
   fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open, and answers from
   the chunks it decoded while they stay cached. The pin's own store invalidates it:
   - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
-  - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment its ledger
-    lists;
+  - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment it retires,
+    neither on a dry run;
   - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
 
-  An invalidated pin opens its object again, and fails if that object is gone or its segment was dropped. Anything
-  else leaves the pin as it is: after a `destroySegment` beside the pin's store, or a write through another store, in
-  the same process or another, the pin answers from what it holds until the pin's store's reader cache evicts its
-  reader and its chunk cache evicts those chunks, or `invalidate()` is called on the pin's store. Where the object the
+  An invalidated pin opens its object again, and fails if that object is gone, or its row is gone or destroyed.
+  Anything else leaves the pin as it is: after a `destroySegment` beside the pin's store, or an erasure, a drop or a
+  retirement through another store, in the same process or another, the pin answers from what it holds until its
+  store's reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or
+  `invalidate()` is called on the pin's store. Where the object the
   pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at once. The
   privacy notes now say so.
 - **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault

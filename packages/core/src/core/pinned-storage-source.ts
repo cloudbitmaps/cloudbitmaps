@@ -29,8 +29,8 @@ import { segmentKey } from './keys';
  * What a pin holds for one segment: the generation, the version identifying those exact bytes, and the pinned
  * object's fingerprint, so a read can tell that the generation it opens is still that object.
  *
- * `fingerprint` is optional so that a pin built by hand, before there was one, still compiles; such a pin is
- * checked by version only, and so cannot tell a name purged and loaded again from the segment it pinned.
+ * `fingerprint` is optional so that a pin built by hand, before there was one, still compiles. Nothing checks the
+ * object such a pin reads, so it cannot tell a name purged and loaded again from the segment it pinned.
  * `seg.pin()` always records it.
  */
 export interface PinnedAt {

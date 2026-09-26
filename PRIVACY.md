@@ -114,8 +114,8 @@ bucket.
 |---|---|
 | storage | on return — the generation holding it is deleted, the DEK is destroyed |
 | the store whose verb made the call (`eraseSubject`, `dropSegment`, `retireExpired`) | on return — it invalidates what it cached, and its pins then fail |
-| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
-| another store with **no clock**, **no registry** (a bare `IStorageDriver`), or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
+| another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 | a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or something tells it |
 
 `destroySegment` and `eraseNamespace` are free functions over raw drivers, not verbs of a store, so for them every

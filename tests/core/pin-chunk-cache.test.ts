@@ -129,6 +129,29 @@ function counted<T extends object>(target: T, name: string, calls: string[]): T 
   });
 }
 
+/** The whole object stored as generation 0 of `s`. */
+async function wholeOf(storage: MemoryStorage['storage']): Promise<Uint8Array> {
+  return (await storage.getTail({ ...REF, generation: 0 }, 1 << 30)).bytes;
+}
+
+/** `bytes` put where generation 0 of `s` is kept, from outside any store, whatever was there: the row is untouched. */
+async function putObject(storage: MemoryStorage['storage'], bytes: Uint8Array): Promise<void> {
+  const key = { ...REF, generation: 0 };
+  for await (const k of storage.list(REF)) if (k.generation === 0) await storage.delete(key);
+  await storage.putImmutable(key, async (sink) => {
+    await sink.write(bytes);
+  });
+}
+
+/** The bytes a load of `ids` stores as generation 0 of `s`, made in a bucket of their own. */
+async function objectOf(ids: number[]): Promise<Uint8Array> {
+  const scratch = new MemoryStorage();
+  await bulkLoadCrbmGeneration(scratch.storage, { ...REF, generation: 0 }, ids, {
+    registry: scratch.registry,
+  });
+  return wholeOf(scratch.storage);
+}
+
 /** A backend holding `s` at generation 0, and a way to purge the name and load it again from outside the store. */
 async function purgeable(ids: number[]) {
   const backend = new MemoryStorage();
@@ -541,7 +564,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
   it.each([
     ['without a fingerprint', {}],
     ['with a null one', { fingerprint: null }],
-  ])('reads through a pin built by hand %s, checked by version alone', async (_how, extra) => {
+  ])('reads through a pin built by hand %s, which checks no object', async (_how, extra) => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
@@ -1033,7 +1056,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
   });
 
-  it('remembers a pinned generation swept after its reader was dropped, and reads the bucket for it no more', async () => {
+  it('fails a generation gone from its key on the reopen alone, keeps nothing, and reads it again once restored', async () => {
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
@@ -1046,12 +1069,18 @@ describe('what a pin says when its object changes under it, and what pinning cos
     await bulkLoadCrbmGeneration(w.backend.storage, { ...REF, generation: 1 }, NEW, {
       registry: w.backend.registry,
     });
+    const mine = await wholeOf(w.backend.storage);
     await w.backend.storage.delete({ ...REF, generation: 0 });
     store.invalidate(REF);
-    await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
-    calls.length = 0;
-    await expect(snap.has(2 * C + 1)).rejects.toThrow(NotFoundError);
-    expect(calls).toEqual([]);
+    // The reopen's own NotFoundError says it is gone, with no footer read to say it again. Nor is it kept: a 404
+    // can pass, and an object can be restored.
+    for (const id of [C + 1, 2 * C + 1]) {
+      calls.length = 0;
+      await expect(snap.has(id)).rejects.toThrow(NotFoundError);
+      expect(calls).toEqual(['registry.get', 'storage.getTail']);
+    }
+    await putObject(w.backend.storage, mine);
+    expect(await collect(snap.iterate())).toEqual(OLD);
   });
 
   it('pays for no footer read when its reopen meets a transient fault, which is retried', async () => {
@@ -1076,7 +1105,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     expect([blips, tails]).toEqual([0, 1]); // the reopen's own tail read, and no footer check
   });
 
-  it('remembers a replacement its reopen found, so the next reopen is never made', async () => {
+  it('remembers a replacement its reopen found, and keeps no reader of the new object under the pin', async () => {
     const w = await purgeable(OLD);
     const calls: string[] = [];
     const store = new CloudRoaring({
@@ -1084,15 +1113,22 @@ describe('what a pin says when its object changes under it, and what pinning cos
         storage: counted(w.backend.storage, 'storage', calls),
         registry: counted(w.backend.registry, 'registry', calls),
       }),
+      cache: { readerMax: 2 },
+      seams: { clock: manualClock() },
     });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     store.invalidate(REF);
+    expect(await store.segment('s').has(C + 3)).toBe(true); // the live reader of the new object
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
-    store.invalidate(REF);
     calls.length = 0;
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([]); // the next reopen is never made
+    // The reopen's reader is not kept, so opening a second segment leaves the live reader in the cache's two places.
+    expect(await store.segment('other').has(7)).toBe(true);
+    calls.length = 0;
+    expect(await store.segment('s').has(2 * C + 3)).toBe(true);
+    expect(calls).toEqual(['storage.getRange']);
   });
 
   it('asks the footer once, even for a read whose chunk fails after the check has ended', async () => {
@@ -1126,7 +1162,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
   });
 
   it.each([
-    ['a NotFoundError, which is a replacement', 'NotFoundError', false],
+    ['a NotFoundError, which says the object is gone', 'NotFoundError', false],
     ['a TransientError, which is retried', 'TransientError', true],
   ])(
     "reads the footer read's own %s by its brand, as another copy of core would throw it",
@@ -1329,5 +1365,295 @@ describe('what a pin says when its object changes under it, and what pinning cos
     w.registry.get = get;
     expect((await w.registry.get({ segment: 'dest' }))?.currentGen).toBe(1); // it did publish
     expect(await collect(dest.iterate())).toEqual([1, 2, C + 10]);
+  });
+});
+
+describe('what a pin found out about its object, and how it forgets', () => {
+  // One size, one layout: only the object's checksum tells the two apart.
+  const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
+  const NEW = [1, 2, C + 3, C + 4, 2 * C + 3];
+  const NOT_PINNED = /no longer the object this handle pinned/;
+
+  /** A backend holding OLD as generation 0 of `s`, and a store on it: with its registry, or on its bare storage. */
+  async function stored(withRegistry: boolean) {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(
+      storage,
+      { ...REF, generation: 0 },
+      OLD,
+      withRegistry ? { registry } : undefined,
+    );
+    const store = new CloudRoaring({ storage: withRegistry ? backend : storage });
+    return { storage, store, mine: await wholeOf(storage) };
+  }
+
+  const EITHER = [
+    ['with a registry', true],
+    ['with no registry', false],
+  ] as const;
+
+  it.each(EITHER)(
+    'reads again once a spell of 404s passes, and so does a pin taken after, %s',
+    async (_how, withRegistry) => {
+      const { storage, store } = await stored(withRegistry);
+      let outage = false;
+      const tail = storage.getTail.bind(storage);
+      const range = storage.getRange.bind(storage);
+      const missing = (): Promise<never> => Promise.reject(new NotFoundError('no such bucket'));
+      storage.getTail = (key, maxBytes) => (outage ? missing() : tail(key, maxBytes));
+      storage.getRange = (key, offset, length) => (outage ? missing() : range(key, offset, length));
+      const snap = await store.segment('s').pin();
+      outage = true; // a bucket's 404, or a replica that has not caught up
+      store.invalidate(REF);
+      await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
+      outage = false;
+      expect(await snap.has(C + 1)).toBe(true);
+      expect(await collect((await store.segment('s').pin()).iterate())).toEqual(OLD);
+    },
+  );
+
+  it.each(EITHER)(
+    'reads its object again once it is restored and the store invalidated, %s',
+    async (_how, withRegistry) => {
+      const { storage, store, mine } = await stored(withRegistry);
+      const snap = await store.segment('s').pin();
+      await putObject(storage, await objectOf(NEW));
+      await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED);
+      await putObject(storage, mine); // a restore puts the pinned object back
+      await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED); // what the store found still stands…
+      store.invalidate(REF); // …until it is told otherwise, as the disaster-recovery runbook says to
+      expect(await collect(snap.iterate())).toEqual(OLD);
+    },
+  );
+
+  it.each(EITHER)(
+    'forgets what it found once a pin is taken of the object restored under its key, %s',
+    async (_how, withRegistry) => {
+      const { storage, store, mine } = await stored(withRegistry);
+      const snap = await store.segment('s').pin();
+      await putObject(storage, await objectOf(NEW));
+      await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED);
+      await putObject(storage, mine);
+      const later = await store.segment('s').pin(); // of the object as it is now: the pinned one, restored
+      expect(await collect(later.iterate())).toEqual(OLD);
+      expect(await snap.has(C + 1)).toBe(true);
+    },
+  );
+
+  it.each(EITHER)(
+    'says a short object that is no .crbm at all is not its own, %s, by its size alone',
+    async (_how, withRegistry) => {
+      for (const reopened of [false, true]) {
+        const { storage, store } = await stored(withRegistry);
+        const snap = await store.segment('s').pin();
+        await putObject(storage, new Uint8Array(50));
+        // Through the reader it holds, a chunk past the new end is a range error; reopened, the open says it is
+        // too small. Either way it is a replacement, and the size says so before any footer is read.
+        if (reopened) store.invalidate(REF);
+        await expect(snap.has(2 * C + 1)).rejects.toThrow(NOT_PINNED);
+      }
+    },
+  );
+
+  it('keeps what it found against one pin of a version from failing another that holds another object', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    const crbm = new CrbmStorageChunkSource(backend.storage, { registry: backend.registry });
+    const good = await crbm.pinGeneration(REF);
+    const byHand = { version: good!.version, fingerprint: 'another object' };
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0, byHand)).rejects.toThrow(NOT_PINNED);
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, good!)).not.toBeNull();
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 2 }, 0, good!)).not.toBeNull();
+  });
+
+  it('reads the object now under its key through a pin taken once the store is invalidated, the row as it was', async () => {
+    const { storage, store } = await stored(true);
+    const first = await store.segment('s').pin();
+    expect(await first.has(1)).toBe(true);
+    await putObject(storage, await objectOf(NEW)); // replaced from outside any store
+    await expect(first.has(C + 3)).rejects.toThrow(NOT_PINNED);
+    store.invalidate(REF);
+    const second = await store.segment('s').pin();
+    expect([await second.count(), await collect(second.iterate())]).toEqual([NEW.length, NEW]);
+  });
+
+  it('applies nothing it found to a pin built by hand with no fingerprint, which reads what is under its key', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    const crbm = new CrbmStorageChunkSource(backend.storage, { registry: backend.registry });
+    const pinned = await crbm.pinGeneration(REF);
+    await putObject(backend.storage, await objectOf(NEW));
+    crbm.invalidate(REF);
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, pinned!)).rejects.toThrow(NOT_PINNED);
+    const byHand = { version: pinned!.version };
+    expect(await crbm.cardinalitiesAt(REF, 0, byHand)).toEqual(
+      new Map([
+        [0, 2],
+        [1, 2],
+        [2, 1],
+      ]),
+    );
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).not.toBeNull();
+  });
+
+  it.each([
+    ['a NotFoundError', () => new NotFoundError('no such object')],
+    ['an error no copy of core branded', () => new Error('socket hang up')],
+  ])(
+    'pays for no footer read on a chunk error that says nothing of which object is there: %s',
+    async (_what, make) => {
+      const w = await purgeable(OLD);
+      const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
+      const snap = await store.segment('s').pin();
+      const { storage } = w.backend;
+      const error = make();
+      storage.getRange = () => Promise.reject(error);
+      let tails = 0;
+      const tail = storage.getTail.bind(storage);
+      storage.getTail = (key, maxBytes) => {
+        tails += 1;
+        return tail(key, maxBytes);
+      };
+      await expect(snap.has(C + 1)).rejects.toThrow(error.message);
+      expect(tails).toBe(0);
+    },
+  );
+
+  it('fails the pin of a replaced object with no registry, and never the pin of the object that replaced it', async () => {
+    const storage = new MemoryStorage().storage;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
+    const store = new CloudRoaring({ storage });
+    const first = await store.segment('s').pin();
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, NEW);
+    const second = await store.segment('s').pin();
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(await second.has(C + 3)).toBe(true);
+  });
+
+  it('keeps what it found about as many pins as the store keeps readers, and no more', async () => {
+    const backend = new MemoryStorage();
+    const calls: string[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(backend.storage, 'storage', calls),
+        registry: counted(backend.registry, 'registry', calls),
+      }),
+      cache: { readerMax: 4 },
+      seams: { clock: manualClock() },
+    });
+    const pins: Segment[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const ref = { segment: `seg${i}` };
+      const deps = { registry: backend.registry };
+      await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation: 0 }, [1, C + 1], deps);
+      pins.push(await store.segment(ref.segment).pin());
+      for await (const key of backend.storage.list(ref)) await backend.storage.delete(key);
+      await backend.registry.delete(ref);
+      await bulkLoadCrbmGeneration(backend.storage, { ...ref, generation: 0 }, [2, C + 2], deps);
+    }
+    for (const snap of pins) await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    calls.length = 0;
+    // The last four it found are kept, so their pins fail with no request…
+    for (const snap of pins.slice(6).reverse()) {
+      await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    }
+    expect(calls).toEqual([]);
+    // …and the first was let go, so its pin finds out again.
+    await expect(pins[0]!.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(calls).not.toEqual([]);
+  });
+
+  /**
+   * A read of `storage`'s tails that reads now and answers only once `release()` is called, and a promise that
+   * resolves once one read is held.
+   */
+  function heldTails(storage: MemoryStorage['storage']) {
+    const tail = storage.getTail.bind(storage);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const held = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    storage.getTail = async (key, maxBytes) => {
+      storage.getTail = tail; // only this one read is held
+      const got = await tail(key, maxBytes); // read now…
+      reached();
+      await gate; // …and answered later
+      return got;
+    };
+    return { held, release };
+  }
+
+  it.each([
+    ['a footer read', false],
+    ['a reopen', true],
+  ])(
+    'keeps nothing %s under way finds once the store is invalidated, as it is after a restore',
+    async (_what, reopening) => {
+      const w = await purgeable(OLD);
+      const { storage } = w.backend;
+      const mine = await wholeOf(storage);
+      const store = new CloudRoaring({ storage: w.backend });
+      const snap = await store.segment('s').pin();
+      await w.reload(NEW);
+      if (reopening) store.invalidate(REF); // so the read opens its generation again, rather than check its footer
+      const { held, release } = heldTails(storage);
+      const read = snap.has(C + 1);
+      await held; // what it read is the replacement…
+      await putObject(storage, mine); // …which a restore then undoes
+      store.invalidate(REF);
+      release();
+      await expect(read).rejects.toThrow(NOT_PINNED);
+      expect(await snap.has(C + 1)).toBe(true);
+    },
+  );
+
+  it('keeps nothing a footer read under way finds once a pin is taken of the object restored, with no registry', async () => {
+    const storage = new MemoryStorage().storage;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
+    const mine = await wholeOf(storage);
+    const store = new CloudRoaring({ storage });
+    const snap = await store.segment('s').pin();
+    await putObject(storage, await objectOf(NEW));
+    const { held, release } = heldTails(storage);
+    const read = snap.has(C + 1);
+    await held;
+    await putObject(storage, mine);
+    const later = await store.segment('s').pin(); // the same version and the same object as the first
+    release();
+    await expect(read).rejects.toThrow(NOT_PINNED);
+    expect([await snap.has(C + 1), await later.has(C + 1)]).toEqual([true, true]);
+  });
+
+  it('keeps nothing when the footer read finds no object there, since a 404 can pass', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    const store = new CloudRoaring({ storage: backend });
+    const snap = await store.segment('s').pin();
+    let faults = 1;
+    const range = storage.getRange.bind(storage);
+    storage.getRange = async (key, offset, length) => {
+      const bytes = await range(key, offset, length);
+      if (faults === 0) return bytes;
+      faults -= 1;
+      return Uint8Array.from(bytes, (b, i) => (i === 0 ? b ^ 0xff : b)); // one bad read of the chunk…
+    };
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = () => {
+      storage.getTail = tail;
+      return Promise.reject(new NotFoundError('no such bucket')); // …and one 404 for the footer read it asks
+    };
+    await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
+    expect(await snap.has(C + 1)).toBe(true);
   });
 });

@@ -176,14 +176,19 @@ process to stop. If you cannot quiesce, re-run the scan to confirm a reported te
 A store that has resolved a segment keeps serving that generation for up to `cache.genTtlMs` (default 2 s) before
 it re-reads the pointer, and decoded chunks sit in the cache for as long as the cache keeps them. After a
 restore or a manual `currentGen` roll, a long-lived process may therefore keep answering from the generation it
-resolved *before* the restore for that window. Some stores need more than waiting: one built **without a clock**,
-on a bare `IStorageDriver` with **no registry**, or with **`cache: { genTtlMs: 0 }`** has no timed refresh, so nothing
-bounds how long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored
-segments in each, as part of the procedure. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
+resolved *before* the restore for that window. Some stores need more than waiting. One with
+**`cache: { genTtlMs: 0 }`**, or on a storage source built with no clock, has no timed refresh, so nothing bounds how
+long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments
+in each, as part of the procedure. One on a bare `IStorageDriver`, with **no registry**, reads no pointer: it lists
+the bucket and serves the newest generation there, whatever the restored pointer says, so while generations above
+the pointer remain, neither a restart nor an invalidation moves it back. Read through a backend, whose reads follow
+the pointer, or, once you are sure the generations above the restored pointer are not wanted, delete them, and then
+restart those readers or invalidate the segments in each. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
 predecessor on return) re-resolves on its next read; that is the documented cost of physical deletion on return,
 not a fault. A `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading
 its own generation while that object is there, and once the object is gone or replaced it answers only from what it
-has already read, and fails with `NotFoundError` for the rest rather than re-resolve. Take new pins after a restore.
+has already read, and fails with `NotFoundError` for the rest rather than re-resolve. Once a restore puts its object
+back, it reads that object again when its store is invalidated, as above. Take new pins after a restore.
 
 ## Repair: an unstamped tombstone after a hard kill
 
