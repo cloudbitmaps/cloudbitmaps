@@ -8,8 +8,9 @@
  * and each region is labelled in words beside it.
  *
  * Used by bench/sizing.cjs. It draws what it is given and refuses what it cannot draw honestly, rather than
- * clamping or overlapping it silently: a point outside the axes, a label past the card's edge or over another
- * label, and an axis a log scale cannot start from.
+ * clamping or overlapping it silently: a point outside the axes, a label past the card's edge, closer to another
+ * label than a third of an em, across a line or a marker's dot, or on the wrong side of the region it names, and an
+ * axis a log scale cannot start from.
  */
 'use strict';
 
@@ -98,26 +99,53 @@ function logChart(spec, theme) {
     }
   };
 
-  // Every label, as the box it is estimated to take, so none leaves the card or lands on another.
+  // Every label, as the box it is estimated to take, so none leaves the card or lands on another. Two labels closer
+  // than a third of an em read as one, so that is the least room between them.
   const boxes = [];
+  const meet = (a, b, gap = 0) =>
+    a.left < b.right + gap &&
+    b.left < a.right + gap &&
+    a.top < b.bottom + gap &&
+    b.top < a.bottom + gap;
   const text = (X, Y, size, content, attrs, anchor = 'start') => {
     const w = String(content).length * size * EM_PER_CHAR;
     const left = anchor === 'end' ? X - w : anchor === 'middle' ? X - w / 2 : X;
     // A line of text rises about 0.8 em above its baseline and drops about 0.2 em below it.
-    const box = { left, right: left + w, top: Y - size * 0.8, bottom: Y + size * 0.2, content };
+    const box = {
+      left,
+      right: left + w,
+      top: Y - size * 0.8,
+      bottom: Y + size * 0.2,
+      content,
+      size,
+    };
     if (box.left < 4 || box.right > W - 4 || box.top < 4 || box.bottom > H - 4) {
       throw new Error(
         `log-chart: "${content}" would run past the card's edge — shorten or move it`,
       );
     }
     for (const b of boxes) {
-      if (box.left < b.right && b.left < box.right && box.top < b.bottom && b.top < box.bottom) {
-        throw new Error(`log-chart: "${content}" would overlap "${b.content}" — move one of them`);
+      if (meet(box, b, 0.3 * Math.max(size, b.size))) {
+        throw new Error(`log-chart: "${content}" would crowd "${b.content}" — move one of them`);
       }
     }
     boxes.push(box);
     const a = anchor === 'start' ? '' : ` text-anchor="${anchor}"`;
     return `<text x="${f1(X)}" y="${f1(Y)}" font-size="${size}"${attrs}${a}>${esc(content)}</text>`;
+  };
+  // A label inside the plot is ringed in the card's colour, so a gridline or a line behind it stops short of every
+  // letter rather than running through the word.
+  const halo = ` stroke="${C.card}" stroke-width="3" stroke-linejoin="round" paint-order="stroke"`;
+  /** Where a polyline, in pixels and in order of x, crosses `X`; undefined off its ends. */
+  const yAt = (q, X) => {
+    for (let i = 1; i < q.length; i++) {
+      const [x1, y1] = q[i - 1];
+      const [x2, y2] = q[i];
+      if (X >= Math.min(x1, x2) && X <= Math.max(x1, x2)) {
+        return x1 === x2 ? Math.min(y1, y2) : y1 + ((X - x1) / (x2 - x1)) * (y2 - y1);
+      }
+    }
+    return undefined;
   };
 
   /** Whether a segment crosses a label's box, by clipping it to the box (Liang–Barsky). */
@@ -216,7 +244,7 @@ function logChart(spec, theme) {
       `<line x1="${f1(X)}" y1="${PLOT.t}" x2="${f1(X)}" y2="${PLOT.b}" stroke="${C.hair}" stroke-width="1"/>`,
     );
     if (t.text !== '')
-      parts.push(text(X, PLOT.b + 18, 11.5, t.text, ` fill="${C.muted}"`, 'middle'));
+      parts.push(text(X, PLOT.b + 20, 11.5, t.text, ` fill="${C.muted}"`, 'middle'));
   }
   for (const t of y.ticks) {
     inside([x.min, t.at], `the y tick ${t.text}`);
@@ -227,16 +255,32 @@ function logChart(spec, theme) {
     );
   }
   parts.push(
-    text((PLOT.l + PLOT.r) / 2, PLOT.b + 42, 12.5, x.title, ` fill="${C.inkSoft}"`, 'middle'),
+    text((PLOT.l + PLOT.r) / 2, PLOT.b + 44, 12.5, x.title, ` fill="${C.inkSoft}"`, 'middle'),
     text(28, PLOT.t - 16, 12.5, y.title, ` fill="${C.inkSoft}"`),
   );
 
-  // The regions' names, over the grid so no gridline runs through a word.
+  // The regions' names, each on its own side of the boundary it names a side of: a name set across it, or beyond
+  // it, would call the other region by this one's name.
   for (const a of spec.areas ?? []) {
     inside(a.textAt, a.text);
     parts.push(
-      text(px(a.textAt[0]), py(a.textAt[1]), 13, a.text, ` font-weight="600" fill="${C.inkSoft}"`),
+      text(
+        px(a.textAt[0]),
+        py(a.textAt[1]),
+        13,
+        a.text,
+        ` font-weight="600" fill="${C.inkSoft}"${halo}`,
+      ),
     );
+    const b = boxes[boxes.length - 1];
+    const edge = path(a.points, a.text);
+    const xs = [b.left, b.right, ...edge.map(([X]) => X).filter((X) => X > b.left && X < b.right)];
+    for (const X of xs) {
+      const Y = yAt(edge, X);
+      if (Y !== undefined && (a.toward === 'min' ? Y > b.top : Y < b.bottom)) {
+        throw new Error(`log-chart: "${a.text}" would sit outside the region it names — move it`);
+      }
+    }
   }
 
   // Lines, each named in words at its end or at a point of the caller's choosing.
@@ -251,16 +295,27 @@ function logChart(spec, theme) {
     if (l.textAt !== undefined) inside(l.textAt, l.text);
     const [tx, ty] = l.textAt ? [px(l.textAt[0]), py(l.textAt[1])] : [PLOT.r - 4, py(end[1]) - 8];
     parts.push(
-      text(tx, ty, 12.5, l.text, ` font-weight="600" fill="${C.ink}"`, l.textAt ? 'start' : 'end'),
+      text(
+        tx,
+        ty,
+        12.5,
+        l.text,
+        ` font-weight="600" fill="${C.ink}"${halo}`,
+        l.textAt ? 'start' : 'end',
+      ),
     );
   }
 
-  // Markers: a dot with a ring of the card around it, named beside it; a hollow one for an example.
+  // Markers: a dot with a ring of the card around it, named beside it; a hollow one for an example. Each dot, ring
+  // and stroke included, is kept clear of every label, as a label is of a line.
+  const dots = [];
   for (const m of spec.markers ?? []) {
     inside(m.at, m.text);
     const X = px(m.at[0]);
     const Y = py(m.at[1]);
     const end = m.anchor === 'end';
+    const r = m.hollow ? 5.5 : 6;
+    dots.push({ left: X - r, right: X + r, top: Y - r, bottom: Y + r, content: m.text });
     parts.push(
       m.hollow
         ? `<circle cx="${f1(X)}" cy="${f1(Y)}" r="4.5" fill="${C.card}" stroke="${C.ink}" stroke-width="2"/>`
@@ -270,15 +325,22 @@ function logChart(spec, theme) {
         Y + 4 + (m.dy ?? 0),
         12,
         m.text,
-        ` fill="${C.ink}"`,
+        ` fill="${C.ink}"${halo}`,
         end ? 'end' : 'start',
       ),
     );
   }
 
-  // No label is set across a line, with a clear margin of 2 pixels, whichever was drawn first.
+  // No label is set across a line or a dot, with a clear margin of 2 pixels, whichever was drawn first; a line is
+  // 2 pixels wide, so the margin is taken from its edge, not its middle.
   for (const b of boxes) {
-    const m = { left: b.left - 2, right: b.right + 2, top: b.top - 2, bottom: b.bottom + 2 };
+    for (const d of dots) {
+      if (meet(b, d, 2))
+        throw new Error(
+          `log-chart: "${b.content}" would sit on the dot of "${d.content}" — move it`,
+        );
+    }
+    const m = { left: b.left - 3, right: b.right + 3, top: b.top - 3, bottom: b.bottom + 3 };
     for (const q of drawn) {
       for (let i = 1; i < q.length; i++) {
         if (crosses(m, q[i - 1], q[i])) {
@@ -296,4 +358,4 @@ function logChart(spec, theme) {
   return svg;
 }
 
-module.exports = { logChart, THEMES };
+module.exports = { esc, logChart, THEMES };

@@ -319,7 +319,8 @@ move it up.
   - **An exact bound on reader memory** — the index's weight measured against the heap rather than estimated, and
     the index held compactly.
   - **One request per pointer read on GCS and Azure**, and a one-request tail read on GCS, which accepts a suffix
-    range, so their reads cost what S3's do.
+    range, so their pointer reads cost what S3's do, and so do GCS's index reads. Azure takes no suffix range, so an
+    Azure tail read stays two requests.
 - **WASM CRoaring — research, after the loaded store.** A WebAssembly build of CRoaring as a second codec would
   remove the native addon from the install story (prebuilt binaries, musl, from-source builds on Alpine) and is
   the prerequisite for the edge-runtime item below. It is deliberately queued *behind* the loaded store's own

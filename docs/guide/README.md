@@ -1,8 +1,9 @@
 # CloudBitmaps guide
 
 User-facing documentation — how to actually use CloudBitmaps. Kept accurate to what's **shipped**, and
-grown one capability per phase, so it never describes vapor: the one list of planned work, in
-[what it saves](why-cloudbitmaps.md#what-is-planned-for-each-weakness), says of every item that it is not built.
+grown one capability per phase, so it never describes vapor: the planned work it mentions, in
+[what it saves](why-cloudbitmaps.md#what-is-planned-for-each-weakness), is said there not to be built, and the
+[roadmap](../ROADMAP.md#planned--exploring) is the whole list.
 
 - [**Getting started**](getting-started.md) — install status, the in-memory quick start, the persistent
   local-filesystem setup, loading a generation, and the operation reference.

@@ -102,8 +102,9 @@ const results = {
 // LIGHT palette — they are what GitHub renders.
 //
 // Two colours deliberately stay literal or muted rather than taking a semantic token:
-//   · redis   — a third-party baseline, outside our token system. Verified 4.50:1 on the dark ground and
-//               4.30:1 on white, so it clears 1.4.11 for non-text in both themes. It is used only for the
+//   · redis   — a third-party baseline, outside our token system. Verified 4.18:1 on the dark surface the
+//               chart sits on (4.50:1 on the page's ground) and 4.30:1 on white, so it clears 1.4.11 for
+//               non-text in both themes. It is used only for the
 //               LINE and the band fill, never for a text label, because 4.30:1 on white fails AA for 11px text.
 //   · the lose-zone label — --cb-no is 4.30:1 on the dark ground, just under AA, so the annotation takes
 //               --cb-muted and lets the band fill plus its own wording carry the meaning. Nothing here is
