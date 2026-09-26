@@ -469,8 +469,36 @@ const PAGES = [
  * A page's blocks, each one a claim's worth of text: an HTML page's paragraphs, list items, headings, captions and
  * table rows, and its meta descriptions; a markdown or text page's paragraphs, list items and table rows.
  */
-function blocksOf(text, isHtml, metas) {
-  const body = text.replace(/<!--[\s\S]*?-->/g, '');
+/**
+ * A page's text without its comments, and without the regions another gate owns. A SIZING region is written by
+ * bench/sizing.cjs from the shipped estimator, and `pnpm bench:sizing:check` fails CI when one is not what it would
+ * write, so the figures in it are held to the estimator there, not to this file's sources. Only the regions that
+ * script writes for this page are left to it, from the list both read; any other SIZING marker is refused, since
+ * nothing would read the figures inside it. Both scans below read pages through this, so neither can check what
+ * the other skips.
+ */
+const { DOCS: SIZING_PAGES } = require('../bench/lib/sizing-pages.cjs');
+// The same reader of SIZING markers as bench/sizing.cjs, so the two agree on where each region begins: a marker
+// quoted in inline code, or malformed, reads the same to both.
+const { withoutRegions } = require('../bench/lib/sizing-markers.cjs');
+/** Each refusal once, though both scans read a page through the function below. */
+const refused = new Set();
+function withoutCommentsOrGenerated(text, rel) {
+  let kept = text;
+  try {
+    kept = withoutRegions(rel, text, SIZING_PAGES);
+  } catch (err) {
+    // A page whose markers cannot be read keeps its every figure in this scan, as prose would.
+    if (!refused.has(err.message)) {
+      refused.add(err.message);
+      fail(`${err.message}, so no gate reads the figures in it`);
+    }
+  }
+  return kept.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+function blocksOf(text, isHtml, metas, rel) {
+  const body = withoutCommentsOrGenerated(text, rel);
   if (!isHtml) {
     return body
       .split(/\n\s*\n/)
@@ -575,7 +603,7 @@ for (const page of PAGES) {
     .join(' ');
   // A markdown or text file is not markup: stripping "tags" there would delete prose such as `<runId>`.
   const isHtml = page.rel.endsWith('.html');
-  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, '');
+  const withoutComments = withoutCommentsOrGenerated(html, page.rel);
   const visible = isHtml
     ? withoutComments
         .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
@@ -673,7 +701,7 @@ for (const page of PAGES) {
         perSecond: [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec],
       }),
     );
-    for (const block of blocksOf(html, isHtml, metas)) {
+    for (const block of blocksOf(html, isHtml, metas, page.rel)) {
       if (!quotesTheRun(block)) continue;
       for (const figure of calibration.unaccounted(block, values)) {
         fail(

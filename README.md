@@ -40,23 +40,45 @@
 > is earned by real-cloud calibration (cost and in-region latency), real adoption, and a format freeze, not by a
 > date.
 
-## Why it exists
+## Why CloudBitmaps
 
-A Roaring Bitmap is a brilliant way to hold a huge set of integer IDs — *"which of my 1.2 billion customer
-IDs are in the `high-value-shoppers` segment?"* — in very little space, with microsecond membership tests
-and set operations. But the established libraries (the C/Java/Go implementations and the `roaring`
-Node bindings) are **local, in-process data structures**: a bitmap is bounded by one machine's RAM and
-disappears when the process dies.
+A Roaring Bitmap holds a huge set of integer ids — *"which of my 1.2 billion customers are in the
+`high-value-shoppers` segment?"* — in very little space, with membership tests in microseconds. But the established
+libraries are **local, in-process data structures**: a bitmap is bounded by one machine's memory and gone when the
+process dies. So teams reach for an always-on Redis cluster, and pay for memory around the clock to hold sets that
+are mostly read. CloudBitmaps keeps the bitmap engine and puts the sets in your own object storage, read from anywhere,
+including a stateless function, where every read is a cold one.
 
-So today, if you want big bitmap-backed **audience segments** or **membership/feature-flag sets** that are
-shared across services and survive restarts, you reach for something like an always-on Redis cluster —
-which is fast, but **expensive to keep running** and **forgets everything on restart** unless you bolt on
-persistence. You're paying for RAM, 24/7, to hold sets that are mostly read.
+| CloudBitmaps is for | Redis is for |
+| --- | --- |
+| many segments, most of them rarely queried | a small set, queried constantly |
+| audiences, cohorts, catalogue facets, history | a live leaderboard, or a flag read on every request |
+| data that outgrows one machine's memory | data cheap to hold in memory around the clock |
+| bursty or batch queries | thousands of queries a second that miss any cache |
+| paying for storage and for each read | paying for memory, around the clock |
 
-**CloudBitmaps** keeps the bitmap engine and the developer experience, but puts the *storage* in one
-pluggable, cloud-native place: immutable generations, cheap and durable at rest (cents/month in object
-storage), with a RAM cache in front of them — able to answer set queries over enormous bitmaps from small,
-stateless functions, and costing nothing while nobody is asking.
+What it costs at three illustrative sizes, priced by the library's own estimator against the cheapest on-demand
+Redis OSS cluster that would hold each one's data:
+
+<!-- SIZING:WHY_SIZES:START -->
+| | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |
+|---|---:|---:|---:|---:|
+| **Small** — a product team keeping its user cohorts | 200 MB | $3.35 | $35.04 | **90% less** |
+| **Medium** — an ad platform matching audiences | 20 GB | $281 | $900 | **69% less** |
+| **Large** — a marketplace filtering its catalogue | 2 TB | $6,771 | $27,325 | **75% less** |
+<!-- SIZING:WHY_SIZES:END -->
+
+<!-- SIZING:WHY_CAVEATS:START -->
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 14% less and 32% less, and on three years paid upfront, 60% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
+
+All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 395 and 589 shared chunks.
+
+The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](docs/guide/sizing.md#what-each-reader-holds)), in memory not priced here.
+<!-- SIZING:WHY_CAVEATS:END -->
+
+Where it loses: small data queried hard, where a node that costs the same however hard it is used wins, and wherever
+an answer cannot wait on object storage. [What it saves, and where it doesn't](docs/guide/why-cloudbitmaps.md)
+explains these, S3's request rate and overlap, with the charts; [what it costs at your size](docs/guide/sizing.md) has each bill term by term.
 
 ## Your data stays yours
 
@@ -180,7 +202,7 @@ data — the topology that ships: 12 loads and 40 cold intersects, all 40 exact.
 
 | Operation | Cost | Kind | Always-on Redis-HA |
 |---|---|---|---|
-| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing |
+| Cold `intersect` of two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median | **$82.40 / million** | measured requests at list prices | **$346 / month**, standing: one three-node cluster, a fixed reference |
 | The same inside the region, each pointer read once: 204 GETs | $81.60 / million | expected | whether you send traffic or not |
 | Loading a segment: the write and the publish, pointer included | **$11.20 / million** | measured requests at list prices | |
 | `count()` on a published segment (an older run; the pointer is **not** in this figure) | **$0.14 / million** | measured requests at list prices | |

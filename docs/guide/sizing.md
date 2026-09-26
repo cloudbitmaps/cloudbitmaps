@@ -37,7 +37,7 @@ it on the list of what is owed.
 <!-- SIZING:INPUTS:END -->
 
 <!-- SIZING:SHAPE:START -->
-Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
+Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks hold when every one is full, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
 <!-- SIZING:SHAPE:END -->
 
 ## What each reader holds
@@ -89,7 +89,7 @@ request, so its bill follows the queries. Which of the two is smaller turns on h
 its size alone.
 
 <!-- SIZING:LEANINGS:START -->
-**Which way the Redis price leans.** It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller. To compare with one cluster you name, pass `pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.
+**Which way the Redis price leans.** It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller: bought all three ways, on three years paid upfront, the medium and large deployments' Redis costs less than CloudBitmaps ([what it saves](why-cloudbitmaps.md#the-short-answer)). To compare with one cluster you name, pass `pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.
 <!-- SIZING:LEANINGS:END -->
 
 ## How much room each has
@@ -101,8 +101,8 @@ held where it is:
 | | cold intersects a second | where the bill meets its Redis | headroom |
 |---|---:|---:|---:|
 | **Small** | 0.0076 | 0.16 | 20× |
-| **Medium** | 1.0 | 3.9 | 4× |
-| **Large** | 20 | 116 | 6× |
+| **Medium** | 1.0 | 3.9 | 3.9× |
+| **Large** | 20 | 116 | 5.8× |
 <!-- SIZING:HEADROOM:END -->
 
 An extra cold intersect a second of this shape costs the same at any data size, while the Redis it is measured
@@ -120,8 +120,8 @@ A cold intersect costs 4 + 2k GETs for k shared chunks, so what two segments sha
 | shared chunks, of 2,000 | GETs a cold intersect | Medium, a month | against its Redis | Large, a month | against its Redis |
 |---:|---:|---:|---:|---:|---:|
 | 100 (the tables above) | 204 | $281 | 69% less | $6,771 | 75% less |
-| 1,000 | 2,004 | $2,174 | 2.4× more | $44,614 | 1.6× more |
-| 2,000 | 4,004 | $4,276 | 4.8× more | $86,662 | 3.2× more |
+| 1,000 | 2,004 | $2,174 | 2.4× as much | $44,614 | 1.6× as much |
+| 2,000 | 4,004 | $4,276 | 4.8× as much | $86,662 | 3.2× as much |
 <!-- SIZING:OVERLAP:END -->
 
 <!-- SIZING:OVERLAP_NOTE:START -->

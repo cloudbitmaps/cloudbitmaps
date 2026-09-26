@@ -27,26 +27,7 @@ const {
 } = require('@cloudbitmaps/core');
 
 const ROOT = path.resolve(__dirname, '..');
-/** Each page this script writes, and the generated regions it holds: every region lives in exactly one page. */
-const DOCS = {
-  'docs/guide/sizing.md': [
-    'SHAPE',
-    'REFRESH',
-    'INPUTS',
-    'READERS',
-    'BILL',
-    'REDIS',
-    'HEADROOM',
-    'LEANINGS',
-    'OVERLAP_INTRO',
-    'OVERLAP',
-    'OVERLAP_NOTE',
-    'LEVERS',
-    'PREFIX',
-    'SAMPLE',
-  ],
-  'docs/guide/getting-started.md': ['GUIDE_EXAMPLE', 'COMPARES', 'GUIDE_LEANINGS', 'ONE_CLUSTER'],
-};
+const { DOCS, CHARTS } = require('./lib/sizing-pages.cjs');
 const P = AWS_US_EAST_1_ONDEMAND;
 const CATALOGUE = ELASTICACHE_REDIS_US_EAST_1_ONDEMAND;
 /** The same Redis without its data-tiering nodes: every byte held in memory. */
@@ -105,6 +86,13 @@ const CACHE_MAX_CHUNKS = sourceConstant(
   'DEFAULT_CACHE_MAX_CHUNKS',
 );
 const S3_PART_BYTES = sourceConstant('packages/s3/src/storage.ts', 'S3_PART_BYTES');
+const INTERSECT_CONCURRENCY = sourceConstant(
+  'packages/core/src/core/engine.ts',
+  'DEFAULT_INTERSECT_CONCURRENCY',
+);
+const { esc, logChart } = require('./lib/log-chart.cjs');
+const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
+const { normalize } = require('./lib/calibration-figures.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
 const COST_TS = 'packages/core/src/core/cost.ts';
 const HOURS_PER_MONTH = sourceConstant(COST_TS, 'HOURS_PER_MONTH');
@@ -153,16 +141,30 @@ function writeRequests(objectBytes) {
 const S3_PREFIX_GETS_PER_SEC = 5500;
 /**
  * ElastiCache's default quota of nodes in one cluster, which AWS raises on request to at most 500 on Redis OSS 5.0.6
- * and later: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html. Not ours to check.
+ * to 7.1 or Valkey 7.2 and later: https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html. Not ours to
+ * check.
  */
 const DEFAULT_NODES_PER_CLUSTER = 90;
+/** The most nodes AWS raises one cluster to, on Redis OSS 5.0.6 to 7.1 or Valkey 7.2 and later (the same page). */
+const MAX_NODES_PER_CLUSTER = 500;
+/**
+ * ElastiCache's default quota of nodes in one Region, across every cluster in it, also raised on request:
+ * https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache. Not ours to check.
+ */
+const DEFAULT_NODES_PER_REGION = 300;
+const SHARDS_URL = 'https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html';
+const QUOTAS_URL =
+  'https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache';
 
 /**
  * The shape every segment has: the calibration run's, about 2,000 chunks, and each cold intersect sharing 100 of them
  * with its other operand, so `chunksPerIntersect` is 200. A larger segment is modelled as holding its ids more densely,
  * not as sharing more chunks — the most favourable choice for large segments, which the overlap table below undoes.
+ * Only up to a point: a chunk holds at most 65,536 ids, a bitmap of FULL_CHUNK_BYTES, so a deployment whose segments
+ * are larger than CHUNKS_PER_SEGMENT full chunks is refused rather than priced on a shape it cannot have.
  */
 const CHUNKS_PER_SEGMENT = 2000;
+const FULL_CHUNK_BYTES = 65536 / 8;
 const SHARED_CHUNKS = 100;
 
 const PROFILES = [
@@ -281,6 +283,181 @@ function breakEvenShared(p) {
   );
 }
 
+/** The library's attempts at a request, from its default retry policy. */
+const LIBRARY_ATTEMPTS = Number(
+  sourceMatch(
+    'packages/core/src/core/retry.ts',
+    /^export const DEFAULT_RETRY_POLICY: RetryPolicy = \{\s*maxAttempts: (\d+),/gm,
+    'DEFAULT_RETRY_POLICY.maxAttempts',
+  )[1],
+);
+/**
+ * The AWS SDK's default attempts in its standard retry mode, which the S3 driver's client keeps:
+ * https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html. Not ours to check.
+ */
+const SDK_ATTEMPTS = 3;
+const SDK_RETRY_URL = 'https://docs.aws.amazon.com/sdkref/latest/guide/feature-retry-behavior.html';
+/** How many segments the library has been validated at, as the roadmap's envelope states it. */
+const VALIDATED_SEGMENTS =
+  Number(
+    sourceMatch(
+      'docs/ROADMAP.md',
+      /\*\*Scale\*\* \| up to ~(\d+)K segments/g,
+      "the roadmap's envelope",
+    )[1],
+  ) * 1000;
+/** How many superseded generations `load()` keeps by default: read from the code rather than restated. */
+const LOAD_KEEPS = Number(
+  sourceMatch(
+    'packages/core/src/core/load.ts',
+    /options\.keep \?\? (\d+)/g,
+    "load()'s default keep",
+  )[1],
+);
+/**
+ * How much less AWS prices an ElastiCache for Valkey node than a Redis OSS one:
+ * https://aws.amazon.com/elasticache/pricing/. Not ours to check.
+ */
+const VALKEY_DISCOUNT = 0.2;
+const ELASTICACHE_PRICING_URL = 'https://aws.amazon.com/elasticache/pricing/';
+// What each catalogue node type costs reserved, read from AWS's price list on its full key and held to it by
+// bench/check-elasticache-prices.cjs. A type missing there is refused when priced, never priced on demand unsaid.
+const { RESERVED } = require('./lib/elasticache-prices.cjs');
+/** A term's cost an hour: the hourly charge, or the upfront one spread over the term's 3 × 8,760 hours. */
+const RESERVED_TERMS = {
+  oneYear: (r) => r.oneYear,
+  threeYearsUpfront: (r) => r.threeYearsUpfront / (3 * 8760),
+};
+function reservedHourly(nodeType, term) {
+  const r = RESERVED[nodeType];
+  if (r === undefined) {
+    throw new Error(
+      `sizing: no reserved price for ${nodeType}; add it to RESERVED from the price list`,
+    );
+  }
+  return RESERVED_TERMS[term](r);
+}
+/**
+ * The default pricing, with its Redis bought another way: as ElastiCache for Valkey, with fewer replicas, or on
+ * a reserved term (`'oneYear'` or `'threeYearsUpfront'`).
+ */
+function redisPricedAs({ valkey = false, replicas = CATALOGUE.replicasPerShard, reserved } = {}) {
+  const hourly = (n) =>
+    (reserved === undefined ? n.hourlyUSD : reservedHourly(n.name, reserved)) *
+    (valkey ? 1 - VALKEY_DISCOUNT : 1);
+  return {
+    ...P,
+    redis: {
+      sizedToData: {
+        ...CATALOGUE,
+        replicasPerShard: replicas,
+        nodeTypes: CATALOGUE.nodeTypes.map((n) => ({ ...n, hourlyUSD: hourly(n) })),
+      },
+    },
+  };
+}
+
+/** Redis bought every cheaper way the pages price: as Valkey, with one replica a shard, on `term`. */
+const cheapestRedis = (term) => redisPricedAs({ valkey: true, replicas: 1, reserved: term });
+/**
+ * The deployments whose Redis, bought every cheaper way on three years paid upfront, costs no more than they do: the
+ * ones where the verdict reverses. Computed once, so every page that says where it reverses says the same thing.
+ */
+const REVERSED = PROFILES.filter(
+  (p) => price(p).monthlyUSD.total >= redisOf(p, cheapestRedis('threeYearsUpfront')).monthlyUSD,
+).map((p) => p.id);
+/** "medium", "medium and large", "small, medium and large". */
+const andList = (items) =>
+  items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+
+/** A pure cold-intersect workload of the calibration run's shape, at one size of data. */
+function coldAt(sizeBytes, perSec) {
+  return estimateCost({
+    segments: [{ sizeBytes }],
+    workload: { intersectsPerSec: perSec, chunksPerIntersect: 2 * SHARED_CHUNKS },
+  });
+}
+/** The cold intersects a second at which that workload's bill meets the Redis that holds `sizeBytes`. */
+function meetsAt(sizeBytes) {
+  const r = coldAt(sizeBytes, 1);
+  return (r.redisBaseline.monthlyUSD - r.monthlyUSD.byOp.storage) / r.monthlyUSD.byOp.intersects;
+}
+/** The explainer's losing example: a dashboard running cold intersects hard over a small set. */
+const HOT = { sizeBytes: 5e9, perSec: 100 };
+/** A deployment's data, all its segments together. */
+const sizeOf = (p) => p.segments * p.segmentBytes;
+/** One cold intersect's GETs on its segments' data prefix: every chunk and tail read, not the pointers beside it. */
+const DATA_GETS_PER_INTERSECT =
+  intersectGets(SHARED_CHUNKS) - OPERANDS * (P.storage.requestsPerSizedRead ?? 1);
+/** A deployment's GETs a second on its one data prefix, the point reads that miss the cache included. */
+const dataGetsOf = (p) =>
+  (p.intersectsPerMonth / SECONDS_PER_MONTH) * DATA_GETS_PER_INTERSECT +
+  p.readsPerSec * (1 - p.cacheHitRate);
+
+// What the pages say of every deployment and of the example, checked rather than assumed: a page that said a
+// deployment had room, or sat below the line, after the model had moved it past, would still render, and pass.
+for (const p of PROFILES) {
+  const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
+  if (p.segmentBytes > CHUNKS_PER_SEGMENT * FULL_CHUNK_BYTES) {
+    throw new Error(
+      // Formatted by hand: the premises run before the page's formatters are defined.
+      `sizing: the ${p.id} deployment's segments are larger than ` +
+        `${CHUNKS_PER_SEGMENT.toLocaleString('en-US')} full chunks can hold`,
+    );
+  }
+  if (!(breakEvenRate(p) > now)) {
+    throw new Error(
+      `sizing: the ${p.id} deployment's bill already meets its Redis, where the pages say it has room`,
+    );
+  }
+  if (!(now < meetsAt(sizeOf(p)))) {
+    throw new Error(`sizing: the ${p.id} deployment is no longer below the line the chart draws`);
+  }
+}
+// A bill at least twice its Redis is past the line where the two meet, so the multiple is the one thing to check.
+if (
+  !(
+    coldAt(HOT.sizeBytes, HOT.perSec).monthlyUSD.total >=
+    2 * coldAt(HOT.sizeBytes, HOT.perSec).redisBaseline.monthlyUSD
+  )
+) {
+  throw new Error(
+    'sizing: the hot dashboard no longer loses to Redis by a multiple, as the pages say',
+  );
+}
+
+/** The charts' span of data, and what they draw across it: computed once, for the charts and for their words. */
+const CHART_X = { min: 1e8, max: 2e13 };
+let chartDataMemo;
+function chartData() {
+  if (chartDataMemo !== undefined) return chartDataMemo;
+  const SAMPLES = 1200;
+  const xs = Array.from(
+    { length: SAMPLES + 1 },
+    (_, i) => CHART_X.min * (CHART_X.max / CHART_X.min) ** (i / SAMPLES),
+  );
+  const reports = xs.map((b) => coldAt(b, 1));
+  const redisLine = xs.map((b, i) => [b, reports[i].redisBaseline.monthlyUSD]);
+  const cbLine = xs.map((b, i) => [b, reports[i].monthlyUSD.total]);
+  const crossAt = xs.findIndex((_, i) => redisLine[i][1] >= cbLine[i][1]);
+  // The words say the bills cross once, inside the chart: not at its edge, and never back.
+  if (crossAt <= 0) throw new Error('sizing: the bills no longer cross inside the chart');
+  if (redisLine.slice(crossAt).some(([, v], j) => v < cbLine[crossAt + j][1])) {
+    throw new Error(
+      'sizing: the bills cross more than once, where the charts say they cross near one size',
+    );
+  }
+  const meets = xs.map((b, i) => [
+    b,
+    (reports[i].redisBaseline.monthlyUSD - reports[i].monthlyUSD.byOp.storage) /
+      reports[i].monthlyUSD.byOp.intersects,
+  ]);
+  /** The cold intersects a second that fill one data prefix's documented GET rate. */
+  const prefixRate = S3_PREFIX_GETS_PER_SEC / DATA_GETS_PER_INTERSECT;
+  chartDataMemo = { xs, redisLine, cbLine, cross: xs[crossAt], crossAt, meets, prefixRate };
+  return chartDataMemo;
+}
+
 // ── rendering ────────────────────────────────────────────────────────────────────────────────────────
 const int = (n) => Math.round(n).toLocaleString('en-US');
 const usd = (n) =>
@@ -289,8 +466,13 @@ const usd = (n) =>
     : n >= 100
       ? `$${Math.round(n).toLocaleString('en-US')}`
       : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const bytes = (n) =>
-  n >= 1e12 ? `${int(n / 1e12)} TB` : n >= 1e9 ? `${int(n / 1e9)} GB` : `${int(n / 1e6)} MB`;
+/** Decimal units, with one decimal place below ten where it is not a whole number: 2.5 GB, not 2 GB. */
+const bytes = (n) => {
+  const [unit, per] = n >= 1e12 ? ['TB', 1e12] : n >= 1e9 ? ['GB', 1e9] : ['MB', 1e6];
+  const v = n / per;
+  const shown = v < 10 && Math.abs(v - Math.round(v)) >= 0.05 ? v.toFixed(1) : int(v);
+  return `${shown} ${unit}`;
+};
 const mib = (n) => `${int(n / MIB)} MiB`;
 const pct = (x) => `${Math.round(x * 100)}%`;
 /** Dollars and cents, rounded as `usd` rounds them. */
@@ -299,10 +481,11 @@ const usd2 = (n) =>
 /** A share to two significant figures, for the small ones a whole percent would round to nothing. */
 const share = (x) => (x >= 1 ? '100%' : `${Number((x * 100).toPrecision(2))}%`);
 /** How a bill compares with the Redis that holds the same data. */
+// Two decimals just past parity, where one would print 1.03 as "1.0× as much" and hide that it costs more.
 const versus = (total, redis) =>
   total < redis
     ? `${Math.round((1 - total / redis) * 100)}% less`
-    : `${(total / redis).toFixed(1)}× more`;
+    : `${(total / redis).toFixed(total / redis < 1.1 ? 2 : 1)}× as much`;
 /** "3 × r6g.xlarge", or "285 × r6g.xlarge, 95 shards". */
 function clusterLabel(b) {
   const { nodeType, shards, nodes } = b.cluster;
@@ -311,6 +494,27 @@ function clusterLabel(b) {
 }
 /** A rate a second, to two significant figures below one, and one decimal below ten. */
 const rate = (n) => (n < 1 ? n.toPrecision(2) : n < 10 ? n.toFixed(1) : int(n));
+/** A multiple to two significant figures: 21×, 3.9×. */
+const times = (n) => `${Number(n.toPrecision(2))}×`;
+/** The words each chart's image is described by, in the page and in its own aria-label. */
+function chartWords() {
+  const d = chartData();
+  const [first, last] = [(l) => l[0][1], (l) => l[l.length - 1][1]];
+  return {
+    bill:
+      'The monthly bill as the data grows, on log scales: the Redis that holds the data climbs in steps from ' +
+      `${usd(first(d.redisLine))} a month at ${bytes(CHART_X.min)} to ${usd(last(d.redisLine))} at ${bytes(CHART_X.max)}, ` +
+      `while CloudBitmaps at one cold intersect a second goes from ${usd(first(d.cbLine))} to ${usd(last(d.cbLine))}. ` +
+      `They cross near ${bytes(d.cross)}.`,
+    where:
+      'Where each costs less, on log scales: the line where the bills meet rises from ' +
+      `${rate(first(d.meets))} cold intersects a second at ${bytes(CHART_X.min)} to ${rate(last(d.meets))} at ` +
+      `${bytes(CHART_X.max)}. Below it CloudBitmaps costs less, and above it Redis does. The three illustrative ` +
+      'deployments sit below it; the example, a dashboard running ' +
+      `${int(HOT.perSec)} cold intersects a second over ${bytes(HOT.sizeBytes)}, sits above it. A dashed rule marks ` +
+      `one data prefix's documented GET rate, ${rate(d.prefixRate)} cold intersects a second.`,
+  };
+}
 const secs = (s) => (s % 60 === 0 && s >= 60 ? `${s / 60} min` : `${int(s)} s`);
 const ttlLabel = (ms) =>
   ms < 60_000 ? `${ms / 1000} s` : `${ms / 60_000} minute${ms === 60_000 ? '' : 's'}`;
@@ -413,16 +617,22 @@ function render() {
     `in production. Toward CloudBitmaps: the nodes are on-demand, every shard has ${replicaWords}, the engine is ` +
     'Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or ' +
     '[ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each ' +
-    'cost less, and against them the saving is smaller.';
+    'cost less, and against them the saving is smaller' +
+    (REVERSED.length === 0
+      ? '.'
+      : `: bought all three ways, on three years paid upfront, the ${andList(REVERSED)} ` +
+        `${REVERSED.length === 1 ? "deployment's" : "deployments'"} Redis costs less than CloudBitmaps ` +
+        '([what it saves](why-cloudbitmaps.md#the-short-answer)).');
   const leaningsSizing =
     `**Which way the Redis price leans.** ${leanings} To compare with one cluster you name, pass ` +
     '`pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.';
   const leaningsGuide =
     `${leanings} It prices nodes, not quotas: a cluster of more than ${int(DEFAULT_NODES_PER_CLUSTER)} nodes ` +
     "needs AWS to raise ElastiCache's " +
-    '[default quota](https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache), ' +
-    'which it [raises to at most 500 nodes a cluster](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html) ' +
-    'on Redis OSS 5.0.6 and later, and data that needs more is several clusters, at the same price a node.';
+    `[default quota](${QUOTAS_URL}), ` +
+    `which it [raises to at most ${int(MAX_NODES_PER_CLUSTER)} nodes a cluster](${SHARDS_URL}) ` +
+    'on Redis OSS 5.0.6 to 7.1 or Valkey 7.2 and later, and data that needs more is several clusters, at the same ' +
+    'price a node.';
 
   const headroom = [
     '| | cold intersects a second | where the bill meets its Redis | headroom |',
@@ -430,7 +640,7 @@ function render() {
     ...PROFILES.map((p) => {
       const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
       const even = breakEvenRate(p);
-      return `| **${p.name}** | ${rate(now)} | ${rate(even)} | ${Math.round(even / now)}× |`;
+      return `| **${p.name}** | ${rate(now)} | ${rate(even)} | ${times(even / now)} |`;
     }),
   ];
 
@@ -467,8 +677,9 @@ function render() {
     `Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids ` +
     `spread over about ${int(CHUNKS_PER_SEGMENT)} chunks, and every cold intersect of two segments sharing ` +
     `${int(SHARED_CHUNKS)} of them, so each fetches the shared chunks from both. A larger segment is modeled as ` +
-    'holding its ids more densely, not as sharing more chunks, which is the most favourable choice for large ' +
-    'segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a ' +
+    `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * FULL_CHUNK_BYTES)} its chunks hold when every one is full, not as ` +
+    'sharing more chunks, which is the most favourable choice for large segments; ' +
+    '[the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a ' +
     'long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, ' +
     `with the point reads spread evenly. ${multipart.join(' ')}`;
   const readsEvery = readEverySec(byId('large'));
@@ -502,10 +713,7 @@ function render() {
 
   // The large deployment's GETs a second on its one data prefix: every chunk and tail read, and the point reads
   // that miss the cache. Pointer reads, one sized read an operand, go to the registry's own prefix beside it.
-  const pointerGets = OPERANDS * (P.storage.requestsPerSizedRead ?? 1);
-  const dataGets =
-    (large.intersectsPerMonth / SECONDS_PER_MONTH) * (intersectGets(SHARED_CHUNKS) - pointerGets) +
-    large.readsPerSec * (1 - large.cacheHitRate);
+  const dataGets = dataGetsOf(large);
   const prefix =
     `And S3 has a rate of its own. AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second ` +
     'per partitioned prefix](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html), ' +
@@ -614,7 +822,326 @@ function render() {
     '```',
   ];
 
+  // ── the explainer page, and the README's section ────────────────────────────────────────────────────
+  const three = PROFILES.map((p) => {
+    const report = price(p);
+    return {
+      p,
+      report,
+      total: report.monthlyUSD.total,
+      redis: report.redisBaseline,
+      inMemory: redisOf(p, IN_MEMORY),
+    };
+  });
+  const list3 = ([a, b, c]) => `${a}, ${b} and ${c}`;
+
+  const whySizes = [
+    '| | data | CloudBitmaps a month | the Redis that holds it | CloudBitmaps costs |',
+    '|---|---:|---:|---:|---:|',
+    ...three.map(
+      ({ p, total, redis: b }) =>
+        `| **${p.name}** — ${p.who} | ${bytes(sizeOf(p))} | ${usd(total)} | ${usd(b.monthlyUSD)} | **${versus(total, b.monthlyUSD)}** |`,
+    ),
+  ];
+
+  // A dot plot on a log scale, $1 to $100,000, ten characters a decade. A bar measured from $1 would invite reading
+  // its length as the price, which on a log scale it is not.
+  const DECADES = 5;
+  const PER_DECADE = 10;
+  const dotAt = (usdValue) => {
+    const col = Math.round(Math.max(0, Math.log10(usdValue)) * PER_DECADE);
+    if (col > DECADES * PER_DECADE) throw new Error(`sizing: ${usdValue} is past the plot's scale`);
+    return `${' '.repeat(col)}●`;
+  };
+  const plotWidth = DECADES * PER_DECADE + 3;
+  const scale = ['$1', '$10', '$100', '$1K', '$10K', '$100K'];
+  const plotRows = [];
+  for (const { p, total, redis: b, inMemory } of three) {
+    const rows = [
+      ['CloudBitmaps', total],
+      ['Redis', b.monthlyUSD],
+      ...(b.cluster.dataTiering ? [['Redis in RAM', inMemory.monthlyUSD]] : []),
+    ];
+    rows.forEach(([who, v], n) => {
+      plotRows.push(
+        `${(n === 0 ? p.name : '').padEnd(8)}${who.padEnd(14)}${dotAt(v).padEnd(plotWidth)}${usd(v)}`,
+      );
+    });
+  }
+  const tiered = three.filter(({ redis: b }) => b.cluster.dataTiering);
+  const whyDeployments = [
+    '```text',
+    `${''.padEnd(22)}${scale
+      .map((t) => t.padEnd(PER_DECADE))
+      .join('')
+      .trimEnd()}   a month, log scale`,
+    `${''.padEnd(22)}${scale
+      .map(() => '│'.padEnd(PER_DECADE))
+      .join('')
+      .trimEnd()}`,
+    ...plotRows,
+    '```',
+    '',
+    ...three.map(
+      ({ p, total, redis: b }) =>
+        `- **${p.name}**, ${bytes(sizeOf(p))}: ${usd(total)} a month against ${usd(b.monthlyUSD)} ` +
+        `for ${clusterLabel(b)}, so CloudBitmaps costs **${versus(total, b.monthlyUSD)}**.`,
+    ),
+    ...tiered.map(
+      ({ p, total, inMemory }) =>
+        `- The ${p.id} deployment's Redis keeps the values read least recently on its SSD. All in memory it ` +
+        `would be ${usd(inMemory.monthlyUSD)} a month, and CloudBitmaps ${versus(total, inMemory.monthlyUSD)}.`,
+    ),
+  ];
+
+  // What the comparison assumes, said where the savings are: the kind of Redis, and how far each other kind moves
+  // the saving; the overlap every figure rests on; and the one deployment past what has been validated.
+  const againstEach = (pricing) =>
+    list3(three.map(({ p, total }) => versus(total, redisOf(p, pricing).monthlyUSD)));
+  // Reserved nodes stack on Valkey and one replica, and at three years they can reverse the verdict: say where, in
+  // words the numbers decide, rather than leave "1.30× as much" for the reader to notice in a list.
+  const reservedNote =
+    'Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs ' +
+    `${againstEach(cheapestRedis('oneYear'))}, and on three years paid upfront, ` +
+    `${againstEach(cheapestRedis('threeYearsUpfront'))}` +
+    (REVERSED.length === 0
+      ? '.'
+      : `, so a Redis bought all three ways costs less than CloudBitmaps at the ${andList(REVERSED)} ` +
+        `${REVERSED.length === 1 ? 'size' : 'sizes'}.`);
+  const redisKind =
+    "Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds " +
+    `the data, every shard a primary and ${words(CATALOGUE.replicasPerShard)} replicas: the cheapest of one kind, not ` +
+    `the least Redis could cost. Against [ElastiCache for Valkey](${ELASTICACHE_PRICING_URL}), which AWS prices ` +
+    `${pct(VALKEY_DISCOUNT)} lower a node, CloudBitmaps costs ${againstEach(redisPricedAs({ valkey: true }))}; with ` +
+    `one replica a shard, ${againstEach(redisPricedAs({ replicas: 1 }))}; with both, ` +
+    `${againstEach(redisPricedAs({ valkey: true, replicas: 1 }))}. ${reservedNote}`;
+  if (!(large.segments > VALIDATED_SEGMENTS)) {
+    throw new Error(
+      "sizing: the large deployment is inside the roadmap's envelope; rewrite the envelope note",
+    );
+  }
+  const envelope = (guide) =>
+    `The large deployment's ${int(large.segments)} segments are past the roughly ${int(VALIDATED_SEGMENTS)} the library has ` +
+    'been validated at, and its readers would need an index budget and a chunk cache far past their defaults ' +
+    `([what each reader holds](${guide}sizing.md#what-each-reader-holds)), in memory not priced here.`;
+  const [medium1000, large1000] = ['medium', 'large'].map((id) => {
+    const r = price(byId(id), { shared: 1000 });
+    return times(r.monthlyUSD.total / r.redisBaseline.monthlyUSD);
+  });
+  const [mediumPasses, largePasses] = ['medium', 'large'].map((id) => breakEvenShared(byId(id)));
+  const whyCaveats = [
+    redisKind,
+    '',
+    `All three assume that two segments share ${int(SHARED_CHUNKS)} of their ${int(CHUNKS_PER_SEGMENT)} chunks, and ` +
+      'filters over one catalogue or one audience can share most of theirs: at ' +
+      `${int(1000)} shared chunks, the medium and large deployments cost ${medium1000} and ${large1000} their Redis, ` +
+      `and their bills pass it at ${int(mediumPasses)} and ${int(largePasses)} shared chunks.`,
+    '',
+    envelope('docs/guide/'),
+  ];
+  const whyLeanings = [redisKind, '', envelope('')];
+
+  const getPerMillion = P.storage.getPerMillion;
+  const box = (lines) => {
+    const w = 60;
+    for (const [inside] of lines) {
+      if (inside.length > w) {
+        throw new Error(`sizing: a line of the money diagram is wider than its box: ${inside}`);
+      }
+    }
+    return [
+      ` ┌${'─'.repeat(w + 2)}┐`,
+      ...lines.map(
+        ([inside, outside]) => ` │ ${inside.padEnd(w)} │${outside ? ` ──► ${outside}` : ''}`,
+      ),
+      ` └${'─'.repeat(w + 2)}┘`,
+    ];
+  };
+  const storages = three.map(({ report }) => report.monthlyUSD.byOp.storage);
+  const money = [
+    '```text',
+    ' REDIS: all your data on its nodes, billed around the clock',
+    ...box([
+      [
+        'all your data ──► memory, on a primary and its replicas',
+        'billed every hour, queried or not',
+      ],
+      ['(a data-tiering node moves the least recently read to SSD)'],
+      [
+        `${int(CATALOGUE.replicasPerShard)} replicas a shard; ${pct(CATALOGUE.reservedMemoryFraction)} of each node's memory kept back`,
+      ],
+    ]),
+    '',
+    ' CLOUDBITMAPS: every byte in object storage, each read paid for',
+    ...box([
+      [
+        `all your data   ──► S3, $${P.storage.storagePerGiBMonth} a GiB-month`,
+        `${usd(Math.min(...storages))} to ${usd(Math.max(...storages))} a month here`,
+      ],
+      ["the hot part    ──► your readers' memory, a slice of it", 'your own machines'],
+      [
+        `each cold read  ──► S3 GETs, $${getPerMillion.toFixed(2)} a million`,
+        'grows with the queries',
+      ],
+      [
+        'each refresh    ──► a pointer GET, after cache.genTtlMs',
+        'at most one a read, and one per segment per reader each genTtlMs',
+      ],
+      ['each load       ──► S3 PUTs, and a pointer write', 'grows with how often the data changes'],
+    ]),
+    '```',
+  ];
+
+  const shareOf = (id, term) => {
+    const { report, total } = three.find(({ p }) => p.id === id);
+    return share(report.monthlyUSD.byOp[term] / total);
+  };
+  // What the storage share would be with the generations `load()` keeps besides the current one, which the
+  // estimator prices as one copy.
+  const kept =
+    LOAD_KEEPS === 1
+      ? 'the generation it replaced'
+      : `the ${words(LOAD_KEEPS)} generations before the current one`;
+  const retained = (() => {
+    const { report, total } = three.find(({ p }) => p.id === 'large');
+    const stored = report.monthlyUSD.byOp.storage;
+    return share(((1 + LOAD_KEEPS) * stored) / (total + LOAD_KEEPS * stored));
+  })();
+  const whyMoves = [
+    '- **Redis grows with how much data you have**: in steps while the data fits a few nodes, then in proportion to ' +
+      'it, every replica with it.',
+    `- **CloudBitmaps grows with its reads.** Storage is ${shareOf('large', 'storage')} of the large deployment's ` +
+      `bill, for one copy of its data; \`load()\` also keeps ${kept} by default, which would make it ` +
+      `${retained}. The rest is the cold reads that miss a reader's cache; the pointer refresh, at most one a read ` +
+      'and one per segment per reader each `cache.genTtlMs`, which is ' +
+      `${shareOf('large', 'pointerRefresh')} of the large bill and ${shareOf('medium', 'pointerRefresh')} of the ` +
+      `medium's; and the loads, ${shareOf('large', 'loads')} of the large bill ` +
+      '([what moves the large bill](sizing.md#what-moves-the-large-bill)).',
+  ];
+
+  const sizes = [200 * MB, 1e9, 5e9, 20e9, 200e9, 2e12, 20e12];
+  const pastQuota = sizes
+    .map((b) => ({ b, nodes: coldAt(b, 1).redisBaseline.cluster.nodes }))
+    .filter(({ nodes }) => nodes > DEFAULT_NODES_PER_CLUSTER);
+  for (const { b, nodes } of pastQuota) {
+    // Past the most one cluster can have, the data is several clusters, which the note below does not say.
+    if (nodes > MAX_NODES_PER_CLUSTER) {
+      throw new Error(
+        `sizing: the ${bytes(b)} cluster's ${nodes} nodes are more than one cluster holds`,
+      );
+    }
+  }
+  const quotas = (nodes) =>
+    nodes > DEFAULT_NODES_PER_REGION
+      ? `default quotas](${QUOTAS_URL}) of ${int(DEFAULT_NODES_PER_CLUSTER)} nodes a cluster and ${int(DEFAULT_NODES_PER_REGION)} a Region`
+      : `default quota](${QUOTAS_URL}) of ${int(DEFAULT_NODES_PER_CLUSTER)} nodes a cluster`;
+  const grows = [
+    '| data stored | the Redis that holds it | its nodes | CloudBitmaps, one cold intersect a second | where the bill meets the Redis |',
+    '|---:|---:|---|---:|---:|',
+    ...sizes.map((b) => {
+      const r = coldAt(b, 1);
+      return (
+        `| ${bytes(b)} | ${usd(r.redisBaseline.monthlyUSD)} | ${clusterLabel(r.redisBaseline)} | ` +
+        `${usd(r.monthlyUSD.total)} | ${rate(meetsAt(b))} a second |`
+      );
+    }),
+    ...(pastQuota.length === 0
+      ? []
+      : [
+          '',
+          pastQuota
+            .map(
+              ({ b, nodes }) =>
+                `The ${bytes(b)} cluster's ${int(nodes)} nodes are past ElastiCache's [${quotas(nodes)}.`,
+            )
+            .join(' ') +
+            ` AWS raises them on request, a cluster to [at most ${int(MAX_NODES_PER_CLUSTER)} nodes](${SHARDS_URL}) ` +
+            'on Redis OSS 5.0.6 to 7.1 or Valkey 7.2 and later.',
+        ]),
+  ];
+
+  const whyLine =
+    "The line is the table's last column. It climbs with the data because the Redis it is measured against does. " +
+    'In this model an extra cold intersect costs CloudBitmaps the same at any size: every segment keeps the ' +
+    `[calibration run](../../bench/calibration/2026-09-23-94416.md)'s shape, ${int(CHUNKS_PER_SEGMENT)} chunks with ` +
+    `${int(SHARED_CHUNKS)} shared, so a larger store is more segments of that shape, not larger ones. Segments that grow by sharing ` +
+    'more chunks cost more, as [overlap](#where-it-loses) shows. The chart counts cold intersects alone; the three ' +
+    'deployments also make point reads and refresh pointers, which ' +
+    '[the next section](#how-much-room-each-deployment-has) counts in.';
+
+  const whyRoom = [
+    '| | data | cold intersects a second | where the bill meets its Redis | room |',
+    '|---|---:|---:|---:|---:|',
+    ...PROFILES.map((p) => {
+      const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
+      const even = breakEvenRate(p);
+      return `| **${p.name}** | ${bytes(sizeOf(p))} | ${rate(now)} | ${rate(even)} | **${times(even / now)}** |`;
+    }),
+  ];
+
+  const hotReport = coldAt(HOT.sizeBytes, HOT.perSec);
+  const hot =
+    `A dashboard running ${int(HOT.perSec)} cold intersects a second over ${bytes(HOT.sizeBytes)} costs ` +
+    `**${usd(hotReport.monthlyUSD.total)}** a month, where the Redis that holds ${bytes(HOT.sizeBytes)} costs ` +
+    `**${usd(hotReport.redisBaseline.monthlyUSD)}** (${clusterLabel(hotReport.redisBaseline)}): CloudBitmaps ` +
+    `costs **${Math.round(hotReport.monthlyUSD.total / hotReport.redisBaseline.monthlyUSD)}×** as much there, ` +
+    'and Redis answers from memory. That is priced cold, as if nothing repeated. A dashboard that repeats its queries is ' +
+    `served from the chunk cache when their chunks fit it, ${int(CACHE_MAX_CHUNKS)} by default, and then pays only ` +
+    "for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is " +
+    "Redis's ground, or a cache's in front of CloudBitmaps.";
+
+  const rounds = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
+  const depth =
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks makes its requests in **${int(rounds)} ` +
+    "rounds**, one after another: both operands' pointers, then both indexes, then the shared chunks " +
+    `${int(INTERSECT_CONCURRENCY)} at a time, each from both operands. Each round waits for the slowest of its ` +
+    'requests, not a typical one, so what the rounds take is for a measurement to say. A repeat served from the ' +
+    'chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.';
+
+  const whyPrefix =
+    `AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second per partitioned prefix]` +
+    '(https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html), and answers ' +
+    "`503 Slow Down` while it scales one. A namespace's segments share one data prefix. The large deployment's " +
+    `reads average **${int(dataGets)} GETs a second** on it, **${pct(dataGets / S3_PREFIX_GETS_PER_SEC)}** of that ` +
+    `documented rate before any peak, and would reach it at ${times(S3_PREFIX_GETS_PER_SEC / dataGets)} its load: ` +
+    'spread segments across namespaces, and expect throttling at peaks. A throttled GET is retried by the ' +
+    `[AWS SDK](${SDK_RETRY_URL}), ${int(SDK_ATTEMPTS)} attempts by default, inside each of the library's ` +
+    `${int(LIBRARY_ATTEMPTS)}: up to ${int(SDK_ATTEMPTS * LIBRARY_ATTEMPTS)} requests for one.`;
+
+  const base = intersectGets(0);
+  const whyOverlap =
+    `A cold intersect costs ${int(base)} + ${int(intersectGets(1) - base)}k GETs for k shared chunks, so segments ` +
+    'that share most of their chunks cost far more to intersect than their size suggests. At ' +
+    `${int(1000)} shared chunks of ${int(CHUNKS_PER_SEGMENT)}, where the tables above assume ` +
+    `${int(SHARED_CHUNKS)}, the medium deployment's bill comes to **${medium1000}** its Redis's price, and the ` +
+    `large one's to **${large1000}**; they pass it at ${int(mediumPasses)} and ${int(largePasses)} shared chunks.`;
+
+  // Each chart, picked for the reader's theme, with words that say what it shows.
+  const chartText = chartWords();
+  const picture = (file, alt) =>
+    [
+      '<picture>',
+      `  <source media="(prefers-color-scheme: dark)" srcset="../../bench/${file}-dark.svg">`,
+      `  <img alt="${esc(alt)}" src="../../bench/${file}.svg">`,
+      '</picture>',
+    ].join('\n');
+
   return {
+    WHY_SIZES: whySizes.join('\n'),
+    WHY_CAVEATS: whyCaveats.join('\n'),
+    WHY_DEPLOYMENTS: whyDeployments.join('\n'),
+    WHY_LEANINGS: whyLeanings.join('\n'),
+    MONEY: money.join('\n'),
+    WHY_MOVES: whyMoves.join('\n'),
+    WHY_CHART_BILL: picture('bill-as-data-grows', chartText.bill),
+    GROWS: grows.join('\n'),
+    WHY_CHART_WHERE: picture('where-each-costs-less', chartText.where),
+    WHY_LINE: whyLine,
+    WHY_ROOM: whyRoom.join('\n'),
+    HOT: hot,
+    DEPTH: depth,
+    WHY_PREFIX: whyPrefix,
+    WHY_OVERLAP: whyOverlap,
     GUIDE_EXAMPLE: guideExample.join('\n'),
     COMPARES: compares,
     GUIDE_LEANINGS: leaningsGuide,
@@ -636,106 +1163,256 @@ function render() {
   };
 }
 
-// ── write / check ────────────────────────────────────────────────────────────────────────────────────
-/**
- * Any comment shaped like a SIZING marker, however it is cased, spaced or separated — `<!--SIZING_BILL:START-->` as
- * much as the strict form — and not a comment that merely begins with the word. Only the strict form is written.
- */
-const ANY_MARKER = /<!--\s*sizing\s*[:_-]\s*[a-z0-9_]*\s*[:_-]?\s*(?:start|end)\b[^>]*-->/gi;
-const MARKER = /^<!-- SIZING:([A-Z][A-Z0-9_]*):(START|END) -->$/;
-/** Which page each region belongs in. */
-const OWNER = Object.fromEntries(
-  Object.entries(DOCS).flatMap(([doc, names]) => names.map((n) => [n, doc])),
-);
-
-/**
- * The spans of a markdown page that are code — fenced blocks and inline spans — where a marker is text a page shows,
- * as a page documenting the syntax does, not a comment. In HTML a comment is a comment wherever it sits.
- */
-function codeSpans(doc, text) {
-  if (!/\.mdx?$/.test(doc)) return [];
-  const spans = [];
-  for (const m of text.matchAll(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*$/gm)) {
-    spans.push([m.index, m.index + m[0].length]);
-  }
-  const inFence = (at) => spans.some(([a, b]) => at >= a && at < b);
-  for (const m of text.matchAll(/`[^`\n]+`/g)) {
-    if (!inFence(m.index)) spans.push([m.index, m.index + m[0].length]);
-  }
-  return spans;
-}
-
-/** A page's markers, in order. A malformed one throws: no check would ever compare the region it meant. */
-function markersOf(doc, text) {
-  const code = codeSpans(doc, text);
-  return [...text.matchAll(ANY_MARKER)]
-    .filter((m) => !code.some(([a, b]) => m.index >= a && m.index < b))
-    .map((m) => {
-      const strict = MARKER.exec(m[0]);
-      if (strict === null) {
-        throw new Error(
-          `${doc}: malformed marker ${JSON.stringify(m[0])} — write <!-- SIZING:NAME:START --> or ` +
-            '<!-- SIZING:NAME:END --> exactly',
-        );
-      }
-      return { name: strict[1], edge: strict[2], at: m.index, end: m.index + m[0].length };
-    });
-}
-
-function regionsOf(doc, text, names) {
-  const markers = markersOf(doc, text);
+// ── the charts ───────────────────────────────────────────────────────────────────────────────────────
+/** Both charts, each in the light theme and the dark one, as the files CHARTS lists. */
+function charts() {
+  const d = chartData();
+  const words_ = chartWords();
+  const xAxis = {
+    ...CHART_X,
+    // 10 TB's gridline without its label, which would run into the 20 TB that names the axis's end.
+    ticks: [
+      ...[1e8, 1e9, 1e10, 1e11, 1e12].map((at) => ({ at, text: bytes(at) })),
+      { at: 1e13, text: '' },
+      { at: CHART_X.max, text: bytes(CHART_X.max) },
+    ],
+    title: 'data stored, log scale',
+  };
+  const redisKind = `${P.name} · Redis: the cheapest on-demand Redis OSS cluster that holds the data`;
+  const shape = `two ${int(CHUNKS_PER_SEGMENT)}-chunk segments sharing ${int(SHARED_CHUNKS)}`;
+  const rates = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000];
   const out = {};
-  // Markers pair up in order, a START and then the END of the same name: a region inside another, or two that
-  // overlap, would be written one over the other.
-  for (let n = 0; n < markers.length; n += 2) {
-    const open = markers[n];
-    const close = markers[n + 1];
-    if (open.edge !== 'START' || close?.edge !== 'END' || close.name !== open.name) {
-      throw new Error(
-        `${doc}: SIZING markers must pair up in order, each START with the END of its name, never nested or ` +
-          `overlapping (at SIZING:${open.name}:${open.edge})`,
-      );
-    }
-    if (!names.includes(open.name)) {
-      throw new Error(
-        OWNER[open.name] === undefined
-          ? `${doc} holds a SIZING:${open.name} region nothing writes`
-          : `${doc} holds a SIZING:${open.name} region, which DOCS puts in ${OWNER[open.name]}`,
-      );
-    }
-    // Exactly one of each: a second copy is one this check would never compare.
-    if (out[open.name] !== undefined) {
-      throw new Error(`${doc} must hold exactly one SIZING:${open.name} region`);
-    }
-    // A region inside a list item is indented with it; the table must be too, or it ends the list.
-    const indent = text.slice(text.lastIndexOf('\n', open.at) + 1, open.at);
-    out[open.name] = { i: open.end, j: close.at, indent };
-  }
-  for (const name of names) {
-    if (out[name] === undefined)
-      throw new Error(`${doc} must hold exactly one SIZING:${name} region`);
+  for (const [suffix, theme] of [
+    ['', 'light'],
+    ['-dark', 'dark'],
+  ]) {
+    out[`bench/bill-as-data-grows${suffix}.svg`] = logChart(
+      {
+        title: 'The monthly bill as the data grows',
+        subtitle: [redisKind, `CloudBitmaps: one cold intersect a second, of ${shape}`],
+        label: words_.bill,
+        x: xAxis,
+        y: {
+          min: 10,
+          max: 1e6,
+          ticks: ['$10', '$100', '$1K', '$10K', '$100K', '$1M'].map((text, n) => ({
+            at: 10 ** (n + 1),
+            text,
+          })),
+          title: 'a month, log scale',
+        },
+        lines: [
+          { points: d.redisLine, color: 'redis', text: 'the Redis that holds it' },
+          {
+            points: d.cbLine,
+            color: 'cloudbitmaps',
+            text: 'CloudBitmaps, one cold intersect a second',
+            textAt: [3e10, 110],
+          },
+        ],
+        markers: [
+          {
+            at: [d.cross, d.cbLine[d.crossAt][1]],
+            text: `they cross near ${bytes(d.cross)}`,
+            anchor: 'end',
+            dy: -14,
+          },
+        ],
+      },
+      theme,
+    );
+    out[`bench/where-each-costs-less${suffix}.svg`] = logChart(
+      {
+        title: 'Where each costs less',
+        subtitle: [redisKind, `cold intersects of ${shape} · the deployments are illustrative`],
+        label: words_.where,
+        x: xAxis,
+        y: {
+          min: rates[0],
+          max: rates[rates.length - 1],
+          ticks: rates.map((at) => ({ at, text: at < 1 ? String(at) : int(at) })),
+          title: 'cold intersects a second, log scale',
+        },
+        areas: [
+          {
+            points: d.meets,
+            toward: 'min',
+            color: 'cloudbitmaps',
+            text: 'CloudBitmaps costs less',
+            textAt: [2e11, 0.004],
+          },
+          {
+            points: d.meets,
+            toward: 'max',
+            color: 'redis',
+            text: 'Redis costs less',
+            textAt: [1.25e8, 2500],
+          },
+        ],
+        lines: [
+          { points: d.meets, color: 'ink', text: 'where the bills meet' },
+          {
+            points: [
+              [CHART_X.min, d.prefixRate],
+              [CHART_X.max, d.prefixRate],
+            ],
+            color: 'ink',
+            dashed: true,
+            text: `one prefix's documented GET rate: ${rate(d.prefixRate)} a second`,
+            // Below the rule: above it, the example's dot leaves no room.
+            textAt: [1.3e8, d.prefixRate / 2.3],
+          },
+        ],
+        markers: [
+          ...PROFILES.map((p) => {
+            const at = [sizeOf(p), p.intersectsPerMonth / SECONDS_PER_MONTH];
+            // A deployment near the dashed rule is labelled on the far side of its dot from it, with its own rate in
+            // place of its size, which the axis gives: a dot that all but touches the rule would otherwise read as
+            // sitting on it.
+            const near = Math.abs(Math.log10(at[1] / d.prefixRate)) < 0.3;
+            if (!near) return { at, text: `${p.name}, ${bytes(sizeOf(p))}` };
+            return {
+              at,
+              text: `${p.name}: ${rate(at[1])} a second`,
+              dy: at[1] < d.prefixRate ? 10 : -10,
+            };
+          }),
+          {
+            at: [HOT.sizeBytes, HOT.perSec],
+            text: `example: ${int(HOT.perSec)} a second over ${bytes(HOT.sizeBytes)}`,
+            hollow: true,
+          },
+        ],
+      },
+      theme,
+    );
   }
   return out;
 }
 
-/** The page with every region rewritten, and the names of the regions whose text changed. */
-function withRegions(doc, text, regions) {
-  const at = regionsOf(doc, text, Object.keys(regions));
-  let s = text;
-  const changed = [];
-  // Replace from the last region back, so earlier offsets stay valid.
-  for (const name of Object.keys(at).sort((a, b) => at[b].i - at[a].i)) {
-    const { i, j, indent } = at[name];
-    const body = regions[name]
-      .split('\n')
-      .map((line) => (line === '' ? line : indent + line))
-      .join('\n');
-    const next = '\n' + body + '\n' + indent;
-    if (s.slice(i, j) !== next) changed.unshift(name);
-    s = s.slice(0, i) + next + s.slice(j);
-  }
-  return { text: s, changed };
+// ── write / check ────────────────────────────────────────────────────────────────────────────────────
+/**
+ * A figure outside every region of a page that says its figures are generated: money, a share, a multiple, a GET
+ * count, or the overlap formula. Nothing compares one with the estimator, so none may stand in the prose. Matched on
+ * text `normalize()` has decoded, so `&#36;5`, `90&percnt;` and `3&times;` are figures too, and in words as well as
+ * signs: `90 percent`, `66 times`, `66x`. A multiple never follows a dot, which is a version: `0.9.x`.
+ */
+const SHARE_OR_MULTIPLE = [
+  String.raw`\d[\d,.]*\s*[%×]`,
+  String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:x\b|per\s?cent\b|times\b)`,
+  String.raw`\bper\s?cent\b`,
+];
+const FIGURE = new RegExp(
+  [
+    String.raw`(?:\$|\bUSD)\s*\d`,
+    ...SHARE_OR_MULTIPLE,
+    String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*dollars?\b`,
+    String.raw`\b\d+\s*\+\s*\d+\s*k\b`,
+    String.raw`\b\d[\d,]*\s+GETs?\b`,
+  ].join('|'),
+  'i',
+);
+/**
+ * The pages that say so, and the part of each that does: the whole page, or one section of it. A page whose
+ * section alone is generated keeps the rest of itself to the shares and multiples listed here, each a measurement
+ * or a definition quoted where it is explained, so a figure moved out of the section is refused there too; its
+ * dollar amounts are `scripts/site-figures.cjs`'s to check.
+ */
+const GENERATED_PROSE = {
+  'docs/guide/why-cloudbitmaps.md': null,
+  'docs/guide/sizing.md': null,
+  'README.md': { section: 'Why CloudBitmaps', elsewhere: ['5%', '6.25%', '12.5×'] },
+};
+for (const doc of Object.keys(GENERATED_PROSE)) {
+  if (DOCS[doc] === undefined)
+    throw new Error(`sizing: GENERATED_PROSE names ${doc}, which DOCS does not list`);
 }
+/** A page with every region's text blanked where it stands, so offsets into the page still hold. */
+function blankRegions(doc, text) {
+  const at = regionsOf(doc, text, DOCS[doc] ?? [], DOCS);
+  let s = text;
+  for (const { i, j } of Object.values(at)) {
+    s = s.slice(0, i) + s.slice(i, j).replace(/[^\n]/g, ' ') + s.slice(j);
+  }
+  return { text: s, at };
+}
+/** What a reader is given of some markdown: no comments, tags or addresses, and its entities decoded. */
+function prose(text) {
+  return normalize(
+    text
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\]\((?:[^()\s]|\([^()]*\))*\)/g, ']')
+      .replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, '')
+      .replace(/<(?:https?|mailto):[^>]*>/g, '')
+      .replace(/\bhttps?:\/\/\S+/g, ''),
+  ).replace(/<[^>]*>/g, ' ');
+}
+/**
+ * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence is not a
+ * heading, so a quoted `## ` cannot cut the section short and leave what follows it unchecked.
+ */
+function sectionOf(doc, text, title) {
+  let at = 0;
+  let fence = null;
+  let start = -1;
+  for (const line of text.split('\n')) {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence === null && marker !== undefined) fence = marker;
+    else if (
+      fence !== null &&
+      marker !== undefined &&
+      marker[0] === fence[0] &&
+      marker.length >= fence.length
+    )
+      fence = null;
+    else if (fence === null && line.startsWith('## ')) {
+      if (start >= 0) return { start, end: at };
+      if (line === `## ${title}`) start = at;
+    }
+    at += line.length + 1;
+  }
+  if (start < 0)
+    throw new Error(`sizing: ${doc} no longer has the section whose figures are generated`);
+  return { start, end: text.length };
+}
+/** The first figure in a page's prose that nothing checks, and where it stands, or null. */
+function proseFigure(doc, text) {
+  const scope = GENERATED_PROSE[doc];
+  const { text: blank, at } = blankRegions(doc, text);
+  if (scope === null) {
+    const hit = FIGURE.exec(prose(blank));
+    return hit === null ? null : { figure: hit[0], where: 'outside its SIZING regions' };
+  }
+  const { start, end } = sectionOf(doc, blank, scope.section);
+  for (const [name, { i, j }] of Object.entries(at)) {
+    if (i < start || j > end) {
+      throw new Error(
+        `sizing: ${doc}'s ${name} region sits outside its "${scope.section}" section`,
+      );
+    }
+  }
+  const inside = FIGURE.exec(prose(blank.slice(start, end)));
+  if (inside !== null) {
+    return {
+      figure: inside[0],
+      where: `outside its SIZING regions, in its "${scope.section}" section`,
+    };
+  }
+  const rest = prose(blank.slice(0, start) + blank.slice(end));
+  for (const m of rest.matchAll(new RegExp(SHARE_OR_MULTIPLE.join('|'), 'gi'))) {
+    if (!scope.elsewhere.includes(m[0])) {
+      return {
+        figure: m[0],
+        where: `outside its "${scope.section}" section, which lists what may stand there`,
+      };
+    }
+  }
+  return null;
+}
+/** The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>. */
+const shownCharts = (text) => [
+  ...new Set(text.match(/\bbench\/[\w./-]+\.(?:svg|png|jpe?g|webp|gif)\b/g) ?? []),
+];
 
 const rendered = render();
 // A figure that failed to compute must not reach a page as a word.
@@ -781,7 +1458,22 @@ for (const [doc, names] of Object.entries(DOCS)) {
   const file = path.join(ROOT, doc);
   // Line endings are not content: a checkout that turns them into CRLF must not fail the check.
   const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-  const next = withRegions(doc, text, Object.fromEntries(names.map((n) => [n, rendered[n]])));
+  const next = withRegions(doc, text, Object.fromEntries(names.map((n) => [n, rendered[n]])), DOCS);
+  const figure = GENERATED_PROSE[doc] === undefined ? null : proseFigure(doc, next.text);
+  if (figure !== null) {
+    throw new Error(
+      `sizing: ${doc} states "${figure.figure}" ${figure.where}, where no gate compares it with the ` +
+        'estimator — generate it into a region',
+    );
+  }
+  for (const chart of shownCharts(next.text)) {
+    // The benchmarks chart is drawn and checked by bench/run.cjs; every other chart a page shows, by this script.
+    if (chart !== 'bench/crossover.svg' && !CHARTS.includes(chart)) {
+      throw new Error(
+        `sizing: ${doc} shows ${chart}, which no generator draws, so no check compares it`,
+      );
+    }
+  }
   if (check) {
     if (next.text !== text) stale.push(`${doc} (${next.changed.join(', ')})`);
   } else {
@@ -789,15 +1481,37 @@ for (const [doc, names] of Object.entries(DOCS)) {
     console.log(`  wrote ${doc}`);
   }
 }
+const drawn = charts();
+{
+  const unlisted = Object.keys(drawn).filter((c) => !CHARTS.includes(c));
+  const undrawn = CHARTS.filter((c) => drawn[c] === undefined);
+  if (unlisted.length > 0 || undrawn.length > 0) {
+    throw new Error(
+      `sizing: the charts drawn are not the ones CHARTS lists: drawn but not listed [${unlisted.join(', ')}], ` +
+        `listed but not drawn [${undrawn.join(', ')}]`,
+    );
+  }
+}
+for (const [rel, svg] of Object.entries(drawn)) {
+  const file = path.join(ROOT, rel);
+  if (check) {
+    const now = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null;
+    if (now !== svg) stale.push(rel);
+  } else {
+    fs.writeFileSync(file, svg);
+    console.log(`  wrote ${rel}`);
+  }
+}
 if (check) {
   if (stale.length > 0) {
     console.error(
-      `bench:sizing:check: these generated regions are not what the shipped estimator and the library's ` +
+      `bench:sizing:check: these generated regions and charts are not what the shipped estimator and the library's ` +
         `defaults give: ${stale.join('; ')}. Run \`pnpm bench:sizing\` rather than editing them by hand.`,
     );
     process.exit(1);
   }
   console.log(
-    `bench:sizing:check: every generated figure in ${Object.keys(DOCS).join(', ')} is current.`,
+    `bench:sizing:check: every generated figure in ${Object.keys(DOCS).join(', ')}, and the charts ` +
+      `${CHARTS.join(', ')}, is current, and no figure stands outside a region.`,
   );
 }
