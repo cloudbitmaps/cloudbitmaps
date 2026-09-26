@@ -50,8 +50,8 @@
  * generation put the first one's id back and collected the generation that had evidenced its removal. A false
  * Art. 17 receipt is the worst output this module can produce.
  *
- * Readers pinned to the collected generation re-resolve on their next read; that is the documented cost of
- * physical deletion on return. **Do not re-load the id while erasing it**: a load that lands after this rewrite
+ * A live read still fetching from the collected generation heals forward to the rewrite, and a pin of it fails with
+ * `NotFoundError` for any chunk it has yet to read: that is the documented cost of physical deletion on return. **Do not re-load the id while erasing it**: a load that lands after this rewrite
  * carries whatever its source held, and the library cannot know that source was meant to exclude the id.
  */
 import { type IAuditSink, NOOP_AUDIT, safeAudit } from './audit';

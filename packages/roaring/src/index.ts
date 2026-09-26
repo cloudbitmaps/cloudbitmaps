@@ -1874,13 +1874,18 @@ export class Segment {
    *
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
    * segment whose row is later dropped or destroyed fails rather than go empty part-way through a call. **A pin
-   * keeps the key its reader unwrapped for as long as that reader stays open.** A crypto-shred, erasure or drop in
-   * this store invalidates the pin, which then fails; one in another process reaches the pin only when that
-   * process's reader cache evicts it or {@link CloudRoaring.invalidate} is called there. No timed refresh bounds
-   * that, as none bounds anything else a pin holds.
+   * keeps the key its reader unwrapped for as long as that reader stays open, and answers from the chunks it
+   * decoded for as long as they stay cached.** An erasure, drop or retirement through this store (`eraseSubject`,
+   * `dropSegment`, `retireExpired`) invalidates the pin, which then fails. A `destroySegment` beside this store, or
+   * any of those in another process, reaches the pin only when both of that store's caches let it go, the reader
+   * cache its reader and the chunk cache its chunks, or {@link CloudRoaring.invalidate} is called there. No timed
+   * refresh bounds that, as none bounds anything else a pin holds.
    *
-   * `pin()` reads the registry row and opens the generation at once, so it costs a tail read, and an unwrapped key
-   * for an encrypted segment, whether or not the pin is read; the pin's first read uses that reader. It retries a
+   * `pin()` reads the registry row and opens the generation at once, so the pin knows its object before its first
+   * read. With a registry, pins of one generation taken while its row is unchanged share one reader while the store
+   * keeps it open: the first costs a tail read, and an unwrapped key for an encrypted segment, whether or not it is
+   * read, and the rest cost the row read alone. Without a registry every `pin()` makes the tail read, since only
+   * the object can tell two incarnations of a name apart there. It retries a
    * transient fault as the store's reads do, and heals a generation swept between the two, but it fails where the
    * generation cannot be opened: `NotFoundError` for a pointer at a missing object, `IntegrityError` for a damaged
    * or misfiled one.

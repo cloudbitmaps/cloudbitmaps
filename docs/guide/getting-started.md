@@ -740,8 +740,8 @@ Which gives:
 
 **What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
 collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
-another generation whether or not the old one still exists. Retaining more copies removes the sweep's heal and none
-of the rest. A job that needs one instant (an export,
+another generation whether or not the old one still exists. Retaining more copies removes the sweep's heal, except
+after an erasure, whose rewrite collects the erased generation whatever `keep` says, and none of the rest. A job that needs one instant (an export,
 a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
@@ -792,8 +792,8 @@ on the lower-level free functions' deps) — any cleartext write/read then throw
 **A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
 with `encryption: { required: true }` it is refused with a `ValidationError` rather than silently downgraded. The reason
-is that one segment cannot be half-encrypted — a reader pinned to a superseded cleartext generation would find
-bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
+is that one segment cannot be half-encrypted — a pin of a superseded cleartext generation, once its reader is
+reopened, would find bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
 while the older cleartext objects stay readable from any of them. The same rule from the other side: publishing
 an encrypted generation onto a segment whose row carries no key material is refused, because the only two silent
 outcomes are an unreadable generation or an over-attesting audit trail.
@@ -1118,14 +1118,14 @@ answer it for you: there is no daemon and no bus, only stores that happen to poi
 | storage | on return — the generation holding it is deleted |
 | the store that performed the erasure | on return, and its pins then fail |
 | another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
-| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts it, or `store.invalidate(ref)` is called there |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache the chunks the pin decoded, or `store.invalidate(ref)` is called there |
 | another store with **no clock**, or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
 immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
 fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
-`destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them holds the
-**unwrapped** key and keeps reading until it is told.
+`destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them, in the same
+process or not, holds the **unwrapped** key and keeps reading until it is told, its pins included.
 
 **What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
 their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred

@@ -15,6 +15,24 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Breaking
+
+Each of these makes a call throw where it used to return, and each fixes a wrong answer: the entries under
+**Fixed** say what the call returned before.
+
+- **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
+  part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
+  `retireExpired` or a crypto-shred.
+- **A combine that holds one segment at two generations throws `ValidationError`** when it is read: pins of two
+  generations, pins of one generation number that are two different objects, or a pin and a live handle, as in
+  `live.intersect([snap])` with nothing moved since the pin. Materialise one side first, with
+  `intersectInto(dest, [])`.
+- **`pin()` opens the generation it pins**, so it fails where the pin's first read used to: `NotFoundError` for a
+  pointer at a missing object, `IntegrityError` for a damaged or misfiled one.
+- **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, and a
+  load onto a segment whose current generation is one fails its guard until that generation is repaired. Store such
+  an object again under the generation its footer names.
+
 ### Added
 
 - **The single-bucket bill, measured on AWS.** The calibration harness's first publishable run,
@@ -173,7 +191,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   again at generation 0, and a pin knew its object only by generation number, so a pin of the old segment opened the
   new one's object of the same number. Once its reader was evicted, its `count()` gave the new total while
   `iterate()` returned chunks of both; while the reader stayed open, its uncached chunks failed with an
-  `IntegrityError` that read as damage; and on a store with no registry, a new pin of the name was handed the old
+  `IntegrityError` that read as damage, or a `ValidationError` when the new object was smaller; and on a store with
+  no registry, a new pin of the name was handed the old
   pin's reader and cached chunks. `pin()` now records the object it pins, its size and footer checksum, and a pin
   reads that object only: what it has already read still answers, as the instant it pinned, and anything it would
   have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. Two pins of one generation
@@ -181,20 +200,26 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 - **A pin whose segment was dropped or destroyed went empty part-way through a read.** A pinned `iterate()` that
   straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
   `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now
-  fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open: a shred in its
-  own store invalidates it, and one in another process reaches it only through that process's reader cache or
-  `invalidate()`, which the privacy notes now say.
+  fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open, and answers from
+  the chunks it decoded while they stay cached. An erasure, drop or retirement through its own store invalidates it,
+  and it then fails; a `destroySegment` beside that store, or any of those in another process, reaches it only when
+  that store's reader cache evicts its reader and its chunk cache those chunks, or `invalidate()` is called there,
+  which the privacy notes now say.
 - **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
   that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
   reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
-  generation's reader as it pins, which is the tail read its first read would otherwise make, and it reads the row
-  once to do both; opening a pinned generation read the row twice. That open costs a tail read, and a key unwrap
-  for an encrypted segment, even for a pin that is never read. A `pin()` whose generation is swept before it can
+  generation's reader as it pins, and reads the row once to do both; opening a pinned generation read the row twice.
+  With a registry, pins of one generation taken while its row is unchanged share that reader, as they did before, so
+  only the first costs a tail read, and a key unwrap for an encrypted segment, even if it is never read. Without a
+  registry every `pin()` makes the tail read, since only the object can tell two incarnations of a name apart there.
+  A `pin()` whose generation is swept before it can
   open it, as a publish and a `keep: 0` sweep can do, pins the generation current then rather than fail.
 - **A store read its own materialisation's predecessor.** `intersectInto`, `unionInto` and `andNotInto` published a
   new generation of `dest` without dropping what the store held of the old one, so the same store went on answering
   from the old generation: until `cache.genTtlMs` lapsed, and indefinitely with no timed refresh. They now
-  invalidate `dest` as `load()` does.
+  invalidate `dest` as `load()` does, and what that costs a pin is what a `load()` costs it: a pin of `dest` on the
+  same store drops its open reader and decoded chunks at each of them, one its guard refuses included, and reads
+  them again. If that call's `keep` collected its generation, it then fails even for a chunk it had read.
 - **A cold `has()` could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
   it fetches a chunk, a read looks up each operand's version, and that lookup did not heal a swept generation the
   way a chunk fetch and `currentGeneration()` do. `count`, `iterate` and `intersect` survived the same race, since

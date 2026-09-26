@@ -686,8 +686,8 @@ describe('store.dropSegment (facade)', () => {
 
 describe('gcOrphanGenerations on a destroyed segment', () => {
   it('collects EVERY generation, because a tombstoned segment has no reader to protect', async () => {
-    // The grace window exists for readers pinned to a just-superseded generation. A destroyed segment resolves no
-    // generation at all, so nothing is or can become pinned — and nothing else would ever collect these: the
+    // The grace window exists for reads still fetching from a just-superseded generation. A destroyed segment
+    // resolves no generation at all, so nothing can read or pin one — and nothing else would ever collect these: the
     // reconcile path that deletes generations above `currentGen` returns early on a destroyed row. Without this,
     // a residual left by a drop whose sweep failed is billed forever.
     const w = await world();

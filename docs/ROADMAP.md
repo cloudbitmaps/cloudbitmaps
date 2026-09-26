@@ -242,7 +242,8 @@ between here and there:
    generation once and reads from it for as long as the handle lives, so an export, a reconciliation or a send
    describes a single instant rather than whichever generations happened to be current as it went. Generation
    GC's grace window (`keep`) never provided this: of the four things that move a long read to another
-   generation, a larger `keep` removes one, the sweep's heal, and leaves the TTL, evictions and invalidations.
+   generation, a larger `keep` removes one, the sweep's heal, except after an erasure, whose rewrite collects the
+   erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
    Size `keep` past your longest pinned job — a pinned read does not heal
    forward, it fails, which is the honest failure for a caller that asked for one instant.
 5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry went from **89 value exports
