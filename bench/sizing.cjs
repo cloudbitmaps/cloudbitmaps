@@ -320,32 +320,9 @@ const LOAD_KEEPS = Number(
  */
 const VALKEY_DISCOUNT = 0.2;
 const ELASTICACHE_PRICING_URL = 'https://aws.amazon.com/elasticache/pricing/';
-/**
- * What each node type in the catalogue costs reserved, at the two ends of what AWS sells: one year with nothing
- * upfront (`oneYear`, dollars an hour) and three years paid all upfront (`threeYearsUpfront`, dollars once). Read
- * from the price list the catalogue cites, version 20260914063714, us-east-1, each type's `NodeUsage` SKU for Redis
- * OSS. On every row of that list a Valkey node's reserved price is its Redis one less VALKEY_DISCOUNT, exactly, so
- * the two stack. A type missing here is refused when priced, rather than priced on demand without saying so.
- */
-const RESERVED = {
-  'cache.t4g.micro': { oneYear: 0.011, threeYearsUpfront: 190 },
-  'cache.t4g.small': { oneYear: 0.022, threeYearsUpfront: 379 },
-  'cache.t4g.medium': { oneYear: 0.044, threeYearsUpfront: 771 },
-  'cache.m6g.large': { oneYear: 0.102, threeYearsUpfront: 1758 },
-  'cache.r6g.large': { oneYear: 0.141, threeYearsUpfront: 2434 },
-  'cache.r6g.xlarge': { oneYear: 0.281, threeYearsUpfront: 4867 },
-  'cache.r6g.2xlarge': { oneYear: 0.561, threeYearsUpfront: 9733 },
-  'cache.r6g.4xlarge': { oneYear: 1.121, threeYearsUpfront: 19466 },
-  'cache.r6g.8xlarge': { oneYear: 2.241, threeYearsUpfront: 38931 },
-  'cache.r6g.12xlarge': { oneYear: 3.362, threeYearsUpfront: 58396 },
-  'cache.r6g.16xlarge': { oneYear: 4.482, threeYearsUpfront: 77862 },
-  'cache.r6gd.xlarge': { oneYear: 0.531, threeYearsUpfront: 9229.86 },
-  'cache.r6gd.2xlarge': { oneYear: 1.061, threeYearsUpfront: 18437.27 },
-  'cache.r6gd.4xlarge': { oneYear: 2.121, threeYearsUpfront: 36874.54 },
-  'cache.r6gd.8xlarge': { oneYear: 4.243, threeYearsUpfront: 73749.08 },
-  'cache.r6gd.12xlarge': { oneYear: 6.363, threeYearsUpfront: 110601.16 },
-  'cache.r6gd.16xlarge': { oneYear: 8.485, threeYearsUpfront: 147475.7 },
-};
+// What each catalogue node type costs reserved, read from AWS's price list on its full key and held to it by
+// bench/check-elasticache-prices.cjs. A type missing there is refused when priced, never priced on demand unsaid.
+const { RESERVED } = require('./lib/elasticache-prices.cjs');
 /** A term's cost an hour: the hourly charge, or the upfront one spread over the term's 3 × 8,760 hours. */
 const RESERVED_TERMS = {
   oneYear: (r) => r.oneYear,
@@ -379,6 +356,19 @@ function redisPricedAs({ valkey = false, replicas = CATALOGUE.replicasPerShard, 
     },
   };
 }
+
+/** Redis bought every cheaper way the pages price: as Valkey, with one replica a shard, on `term`. */
+const cheapestRedis = (term) => redisPricedAs({ valkey: true, replicas: 1, reserved: term });
+/**
+ * The deployments whose Redis, bought every cheaper way on three years paid upfront, costs no more than they do: the
+ * ones where the verdict reverses. Computed once, so every page that says where it reverses says the same thing.
+ */
+const REVERSED = PROFILES.filter(
+  (p) => price(p).monthlyUSD.total >= redisOf(p, cheapestRedis('threeYearsUpfront')).monthlyUSD,
+).map((p) => p.id);
+/** "medium", "medium and large", "small, medium and large". */
+const andList = (items) =>
+  items.length === 1 ? items[0] : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 
 /** A pure cold-intersect workload of the calibration run's shape, at one size of data. */
 function coldAt(sizeBytes, perSec) {
@@ -627,7 +617,12 @@ function render() {
     `in production. Toward CloudBitmaps: the nodes are on-demand, every shard has ${replicaWords}, the engine is ` +
     'Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or ' +
     '[ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each ' +
-    'cost less, and against them the saving is smaller.';
+    'cost less, and against them the saving is smaller' +
+    (REVERSED.length === 0
+      ? '.'
+      : `: bought all three ways, on three years paid upfront, the ${andList(REVERSED)} ` +
+        `${REVERSED.length === 1 ? "deployment's" : "deployments'"} Redis costs less than CloudBitmaps ` +
+        '([what it saves](why-cloudbitmaps.md#the-short-answer)).');
   const leaningsSizing =
     `**Which way the Redis price leans.** ${leanings} To compare with one cluster you name, pass ` +
     '`pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.';
@@ -905,19 +900,14 @@ function render() {
     list3(three.map(({ p, total }) => versus(total, redisOf(p, pricing).monthlyUSD)));
   // Reserved nodes stack on Valkey and one replica, and at three years they can reverse the verdict: say where, in
   // words the numbers decide, rather than leave "1.30× as much" for the reader to notice in a list.
-  const reservedOn = (term) => redisPricedAs({ valkey: true, replicas: 1, reserved: term });
-  const dearer = three
-    .filter(({ p, total }) => total >= redisOf(p, reservedOn('threeYearsUpfront')).monthlyUSD)
-    .map(({ p }) => p.id);
-  const dearerAt =
-    dearer.length === 1 ? dearer[0] : `${dearer.slice(0, -1).join(', ')} and ${dearer.at(-1)}`;
   const reservedNote =
     'Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs ' +
-    `${againstEach(reservedOn('oneYear'))}, and on three years paid upfront, ` +
-    `${againstEach(reservedOn('threeYearsUpfront'))}` +
-    (dearer.length === 0
+    `${againstEach(cheapestRedis('oneYear'))}, and on three years paid upfront, ` +
+    `${againstEach(cheapestRedis('threeYearsUpfront'))}` +
+    (REVERSED.length === 0
       ? '.'
-      : `, so a Redis bought all three ways costs less than CloudBitmaps at the ${dearerAt} ${dearer.length === 1 ? 'size' : 'sizes'}.`);
+      : `, so a Redis bought all three ways costs less than CloudBitmaps at the ${andList(REVERSED)} ` +
+        `${REVERSED.length === 1 ? 'size' : 'sizes'}.`);
   const redisKind =
     "Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds " +
     `the data, every shard a primary and ${words(CATALOGUE.replicasPerShard)} replicas: the cheapest of one kind, not ` +
