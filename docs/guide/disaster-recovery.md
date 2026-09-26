@@ -182,8 +182,8 @@ generation it resolved — restart those readers, or `store.invalidate(ref)` the
 of the procedure. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
 predecessor on return) re-resolves on its next read; that is the documented cost of physical deletion on return,
 not a fault. A `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading
-its own generation while that object is there, and once the object is gone or replaced it fails with
-`NotFoundError` rather than re-resolve. Take new pins after a restore.
+its own generation while that object is there, and once the object is gone or replaced it answers only from what it
+has already read, and fails with `NotFoundError` for the rest rather than re-resolve. Take new pins after a restore.
 
 ## Repair: an unstamped tombstone after a hard kill
 

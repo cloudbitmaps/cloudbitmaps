@@ -421,8 +421,9 @@ segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
 registry reads. `0` turns the timed refresh off: the store then re-resolves a segment only when its reader cache
-evicts it, its generation is swept, or it is invalidated — by this store's own `load`, `rollback` or `eraseSubject`,
-or by `store.invalidate(ref)` — so another process's publish reaches it with no bound at all. The cache is keyed by
+evicts it, when a read has to fetch from a generation a sweep deleted, or when it is invalidated — by this store's
+own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)` — so another process's
+publish reaches it with no bound at all. The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
 `intersect` — the generation is resolved **once**, before any chunk is fetched, and every chunk is a whole,
 checksum-verified chunk of one generation, so a load landing mid-call never tears a chunk. A long call can still
@@ -430,7 +431,7 @@ read its later chunks from another generation — if it straddles a TTL boundary
 mid-call, a sweep collects the generation it was reading, or the store invalidates the segment — and its answer then
 describes two instants ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one.
 Without a registry, a store finds the generation by listing the bucket when it opens a segment, and keeps it until
-the reader cache evicts that segment, a sweep deletes it, or it is invalidated (single-process/local use).
+the reader cache evicts that segment, a read finds it swept, or it is invalidated (single-process/local use).
 
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:
@@ -697,7 +698,7 @@ stale decoded chunk for a new generation. A `count()` is a single index read, so
 consistent. A **long** call is the one shape where the generation can move underneath you. A resolved snapshot
 is re-checked once the TTL elapses, and three things force a fresh resolve even sooner: the reader cache evicting
 an operand mid-call, a sweep collecting the generation the call was reading, and an invalidation (this store's own
-`load`, `rollback` or `eraseSubject`, or `store.invalidate(ref)`). So a long `intersect` across a publish may read
+`load`, `rollback`, `eraseSubject` or `*Into` writes, or `store.invalidate(ref)`). So a long `intersect` across a publish may read
 its later chunks from another generation: every chunk whole, immutable and checksum-verified, never torn, but the
 answer describing two instants rather than one, with nothing in the result saying so. `cache.genTtlMs: 0` removes
 only the timed re-check, so it is no way to get one instant. That is what a snapshot handle is for:
@@ -721,8 +722,8 @@ crypto-shredded, where reading empty is the documented outcome.
 `cache.genTtlMs`, so at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
 read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
 `intersect` does not need a sixty-second window. The exception is a source with no timed refresh — no clock
-injected, no registry, or `cache: { genTtlMs: 0 }` — whose snapshot lasts until an eviction, a sweep or an
-invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
+injected, no registry, or `cache: { genTtlMs: 0 }` — whose snapshot lasts until an eviction, a read that finds its
+generation swept, or an invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
 mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
@@ -737,9 +738,10 @@ Which gives:
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
 | a long job that must see **one** instant, not merely succeed | none of the above — see below |
 
-**What no value of `keep` gives you is a single instant.** The generation hop above is caused by
-*re-resolution*, not by collection: a read whose TTL elapses moves to the newer generation whether or not the
-old one still exists. Retaining more copies changes nothing about it. A job that needs one instant (an export,
+**What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
+collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
+another generation whether or not the old one still exists. Retaining more copies removes the sweep's heal and none
+of the rest. A job that needs one instant (an export,
 a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
@@ -1114,8 +1116,9 @@ answer it for you: there is no daemon and no bus, only stores that happen to poi
 | | when the id stops being readable |
 |---|---|
 | storage | on return — the generation holding it is deleted |
-| the store that performed the erasure | on return |
+| the store that performed the erasure | on return, and its pins then fail |
 | another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts it, or `store.invalidate(ref)` is called there |
 | another store with **no clock**, or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
@@ -1460,7 +1463,7 @@ because deleting the row is what makes the name writable again:
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
-`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "never refresh",
+`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer",
 and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 
 ## 14. Export / eject your data

@@ -130,7 +130,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
 
-    // A long-lived source pins gen 0 (resolved on first read).
+    // A long-lived source keeps gen 0, resolved on its first read: with no clock it has no timed refresh.
     const source = new CrbmStorageChunkSource(storage, { registry });
     const first = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);

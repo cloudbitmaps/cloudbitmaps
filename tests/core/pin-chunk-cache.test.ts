@@ -1,6 +1,7 @@
 import {
   MemoryStorage,
   CloudRoaring,
+  createBackend,
   CrbmStorageChunkSource,
   NotFoundError,
   TransientError,
@@ -109,6 +110,20 @@ async function pinnedViews(
   store.invalidate(REF); // drops decoded chunks and readers; the bucket is untouched
   const afterInvalidate = await observe(snap);
   return { pinned, afterInvalidate };
+}
+
+/** A backend holding `s` at generation 0, and a way to purge the name and load it again from outside the store. */
+async function purgeable(ids: number[]) {
+  const backend = new MemoryStorage();
+  const { storage, registry } = backend;
+  await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, ids, { registry });
+  await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, [7], { registry });
+  const reload = async (next: number[]): Promise<void> => {
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await registry.delete(REF);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, next, { registry });
+  };
+  return { backend, reload };
 }
 
 describe('a pin is never handed a chunk a live read fetched across a change of generation', () => {
@@ -389,7 +404,7 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     await w.publishGen1();
     w.clock.advance(TTL);
     const snap1 = await live.pin();
-    // Refused when the call is made, as its other arguments are; an async wrapper catches it either way.
+    // Refused when the combine is read, as its other errors are; each call here reads it, so each rejects.
     for (const call of [
       async () => collect(snap0.andNot([snap1])),
       async () => collect(snap0.intersect([snap1])),
@@ -439,20 +454,6 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     expect(gets).toBe(1);
   });
 
-  /** A backend holding `s` at generation 0, and a way to purge the name and load it again from outside the store. */
-  async function purgeable(ids: number[]) {
-    const backend = new MemoryStorage();
-    const { storage, registry } = backend;
-    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, ids, { registry });
-    await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, [7], { registry });
-    const reload = async (next: number[]): Promise<void> => {
-      for await (const key of storage.list(REF)) await storage.delete(key);
-      await registry.delete(REF);
-      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, next, { registry });
-    };
-    return { backend, reload };
-  }
-
   it('a pin whose segment was purged and loaded again fails, rather than read the new one beside the old', async () => {
     const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
     const NEW = [1, 2, 3, C + 5, C + 6, C + 7, 2 * C + 5];
@@ -499,7 +500,9 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     expect(await collect(before.intersect([after]))).toEqual([1, 2, 3]);
     await w.reload([9]);
     const other = await store.segment('s').pin();
-    await expect(collect(before.union([other]))).rejects.toThrow(/two incarnations of its name/);
+    await expect(collect(before.union([other]))).rejects.toThrow(
+      /pinned twice at generation 0, as two different objects/,
+    );
   });
 
   it('refuses when the combine is read, not when it is made, as its other arguments are', async () => {
@@ -510,19 +513,24 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     const snap1 = await w.store.segment('s').pin();
     const refused = snap0.andNot([snap1]); // no throw here
     await expect(collect(refused)).rejects.toThrow(ValidationError);
+    const intersected = snap0.intersect([snap1]); // nor here
+    await expect(collect(intersected)).rejects.toThrow(ValidationError);
     // Nothing is written by a materialisation whose combine is refused.
     const dest = w.store.segment('dest');
     await expect(snap0.intersectInto(dest, [snap1])).rejects.toThrow(ValidationError);
     expect(await dest.count()).toBe(0);
   });
 
-  it('reads through a pin built by hand without a fingerprint, the shape a PinnedAt had before it gained one', async () => {
+  it.each([
+    ['without a fingerprint', {}],
+    ['with a null one', { fingerprint: null }],
+  ])('reads through a pin built by hand %s, checked by version alone', async (_how, extra) => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
     const crbm = new CrbmStorageChunkSource(storage, { registry });
     // Typed without a `fingerprint`: if the field became required again, this file would stop compiling.
-    const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF) };
+    const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF), ...extra };
     const engine = new SegmentEngine({
       storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
       codec: roaringCodec,
@@ -547,5 +555,117 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     const snap = await w.store.segment('s').pin();
     expect(await snap.count()).toBe(GEN0.length);
     expect(faults).toBe(0);
+  });
+});
+
+describe('a pin knows its object on any store, and fails rather than tear', () => {
+  it('holds each incarnation apart on a store with no registry, where the version is the bare number', async () => {
+    const storage = new MemoryStorage().storage;
+    const OLD = [1, 2, C + 1, C + 2];
+    const NEW = [7, 8, C + 7, C + 8];
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
+    const store = new CloudRoaring({ storage });
+    const first = await store.segment('s').pin();
+    expect(await collect(first.iterate())).toEqual(OLD);
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, NEW);
+    // A new pin is of the object there now: not the first pin's reader, nor its cached chunks.
+    const second = await store.segment('s').pin();
+    expect(await collect(second.iterate())).toEqual(NEW);
+    store.invalidate(REF);
+    await expect(collect(first.iterate())).rejects.toThrow(
+      /no longer the object this handle pinned/,
+    );
+    expect(await collect(second.iterate())).toEqual(NEW);
+  });
+
+  it('answers from what it holds after its object is replaced, and fails with NotFoundError for the rest', async () => {
+    // One size, one layout: only the fingerprint's checksum tells the two objects apart.
+    const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
+    const NEW = [1, 2, C + 3, C + 4, 2 * C + 3];
+    const w = await purgeable(OLD);
+    const store = new CloudRoaring({ storage: w.backend });
+    const snap = await store.segment('s').pin();
+    expect(await snap.has(1)).toBe(true); // chunk 0, cached under the pin
+    await w.reload(NEW);
+    // The pinned instant's own index and chunks still answer; a chunk it never fetched is not there to fetch.
+    expect(await snap.count()).toBe(OLD.length);
+    expect(await snap.has(2)).toBe(true);
+    await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+    await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
+  });
+
+  it('fails a read torn by dropSegment on its own store, rather than return the part it read', async () => {
+    const w = await world();
+    const snap = await w.store.segment('s').pin();
+    const seen: number[] = [];
+    const read = async (): Promise<void> => {
+      for await (const id of snap.iterate()) {
+        seen.push(id);
+        if (seen.length === 2) await w.store.dropSegment(REF, { confirmSegment: 's' });
+      }
+    };
+    await expect(read()).rejects.toThrow(/which this handle pinned, can no longer be read/);
+    expect(seen.length).toBeLessThan(GEN0.length);
+    await expect(snap.count()).rejects.toThrow(NotFoundError);
+  });
+
+  it('refuses a materialisation that holds a segment twice before it reads anything, destination included', async () => {
+    const calls: string[] = [];
+    const counted = <T extends object>(target: T, name: string): T =>
+      new Proxy(target, {
+        get(t, prop, receiver) {
+          const v = Reflect.get(t, prop, receiver) as unknown;
+          if (typeof v !== 'function') return v;
+          return (...args: unknown[]) => {
+            calls.push(`${name}.${String(prop)}`);
+            return (v as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        },
+      });
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, GEN0, {
+      registry: backend.registry,
+    });
+    const clock = manualClock();
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(backend.storage, 'storage'),
+        registry: counted(backend.registry, 'registry'),
+      }),
+      cache: { genTtlMs: TTL },
+      seams: { clock },
+    });
+    const snap0 = await store.segment('s').pin();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 1 }, GEN1, {
+      registry: backend.registry,
+    });
+    clock.advance(TTL);
+    const snap1 = await store.segment('s').pin();
+    calls.length = 0;
+    for (const into of [
+      () => snap0.intersectInto(store.segment('dest'), [snap1]),
+      () => snap0.unionInto(store.segment('dest'), [snap1]),
+      () => snap0.andNotInto(store.segment('dest'), [snap1]),
+    ]) {
+      await expect(into()).rejects.toThrow(ValidationError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('reads its own materialisation at once, as it does its own load, with no timed refresh', async () => {
+    const w = await world({ cache: { genTtlMs: 0 } });
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [1, 2, C + 10], {
+      registry: w.registry,
+    });
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'dest', generation: 0 }, [5, 6, 7, 8], {
+      registry: w.registry,
+    });
+    const dest = w.store.segment('dest');
+    expect(await dest.count()).toBe(4); // read, so this store holds dest's reader
+    const r = await w.store.segment('s').intersectInto(dest, [w.store.segment('other')]);
+    expect(r.cardinality).toBe(3);
+    expect(await dest.count()).toBe(3);
+    expect(await collect(dest.iterate())).toEqual([1, 2, C + 10]);
   });
 });

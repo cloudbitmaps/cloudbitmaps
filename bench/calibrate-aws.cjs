@@ -21,8 +21,8 @@
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
- * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores pin their
- * pointers, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads it); what a
+ * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores never re-read
+ * their pointers on a timer, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads it); what a
  * client far from the region adds to the bill is transfer out, which this harness does not meter. LATENCY is
  * location-dependent: from outside the region it measures internet transit, which is why the July run's wall-clock was
  * withheld and why the first run of this harness — from a laptop — produced a p50 of 112 ms that describes the

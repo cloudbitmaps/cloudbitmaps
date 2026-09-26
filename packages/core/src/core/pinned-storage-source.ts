@@ -6,9 +6,10 @@
  * publish part-way through an export, a send or a reconciliation means the second half of the job describes a
  * different instant than the first — and nothing in the result says so.
  *
- * **A pin is a generation NUMBER, not a captured reader.** The number is immutable, so the reader behind it can
- * live in the shared bounded LRU and be evicted freely: re-opening at the same number reproduces the same
- * bytes. Holding the reader instead put every live pin outside the library's memory ceiling.
+ * **A pin is a generation number and the object it named, not a captured reader.** The reader behind it can live
+ * in the shared bounded LRU and be evicted freely: re-opening at the same number reopens the same object, or, if
+ * the name was purged and loaded again since, finds another one, which the pin's fingerprint refuses. Holding the
+ * reader instead put every live pin outside the library's memory ceiling.
  *
  * **Other segments are not pinned, and that is the contract, not an omission.** `snap.intersect([other])` reads
  * `snap` at its pinned generation and `other` at whatever is current. Pinning the whole query means pinning
@@ -125,8 +126,12 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
   currentVersion(ref: SegmentRef): Promise<string | null> {
     const pin = this.pinFor(ref);
     if (pin === undefined) return this.inner.currentVersion(ref);
-    // A live version starts with its generation number, so no live version can equal a pin's.
-    return Promise.resolve(pin.version === null ? null : `pin ${pin.version}`);
+    // A live version starts with its generation number, so no live version can equal a pin's. The fingerprint keeps
+    // two incarnations' pins apart where the version cannot: on a store with no registry it is the bare number.
+    if (pin.version === null) return Promise.resolve(null);
+    return Promise.resolve(
+      `pin ${pin.version}${pin.fingerprint == null ? '' : `#${pin.fingerprint}`}`,
+    );
   }
 
   exists(ref: SegmentRef): Promise<boolean> {

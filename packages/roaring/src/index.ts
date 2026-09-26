@@ -230,10 +230,11 @@ export interface CacheOptions {
    *
    * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
-   * evicts the segment, when a sweep deletes the generation it holds, and when it is invalidated, as its own
-   * `load`, `rollback` and `eraseSubject` do and {@link CloudRoaring.invalidate} does. What it gives up is the
-   * bound: another process's publish, erasure or drop reaches it only through one of those, whenever that is.
-   * To read one generation for as long as you need it, take a {@link Segment.pin}.
+   * evicts the segment, when a read has to fetch from a generation a sweep deleted, and when it is invalidated,
+   * as its own `load`, `rollback`, `eraseSubject` and `*Into` writes do and {@link CloudRoaring.invalidate} does.
+   * A read its caches can answer reaches nothing, so a sweep alone moves nothing. What it gives up is the bound:
+   * another process's publish, erasure or drop reaches it only through one of those, whenever that is. To read
+   * one generation for as long as you need it, take a {@link Segment.pin}.
    */
   readonly genTtlMs?: number;
   /**
@@ -875,18 +876,25 @@ export class CloudRoaring {
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     const deps = this.lifecycleDeps(op);
-    const result = await loadSegment(dest, ids, deps, {
-      ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
-      ...(options?.guard === undefined ? {} : { guard: options.guard }),
-      // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
-      // the rest. A materialisation has never collected: the guide states "**It deletes nothing.** The
-      // destination's previous generation stays in the bucket until you collect it", and the ownership table
-      // puts that call on the operator. Inheriting `load()`'s collection would have silently deleted the
-      // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
-      // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
-      keep: options?.keep ?? KEEP_EVERY_GENERATION,
-      ...(options?.audit === undefined ? {} : { audit: options.audit }),
-    });
+    let result: Awaited<ReturnType<typeof loadSegment>>;
+    try {
+      result = await loadSegment(dest, ids, deps, {
+        ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
+        ...(options?.guard === undefined ? {} : { guard: options.guard }),
+        // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
+        // the rest. A materialisation has never collected: the guide states "**It deletes nothing.** The
+        // destination's previous generation stays in the bucket until you collect it", and the ownership table
+        // puts that call on the operator. Inheriting `load()`'s collection would have silently deleted the
+        // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
+        // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.
+        keep: options?.keep ?? KEEP_EVERY_GENERATION,
+        ...(options?.audit === undefined ? {} : { audit: options.audit }),
+      });
+    } finally {
+      // As `load()` does: this store's view of `dest` is behind whatever just happened, and a throw can still have
+      // published first. Left alone, the store read its own write's predecessor: indefinitely, with no timed refresh.
+      this.engine.invalidate(dest);
+    }
     // Checked on `reason` alone, not `published && reason`: the compiler narrows a const through an equality
     // test, so after this throw `reason` is provably a `MaterializeRefusal` and the return below type-checks
     // without an assertion. `'superseded'` only ever accompanies `published: false` anyway.
@@ -1752,7 +1760,7 @@ const twoPins = (a: PinnedAt | undefined, b: PinnedAt | undefined): string => {
   const one = (p: PinnedAt | undefined): string =>
     p === undefined ? 'live' : `pinned at generation ${p.generation ?? 'none'}`;
   return a !== undefined && b !== undefined && a.generation === b.generation
-    ? `pinned at generation ${a.generation ?? 'none'} of two incarnations of its name`
+    ? `pinned twice at generation ${a.generation ?? 'none'}, as two different objects`
     : `${one(a)} and ${one(b)}`;
 };
 
@@ -1851,12 +1859,12 @@ export class Segment {
    * used as an *operand* is still read at its pin, never live.
    *
    * **One call reads a segment at one generation**, so a combine that holds this segment at two —
-   * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read.
-   * Materialise one side first, with `intersectInto(dest, [])`.
+   * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read, and an
+   * `*Into` of one throws before it reads anything. Materialise one side first, with `intersectInto(dest, [])`.
    *
    * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
-   * 0, so a pin of the old segment fails with `NotFoundError`, as a swept one does, rather than read the
-   * new segment's object of the same number.
+   * 0, so a pin of the old segment never reads the new one: what it has already read still answers, as the
+   * instant it pinned, and anything it would have to fetch fails with `NotFoundError`, as a swept pin's does.
    *
    * **It is a hold, not a lease.** Nothing here stops `gcOrphanGenerations` deleting the generation underneath
    * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
@@ -1864,9 +1872,18 @@ export class Segment {
    * job — see [Sizing `keep`](../../docs/guide/getting-started.md#sizing-keep) — or take the pin on a segment
    * you are not collecting.
    *
-   * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pin
-   * taken before a crypto-shred stops reading when the shred lands: the destroyed row is re-checked every time
-   * the pinned reader opens, so a pin cannot outlive the key it was using.
+   * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
+   * segment whose row is later dropped or destroyed fails rather than go empty part-way through a call. **A pin
+   * keeps the key its reader unwrapped for as long as that reader stays open.** A crypto-shred, erasure or drop in
+   * this store invalidates the pin, which then fails; one in another process reaches the pin only when that
+   * process's reader cache evicts it or {@link CloudRoaring.invalidate} is called there. No timed refresh bounds
+   * that, as none bounds anything else a pin holds.
+   *
+   * `pin()` reads the registry row and opens the generation at once, so it costs a tail read, and an unwrapped key
+   * for an encrypted segment, whether or not the pin is read; the pin's first read uses that reader. It retries a
+   * transient fault as the store's reads do, and heals a generation swept between the two, but it fails where the
+   * generation cannot be opened: `NotFoundError` for a pointer at a missing object, `IntegrityError` for a damaged
+   * or misfiled one.
    *
    * Needs a store built on the `.crbm` storage source (the default when you pass a backend or a raw driver). Throws
    * {@link UnsupportedError} on a store wired with a pre-built source that cannot pin.
@@ -1896,8 +1913,8 @@ export class Segment {
    *
    * On the read verbs an expired handle answers empty, which is the point of lazy expiry. On a *write* the same
    * rule would be destructive in a way nobody asks for: `a.intersectInto(dest, [b])` where `b`'s deadline has
-   * quietly passed publishes an **empty generation over `dest`** — a wipe, reported as a successful write, with
-   * the cause (a deadline on a handle somewhere) nowhere in the result. Reads degrade to empty; writes must not.
+   * quietly passed would, unrefused, replace `dest` with an **empty generation** — a wipe, reported as a successful
+   * write, with the cause (a deadline on a handle somewhere) nowhere in the result. Reads degrade to empty; writes must not.
    *
    * So every handle in the call is checked, `dest` included: an expired `dest` does not change the bytes written,
    * but a caller who put a deadline on the thing they are writing into has said something contradictory and is
@@ -2017,6 +2034,9 @@ export class Segment {
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('intersectInto', dest, [...others, ...(options?.exclude ?? [])]);
+    // Refused here, before `materialize` reads anything of `dest`, rather than when the load reads the combine: a
+    // broken destination would otherwise answer first, and hide the refusal behind its own error.
+    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]);
     return this.timed('intersectInto', () =>
       this.materialize(dest.ref, this.intersect(others, options), 'intersectInto', options),
     );
@@ -2065,6 +2085,7 @@ export class Segment {
     options?: MaterializeOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('unionInto', dest, [...others, ...(options?.exclude ?? [])]);
+    this.combineEngine([this, ...others, ...(options?.exclude ?? [])]); // as intersectInto: before any read
     return this.timed('unionInto', () =>
       this.materialize(dest.ref, this.union(others, options), 'unionInto', options),
     );
@@ -2109,6 +2130,7 @@ export class Segment {
     options?: AndNotIntoOptions,
   ): Promise<MaterializeResult> {
     this.refuseIfExpired('andNotInto', dest, excludes);
+    this.combineEngine([this, ...excludes]); // as intersectInto: before any read
     return this.timed('andNotInto', () =>
       this.materialize(dest.ref, this.andNot(excludes, options), 'andNotInto', options),
     );

@@ -58,7 +58,8 @@ function world() {
     });
   /**
    * Put `ids` in a segment the only way anything can: load them as its next generation and publish. A fresh
-   * `store()` per read, because a store pins each segment's resolved generation (the clock here never advances).
+   * `store()` per read, because a store re-reads a segment's pointer only on a timed refresh, and the clock here
+   * never advances.
    */
   const load = async (seg: string | SegmentRef, ids: readonly number[]): Promise<void> => {
     const ref = typeof seg === 'string' ? { segment: seg } : seg;

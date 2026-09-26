@@ -12,6 +12,7 @@ import {
   createBackend,
 } from '@/index';
 import { SafeBitmap, roaringCodec } from '@/roaring-codec';
+import { verifyGeneration } from '@/core/crbm-storage-source';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { segment: 's' };
@@ -212,6 +213,21 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
 
+  it('pinGeneration retries only a NotFoundError: a misfiled object fails pin() on the first open', async () => {
+    const storage = freshStorage();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
+    const tail = await storage.getTail({ ...SEG, generation: 0 }, 1 << 20);
+    await storage.putImmutable({ ...SEG, generation: 1 }, async (sink) => {
+      await sink.write(tail.bytes);
+    });
+    await registry.compareAndSwap(SEG, (await registry.get(SEG))!.token, { currentGen: 1 });
+    const c = counting(storage, registry);
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
+    await expect(source.pinGeneration(SEG)).rejects.toThrow(IntegrityError);
+    expect(c.calls).toEqual({ regGet: 1, getTail: 1 });
+  });
+
   it('an error that is NOT NotFound propagates on the first attempt, unretried', async () => {
     // The widened `try` now encloses the registry read and the reader open, so it could have swallowed faults
     // that have nothing to do with a swept generation. Only `NotFoundError` may be retried.
@@ -282,5 +298,43 @@ describe("a generation's footer must name the generation it is stored as", () =>
       eraseIdFromSegment(SEG, 1, { storage, registry, codec: roaringCodec }),
     ).rejects.toThrow(IntegrityError);
     expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published
+  });
+
+  it('refuses it in the load guard, which reads the current generation before a load replaces it', async () => {
+    const { storage, registry } = await misfiled(0, 1);
+    const store = new CloudRoaring({ storage: createBackend({ storage, registry }) });
+    await expect(store.load(SEG, [1, 2, 3])).rejects.toThrow(IntegrityError);
+    expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published over it
+  });
+
+  it("refuses it in the erasure's search of superseded generations for an id the current one lacks", async () => {
+    const storage = freshStorage();
+    const registry = new MemoryRegistryDriver();
+    // Generation 0 holds the id, generation 1 is current without it: the erasure then looks in generation 0.
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 2 }, [1, 2, 9]); // written, never published
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 9], { registry });
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2], { registry });
+    // …and finds there an object whose footer names generation 2.
+    const misplaced = await storage.getTail({ ...SEG, generation: 2 }, 1 << 20);
+    await storage.delete({ ...SEG, generation: 0 });
+    await storage.delete({ ...SEG, generation: 2 });
+    await storage.putImmutable({ ...SEG, generation: 0 }, async (sink) => {
+      await sink.write(misplaced.bytes);
+    });
+    await expect(
+      eraseIdFromSegment(SEG, 9, { storage, registry, codec: roaringCodec }),
+    ).rejects.toThrow(/generation 0: its footer says generation 2/);
+  });
+
+  it('refuses it when a write re-reads what it wrote', async () => {
+    const { storage } = await misfiled(0, 1);
+    await expect(
+      verifyGeneration(
+        storage,
+        { ...SEG, generation: 1 },
+        { chunkKeys: [0], cardinality: 3 },
+        undefined,
+      ),
+    ).rejects.toThrow(/generation 1: its footer says generation 0/);
   });
 });

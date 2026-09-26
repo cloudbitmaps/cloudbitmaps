@@ -133,7 +133,7 @@ function projectOps({
   const putPerLargeLoad = 2 + partsPerLargeLoad + retryBound;
   // A read, per operand: resolve the pointer, read the footer and the index, then one GET per chunk fetched.
   // Three fixed GETs is the generous reading of "open a generation": the pointer, the tail read, and a second read
-  // for an index longer than the tail. The pointer is read once only because the timed store pins it
+  // for an index longer than the tail. The pointer is read once only because the timed store has no timed refresh
   // (`TIMED_STORE`) — on the default 2 s refresh, an intersect slower than that reads it again, and the median
   // intersect of run 2026-09-23-94416, from a laptop, used exactly this allowance. The end-of-run check keeps it
   // honest.

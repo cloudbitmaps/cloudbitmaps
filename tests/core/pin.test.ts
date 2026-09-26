@@ -10,7 +10,7 @@ import {
   gcOrphanGenerations,
 } from '@/index';
 import { destroySegment } from '@/core/erasure';
-import { UnsupportedError } from '@/core/errors';
+import { NotFoundError, UnsupportedError } from '@/core/errors';
 import type { SegmentRef } from '@/index';
 
 /**
@@ -110,7 +110,7 @@ describe('pin holds one segment at one generation', () => {
     expect(await w.store.segment('s').has(2)).toBe(false);
   });
 
-  it('a pin taken before a crypto-shred stops reading when the shred lands', async () => {
+  it('a pin taken before a crypto-shred fails once its store is told, rather than read empty part-way', async () => {
     const keystore = new InProcessKeystore({
       keys: { k1: new Uint8Array(32).fill(7) },
       activeKeyId: 'k1',
@@ -120,10 +120,13 @@ describe('pin holds one segment at one generation', () => {
     expect(await snap.count()).toBe(3);
 
     await destroySegment(REF, { registry: w.registry }, { confirmSegment: 's' });
-    w.store.invalidate(REF); // the shred happened beside the store
+    // The shred happened beside the store, which holds the pin's reader and the key it unwrapped until told. A pin
+    // in a store that is never told keeps both until its reader is evicted: the documented cost of a snapshot.
+    w.store.invalidate(REF);
 
-    expect(await snap.count()).toBe(0);
-    expect(await collect(snap.iterate())).toEqual([]);
+    // A pin describes one instant, so it fails rather than go empty: a read torn by a shred would say nothing.
+    await expect(snap.count()).rejects.toThrow(/which this handle pinned, can no longer be read/);
+    await expect(collect(snap.iterate())).rejects.toThrow(NotFoundError);
   });
 
   it('the pinned reader is bounded by the same LRU — a pin costs a number, not an index', async () => {
@@ -146,7 +149,7 @@ describe('pin holds one segment at one generation', () => {
     for (let i = 0; i < 12; i++) expect(await pins[i]!.has(i)).toBe(true);
   });
 
-  it('a transient fault does not poison a pin for good', async () => {
+  it('a transient fault does not poison a pin for the rest of its life', async () => {
     // The memoized-rejection bug: `this.reader ??= open()` cached a REJECTED promise, so one fault made the pin
     // the single read path in the library with no resilience.
     const real = new MemoryStorageDriver();
