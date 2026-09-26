@@ -705,6 +705,28 @@ describe('what a pin says when its object changes under it, and what pinning cos
     },
   );
 
+  it("reads a driver's range error by its brand, as one from another copy of core would be thrown", async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    const SPREAD = Array.from({ length: 12 }, (_, k) => k * C + 1);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, SPREAD, { registry });
+    const store = new CloudRoaring({ storage: backend });
+    const snap = await store.segment('s').pin();
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await registry.delete(REF);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1], { registry });
+    // What a driver package with its own copy of core throws: the brand and the name, not this copy's class.
+    const range = storage.getRange.bind(storage);
+    storage.getRange = (key, offset, length) =>
+      range(key, offset, length).catch((err: Error) => {
+        throw Object.assign(new Error(err.message), {
+          name: 'ValidationError',
+          [Symbol.for('cloud-roaring.error')]: true,
+        });
+      });
+    await expect(snap.has(11 * C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+  });
+
   it('reports a replaced object as replaced when the reopen that finds it first meets a transient fault', async () => {
     const w = await purgeable(OLD);
     const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
@@ -810,6 +832,146 @@ describe('what a pin says when its object changes under it, and what pinning cos
     for (let i = 0; i < 3; i += 1) await registryless.segment('s').pin();
     // Without a registry only the object can tell two incarnations of a name apart, so each pin reads it.
     expect(bareCalls.filter((c) => c === 'storage.getTail')).toHaveLength(3);
+  });
+
+  it('coalesces pins taken at the same moment onto one open, with a registry', async () => {
+    const keystore = new InProcessKeystore({
+      keys: { k1: new Uint8Array(32).fill(7) },
+      activeKeyId: 'k1',
+    });
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+      keystore,
+    });
+    const calls: string[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(backend.storage, 'storage', calls),
+        registry: backend.registry,
+      }),
+      encryption: { keystore: counted(keystore, 'keystore', calls) },
+    });
+    const pins = await Promise.all(Array.from({ length: 20 }, () => store.segment('s').pin()));
+    expect(calls.filter((c) => c === 'storage.getTail')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'keystore.openDek')).toHaveLength(1);
+    for (const snap of pins) expect(await snap.count()).toBe(OLD.length);
+  });
+
+  it('remembers that its object was replaced, so a later chunk read fails with no request', async () => {
+    const w = await purgeable(OLD);
+    const calls: string[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(w.backend.storage, 'storage', calls),
+        registry: counted(w.backend.registry, 'registry', calls),
+      }),
+    });
+    const snap = await store.segment('s').pin();
+    await w.reload(NEW); // through the raw backend: nothing counted
+    await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+    calls.length = 0;
+    await expect(snap.has(2 * C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+    expect(calls).toEqual([]);
+    // Its index still answers, as the instant it pinned.
+    expect(await snap.count()).toBe(OLD.length);
+  });
+
+  it("keeps the chunk's error when the object there now cannot be opened with this store's keys", async () => {
+    const mine = new InProcessKeystore({
+      keys: { k1: new Uint8Array(32).fill(7) },
+      activeKeyId: 'k1',
+    });
+    const theirs = new InProcessKeystore({
+      keys: { k2: new Uint8Array(32).fill(9) },
+      activeKeyId: 'k2',
+    });
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, {
+      registry,
+      keystore: mine,
+    });
+    const store = new CloudRoaring({ storage: backend, encryption: { keystore: mine } });
+    const snap = await store.segment('s').pin();
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await registry.delete(REF);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, NEW, {
+      registry,
+      keystore: theirs,
+    });
+    // The reopen cannot unwrap the new object's key, which says nothing about which object it is: the checksum's
+    // error stands, rather than a key error about a key the pin never used.
+    await expect(snap.has(C + 1)).rejects.toThrow(IntegrityError);
+  });
+
+  it('retries a transient fault during the reopen, and still reports damage as damage', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    let damaged = false;
+    const range = backend.storage.getRange.bind(backend.storage);
+    backend.storage.getRange = async (key, offset, length) => {
+      const bytes = await range(key, offset, length);
+      if (!damaged) return bytes;
+      const flipped = Uint8Array.from(bytes);
+      flipped[0]! ^= 0xff;
+      return flipped;
+    };
+    const store = new CloudRoaring({ storage: backend, seams: { clock: manualClock() } });
+    const snap = await store.segment('s').pin();
+    damaged = true;
+    let faults = 1;
+    const get = backend.registry.get.bind(backend.registry);
+    backend.registry.get = (ref) => {
+      if (faults === 0) return get(ref);
+      faults -= 1;
+      return Promise.reject(new TransientError('registry blip'));
+    };
+    await expect(snap.has(1)).rejects.toThrow(/payload CRC mismatch/);
+    expect(faults).toBe(0);
+  });
+
+  it('pays for the reopen only on a checksum or range error, not on a transient one', async () => {
+    const w = await purgeable(OLD);
+    const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
+    const snap = await store.segment('s').pin();
+    const { storage, registry } = w.backend;
+    const calls: string[] = [];
+    let faults = 1;
+    const range = storage.getRange.bind(storage);
+    storage.getRange = (key, offset, length) => {
+      calls.push('getRange');
+      if (faults === 0) return range(key, offset, length);
+      faults -= 1;
+      return Promise.reject(new TransientError('range blip'));
+    };
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      calls.push('getTail');
+      return tail(key, maxBytes);
+    };
+    const get = registry.get.bind(registry);
+    registry.get = (ref) => {
+      calls.push('registry.get');
+      return get(ref);
+    };
+    // The fault is retried as it stands; nothing reopens the object to ask whether it is still the pinned one.
+    expect(await snap.has(C + 1)).toBe(true);
+    expect(calls).toEqual(['getRange', 'getRange']);
+  });
+
+  it('never hands a pin a reader a bare read memoised, on a store with no registry', async () => {
+    const storage = new MemoryStorage().storage;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
+    const crbm = new CrbmStorageChunkSource(storage);
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 0 }, 0)).not.toBeNull(); // memoises the old object
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, C + 1]);
+    const pin = await crbm.pinGeneration(REF);
+    expect(pin).not.toBeNull();
+    expect(await crbm.listChunkKeysAt(REF, 0, pin!)).toEqual([0, 1]);
   });
 
   it('reads its own materialisation even when the call throws after its publish landed', async () => {

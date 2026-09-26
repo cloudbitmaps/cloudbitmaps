@@ -15,7 +15,10 @@ import {
   NotFoundError,
   ValidationError,
   WriteConflictError,
+  isIntegrityError,
   isNotFoundError,
+  isTransientError,
+  isValidationError,
   isWriteConflictError,
 } from './errors';
 import type { BlobReader } from './blob';
@@ -192,6 +195,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * steady-state memory bound; re-opening an evicted segment is one cheap tail GET.
    */
   private readonly snapshots: BoundedLru<string, Snapshot>;
+  /**
+   * Pinned readers found to be of an object that has since been replaced. A replaced object never comes back, so the
+   * verdict is kept against the reader, and dies with it: the reader stays memoised for the index its pin's `count()`
+   * answers from, and its later chunk reads fail at once rather than repeat the check that found it.
+   */
+  private readonly replaced = new WeakSet<CrbmReader>();
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -430,16 +439,22 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     const version = versionOf(target.generation, target.lineage);
     // Opened now, not at the first pinned read, so the pin knows which object it holds: a name purged and loaded
     // again starts again at generation 0, and only the object itself tells the two apart. With a registry the
-    // version already does, since the row a name is loaded into again is a new row with a new token, so a pin of
-    // this version that is still open is this object's, and its reader is shared: N pins of one generation make one
-    // tail read and one key unwrap between them. Without a registry the version is the bare generation number,
-    // which two incarnations share, so every pin opens the object afresh and reads its fingerprint.
-    const open =
-      target.lineage === undefined ? undefined : this.snapshots.get(this.pinnedKey(ref, version));
-    const reader =
-      (await open?.reader.catch(() => null)) ?? (await this.openForTarget(ref, target));
-    if (reader === null) return null;
-    this.install(this.pinnedKey(ref, version, reader.fingerprint), Promise.resolve(reader));
+    // version already does, since the row a name is loaded into again is a new row with a new token, so every pin of
+    // this version shares one open. It is installed before it resolves, so pins taken at the same moment wait on it
+    // rather than each make their own: N pins of one generation make one tail read and one key unwrap between them,
+    // while the store keeps the reader. Without a registry the version is the bare generation number, which two
+    // incarnations share, so every pin opens the object afresh and reads its fingerprint.
+    let reader: CrbmReader | null;
+    if (target.lineage === undefined) {
+      reader = await this.openForTarget(ref, target);
+      if (reader === null) return null;
+      this.install(this.pinnedKey(ref, version, reader.fingerprint), Promise.resolve(reader));
+    } else {
+      const key = this.pinnedKey(ref, version);
+      reader = await (this.snapshots.get(key) ?? this.install(key, this.openForTarget(ref, target)))
+        .reader;
+      if (reader === null) return null;
+    }
     return { generation: target.generation, version, fingerprint: reader.fingerprint };
   }
 
@@ -530,6 +545,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     validateSegmentRef(ref);
     const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     if (reader === null) return null;
+    if (this.replaced.has(reader)) throw notThePinned(ref, generation);
     try {
       return await reader.getChunk(ref.chunkKey);
     } catch (err) {
@@ -537,23 +553,25 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // into bytes that are not its own, so the chunk fails its checksum or, when the new object is smaller, asks
       // for a range past its end, which every driver refuses with a ValidationError. Opened afresh, the object says
       // which it was: replaced, which is a pin's NotFoundError, or not, and the error stands. Only these two errors
-      // pay for the second open.
-      if (
-        held?.fingerprint === undefined ||
-        !(err instanceof IntegrityError || err instanceof ValidationError)
-      )
+      // pay for the second open. Told apart by their brands, not `instanceof`: the range error is a driver
+      // package's, which may carry a copy of core of its own.
+      if (held?.fingerprint === undefined || !(isIntegrityError(err) || isValidationError(err)))
         throw err;
       let now: CrbmReader | null;
       try {
         now = await this.openAt(ref, generation);
       } catch (reopen) {
-        // A generation gone is the pin's NotFoundError. Anything else is the reopen's own error, a transient fault
-        // above all, which the store's retries then see for what it is rather than as damage.
-        throw isNotFoundError(reopen) ? notThePinned(ref, generation) : reopen;
+        // A generation gone is the pin's NotFoundError, and a transient fault is the reopen's own, which the store's
+        // retries then see for what it is. Anything else, such as a key this store cannot unwrap for the object there
+        // now, says nothing about which object that is, so the chunk's own error stands.
+        if (isNotFoundError(reopen)) throw notThePinned(ref, generation);
+        if (isTransientError(reopen)) throw reopen;
+        throw err;
       }
-      // The stale reader stays memoised, since its index is what the pin's `count()` still answers from. So each
-      // chunk it has yet to fetch makes this check again: a range read and a reopen, and then this error.
-      if (now === null || now.fingerprint !== held.fingerprint) throw notThePinned(ref, generation);
+      if (now === null || now.fingerprint !== held.fingerprint) {
+        this.replaced.add(reader);
+        throw notThePinned(ref, generation);
+      }
       throw err;
     }
   }

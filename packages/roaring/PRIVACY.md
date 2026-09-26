@@ -110,8 +110,9 @@ which is why it is reported rather than swallowed.
 ### One process, and the rest of your fleet
 
 Erasure and crypto-shred are **immediate in storage and immediate in the store whose verb performed them**. They
-are not immediate in *other* stores, other processes' above all, and this library ships nothing that could make them
-so — there is no daemon, no bus, and no connection between two stores that happen to point at the same bucket.
+are not immediate in any *other* store, in the same process or another, and this library ships nothing that could
+make them so — there is no daemon, no bus, and no connection between two stores that happen to point at the same
+bucket.
 
 | | when the id stops being readable |
 |---|---|

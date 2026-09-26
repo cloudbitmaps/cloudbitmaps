@@ -341,7 +341,7 @@ The loaded store's own measurements are the next benchmark pass. The single-buck
 `A ∩ B` latency for two 500,000-id operands spanning ~2,000 chunks with 100 shared — the chunk-skipping ratio the
 at-scale section reports, at a quarter of its density; and every request the single-bucket topology bills, pointer
 reads and conditional PUTs included, counted attempt by attempt. Each intersect must return exactly the planned ids
-or no latency is reported, and each pins its store's pointers, so a cold intersect's request count does not move
+or no latency is reported, and each turns off its store's timed pointer refresh, so a cold intersect's request count does not move
 with the network. Every run records its own round-trip floor to the region and labels its latency in-region only
 below 30 ms — a line that keeps another continent out, not a neighbouring region, so the raw floor is recorded with
 it for a reader who wants a stricter one. Its run `2026-09-23-94416`, from a laptop, paid the cost side above. A run

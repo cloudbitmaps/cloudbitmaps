@@ -28,10 +28,11 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   `live.intersect([snap])` with nothing moved since the pin. Materialise one side first, with
   `intersectInto(dest, [])`.
 - **`pin()` opens the generation it pins**, so it fails where the pin's first read used to: `NotFoundError` for a
-  pointer at a missing object, `IntegrityError` for a damaged or misfiled one.
-- **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, and a
-  load onto a segment whose current generation is one fails its guard until that generation is repaired. Store such
-  an object again under the generation its footer names.
+  pointer at a missing object, `IntegrityError` for a damaged one.
+- **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, a pin
+  included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
+  roll the segment back to an earlier generation that opens, or load with `allowEmpty: true`, which does not read the
+  current generation.
 
 ### Added
 
@@ -201,17 +202,18 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
   `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now
   fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open, and answers from
-  the chunks it decoded while they stay cached. An erasure, drop or retirement through its own store invalidates it,
-  and it then fails; a `destroySegment` beside that store, or any of those in another process, reaches it only when
-  that store's reader cache evicts its reader and its chunk cache those chunks, or `invalidate()` is called there,
-  which the privacy notes now say.
+  the chunks it decoded while they stay cached. An erasure, drop or retirement through its own store invalidates a
+  pin of each segment it changes, and that pin then fails. A `destroySegment` beside that store, or any of those
+  through another store, in the same process or another, reaches it only when its reader cache evicts its reader and
+  its chunk cache evicts those chunks, or `invalidate()` is called on its store, which the privacy notes now say.
 - **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
   that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
   reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
   generation's reader as it pins, and reads the row once to do both; opening a pinned generation read the row twice.
-  With a registry, pins of one generation taken while its row is unchanged share that reader, as they did before, so
-  only the first costs a tail read, and a key unwrap for an encrypted segment, even if it is never read. Without a
-  registry every `pin()` makes the tail read, since only the object can tell two incarnations of a name apart there.
+  With a registry, pins of one generation taken while its row is unchanged share that reader while the store keeps
+  it open, as they did before, pins taken at the same moment included, so only the first costs a tail read, and a
+  key unwrap for an encrypted segment, even if it is never read. Without a registry every `pin()` lists the segment's
+  objects and makes the tail read, since only the object can tell two incarnations of a name apart there.
   A `pin()` whose generation is swept before it can
   open it, as a publish and a `keep: 0` sweep can do, pins the generation current then rather than fail.
 - **A store read its own materialisation's predecessor.** `intersectInto`, `unionInto` and `andNotInto` published a
@@ -230,10 +232,11 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   its key's number, and the chunk cache is keyed by it, so an object that disagrees — written under another key, or
   altered — now fails with `IntegrityError` wherever it is opened: by a read, a pin, the load guard, the erasure
   rewrite and its search of superseded generations, and a write's re-read of what it wrote. It was read as the
-  generation its footer claimed, and the erasure rewrite republished its content. A load onto a segment whose
-  current generation is misfiled now fails in its guard until that generation is repaired. The one way to write such
-  an object was `CrbmWriter`, public through 0.9.0, given one generation and stored under another, which was never a
-  valid object; store it again under the generation its footer names.
+  generation its footer claimed, and the erasure rewrite republished its content. A default load onto a segment
+  whose current generation is misfiled now fails in its guard: roll the segment back to an earlier generation that
+  opens, or load with `allowEmpty: true`, which does not read the current generation. The one way to write such an
+  object was `CrbmWriter`, public through 0.9.0, given one generation and stored under another, which was never a
+  valid object.
 
 ## [0.10.0] — 2026-09-21
 
