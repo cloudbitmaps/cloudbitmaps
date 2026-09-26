@@ -301,10 +301,11 @@ move it up.
   implementation reads both; a hand-rolled or cut-down reader may only have been tested against the cookie our
   objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
 - **The weaknesses, and a direction for each** — the [what it saves](guide/why-cloudbitmaps.md#what-is-planned-for-each-weakness)
-  page has them side by side. None is built; each that changes the public API is agreed before it is.
+  page has them side by side. None is built; each will be proposed in an issue on this repo before it is, and one that
+  changes the public API agreed there first.
   - **Coalesced reads**, the largest lever. Fetch neighbouring chunks, or a small segment whole, in one ranged GET,
     and check each chunk's checksum inside it, as today. A cold intersect's requests, and the chain they wait on,
-    would stop growing with the chunks it shares. Designed first and benchmarked on a layout that spreads the shared
+    would stop growing with the chunks it shares where those lie together. Designed first and benchmarked on a layout that spreads the shared
     chunks, since the calibration run's puts them side by side, which flatters coalescing.
   - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
     the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and

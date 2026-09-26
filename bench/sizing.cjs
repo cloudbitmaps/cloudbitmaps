@@ -92,7 +92,7 @@ const INTERSECT_CONCURRENCY = sourceConstant(
 );
 const { esc, logChart } = require('./lib/log-chart.cjs');
 const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
-const { normalize } = require('./lib/calibration-figures.cjs');
+const { plain } = require('./lib/calibration-figures.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
 const COST_TS = 'packages/core/src/core/cost.ts';
 const HOURS_PER_MONTH = sourceConstant(COST_TS, 'HOURS_PER_MONTH');
@@ -160,13 +160,14 @@ const QUOTAS_URL =
  * The shape every segment has: the calibration run's, about 2,000 chunks, and each cold intersect sharing 100 of them
  * with its other operand, so `chunksPerIntersect` is 200. A larger segment is modelled as holding its ids more densely,
  * not as sharing more chunks — the most favourable choice for large segments, which the overlap table below undoes.
- * Only up to a point: a chunk holds at most 65,536 ids and takes at most MAX_CHUNK_BYTES, a bitmap of that many bits,
- * whatever ids it holds, since a write keeps each chunk in its smallest form. A full chunk is one run and takes a
- * few bytes; the bitmap is the ceiling. So a deployment whose segments are larger than CHUNKS_PER_SEGMENT chunks at
- * that ceiling is refused rather than priced on a shape it cannot have.
+ * Only up to a point: a chunk holds at most 65,536 ids and takes at most MAX_CHUNK_BYTES whatever ids it holds, since a
+ * write keeps each chunk in its smallest form. That ceiling is a bitmap of 65,536 bits, 8,192 bytes, and the 16-byte
+ * header of its portable encoding: every other id of a chunk, which no run shortens, measures 8,208 bytes. A full chunk
+ * is one run and measures 15. So a deployment whose segments are larger than CHUNKS_PER_SEGMENT chunks at that
+ * ceiling is refused rather than priced on a shape it cannot have.
  */
 const CHUNKS_PER_SEGMENT = 2000;
-const MAX_CHUNK_BYTES = 65536 / 8;
+const MAX_CHUNK_BYTES = 65536 / 8 + 16;
 const SHARED_CHUNKS = 100;
 
 const PROFILES = [
@@ -316,15 +317,10 @@ const LOAD_KEEPS = Number(
     "load()'s default keep",
   )[1],
 );
-/**
- * How much less AWS prices an ElastiCache for Valkey node than a Redis OSS one:
- * https://aws.amazon.com/elasticache/pricing/. Not ours to check.
- */
-const VALKEY_DISCOUNT = 0.2;
 const ELASTICACHE_PRICING_URL = 'https://aws.amazon.com/elasticache/pricing/';
 // What each catalogue node type costs reserved, read from AWS's price list on its full key and held to it by
 // bench/check-elasticache-prices.cjs. A type missing there is refused when priced, never priced on demand unsaid.
-const { RESERVED } = require('./lib/elasticache-prices.cjs');
+const { RESERVED, VALKEY_DISCOUNT } = require('./lib/elasticache-prices.cjs');
 /** A term's cost an hour: the hourly charge, or the upfront one spread over the term's 3 × 8,760 hours. */
 const RESERVED_TERMS = {
   oneYear: (r) => r.oneYear,
@@ -488,6 +484,7 @@ const bytes = (n) => {
   return `${shown} ${unit}`;
 };
 const mib = (n) => `${int(n / MIB)} MiB`;
+const kib = (n) => `${Math.round(n / 1024)} KiB`;
 const pct = (x) => `${Math.round(x * 100)}%`;
 /** Dollars and cents, rounded as `usd` rounds them. */
 const usd2 = (n) =>
@@ -510,9 +507,8 @@ function clusterLabel(b) {
 const rate = (n) => (n < 1 ? n.toPrecision(2) : n < 10 ? n.toFixed(1) : int(n));
 /** A multiple to two significant figures: 21×, 3.9×. */
 const times = (n) => `${Number(n.toPrecision(2))}×`;
-/** How far apart two rates are, as the table shows them, so a reader dividing its columns gets its answer. */
-const shownRatio = (to, from) =>
-  times(Number(rate(to).replace(/,/g, '')) / Number(rate(from).replace(/,/g, '')));
+/** A rate to three figures, for a table whose reader divides one column by another. */
+const rate3 = (n) => (n < 100 ? String(Number(n.toPrecision(3))) : int(n));
 /** The words each chart's image is described by, in the page and in its own aria-label. */
 function chartWords() {
   const d = chartData();
@@ -657,7 +653,7 @@ function render() {
   const exampleReverses =
     exampleCheaper.length === 0
       ? ''
-      : ' So does the Redis of the example above: bought all three ways, it costs ' +
+      : ' So does the Redis of the planning example above: bought all three ways, it costs ' +
         `${exampleCheaper.map((t) => `${usd2(t.usd)} a month ${t.words}`).join(', and ')}, where ` +
         `CloudBitmaps costs ${usd2(exampleTotal)}.`;
   const leaningsGuide =
@@ -674,7 +670,7 @@ function render() {
     ...PROFILES.map((p) => {
       const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
       const even = breakEvenRate(p);
-      return `| **${p.name}** | ${rate(now)} | ${rate(even)} | ${shownRatio(even, now)} |`;
+      return `| **${p.name}** | ${rate3(now)} | ${rate3(even)} | ${times(even / now)} |`;
     }),
   ];
 
@@ -712,7 +708,7 @@ function render() {
     `spread over about ${int(CHUNKS_PER_SEGMENT)} chunks, and every cold intersect of two segments sharing ` +
     `${int(SHARED_CHUNKS)} of them, so each fetches the shared chunks from both. A larger segment is modeled as ` +
     `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * MAX_CHUNK_BYTES)} its chunks can take, ` +
-    `${bytes(MAX_CHUNK_BYTES)} each, the most one takes whatever ids it holds, not as ` +
+    `about ${kib(MAX_CHUNK_BYTES)} each, the most one takes whatever ids it holds, not as ` +
     'sharing more chunks, which is the most favourable choice for large segments; ' +
     '[the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a ' +
     'long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, ' +
@@ -1008,11 +1004,11 @@ function render() {
         'grows with the queries',
       ],
       [
-        'each refresh    ──► a pointer GET, after cache.genTtlMs',
-        'one per segment per reader each genTtlMs',
+        "each refresh    ──► a reader's pointer GET, after genTtlMs",
+        'at most one a read, and one a genTtlMs',
       ],
       [
-        'each load       ──► S3 PUTs and LISTs, pointer GETs, a write',
+        'each load       ──► S3 PUTs and LISTs, GETs, a pointer write',
         'grows with how often the data changes',
       ],
     ]),
@@ -1102,7 +1098,7 @@ function render() {
     ...PROFILES.map((p) => {
       const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
       const even = breakEvenRate(p);
-      return `| **${p.name}** | ${bytes(sizeOf(p))} | ${rate(now)} | ${rate(even)} | **${shownRatio(even, now)}** |`;
+      return `| **${p.name}** | ${bytes(sizeOf(p))} | ${rate3(now)} | ${rate3(even)} | **${times(even / now)}** |`;
     }),
   ];
 
@@ -1122,8 +1118,9 @@ function render() {
   const chain = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
   const depth =
     `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests ` +
-    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, each from both ` +
-    `operands, with ${int(INTERSECT_CONCURRENCY)} in flight and the next starting as the oldest finishes. At an ` +
+    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, ` +
+    `${int(INTERSECT_CONCURRENCY)} at a time, each read from both operands together, so ` +
+    `${int(OPERANDS * INTERSECT_CONCURRENCY)} requests are in flight, and the next chunk starts as the oldest finishes. At an ` +
     `even latency that is ${int(chain)} request times end to end. A slow request holds up those queued behind it, ` +
     'so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request ' +
     'within `cache.genTtlMs`, and one round of pointer reads after it.';
@@ -1326,33 +1323,48 @@ function charts() {
  * requests, or the overlap formula. Nothing compares one with the estimator, so none may stand in the prose. Matched
  * on the text `prose()` leaves, with its entities decoded and its fullwidth forms folded, so `&#36;5`, `&#57;&#48;%`,
  * `９０％` and `3&times;` are figures, and in the words a page might use as well as its signs: `90 percent`, `90 pct`,
- * `66 times`, `66x`, `66-fold`, `twice as much`, `40 cents`, `40¢`, `21,445 USD`, `4,140 requests`. These are the
- * spellings it knows, not every one there is. A number after a second dot is part of a version, not a multiple:
- * `Redis 7.2.4 times out` is not 2.4 times anything.
+ * `66 times`, `three times`, `66x`, `66-fold`, `tenfold`, `twice as much`, `half the bill`, `40 cents`, `40¢`, `€5`,
+ * `21,445 USD`, `4,140 requests`, `200 chunk reads`, `4.1k GETs`, `12 LISTs`. These are the spellings it knows, not
+ * every one there is. "S3 times out", a version's number, "HTTP/2 requests" and "can double as" are not figures.
  */
+const NUMBER_WORD = String.raw`(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|fifty|a\s+hundred|a\s+thousand)`;
 const SHARE_OR_MULTIPLE = [
-  String.raw`\d[\d,.]*\s*[%×✕✖⨯]`,
-  String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:x\b|per[\s-]?cent\b|pct\b|times\b|-?fold\b)`,
-  String.raw`\bper[\s-]?cent\b`,
-  String.raw`\b(?:twice|thrice|double|triple)\s+(?:as|the)\b`,
+  String.raw`\d[\d,.]*\s*[%‰×✕✖⨯]`,
+  String.raw`[×✕✖⨯]\s?\d`,
+  // Not after a letter or a dot: "S3 times out" is no multiple, nor is the 2 of a version, 7.2.4.
+  String.raw`(?<![\w.])\d[\d,]*(?:\.\d+)?\s*(?:x\b|per[\s-]?cent\b|pct\b|times\b(?!\s+out\b)|-?fold\b|-times\b)`,
+  String.raw`\bper[\s-]?cent\b(?!-)`,
+  String.raw`\b(?:twice|thrice|double|triple|half)\s+(?:as\s+(?:much|many|large|big|high|long|expensive|costly|cheap|fast|slow)|the\s+(?:bill|cost|price|requests|GETs|rate|reads|bytes|size|money|load|figure|time|latency|memory|storage))\b`,
+  String.raw`\b${NUMBER_WORD}(?:\s+times\b(?!\s+out\b)|fold\b)`,
 ];
+/** A count of requests: of anything the bill counts, by its noun, whole or in thousands and millions. */
+const REQUEST_COUNT = String.raw`(?<![\w./])\d[\d,]*(?:\.\d+\s*(?:k|M|million|billion|thousand)\b|\s*(?:k|M|million|billion|thousand)\b)?\s+(?:(?:S3|pointer|chunk|index|tail|range|ranged|sized|conditional)\s+)?(?:GETs?|requests?|reads?)\b`;
 const FIGURE = new RegExp(
   [
     String.raw`(?:\$|\bUS\$|\bUSD)\s*\d`,
-    String.raw`\d\s*¢|¢\s*\d`,
+    String.raw`\d\s*[¢$€£¥]|[¢€£¥]\s*\d`,
     ...SHARE_OR_MULTIPLE,
-    String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:USD\b|(?:US\s+)?dollars?\b|cents?\b)`,
-    String.raw`\b\d+\s*\+\s*\d+\s*k\b`,
-    String.raw`\b\d[\d,]*\s+(?:GETs?|requests?)\b`,
+    String.raw`(?<![\w.])\d[\d,]*(?:\.\d+)?\s*(?:USD\b|(?:US\s+)?dollars?\b|cents?\b)`,
+    String.raw`\b\d+\s*\+\s*\d+\s*[·×*]?\s*k\b`,
+    REQUEST_COUNT,
   ].join('|'),
   'i',
 );
+/** A count of S3's other requests, which are only ever written in capitals: "1 list" is a word, "12 LISTs" a count. */
+const WRITE_COUNT = /(?<![\w./])\d[\d,]*\s*(?:k|M)?\s+(?:S3\s+)?(?:PUT|LIST|HEAD|DELETE|POST)s?\b/;
+/** The first figure in `text`, whichever pattern finds it. */
+function figureIn(text) {
+  const hits = [FIGURE.exec(text), WRITE_COUNT.exec(text)].filter((m) => m !== null);
+  return hits.length === 0 ? null : hits.reduce((a, b) => (b.index < a.index ? b : a));
+}
 /**
  * The pages that say so, and the part of each that does: the whole page, or one section of it. A page whose
  * section alone is generated keeps the rest of itself to the phrases listed here, each a measurement or a definition
- * quoted where it is explained, and a share or multiple anywhere else in it is refused, so a figure moved out of the
- * section is refused there too. A listed phrase the page no longer says is refused as well, rather than left to
- * allow a figure nobody is quoting. Its dollar amounts are `scripts/site-figures.cjs`'s to check.
+ * quoted where it is explained, once: a share or multiple anywhere else in it, a second copy of a listed phrase
+ * included, is refused, so one moved out of the section is refused there too. A listed phrase the page no longer
+ * says is refused as well, rather than left to allow a figure nobody is quoting. Its dollar amounts are
+ * `scripts/site-figures.cjs`'s to check. Its request counts are measured figures its calibration section quotes,
+ * which neither gate compares.
  */
 const GENERATED_PROSE = {
   'docs/guide/why-cloudbitmaps.md': null,
@@ -1380,49 +1392,103 @@ function blankRegions(doc, text) {
   }
   return { text: s, at };
 }
+/** A reference definition's line: a label, a colon, an address, and at most a quoted title. */
+const REF_DEF =
+  /^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|[^\s<>]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/;
+/** A tag as HTML has one: a name, then attributes by HTML's rules. `<about 95% at 2 TB>` is text, and is shown. */
+const TAG =
+  /<\/?[a-z][a-z0-9-]*(?:\s+[a-z_:][\w.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>/gi;
+const codePoint = (entity, n) => (n <= 0x10ffff ? String.fromCodePoint(n) : entity);
+/** An escaped character, held where no rule reads it as markup until the reading is done: `\<` opens no tag. */
+const inert = (c) => String.fromCharCode(0xe000 + c.charCodeAt(0));
+const INERT = /[\ue000-\ue07f]/g;
 /**
  * What a reader is given of some markdown, and only that: what a renderer takes away is taken away, and everything it
- * shows is kept. Comments go, and so does a reference definition, a line holding a label, a colon, an address and at
- * most a quoted title, which is read before any link is, so a line that opens with a link is not taken for one. A
- * footnote's `[^1]:` line is shown, as is a line that only looks like a definition, so both stay. Link targets,
- * autolinks and bare addresses go; a bare address ends where a dash or a bracket does, as none is part of one. Then
- * entities are decoded, fullwidth forms folded, and tags removed: a tag is `<` and a letter, so a `<` in a sentence
- * hides nothing.
+ * shows is kept. This reads markdown with rules, not a parser, for the constructs these pages use:
+ * - comments go, `<!-->` and `<!--->` among them;
+ * - a reference definition goes where a renderer drops one, which is not in the middle of a paragraph, and a
+ *   footnote's `[^1]:` line stays, since it is shown;
+ * - a link or an image is read as its text, so what follows it is read as it stands;
+ * - a backslash escape shows the character it escapes, and that character opens nothing: `\<span>` is text;
+ * - autolinks and bare addresses go, a bare one ending at a space, a quote, a bracket, a table cell's edge, a dash
+ *   or an escape;
+ * - tags go, and only tags: a `<` that opens none hides nothing, and neither does an entity or an escape spelling one;
+ * - entities are decoded, fullwidth forms folded, invisible characters dropped, and emphasis around a figure undone.
+ * A page that needs more than this should move it to a markdown parser.
  */
 function prose(text) {
-  return normalize(
-    text
-      .replace(/<!--[\s\S]*?-->/g, '')
+  const kept = [];
+  let paragraph = false; // whether the line before continues a paragraph, which a definition cannot interrupt
+  // Not a comment opened by an escaped `<`, which is text.
+  const uncommented = text.replace(/(?<=(?:^|[^\\])(?:\\\\)*)<!--(?:>|->|[\s\S]*?-->)/g, '');
+  for (const line of uncommented.split('\n')) {
+    if (!paragraph && REF_DEF.test(line)) {
+      kept.push('');
+      continue;
+    }
+    kept.push(line);
+    paragraph = line.trim() !== '' && !/^ {0,3}#{1,6}(?:\s|$)/.test(line);
+  }
+  return plain(
+    kept
+      .join('\n')
+      .replace(/\\([!-/:-@[-`{-~])/g, (_, c) => inert(c))
       .replace(
-        /^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|[^\s<>]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/gm,
-        '',
+        /!?\[([^\]\n]*)\]\(\s*(?:<[^<>\n]*>|(?:[^()\s]|\([^()\s]*\))*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)/g,
+        '$1',
       )
-      .replace(/\]\((?:[^()\s]|\([^()]*\))*\)/g, ']')
-      .replace(/<(?:https?|mailto):[^>\s]*>/g, '')
-      .replace(/\bhttps?:\/\/[^\s<>"'()[\]\u2013\u2014]+/g, '')
-      .replace(/&#(\d+);/g, (e, d) => (Number(d) <= 0x10ffff ? String.fromCodePoint(Number(d)) : e))
-      .replace(/&#x([0-9a-f]+);/gi, (e, h) =>
-        Number.parseInt(h, 16) <= 0x10ffff ? String.fromCodePoint(Number.parseInt(h, 16)) : e,
-      ),
+      .replace(/<(?:https?|mailto):[^>\s\ue000-\ue07f]*>/g, '')
+      .replace(/\bhttps?:\/\/[^\s<>"'()[\]|\u2013\u2014\ue000-\ue07f]+/g, '')
+      .replace(TAG, ' ')
+      .replace(/&#(\d+);/g, (e, d) => codePoint(e, Number(d)))
+      .replace(/&#x([0-9a-f]+);/gi, (e, h) => codePoint(e, Number.parseInt(h, 16)))
+      .replace(/&(?:shy|ZeroWidthSpace);/g, '')
+      .replace(/&(?:hairsp|VeryThinSpace);/g, ' ')
+      .replace(/&Cross;/g, '⨯')
+      .replace(/([\d%‰×])(?:\*\*|__|\*|_)+/g, '$1')
+      .replace(/(?:\*\*|__|\*|_)+(?=[\d$×])/g, ''),
   )
     .normalize('NFKC')
-    .replace(/<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>/gi, ' ');
+    .replace(/[\u00ad\u200b-\u200d\u2060\ufeff]/g, '')
+    .replace(/[\u2000-\u200a]/g, ' ')
+    .replace(INERT, (c) => String.fromCharCode(c.charCodeAt(0) - 0xe000));
 }
+/** A line that opens an HTML block with one of CommonMark's block tags, which may interrupt a paragraph. */
+const HTML_BLOCK_TAG = new RegExp(
+  String.raw`^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|` +
+    String.raw`details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|` +
+    String.raw`hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|` +
+    String.raw`section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|\/?>|$)`,
+  'i',
+);
+/** A whole tag alone on a line, which opens an HTML block too, but only after a blank line. */
+const HTML_LONE_TAG = /^ {0,3}(?:<[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>|<\/[a-z][a-z0-9-]*\s*>)\s*$/i;
 /**
- * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence, an HTML comment
- * or a `<pre>` is not a heading, so a quoted `## ` cannot cut the section short and leave what follows it unchecked.
- * Comments and `<pre>` blocks are blanked where they stand, so the offsets are still the page's.
+ * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence, an HTML comment,
+ * a `<pre>` or any other HTML block is not a heading, so a quoted `## ` cannot cut the section short and leave what
+ * follows it unchecked. An HTML block runs to the next blank line; comments and `<pre>` blocks are blanked where they
+ * stand, so the offsets are still the page's.
  */
 function sectionOf(doc, text, title) {
-  const headings = text.replace(/<!--[\s\S]*?-->|<pre\b[\s\S]*?<\/pre>/gi, (m) =>
+  const headings = text.replace(/<!--(?:>|->|[\s\S]*?-->)|<pre\b[\s\S]*?<\/pre>/gi, (m) =>
     m.replace(/[^\n]/g, ' '),
   );
   let at = 0;
   let fence = null;
   let start = -1;
+  let html = false;
+  let blank = true;
   for (const line of headings.split('\n')) {
     const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (fence === null && marker !== undefined) fence = marker;
+    if (html) {
+      if (line.trim() === '') html = false;
+    } else if (
+      fence === null &&
+      marker === undefined &&
+      (HTML_BLOCK_TAG.test(line) || (blank && HTML_LONE_TAG.test(line)))
+    ) {
+      html = true;
+    } else if (fence === null && marker !== undefined) fence = marker;
     else if (
       fence !== null &&
       marker !== undefined &&
@@ -1434,6 +1500,7 @@ function sectionOf(doc, text, title) {
       if (start >= 0) return { start, end: at };
       if (line === `## ${title}`) start = at;
     }
+    blank = line.trim() === '';
     at += line.length + 1;
   }
   if (start < 0)
@@ -1445,7 +1512,7 @@ function proseFigure(doc, text) {
   const scope = GENERATED_PROSE[doc];
   const { text: blank, at } = blankRegions(doc, text);
   if (scope === null) {
-    const hit = FIGURE.exec(prose(blank));
+    const hit = figureIn(prose(blank));
     return hit === null ? null : { figure: hit[0], where: 'outside its SIZING regions' };
   }
   const { start, end } = sectionOf(doc, blank, scope.section);
@@ -1456,7 +1523,7 @@ function proseFigure(doc, text) {
       );
     }
   }
-  const inside = FIGURE.exec(prose(blank.slice(start, end)));
+  const inside = figureIn(prose(blank.slice(start, end)));
   if (inside !== null) {
     return {
       figure: inside[0],
@@ -1471,7 +1538,7 @@ function proseFigure(doc, text) {
           `"${scope.section}" section: take it off that list`,
       );
     }
-    rest = rest.split(phrase).join(' ');
+    rest = rest.replace(phrase, ' '); // once: a second copy is a figure like any other
   }
   const m = new RegExp(SHARE_OR_MULTIPLE.join('|'), 'i').exec(rest);
   return m === null
@@ -1482,14 +1549,18 @@ function proseFigure(doc, text) {
       };
 }
 /**
- * The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>, in any case and with its
- * path's escapes undone, since `bench/%68and.SVG` is an image a browser shows too.
+ * The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>, in any case and however
+ * its path is spelled, since `bench/%68and.SVG`, `bench&#47;hand.svg` and `bench/hand\.svg` are images a browser
+ * shows too. A path with a space in it is not read.
  */
 const shownCharts = (text) => [
   ...new Set(
     text
       .replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
-      .match(/\bbench\/[\w./-]+\.(?:svg|png|jpe?g|webp|gif|avif)\b/gi) ?? [],
+      .replace(/&#(\d+);/g, (e, d) => codePoint(e, Number(d)))
+      .replace(/&#x([0-9a-f]+);/gi, (e, h) => codePoint(e, Number.parseInt(h, 16)))
+      .replace(/\\([!-/:-@[-`{-~])/g, '$1')
+      .match(/\bbench\/[\p{L}\p{N}_./~+-]+\.(?:svg|png|jpe?g|webp|gif|avif)\b/giu) ?? [],
   ),
 ];
 

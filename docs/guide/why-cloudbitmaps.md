@@ -1,9 +1,9 @@
 # What it saves, and where it doesn't
 
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
-comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page,
-AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it by CI, which
-refuses one typed anywhere else on the page in any spelling it knows. The prices are AWS's `us-east-1` list prices,
+comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
+written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
+by CI, which refuses one typed anywhere else on the page in any spelling it knows. The prices are AWS's `us-east-1` list prices,
 on demand unless a sentence says otherwise, and the three deployments are illustrative workloads, not anyone's
 measured system. There is no latency figure, because none has been measured inside a region yet.
 
@@ -84,8 +84,8 @@ The two bills charge for different things:
  │ all your data   ──► S3, $0.023 a GiB-month                   │ ──► under $0.01 to $42.84 a month here
  │ the hot part    ──► your readers' memory, a slice of it      │ ──► your own machines
  │ each cold read  ──► S3 GETs, $0.40 a million                 │ ──► grows with the queries
- │ each refresh    ──► a pointer GET, after cache.genTtlMs      │ ──► one per segment per reader each genTtlMs
- │ each load       ──► S3 PUTs and LISTs, pointer GETs, a write │ ──► grows with how often the data changes
+ │ each refresh    ──► a reader's pointer GET, after genTtlMs   │ ──► at most one a read, and one a genTtlMs
+ │ each load       ──► S3 PUTs and LISTs, GETs, a pointer write │ ──► grows with how often the data changes
  └──────────────────────────────────────────────────────────────┘
 ```
 <!-- SIZING:MONEY:END -->
@@ -145,8 +145,8 @@ it is. It is where the bills cross, not a capacity: S3's own request rate is a l
 <!-- SIZING:WHY_ROOM:START -->
 | | data | cold intersects a second | where the bill meets its Redis | room |
 |---|---:|---:|---:|---:|
-| **Small** | 200 MB | 0.0076 | 0.16 | **21×** |
-| **Medium** | 20 GB | 1.0 | 3.9 | **3.9×** |
+| **Small** | 200 MB | 0.00761 | 0.155 | **20×** |
+| **Medium** | 20 GB | 1 | 3.88 | **3.9×** |
 | **Large** | 2 TB | 20 | 116 | **5.8×** |
 <!-- SIZING:WHY_ROOM:END -->
 
@@ -161,7 +161,7 @@ A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a m
 **Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, each from both operands, with 8 in flight and the next starting as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, 8 at a time, each read from both operands together, so 16 requests are in flight, and the next chunk starts as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
 Neither is timed yet: the in-region run is owed.

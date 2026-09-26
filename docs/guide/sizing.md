@@ -37,7 +37,7 @@ it on the list of what is owed.
 <!-- SIZING:INPUTS:END -->
 
 <!-- SIZING:SHAPE:START -->
-Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, 0 MB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
+Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks can take, about 8 KiB each, the most one takes whatever ids it holds, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
 <!-- SIZING:SHAPE:END -->
 
 ## What each reader holds
@@ -100,8 +100,8 @@ held where it is:
 <!-- SIZING:HEADROOM:START -->
 | | cold intersects a second | where the bill meets its Redis | headroom |
 |---|---:|---:|---:|
-| **Small** | 0.0076 | 0.16 | 21× |
-| **Medium** | 1.0 | 3.9 | 3.9× |
+| **Small** | 0.00761 | 0.155 | 20× |
+| **Medium** | 1 | 3.88 | 3.9× |
 | **Large** | 20 | 116 | 5.8× |
 <!-- SIZING:HEADROOM:END -->
 
@@ -202,7 +202,8 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 ## What this page does not establish
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
-- **A warm reader's intersects.** They are priced cold, which is the most they can cost.
+- **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for a pointer re-read
+  by a call that outlives `cache.genTtlMs`, and a second index read for an index larger than the reader's tail read.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.

@@ -11,8 +11,16 @@ import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/core';
  */
 const ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
-const { RESERVED, nodePrices, nodeProduct } = require_('./lib/elasticache-prices.cjs') as {
+const { RESERVED, VALKEY_DISCOUNT, disagreements, nodePrices, nodeProduct } = require_(
+  './lib/elasticache-prices.cjs',
+) as {
   RESERVED: Record<string, { oneYear: number; threeYearsUpfront: number }>;
+  VALKEY_DISCOUNT: number;
+  disagreements: (
+    offer: object,
+    nodeTypes: ReadonlyArray<{ name: string; hourlyUSD: number }>,
+    reserved?: Record<string, { oneYear: number; threeYearsUpfront: number }>,
+  ) => string[];
   nodePrices: (offer: object, type: string, engine: string) => Record<string, number>;
   nodeProduct: (offer: object, type: string, engine: string) => string;
 };
@@ -30,7 +38,12 @@ const term = (length: string, option: string, dims: object) => ({
 
 function offer(
   extra: Record<string, object> = {},
-  terms: { onDemand?: object; reserved?: object } = {},
+  terms: {
+    onDemand?: object;
+    reserved?: object;
+    valkeyOnDemand?: string;
+    threeYearsHourly?: string;
+  } = {},
 ) {
   return {
     products: {
@@ -46,12 +59,15 @@ function offer(
         node: terms.onDemand ?? { t: { priceDimensions: { d: hourly('0.4110000000') } } },
         support: { t: { priceDimensions: { d: hourly('0.3290000000') } } },
         durability: { t: { priceDimensions: { d: hourly('0.0592000000') } } },
-        valkey: { t: { priceDimensions: { d: hourly('0.3288000000') } } },
+        valkey: { t: { priceDimensions: { d: hourly(terms.valkeyOnDemand ?? '0.3288000000') } } },
       },
       Reserved: {
         node: terms.reserved ?? {
           one: term('1yr', 'No Upfront', { h: hourly('0.2810000000') }),
-          three: term('3yr', 'All Upfront', { q: upfront('4867'), h: hourly('0.0000000000') }),
+          three: term('3yr', 'All Upfront', {
+            q: upfront('4867'),
+            h: hourly(terms.threeYearsHourly ?? '0.0000000000'),
+          }),
           // The terms the reader must pass over: every other purchase option, at both lengths.
           oneAll: term('1yr', 'All Upfront', { q: upfront('2336'), h: hourly('0.0000000000') }),
           onePartial: term('1yr', 'Partial Upfront', {
@@ -63,6 +79,11 @@ function offer(
             q: upfront('2530'),
             h: hourly('0.0960000000'),
           }),
+        },
+        // Valkey's, which is Redis's less a fifth on every term.
+        valkey: {
+          one: term('1yr', 'No Upfront', { h: hourly('0.2248000000') }),
+          three: term('3yr', 'All Upfront', { q: upfront('3893.6'), h: hourly('0.0000000000') }),
         },
       },
     },
@@ -156,6 +177,42 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
         expect(Math.max(...perUnit) / Math.min(...perUnit), `${family} ${term}`).toBeLessThan(1.02);
       }
     }
+  });
+
+  describe('the price check holds every rule the pages price by', () => {
+    const catalogue = [{ name: TYPE, hourlyUSD: 0.411 }];
+    const reserved = { [TYPE]: RESERVED[TYPE]! };
+
+    it('finds nothing wrong with a list that agrees', () => {
+      expect(disagreements(offer(), catalogue, reserved)).toEqual([]);
+    });
+
+    it("names a Valkey price that is not Redis's less the discount the pages use", () => {
+      expect(VALKEY_DISCOUNT).toBe(0.2);
+      expect(
+        disagreements(offer({}, { valkeyOnDemand: '0.3500000000' }), catalogue, reserved),
+      ).toEqual([`${TYPE}: Valkey's hourlyUSD is 0.35, not Redis's 0.411 less 20%`]);
+    });
+
+    it('names a catalogue price, or a reserved row, that the list does not bear out', () => {
+      expect(disagreements(offer(), [{ name: TYPE, hourlyUSD: 0.4 }], reserved)).toEqual([
+        `${TYPE}: on demand 0.411 an hour, where the catalogue says 0.4`,
+      ]);
+      const off = { [TYPE]: { ...RESERVED[TYPE]!, oneYear: 0.28 } };
+      expect(disagreements(offer(), catalogue, off)).toEqual([
+        `${TYPE}: oneYear is 0.281, where RESERVED says 0.28`,
+      ]);
+    });
+
+    it('names a three-year term that also charges by the hour, and rows on either side with no partner', () => {
+      expect(
+        disagreements(offer({}, { threeYearsHourly: '0.0100000000' }), catalogue, reserved),
+      ).toEqual([`${TYPE}: three years paid upfront also charges 0.01 an hour`]);
+      expect(disagreements(offer(), catalogue, {})).toEqual([`${TYPE}: no reserved row`]);
+      expect(
+        disagreements(offer(), catalogue, { ...reserved, 'cache.r9.huge': reserved[TYPE]! }),
+      ).toEqual(['cache.r9.huge: a reserved row for no catalogue node']);
+    });
   });
 
   it('holds a reserved row for every node the catalogue prices, and none it does not', () => {

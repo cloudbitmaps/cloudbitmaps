@@ -37,6 +37,13 @@ const RESERVED = Object.freeze({
   'cache.r6gd.16xlarge': { oneYear: 8.485, threeYearsUpfront: 147475.7 },
 });
 
+/**
+ * How much less AWS prices an ElastiCache for Valkey node than a Redis OSS one, on demand and on each reserved term:
+ * https://aws.amazon.com/elasticache/pricing/. `sizing.cjs` prices Valkey with it, and {@link disagreements} holds
+ * every row of the price list to it.
+ */
+const VALKEY_DISCOUNT = 0.2;
+
 /** The one product for a node type and engine: its `NodeUsage:<type>` SKU, or a refusal naming what was found. */
 function nodeProduct(offer, type, engine) {
   const skus = Object.entries(offer.products)
@@ -93,4 +100,49 @@ function nodePrices(offer, type, engine) {
   };
 }
 
-module.exports = { RESERVED, nodePrices, nodeProduct };
+/**
+ * Every way a price list disagrees with what the pages price: a catalogue node's on-demand price, a reserved row, a
+ * Valkey price that is not Redis's less {@link VALKEY_DISCOUNT}, or a three-year term that also charges by the hour.
+ * `nodeTypes` is the catalogue's, `reserved` the table the pages read.
+ */
+function disagreements(offer, nodeTypes, reserved = RESERVED) {
+  const wrong = [];
+  const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+  for (const { name, hourlyUSD } of nodeTypes) {
+    const redis = nodePrices(offer, name, 'Redis');
+    const valkey = nodePrices(offer, name, 'Valkey');
+    const row = reserved[name];
+    if (redis.hourlyUSD !== hourlyUSD) {
+      wrong.push(
+        `${name}: on demand ${redis.hourlyUSD} an hour, where the catalogue says ${hourlyUSD}`,
+      );
+    }
+    if (row === undefined) {
+      wrong.push(`${name}: no reserved row`);
+      continue;
+    }
+    for (const term of ['oneYear', 'threeYearsUpfront']) {
+      if (redis[term] !== row[term])
+        wrong.push(`${name}: ${term} is ${redis[term]}, where RESERVED says ${row[term]}`);
+    }
+    for (const term of ['hourlyUSD', 'oneYear', 'threeYearsUpfront']) {
+      if (!near(valkey[term], (1 - VALKEY_DISCOUNT) * redis[term])) {
+        wrong.push(
+          `${name}: Valkey's ${term} is ${valkey[term]}, not Redis's ${redis[term]} less ${VALKEY_DISCOUNT * 100}%`,
+        );
+      }
+    }
+    if (redis.threeYearsHourly !== 0) {
+      wrong.push(
+        `${name}: three years paid upfront also charges ${redis.threeYearsHourly} an hour`,
+      );
+    }
+  }
+  for (const name of Object.keys(reserved)) {
+    if (!nodeTypes.some((n) => n.name === name))
+      wrong.push(`${name}: a reserved row for no catalogue node`);
+  }
+  return wrong;
+}
+
+module.exports = { RESERVED, VALKEY_DISCOUNT, disagreements, nodePrices, nodeProduct };

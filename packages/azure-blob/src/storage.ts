@@ -174,7 +174,7 @@ export class AzureBlobStorageDriver implements IStorageDriver {
       // Two round-trips (properties for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). The Blob service takes no suffix range, only `bytes=start-` and `bytes=start-end`, so a
       // tail read needs the size first, and it stays two. This is on the per-*generation* open path, which the
-      // reader caches — NOT the per-op cache path (add/has/count/intersect) — so it's amortized.
+      // reader caches — NOT the per-op cache path (has/count/intersect) — so it's amortized.
       const props = await this.blob(objectName).getProperties();
       const size = props.contentLength ?? 0;
       if (!Number.isSafeInteger(size) || size < 0) {

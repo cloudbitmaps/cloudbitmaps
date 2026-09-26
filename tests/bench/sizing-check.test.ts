@@ -271,6 +271,37 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['９０％ less'],
       ['＄21,445 a month'],
       ['&#57;&#48;% less'],
+      ['&#x39;&#x30;% less'],
+      ['4,000 PUTs'],
+      ['12 LISTs'],
+      ['23 S3 GETs'],
+      ['200 chunk reads'],
+      ['2 pointer GETs'],
+      ['4.1k GETs'],
+      ['1M GETs'],
+      ['4 million requests'],
+      ['three times as much'],
+      ['10-times as much'],
+      ['tenfold'],
+      ['half as much'],
+      ['double the cost'],
+      ['triple the bill'],
+      ['thrice as much'],
+      ['twice the price'],
+      ['3 ✖ as much'],
+      ['3 ⨯ as much'],
+      ['3&Cross; as much'],
+      ['×3'],
+      ['5$ a month'],
+      ['€5 a month'],
+      ['950‰'],
+      ['4 + 2·k GETs'],
+      ['95&shy;% less'],
+      ['95&#8203;% less'],
+      ['95&hairsp;% less'],
+      ['95\\% less'],
+      ['4 \\+ 2k GETs'],
+      ['66\\-fold'],
     ])('fails %j typed outside a region, in a spelling it knows', (figure) => {
       refused(
         { [WHY]: why.replace('mostly cold.', `mostly cold: ${figure}.`) },
@@ -301,6 +332,37 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ],
       ['a mailto autolink', 'has the rest, and <mailto:ops-5x@example.org> answers.'],
       ['a version before a word', 'has the rest, and Redis 7.2.4 times out idle clients.'],
+      ['a timeout after a version', 'has the rest, and Redis 7.2 times out idle clients.'],
+      ['a service named with a digit', 'has the rest. If S3 times out, the reader retries.'],
+      [
+        'a service named with a digit, as a verb',
+        'has the rest. S3 times each request from its first byte.',
+      ],
+      ['a protocol version', 'has the rest, over HTTP/1.1 requests and HTTP/2 requests alike.'],
+      [
+        'a release number before a verb',
+        'has the rest. CloudBitmaps 1.0 requests no new permissions.',
+      ],
+      [
+        '"double" and "twice" as words',
+        'has the rest. It can double as a lock, twice as a check, twice the first time.',
+      ],
+      ['a percent-encoded path', 'has the rest, with percent-encoded paths.'],
+      ['a reference definition with a title', 'has the rest.\n\n[plan]: plans/a.md "10x faster"\n'],
+      [
+        'a reference definition in angle brackets',
+        'has the rest.\n\n[plan]: <plans/10x faster.md>\n',
+      ],
+      ['a tag in capitals', 'has the rest. <IMG WIDTH="50%" SRC="x.png" ALT="">'],
+      [
+        'a link with a title, which is a tooltip',
+        'has the rest. See [the prices](https://aws.amazon.com/pricing/ "95% less").',
+      ],
+      [
+        'a link to an address in angle brackets',
+        'has the rest. See [the plan](<plans/10x faster.md>).',
+      ],
+      ['a comment after an escaped backslash', 'has the rest. \\\\<!-- 95% less -->'],
     ])('passes %s', (_what, text) => {
       const r = sizingCheck({ [WHY]: why.replace('has the rest.', text) });
       expect(r.code, r.out).toBe(0);
@@ -324,6 +386,39 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ' On Node < 22.12 it cannot load; with it, loads are 40% faster, and a > b.',
       ],
       ['a figure glued to a bare address', ' See https://aws.amazon.com/pricing/—90% less.'],
+      [
+        'a parenthetical glued to a link',
+        ' See [the prices](https://aws.amazon.com/pricing/)(95% less than Redis).',
+      ],
+      ['the text after an empty comment', ' <!--> It costs 95% less. <!-- a note -->'],
+      ['the text after a comment of one dash', ' <!---> It costs 95% less. <!-- a note -->'],
+      [
+        'a definition-shaped line inside a paragraph',
+        '\n[It costs 95% less]: https://aws.amazon.com/pricing/\n',
+      ],
+      ['a tag spelled in entities, which is text', ' &#60;span data-x="95% less"&#62;'],
+      ['an escaped tag, which is text', ' \\<span data-x="95% less">'],
+      ['an escaped link, which is text', ' \\[a\\](95%)'],
+      ['an escaped comment, which is text', ' \\<!-- 95% less -->'],
+      ['an address that stops at an escape', ' See https://a.example/x\\(95% less\\).'],
+      ['an autolink that ends before an escape', ' See <https://a.example/x\\>95%>.'],
+      [
+        'a reference definition with text after its address',
+        '\n\n[Update]: plans/a.md then 95% less\n\n',
+      ],
+      ['a definition indented into a code block', '\n\n    [plan]: plans/10x.md\n\n'],
+      ['an autolink with a space, which is text', ' See <https://a.example/ 95% less>.'],
+      ['an address that stops at a parenthesis', ' See https://a.example/x(95% less).'],
+      ['an address that stops at a quote', ' See https://a.example/x"95% less.'],
+      ['an address that stops at an apostrophe', " See https://a.example/x'95% less."],
+      ['an address that stops at a bracket', ' See https://a.example/x[95% less].'],
+      [
+        'an address that stops at a table cell',
+        '\n\n| where | how much |\n|---|---|\n|https://aws.amazon.com/pricing/|95%|\n\n',
+      ],
+      ['a pseudo-tag, which is text', ' <about 95% at 2 TB>'],
+      ['a pseudo-tag spelled in entities', ' &#60;about 95% at 2 TB&#62;'],
+      ['a pseudo-tag in fullwidth brackets', ' ＜about 95% at 2 TB＞'],
     ])('fails a figure in %s', (_what, text) => {
       refused(
         { [WHY]: why.replace('mostly cold.', `mostly cold.${text}`) },
@@ -331,15 +426,20 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
     });
 
-    it.each([['bench/hand.SVG'], ['bench/hand.avif'], ['bench/%68and.svg']])(
-      'fails a page that shows %s, an image under bench/ no generator draws',
-      (image) => {
-        refused(
-          { [WHY]: why.replace('has the rest.', `has the rest. ![a chart](../../${image})`) },
-          /which no generator draws/,
-        );
-      },
-    );
+    it.each([
+      ['bench/hand.SVG'],
+      ['bench/hand.avif'],
+      ['bench/%68and.svg'],
+      ['bench/hand&#46;svg'],
+      ['bench&#47;hand.svg'],
+      ['bench/hand\\.svg'],
+      ['bench/café.svg'],
+    ])('fails a page that shows %s, an image under bench/ no generator draws', (image) => {
+      refused(
+        { [WHY]: why.replace('has the rest.', `has the rest. ![a chart](../../${image})`) },
+        /which no generator draws/,
+      );
+    });
 
     it('lets the README say its listed phrases, and no share or multiple besides', () => {
       // Under another heading, a share the list names is refused all the same where it is not the listed phrase.
@@ -357,6 +457,30 @@ describe('bench:sizing:check fails what it exists to catch', () => {
           new RegExp(`states "${figure}" outside its "Why CloudBitmaps" section`),
         );
       }
+      // A listed phrase is allowed once: said again as a new claim, it is a figure like any other.
+      refused(
+        {
+          [README]: readme.replace(
+            '## Your data stays yours',
+            '## Your data stays yours\n\nOn-demand Redis costs about twice the load figure.',
+          ),
+        },
+        /states "twice the load" outside its "Why CloudBitmaps" section/,
+      );
+      // Shares are read in any case.
+      refused(
+        {
+          [README]: readme.replace(
+            '## Your data stays yours',
+            '## Your data stays yours\n\nIt costs 90 PERCENT less.',
+          ),
+        },
+        /states "90 PERCENT" outside its "Why CloudBitmaps" section/,
+      );
+      // Emphasis on a listed phrase's figure is still that phrase.
+      const bolded = readme.replace('LIST bills at 12.5× a GET', 'LIST bills at **12.5×** a GET');
+      expect(bolded).not.toBe(readme);
+      expect(sizingCheck({ [README]: bolded }).code).toBe(0);
       // And a phrase the README stops saying is refused, rather than left to allow a figure nobody quotes.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in a few chunks') },
@@ -387,8 +511,16 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         },
         /states "95%" outside its SIZING regions, in its "Why CloudBitmaps" section/,
       );
-      // Nor is one in a comment or a <pre>, which a reader is not shown as a heading.
-      for (const quoted of ['<!--\n## draft\n-->', '<pre>\n## not a heading\n</pre>']) {
+      // Nor is one in a comment, a <pre> or any other HTML block, which a reader is not shown as a heading.
+      for (const quoted of [
+        '<!--\n## draft\n-->',
+        '<pre>\n## not a heading\n</pre>',
+        '<PRE>\n## not a heading\n</PRE>',
+        '<details>\n<summary>More</summary>\n## Note\n</details>',
+        '<details><summary>More</summary>\n## Note\n</details>',
+        '<div>\n## Note\n</div>',
+        '<picture>\n## not a heading\n</picture>',
+      ]) {
         refused(
           {
             [README]: readme
