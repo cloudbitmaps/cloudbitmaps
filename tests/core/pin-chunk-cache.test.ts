@@ -14,6 +14,7 @@ import {
 } from '@/index';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
+import { destroySegment } from '@/core/erasure';
 import { segmentKey } from '@/core/keys';
 import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
 import type { PinnedAt } from '@/core/pinned-storage-source';
@@ -727,24 +728,23 @@ describe('what a pin says when its object changes under it, and what pinning cos
     await expect(snap.has(11 * C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
   });
 
-  it('reports a replaced object as replaced when the reopen that finds it first meets a transient fault', async () => {
+  it('reports a replaced object as replaced when the footer read that finds it first meets a transient fault', async () => {
     const w = await purgeable(OLD);
     const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
     const snap = await store.segment('s').pin();
     await w.reload(NEW);
     let faults = 1;
-    const get = w.backend.registry.get.bind(w.backend.registry);
-    w.backend.registry.get = (ref) => {
-      if (faults === 0) return get(ref);
+    const tail = w.backend.storage.getTail.bind(w.backend.storage);
+    w.backend.storage.getTail = (key, maxBytes) => {
+      if (faults === 0) return tail(key, maxBytes);
       faults -= 1;
-      return Promise.reject(new TransientError('registry blip'));
+      return Promise.reject(new TransientError('tail blip'));
     };
-    // The fault is the reopen's, and is retried as a store's read is. Reported as the chunk's checksum, it was
-    // taken for damage and never retried.
+    // The fault is the check's, and is retried as a store's read is. Reported as the chunk's checksum, it was taken
+    // for damage and never retried.
     await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
     expect(faults).toBe(0);
   });
-
   it('says a replaced object is replaced when it is gone by the time the pin reopens it', async () => {
     const w = await purgeable(OLD);
     const store = new CloudRoaring({ storage: w.backend });
@@ -781,6 +781,67 @@ describe('what a pin says when its object changes under it, and what pinning cos
     // The reopen finds the same object, so the checksum's verdict stands: damage, not a replacement.
     await expect(snap.has(1)).rejects.toThrow(IntegrityError);
     await expect(snap.has(1)).rejects.toThrow(/payload CRC mismatch/);
+  });
+
+  it("keeps the chunk's own error when the footer read fails for a reason other than a transient fault", async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    let damaged = false;
+    const range = backend.storage.getRange.bind(backend.storage);
+    backend.storage.getRange = async (key, offset, length) => {
+      const bytes = await range(key, offset, length);
+      if (!damaged) return bytes;
+      const flipped = Uint8Array.from(bytes);
+      flipped[0]! ^= 0xff;
+      return flipped;
+    };
+    const tail = backend.storage.getTail.bind(backend.storage);
+    backend.storage.getTail = async (key, maxBytes) => {
+      const got = await tail(key, maxBytes);
+      if (!damaged) return got;
+      const bytes = Uint8Array.from(got.bytes);
+      bytes[bytes.length - 50]! ^= 0xff; // inside what the footer's CRC covers
+      return { ...got, bytes };
+    };
+    const store = new CloudRoaring({ storage: backend });
+    const snap = await store.segment('s').pin();
+    damaged = true;
+    // A footer that fails its own check says nothing about which object is there, so the chunk's error stands.
+    await expect(snap.has(1)).rejects.toThrow(/payload CRC mismatch/);
+  });
+
+  it('pins nothing, and reads empty, when it joins a reopen of its version that finds the row gone', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    const store = new CloudRoaring({ storage: backend });
+    const first = await store.segment('s').pin();
+    store.invalidate(REF); // so the first pin's next read opens its version again
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let gets = 0;
+    const get = registry.get.bind(registry);
+    registry.get = async (ref) => {
+      gets += 1;
+      if (gets === 1) await gate; // the first pin's reopen reads the row after the row is gone
+      return get(ref);
+    };
+    const settle = async (n: number): Promise<void> => {
+      for (let i = 0; i < 50 && gets < n; i += 1) await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    };
+    const read = first.has(1);
+    await settle(1);
+    const second = store.segment('s').pin(); // reads the row while it is live, then waits on the reopen
+    await settle(2);
+    await registry.delete(REF);
+    release();
+    await expect(read).rejects.toThrow(NotFoundError);
+    expect(await (await second).count()).toBe(0);
   });
 
   it('reads nothing, and throws nothing, for a generation read with no pin held once its row is gone', async () => {
@@ -877,7 +938,7 @@ describe('what a pin says when its object changes under it, and what pinning cos
     expect(await snap.count()).toBe(OLD.length);
   });
 
-  it("keeps the chunk's error when the object there now cannot be opened with this store's keys", async () => {
+  it('tells an object written under a key this store lacks from its own by the footer alone, and remembers it', async () => {
     const mine = new InProcessKeystore({
       keys: { k1: new Uint8Array(32).fill(7) },
       activeKeyId: 'k1',
@@ -892,7 +953,14 @@ describe('what a pin says when its object changes under it, and what pinning cos
       registry,
       keystore: mine,
     });
-    const store = new CloudRoaring({ storage: backend, encryption: { keystore: mine } });
+    const calls: string[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(storage, 'storage', calls),
+        registry: counted(registry, 'registry', calls),
+      }),
+      encryption: { keystore: counted(mine, 'keystore', calls) },
+    });
     const snap = await store.segment('s').pin();
     for await (const key of storage.list(REF)) await storage.delete(key);
     await registry.delete(REF);
@@ -900,12 +968,15 @@ describe('what a pin says when its object changes under it, and what pinning cos
       registry,
       keystore: theirs,
     });
-    // The reopen cannot unwrap the new object's key, which says nothing about which object it is: the checksum's
-    // error stands, rather than a key error about a key the pin never used.
-    await expect(snap.has(C + 1)).rejects.toThrow(IntegrityError);
+    calls.length = 0;
+    // One footer read decides it, with no row read and no key: the footer is stored in the clear.
+    await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+    expect(calls).toEqual(['storage.getRange', 'storage.getTail']);
+    calls.length = 0;
+    await expect(snap.has(2 * C + 1)).rejects.toThrow(NotFoundError);
+    expect(calls).toEqual([]);
   });
-
-  it('retries a transient fault during the reopen, and still reports damage as damage', async () => {
+  it('retries a transient fault during the footer read, and still reports damage as damage', async () => {
     const backend = new MemoryStorage();
     await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
       registry: backend.registry,
@@ -923,16 +994,18 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const snap = await store.segment('s').pin();
     damaged = true;
     let faults = 1;
-    const get = backend.registry.get.bind(backend.registry);
-    backend.registry.get = (ref) => {
-      if (faults === 0) return get(ref);
+    let tails = 0;
+    const tail = backend.storage.getTail.bind(backend.storage);
+    backend.storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      if (faults === 0) return tail(key, maxBytes);
       faults -= 1;
-      return Promise.reject(new TransientError('registry blip'));
+      return Promise.reject(new TransientError('tail blip'));
     };
+    // The faulted footer read is retried, finds the object it pinned, and the checksum's verdict stands.
     await expect(snap.has(1)).rejects.toThrow(/payload CRC mismatch/);
-    expect(faults).toBe(0);
+    expect([faults, tails]).toEqual([0, 2]);
   });
-
   it('pays for the reopen only on a checksum or range error, not on a transient one', async () => {
     const w = await purgeable(OLD);
     const store = new CloudRoaring({ storage: w.backend, seams: { clock: manualClock() } });
@@ -972,6 +1045,85 @@ describe('what a pin says when its object changes under it, and what pinning cos
     const pin = await crbm.pinGeneration(REF);
     expect(pin).not.toBeNull();
     expect(await crbm.listChunkKeysAt(REF, 0, pin!)).toEqual([0, 1]);
+  });
+
+  it('reads a checksum error by its brand, as one from another copy of core would be thrown', async () => {
+    const w = await purgeable(OLD);
+    const store = new CloudRoaring({ storage: w.backend });
+    const snap = await store.segment('s').pin();
+    await w.reload(NEW);
+    w.backend.storage.getRange = () =>
+      Promise.reject(
+        Object.assign(new Error('checksum mismatch'), {
+          name: 'IntegrityError',
+          [Symbol.for('cloud-roaring.error')]: true,
+        }),
+      );
+    await expect(snap.has(C + 1)).rejects.toThrow(/no longer the object this handle pinned/);
+  });
+
+  it('shares one footer read among the chunk reads that find the same stale reader at once', async () => {
+    const w = await purgeable(OLD);
+    const store = new CloudRoaring({ storage: w.backend });
+    const snap = await store.segment('s').pin();
+    await w.reload(NEW);
+    let tails = 0;
+    const tail = w.backend.storage.getTail.bind(w.backend.storage);
+    w.backend.storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    const reads = await Promise.allSettled([snap.has(C + 1), snap.has(C + 2), snap.has(2 * C + 1)]);
+    expect(reads.map((r) => r.status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(tails).toBe(1);
+  });
+
+  it('keeps reading its own object through a short read after a shred beside it, its open reader holding the key', async () => {
+    const keystore = new InProcessKeystore({
+      keys: { k1: new Uint8Array(32).fill(7) },
+      activeKeyId: 'k1',
+    });
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry, keystore });
+    const store = new CloudRoaring({ storage: backend, encryption: { keystore } });
+    const snap = await store.segment('s').pin();
+    await destroySegment(REF, { registry }, { confirmSegment: 's' });
+    let shorts = 1;
+    const range = storage.getRange.bind(storage);
+    storage.getRange = (key, offset, length) => {
+      if (shorts === 0) return range(key, offset, length);
+      shorts -= 1;
+      return Promise.reject(new ValidationError('short read'));
+    };
+    // The footer is still the pinned object's, so the short read is only a short read: the next read answers.
+    await expect(snap.has(C + 1)).rejects.toThrow(/short read/);
+    expect(await snap.has(C + 1)).toBe(true);
+  });
+
+  it("cannot tell a replacement without a fingerprint, so a pin built by hand without one keeps the chunk's error", async () => {
+    const w = await purgeable(OLD);
+    const crbm = new CrbmStorageChunkSource(w.backend.storage, { registry: w.backend.registry });
+    const version = await crbm.currentVersion(REF);
+    const pin: PinnedAt = { generation: 0, version: version! };
+    const engine = new SegmentEngine({
+      storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
+      codec: roaringCodec,
+    });
+    expect(await engine.has(REF, 1)).toBe(true); // opens the old object, under the pin's version
+    await w.reload(NEW);
+    await expect(engine.has(REF, C + 1)).rejects.toThrow(IntegrityError);
+  });
+
+  it('reads with the reader pin() opened, with no second tail read, on a store with no registry', async () => {
+    const storage = new MemoryStorage().storage;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD);
+    const calls: string[] = [];
+    const store = new CloudRoaring({ storage: counted(storage, 'storage', calls) });
+    const snap = await store.segment('s').pin();
+    calls.length = 0;
+    expect(await snap.count()).toBe(OLD.length);
+    expect(calls.filter((c) => c === 'storage.getTail')).toEqual([]);
   });
 
   it('reads its own materialisation even when the call throws after its publish landed', async () => {

@@ -31,8 +31,8 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   pointer at a missing object, `IntegrityError` for a damaged one.
 - **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, a pin
   included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
-  roll the segment back to an earlier generation that opens, or load with `allowEmpty: true`, which does not read the
-  current generation.
+  roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
+  `guard.minRetained`, which then does not read the current generation.
 
 ### Added
 
@@ -196,16 +196,21 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   no registry, a new pin of the name was handed the old
   pin's reader and cached chunks. `pin()` now records the object it pins, its size and footer checksum, and a pin
   reads that object only: what it has already read still answers, as the instant it pinned, and anything it would
-  have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. Two pins of one generation
-  number in two incarnations never share a reader or a cached chunk, with a registry or without one.
+  have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. It tells a replacement from
+  damage by one read of the footer, which needs no key, so one written under a key the store lacks is found too, and
+  the reads that ask at once share that read. Two pins of one generation number in two incarnations never share a
+  reader or a cached chunk, with a registry or without one.
 - **A pin whose segment was dropped or destroyed went empty part-way through a read.** A pinned `iterate()` that
   straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
   `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now
   fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open, and answers from
-  the chunks it decoded while they stay cached. An erasure, drop or retirement through its own store invalidates a
-  pin of each segment it changes, and that pin then fails. A `destroySegment` beside that store, or any of those
-  through another store, in the same process or another, reaches it only when its reader cache evicts its reader and
-  its chunk cache evicts those chunks, or `invalidate()` is called on its store, which the privacy notes now say.
+  the chunks it decoded while they stay cached. The pin's own store invalidates it: `eraseSubject` a pin of every
+  segment it scans, and `dropSegment` and `retireExpired` a pin of each segment they remove. The pin then opens its
+  object again, and fails if that object is gone or its segment was dropped. Anything else leaves the pin as it is:
+  after a `destroySegment` beside the pin's store, or any of those verbs through another store, in the same process or
+  another, the pin answers from what it holds until the store's reader cache evicts the pin's reader and the chunk
+  cache evicts those chunks, or `invalidate()` is called on that store. Where an erasure or a drop has deleted the
+  object the pin reads, a chunk the pin has not cached fails at once. The privacy notes now say so.
 - **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
   that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
   reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
@@ -234,7 +239,8 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   rewrite and its search of superseded generations, and a write's re-read of what it wrote. It was read as the
   generation its footer claimed, and the erasure rewrite republished its content. A default load onto a segment
   whose current generation is misfiled now fails in its guard: roll the segment back to an earlier generation that
-  opens, or load with `allowEmpty: true`, which does not read the current generation. The one way to write such an
+  opens, or load with `allowEmpty: true` and no `guard.minRetained`, which then does not read the current
+  generation. The one way to write such an
   object was `CrbmWriter`, public through 0.9.0, given one generation and stored under another, which was never a
   valid object.
 

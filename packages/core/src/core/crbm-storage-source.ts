@@ -201,6 +201,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * answers from, and its later chunk reads fail at once rather than repeat the check that found it.
    */
   private readonly replaced = new WeakSet<CrbmReader>();
+  /** A check of a pinned reader's object still under way, so the reads that ask at once share one footer read. */
+  private readonly checking = new WeakMap<CrbmReader, Promise<boolean>>();
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -447,12 +449,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     let reader: CrbmReader | null;
     if (target.lineage === undefined) {
       reader = await this.openForTarget(ref, target);
-      if (reader === null) return null;
       this.install(this.pinnedKey(ref, version, reader.fingerprint), Promise.resolve(reader));
     } else {
       const key = this.pinnedKey(ref, version);
       reader = await (this.snapshots.get(key) ?? this.install(key, this.openForTarget(ref, target)))
         .reader;
+      // A pinned read's reopen of this version, already under way, found the row gone or destroyed: the segment
+      // resolves no generation now, so this pin pins nothing, as one taken a moment later would.
       if (reader === null) return null;
     }
     return { generation: target.generation, version, fingerprint: reader.fingerprint };
@@ -557,23 +560,53 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // package's, which may carry a copy of core of its own.
       if (held?.fingerprint === undefined || !(isIntegrityError(err) || isValidationError(err)))
         throw err;
-      let now: CrbmReader | null;
+      let replaced: boolean;
       try {
-        now = await this.openAt(ref, generation);
-      } catch (reopen) {
-        // A generation gone is the pin's NotFoundError, and a transient fault is the reopen's own, which the store's
-        // retries then see for what it is. Anything else, such as a key this store cannot unwrap for the object there
-        // now, says nothing about which object that is, so the chunk's own error stands.
-        if (isNotFoundError(reopen)) throw notThePinned(ref, generation);
-        if (isTransientError(reopen)) throw reopen;
+        replaced = await this.replacedObject(ref, generation, reader, held.fingerprint);
+      } catch (check) {
+        // A transient fault is the check's own, which the store's retries then see for what it is. A footer that
+        // cannot be read otherwise says nothing about which object is there, so the chunk's own error stands.
+        if (isTransientError(check)) throw check;
         throw err;
       }
-      if (now === null || now.fingerprint !== held.fingerprint) {
-        this.replaced.add(reader);
-        throw notThePinned(ref, generation);
-      }
+      if (replaced) throw notThePinned(ref, generation);
       throw err;
     }
+  }
+
+  /**
+   * Whether the object under a pinned reader's key is no longer the one it opened: its footer's fingerprint, read
+   * with no key and no row, so an object written under another key, or a row since destroyed, answers the same way.
+   * An object gone from its key is replaced too, as a write-once key never holds it again. A verdict of "replaced"
+   * is kept, and a check under way is shared by the reads that ask at once; "the same" is not kept, since the object
+   * could be replaced after.
+   */
+  private replacedObject(
+    ref: SegmentRef,
+    generation: number,
+    reader: CrbmReader,
+    fingerprint: string,
+  ): Promise<boolean> {
+    const pending = this.checking.get(reader);
+    if (pending !== undefined) return pending;
+    const key: GenKey = { namespace: ref.namespace, segment: ref.segment, generation };
+    const check = CrbmReader.fingerprintOf(storageBlobReader(this.driver, key))
+      .then(
+        (now) => now !== fingerprint,
+        (err: unknown) => {
+          if (isNotFoundError(err)) return true;
+          throw err;
+        },
+      )
+      .then((replaced) => {
+        if (replaced) this.replaced.add(reader);
+        return replaced;
+      })
+      .finally(() => {
+        this.checking.delete(reader);
+      });
+    this.checking.set(reader, check);
+    return check;
   }
 
   /** Chunk keys of a specific generation — the pinned shape read. `held` as for {@link getChunkAt}. */
@@ -647,7 +680,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /** Open a {@link CrbmReader} for an already-resolved generation target (decrypting if the segment is encrypted). */
-  private async openForTarget(ref: SegmentRef, target: Target): Promise<CrbmReader | null> {
+  private async openForTarget(ref: SegmentRef, target: Target): Promise<CrbmReader> {
     const genKey: GenKey = {
       namespace: ref.namespace,
       segment: ref.segment,

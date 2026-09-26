@@ -740,9 +740,8 @@ Which gives:
 
 **What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
 collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
-another generation whether or not the old one still exists. Retaining more copies removes the sweep's heal and none
-of the rest, and not even the heal after an erasure, whose rewrite collects the erased generation whatever `keep`
-says. A job that needs one instant (an export,
+another generation whether or not the old one still exists. Retaining more copies removes only the sweep's heal,
+and not even that after an erasure, whose rewrite collects the erased generation whatever `keep` says. A job that needs one instant (an export,
 a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
@@ -1111,8 +1110,9 @@ racing erasure).
 
 **Who stops seeing the id, and when.** The erasure is immediate in storage and immediate in the store that
 performed it — that store drops what it had cached about the segment before returning, so it cannot keep
-answering from memory. Other processes are a different question, and this library ships nothing that could
-answer it for you: there is no daemon and no bus, only stores that happen to point at the same bucket.
+answering from memory. Every other store is a different question, in this process or another, and this library
+ships nothing that could answer it for you: there is no daemon, no bus, and no connection between two stores that
+happen to point at the same bucket.
 
 | | when the id stops being readable |
 |---|---|
@@ -1126,8 +1126,8 @@ answer it for you: there is no daemon and no bus, only stores that happen to poi
 immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
 fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
 `destroySegment` and `eraseNamespace`, which are free functions over raw drivers and invalidate no store: every
-store beside them, in the same process or not, is one of the table's other stores, and keeps the **unwrapped** key
-for as long as its row says.
+store beside them, in the same process or not, is one of the other stores in the table above, and keeps the
+**unwrapped** key for as long as that table's row for it says.
 
 **What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
 their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred

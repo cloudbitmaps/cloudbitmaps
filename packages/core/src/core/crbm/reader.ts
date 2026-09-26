@@ -87,6 +87,26 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
   );
 }
 
+/** The footer at the end of `tail`, once its size, magic and CRC hold, with its view and its CRC. */
+function checkedFooter(
+  tail: Uint8Array,
+  size: number,
+): { footer: Uint8Array; fview: DataView; storedFooterCrc: number } {
+  if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
+    throw new IntegrityError(`.crbm too small: ${size}B`);
+  }
+  const footer = tail.subarray(tail.length - FOOTER_BYTES);
+  if (!magicMatches(footer, FOOTER.endMagic)) {
+    throw new IntegrityError('.crbm end magic mismatch');
+  }
+  const fview = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
+  const storedFooterCrc = fview.getUint32(FOOTER.footerCrc32c, true);
+  if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
+    throw new IntegrityError('.crbm footer CRC mismatch');
+  }
+  return { footer, fview, storedFooterCrc };
+}
+
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
 function readU64(view: DataView, offset: number, field: string): number {
   const big = view.getBigUint64(offset, true);
@@ -144,27 +164,23 @@ export class CrbmReader {
     return out;
   }
 
+  /**
+   * The {@link fingerprint} of the object behind `blob`, from its footer alone: one tail read of a footer's worth,
+   * with no key and no index, since the footer is stored in the clear and checked by its own CRC. What a pin compares
+   * to tell the object it opened from one that has since been stored under its key, whoever wrote it.
+   */
+  static async fingerprintOf(blob: BlobReader): Promise<string> {
+    const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+    return `${size}:${checkedFooter(tail, size).storedFooterCrc}`;
+  }
+
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
     const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
     const maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
-
-    if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
-      throw new IntegrityError(`.crbm too small: ${size}B`);
-    }
-
-    // --- Footer (last 104 bytes of the tail) ---
-    const footer = tail.subarray(tail.length - FOOTER_BYTES);
-    if (!magicMatches(footer, FOOTER.endMagic)) {
-      throw new IntegrityError('.crbm end magic mismatch');
-    }
-    const fview = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
-    const storedFooterCrc = fview.getUint32(FOOTER.footerCrc32c, true);
-    if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
-      throw new IntegrityError('.crbm footer CRC mismatch');
-    }
+    const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
     const versionMajor = footer[FOOTER.versionMajor]!;
     if (versionMajor !== VERSION_MAJOR) {
       throw new UnsupportedError(`.crbm major version ${versionMajor} not supported`);

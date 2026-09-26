@@ -1452,7 +1452,7 @@ describe('the meter counts every attempt the SDK makes, not every send', () => {
 
   // The store has a retry layer of its own, above the client's, and it re-runs a failed read INSIDE the timed
   // window. The client's one-attempt pin does not reach it, so the timed store turns it off.
-  it("the timed reads run with the store's own retry off, and its pointer pinned", () => {
+  it("the timed reads run with the store's own retry off, and its pointer refresh off", () => {
     expect(guards.TIMED_STORE.retry).toBe(false);
     expect(guards.TIMED_STORE.cache.genTtlMs).toBe(0);
     const src = readFileSync(join(ROOT, 'bench', 'calibrate-aws.cjs'), 'utf8');

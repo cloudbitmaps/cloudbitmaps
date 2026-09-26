@@ -234,4 +234,35 @@ describe('crafted (hostile) index — reader-side guards', () => {
     );
     expect(reader.chunkKeys()).toEqual([0]);
   });
+
+  // The footer is checked before anything in it is trusted, by an open and by the fingerprint a pin compares alike.
+  const flipped = (at: number): Uint8Array => {
+    const bytes = Uint8Array.from(wellFormed({}));
+    bytes[bytes.length - FOOTER_BYTES + at]! ^= 0xff;
+    return bytes;
+  };
+
+  it.each([
+    ['its end magic, which its CRC does not cover', FOOTER.endMagic, /end magic mismatch/],
+    ['its CRC', FOOTER.footerCrc32c, /footer CRC mismatch/],
+    ['the first field its CRC covers', 0, /footer CRC mismatch/],
+  ])('refuses a footer with a byte flipped in %s', async (_where, at, message) => {
+    await expect(open(flipped(at))).rejects.toThrow(message);
+    await expect(CrbmReader.fingerprintOf(new BufferReader(flipped(at)))).rejects.toThrow(message);
+  });
+
+  it("gives an object's fingerprint from a footer's worth of its bytes, as an open gives it", async () => {
+    const bytes = wellFormed({});
+    const inner = new BufferReader(bytes);
+    const asked: number[] = [];
+    const blob = {
+      getRange: (offset: number, length: number) => inner.getRange(offset, length),
+      getTail: (maxBytes: number) => {
+        asked.push(maxBytes);
+        return inner.getTail(maxBytes);
+      },
+    };
+    expect(await CrbmReader.fingerprintOf(blob)).toBe((await open(bytes)).fingerprint);
+    expect(asked).toEqual([FOOTER_BYTES]);
+  });
 });

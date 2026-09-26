@@ -281,7 +281,8 @@ function derive(run, src) {
   const chunksPerOperand = it.chunksFetchedPerOperand;
   const tailPerOperand = rd.suffix.n / operandReads;
   // Expected, from measured parts: each operand's pointer read once, as the library does when an intersect ends
-  // inside its pointer refresh (`genTtlMs`) — which one inside the region does, and which the harness now pins.
+  // inside its pointer refresh (`genTtlMs`) — which one inside the region does, and which the harness's timed store
+  // makes certain by turning that refresh off (`genTtlMs: 0`).
   const fixedGets = 2 * (1 + tailPerOperand);
   const coldGets = (k) => fixedGets + 2 * k;
   const expectedGets = coldGets(chunksPerOperand);
