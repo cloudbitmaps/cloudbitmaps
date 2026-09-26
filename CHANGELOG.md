@@ -26,12 +26,13 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   catalogue cites. Bought all three ways, on three years paid upfront, the medium and large deployments' Redis
   costs less than CloudBitmaps. It says where CloudBitmaps loses — small data queried hard, latency, S3's
   per-prefix rate, and overlap — and lists the planned work that addresses them, none of it built yet; the roadmap
-  holds the same directions. `pnpm bench:sizing:check` now also refuses a dollar amount, a share, a multiple or a
-  request count typed outside a generated region of a page that says its figures are generated, in the spellings it
-  knows (signs, words, entities and fullwidth forms), and keeps the rest of the README to the phrases it lists, each
-  a measurement quoted where it is explained; it refuses an image under
-  `bench/` that a page shows and no generator draws; and `scripts/site-figures.cjs` reads `SIZING` markers with the
-  same parser, so a marker quoted in code reads the same to both.
+  holds the same directions. `pnpm bench:sizing:check` now also refuses, outside the generated regions of a page that
+  says its figures are generated, what it cannot read as plain words: a digit, but in a few names and definitions it
+  lists, such as `us-east-1`; HTML, an image or a code fence; and a share or a multiple in words. It reads the text as
+  written, not as a renderer would show it, so no markup can hide a figure from it. It keeps the rest of the README
+  to the phrases it lists, each a measurement quoted where it is explained; it refuses an entity on any page it
+  writes into, and an image under `bench/` that a page shows and no generator draws; and `scripts/site-figures.cjs`
+  reads `SIZING` markers with the same reader, which takes every comment shaped like a marker for one.
 - **What it costs at your size**, a new guide page, `docs/guide/sizing.md`. It prices a small, a medium and a
   large deployment with `estimateCost()`, term by term, against the Redis that would hold each one's data, and says
   how much room each has before its bill meets that Redis: illustrative workloads, labelled as such, with every

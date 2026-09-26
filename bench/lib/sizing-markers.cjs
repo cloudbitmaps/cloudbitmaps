@@ -1,8 +1,10 @@
 /*
  * The one reader of SIZING markers, for bench/sizing.cjs, which writes and checks the regions between them, and for
  * scripts/site-figures.cjs, which leaves exactly those regions to it. Two parsers that disagreed about where a region
- * begins would each skip what the other reads: a marker quoted in inline code, say, which one saw as a region and the
- * other as text. Pure functions of a page's text, so either script can read pages however it likes.
+ * begins would each skip what the other reads. Every comment shaped like a marker is read as one, wherever it stands,
+ * code included: a page does not quote a marker, since a reading that told a quoted one from a real one could be
+ * wrong, and one it got wrong would hide a region's text from both. Pure functions of a page's text, so either script
+ * can read pages however it likes.
  */
 'use strict';
 
@@ -15,73 +17,18 @@ const MARKER = /^<!-- SIZING:([A-Z][A-Z0-9_]*):(START|END) -->$/;
 /** What may stand before a START marker on its line: a list item's or a blockquote's indentation, and nothing else. */
 const INDENT = /^[ \t]*(?:>[ \t]*)*$/;
 
-/** A fence that opens a code block, as CommonMark reads one: indented three spaces at most, and a backtick fence's
- * info string holds no backtick. */
-const FENCE_OPEN = /^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$/;
-/** Whether `line` closes the block `fence` opened: the same character, at least as many, alone on the line. */
-function closesFence(line, fence) {
-  const m = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-  return m !== null && m[1][0] === fence[0] && m[1].length >= fence.length;
-}
-/**
- * A code span: a run of backticks, what it holds, and a run of as many, within one paragraph. A backtick after a
- * backslash opens none, and a span does not cross a blank line or a line that opens a comment, which ends a paragraph.
- */
-const CODE_SPAN = /(?<![\\`])(`+)(?!`)((?:(?!\n[^\S\n]*\n|\n {0,3}<!--)[\s\S])+?)(?<!`)\1(?!`)/g;
-
-/**
- * The spans of a markdown page that are code — fenced blocks and inline spans — where a marker is text a page shows,
- * as a page documenting the syntax does, not a comment. A fence opens and closes as CommonMark says, an unclosed one
- * runs to the end, and a fence line inside a comment is the comment's. In HTML a comment is a comment wherever it sits.
- */
-function codeSpans(doc, text) {
-  if (!/\.mdx?$/.test(doc)) return [];
-  const spans = [];
-  let at = 0;
-  let fence = null;
-  let from = 0;
-  let comment = false;
-  for (const line of text.split('\n')) {
-    const next = at + line.length + 1;
-    if (fence !== null) {
-      if (closesFence(line, fence)) {
-        spans.push([from, next]);
-        fence = null;
-      }
-    } else if (comment) {
-      if (line.includes('-->')) comment = false;
-    } else {
-      const open = FENCE_OPEN.exec(line);
-      if (open !== null) {
-        fence = open[1] ?? open[2];
-        from = at;
-      } else if (/^ {0,3}<!--/.test(line) && !/<!--(?:>|->|[\s\S]*?-->)/.test(line)) comment = true;
-    }
-    at = next;
-  }
-  if (fence !== null) spans.push([from, text.length]);
-  const inFence = (i) => spans.some(([a, b]) => i >= a && i < b);
-  for (const m of text.matchAll(CODE_SPAN)) {
-    if (!inFence(m.index)) spans.push([m.index, m.index + m[0].length]);
-  }
-  return spans;
-}
-
 /** A page's markers, in order. A malformed one throws: no check would ever compare the region it meant. */
 function markersOf(doc, text) {
-  const code = codeSpans(doc, text);
-  return [...text.matchAll(ANY_MARKER)]
-    .filter((m) => !code.some(([a, b]) => m.index >= a && m.index < b))
-    .map((m) => {
-      const strict = MARKER.exec(m[0]);
-      if (strict === null) {
-        throw new Error(
-          `${doc}: malformed marker ${JSON.stringify(m[0])} — write <!-- SIZING:NAME:START --> or ` +
-            '<!-- SIZING:NAME:END --> exactly',
-        );
-      }
-      return { name: strict[1], edge: strict[2], at: m.index, end: m.index + m[0].length };
-    });
+  return [...text.matchAll(ANY_MARKER)].map((m) => {
+    const strict = MARKER.exec(m[0]);
+    if (strict === null) {
+      throw new Error(
+        `${doc}: malformed marker ${JSON.stringify(m[0])} — write <!-- SIZING:NAME:START --> or ` +
+          '<!-- SIZING:NAME:END --> exactly',
+      );
+    }
+    return { name: strict[1], edge: strict[2], at: m.index, end: m.index + m[0].length };
+  });
 }
 
 /**
@@ -163,9 +110,6 @@ function withoutRegions(doc, text, docs) {
 }
 
 module.exports = {
-  CODE_SPAN,
-  FENCE_OPEN,
-  closesFence,
   markersOf,
   regionsOf,
   withRegions,

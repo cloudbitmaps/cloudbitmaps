@@ -154,4 +154,25 @@ function disagreements(offer, nodeTypes, reserved = RESERVED, version = undefine
   return wrong;
 }
 
-module.exports = { RESERVED, VALKEY_DISCOUNT, disagreements, nodePrices, nodeProduct };
+/**
+ * The version of AWS's price list a catalogue cites, by its `source`: the list the check holds it to. A source that no
+ * longer names one throws, since the check would otherwise compare against whichever list it was given.
+ */
+function citedVersion(source) {
+  const version = /price list (\d{14})\b/.exec(source)?.[1];
+  if (version === undefined) {
+    throw new Error(
+      `the catalogue's source names no price list version: ${JSON.stringify(source)}`,
+    );
+  }
+  return version;
+}
+
+module.exports = {
+  RESERVED,
+  VALKEY_DISCOUNT,
+  citedVersion,
+  disagreements,
+  nodePrices,
+  nodeProduct,
+};

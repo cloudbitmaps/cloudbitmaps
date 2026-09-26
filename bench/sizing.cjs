@@ -91,15 +91,7 @@ const INTERSECT_CONCURRENCY = sourceConstant(
   'DEFAULT_INTERSECT_CONCURRENCY',
 );
 const { esc, logChart } = require('./lib/log-chart.cjs');
-const {
-  CODE_SPAN,
-  FENCE_OPEN,
-  closesFence,
-  markersOf,
-  regionsOf,
-  withRegions,
-} = require('./lib/sizing-markers.cjs');
-const { plain } = require('./lib/calibration-figures.cjs');
+const { markersOf, regionsOf, withRegions } = require('./lib/sizing-markers.cjs');
 /** The estimator's month, read from it: AWS's 730 hours, of 3,600 seconds. */
 const COST_TS = 'packages/core/src/core/cost.ts';
 const HOURS_PER_MONTH = sourceConstant(COST_TS, 'HOURS_PER_MONTH');
@@ -510,6 +502,12 @@ function clusterLabel(b) {
   const node = nodeType.replace(/^cache\./, '');
   return shards === 1 ? `${nodes} × ${node}` : `${nodes} × ${node}, ${shards} shards`;
 }
+/** The cluster that would hold a deployment's data all in memory, and the quota it passes, if it passes one. */
+const inMemoryCluster = (m) =>
+  clusterLabel(m) +
+  (m.cluster.nodes > DEFAULT_NODES_PER_CLUSTER
+    ? `, past ElastiCache's default quota of ${DEFAULT_NODES_PER_CLUSTER} nodes a cluster`
+    : '');
 /** A rate a second, to two significant figures below one, and one decimal below ten. */
 const rate = (n) => (n < 1 ? n.toPrecision(2) : n < 10 ? n.toFixed(1) : int(n));
 /** A multiple to two significant figures: 21×, 3.9×. */
@@ -519,7 +517,8 @@ const rate3 = (n) => (n < 100 ? String(Number(n.toPrecision(3))) : int(n));
 /** A headroom row's rates and multiple, refused unless the rates as shown divide to the multiple shown. */
 function headroomRow(now, even) {
   const shown = [rate3(now), rate3(even), times(even / now)];
-  if (times(Number(shown[1]) / Number(shown[0])) !== shown[2]) {
+  const value = (text) => Number(text.replace(/,/g, '')); // a rate of 1,000 or more is shown with its comma
+  if (times(value(shown[1]) / value(shown[0])) !== shown[2]) {
     throw new Error(
       `sizing: ${shown[1]} ÷ ${shown[0]} does not show as ${shown[2]}, the headroom it is printed beside`,
     );
@@ -612,14 +611,10 @@ function render() {
     tieredProfiles
       .map((p) => {
         const m = redisOf(p, IN_MEMORY);
-        const quota =
-          m.cluster.nodes > DEFAULT_NODES_PER_CLUSTER
-            ? `, past ElastiCache's default quota of ${DEFAULT_NODES_PER_CLUSTER} nodes a cluster`
-            : '';
         return (
           `The ${p.id} deployment's is a data-tiering cluster, which keeps the values read least recently on its ` +
           'SSD, and which AWS recommends for workloads that regularly read up to 20% of their data. Kept all in ' +
-          `memory it would be **${usd(m.monthlyUSD)}** a month (${clusterLabel(m)}${quota}), and CloudBitmaps ` +
+          `memory it would be **${usd(m.monthlyUSD)}** a month (${inMemoryCluster(m)}), and CloudBitmaps ` +
           `**${versus(price(p).monthlyUSD.total, m.monthlyUSD)}**.`
         );
       })
@@ -928,7 +923,8 @@ function render() {
     ...tiered.map(
       ({ p, total, inMemory }) =>
         `- The ${p.id} deployment's Redis keeps the values read least recently on its SSD. All in memory it ` +
-        `would be ${usd(inMemory.monthlyUSD)} a month, and CloudBitmaps ${versus(total, inMemory.monthlyUSD)}.`,
+        `would be ${usd(inMemory.monthlyUSD)} a month, for ${inMemoryCluster(inMemory)}, and CloudBitmaps ` +
+        `${versus(total, inMemory.monthlyUSD)}.`,
     ),
   ];
 
@@ -1338,13 +1334,11 @@ function charts() {
 
 // ── write / check ────────────────────────────────────────────────────────────────────────────────────
 /**
- * A figure outside every region of a page that says its figures are generated: money, a share, a multiple, a count of
- * requests, or the overlap formula. Nothing compares one with the estimator, so none may stand in the prose. Matched
- * on the text `prose()` leaves, with its entities decoded and its fullwidth forms folded, so `&#36;5`, `&#57;&#48;%`,
- * `９０％` and `3&times;` are figures, and in the words a page might use as well as its signs: `90 percent`, `90 pct`,
- * `66 times`, `three times`, `66x`, `66-fold`, `tenfold`, `twice as much`, `half the bill`, `40 cents`, `40¢`, `€5`,
- * `21,445 USD`, `4,140 requests`, `200 chunk reads`, `4.1k GETs`, `12 LISTs`. These are the spellings it knows, not
- * every one there is. "S3 times out", a version's number, "HTTP/2 requests" and "can double as" are not figures.
+ * A share or a multiple, as a page might write one: `90%`, `3×`, `90 percent`, `90 pct`, `66 times`, `66x`, `66-fold`,
+ * and in words, `per cent`, `twice as much`, `half the bill`, `three times`, `tenfold`, `by a factor of two`. On the
+ * text `handWrittenFigure` reads, every digit is refused before this runs, so there it finds a figure in words; the
+ * rest of the README is read with it alone. These are the spellings it knows, not every one there is. "S3 times out",
+ * a version's number and "can double as" are not figures.
  */
 const NUMBER_WORD = String.raw`(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|fifty|a\s+hundred|a\s+thousand)`;
 const SHARE_OR_MULTIPLE = [
@@ -1358,28 +1352,7 @@ const SHARE_OR_MULTIPLE = [
   String.raw`\b(?:twice|thrice|double|triple|half)\s+(?:as\s+(?:much|many|large|big|high|long|expensive|costly|cheap|fast|slow)|the\s+(?:bill|cost|price|requests|GETs|rate|reads|bytes|size|money|load|figure|time|latency|memory|storage))\b`,
   String.raw`\b${NUMBER_WORD}(?:\s+times\b(?!\s+out\b)|fold\b)`,
 ];
-/** A count of requests: of anything the bill counts, by its noun, whole or in thousands and millions. */
-const REQUEST_COUNT = String.raw`(?<![\w./])\d(?:[\d,]*\d)?(?:\.\d+\s*(?:k|M|million|billion|thousand)\b|\s*(?:k|M|million|billion|thousand)\b)?\s+(?:(?:S3|pointer|chunk|index|tail|range|ranged|sized|conditional|object)\s+)?(?:GETs?|requests?|reads?)\b`;
-const FIGURE = new RegExp(
-  [
-    String.raw`(?:\$|\bUS\$|\bUSD)\s*\d`,
-    String.raw`\d\s*[¢$€£¥]|[¢€£¥]\s*\d`,
-    ...SHARE_OR_MULTIPLE,
-    String.raw`(?<![\w.])\d[\d,]*(?:\.\d+)?\s*(?:USD\b|(?:US\s+)?dollars?\b|cents?\b)`,
-    String.raw`\b\d+\s*\+\s*\d+\s*[·×*]?\s*k\b`,
-    String.raw`\b\d+\s*[·×*]?\s*k\s*\+\s*\d+\b`,
-    REQUEST_COUNT,
-  ].join('|'),
-  'i',
-);
-/** A count of S3's other requests, which are only ever written in capitals: "1 list" is a word, "12 LISTs" a count. */
-const WRITE_COUNT =
-  /(?<![\w./])\d(?:[\d,]*\d)?\s*(?:k|M)?\s+(?:S3\s+)?(?:PUT|LIST|HEAD|DELETE|POST)s?\b/;
-/** The first figure in `text`, whichever pattern finds it. */
-function figureIn(text) {
-  const hits = [FIGURE.exec(text), WRITE_COUNT.exec(text)].filter((m) => m !== null);
-  return hits.length === 0 ? null : hits.reduce((a, b) => (b.index < a.index ? b : a));
-}
+const SHARE = new RegExp(SHARE_OR_MULTIPLE.join('|'), 'i');
 /**
  * The pages that say so, and the part of each that does: the whole page, or one section of it. A page whose
  * section alone is generated keeps the rest of itself to the phrases listed here, each a measurement or a definition
@@ -1415,303 +1388,76 @@ function blankRegions(doc, text) {
   }
   return { text: s, at };
 }
-/** A reference definition's line: a label, a colon, an address, and at most a quoted title. */
 /**
- * A reference definition: a label, a colon, an address and at most a title, alone on a line. A label holds at least one
- * character that is not a space, and an escaped bracket does not close it: `[Large\]: $5` and `[ ]: $5` are text.
+ * An entity, or what a renderer may read as one: `&#36;`, `&#36` and `&dollar;`, and `&times` with no semicolon, which
+ * HTML still decodes. A page a generator writes into holds none, so no figure or image path can be spelled with one;
+ * only a URL's `&name=`, which starts a query parameter, is not one.
  */
-const REF_DEF =
-  /^ {0,3}\[(?!\^)(?!\s*\])(?:[^\]\\\n]|\\.)+\]:[ \t]*(?:<[^>\n]*>|[^\s<>]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/;
-/** A tag as HTML has one: a name, then attributes by HTML's rules. `<about 95% at 2 TB>` is text, and is shown. */
-const TAG =
-  /<\/?[a-z][a-z0-9-]*(?:\s+[a-z_:][\w.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>/gi;
-/** Tags a renderer lays out inside a line of text, so the words either side of one run on: `time<b>s</b>`. */
-const INLINE_TAG =
-  /^(?:a|abbr|b|bdi|bdo|cite|code|data|del|dfn|em|i|img|ins|kbd|mark|q|s|samp|small|span|strong|sub|sup|time|u|var|wbr)$/;
-const codePoint = (entity, n) => (n <= 0x10ffff ? String.fromCodePoint(n) : entity);
+const ENTITY = /&(?:#|[a-z][a-z0-9]*(?![a-z0-9=]))/i;
 /**
- * The named entities a figure could be spelled with: signs, spaces, invisible characters and the punctuation markup is
- * made of. Any other name is left as it stands, as a renderer shows an entity it does not know.
+ * What a page whose figures are generated may write by hand, outside its regions: its region markers and no other
+ * HTML, no image, no code fence at any depth, and no digit but in the tokens below and in a link's target, which is not
+ * shown. It is read as it is written, not as a renderer would show it. A reading of markdown can be wrong, and a figure
+ * it misread would stand where nothing checks it, so what this cannot read, it refuses. Each token is a name or a
+ * definition, not a figure; one a page needs is added here, where a review sees it.
  */
-const ENTITIES = {
-  dollar: '$',
-  cent: '¢',
-  pound: '£',
-  yen: '¥',
-  euro: '€',
-  curren: '¤',
-  percnt: '%',
-  permil: '‰',
-  pertenk: '‱',
-  times: '×',
-  Cross: '⨯',
-  divide: '÷',
-  asymp: '≈',
-  approx: '≈',
-  thickapprox: '≈',
-  plus: '+',
-  minus: '−',
-  equals: '=',
-  nbsp: ' ',
-  NonBreakingSpace: ' ',
-  ensp: ' ',
-  emsp: ' ',
-  emsp13: ' ',
-  emsp14: ' ',
-  numsp: ' ',
-  puncsp: ' ',
-  thinsp: ' ',
-  ThinSpace: ' ',
-  hairsp: ' ',
-  VeryThinSpace: ' ',
-  MediumSpace: ' ',
-  shy: '',
-  ZeroWidthSpace: '',
-  NegativeVeryThinSpace: '',
-  NegativeThinSpace: '',
-  NegativeMediumSpace: '',
-  NegativeThickSpace: '',
-  zwnj: '',
-  zwj: '',
-  lrm: '',
-  rlm: '',
-  NoBreak: '',
-  InvisibleTimes: '',
-  it: '',
-  InvisibleComma: '',
-  ic: '',
-  ApplyFunction: '',
-  af: '',
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  comma: ',',
-  period: '.',
-  colon: ':',
-  semi: ';',
-  num: '#',
-  sol: '/',
-  bsol: '\\',
-  lpar: '(',
-  rpar: ')',
-  lsqb: '[',
-  rsqb: ']',
-  lbrack: '[',
-  rbrack: ']',
-  ast: '*',
-  midast: '*',
-  lowbar: '_',
-  UnderBar: '_',
-  grave: '`',
-  excl: '!',
-  quest: '?',
-  commat: '@',
-  Hat: '^',
-  hyphen: '‐',
-  dash: '‐',
-  ndash: '–',
-  mdash: '—',
-  hellip: '…',
-  mldr: '…',
-};
-/** Each entity decoded, once: `&#38;#36;5` shows `&#36;5`, so what an entity spells is inert markup, and no entity. */
-const decodeEntities = (text, hold) =>
-  text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z][a-z0-9]*));/gi, (entity, d, h, name) => {
-    const c =
-      d !== undefined
-        ? codePoint(entity, Number(d))
-        : h !== undefined
-          ? codePoint(entity, Number.parseInt(h, 16))
-          : (ENTITIES[name] ?? entity);
-    return c === entity ? c : c.replace(ASCII_PUNCTUATION, hold);
-  });
-/** A character held where no rule reads it as markup until the reading is done: an escaped `\<` opens no tag. */
-const inert = (c) => String.fromCharCode(0xe000 + c.charCodeAt(0));
-const INERT = /[-]/g;
-/** Every ASCII punctuation character, none of which opens anything inside code. */
-const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/g;
-/** Markdown's own punctuation, which an HTML block leaves as text: links, images, emphasis, code and escapes. */
-const MARKDOWN_PUNCTUATION = /[!()*[\\\]_`]/g;
-/** A line that opens an HTML block whose end is its closing tag rather than a blank line. */
-const HTML_RAW_OPEN = /^ {0,3}<(pre|script|style|textarea)(?:\s|>|$)/i;
-/** Whether a comment opened at `at` in `line` also closes on it: `<!-->`, `<!--->`, or a `-->` after it. */
-const commentCloses = (line, at) => /^(?:>|->|[\s\S]*?-->)/.test(line.slice(at + 4));
-/**
- * The blocks of some markdown, line by line, as CommonMark reads them. A fenced code block is shown as it stands, so
- * every mark in it is held inert and its fences go. An HTML block shows its text and its tags are tags, but markdown in
- * it is text, so markdown's punctuation is held inert. A comment block is kept for the comment rule. A reference
- * definition goes, where a renderer drops one: not in the middle of a paragraph.
- */
-function blocks(text) {
-  const out = [];
-  let fence = null;
-  let html = null; // 'blank' for a block a blank line ends, 'comment', or the tag whose closing ends it
-  let paragraph = false; // whether the line before continues a paragraph, which a definition cannot interrupt
-  for (const line of text.split('\n')) {
-    if (fence !== null) {
-      const closes = closesFence(line, fence);
-      out.push(closes ? '' : line.replace(ASCII_PUNCTUATION, inert));
-      if (closes) fence = null;
-      continue;
-    }
-    if (html !== null) {
-      if (html === 'comment') {
-        out.push(line);
-        if (line.includes('-->')) html = null;
-        continue;
-      }
-      if (html === 'blank' && line.trim() === '') {
-        html = null;
-        out.push(line);
-        paragraph = false;
-        continue;
-      }
-      out.push(line.replace(MARKDOWN_PUNCTUATION, inert));
-      if (html !== 'blank' && new RegExp(`</${html}\\s*>`, 'i').test(line)) html = null;
-      continue;
-    }
-    const open = FENCE_OPEN.exec(line);
-    if (open !== null) {
-      fence = open[1] ?? open[2];
-      out.push('');
-      paragraph = false;
-      continue;
-    }
-    const comment = /^ {0,3}<!--/.exec(line);
-    if (comment !== null) {
-      out.push(line);
-      if (!commentCloses(line, comment[0].length - 4)) html = 'comment';
-      paragraph = false;
-      continue;
-    }
-    const raw = HTML_RAW_OPEN.exec(line);
-    if (raw !== null || HTML_BLOCK_TAG.test(line) || (!paragraph && HTML_LONE_TAG.test(line))) {
-      out.push(line.replace(MARKDOWN_PUNCTUATION, inert));
-      html = raw === null ? 'blank' : raw[1].toLowerCase();
-      if (raw !== null && new RegExp(`</${html}\\s*>`, 'i').test(line)) html = null;
-      paragraph = false;
-      continue;
-    }
-    if (!paragraph && REF_DEF.test(line)) {
-      out.push('');
-      continue;
-    }
-    out.push(line);
-    paragraph = line.trim() !== '' && !/^ {0,3}#{1,6}(?:\s|$)/.test(line);
+const HAND_WRITTEN_TOKENS = [
+  /`us-east-1`/g, // a region's name
+  /\bS3(?:'s)?\b/g, // a service's
+  /\bV8(?:'s)?\b/g, // an engine's
+  /\b(?:32|64)-bit\b/g, // an id's width
+  /\b65,536\b/g, // the ids a chunk holds
+  /§11\b/g, // a section of the guide
+  /\b1\.2 billion\b/g, // the README's example of a set too large to hold in one machine's memory
+];
+const MARKER_TEXT = /<!-- SIZING:[A-Z][A-Z0-9_]*:(?:START|END) -->/g;
+const REFUSED = [
+  [/<[!?/a-z]/i, 'HTML'],
+  [/!\[/, 'an image'],
+  [/^[ \t>]*(?:`{3,}|~{3,})/m, 'a code fence'],
+];
+/** The first thing in some hand-written text that could be a figure no gate compares, and what it is, or null. */
+function handWrittenFigure(text) {
+  const t = text.replace(MARKER_TEXT, ' ');
+  for (const [pattern, what] of REFUSED) {
+    const m = pattern.exec(t);
+    if (m !== null) return { figure: t.slice(m.index, m.index + 24).split('\n')[0], what };
   }
-  return out.join('\n');
+  let s = t.normalize('NFKC').replace(/\]\([^)\s]*\)/g, ']');
+  for (const token of HAND_WRITTEN_TOKENS) s = s.replace(token, ' ');
+  const digit = /\p{N}/u.exec(s);
+  if (digit !== null) return { figure: numberAt(s, digit.index), what: 'a number' };
+  // A figure in words, however emphasis, code or an escape falls across it.
+  const words = SHARE.exec(s.replace(/[*_`~\\]/g, ''));
+  return words === null ? null : { figure: words[0], what: 'a figure in words' };
 }
+/** The run of non-space characters around `at`, which is how a number is written. */
+const numberAt = (s, at) => /\S*$/.exec(s.slice(0, at))[0] + /^\S*/.exec(s.slice(at))[0];
 /**
- * What a reader is given of some markdown, and only that: what a renderer takes away is taken away, and everything it
- * shows is kept. This reads markdown with rules, not a parser, for the constructs these pages use:
- * - code, fenced or in a span, is shown as it stands, and so is markdown inside an HTML block;
- * - comments go, `<!-->` and `<!--->` among them, but not one inside code;
- * - a reference definition goes where a renderer drops one, which is not in the middle of a paragraph, and a
- *   footnote's `[^1]:` line stays, since it is shown;
- * - a link or an image is read as its text, so what follows it is read as it stands;
- * - a backslash escape shows the character it escapes, and that character opens nothing: `\<span>` is text;
- * - autolinks and bare addresses go, a bare one ending at a space, a quote, a bracket, a table cell's edge, a dash
- *   or an escape;
- * - tags go, and only tags: a `<` that opens none hides nothing, and neither does an entity or an escape spelling one.
- *   An inline tag joins the words either side of it, and an image's `alt` text is read, as a markdown image's is;
- * - entities are decoded once, fullwidth forms folded, invisible characters dropped, and emphasis around a word undone.
- * A page that needs more than this should move it to a markdown parser.
- */
-function prose(text) {
-  const marked = blocks(text)
-    .replace(CODE_SPAN, (_, ticks, body) => body.replace(ASCII_PUNCTUATION, inert))
-    .replace(/(?<=(?:^|[^\\])(?:\\\\)*)<!--(?:>|->|[\s\S]*?-->)/g, '')
-    .replace(/\\([!-/:-@[-`{-~])/g, (_, c) => inert(c))
-    .replace(
-      /!?\[([^\]\n]*)\]\(\s*(?:<[^<>\n]*>|(?:[^()\s]|\([^()\s]*\))*)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)/g,
-      '$1',
-    )
-    .replace(/<(?:https?|mailto):[^>\s-]*>/g, '')
-    .replace(/\bhttps?:\/\/[^\s<>"'()[\]|–—-]+/g, '')
-    .replace(TAG, (tag) => {
-      const name = /^<\/?([a-z][a-z0-9-]*)/i.exec(tag)[1].toLowerCase();
-      const alt =
-        name === 'img' ? /\salt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag) : null;
-      const shown = alt === null ? '' : (alt[1] ?? alt[2] ?? alt[3]);
-      return INLINE_TAG.test(name) ? shown : ` ${shown} `;
-    });
-  const read = decodeEntities(marked, inert).replace(
-    /(?<=[\w%‰×$¢€£¥])(?:\*\*|__|\*|_)+|(?:\*\*|__|\*|_)+(?=[\w$¢€£¥×])/g,
-    '',
-  );
-  return plain(read)
-    .normalize('NFKC')
-    .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
-    .replace(/\p{Zs}/gu, ' ')
-    .replace(INERT, (c) => String.fromCharCode(c.charCodeAt(0) - 0xe000));
-}
-/** A line that opens an HTML block with one of CommonMark's block tags, which may interrupt a paragraph. */
-const HTML_BLOCK_TAG = new RegExp(
-  String.raw`^ {0,3}<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|` +
-    String.raw`details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|` +
-    String.raw`hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|` +
-    String.raw`section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|\/?>|$)`,
-  'i',
-);
-/** A whole tag alone on a line, which opens an HTML block too, but only after a blank line. */
-const HTML_LONE_TAG = /^ {0,3}(?:<[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>|<\/[a-z][a-z0-9-]*\s*>)\s*$/i;
-/**
- * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence, an HTML comment,
- * a `<pre>` or any other HTML block is not a heading, so a quoted `## ` cannot cut the section short and leave what
- * follows it unchecked. An HTML block runs to the next blank line; comments and `<pre>` blocks are blanked where they
- * stand, so the offsets are still the page's.
+ * Where a section runs in `text`: from its `## ` heading to the next line that starts one. The section itself holds
+ * no code fence and no HTML, which `handWrittenFigure` refuses, so no quoted `## ` can end it early.
  */
 function sectionOf(doc, text, title) {
-  const headings = text.replace(/<!--(?:>|->|[\s\S]*?-->)|<pre\b[\s\S]*?<\/pre>/gi, (m) =>
-    m.replace(/[^\n]/g, ' '),
-  );
   let at = 0;
-  let fence = null;
   let start = -1;
-  let html = false;
-  let blank = true;
-  for (const line of headings.split('\n')) {
-    const open = fence === null ? FENCE_OPEN.exec(line) : null;
-    if (html) {
-      if (line.trim() === '') html = false;
-    } else if (fence !== null) {
-      if (closesFence(line, fence)) fence = null;
-    } else if (open !== null) fence = open[1] ?? open[2];
-    else if (HTML_BLOCK_TAG.test(line) || (blank && HTML_LONE_TAG.test(line))) html = true;
-    else if (line.startsWith('## ')) {
+  for (const line of text.split('\n')) {
+    if (line.startsWith('## ')) {
       if (start >= 0) return { start, end: at };
       if (line === `## ${title}`) start = at;
     }
-    blank = line.trim() === '';
     at += line.length + 1;
   }
   if (start < 0)
     throw new Error(`sizing: ${doc} no longer has the section whose figures are generated`);
   return { start, end: text.length };
 }
-/**
- * A number alone in a hand-written table cell, whose unit its header or its row gives: on a page whose figures are
- * all generated, it is a figure like any other. Code is not a table, so a pipe in a code block is not read as one.
- */
-function tableFigure(text) {
-  for (const line of blocks(text).split('\n')) {
-    if (!/^ {0,3}\|/.test(line)) continue;
-    for (const cell of line.split('|')) {
-      const m = /^\s*(\d(?:[\d,.]*\d)?)\s*$/.exec(prose(cell));
-      if (m !== null) return [m[1]];
-    }
-  }
-  return null;
-}
 /** The first figure in a page's prose that nothing checks, and where it stands, or null. */
 function proseFigure(doc, text) {
   const scope = GENERATED_PROSE[doc];
   const { text: blank, at } = blankRegions(doc, text);
   if (scope === null) {
-    const hit = figureIn(prose(blank)) ?? tableFigure(blank);
-    return hit === null ? null : { figure: hit[0], where: 'outside its SIZING regions' };
+    const hit = handWrittenFigure(blank);
+    return hit === null ? null : { ...hit, where: 'outside its SIZING regions' };
   }
   const { start, end } = sectionOf(doc, blank, scope.section);
   for (const [name, { i, j }] of Object.entries(at)) {
@@ -1721,14 +1467,16 @@ function proseFigure(doc, text) {
       );
     }
   }
-  const inside = figureIn(prose(blank.slice(start, end)));
+  const inside = handWrittenFigure(blank.slice(start, end));
   if (inside !== null) {
     return {
-      figure: inside[0],
+      ...inside,
       where: `outside its SIZING regions, in its "${scope.section}" section`,
     };
   }
-  let rest = prose(blank.slice(0, start) + blank.slice(end));
+  // The rest of the page is written as any page is, so only a share or a multiple is refused there, as it is written
+  // and with its tags taken out, since a tag can split a word a reader is shown whole.
+  let rest = (blank.slice(0, start) + blank.slice(end)).normalize('NFKC');
   for (const phrase of scope.elsewhere) {
     if (!rest.includes(phrase)) {
       throw new Error(
@@ -1738,27 +1486,26 @@ function proseFigure(doc, text) {
     }
     rest = rest.replace(phrase, ' '); // once: a second copy is a figure like any other
   }
-  const m = new RegExp(SHARE_OR_MULTIPLE.join('|'), 'i').exec(rest);
+  const m = SHARE.exec(rest) ?? SHARE.exec(rest.replace(/<[^<>]*>/g, ''));
   return m === null
     ? null
     : {
         figure: m[0],
+        what: 'a share or a multiple',
         where: `outside its "${scope.section}" section, which lists what may stand there`,
       };
 }
 /**
- * The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>, in any case and however
- * its path is spelled, since `bench/%68and.SVG`, `bench&#47;hand.svg` and `bench/hand\.svg` are images a browser
- * shows too. A path with a space in it is not read.
+ * The images under bench/ a page shows: any path to an image file, in a markdown image, an <img>, a <source srcset> or
+ * anywhere else, read with its percent-escapes and backslash escapes undone, since a browser reads `bench/%68and.SVG`
+ * and `bench/hand\.svg` as `bench/hand.svg`. The page holds no entity (see ENTITY), so none can spell one.
  */
 const shownCharts = (text) => [
   ...new Set(
-    decodeEntities(
-      text.replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(Number.parseInt(h, 16))),
-      (c) => c,
-    )
+    text
+      .replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
       .replace(/\\([!-/:-@[-`{-~])/g, '$1')
-      .match(/\bbench\/[\p{L}\p{N}_./~+@()-]+\.(?:svg|png|jpe?g|webp|gif|avif)\b/giu) ?? [],
+      .match(/\bbench\/[^\s"<>[\]]*?\.(?:svg|png|jpe?g|webp|gif|avif|bmp)\b/giu) ?? [],
   ),
 ];
 
@@ -1807,11 +1554,18 @@ for (const [doc, names] of Object.entries(DOCS)) {
   // Line endings are not content: a checkout that turns them into CRLF must not fail the check.
   const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   const next = withRegions(doc, text, Object.fromEntries(names.map((n) => [n, rendered[n]])), DOCS);
+  const entity = ENTITY.exec(next.text);
+  if (entity !== null) {
+    throw new Error(
+      `sizing: ${doc} holds an entity, "${next.text.slice(entity.index).split(/[\s;]/)[0]}": a page a generator ` +
+        'writes into spells every character plainly, so no figure or image path can be spelled with one',
+    );
+  }
   const figure = GENERATED_PROSE[doc] === undefined ? null : proseFigure(doc, next.text);
   if (figure !== null) {
     throw new Error(
-      `sizing: ${doc} states "${figure.figure}" ${figure.where}, where no gate compares it with the ` +
-        'estimator — generate it into a region',
+      `sizing: ${doc} holds ${figure.what}, "${figure.figure}", ${figure.where}, where no gate compares it ` +
+        'with the estimator — generate it into a region, or write it without one',
     );
   }
   for (const chart of shownCharts(next.text)) {

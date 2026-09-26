@@ -485,8 +485,8 @@ const PAGES = [
  * the other skips.
  */
 const { DOCS: SIZING_PAGES } = require('../bench/lib/sizing-pages.cjs');
-// The same reader of SIZING markers as bench/sizing.cjs, so the two agree on where each region begins: a marker
-// quoted in inline code, or malformed, reads the same to both.
+// The same reader of SIZING markers as bench/sizing.cjs, so the two agree on where each region begins: each takes
+// every comment shaped like a marker for one, and refuses a malformed one.
 const { withoutRegions } = require('../bench/lib/sizing-markers.cjs');
 /** Each refusal once, though both scans read a page through the function below. */
 const refused = new Set();

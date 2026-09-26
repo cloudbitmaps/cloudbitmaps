@@ -3,7 +3,8 @@
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
 comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
 written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
-by CI, which refuses one typed anywhere else on the page in the spellings and the markdown it knows. The prices are AWS's `us-east-1` list prices,
+by CI, which refuses any other number on the page, bar a few names such as `us-east-1`, and any markup that could hide
+one. The prices are AWS's `us-east-1` list prices,
 on demand unless a sentence says otherwise, and the three deployments are illustrative workloads, not anyone's
 measured system. There is no latency figure, because none has been measured inside a region yet.
 
@@ -52,7 +53,7 @@ Large   CloudBitmaps                                        ●              $6,
 - **Small**, 200 MB: $3.35 a month against $35.04 for 3 × t4g.micro, so CloudBitmaps costs **90% less**.
 - **Medium**, 20 GB: $281 a month against $900 for 3 × r6g.xlarge, so CloudBitmaps costs **69% less**.
 - **Large**, 2 TB: $6,771 a month against $27,325 for 3 × r6gd.16xlarge, so CloudBitmaps costs **75% less**.
-- The large deployment's Redis keeps the values read least recently on its SSD. All in memory it would be $85,509 a month, and CloudBitmaps 92% less.
+- The large deployment's Redis keeps the values read least recently on its SSD. All in memory it would be $85,509 a month, for 285 × r6g.xlarge, 95 shards, past ElastiCache's default quota of 90 nodes a cluster, and CloudBitmaps 92% less.
 <!-- SIZING:WHY_DEPLOYMENTS:END -->
 
 <!-- SIZING:WHY_LEANINGS:START -->
@@ -212,8 +213,9 @@ proposed in an issue on this repo before it is built.
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
-  again when it outlives `cache.genTtlMs` (a pointer) or the reader cache evicts its reader part-way through (a pointer
-  and an index), and a second index read for an index larger than the reader's tail read.
+  again when it outlives `cache.genTtlMs` (a pointer, and an index once a load has published) or the reader cache
+  evicts its reader part-way through (a pointer and an index), and a second index read for an index larger than the
+  reader's tail read.
 - **Your readers' memory.** It is your own machines' cost, and not priced here.
 - **An invoice.** These are list prices applied to modeled request counts; data transfer out of the region is not
   modeled.

@@ -11,20 +11,20 @@ import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/core';
  */
 const ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const require_ = createRequire(join(ROOT, 'bench', 'sizing.cjs'));
-const { RESERVED, VALKEY_DISCOUNT, disagreements, nodePrices, nodeProduct } = require_(
-  './lib/elasticache-prices.cjs',
-) as {
-  RESERVED: Record<string, { oneYear: number; threeYearsUpfront: number }>;
-  VALKEY_DISCOUNT: number;
-  disagreements: (
-    offer: object,
-    nodeTypes: ReadonlyArray<{ name: string; hourlyUSD: number }>,
-    reserved?: Record<string, { oneYear: number; threeYearsUpfront: number }>,
-    version?: string,
-  ) => string[];
-  nodePrices: (offer: object, type: string, engine: string) => Record<string, number>;
-  nodeProduct: (offer: object, type: string, engine: string) => string;
-};
+const { RESERVED, VALKEY_DISCOUNT, citedVersion, disagreements, nodePrices, nodeProduct } =
+  require_('./lib/elasticache-prices.cjs') as {
+    RESERVED: Record<string, { oneYear: number; threeYearsUpfront: number }>;
+    VALKEY_DISCOUNT: number;
+    citedVersion: (source: string) => string;
+    disagreements: (
+      offer: object,
+      nodeTypes: ReadonlyArray<{ name: string; hourlyUSD: number }>,
+      reserved?: Record<string, { oneYear: number; threeYearsUpfront: number }>,
+      version?: string,
+    ) => string[];
+    nodePrices: (offer: object, type: string, engine: string) => Record<string, number>;
+    nodeProduct: (offer: object, type: string, engine: string) => string;
+  };
 
 const TYPE = 'cache.r6g.xlarge';
 const product = (engine: string, usagetype: string) => ({
@@ -211,12 +211,22 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
       const byDefault = disagreements(offer(), catalogue);
       expect(byDefault).not.toContain(`${TYPE}: no reserved row`);
       expect(byDefault).toHaveLength(Object.keys(RESERVED).length - 1); // the rows for nodes this catalogue lacks
-      const cited = /price list (\d{14})/.exec(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.source)?.[1];
+      const cited = citedVersion(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.source);
       expect(cited).toBe('20260914063714');
       expect(disagreements({ ...offer(), version: cited }, catalogue, reserved, cited)).toEqual([]);
       expect(
         disagreements({ ...offer(), version: '20260801000000' }, catalogue, reserved, cited),
       ).toEqual([`the list is version 20260801000000, where the catalogue cites ${cited}`]);
+    });
+
+    it('refuses a catalogue whose source no longer names the list it cites, rather than check against any', () => {
+      for (const source of [
+        'AWS price list',
+        'AWS price list 2026091406371',
+        'AWS price list 202609140637140',
+      ]) {
+        expect(() => citedVersion(source)).toThrow(/names no price list version/);
+      }
     });
 
     it("names a Valkey price that is not Redis's less the discount the pages use", () => {

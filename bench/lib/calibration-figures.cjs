@@ -1388,7 +1388,6 @@ module.exports = {
   accounted,
   statesFigure,
   normalize,
-  plain,
   visible,
   unitsOf,
   runSection,
