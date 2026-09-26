@@ -354,6 +354,26 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         'has the rest.\n\n[plan]: <plans/10x faster.md>\n',
       ],
       ['a tag in capitals', 'has the rest. <IMG WIDTH="50%" SRC="x.png" ALT="">'],
+      ['a year before a comma', 'has the rest, since December 2020, reads included.'],
+      [
+        'an entity spelled with an entity, which is shown as one',
+        'has the rest. &#38;#36;5 is how the sign is escaped.',
+      ],
+      [
+        'an entity in a code span, which is shown as it stands',
+        'has the rest. Write `&#36;5` for the sign.',
+      ],
+      ['"times out" after a number word', 'has the rest. It fails three times out of four.'],
+      ['an entity past the last character there is', 'has the rest. &#1114112; is no character.'],
+      [
+        'a definition after a heading, which ends a paragraph',
+        'has the rest.\n### Notes\n[plan]: plans/10x.md\n',
+      ],
+      // A fence indented four spaces opens nothing, a comment is a comment whatever it holds, and a lone tag cannot
+      // interrupt a paragraph: none of them turns what follows into code or HTML.
+      ['a fence indented four spaces', 'has the rest.\n\n    ```\n\n[plan]: plans/10x.md\n'],
+      ['a comment that holds a fence', 'has the rest.\n\n<!--\n```\na draft: 95% less\n-->\n'],
+      ['a lone tag inside a paragraph', 'has the rest.\n<span>\n[x](plans/a.md "95% less")\n'],
       [
         'a link with a title, which is a tooltip',
         'has the rest. See [the prices](https://aws.amazon.com/pricing/ "95% less").',
@@ -364,7 +384,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ],
       ['a comment after an escaped backslash', 'has the rest. \\\\<!-- 95% less -->'],
     ])('passes %s', (_what, text) => {
-      const r = sizingCheck({ [WHY]: why.replace('has the rest.', text) });
+      const edited = why.replace('has the rest.', () => text); // a function, so `$&` in a case is text
+      expect(edited).not.toBe(why); // the page says "has the rest.", so each case is read where it was put
+      const r = sizingCheck({ [WHY]: edited });
       expect(r.code, r.out).toBe(0);
     });
 
@@ -419,9 +441,80 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['a pseudo-tag, which is text', ' <about 95% at 2 TB>'],
       ['a pseudo-tag spelled in entities', ' &#60;about 95% at 2 TB&#62;'],
       ['a pseudo-tag in fullwidth brackets', ' ＜about 95% at 2 TB＞'],
+      // Code and HTML blocks are shown as they stand, so markup in them hides nothing.
+      [
+        'a code span that opens a comment',
+        ' A region opens with `<!--`. The large deployment costs $99,999 a month.',
+      ],
+      ['a fence holding a line shaped like a definition', '\n\n```\n\n[Large]: $99,999\n```\n\n'],
+      [
+        'a code span holding a link with a title',
+        ' `[prices](https://aws.amazon.com/pricing/ "CloudBitmaps costs 95% less")`',
+      ],
+      [
+        'a fence holding a tag with a title',
+        '\n\n```html\n<span title="$99,999 a month">x</span>\n```\n\n',
+      ],
+      [
+        'an HTML block holding a markdown link',
+        '\n\n<div>\n[x](plans/a.md "95% less than Redis")\n</div>\n\n',
+      ],
+      [
+        'a <pre> holding a markdown link',
+        '\n\n<pre>\n[x](plans/a.md "95% less than Redis")\n</pre>\n\n',
+      ],
+      [
+        'a <pre> that runs past a blank line',
+        '\n\n<pre>\n\n[x](plans/a.md "95% less than Redis")\n</pre>\n\n',
+      ],
+      [
+        'a markdown link on the line that opens an HTML block',
+        '\n\n<div>[x](plans/a.md "95% less than Redis")\n</div>\n\n',
+      ],
+      ['a fence a shorter one does not close', '\n\n````\n```\n[Large]: $99,999\n````\n\n'],
+      // An inline tag inside a word leaves the word whole.
+      ['a word split by an inline tag', ' It costs 66 time<b>s</b> as much.'],
+      ['a count split by a line-break opportunity', ' It makes 4,140 GE<wbr>Ts a second.'],
+      // Emphasis on the unit is not a disguise.
+      ['emphasis on "times"', ' It costs 66 **times** the bill.'],
+      ['emphasis on "GETs"', ' It makes 4,140 **GETs** a second.'],
+      ['emphasis on "USD"', ' It is 21,445 **USD** a month.'],
+      ['emphasis on "cents"', ' It is 40 _cents_.'],
+      ['emphasis on "LISTs"', ' It makes 12 **LISTs**.'],
+      ['a multiple after emphasis', ' It costs **3**× as much.'],
+      // Entities and invisible characters are read as a renderer shows them.
+      ['&euro;', ' It costs &euro;5.'],
+      ['&pound;', ' It costs &pound;5.'],
+      ['&permil;', ' It is 950&permil;.'],
+      ['&zwnj;', ' It is 95&zwnj;% less.'],
+      ['&lrm;', ' It is 95&lrm;% less.'],
+      ['&NoBreak;', ' It is $&NoBreak;5.'],
+      ['&numsp;', ' It is 95&numsp;% less.'],
+      ['a left-to-right mark', ' It is 95\u200e% less.'],
+      ['an invisible times', ' It is 95\u2062% less.'],
+      ['a combining grapheme joiner', ' It is 95\u034f% less.'],
+      [
+        'an image alt text',
+        ' <img alt="CloudBitmaps costs 95% less" src="../../bench/crossover.svg">',
+      ],
+      // A definition's label holds a character, and an escaped bracket does not close it.
+      ['a label with an escaped bracket', '\n\n[Large\\]: $99,999\n\n'],
+      ['a blank label', '\n\n[ ]: $99,999\n\n'],
+      // A number alone in a hand-written table's cell takes its unit from the header.
+      [
+        'a table whose header gives the unit',
+        '\n\n| | GETs a cold intersect | a month, USD |\n|---|---:|---:|\n| Large | 2,004 | 99,999 |\n\n',
+      ],
+      // And spellings the patterns learned.
+      ['"by a factor of"', ' It is cheaper by a factor of 4.'],
+      ['percentage points', ' It is 20 percentage points less.'],
+      ['object GETs', ' It makes 204 object GETs.'],
+      ['the formula written k first', ' It costs 2k+4.'],
+      ['a bare "percent"', ' It saves a few percent.'],
+      ['S3 PUTs', ' It makes 12 S3 PUTs a load.'],
     ])('fails a figure in %s', (_what, text) => {
       refused(
-        { [WHY]: why.replace('mostly cold.', `mostly cold.${text}`) },
+        { [WHY]: why.replace('mostly cold.', () => `mostly cold.${text}`) },
         /outside its SIZING regions/,
       );
     });
@@ -434,6 +527,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['bench&#47;hand.svg'],
       ['bench/hand\\.svg'],
       ['bench/café.svg'],
+      ['bench/@2x/hand.svg'],
+      ['bench/hand(1).svg'],
+      ['bench&sol;hand.svg'],
     ])('fails a page that shows %s, an image under bench/ no generator draws', (image) => {
       refused(
         { [WHY]: why.replace('has the rest.', `has the rest. ![a chart](../../${image})`) },
@@ -528,6 +624,32 @@ describe('bench:sizing:check fails what it exists to catch', () => {
               .replace('Where it loses:', 'It is 95% cheaper. Where it loses:'),
           },
           /states "95%" outside its SIZING regions, in its "Why CloudBitmaps" section/,
+        );
+      }
+      // A fence closes only on a line that is a fence and nothing else, indented three spaces at most: a heading after
+      // a line that only starts like one is inside the code, and the section runs on past it.
+      for (const notAClose of ['``` not a close', '    ```']) {
+        refused(
+          {
+            [README]: readme.replace(
+              'Where it loses:',
+              `\`\`\`text\n${notAClose}\n## x\n\`\`\`\n\nIt makes 2,004 GETs.\n\nWhere it loses:`,
+            ),
+          },
+          /states "2,004 GETs" outside its SIZING regions, in its "Why CloudBitmaps" section/,
+        );
+      }
+      // A lone tag after a paragraph line opens no HTML block, a blank line ends one, and `<!-->` closes at once: in
+      // each, the heading after it is a heading, and ends the section.
+      for (const before of ['Some text.\n<picture>', '<div>\nx\n</div>\n', '<!-->']) {
+        refused(
+          {
+            [README]: readme.replace(
+              'Where it loses:',
+              `${before}\n## What it saves\n\nIt is 95% cheaper.\n\nWhere it loses:`,
+            ),
+          },
+          /states "95%" outside its "Why CloudBitmaps" section/,
         );
       }
       // A real heading does end it, and what follows is held to the list.

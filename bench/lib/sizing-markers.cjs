@@ -15,18 +15,53 @@ const MARKER = /^<!-- SIZING:([A-Z][A-Z0-9_]*):(START|END) -->$/;
 /** What may stand before a START marker on its line: a list item's or a blockquote's indentation, and nothing else. */
 const INDENT = /^[ \t]*(?:>[ \t]*)*$/;
 
+/** A fence that opens a code block, as CommonMark reads one: indented three spaces at most, and a backtick fence's
+ * info string holds no backtick. */
+const FENCE_OPEN = /^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$/;
+/** Whether `line` closes the block `fence` opened: the same character, at least as many, alone on the line. */
+function closesFence(line, fence) {
+  const m = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+  return m !== null && m[1][0] === fence[0] && m[1].length >= fence.length;
+}
+/**
+ * A code span: a run of backticks, what it holds, and a run of as many, within one paragraph. A backtick after a
+ * backslash opens none, and a span does not cross a blank line or a line that opens a comment, which ends a paragraph.
+ */
+const CODE_SPAN = /(?<![\\`])(`+)(?!`)((?:(?!\n[^\S\n]*\n|\n {0,3}<!--)[\s\S])+?)(?<!`)\1(?!`)/g;
+
 /**
  * The spans of a markdown page that are code — fenced blocks and inline spans — where a marker is text a page shows,
- * as a page documenting the syntax does, not a comment. In HTML a comment is a comment wherever it sits.
+ * as a page documenting the syntax does, not a comment. A fence opens and closes as CommonMark says, an unclosed one
+ * runs to the end, and a fence line inside a comment is the comment's. In HTML a comment is a comment wherever it sits.
  */
 function codeSpans(doc, text) {
   if (!/\.mdx?$/.test(doc)) return [];
   const spans = [];
-  for (const m of text.matchAll(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*$/gm)) {
-    spans.push([m.index, m.index + m[0].length]);
+  let at = 0;
+  let fence = null;
+  let from = 0;
+  let comment = false;
+  for (const line of text.split('\n')) {
+    const next = at + line.length + 1;
+    if (fence !== null) {
+      if (closesFence(line, fence)) {
+        spans.push([from, next]);
+        fence = null;
+      }
+    } else if (comment) {
+      if (line.includes('-->')) comment = false;
+    } else {
+      const open = FENCE_OPEN.exec(line);
+      if (open !== null) {
+        fence = open[1] ?? open[2];
+        from = at;
+      } else if (/^ {0,3}<!--/.test(line) && !/<!--(?:>|->|[\s\S]*?-->)/.test(line)) comment = true;
+    }
+    at = next;
   }
-  const inFence = (at) => spans.some(([a, b]) => at >= a && at < b);
-  for (const m of text.matchAll(/`[^`\n]+`/g)) {
+  if (fence !== null) spans.push([from, text.length]);
+  const inFence = (i) => spans.some(([a, b]) => i >= a && i < b);
+  for (const m of text.matchAll(CODE_SPAN)) {
     if (!inFence(m.index)) spans.push([m.index, m.index + m[0].length]);
   }
   return spans;
@@ -127,4 +162,12 @@ function withoutRegions(doc, text, docs) {
   return s;
 }
 
-module.exports = { markersOf, regionsOf, withRegions, withoutRegions };
+module.exports = {
+  CODE_SPAN,
+  FENCE_OPEN,
+  closesFence,
+  markersOf,
+  regionsOf,
+  withRegions,
+  withoutRegions,
+};

@@ -103,10 +103,14 @@ function nodePrices(offer, type, engine) {
 /**
  * Every way a price list disagrees with what the pages price: a catalogue node's on-demand price, a reserved row, a
  * Valkey price that is not Redis's less {@link VALKEY_DISCOUNT}, or a three-year term that also charges by the hour.
- * `nodeTypes` is the catalogue's, `reserved` the table the pages read.
+ * `nodeTypes` is the catalogue's, `reserved` the table the pages read, and `version`, when given, the list version the
+ * catalogue cites, which the list must be.
  */
-function disagreements(offer, nodeTypes, reserved = RESERVED) {
+function disagreements(offer, nodeTypes, reserved = RESERVED, version = undefined) {
   const wrong = [];
+  if (version !== undefined && offer.version !== version) {
+    wrong.push(`the list is version ${offer.version}, where the catalogue cites ${version}`);
+  }
   const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
   for (const { name, hourlyUSD } of nodeTypes) {
     const redis = nodePrices(offer, name, 'Redis');
@@ -132,10 +136,15 @@ function disagreements(offer, nodeTypes, reserved = RESERVED) {
         );
       }
     }
-    if (redis.threeYearsHourly !== 0) {
-      wrong.push(
-        `${name}: three years paid upfront also charges ${redis.threeYearsHourly} an hour`,
-      );
+    for (const [engine, prices] of [
+      ['Redis', redis],
+      ['Valkey', valkey],
+    ]) {
+      if (prices.threeYearsHourly !== 0) {
+        wrong.push(
+          `${name}: ${engine}'s three years paid upfront also charges ${prices.threeYearsHourly} an hour`,
+        );
+      }
     }
   }
   for (const name of Object.keys(reserved)) {

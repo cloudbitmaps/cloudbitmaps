@@ -21,7 +21,9 @@ if (file === undefined) {
   process.exit(2);
 }
 const offer = JSON.parse(fs.readFileSync(file, 'utf8'));
-const wrong = disagreements(offer, CATALOGUE.nodeTypes);
+// The list the catalogue cites, by the version its source names: a newer list is checked when the citation moves.
+const cited = /price list (\d{14})/.exec(CATALOGUE.source)?.[1];
+const wrong = disagreements(offer, CATALOGUE.nodeTypes, undefined, cited);
 if (wrong.length > 0) {
   console.error(`check-elasticache-prices: ${file} disagrees:\n  ${wrong.join('\n  ')}`);
   process.exit(1);

@@ -141,7 +141,7 @@ export class GcsStorageDriver implements IStorageDriver {
     try {
       // Two round-trips (metadata for the size, then a ranged download) vs S3's one (suffix-range +
       // Content-Range). This is on the per-*generation* open path, which the reader caches — NOT the per-op cache
-      // path (add/has/count/intersect) — so it's amortized; collapsing to one RT is a tracked follow-up.
+      // path (has/count/intersect) — so it's amortized; collapsing to one RT is a tracked follow-up.
       const [meta] = await this.file(objectName).getMetadata();
       const size = Number(meta.size ?? 0);
       if (!Number.isSafeInteger(size) || size < 0) {

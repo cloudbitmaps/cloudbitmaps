@@ -202,8 +202,9 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 ## What this page does not establish
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
-- **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for a pointer re-read
-  by a call that outlives `cache.genTtlMs`, and a second index read for an index larger than the reader's tail read.
+- **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
+  again when it outlives `cache.genTtlMs` (a pointer) or the reader cache evicts its reader part-way through (a pointer
+  and an index), and a second index read for an index larger than the reader's tail read.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.

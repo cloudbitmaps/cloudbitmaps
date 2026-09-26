@@ -3,7 +3,7 @@
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
 comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
 written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
-by CI, which refuses one typed anywhere else on the page in any spelling it knows. The prices are AWS's `us-east-1` list prices,
+by CI, which refuses one typed anywhere else on the page in the spellings and the markdown it knows. The prices are AWS's `us-east-1` list prices,
 on demand unless a sentence says otherwise, and the three deployments are illustrative workloads, not anyone's
 measured system. There is no latency figure, because none has been measured inside a region yet.
 
@@ -211,8 +211,9 @@ proposed in an issue on this repo before it is built.
 ## What this page does not establish
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
-- **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for a pointer re-read
-  by a call that outlives `cache.genTtlMs`, and a second index read for an index larger than the reader's tail read.
+- **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
+  again when it outlives `cache.genTtlMs` (a pointer) or the reader cache evicts its reader part-way through (a pointer
+  and an index), and a second index read for an index larger than the reader's tail read.
 - **Your readers' memory.** It is your own machines' cost, and not priced here.
 - **An invoice.** These are list prices applied to modeled request counts; data transfer out of the region is not
   modeled.

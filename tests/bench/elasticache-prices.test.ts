@@ -20,6 +20,7 @@ const { RESERVED, VALKEY_DISCOUNT, disagreements, nodePrices, nodeProduct } = re
     offer: object,
     nodeTypes: ReadonlyArray<{ name: string; hourlyUSD: number }>,
     reserved?: Record<string, { oneYear: number; threeYearsUpfront: number }>,
+    version?: string,
   ) => string[];
   nodePrices: (offer: object, type: string, engine: string) => Record<string, number>;
   nodeProduct: (offer: object, type: string, engine: string) => string;
@@ -43,6 +44,8 @@ function offer(
     reserved?: object;
     valkeyOnDemand?: string;
     threeYearsHourly?: string;
+    valkeyOneYear?: string;
+    valkeyThreeYearsHourly?: string;
   } = {},
 ) {
   return {
@@ -82,8 +85,11 @@ function offer(
         },
         // Valkey's, which is Redis's less a fifth on every term.
         valkey: {
-          one: term('1yr', 'No Upfront', { h: hourly('0.2248000000') }),
-          three: term('3yr', 'All Upfront', { q: upfront('3893.6'), h: hourly('0.0000000000') }),
+          one: term('1yr', 'No Upfront', { h: hourly(terms.valkeyOneYear ?? '0.2248000000') }),
+          three: term('3yr', 'All Upfront', {
+            q: upfront('3893.6'),
+            h: hourly(terms.valkeyThreeYearsHourly ?? '0.0000000000'),
+          }),
         },
       },
     },
@@ -187,6 +193,32 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
       expect(disagreements(offer(), catalogue, reserved)).toEqual([]);
     });
 
+    it('names a three-year upfront price, and a Valkey reserved price, the list does not bear out', () => {
+      const off = { [TYPE]: { ...RESERVED[TYPE]!, threeYearsUpfront: 4800 } };
+      expect(disagreements(offer(), catalogue, off)).toEqual([
+        `${TYPE}: threeYearsUpfront is 4867, where RESERVED says 4800`,
+      ]);
+      expect(
+        disagreements(offer({}, { valkeyOneYear: '0.2300000000' }), catalogue, reserved),
+      ).toEqual([`${TYPE}: Valkey's oneYear is 0.23, not Redis's 0.281 less 20%`]);
+      // Exactly the discount: a Valkey price a tenth of a percent off is named too.
+      expect(
+        disagreements(offer({}, { valkeyOnDemand: '0.3291288000' }), catalogue, reserved),
+      ).toHaveLength(1);
+    });
+
+    it('reads the reserved table the pages price by when none is passed, and the version the catalogue cites', () => {
+      const byDefault = disagreements(offer(), catalogue);
+      expect(byDefault).not.toContain(`${TYPE}: no reserved row`);
+      expect(byDefault).toHaveLength(Object.keys(RESERVED).length - 1); // the rows for nodes this catalogue lacks
+      const cited = /price list (\d{14})/.exec(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.source)?.[1];
+      expect(cited).toBe('20260914063714');
+      expect(disagreements({ ...offer(), version: cited }, catalogue, reserved, cited)).toEqual([]);
+      expect(
+        disagreements({ ...offer(), version: '20260801000000' }, catalogue, reserved, cited),
+      ).toEqual([`the list is version 20260801000000, where the catalogue cites ${cited}`]);
+    });
+
     it("names a Valkey price that is not Redis's less the discount the pages use", () => {
       expect(VALKEY_DISCOUNT).toBe(0.2);
       expect(
@@ -207,7 +239,10 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
     it('names a three-year term that also charges by the hour, and rows on either side with no partner', () => {
       expect(
         disagreements(offer({}, { threeYearsHourly: '0.0100000000' }), catalogue, reserved),
-      ).toEqual([`${TYPE}: three years paid upfront also charges 0.01 an hour`]);
+      ).toEqual([`${TYPE}: Redis's three years paid upfront also charges 0.01 an hour`]);
+      expect(
+        disagreements(offer({}, { valkeyThreeYearsHourly: '0.0080000000' }), catalogue, reserved),
+      ).toEqual([`${TYPE}: Valkey's three years paid upfront also charges 0.008 an hour`]);
       expect(disagreements(offer(), catalogue, {})).toEqual([`${TYPE}: no reserved row`]);
       expect(
         disagreements(offer(), catalogue, { ...reserved, 'cache.r9.huge': reserved[TYPE]! }),
