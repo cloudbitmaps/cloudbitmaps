@@ -116,12 +116,15 @@ no bus, and no connection between two stores that happen to point at the same bu
 | | when the id stops being readable |
 |---|---|
 | storage | on return — the generation holding it is deleted, the DEK is destroyed |
-| the store that performed the call | on return — it invalidates what it cached |
+| the store that performed the call | on return — it invalidates what it cached, and its pins then fail |
 | another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s), when its snapshot re-resolves |
-| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
+| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts it, or something tells it |
 
-That last row is the one to design around. `cache: { genTtlMs: 0 }` means "pin forever" and is a legitimate setting for
-a read-only replica of immutable data — but a segment pinned that way does not observe a shred at all. If a
+That last row is the one to design around. `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a legitimate
+setting for a read-only replica of immutable data — but a store set that way has no bound on when it observes a
+shred: until its reader cache lets the segment go, it keeps decrypting with the key it already unwrapped. A pinned
+handle is that case in any store, clock or none: it holds its reader, and the key, for as long as it is kept. If a
 compliance deadline depends on every reader converging, fan the reference out to your fleet and have each
 process call `store.invalidate(ref)`; that is the hook, and delivering it is yours because the transport is
 yours.

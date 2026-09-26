@@ -110,7 +110,18 @@ export class CrbmReader {
     readonly servedFromTail: boolean,
     /** Set iff the object is encrypted — used to decrypt each chunk payload in {@link getChunk}. */
     private readonly crypto: CrbmCrypto | undefined,
+    /** The footer's own CRC, as verified at open: it covers the index's CRC, the chunk count and the generation. */
+    private readonly footerCrc: number,
   ) {}
+
+  /**
+   * Which object this reader opened, as its size and its footer's CRC. The footer covers the index's CRC, so two
+   * objects with the same fingerprint hold the same chunks, as far as a CRC can tell; a pin compares it to know that
+   * the object it reopens is the one it pinned, since a purged and reloaded name reuses the generation number.
+   */
+  get fingerprint(): string {
+    return `${this.objectSize}:${this.footerCrc}`;
+  }
 
   /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
   get sizeBytes(): number {
@@ -291,6 +302,7 @@ export class CrbmReader {
       orderedKeys,
       servedFromTail,
       options.crypto,
+      storedFooterCrc,
     );
   }
 

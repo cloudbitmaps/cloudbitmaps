@@ -68,8 +68,9 @@ function freshStore(
   storage: MemoryStorageDriver,
   keystore?: IKeystore,
 ): CloudRoaring {
-  // `cache.genTtlMs: 0` pins the generation for this store's lifetime, which is what an export wants: the run
-  // reads one snapshot rather than drifting onto a generation published while it was streaming.
+  // `cache.genTtlMs: 0` turns off the timed refresh, so a run reads the generations this store first resolved:
+  // nothing in these tests evicts, sweeps or invalidates a segment mid-run. That is the fixture's property, not
+  // the export's — `runExport` reads each segment live, so a real store gets no such hold from this setting.
   return new CloudRoaring({
     storage: createBackend({ storage, registry }),
     retry: false,

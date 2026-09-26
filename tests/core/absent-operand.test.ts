@@ -138,7 +138,7 @@ describe('a combine refuses an operand that names a segment which does not exist
 
     registryGets = 0;
     await collect(audience.andNot([optout]));
-    expect(registryGets).toBe(0); // pinned store, both operands non-empty: no existence check at all
+    expect(registryGets).toBe(0); // no timed refresh, both operands non-empty: no existence check at all
     expect(baseline).toBeGreaterThan(0);
   });
 });

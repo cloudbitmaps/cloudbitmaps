@@ -12,6 +12,7 @@ import {
   IntegrityError,
   CapabilityError,
   KeyUnavailableError,
+  NotFoundError,
   ValidationError,
   WriteConflictError,
   isNotFoundError,
@@ -50,7 +51,7 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
    * retirement of that scan. When absent, the source falls back to the `list`-scan (so the
    * in-memory / simple setups keep working with no registry). The resolved generation is cached and
    * **re-resolved on a short TTL** ({@link currentGenTtlMs}, needs a {@link clock}) so a long-lived source
-   * observes a load's new generation within the TTL instead of pinning one generation forever.
+   * observes another process's load within the TTL, not only when something else happens to re-resolve it.
    */
   readonly registry?: IRegistryDriver;
   /**
@@ -68,16 +69,19 @@ export interface CrbmStorageChunkSourceOptions extends CrbmReaderOptions {
   readonly requireEncryption?: boolean;
   /**
    * Time source for the current-generation TTL refresh — the determinism seam; `core/` never reads
-   * ambient time. Refresh needs **both** a clock and a `registry`; without either the source **pins** the
-   * first-resolved generation for its lifetime (the behaviour before the registry was wired in). The `CloudRoaring` facade passes its
-   * clock automatically, so wiring a `registry` is enough to get live cross-generation invalidation.
+   * ambient time. Refresh needs **both** a clock and a `registry`. Without either there is no timed refresh, and
+   * that is the only difference: a segment is still re-resolved when its reader is evicted, when a fetch finds its
+   * generation swept, and on {@link CrbmStorageChunkSource.invalidate}. What goes is the bound on how long another
+   * process's publish takes to arrive. The `CloudRoaring` facade passes its clock automatically, so wiring a
+   * `registry` is enough to get the bounded refresh.
    */
   readonly clock?: Pick<Clock, 'now'>;
   /**
    * How long (ms) a resolved `currentGen` is trusted before the next read re-resolves it (default 2000) — the
    * bound on read staleness after a load publishes: a reader may serve the prior generation for up to this long,
    * then converges. Lazy (checked on read — no timer); ≤ one cheap registry read per segment per window, and a
-   * new {@link CrbmReader} is opened only when the generation actually changed. `0` (or no clock) ⇒ pin forever.
+   * new {@link CrbmReader} is opened only when the generation actually changed. `0` turns the refresh off, as a
+   * missing clock or registry does: {@link clock} says what that changes, and what it does not.
    */
   readonly currentGenTtlMs?: number;
   /**
@@ -111,9 +115,9 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
   };
 }
 
-/** The generation target `resolveTarget` produces: which generation is current + its DEK wrappings (if encrypted). */
 /**
- * A resolved read target. `lineage` is the registry row's OCC token — the identity that survives a delete,
+ * A resolved read target, as `resolveTarget` produces it: which generation is current, and its DEK wrappings if it
+ * is encrypted. `lineage` is the registry row's OCC token — the identity that survives a delete,
  * because `IRegistryDriver.delete` tombstones rather than unlinks ("a later `create` still gets a fresh,
  * greater token"). It is what separates two *incarnations* of one name, which a generation number cannot:
  * `nextGeneration` restarts at 0 once the row is purged and the bucket emptied, so a retired-and-re-created
@@ -121,6 +125,38 @@ function storageBlobReader(driver: IStorageDriver, key: GenKey): BlobReader {
  * row and therefore no incarnation to confuse.
  */
 type Target = { generation: number; lineage?: Token; wrappedDeks?: readonly WrappedDek[] };
+
+/**
+ * What a pin holds of the object it pinned: the version its cache entries are keyed by, and the object's
+ * fingerprint, which a pinned read checks each time it opens the generation. `pinGeneration` always records one;
+ * a pin built by hand without it is checked by version only.
+ */
+export interface PinnedObject {
+  readonly version: string;
+  readonly fingerprint?: string;
+}
+
+/**
+ * The version of one generation of one incarnation: `<generation>`, or `<generation>:<row token>` where there is
+ * a row. One spelling, for the live lookup and for what a pin holds.
+ */
+
+/**
+ * Where a pinned reader of one object is memoised. The fingerprint makes the key that object's, as a version alone
+ * does not on a store with no registry, where the version is the bare generation number two incarnations share.
+ */
+const pinnedKey = (ref: SegmentRef, version: string, fingerprint: string | undefined): string =>
+  `${segmentKey(ref)}@${version}${fingerprint === undefined ? '' : `#${fingerprint}`}`;
+
+/** A pinned read of a generation that is no longer the object the pin opened: stated as a fact, not a cause. */
+const notThePinned = (ref: SegmentRef, generation: number): NotFoundError =>
+  new NotFoundError(
+    `segment "${ref.segment}" generation ${generation} is no longer the object this handle pinned`,
+  );
+
+function versionOf(generation: number, lineage: unknown): string {
+  return lineage === undefined ? String(generation) : `${generation}:${String(lineage)}`;
+}
 
 /** A memoized per-segment reader plus the time it was installed, for the current-generation TTL refresh. */
 interface Snapshot {
@@ -155,11 +191,11 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * One resolved reader per segment, re-resolved on a short TTL ({@link CrbmStorageChunkSourceOptions.currentGenTtlMs},
    * needs a clock). Within the TTL a segment's Storage bytes are treated as an immutable snapshot; when the TTL
    * elapses the next read cheaply re-resolves `currentGen` and, only if it advanced (a load published),
-   * opens the new generation — so a long-lived source observes new generations within the TTL rather than
-   * pinning one forever. The engine pairs this with a **generation-keyed** cache so a bump never
-   * serves a stale decoded chunk. Without a clock or a registry the source pins the first generation for its
-   * lifetime (the behaviour before the registry was wired in). A segment with no generation yet is not memoized, so it's re-checked until
-   * one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmStorageChunkSourceOptions.maxOpenSegments}, default
+   * opens the new generation — so a long-lived source observes new generations within the TTL. The engine pairs
+   * this with a **generation-keyed** cache so a bump never serves a stale decoded chunk. Without a clock or a
+   * registry there is no timed refresh, and a segment's reader is replaced only when it is evicted, when a read
+   * has to fetch from a generation a sweep deleted, or when {@link invalidate} drops it. A segment with no generation yet is not memoized, so
+   * it's re-checked until one exists. **Bounded** by a {@link BoundedLru} ({@link CrbmStorageChunkSourceOptions.maxOpenSegments}, default
    * 1024): past the ceiling the least-recently-used segment's reader (and its parsed index) is evicted — the
    * steady-state memory bound; re-opening an evicted segment is one cheap tail GET.
    */
@@ -287,7 +323,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   private expired(installedAtMs: number): boolean {
     // Refresh needs a clock (the TTL) AND a registry (the *cheap* `currentGen` read the design assumes —
     // without one, re-resolution is a full storage `list`-scan, and a registry-less setup is single-process
-    // local, not the shared bucket that separate loaders publish into). Otherwise: pin for the lifetime.
+    // local, not the shared bucket that separate loaders publish into). Otherwise there is no timed refresh, and
+    // only an eviction, a sweep's heal or `invalidate` re-resolves the segment.
     return (
       this.clock !== undefined &&
       this.registry !== undefined &&
@@ -301,11 +338,12 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * is observed instead of serving a stale decoded chunk. Served from the (TTL-refreshed)
    * snapshot, so no extra backend read within the TTL window. `null` if the segment has no committed generation.
    *
-   * Heals a swept generation exactly like {@link withFreshSnapshot} — the engine calls this **once per op**,
-   * before any chunk fetch, so an unhealed miss here fails the whole operation rather than one chunk. It is
-   * spelled out rather than delegated because this is the hottest call in the library: once per operand of
-   * every `has`/`count`/`iterate`/`intersect`, and almost always served from the cached snapshot with no
-   * backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
+   * Heals a swept generation exactly like {@link withFreshSnapshot}: a caller that resolves the generation once
+   * per op, before any chunk fetch, would otherwise fail the whole operation rather than one chunk. The engine
+   * keys by {@link currentVersion} instead, which heals the same way, and falls back to this for a source that
+   * cannot report a version. It is spelled out rather than delegated because a lookup like this runs once per
+   * operand of every `has`/`count`/`iterate`/`intersect`, almost always served from the cached snapshot with
+   * no backend call at all. Routing it through the generic helper cost ~115 ns/op on that path (a second async
    * frame, a per-call closure, and an `await` on a plain number) for a race that fires only during a
    * concurrent sweep. One retry, then propagate — same contract, same eviction rule.
    */
@@ -328,7 +366,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * an erasure that deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement —
    * leaves the pointer's answer unchanged from this source's point of view while making the snapshot wrong.
    * Until this is called the source keeps serving that snapshot with no backend read at all, so nothing on the
-   * storage side can close the window; with `cache.genTtlMs: 0` or no clock it never closes.
+   * storage side can close the window; with `cache.genTtlMs: 0` or no clock, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
     const key = segmentKey(ref);
@@ -341,45 +379,70 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   }
 
   /**
-   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
-   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
-   * both of which are names somebody deliberately created. Without a registry there is no registration to
-   * consult, so the honest answer is whether the bucket holds any generation of it.
-   *
-   * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
-   * tell apart.
-   */
-  /**
    * `<generation>` for a registry-less source (no row, so no incarnation to confuse), or
    * `<generation>:<row token>` with one. The token moves on every row write, so an unrelated write (a
    * `setRetention`) costs the segment's decoded chunks once — bounded, and on an admin path. Exactness in the
    * direction that matters: two incarnations can never share a version string.
+   *
+   * This is the call the engine makes **once per operand of every read**, before any chunk fetch, to key its
+   * chunk cache, so it heals a swept generation exactly as {@link currentGeneration} does: unhealed, a cold read
+   * racing a publish and a `keep: 0` sweep failed the whole operation with `NotFoundError`, where the same race
+   * on a chunk fetch heals. Spelled out rather than delegated for the reason `currentGeneration` gives: it is
+   * almost always served from the cached snapshot with no backend call at all. One retry, then propagate.
    */
   async currentVersion(ref: SegmentRef): Promise<string | null> {
-    const reader = await this.resolvedReader(ref);
-    if (reader === null) return null;
-    return reader.lineage === undefined
-      ? String(reader.generation)
-      : `${reader.generation}:${String(reader.lineage)}`;
+    const pending = this.resolvedReader(ref);
+    let reader: CrbmReader | null;
+    try {
+      reader = await pending;
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      this.dropStale(segmentKey(ref), pending);
+      reader = await this.resolvedReader(ref); // a second miss propagates
+    }
+    return reader === null ? null : versionOf(reader.generation, reader.lineage);
   }
 
   /**
    * Resolve the segment **once** and report what a pin should hold: the generation, and the version that
    * identifies those exact bytes. `null` when the segment resolves to no generation — there is nothing to pin,
    * and a caller must treat that as "this handle reads empty", not "pinning is unsupported here".
+   *
+   * Heals a generation swept between the registry read and the open, as {@link currentVersion} does: a publish
+   * and a `keep: 0` sweep can land in that gap, and nothing has been handed out yet, so the generation current
+   * once the swept one is gone is exactly what a pin taken now should hold. One retry, then propagate.
    */
-  async pinGeneration(ref: SegmentRef): Promise<{ generation: number; version: string } | null> {
+  async pinGeneration(
+    ref: SegmentRef,
+  ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+    try {
+      return await this.pinOnce(ref);
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      return this.pinOnce(ref); // a second miss propagates
+    }
+  }
+
+  private async pinOnce(
+    ref: SegmentRef,
+  ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
     // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no clock,
-    // arbitrarily far behind, since it never refreshes at all. Pinning through it made every pin on such a
-    // store return the first generation that store had ever read.
+    // arbitrarily far behind, since nothing refreshes it on a timer. Pinning through it made a pin on such a store
+    // return whatever generation the store happened to hold, however old.
     const target = await this.resolveTarget(ref);
     if (target === null) return null;
-    const version =
-      target.lineage === undefined
-        ? String(target.generation)
-        : `${target.generation}:${String(target.lineage)}`;
-    return { generation: target.generation, version };
+    const version = versionOf(target.generation, target.lineage);
+    // Opened now, not at the first pinned read, so the pin knows which object it holds: a name purged and loaded
+    // again starts again at generation 0, and only the object itself tells the two apart. Opened afresh, never taken
+    // from the memo: without a registry a version is the bare generation number, which two incarnations share, so
+    // only the fingerprint this open reads can say which object a memoised reader is. The reader is then memoised
+    // under that fingerprint for the pin's reads, so this is the tail read the first of them would otherwise make,
+    // done with the row just read.
+    const reader = await this.openForTarget(ref, target);
+    if (reader === null) return null;
+    this.install(pinnedKey(ref, version, reader.fingerprint), Promise.resolve(reader));
+    return { generation: target.generation, version, fingerprint: reader.fingerprint };
   }
 
   /**
@@ -388,72 +451,141 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    *
    * Sharing the LRU is the point, not an implementation detail. A pinned reader held in a private field is
    * outside the memory ceiling the library advertises — measured at 10.34 MiB per live pin, 32 pins holding
-   * 111.7 MiB against an 8 MiB configured bound. A pinned *generation number* has no such problem: the
-   * generation is immutable, so eviction is harmless and re-opening at the same number reproduces the same
-   * bytes. It also removes a memoized-rejection bug by construction — `install` forgets a promise that rejects,
+   * 111.7 MiB against an 8 MiB configured bound. A pinned *generation number* has no such problem: an object is
+   * immutable, so eviction is harmless, and re-opening at the same number reopens the same bytes unless the name
+   * was purged and loaded again, which the pin's fingerprint then says. It also removes a memoized-rejection bug by
+   * construction — `install` forgets a promise that rejects,
    * where a hand-rolled `this.reader ??= open()` cached the rejection for the life of the handle and made a pin
    * the one read path with no resilience.
    *
    * **`status` is re-checked here**, on every open rather than once at pin time. A pin taken before a
    * crypto-shred must not keep unwrapping a DEK the shred destroyed; a destroyed segment resolves no generation
-   * for anyone, pinned or not.
+   * for anyone, and a pin's read of one fails. That holds from the pin's next open: a reader already open keeps
+   * the key it unwrapped until it is evicted or invalidated.
+   *
+   * **And the object is checked**, when the caller says which one it pinned. A generation number is not an
+   * identity (invariant 1): once a name is purged and loaded again, its new segment starts again at generation 0,
+   * so a pin of the old one would open the new one's object as its own, and read it beside the chunks it had
+   * already cached from the old one. The row's token cannot tell them apart, since it moves on every write, a
+   * publish included; the object's fingerprint can, and a pin whose object has been replaced fails, as one whose
+   * generation has been swept does. The memo is keyed by the pin's version and the object's fingerprint, so two
+   * pins of one generation number in two incarnations never share a reader, with a registry or without one.
    */
-  private async readerAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
-    const key = `${segmentKey(ref)}@${generation}`;
-    const existing = this.snapshots.get(key);
-    if (existing !== undefined) return existing.reader;
-    return this.install(key, this.openAt(ref, generation)).reader;
+  private async readerAt(
+    ref: SegmentRef,
+    generation: number,
+    version?: string,
+    fingerprint?: string,
+  ): Promise<CrbmReader | null> {
+    const key = pinnedKey(ref, version ?? String(generation), fingerprint);
+    const reader = await (
+      this.snapshots.get(key) ?? this.install(key, this.openAt(ref, generation))
+    ).reader;
+    // A pin's read fails where a bare read of a generation reads nothing: a pin describes one instant, and one that
+    // goes empty partway through a call, because its row was dropped or destroyed, has torn it.
+    if (reader === null) {
+      if (version === undefined) return null;
+      throw new NotFoundError(
+        `segment "${ref.segment}" generation ${generation}, which this handle pinned, can no longer be read: its ` +
+          'registry row is gone or destroyed',
+      );
+    }
+    if (fingerprint !== undefined && reader.fingerprint !== fingerprint)
+      throw notThePinned(ref, generation);
+    return reader;
   }
 
   private async openAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
-    let lineage: Token | undefined;
-    if (this.registry !== undefined) {
-      const record = await this.registry.get(ref);
-      // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
-      // takes its key material with it, so there is nothing left to read under any generation.
-      if (record === null || record.status === 'destroyed') return null;
-      lineage = record.token;
+    if (this.registry === undefined) return this.openForTarget(ref, { generation });
+    // One read of the row, for its status, its incarnation and its key wrappings together.
+    const record = await this.registry.get(ref);
+    // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
+    // takes its key material with it, so there is nothing left to read under any generation.
+    if (record === null || record.status === 'destroyed') return null;
+    return this.openForTarget(ref, {
+      generation,
+      lineage: record.token,
+      wrappedDeks: record.wrappedDeks,
+    });
+  }
+
+  /**
+   * Read one chunk of a specific generation — the pinned read path. `held`, when given, is what a pin holds of the
+   * object, and the read fails if the generation is now another object.
+   */
+  async getChunkAt(
+    ref: ChunkRef,
+    generation: number,
+    held?: PinnedObject,
+  ): Promise<Uint8Array | null> {
+    validateSegmentRef(ref);
+    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
+    if (reader === null) return null;
+    try {
+      return await reader.getChunk(ref.chunkKey);
+    } catch (err) {
+      // A pin's memoised reader outlives its object when the name is purged and loaded again: its index then points
+      // into bytes that are not its own, and the chunk fails its checksum. Opened afresh, the object says which it
+      // was: replaced, which is a pin's NotFoundError, or damaged, which stays the IntegrityError it is. Only this
+      // error pays for the second open.
+      if (held?.fingerprint === undefined || !(err instanceof IntegrityError)) throw err;
+      let now: CrbmReader | null;
+      try {
+        now = await this.openAt(ref, generation);
+      } catch (reopen) {
+        if (isNotFoundError(reopen)) throw notThePinned(ref, generation);
+        throw err;
+      }
+      if (now === null || now.fingerprint !== held.fingerprint) throw notThePinned(ref, generation);
+      throw err;
     }
-    return this.openForTarget(ref, { generation, lineage, wrappedDeks: await this.deksFor(ref) });
   }
 
-  /** The row's current key wrappings, for opening a pinned generation. */
-  private async deksFor(ref: SegmentRef): Promise<readonly WrappedDek[] | undefined> {
-    if (this.registry === undefined) return undefined;
-    return (await this.registry.get(ref))?.wrappedDeks;
-  }
-
-  /** Read one chunk of a specific generation — the pinned read path. */
-  async getChunkAt(ref: ChunkRef, generation: number): Promise<Uint8Array | null> {
+  /** Chunk keys of a specific generation — the pinned shape read. `held` as for {@link getChunkAt}. */
+  async listChunkKeysAt(
+    ref: SegmentRef,
+    generation: number,
+    held?: PinnedObject,
+  ): Promise<number[]> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
-    return reader === null ? null : reader.getChunk(ref.chunkKey);
-  }
-
-  /** Chunk keys of a specific generation — the pinned shape read. */
-  async listChunkKeysAt(ref: SegmentRef, generation: number): Promise<number[]> {
-    validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? [] : reader.chunkKeys();
   }
 
-  /** Per-chunk cardinalities of a specific generation — powers a pinned `count()` with no payload reads. */
+  /**
+   * Per-chunk cardinalities of a specific generation — powers a pinned `count()` with no payload reads. `held` as
+   * for {@link getChunkAt}.
+   */
   async cardinalitiesAt(
     ref: SegmentRef,
     generation: number,
+    held?: PinnedObject,
   ): Promise<ReadonlyMap<number, number> | null> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? null : reader.cardinalities();
   }
 
-  /** Grounded size of a specific generation. */
-  async sizeOfAt(ref: SegmentRef, generation: number): Promise<SegmentSize | null> {
+  /** Grounded size of a specific generation. `held` as for {@link getChunkAt}. */
+  async sizeOfAt(
+    ref: SegmentRef,
+    generation: number,
+    held?: PinnedObject,
+  ): Promise<SegmentSize | null> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, held?.version, held?.fingerprint);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
 
+  /**
+   * Whether the segment is a registered name at all. With a registry that is exactly "a row exists" — including
+   * a row with no generation yet (minted by `setRetention` before the first load) and a `destroyed` tombstone,
+   * both of which are names somebody deliberately created. Without a registry there is no registration to
+   * consult, so the honest answer is whether the bucket holds any generation of it.
+   *
+   * Deliberately NOT served from the snapshot memo: the memo resolves to `null` for both states this exists to
+   * tell apart.
+   */
   async exists(ref: SegmentRef): Promise<boolean> {
     if (this.registry !== undefined) return (await this.registry.get(ref)) !== null;
     for await (const key of this.driver.list(ref)) {
@@ -487,7 +619,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       generation: target.generation,
     };
     const crypto = await this.cryptoForRead(ref, target.generation, target.wrappedDeks);
-    return CrbmReader.open(storageBlobReader(this.driver, genKey), {
+    return openChecked(this.driver, genKey, {
       ...this.readerOptions,
       crypto,
       lineage: target.lineage,
@@ -1156,7 +1288,26 @@ export function openGenerationReader(
   crypto: CrbmCrypto | undefined,
   options: Omit<CrbmReaderOptions, 'crypto'> = {},
 ): Promise<CrbmReader> {
-  return CrbmReader.open(storageBlobReader(storage, key), { ...options, crypto });
+  return openChecked(storage, key, { ...options, crypto });
+}
+
+/**
+ * Open a reader on `key`, refusing an object whose footer names another generation. Every writer stamps the key's
+ * number, and the chunk cache, the load guard and the erasure rewrite all trust it, so an object that disagrees
+ * was written under another key or altered. Every open, the live read's, a pin's and the write paths', comes here.
+ */
+async function openChecked(
+  storage: IStorageDriver,
+  key: GenKey,
+  options: CrbmReaderOptions,
+): Promise<CrbmReader> {
+  const reader = await CrbmReader.open(storageBlobReader(storage, key), options);
+  if (reader.generation !== key.generation) {
+    throw new IntegrityError(
+      `segment "${key.segment}" generation ${key.generation}: its footer says generation ${reader.generation}`,
+    );
+  }
+  return reader;
 }
 
 /**

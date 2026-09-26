@@ -420,10 +420,18 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
-registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
+registry reads. `0` turns the timed refresh off: the store then re-resolves a segment only when its reader cache
+evicts it, when a read has to fetch from a generation a sweep deleted, or when it is invalidated — by this store's
+own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)` — so another process's
+publish reaches it with no bound at all. The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
-`intersect` — the generation is resolved **once** and every chunk comes from it, so a load landing mid-call cannot
-tear the result. Without a registry the generation is pinned for the source's lifetime (single-process/local use).
+`intersect` — the generation is resolved **once**, before any chunk is fetched, and every chunk is a whole,
+checksum-verified chunk of one generation, so a load landing mid-call never tears a chunk. A long call can still
+read its later chunks from another generation — if it straddles a TTL boundary, the reader cache evicts the segment
+mid-call, a sweep collects the generation it was reading, or the store invalidates the segment — and its answer then
+describes two instants ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one.
+Without a registry, a store finds the generation by listing the bucket when it opens a segment, and keeps it until
+the reader cache evicts that segment, a read finds it swept, or it is invalidated (single-process/local use).
 
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:
@@ -687,12 +695,15 @@ Who calls it today:
 **Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
 generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
 stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
-consistent. A **long** call is the one shape where the generation can move underneath you — a resolved snapshot
-is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
-resolve even sooner — so a long `intersect` across a publish may read its later chunks from the newer
-generation: every chunk whole, immutable and checksum-verified, never torn, but the answer describing two
-instants rather than one, with nothing in the result saying so. That is what a snapshot handle is for, and it
-is [on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
+consistent. A **long** call is the one shape where the generation can move underneath you. A resolved snapshot
+is re-checked once the TTL elapses, and three things force a fresh resolve even sooner: the reader cache evicting
+an operand mid-call, a sweep collecting the generation the call was reading, and an invalidation (this store's own
+`load`, `rollback`, `eraseSubject` or `*Into` writes, or `store.invalidate(ref)`). So a long `intersect` across a publish may read
+its later chunks from another generation: every chunk whole, immutable and checksum-verified, never torn, but the
+answer describing two instants rather than one, with nothing in the result saying so. `cache.genTtlMs: 0` removes
+only the timed re-check, so it is no way to get one instant. That is what a snapshot handle is for:
+`seg.pin()` holds a segment at the generation current when you call it, for the life of the handle it returns
+([API reference](api-reference.md#the-segment-verbs-the-90-of-daily-use)), so a long export or reconciliation describes one instant.
 
 ### Sizing `keep`
 
@@ -710,9 +721,10 @@ crypto-shredded, where reading empty is the documented outcome.
 **The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every
 `cache.genTtlMs`, so at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
 read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
-`intersect` does not need a sixty-second window. The exception is a source that never re-resolves — no clock
-injected, no registry, or `cache: { genTtlMs: 0 }` ("pin forever") — which holds one generation for its whole
-lifetime; there no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
+`intersect` does not need a sixty-second window. The exception is a source with no timed refresh — no clock
+injected, no registry, or `cache: { genTtlMs: 0 }` — whose snapshot lasts until an eviction, a read that finds its
+generation swept, or an invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
+mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
 160 GB of object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
@@ -726,9 +738,10 @@ Which gives:
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
 | a long job that must see **one** instant, not merely succeed | none of the above — see below |
 
-**What no value of `keep` gives you is a single instant.** The generation hop above is caused by
-*re-resolution*, not by collection: a read whose TTL elapses moves to the newer generation whether or not the
-old one still exists. Retaining more copies changes nothing about it. A job that needs one instant (an export,
+**What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
+collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
+another generation whether or not the old one still exists. Retaining more copies removes the sweep's heal and none
+of the rest. A job that needs one instant (an export,
 a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
@@ -1103,12 +1116,13 @@ answer it for you: there is no daemon and no bus, only stores that happen to poi
 | | when the id stops being readable |
 |---|---|
 | storage | on return — the generation holding it is deleted |
-| the store that performed the erasure | on return |
+| the store that performed the erasure | on return, and its pins then fail |
 | another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
-| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts it, or `store.invalidate(ref)` is called there |
+| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
-`cache: { genTtlMs: 0 }` means "pin forever" and is a reasonable setting for a read-only replica of immutable data —
-but a segment pinned that way never observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
+`cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
+immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
 fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
 `destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them holds the
 **unwrapped** key and keeps reading until it is told.
@@ -1274,9 +1288,10 @@ Two limits worth knowing before you automate it:
   `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
   tombstone (below), or use a fresh dated name — which is the pattern anyway.
 - **"Reads as empty" needs a clock.** The `cache.genTtlMs` bound applies to a reader whose storage source has a
-  clock, a registry, *and* a positive TTL. Built without a clock, or with `cache: { genTtlMs: 0 }` ("pin forever"), a
-  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely —
-  restart it.
+  clock, a registry, *and* a positive TTL. Built without a clock, or with `cache: { genTtlMs: 0 }`, a reader has no
+  timed refresh: it notices the drop only when a read has to fetch from a deleted generation or its reader cache
+  evicts the segment, and can answer `true` from its cache for a dropped segment indefinitely — call
+  `store.invalidate(ref)` on it, or restart it.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
 > the registry still points at them, which is exactly the state
@@ -1448,7 +1463,7 @@ because deleting the row is what makes the name writable again:
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
-`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "pin forever",
+`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer",
 and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 
 ## 14. Export / eject your data

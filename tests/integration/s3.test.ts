@@ -175,7 +175,7 @@ describe('S3StorageDriver specifics (MinIO)', () => {
     const gens: number[] = [];
     for await (const k of driver.list({ segment: 's' })) gens.push(k.generation);
     expect(gens.sort((a, b) => a - b)).toEqual([1, 5]);
-    // CrbmStorageChunkSource pins the highest generation.
+    // CrbmStorageChunkSource, with no registry, resolves the highest generation in the bucket.
     const storage = new CrbmStorageChunkSource(driver);
     const bytes = await storage.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(bytes!, 1 << 20).toArray()).toEqual([9]);
