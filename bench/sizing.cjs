@@ -160,11 +160,13 @@ const QUOTAS_URL =
  * The shape every segment has: the calibration run's, about 2,000 chunks, and each cold intersect sharing 100 of them
  * with its other operand, so `chunksPerIntersect` is 200. A larger segment is modelled as holding its ids more densely,
  * not as sharing more chunks — the most favourable choice for large segments, which the overlap table below undoes.
- * Only up to a point: a chunk holds at most 65,536 ids, a bitmap of FULL_CHUNK_BYTES, so a deployment whose segments
- * are larger than CHUNKS_PER_SEGMENT full chunks is refused rather than priced on a shape it cannot have.
+ * Only up to a point: a chunk holds at most 65,536 ids and takes at most MAX_CHUNK_BYTES, a bitmap of that many bits,
+ * whatever ids it holds, since a write keeps each chunk in its smallest form. A full chunk is one run and takes a
+ * few bytes; the bitmap is the ceiling. So a deployment whose segments are larger than CHUNKS_PER_SEGMENT chunks at
+ * that ceiling is refused rather than priced on a shape it cannot have.
  */
 const CHUNKS_PER_SEGMENT = 2000;
-const FULL_CHUNK_BYTES = 65536 / 8;
+const MAX_CHUNK_BYTES = 65536 / 8;
 const SHARED_CHUNKS = 100;
 
 const PROFILES = [
@@ -360,11 +362,11 @@ function redisPricedAs({ valkey = false, replicas = CATALOGUE.replicasPerShard, 
 /** Redis bought every cheaper way the pages price: as Valkey, with one replica a shard, on `term`. */
 const cheapestRedis = (term) => redisPricedAs({ valkey: true, replicas: 1, reserved: term });
 /**
- * The deployments whose Redis, bought every cheaper way on three years paid upfront, costs no more than they do: the
+ * The deployments whose Redis, bought every cheaper way on three years paid upfront, costs less than they do: the
  * ones where the verdict reverses. Computed once, so every page that says where it reverses says the same thing.
  */
 const REVERSED = PROFILES.filter(
-  (p) => price(p).monthlyUSD.total >= redisOf(p, cheapestRedis('threeYearsUpfront')).monthlyUSD,
+  (p) => price(p).monthlyUSD.total > redisOf(p, cheapestRedis('threeYearsUpfront')).monthlyUSD,
 ).map((p) => p.id);
 /** "medium", "medium and large", "small, medium and large". */
 const andList = (items) =>
@@ -384,6 +386,18 @@ function meetsAt(sizeBytes) {
 }
 /** The explainer's losing example: a dashboard running cold intersects hard over a small set. */
 const HOT = { sizeBytes: 5e9, perSec: 100 };
+/** The guide's planning example: its inputs are the guide's, and every figure in its comments is the estimator's. */
+const GUIDE_EXAMPLE_INPUT = {
+  segments: [{ sizeBytes: 6e8, count: 2 }],
+  workload: {
+    readsPerSec: 200,
+    cacheHitRate: 0.8,
+    intersectsPerSec: 1,
+    chunksPerIntersect: 20,
+    loadsPerMonth: 30,
+    hotSegments: 2,
+  },
+};
 /** A deployment's data, all its segments together. */
 const sizeOf = (p) => p.segments * p.segmentBytes;
 /** One cold intersect's GETs on its segments' data prefix: every chunk and tail read, not the pointers beside it. */
@@ -398,11 +412,11 @@ const dataGetsOf = (p) =>
 // deployment had room, or sat below the line, after the model had moved it past, would still render, and pass.
 for (const p of PROFILES) {
   const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
-  if (p.segmentBytes > CHUNKS_PER_SEGMENT * FULL_CHUNK_BYTES) {
+  if (p.segmentBytes > CHUNKS_PER_SEGMENT * MAX_CHUNK_BYTES) {
     throw new Error(
       // Formatted by hand: the premises run before the page's formatters are defined.
       `sizing: the ${p.id} deployment's segments are larger than ` +
-        `${CHUNKS_PER_SEGMENT.toLocaleString('en-US')} full chunks can hold`,
+        `${CHUNKS_PER_SEGMENT.toLocaleString('en-US')} chunks can take`,
     );
   }
   if (!(breakEvenRate(p) > now)) {
@@ -496,6 +510,9 @@ function clusterLabel(b) {
 const rate = (n) => (n < 1 ? n.toPrecision(2) : n < 10 ? n.toFixed(1) : int(n));
 /** A multiple to two significant figures: 21×, 3.9×. */
 const times = (n) => `${Number(n.toPrecision(2))}×`;
+/** How far apart two rates are, as the table shows them, so a reader dividing its columns gets its answer. */
+const shownRatio = (to, from) =>
+  times(Number(rate(to).replace(/,/g, '')) / Number(rate(from).replace(/,/g, '')));
 /** The words each chart's image is described by, in the page and in its own aria-label. */
 function chartWords() {
   const d = chartData();
@@ -512,7 +529,7 @@ function chartWords() {
       `${bytes(CHART_X.max)}. Below it CloudBitmaps costs less, and above it Redis does. The three illustrative ` +
       'deployments sit below it; the example, a dashboard running ' +
       `${int(HOT.perSec)} cold intersects a second over ${bytes(HOT.sizeBytes)}, sits above it. A dashed rule marks ` +
-      `one data prefix's documented GET rate, ${rate(d.prefixRate)} cold intersects a second.`,
+      `the cold intersects that fill one data prefix's documented GET rate: ${rate(d.prefixRate)} a second.`,
   };
 }
 const secs = (s) => (s % 60 === 0 && s >= 60 ? `${s / 60} min` : `${int(s)} s`);
@@ -620,14 +637,31 @@ function render() {
     'cost less, and against them the saving is smaller' +
     (REVERSED.length === 0
       ? '.'
-      : `: bought all three ways, on three years paid upfront, the ${andList(REVERSED)} ` +
-        `${REVERSED.length === 1 ? "deployment's" : "deployments'"} Redis costs less than CloudBitmaps ` +
-        '([what it saves](why-cloudbitmaps.md#the-short-answer)).');
+      : `: bought all three ways, on three years paid upfront, the Redis of [the ${andList(REVERSED)} ` +
+        `${REVERSED.length === 1 ? 'deployment' : 'deployments'}](why-cloudbitmaps.md#the-short-answer) costs ` +
+        'less than CloudBitmaps.');
   const leaningsSizing =
     `**Which way the Redis price leans.** ${leanings} To compare with one cluster you name, pass ` +
     '`pricing.redis: { monthlyUSD }`; to price Redis your own way, `pricing.redis: { sizedToData }`.';
+  const exampleTotal = estimateCost(GUIDE_EXAMPLE_INPUT).monthlyUSD.total;
+  const exampleCheaper = [
+    ['oneYear', 'on one year with nothing upfront'],
+    ['threeYearsUpfront', 'on three years paid upfront'],
+  ]
+    .map(([term, words]) => ({
+      words,
+      usd: estimateCost({ ...GUIDE_EXAMPLE_INPUT, pricing: cheapestRedis(term) }).redisBaseline
+        .monthlyUSD,
+    }))
+    .filter((t) => t.usd < exampleTotal);
+  const exampleReverses =
+    exampleCheaper.length === 0
+      ? ''
+      : ' So does the Redis of the example above: bought all three ways, it costs ' +
+        `${exampleCheaper.map((t) => `${usd2(t.usd)} a month ${t.words}`).join(', and ')}, where ` +
+        `CloudBitmaps costs ${usd2(exampleTotal)}.`;
   const leaningsGuide =
-    `${leanings} It prices nodes, not quotas: a cluster of more than ${int(DEFAULT_NODES_PER_CLUSTER)} nodes ` +
+    `${leanings}${exampleReverses} It prices nodes, not quotas: a cluster of more than ${int(DEFAULT_NODES_PER_CLUSTER)} nodes ` +
     "needs AWS to raise ElastiCache's " +
     `[default quota](${QUOTAS_URL}), ` +
     `which it [raises to at most ${int(MAX_NODES_PER_CLUSTER)} nodes a cluster](${SHARDS_URL}) ` +
@@ -640,7 +674,7 @@ function render() {
     ...PROFILES.map((p) => {
       const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
       const even = breakEvenRate(p);
-      return `| **${p.name}** | ${rate(now)} | ${rate(even)} | ${times(even / now)} |`;
+      return `| **${p.name}** | ${rate(now)} | ${rate(even)} | ${shownRatio(even, now)} |`;
     }),
   ];
 
@@ -677,7 +711,8 @@ function render() {
     `Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids ` +
     `spread over about ${int(CHUNKS_PER_SEGMENT)} chunks, and every cold intersect of two segments sharing ` +
     `${int(SHARED_CHUNKS)} of them, so each fetches the shared chunks from both. A larger segment is modeled as ` +
-    `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * FULL_CHUNK_BYTES)} its chunks hold when every one is full, not as ` +
+    `holding its ids more densely, up to the ${bytes(CHUNKS_PER_SEGMENT * MAX_CHUNK_BYTES)} its chunks can take, ` +
+    `${bytes(MAX_CHUNK_BYTES)} each, the most one takes whatever ids it holds, not as ` +
     'sharing more chunks, which is the most favourable choice for large segments; ' +
     '[the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a ' +
     'long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, ' +
@@ -780,18 +815,7 @@ function render() {
     `${usd(anchorNodes * m6g.hourlyUSD * HOURS_PER_MONTH)}, so it is a fixed point to compare with, not a price the ` +
     'estimator picks.';
 
-  // The guide's planning example: its inputs are the guide's, and every figure in its comments is the estimator's.
-  const guide = {
-    segments: [{ sizeBytes: 6e8, count: 2 }],
-    workload: {
-      readsPerSec: 200,
-      cacheHitRate: 0.8,
-      intersectsPerSec: 1,
-      chunksPerIntersect: 20,
-      loadsPerMonth: 30,
-      hotSegments: 2,
-    },
-  };
+  const guide = GUIDE_EXAMPLE_INPUT;
   const g = estimateCost(guide);
   const uncached = estimateCost({ ...guide, workload: { ...guide.workload, cacheHitRate: 0 } });
   const w = guide.workload;
@@ -985,9 +1009,12 @@ function render() {
       ],
       [
         'each refresh    ──► a pointer GET, after cache.genTtlMs',
-        'at most one a read, and one per segment per reader each genTtlMs',
+        'one per segment per reader each genTtlMs',
       ],
-      ['each load       ──► S3 PUTs, and a pointer write', 'grows with how often the data changes'],
+      [
+        'each load       ──► S3 PUTs and LISTs, pointer GETs, a write',
+        'grows with how often the data changes',
+      ],
     ]),
     '```',
   ];
@@ -1075,7 +1102,7 @@ function render() {
     ...PROFILES.map((p) => {
       const now = p.intersectsPerMonth / SECONDS_PER_MONTH;
       const even = breakEvenRate(p);
-      return `| **${p.name}** | ${bytes(sizeOf(p))} | ${rate(now)} | ${rate(even)} | **${times(even / now)}** |`;
+      return `| **${p.name}** | ${bytes(sizeOf(p))} | ${rate(now)} | ${rate(even)} | **${shownRatio(even, now)}** |`;
     }),
   ];
 
@@ -1090,13 +1117,16 @@ function render() {
     "for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is " +
     "Redis's ground, or a cache's in front of CloudBitmaps.";
 
-  const rounds = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
+  // The engine keeps a window of INTERSECT_CONCURRENCY chunks in flight and starts the next as the OLDEST finishes, so
+  // at an even latency the shared chunks take ceil(shared ÷ window) request times, after the pointers and indexes.
+  const chain = 2 + Math.ceil(SHARED_CHUNKS / INTERSECT_CONCURRENCY);
   const depth =
-    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks makes its requests in **${int(rounds)} ` +
-    "rounds**, one after another: both operands' pointers, then both indexes, then the shared chunks " +
-    `${int(INTERSECT_CONCURRENCY)} at a time, each from both operands. Each round waits for the slowest of its ` +
-    'requests, not a typical one, so what the rounds take is for a measurement to say. A repeat served from the ' +
-    'chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.';
+    `A cold intersect of two segments sharing ${int(SHARED_CHUNKS)} chunks waits on a chain of requests ` +
+    `**${int(chain)} deep**: both operands' pointers, then both indexes, then the shared chunks, each from both ` +
+    `operands, with ${int(INTERSECT_CONCURRENCY)} in flight and the next starting as the oldest finishes. At an ` +
+    `even latency that is ${int(chain)} request times end to end. A slow request holds up those queued behind it, ` +
+    'so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request ' +
+    'within `cache.genTtlMs`, and one round of pointer reads after it.';
 
   const whyPrefix =
     `AWS documents [at least ${int(S3_PREFIX_GETS_PER_SEC)} GET requests a second per partitioned prefix]` +
@@ -1258,7 +1288,7 @@ function charts() {
             ],
             color: 'ink',
             dashed: true,
-            text: `one prefix's documented GET rate: ${rate(d.prefixRate)} a second`,
+            text: `one prefix's GETs: ${rate(d.prefixRate)} intersects a second`,
             // Below the rule: above it, the example's dot leaves no room.
             textAt: [1.3e8, d.prefixRate / 2.3],
           },
@@ -1292,36 +1322,50 @@ function charts() {
 
 // ── write / check ────────────────────────────────────────────────────────────────────────────────────
 /**
- * A figure outside every region of a page that says its figures are generated: money, a share, a multiple, a GET
- * count, or the overlap formula. Nothing compares one with the estimator, so none may stand in the prose. Matched on
- * text `normalize()` has decoded, so `&#36;5`, `90&percnt;` and `3&times;` are figures too, and in words as well as
- * signs: `90 percent`, `66 times`, `66x`. A multiple never follows a dot, which is a version: `0.9.x`.
+ * A figure outside every region of a page that says its figures are generated: money, a share, a multiple, a count of
+ * requests, or the overlap formula. Nothing compares one with the estimator, so none may stand in the prose. Matched
+ * on the text `prose()` leaves, with its entities decoded and its fullwidth forms folded, so `&#36;5`, `&#57;&#48;%`,
+ * `９０％` and `3&times;` are figures, and in the words a page might use as well as its signs: `90 percent`, `90 pct`,
+ * `66 times`, `66x`, `66-fold`, `twice as much`, `40 cents`, `40¢`, `21,445 USD`, `4,140 requests`. These are the
+ * spellings it knows, not every one there is. A number after a second dot is part of a version, not a multiple:
+ * `Redis 7.2.4 times out` is not 2.4 times anything.
  */
 const SHARE_OR_MULTIPLE = [
-  String.raw`\d[\d,.]*\s*[%×]`,
-  String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:x\b|per\s?cent\b|times\b)`,
-  String.raw`\bper\s?cent\b`,
+  String.raw`\d[\d,.]*\s*[%×✕✖⨯]`,
+  String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:x\b|per[\s-]?cent\b|pct\b|times\b|-?fold\b)`,
+  String.raw`\bper[\s-]?cent\b`,
+  String.raw`\b(?:twice|thrice|double|triple)\s+(?:as|the)\b`,
 ];
 const FIGURE = new RegExp(
   [
-    String.raw`(?:\$|\bUSD)\s*\d`,
+    String.raw`(?:\$|\bUS\$|\bUSD)\s*\d`,
+    String.raw`\d\s*¢|¢\s*\d`,
     ...SHARE_OR_MULTIPLE,
-    String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*dollars?\b`,
+    String.raw`(?<![.\d])\d[\d,]*(?:\.\d+)?\s*(?:USD\b|(?:US\s+)?dollars?\b|cents?\b)`,
     String.raw`\b\d+\s*\+\s*\d+\s*k\b`,
-    String.raw`\b\d[\d,]*\s+GETs?\b`,
+    String.raw`\b\d[\d,]*\s+(?:GETs?|requests?)\b`,
   ].join('|'),
   'i',
 );
 /**
  * The pages that say so, and the part of each that does: the whole page, or one section of it. A page whose
- * section alone is generated keeps the rest of itself to the shares and multiples listed here, each a measurement
- * or a definition quoted where it is explained, so a figure moved out of the section is refused there too; its
- * dollar amounts are `scripts/site-figures.cjs`'s to check.
+ * section alone is generated keeps the rest of itself to the phrases listed here, each a measurement or a definition
+ * quoted where it is explained, and a share or multiple anywhere else in it is refused, so a figure moved out of the
+ * section is refused there too. A listed phrase the page no longer says is refused as well, rather than left to
+ * allow a figure nobody is quoting. Its dollar amounts are `scripts/site-figures.cjs`'s to check.
  */
 const GENERATED_PROSE = {
   'docs/guide/why-cloudbitmaps.md': null,
   'docs/guide/sizing.md': null,
-  'README.md': { section: 'Why CloudBitmaps', elsewhere: ['5%', '6.25%', '12.5×'] },
+  'README.md': {
+    section: 'Why CloudBitmaps',
+    elsewhere: [
+      'overlapping in 5% of chunks',
+      'LIST bills at 12.5× a GET',
+      '65,536-id chunk (6.25% of it)',
+      'about twice the load figure',
+    ],
+  },
 };
 for (const doc of Object.keys(GENERATED_PROSE)) {
   if (DOCS[doc] === undefined)
@@ -1336,26 +1380,47 @@ function blankRegions(doc, text) {
   }
   return { text: s, at };
 }
-/** What a reader is given of some markdown: no comments, tags or addresses, and its entities decoded. */
+/**
+ * What a reader is given of some markdown, and only that: what a renderer takes away is taken away, and everything it
+ * shows is kept. Comments go, and so does a reference definition, a line holding a label, a colon, an address and at
+ * most a quoted title, which is read before any link is, so a line that opens with a link is not taken for one. A
+ * footnote's `[^1]:` line is shown, as is a line that only looks like a definition, so both stay. Link targets,
+ * autolinks and bare addresses go; a bare address ends where a dash or a bracket does, as none is part of one. Then
+ * entities are decoded, fullwidth forms folded, and tags removed: a tag is `<` and a letter, so a `<` in a sentence
+ * hides nothing.
+ */
 function prose(text) {
   return normalize(
     text
       .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(
+        /^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|[^\s<>]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/gm,
+        '',
+      )
       .replace(/\]\((?:[^()\s]|\([^()]*\))*\)/g, ']')
-      .replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, '')
-      .replace(/<(?:https?|mailto):[^>]*>/g, '')
-      .replace(/\bhttps?:\/\/\S+/g, ''),
-  ).replace(/<[^>]*>/g, ' ');
+      .replace(/<(?:https?|mailto):[^>\s]*>/g, '')
+      .replace(/\bhttps?:\/\/[^\s<>"'()[\]\u2013\u2014]+/g, '')
+      .replace(/&#(\d+);/g, (e, d) => (Number(d) <= 0x10ffff ? String.fromCodePoint(Number(d)) : e))
+      .replace(/&#x([0-9a-f]+);/gi, (e, h) =>
+        Number.parseInt(h, 16) <= 0x10ffff ? String.fromCodePoint(Number.parseInt(h, 16)) : e,
+      ),
+  )
+    .normalize('NFKC')
+    .replace(/<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>/gi, ' ');
 }
 /**
- * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence is not a
- * heading, so a quoted `## ` cannot cut the section short and leave what follows it unchecked.
+ * Where a section runs in `text`: from its `## ` heading to the next one. A line inside a code fence, an HTML comment
+ * or a `<pre>` is not a heading, so a quoted `## ` cannot cut the section short and leave what follows it unchecked.
+ * Comments and `<pre>` blocks are blanked where they stand, so the offsets are still the page's.
  */
 function sectionOf(doc, text, title) {
+  const headings = text.replace(/<!--[\s\S]*?-->|<pre\b[\s\S]*?<\/pre>/gi, (m) =>
+    m.replace(/[^\n]/g, ' '),
+  );
   let at = 0;
   let fence = null;
   let start = -1;
-  for (const line of text.split('\n')) {
+  for (const line of headings.split('\n')) {
     const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
     if (fence === null && marker !== undefined) fence = marker;
     else if (
@@ -1398,20 +1463,34 @@ function proseFigure(doc, text) {
       where: `outside its SIZING regions, in its "${scope.section}" section`,
     };
   }
-  const rest = prose(blank.slice(0, start) + blank.slice(end));
-  for (const m of rest.matchAll(new RegExp(SHARE_OR_MULTIPLE.join('|'), 'gi'))) {
-    if (!scope.elsewhere.includes(m[0])) {
-      return {
+  let rest = prose(blank.slice(0, start) + blank.slice(end));
+  for (const phrase of scope.elsewhere) {
+    if (!rest.includes(phrase)) {
+      throw new Error(
+        `sizing: ${doc} no longer says "${phrase}", which GENERATED_PROSE lets it say outside its ` +
+          `"${scope.section}" section: take it off that list`,
+      );
+    }
+    rest = rest.split(phrase).join(' ');
+  }
+  const m = new RegExp(SHARE_OR_MULTIPLE.join('|'), 'i').exec(rest);
+  return m === null
+    ? null
+    : {
         figure: m[0],
         where: `outside its "${scope.section}" section, which lists what may stand there`,
       };
-    }
-  }
-  return null;
 }
-/** The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>. */
+/**
+ * The images under bench/ a page shows: in a markdown image, an <img> or a <source srcset>, in any case and with its
+ * path's escapes undone, since `bench/%68and.SVG` is an image a browser shows too.
+ */
 const shownCharts = (text) => [
-  ...new Set(text.match(/\bbench\/[\w./-]+\.(?:svg|png|jpe?g|webp|gif)\b/g) ?? []),
+  ...new Set(
+    text
+      .replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
+      .match(/\bbench\/[\w./-]+\.(?:svg|png|jpe?g|webp|gif|avif)\b/gi) ?? [],
+  ),
 ];
 
 const rendered = render();

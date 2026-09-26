@@ -39,7 +39,9 @@ for (const { name, hourlyUSD } of CATALOGUE.nodeTypes) {
   for (const term of ['oneYear', 'threeYearsUpfront']) {
     if (redis[term] !== row[term])
       wrong.push(`${name}: ${term} is ${redis[term]}, where RESERVED says ${row[term]}`);
-    // RESERVED's header says Valkey's reserved price is Redis's less a fifth, exactly: held, not assumed.
+  }
+  // sizing.cjs prices Valkey as Redis less a fifth, on demand and on each term alike: held, not assumed.
+  for (const term of ['hourlyUSD', 'oneYear', 'threeYearsUpfront']) {
     if (!near(valkey[term], 0.8 * redis[term])) {
       wrong.push(
         `${name}: Valkey's ${term} is ${valkey[term]}, not four fifths of Redis's ${redis[term]}`,

@@ -257,7 +257,21 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['$  5 a month'],
       ['4+2k GETs'],
       ['4,140 GETs a second'],
-    ])('fails %j typed outside a region, however it is spelled', (figure) => {
+      ['4,140 requests a second'],
+      ['21,445 USD a month'],
+      ['21,445 US dollars a month'],
+      ['40 cents a million'],
+      ['40¢ a million'],
+      ['&cent;40 a million'],
+      ['66-fold as much'],
+      ['twice as much'],
+      ['90 per-cent less'],
+      ['90 pct less'],
+      ['3 ✕ as much'],
+      ['９０％ less'],
+      ['＄21,445 a month'],
+      ['&#57;&#48;% less'],
+    ])('fails %j typed outside a region, in a spelling it knows', (figure) => {
       refused(
         { [WHY]: why.replace('mostly cold.', `mostly cold: ${figure}.`) },
         /outside its SIZING regions/,
@@ -275,9 +289,79 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['an autolink', 'has the rest, and <https://aws.amazon.com/?off=20%> more.'],
       ['a bare address', 'has the rest, and https://example.org/a%20b/50% more.'],
       ['an attribute', 'has the rest. <img width="50%" src="x.png" alt="">'],
+      // Each of these needs its own strip: none is an https address, which the bare-address strip would take anyway.
+      ['a comment', 'has the rest. <!-- it cost $99 once -->'],
+      [
+        'a relative link with parentheses',
+        'has the rest, and [the paper](papers/Roaring_(2016)_10x.md) more.',
+      ],
+      [
+        'a reference definition to a relative path',
+        'has the rest.\n\n[plan]: plans/10x-faster.md\n',
+      ],
+      ['a mailto autolink', 'has the rest, and <mailto:ops-5x@example.org> answers.'],
+      ['a version before a word', 'has the rest, and Redis 7.2.4 times out idle clients.'],
     ])('passes %s', (_what, text) => {
       const r = sizingCheck({ [WHY]: why.replace('has the rest.', text) });
       expect(r.code, r.out).toBe(0);
+    });
+
+    // What a renderer shows is read, whatever it looks like: a line that opens with a link, a footnote, a line that only
+    // looks like a reference definition, the text after a `<` that opens no tag, and text glued to a bare address.
+    it.each([
+      [
+        'a line that opens with a link and a colon',
+        '\n\n[What it costs](sizing.md): the large deployment costs $6,771 a month.\n\n',
+      ],
+      ['a footnote', '[^1]\n\n[^1]: Against reserved nodes it costs 95% less.\n\n'],
+      ['a footnote of one word, shaped like a definition', '[^1]\n\n[^1]: $1,200\n\n'],
+      [
+        'a line shaped like a reference definition',
+        '\n\n[Update]: CloudBitmaps costs 95% less than Redis.\n\n',
+      ],
+      [
+        'a < that opens no tag',
+        ' On Node < 22.12 it cannot load; with it, loads are 40% faster, and a > b.',
+      ],
+      ['a figure glued to a bare address', ' See https://aws.amazon.com/pricing/—90% less.'],
+    ])('fails a figure in %s', (_what, text) => {
+      refused(
+        { [WHY]: why.replace('mostly cold.', `mostly cold.${text}`) },
+        /outside its SIZING regions/,
+      );
+    });
+
+    it.each([['bench/hand.SVG'], ['bench/hand.avif'], ['bench/%68and.svg']])(
+      'fails a page that shows %s, an image under bench/ no generator draws',
+      (image) => {
+        refused(
+          { [WHY]: why.replace('has the rest.', `has the rest. ![a chart](../../${image})`) },
+          /which no generator draws/,
+        );
+      },
+    );
+
+    it('lets the README say its listed phrases, and no share or multiple besides', () => {
+      // Under another heading, a share the list names is refused all the same where it is not the listed phrase.
+      for (const [line, figure] of [
+        ['CloudBitmaps costs 5% of its Redis.', '5%'],
+        ['Redis costs 12.5× as much.', '12.5×'],
+      ]) {
+        refused(
+          {
+            [README]: readme.replace(
+              '## Your data stays yours',
+              `## Your data stays yours\n\n${line}`,
+            ),
+          },
+          new RegExp(`states "${figure}" outside its "Why CloudBitmaps" section`),
+        );
+      }
+      // And a phrase the README stops saying is refused, rather than left to allow a figure nobody quotes.
+      refused(
+        { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in a few chunks') },
+        /no longer says "overlapping in 5% of chunks"/,
+      );
     });
 
     it('holds the rest of the README to the shares and multiples it lists, wherever the Why section ends', () => {
@@ -303,6 +387,17 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         },
         /states "95%" outside its SIZING regions, in its "Why CloudBitmaps" section/,
       );
+      // Nor is one in a comment or a <pre>, which a reader is not shown as a heading.
+      for (const quoted of ['<!--\n## draft\n-->', '<pre>\n## not a heading\n</pre>']) {
+        refused(
+          {
+            [README]: readme
+              .replace('## Why CloudBitmaps\n', `## Why CloudBitmaps\n\n${quoted}\n`)
+              .replace('Where it loses:', 'It is 95% cheaper. Where it loses:'),
+          },
+          /states "95%" outside its SIZING regions, in its "Why CloudBitmaps" section/,
+        );
+      }
       // A real heading does end it, and what follows is held to the list.
       refused(
         {
@@ -434,7 +529,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       [
         'segments larger than their chunks can hold',
         (t: string) => t.replace('segmentBytes: 10 * MB,', 'segmentBytes: 20 * MB,'),
-        /large deployment's segments are larger than 2,000 full chunks can hold/,
+        /large deployment's segments are larger than 2,000 chunks can take/,
       ],
       [
         // Four a second is past the medium deployment's whole-bill break-even of 3.9, and still under the 4.2 the

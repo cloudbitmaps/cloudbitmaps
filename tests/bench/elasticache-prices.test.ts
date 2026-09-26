@@ -28,7 +28,10 @@ const term = (length: string, option: string, dims: object) => ({
   priceDimensions: dims,
 });
 
-function offer(extra: Record<string, object> = {}) {
+function offer(
+  extra: Record<string, object> = {},
+  terms: { onDemand?: object; reserved?: object } = {},
+) {
   return {
     products: {
       node: product('Redis', `NodeUsage:${TYPE}`),
@@ -40,15 +43,26 @@ function offer(extra: Record<string, object> = {}) {
     },
     terms: {
       OnDemand: {
-        node: { t: { priceDimensions: { d: hourly('0.4110000000') } } },
+        node: terms.onDemand ?? { t: { priceDimensions: { d: hourly('0.4110000000') } } },
         support: { t: { priceDimensions: { d: hourly('0.3290000000') } } },
         durability: { t: { priceDimensions: { d: hourly('0.0592000000') } } },
         valkey: { t: { priceDimensions: { d: hourly('0.3288000000') } } },
       },
       Reserved: {
-        node: {
+        node: terms.reserved ?? {
           one: term('1yr', 'No Upfront', { h: hourly('0.2810000000') }),
           three: term('3yr', 'All Upfront', { q: upfront('4867'), h: hourly('0.0000000000') }),
+          // The terms the reader must pass over: every other purchase option, at both lengths.
+          oneAll: term('1yr', 'All Upfront', { q: upfront('2336'), h: hourly('0.0000000000') }),
+          onePartial: term('1yr', 'Partial Upfront', {
+            q: upfront('1168'),
+            h: hourly('0.1330000000'),
+          }),
+          threeNone: term('3yr', 'No Upfront', { h: hourly('0.2070000000') }),
+          threePartial: term('3yr', 'Partial Upfront', {
+            q: upfront('2530'),
+            h: hourly('0.0960000000'),
+          }),
         },
       },
     },
@@ -83,6 +97,65 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
     expect(() => nodeProduct(twice, TYPE, 'Redis')).toThrow(
       /2 NodeUsage:cache\.r6g\.xlarge product\(s\)/,
     );
+  });
+
+  it('refuses a node with several on-demand terms, several of one reserved term, or several prices of one unit', () => {
+    const twoOnDemand = offer(
+      {},
+      {
+        onDemand: {
+          t: { priceDimensions: { d: hourly('0.4110000000') } },
+          u: { priceDimensions: { d: hourly('0.4120000000') } },
+        },
+      },
+    );
+    expect(() => nodePrices(twoOnDemand, TYPE, 'Redis')).toThrow(/2 on-demand terms/);
+    const twice = offer(
+      {},
+      {
+        reserved: {
+          one: term('1yr', 'No Upfront', { h: hourly('0.2810000000') }),
+          again: term('1yr', 'No Upfront', { h: hourly('0.2800000000') }),
+          three: term('3yr', 'All Upfront', { q: upfront('4867'), h: hourly('0.0000000000') }),
+        },
+      },
+    );
+    expect(() => nodePrices(twice, TYPE, 'Redis')).toThrow(/2 1yr No Upfront terms/);
+    const twoPrices = offer(
+      {},
+      {
+        onDemand: {
+          t: { priceDimensions: { d: hourly('0.4110000000'), e: hourly('0.4120000000') } },
+        },
+      },
+    );
+    expect(() => nodePrices(twoPrices, TYPE, 'Redis')).toThrow(/2 Hrs prices/);
+  });
+
+  // CI cannot read the list itself, a 2 MB download. What it can see is a mistyped price: within a family, each size
+  // is priced as a multiple of the smallest, to within the few tenths of a percent AWS rounds to, so a row off that
+  // line by more than 2% is a typo. A price nudged by less still needs `check-elasticache-prices.cjs` and the list.
+  it('prices each node of a family in proportion to its size, on both terms', () => {
+    const units = (type: string): number => {
+      const size = type.slice(type.lastIndexOf('.') + 1);
+      const named: Record<string, number> = { micro: 0.25, small: 0.5, medium: 1, large: 2 };
+      if (named[size] !== undefined) return named[size];
+      const x = /^(\d*)xlarge$/.exec(size);
+      if (x === null) throw new Error(`no size for ${type}`);
+      return 4 * (x[1] === '' ? 1 : Number(x[1]));
+    };
+    const families = new Map<string, string[]>();
+    for (const type of Object.keys(RESERVED)) {
+      const family = type.slice(0, type.lastIndexOf('.'));
+      families.set(family, [...(families.get(family) ?? []), type]);
+    }
+    for (const [family, types] of families) {
+      if (types.length < 2) continue;
+      for (const term of ['oneYear', 'threeYearsUpfront'] as const) {
+        const perUnit = types.map((t) => RESERVED[t]![term] / units(t));
+        expect(Math.max(...perUnit) / Math.min(...perUnit), `${family} ${term}`).toBeLessThan(1.02);
+      }
+    }
   });
 
   it('holds a reserved row for every node the catalogue prices, and none it does not', () => {

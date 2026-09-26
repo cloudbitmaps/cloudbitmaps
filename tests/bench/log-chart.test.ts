@@ -94,7 +94,23 @@ describe('log-chart keeps every word clear of every mark', () => {
       { at: [10, up(10, px)], text: 'second' },
     ];
     expect(() => logChart(spec({ lines: [], markers: at(14) }), 'light')).toThrow(/would crowd/);
+    // 3 px is under a third of 12 px, 3.6, though over a fifth of it: the rule is the third.
+    expect(() => logChart(spec({ lines: [], markers: at(15) }), 'light')).toThrow(/would crowd/);
     expect(logChart(spec({ lines: [], markers: at(16) }), 'light')).toContain('<svg');
+  });
+
+  it("keeps a label 2 px clear of a dot's whole ring, not only of its centre", () => {
+    // 210.67 px a decade across; the first label, 12 px and 19 characters, ends 151.36 px right of its dot.
+    const right = (v: number, px: number) => v * 10 ** (px / 210.67);
+    const beyond = (px: number) => [
+      { at: [10, 10], text: 'a label long enough' },
+      { at: [right(10, 151.36 + px), 10], text: 'b', dy: 40 },
+    ];
+    // A dot 6 px across its ring and centred 7 px past the label's end reaches within 2 px of it; 9 px past, not.
+    expect(() => logChart(spec({ lines: [], markers: beyond(7) }), 'light')).toThrow(
+      /would sit on the dot of "b"/,
+    );
+    expect(logChart(spec({ lines: [], markers: beyond(9) }), 'light')).toContain('<svg');
   });
 
   it("refuses a label drawn through another marker's dot", () => {
@@ -146,6 +162,33 @@ describe('log-chart keeps every word clear of every mark', () => {
     });
     expect(() => logChart(spec(below([2, 200])), 'light')).toThrow(/outside the region it names/);
     expect(logChart(spec(below([200, 2])), 'light')).toContain('<svg');
+  });
+
+  it("refuses a region's name its boundary cuts through, or dips into between its ends", () => {
+    const named = (points: number[][], textAt: [number, number]) => ({
+      lines: [],
+      areas: [{ points, toward: 'min', color: 'cloudbitmaps', text: 'below the boundary', textAt }],
+    });
+    // A flat boundary 5 px above the label's baseline runs through its letters, which rise 10.4 px.
+    const flat = [
+      [1, 100],
+      [1000, 100],
+    ];
+    expect(() => logChart(spec(named(flat, [2, up(100, -5)])), 'light')).toThrow(
+      /outside the region it names/,
+    );
+    expect(logChart(spec(named(flat, [2, up(100, -12)])), 'light')).toContain('<svg');
+    // A narrow valley under the label's right half, away from both its ends and its middle, dips into it too.
+    const valley = [
+      [1, 1000],
+      [20, 1000],
+      [22, 20],
+      [24, 1000],
+      [1000, 1000],
+    ];
+    expect(() => logChart(spec(named(valley, [5, 40])), 'light')).toThrow(
+      /outside the region it names/,
+    );
   });
 
   it('refuses a marker outside the axes, and a label whose position did not compute', () => {

@@ -1,9 +1,9 @@
 # What it saves, and where it doesn't
 
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
-comes from the library's own `estimateCost()`, and every figure, AWS's published prices and limits among them, is
-written into this page by `bench/sizing.cjs` and checked against it by CI, which also refuses a dollar amount, a
-share, a multiple or a request count typed anywhere else on the page. The prices are AWS's `us-east-1` list prices,
+comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page,
+AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it by CI, which
+refuses one typed anywhere else on the page in any spelling it knows. The prices are AWS's `us-east-1` list prices,
 on demand unless a sentence says otherwise, and the three deployments are illustrative workloads, not anyone's
 measured system. There is no latency figure, because none has been measured inside a region yet.
 
@@ -61,7 +61,7 @@ Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the es
 The large deployment's 200,000 segments are past the roughly 100,000 the library has been validated at, and its readers would need an index budget and a chunk cache far past their defaults ([what each reader holds](sizing.md#what-each-reader-holds)), in memory not priced here.
 <!-- SIZING:WHY_LEANINGS:END -->
 
-The saving is largest in dollars where the data is large and mostly cold. Small data queried hard is Redis's ground, and there the answer is a
+Against on-demand Redis, the saving is largest in dollars where the data is large and mostly cold. Small data queried hard is Redis's ground, and there the answer is a
 cache in front, or Redis itself. For a large company the usual answer is both: CloudBitmaps holds the long tail, and a
 cache or a Redis node fronts the one or two hottest paths. [What it costs at your size](sizing.md) has each
 deployment's bill, term by term.
@@ -84,8 +84,8 @@ The two bills charge for different things:
  │ all your data   ──► S3, $0.023 a GiB-month                   │ ──► under $0.01 to $42.84 a month here
  │ the hot part    ──► your readers' memory, a slice of it      │ ──► your own machines
  │ each cold read  ──► S3 GETs, $0.40 a million                 │ ──► grows with the queries
- │ each refresh    ──► a pointer GET, after cache.genTtlMs      │ ──► at most one a read, and one per segment per reader each genTtlMs
- │ each load       ──► S3 PUTs, and a pointer write             │ ──► grows with how often the data changes
+ │ each refresh    ──► a pointer GET, after cache.genTtlMs      │ ──► one per segment per reader each genTtlMs
+ │ each load       ──► S3 PUTs and LISTs, pointer GETs, a write │ ──► grows with how often the data changes
  └──────────────────────────────────────────────────────────────┘
 ```
 <!-- SIZING:MONEY:END -->
@@ -128,7 +128,7 @@ The 20 TB cluster's 471 nodes are past ElastiCache's [default quotas](https://do
 <!-- SIZING:WHY_CHART_WHERE:START -->
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../bench/where-each-costs-less-dark.svg">
-  <img alt="Where each costs less, on log scales: the line where the bills meet rises from 0.16 cold intersects a second at 100 MB to 1,250 at 20 TB. Below it CloudBitmaps costs less, and above it Redis does. The three illustrative deployments sit below it; the example, a dashboard running 100 cold intersects a second over 5 GB, sits above it. A dashed rule marks one data prefix's documented GET rate, 27 cold intersects a second." src="../../bench/where-each-costs-less.svg">
+  <img alt="Where each costs less, on log scales: the line where the bills meet rises from 0.16 cold intersects a second at 100 MB to 1,250 at 20 TB. Below it CloudBitmaps costs less, and above it Redis does. The three illustrative deployments sit below it; the example, a dashboard running 100 cold intersects a second over 5 GB, sits above it. A dashed rule marks the cold intersects that fill one data prefix's documented GET rate: 27 a second." src="../../bench/where-each-costs-less.svg">
 </picture>
 <!-- SIZING:WHY_CHART_WHERE:END -->
 
@@ -145,7 +145,7 @@ it is. It is where the bills cross, not a capacity: S3's own request rate is a l
 <!-- SIZING:WHY_ROOM:START -->
 | | data | cold intersects a second | where the bill meets its Redis | room |
 |---|---:|---:|---:|---:|
-| **Small** | 200 MB | 0.0076 | 0.16 | **20×** |
+| **Small** | 200 MB | 0.0076 | 0.16 | **21×** |
 | **Medium** | 20 GB | 1.0 | 3.9 | **3.9×** |
 | **Large** | 2 TB | 20 | 116 | **5.8×** |
 <!-- SIZING:WHY_ROOM:END -->
@@ -158,11 +158,10 @@ it is. It is where the bills cross, not a capacity: S3's own request rate is a l
 A dashboard running 100 cold intersects a second over 5 GB costs **$21,445** a month, where the Redis that holds 5 GB costs **$326** (3 × m6g.large): CloudBitmaps costs **66×** as much there, and Redis answers from memory. That is priced cold, as if nothing repeated. A dashboard that repeats its queries is served from the chunk cache when their chunks fit it, 1,024 by default, and then pays only for its pointer reads, once each `cache.genTtlMs`; one that ranges over more than a reader's cache holds is Redis's ground, or a cache's in front of CloudBitmaps.
 <!-- SIZING:HOT:END -->
 
-**Latency.** Redis answers from memory. A cold intersect waits on object storage, one round of requests after
-another:
+**Latency.** Redis answers from memory. A cold intersect waits on object storage, request after request:
 
 <!-- SIZING:DEPTH:START -->
-A cold intersect of two segments sharing 100 chunks makes its requests in **15 rounds**, one after another: both operands' pointers, then both indexes, then the shared chunks 8 at a time, each from both operands. Each round waits for the slowest of its requests, not a typical one, so what the rounds take is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
+A cold intersect of two segments sharing 100 chunks waits on a chain of requests **15 deep**: both operands' pointers, then both indexes, then the shared chunks, each from both operands, with 8 in flight and the next starting as the oldest finishes. At an even latency that is 15 request times end to end. A slow request holds up those queued behind it, so what the chain takes is for a measurement to say. A repeat served from the chunk cache makes no request within `cache.genTtlMs`, and one round of pointer reads after it.
 <!-- SIZING:DEPTH:END -->
 
 Neither is timed yet: the in-region run is owed.
@@ -186,7 +185,7 @@ proposed in an issue on this repo before it is built.
 
 | Weakness | What is planned | What it should change |
 | --- | --- | --- |
-| Overlap, and the requests of a cold intersect | **Coalesced reads**: fetch neighbouring chunks, or a small segment whole, in one ranged GET, still checking each chunk's checksum | A cold intersect's requests, and its rounds of them, stop growing with the overlap where the shared chunks lie together; layouts that spread them are to be measured first |
+| Overlap, and the requests of a cold intersect | **Coalesced reads**: fetch neighbouring chunks, or a small segment whole, in one ranged GET, still checking each chunk's checksum | A cold intersect's requests, and the chain they wait on, stop growing with the overlap where the shared chunks lie together; layouts that spread them are to be measured first |
 | Small data queried hard | **A reader cache sized by bytes**, not by chunk count, and a small segment kept whole after its first read | A repeat stays cached however many small chunks it touches, bounded by bytes rather than a count; pointers are still re-read after `cache.genTtlMs` |
 | Many stateless readers | **A shared cache tier**: a port that a Valkey, Redis or local-disk adapter implements, holding only the hot set | A fleet shares one warm copy of the hot set instead of each reader paying for its own |
 | The pointer refresh | **Push invalidation**: object-store events tell readers a segment changed, with a longer refresh as the backstop | Most of the refresh bill goes, and a change reaches readers as fast as the events do: [typically seconds, sometimes a minute or longer](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), with the backstop as the bound |
@@ -201,8 +200,9 @@ proposed in an issue on this repo before it is built.
 - **Durability is the object store's.** S3 Standard is
   [designed for eleven nines of durability](https://aws.amazon.com/s3/storage-classes/), with no replicas for you to
   manage.
-- **Reader memory is bounded by its caches, not by the store's size.** A reader holds only what it reads, within the
-  index budget and chunk cache you give it, however large the store. A load still holds a
+- **Reader memory is set by what it reads, not by the store's size.** A reader holds the index budget and chunk cache
+  you give it, and the chunks an intersect has in flight, however large the store; one segment whose index alone
+  is past the budget is still held, alone. A load still holds a
   segment's distinct ids in memory, and ids are 32-bit; 64-bit ids and an external-merge load are
   [planned](../ROADMAP.md#planned--exploring).
 - **A portable format, and a one-command exit.** Each chunk is standard portable Roaring, which every maintained

@@ -27,8 +27,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   costs less than CloudBitmaps. It says where CloudBitmaps loses — small data queried hard, latency, S3's
   per-prefix rate, and overlap — and lists the planned work that addresses them, none of it built yet; the roadmap
   holds the same directions. `pnpm bench:sizing:check` now also refuses a dollar amount, a share, a multiple or a
-  request count typed outside a generated region of a page that says its figures are generated, however it is
-  spelled, and keeps the rest of the README to the shares and multiples it lists; it refuses an image under
+  request count typed outside a generated region of a page that says its figures are generated, in the spellings it
+  knows (signs, words, entities and fullwidth forms), and keeps the rest of the README to the phrases it lists, each
+  a measurement quoted where it is explained; it refuses an image under
   `bench/` that a page shows and no generator draws; and `scripts/site-figures.cjs` reads `SIZING` markers with the
   same parser, so a marker quoted in code reads the same to both.
 - **What it costs at your size**, a new guide page, `docs/guide/sizing.md`. It prices a small, a medium and a

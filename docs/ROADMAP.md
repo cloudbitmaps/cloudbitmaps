@@ -303,8 +303,8 @@ move it up.
 - **The weaknesses, and a direction for each** — the [what it saves](guide/why-cloudbitmaps.md#what-is-planned-for-each-weakness)
   page has them side by side. None is built; each that changes the public API is agreed before it is.
   - **Coalesced reads**, the largest lever. Fetch neighbouring chunks, or a small segment whole, in one ranged GET,
-    and check each chunk's checksum inside it, as today. A cold intersect's requests, and its rounds of them, would
-    stop growing with the chunks it shares. Designed first and benchmarked on a layout that spreads the shared
+    and check each chunk's checksum inside it, as today. A cold intersect's requests, and the chain they wait on,
+    would stop growing with the chunks it shares. Designed first and benchmarked on a layout that spreads the shared
     chunks, since the calibration run's puts them side by side, which flatters coalescing.
   - **A reader cache sized by bytes, and small segments kept whole.** The chunk cache is bounded by count today, so
     the same setting holds very different amounts of memory for sparse and dense chunks; bounding it by bytes, and
