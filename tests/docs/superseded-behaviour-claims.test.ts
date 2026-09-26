@@ -261,7 +261,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // A store with no timed refresh, labelled "Pinned" where a sentence or a comment line opens: "Pinned: no refresh
     // at all", "Pinned, it is two". Capitalised, as a label is: `pinned:` in code is a key. Of a real pin, say "a
     // pinned handle".
-    claim: /(?:^|[.!?][^\S\n]+|\n)[^\S\n]*(?:(?:\/\/|\*|#+|>|-|\d+\.)[^\S\n]*)?Pinned[:,]/,
+    claim: /(?<=(?:^|[.!?][^\S\n]+|\n)[^\S\n]*(?:(?:\/\/|\*|#+|>|-|\d+\.)[^\S\n]*)?)Pinned[:,]/,
     why: NO_TIMED_REFRESH,
   },
   {
@@ -611,6 +611,13 @@ describe('no document claims behaviour this library has retired', () => {
       '<meta\n  name="description"\n  content="x"\n/>\n\npins it forever',
     ).map((h) => h.split(' — ')[0]);
     expect(lines).toEqual(['x.html:6']);
+  });
+
+  it('reports a label on its own line, not the line before it', () => {
+    const lines = hitsIn('x.ts', 'const a = 1;\n\n    // Pinned: no refresh at all').map(
+      (h) => h.split(' — ')[0],
+    );
+    expect(lines).toEqual(['x.ts:3']);
   });
 
   it('reports every hit, not the first of each pattern', () => {
