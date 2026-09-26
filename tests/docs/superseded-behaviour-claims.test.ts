@@ -76,8 +76,9 @@ const codePoint = (entity: string, n: number): string =>
  */
 const plain = (src: string): string =>
   src
-    // A string a program prints, split across literals, is one sentence: `'…never ' +` then `'re-resolves'`.
-    .replace(/(['"`])[^\S\n]*\+[^\S\n]*\n?[^\S\n]*(['"`])/g, '')
+    // A string a program prints, split across literals, is one sentence: `'…never ' +` then `'re-resolves'`. The line
+    // end between the two stays, so a hit's line is still its own.
+    .replace(/(['"`])[^\S\n]*\+[^\S\n]*\n?[^\S\n]*(['"`])/g, (join) => join.replace(/[^\n]/g, ''))
     .replace(/<br\b[^<>]*>/gi, ' ')
     // Any tag, its attributes wrapped or not; a `<` in a sentence opens none. What an attribute shows is kept: a
     // `<meta>` description is a search result's text, and `alt`, `title` and `aria-label` are read or shown too.
@@ -740,6 +741,14 @@ describe('no document claims behaviour this library has retired', () => {
       '<meta\n  name="description"\n  content="x"\n/>\n\npins it forever',
     ).map((h) => h.split(' — ')[0]);
     expect(lines).toEqual(['x.html:6']);
+  });
+
+  it('reports a hit after a string split across literals on its own line', () => {
+    const lines = hitsIn(
+      'x.ts',
+      "const a = 'one ' +\n  'two';\n\n// Pinned: no refresh at all",
+    ).map((h) => h.split(' — ')[0]);
+    expect(lines).toEqual(['x.ts:4']);
   });
 
   it('reports a label on its own line, not the line before it', () => {
