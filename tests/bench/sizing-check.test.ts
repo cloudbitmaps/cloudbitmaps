@@ -243,6 +243,107 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(r.code, r.out).toBe(0);
     });
 
+    // However a figure is spelled, it is one: in an entity, in words, or as a count of requests.
+    it.each([
+      ['&#36;5 a month'],
+      ['&dollar;7 a month'],
+      ['90&percnt; less'],
+      ['90&#37; less'],
+      ['3&times; as much'],
+      ['66x as much'],
+      ['90 percent less'],
+      ['66 times as much'],
+      ['USD 21,445 a month'],
+      ['$  5 a month'],
+      ['4+2k GETs'],
+      ['4,140 GETs a second'],
+    ])('fails %j typed outside a region, however it is spelled', (figure) => {
+      refused(
+        { [WHY]: why.replace('mostly cold.', `mostly cold: ${figure}.`) },
+        /outside its SIZING regions/,
+      );
+    });
+
+    // And what only looks like one is not: a version, and an address wherever markdown or HTML keeps one.
+    it.each([
+      ['a version', 'has the rest, from 0.9.x on.'],
+      [
+        'a link with parentheses',
+        'has the rest, and [the paper](https://example.org/Roaring_(2016)_50%) more.',
+      ],
+      ['a reference definition', 'has the rest.\n\n[aws]: https://aws.amazon.com/?off=20%\n'],
+      ['an autolink', 'has the rest, and <https://aws.amazon.com/?off=20%> more.'],
+      ['a bare address', 'has the rest, and https://example.org/a%20b/50% more.'],
+      ['an attribute', 'has the rest. <img width="50%" src="x.png" alt="">'],
+    ])('passes %s', (_what, text) => {
+      const r = sizingCheck({ [WHY]: why.replace('has the rest.', text) });
+      expect(r.code, r.out).toBe(0);
+    });
+
+    it('holds the rest of the README to the shares and multiples it lists, wherever the Why section ends', () => {
+      // Above the section, where no region is: refused, as a share it does not list.
+      refused(
+        {
+          [README]: readme.replace(
+            '## Why CloudBitmaps',
+            'It costs 90% less.\n\n## Why CloudBitmaps',
+          ),
+        },
+        /states "90%" outside its "Why CloudBitmaps" section/,
+      );
+      // A `## ` quoted in a fence is not a heading, so the section runs on past it, and a figure after it is still in it.
+      refused(
+        {
+          [README]: readme
+            .replace(
+              '## Why CloudBitmaps\n',
+              '## Why CloudBitmaps\n\n```text\n## not a heading\n```\n',
+            )
+            .replace('Where it loses:', 'It is 95% cheaper. Where it loses:'),
+        },
+        /states "95%" outside its SIZING regions, in its "Why CloudBitmaps" section/,
+      );
+      // A real heading does end it, and what follows is held to the list.
+      refused(
+        {
+          [README]: readme.replace(
+            'Where it loses:',
+            '## What it saves\n\nIt is 95% cheaper.\n\nWhere it loses:',
+          ),
+        },
+        /states "95%" outside its "Why CloudBitmaps" section/,
+      );
+      // And a region moved out of the section is refused, rather than left where no rule reads its neighbours.
+      const cut = /<!-- SIZING:WHY_CAVEATS:START -->[\s\S]*?<!-- SIZING:WHY_CAVEATS:END -->\n/.exec(
+        readme,
+      )![0];
+      refused(
+        {
+          [README]: readme
+            .replace(cut, '')
+            .replace('## Why CloudBitmaps', `${cut}\n## Why CloudBitmaps`),
+        },
+        /WHY_CAVEATS region sits outside its "Why CloudBitmaps" section/,
+      );
+    });
+
+    it('fails a chart shown only through <source srcset>, or as a PNG in a folder under bench/', () => {
+      const shown = (src: string, dark: string) =>
+        `${why}\n<picture>\n  <source media="(prefers-color-scheme: dark)" srcset="../../${dark}">\n` +
+        `  <img alt="x" src="../../${src}">\n</picture>\n`;
+      refused(
+        {
+          'bench/hand-dark.svg': '<svg/>',
+          [WHY]: shown('bench/bill-as-data-grows.svg', 'bench/hand-dark.svg'),
+        },
+        /hand-dark\.svg, which no generator draws/,
+      );
+      refused(
+        { 'bench/charts/x.png': 'png', [WHY]: `${why}\n![x](../../bench/charts/x.png)\n` },
+        /bench\/charts\/x\.png, which no generator draws/,
+      );
+    });
+
     it('fails an image from bench/ that nothing draws, and passes the benchmarks chart', () => {
       refused(
         { 'bench/hand.svg': '<svg/>', [WHY]: `${why}\n![x](../../bench/hand.svg)\n` },
@@ -263,6 +364,15 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const ok = sizingCheck({ [SIZING]: quoted });
       expect(ok.code, ok.out).toBe(0);
       refused({ [SIZING]: `${quoted}\n<!-- SIZING:NOPE:START -->\n` }, /pair up in order/);
+    });
+
+    it('writes a region inside a blockquote with every line of it still in the quote', () => {
+      const { withRegions } = requireFromScript('./lib/sizing-markers.cjs') as {
+        withRegions: (doc: string, text: string, regions: object, docs: object) => { text: string };
+      };
+      const quoted = '> <!-- SIZING:X:START -->\n> <!-- SIZING:X:END -->\n';
+      const { text } = withRegions('q.md', quoted, { X: 'a\n\nb' }, { 'q.md': ['X'] });
+      expect(text).toBe('> <!-- SIZING:X:START -->\n> a\n>\n> b\n> <!-- SIZING:X:END -->\n');
     });
 
     it('fails text before a START marker on its line', () => {
@@ -312,6 +422,21 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         /hot dashboard no longer loses/,
       ],
       [
+        // Two a second loses to Redis, but by less than the multiple the pages claim: only the 2× itself refuses it.
+        'the hot dashboard losing by less than a multiple',
+        (t: string) =>
+          t.replace(
+            'const HOT = { sizeBytes: 5e9, perSec: 100 };',
+            'const HOT = { sizeBytes: 5e9, perSec: 2 };',
+          ),
+        /hot dashboard no longer loses to Redis by a multiple/,
+      ],
+      [
+        'segments larger than their chunks can hold',
+        (t: string) => t.replace('segmentBytes: 10 * MB,', 'segmentBytes: 20 * MB,'),
+        /large deployment's segments are larger than 2,000 full chunks can hold/,
+      ],
+      [
         // Four a second is past the medium deployment's whole-bill break-even of 3.9, and still under the 4.2 the
         // chart's line gives cold intersects alone: only the room the pages claim is gone.
         'a deployment with no room left',
@@ -326,6 +451,56 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const r = sizingCheck({}, { source: edit });
       expect(r.code, r.out).not.toBe(0);
       expect(r.out).toMatch(message);
+    });
+
+    // Two premises only a different model can break, so each is tested against one: an estimator wrapped to price
+    // things as the current one does not.
+    it('fails a deployment above the line, as it would be if cached intersects cost less than cold ones', () => {
+      // With intersects half price whenever a cache is in play, the medium deployment's whole-bill break-even moves
+      // past the chart's line, where the room it is given still holds: only the line's own premise refuses it.
+      const halved = {
+        ...core,
+        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
+          const r = core.estimateCost(input);
+          if (!input.workload?.cacheHitRate) return r;
+          const cut = r.monthlyUSD.byOp.intersects / 2;
+          return {
+            ...r,
+            monthlyUSD: {
+              ...r.monthlyUSD,
+              byOp: { ...r.monthlyUSD.byOp, intersects: cut },
+              total: r.monthlyUSD.total - cut,
+            },
+          };
+        },
+      };
+      const r = sizingCheck(
+        {},
+        {
+          mods: { '@cloudbitmaps/core': halved },
+          source: (t) =>
+            t.replace(
+              'intersectsPerMonth: 2_628_000, // one a second',
+              'intersectsPerMonth: 11_826_000, // one a second',
+            ),
+        },
+      );
+      expect(r.code, r.out).not.toBe(0);
+      expect(r.out).toMatch(/medium deployment is no longer below the line the chart draws/);
+    });
+
+    it('fails bills that cross back inside the chart, where the pages say they cross once', () => {
+      const cheapPast10TB = {
+        ...core,
+        estimateCost: (input: Parameters<typeof core.estimateCost>[0]) => {
+          const r = core.estimateCost(input);
+          const size = input.segments.reduce((a, g) => a + (g.sizeBytes ?? 0) * (g.count ?? 1), 0);
+          return size > 1e13 ? { ...r, redisBaseline: { ...r.redisBaseline, monthlyUSD: 1 } } : r;
+        },
+      };
+      const r = sizingCheck({}, { mods: { '@cloudbitmaps/core': cheapPast10TB } });
+      expect(r.code, r.out).not.toBe(0);
+      expect(r.out).toMatch(/cross more than once/);
     });
   });
 });

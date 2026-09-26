@@ -47,12 +47,12 @@ A Roaring Bitmap holds a huge set of integer ids — *"which of my 1.2 billion c
 libraries are **local, in-process data structures**: a bitmap is bounded by one machine's memory and gone when the
 process dies. So teams reach for an always-on Redis cluster, and pay for memory around the clock to hold sets that
 are mostly read. CloudBitmaps keeps the bitmap engine and puts the sets in your own object storage, read from anywhere,
-including a stateless function with no cache to warm.
+including a stateless function, where every read is a cold one.
 
 | CloudBitmaps is for | Redis is for |
 | --- | --- |
 | many segments, most of them rarely queried | a small set, queried constantly |
-| audiences, cohorts, entitlements, catalogue facets, history | a live leaderboard, or a flag read on every request |
+| audiences, cohorts, catalogue facets, history | a live leaderboard, or a flag read on every request |
 | data that outgrows one machine's memory | data cheap to hold in memory around the clock |
 | bursty or batch queries | thousands of queries a second that miss any cache |
 | paying for storage and for each read | paying for memory, around the clock |
@@ -69,7 +69,7 @@ Redis OSS cluster that would hold each one's data:
 <!-- SIZING:WHY_SIZES:END -->
 
 <!-- SIZING:WHY_CAVEATS:START -->
-Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less.
+Each Redis is the cheapest on-demand ElastiCache for Redis OSS cluster in the estimator's catalogue that holds the data, every shard a primary and two replicas: the cheapest of one kind, not the least Redis could cost. Against [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, CloudBitmaps costs 88% less, 61% less and 69% less; with one replica a shard, 86% less, 53% less and 63% less; with both, 82% less, 41% less and 54% less. Reserved nodes cost less again, and stack on both: on a one-year term with nothing upfront, CloudBitmaps costs 74% less, 14% less and 32% less, and on three years paid upfront, 60% less, 1.3× as much and 1.03× as much, so a Redis bought all three ways costs less than CloudBitmaps at the medium and large sizes.
 
 All three assume that two segments share 100 of their 2,000 chunks, and filters over one catalogue or one audience can share most of theirs: at 1,000 shared chunks, the medium and large deployments cost 2.4× and 1.6× their Redis, and their bills pass it at 395 and 589 shared chunks.
 

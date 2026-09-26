@@ -107,7 +107,8 @@ function withRegions(doc, text, regions, docs) {
     const { i, j, indent } = at[name];
     const body = regions[name]
       .split('\n')
-      .map((line) => (line === '' ? line : indent + line))
+      // A blank line keeps a quote's `>`, or it would end the blockquote the region sits in.
+      .map((line) => (line === '' ? indent.trimEnd() : indent + line))
       .join('\n');
     const next = '\n' + body + '\n' + indent;
     if (s.slice(i, j) !== next) changed.unshift(name);

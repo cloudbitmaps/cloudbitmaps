@@ -37,7 +37,7 @@ it on the list of what is owed.
 <!-- SIZING:INPUTS:END -->
 
 <!-- SIZING:SHAPE:START -->
-Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
+Every segment has the shape of the [calibration run's](../../bench/calibration/2026-09-23-94416.md): its ids spread over about 2,000 chunks, and every cold intersect of two segments sharing 100 of them, so each fetches the shared chunks from both. A larger segment is modeled as holding its ids more densely, up to the 16 MB its chunks hold when every one is full, not as sharing more chunks, which is the most favourable choice for large segments; [the overlap table](#how-much-the-overlap-matters) undoes it. **Hot segments** are the ones a long-lived reader keeps open, each reader its own; the last column is how often one reader reads each of them, with the point reads spread evenly. The large deployment's 10 MB segments load as 2-part uploads, 4 PUT-class requests each, since the S3 driver uploads in 8 MiB parts.
 <!-- SIZING:SHAPE:END -->
 
 ## What each reader holds
@@ -101,8 +101,8 @@ held where it is:
 | | cold intersects a second | where the bill meets its Redis | headroom |
 |---|---:|---:|---:|
 | **Small** | 0.0076 | 0.16 | 20× |
-| **Medium** | 1.0 | 3.9 | 4× |
-| **Large** | 20 | 116 | 6× |
+| **Medium** | 1.0 | 3.9 | 3.9× |
+| **Large** | 20 | 116 | 5.8× |
 <!-- SIZING:HEADROOM:END -->
 
 An extra cold intersect a second of this shape costs the same at any data size, while the Redis it is measured

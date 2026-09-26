@@ -21,13 +21,16 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   opens with the same comparison. It sets CloudBitmaps against an always-on Redis: what each is for, where each
   bill's money goes, what each grows with, and where each costs less, with two charts that `bench/sizing.cjs` draws
   from the estimator, in a light and a dark file each, and `pnpm bench:sizing:check` holds to it, byte for byte.
-  It says what the comparison assumes, and how far a Redis bought another way moves the saving: priced as
-  ElastiCache for Valkey, or with one replica a shard, the three savings of 90%, 69% and 75% become as little as
-  82%, 41% and 54%. It says where CloudBitmaps loses — small data queried hard, latency, S3's per-prefix rate, and
-  overlap — and what is planned for each; the roadmap lists the same directions. None of them is built yet.
-  `pnpm bench:sizing:check` now also refuses a figure typed outside a generated region of a page that says its
-  figures are generated, and a chart a page shows that no generator draws; `scripts/site-figures.cjs` reads
-  `SIZING` markers with the same parser, so a marker quoted in code reads the same to both.
+  It says what the comparison assumes, and how far a Redis bought another way moves the saving: as ElastiCache for
+  Valkey, with one replica a shard, or on a reserved term, each priced from the AWS price list the estimator's
+  catalogue cites. Bought all three ways, on three years paid upfront, the medium and large deployments' Redis
+  costs less than CloudBitmaps. It says where CloudBitmaps loses — small data queried hard, latency, S3's
+  per-prefix rate, and overlap — and lists the planned work that addresses them, none of it built yet; the roadmap
+  holds the same directions. `pnpm bench:sizing:check` now also refuses a dollar amount, a share, a multiple or a
+  request count typed outside a generated region of a page that says its figures are generated, however it is
+  spelled, and keeps the rest of the README to the shares and multiples it lists; it refuses an image under
+  `bench/` that a page shows and no generator draws; and `scripts/site-figures.cjs` reads `SIZING` markers with the
+  same parser, so a marker quoted in code reads the same to both.
 - **What it costs at your size**, a new guide page, `docs/guide/sizing.md`. It prices a small, a medium and a
   large deployment with `estimateCost()`, term by term, against the Redis that would hold each one's data, and says
   how much room each has before its bill meets that Redis: illustrative workloads, labelled as such, with every
