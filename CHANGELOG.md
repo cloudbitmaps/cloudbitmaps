@@ -179,7 +179,8 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
   reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
   generation's reader as it pins, which is the tail read its first read would otherwise make, and it reads the row
-  once to do both; opening a pinned generation read the row twice.
+  once to do both; opening a pinned generation read the row twice. A `pin()` whose generation is swept before it
+  can open it, as a publish and a `keep: 0` sweep can do, pins the generation current then rather than fail.
 - **A cold `has()` could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
   it fetches a chunk, a read looks up each operand's version, and that lookup did not heal a swept generation the
   way a chunk fetch and `currentGeneration()` do. `count`, `iterate` and `intersect` survived the same race, since

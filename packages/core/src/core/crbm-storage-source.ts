@@ -393,8 +393,23 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * Resolve the segment **once** and report what a pin should hold: the generation, and the version that
    * identifies those exact bytes. `null` when the segment resolves to no generation — there is nothing to pin,
    * and a caller must treat that as "this handle reads empty", not "pinning is unsupported here".
+   *
+   * Heals a generation swept between the registry read and the open, as {@link currentVersion} does: a publish
+   * and a `keep: 0` sweep can land in that gap, and nothing has been handed out yet, so the generation current
+   * once the swept one is gone is exactly what a pin taken now should hold. One retry, then propagate.
    */
   async pinGeneration(
+    ref: SegmentRef,
+  ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
+    try {
+      return await this.pinOnce(ref);
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      return this.pinOnce(ref); // a second miss propagates
+    }
+  }
+
+  private async pinOnce(
     ref: SegmentRef,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise

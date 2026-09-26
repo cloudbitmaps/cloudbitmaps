@@ -105,6 +105,25 @@ describe('CrbmStorageChunkSource heals a generation swept before the reader open
     await expect(source.currentVersion(SEG)).resolves.toMatch(/^1:/);
   });
 
+  it('pinGeneration, which pin() makes, heals it too, and pins the generation current once the swept one is gone', async () => {
+    const storage = freshStorage();
+    const inner = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry: inner });
+
+    const registry = sweepingRegistry(inner, async () => {
+      await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], {
+        registry: inner,
+      });
+      await storage.delete({ ...SEG, generation: 0 });
+    });
+
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    await expect(source.pinGeneration(SEG)).resolves.toMatchObject({
+      generation: 1,
+      version: expect.stringMatching(/^1:/),
+    });
+  });
+
   it('so a cold has() racing a publish and a keep: 0 sweep answers, rather than failing the read', async () => {
     const storage = freshStorage();
     const inner = new MemoryRegistryDriver();
@@ -183,6 +202,13 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
     const c = await tornSegment();
     const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
     await expect(source.currentVersion(SEG)).rejects.toThrow(/no such generation/);
+    expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
+  });
+
+  it('pinGeneration against a permanently absent generation: two attempts, then propagate', async () => {
+    const c = await tornSegment();
+    const source = new CrbmStorageChunkSource(c.storage, { registry: c.registry });
+    await expect(source.pinGeneration(SEG)).rejects.toThrow(/no such generation/);
     expect(c.calls).toEqual({ regGet: 2, getTail: 2 });
   });
 
