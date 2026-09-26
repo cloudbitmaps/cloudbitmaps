@@ -615,6 +615,8 @@ interface LifecycleDeps {
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
+  /** The store's retry options, for a pinned engine to read through as the store's own does; undefined when off. */
+  private readonly retryOptions: RetryingOptions | undefined;
   private readonly crbmSource: CrbmStorageChunkSource | undefined;
   private readonly clock: Clock;
   private readonly metrics: IMetricsSink;
@@ -727,6 +729,7 @@ export class CloudRoaring {
         },
       };
       storage = new RetryingStorageChunkSource(storage, retryOpts);
+      this.retryOptions = retryOpts;
     }
     // Resolve the denial-of-wallet budget once (validates; `false` ⇒ null = disabled) and share it between the
     // engine (count/iterate/combines) and the facade's admin scans (subjectReport/eraseSubject).
@@ -1475,11 +1478,9 @@ export class CloudRoaring {
   /**
    * Build a handle held at the generation `ref` resolves to right now. See {@link Segment.pin}.
    *
-   * The pinned handle gets its own engine but **shares the store's chunk cache**, which is safe precisely
-   * because the cache is keyed by the source's version rather than the generation number: the pinned view
-   * reports the version captured at pin time, so its decoded chunks cannot collide with the live generation's.
-   * Sharing it on a generation-only key was how a pinned read could resurrect an id already reported
-   * physically gone.
+   * The pinned handle gets its own engine but **shares the store's chunk cache**, under keys of its own: the
+   * pinned view reports the version captured at pin time, marked as a pin's, so its decoded chunks are never
+   * those of a live read that fetched across a publish (see {@link PinnedStorageChunkSource.currentVersion}).
    */
   private async pinSegment(ref: SegmentRef, expiresAt?: number): Promise<Segment> {
     const crbm = this.crbmSource;
@@ -1506,11 +1507,10 @@ export class CloudRoaring {
   }
 
   /**
-   * An engine reading every segment in `pins` at its pinned generation and everything else live.
+   * An engine reading every segment in `pins` at its pinned generation and everything else live, with the store's
+   * retries, so a transient fault on a pinned read is retried as it would be on a live one.
    *
-   * It **shares the store's chunk cache**, which is safe only because that cache is keyed by the source's
-   * version rather than the generation number: a pinned view reports the version captured at pin time, so its
-   * decoded chunks cannot collide with the live generation's.
+   * It **shares the store's chunk cache and its memory bound**, under keys of its own for each pinned segment.
    */
   private engineWithPins(pins: ReadonlyMap<string, PinnedAt>): SegmentEngine {
     const crbm = this.crbmSource;
@@ -1520,8 +1520,12 @@ export class CloudRoaring {
           'that cannot resolve a generation has nothing to pin)',
       );
     }
+    const pinned = new PinnedStorageChunkSource(crbm, pins);
     return new SegmentEngine({
-      storage: new PinnedStorageChunkSource(crbm, pins),
+      storage:
+        this.retryOptions === undefined
+          ? pinned
+          : new RetryingStorageChunkSource(pinned, this.retryOptions),
       cache: this.cache,
       codec: roaringCodec,
       clock: this.clock,
@@ -1538,11 +1542,25 @@ export class CloudRoaring {
    * `other.intersect([snap])` silently does not, and the two are the same question. So the combine collects
    * every pin in play and runs on an engine that honours all of them. With no pins anywhere this is the
    * store's own engine and costs nothing.
+   *
+   * One engine reads a segment at one generation, so a combine that holds the same segment at two — two pins of
+   * it, or a pin and a live handle — is refused. Keeping one of them would answer the question for the wrong
+   * instant, and say nothing: diffing two snapshots of a segment returned no ids at all.
    */
   private engineForCombine(handles: readonly Segment[]): SegmentEngine | undefined {
     const pins = new Map<string, PinnedAt>();
+    const held = new Map<string, string>();
     for (const h of handles) {
       const at = h.pinnedAt;
+      const as = at === undefined ? 'live' : `pinned at generation ${at.generation ?? 'none'}`;
+      const before = held.get(h.key());
+      if (before !== undefined && before !== as) {
+        throw new ValidationError(
+          `the same segment is in this combine twice, ${before} and ${as}: one call reads a segment at one ` +
+            'generation, so materialise one of them into a segment of its own first (intersectInto, andNotInto)',
+        );
+      }
+      held.set(h.key(), as);
       if (at !== undefined) pins.set(h.key(), at);
     }
     return pins.size === 0 ? undefined : this.engineWithPins(pins);

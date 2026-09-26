@@ -58,7 +58,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.getChunk(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.getChunkAt(ref, pin.generation);
+      : this.inner.getChunkAt(ref, pin.generation, pin.version ?? undefined);
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
@@ -66,7 +66,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.listChunkKeys(ref);
     return pin.generation === null
       ? Promise.resolve([])
-      : this.inner.listChunkKeysAt(ref, pin.generation);
+      : this.inner.listChunkKeysAt(ref, pin.generation, pin.version ?? undefined);
   }
 
   sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
@@ -74,7 +74,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.sizeOf(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.sizeOfAt(ref, pin.generation);
+      : this.inner.sizeOfAt(ref, pin.generation, pin.version ?? undefined);
   }
 
   cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
@@ -82,7 +82,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.cardinalities(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.cardinalitiesAt(ref, pin.generation);
+      : this.inner.cardinalitiesAt(ref, pin.generation, pin.version ?? undefined);
   }
 
   currentGeneration(ref: SegmentRef): Promise<number | null> {
@@ -97,12 +97,13 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
    * and a lapsed `cache.genTtlMs`, a reader-cache eviction, or a sweep that heals the read forward, a newer one —
    * so an entry under a live version can hold a newer generation's chunk. Invariant 3 lets that live call see
    * it, and later live reads resolve the newer version and never look the entry up; a pin sharing the key would
-   * be handed it, and return a torn read. A pinned read fetches exactly its own generation, so the entries it
+   * be handed it, and return a read that mixed two generations. A pinned read fetches exactly its own generation, so the entries it
    * fills are always that generation's.
    *
    * The pin still shares the store's chunk cache, and its memory ceiling; what it gives up is a hit on a chunk a
-   * live read of the same version cached, which costs a pin one GET per such chunk and costs every other read
-   * nothing. The version, not the bare generation, is still what the key carries: sharing on a generation-only
+   * live read of the same version cached, which costs a pin one GET per such chunk. Live reads make no call for it,
+   * though a pin's entries share the cache's bound with theirs, so under a small `cache.maxChunks` each can evict
+   * the other. The version, not the bare generation, is still what the key carries: sharing on a generation-only
    * key was how a pinned read could resurrect an id that `eraseIdFromSegment` had reported physically gone.
    */
   currentVersion(ref: SegmentRef): Promise<string | null> {

@@ -420,14 +420,15 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
-registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
+registry reads (`0` re-resolves only when the reader cache evicts the segment or its generation is swept). The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
 `intersect` — the generation is resolved **once**, before any chunk is fetched, and every chunk is a whole,
 checksum-verified chunk of one generation, so a load landing mid-call never tears a chunk. A long call can still
-read its later chunks from the newer generation, if it straddles a TTL boundary or the reader cache evicts the
-segment mid-call, and its answer then describes two instants
-([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one. Without a registry
-the generation is pinned for the source's lifetime (single-process/local use).
+read its later chunks from the newer generation, if it straddles a TTL boundary, the reader cache evicts the
+segment mid-call, or a sweep collects the generation it was reading, and its answer then describes two instants
+([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one. Without a registry, a
+store finds the generation by listing the bucket when it opens a segment, and keeps it until the reader cache evicts
+that segment (single-process/local use).
 
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:

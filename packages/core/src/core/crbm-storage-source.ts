@@ -404,60 +404,78 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * **`status` is re-checked here**, on every open rather than once at pin time. A pin taken before a
    * crypto-shred must not keep unwrapping a DEK the shred destroyed; a destroyed segment resolves no generation
    * for anyone, pinned or not.
+   *
+   * The memo is keyed by the version a pin holds, when the caller gives it, so two pins of the same generation
+   * number in two incarnations of a name never share a reader. What this does **not** do is tell the two
+   * incarnations' objects apart: the row's token moves on every write, a publish included, so it cannot say
+   * whether the row a pin opens against is the one it pinned. A pin held while its segment is purged and loaded
+   * again opens the new segment's generation of the same number, and reads it.
    */
-  private async readerAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
-    const key = `${segmentKey(ref)}@${generation}`;
+  private async readerAt(
+    ref: SegmentRef,
+    generation: number,
+    version?: string,
+  ): Promise<CrbmReader | null> {
+    const key = `${segmentKey(ref)}@${version ?? generation}`;
     const existing = this.snapshots.get(key);
     if (existing !== undefined) return existing.reader;
     return this.install(key, this.openAt(ref, generation)).reader;
   }
 
   private async openAt(ref: SegmentRef, generation: number): Promise<CrbmReader | null> {
-    let lineage: Token | undefined;
-    if (this.registry !== undefined) {
-      const record = await this.registry.get(ref);
-      // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
-      // takes its key material with it, so there is nothing left to read under any generation.
-      if (record === null || record.status === 'destroyed') return null;
-      lineage = record.token;
-    }
-    return this.openForTarget(ref, { generation, lineage, wrappedDeks: await this.deksFor(ref) });
+    if (this.registry === undefined) return this.openForTarget(ref, { generation });
+    // One read of the row, for its status, its incarnation and its key wrappings together.
+    const record = await this.registry.get(ref);
+    // Re-checked at open, not captured at pin: a shred between the two must be observed. A row that has gone
+    // takes its key material with it, so there is nothing left to read under any generation.
+    if (record === null || record.status === 'destroyed') return null;
+    return this.openForTarget(ref, {
+      generation,
+      lineage: record.token,
+      wrappedDeks: record.wrappedDeks,
+    });
   }
 
-  /** The row's current key wrappings, for opening a pinned generation. */
-  private async deksFor(ref: SegmentRef): Promise<readonly WrappedDek[] | undefined> {
-    if (this.registry === undefined) return undefined;
-    return (await this.registry.get(ref))?.wrappedDeks;
-  }
-
-  /** Read one chunk of a specific generation — the pinned read path. */
-  async getChunkAt(ref: ChunkRef, generation: number): Promise<Uint8Array | null> {
+  /** Read one chunk of a specific generation — the pinned read path. `version` is the one the pin holds, if any. */
+  async getChunkAt(
+    ref: ChunkRef,
+    generation: number,
+    version?: string,
+  ): Promise<Uint8Array | null> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, version);
     return reader === null ? null : reader.getChunk(ref.chunkKey);
   }
 
-  /** Chunk keys of a specific generation — the pinned shape read. */
-  async listChunkKeysAt(ref: SegmentRef, generation: number): Promise<number[]> {
+  /** Chunk keys of a specific generation — the pinned shape read. `version` as for {@link getChunkAt}. */
+  async listChunkKeysAt(ref: SegmentRef, generation: number, version?: string): Promise<number[]> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, version);
     return reader === null ? [] : reader.chunkKeys();
   }
 
-  /** Per-chunk cardinalities of a specific generation — powers a pinned `count()` with no payload reads. */
+  /**
+   * Per-chunk cardinalities of a specific generation — powers a pinned `count()` with no payload reads. `version`
+   * as for {@link getChunkAt}.
+   */
   async cardinalitiesAt(
     ref: SegmentRef,
     generation: number,
+    version?: string,
   ): Promise<ReadonlyMap<number, number> | null> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, version);
     return reader === null ? null : reader.cardinalities();
   }
 
-  /** Grounded size of a specific generation. */
-  async sizeOfAt(ref: SegmentRef, generation: number): Promise<SegmentSize | null> {
+  /** Grounded size of a specific generation. `version` as for {@link getChunkAt}. */
+  async sizeOfAt(
+    ref: SegmentRef,
+    generation: number,
+    version?: string,
+  ): Promise<SegmentSize | null> {
     validateSegmentRef(ref);
-    const reader = await this.readerAt(ref, generation);
+    const reader = await this.readerAt(ref, generation, version);
     return reader === null ? null : { sizeBytes: reader.sizeBytes };
   }
 
@@ -503,11 +521,19 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       generation: target.generation,
     };
     const crypto = await this.cryptoForRead(ref, target.generation, target.wrappedDeks);
-    return CrbmReader.open(storageBlobReader(this.driver, genKey), {
+    const reader = await CrbmReader.open(storageBlobReader(this.driver, genKey), {
       ...this.readerOptions,
       crypto,
       lineage: target.lineage,
     });
+    // The footer names its own generation, and every writer stamps the key's. An object that disagrees was
+    // written under another key or altered, and its generation — which the cache is keyed by — cannot be trusted.
+    if (reader.generation !== target.generation) {
+      throw new IntegrityError(
+        `segment "${ref.segment}" generation ${target.generation}: its footer says generation ${reader.generation}`,
+      );
+    }
+    return reader;
   }
 
   /**

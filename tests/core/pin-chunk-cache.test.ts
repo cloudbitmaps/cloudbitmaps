@@ -2,6 +2,9 @@ import {
   MemoryStorage,
   CloudRoaring,
   CrbmStorageChunkSource,
+  NotFoundError,
+  TransientError,
+  ValidationError,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
 } from '@/index';
@@ -23,17 +26,18 @@ import { roaringCodec } from '@/roaring-codec';
  *
  * A pinned handle held at that older generation reads the same cache under the same key — a pin reports the
  * version it captured, and a live snapshot of the same generation of the same row reports the same string — so
- * it is handed the newer generation's chunk. The one handle that exists to describe a single instant then
- * returns a torn read: some chunks from the generation it pinned and some from the next, while its `count()`,
- * served from the pinned generation's index rather than from the cache, still reports the pinned total.
+ * it is handed the newer generation's chunk. The one handle that exists to describe a single instant then mixes
+ * two: some chunks from the generation it pinned and some from the next, while its `count()`, served from the
+ * pinned generation's index rather than from the cache, still reports the pinned total.
  *
  * So a pin keys its chunks in a space of its own (`PinnedStorageChunkSource.currentVersion`), which no live read
  * writes, and fills it only from its own generation. The live entry may still hold the newer chunk under the
  * older version, which is harmless: later live reads resolve the newer version and never look it up. Nothing on
- * the live path checks anything after a fetch, so a live read pays nothing for the pin's safety.
+ * the live path checks anything after a fetch, so a live read makes no call for the pin's safety. The pin's entries
+ * do share the cache's bound with the live ones, so under a small `cache.maxChunks` each can evict the other.
  *
- * Every case below ends with the same check: dropping the store's derived state (`invalidate`) makes the pin
- * read correctly again, because the bytes in the bucket were never wrong — only the cache entry was.
+ * Every case but the sweep ends with the same check: dropping the store's derived state (`invalidate`) leaves the
+ * pin reading correctly, since the bytes in the bucket were never wrong — only the cache entry was.
  */
 const REF: SegmentRef = { segment: 's' };
 const TTL = 10;
@@ -104,7 +108,7 @@ async function pinnedViews(
 }
 
 describe('a pin is never handed a chunk a live read fetched across a change of generation', () => {
-  it('iterate: a live read straddling a publish and cache.genTtlMs hands the pin generation 1 chunks', async () => {
+  it('iterate: a live read straddling a publish and cache.genTtlMs does not hand the pin generation 1 chunks', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     const snap = await w.store.segment('s').pin(); // generation 0: the instant this handle must describe
 
@@ -126,7 +130,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     });
   });
 
-  it('iterate: a reader-cache eviction does the same with no TTL at all (cache.genTtlMs: 0)', async () => {
+  it('iterate: nor does a reader-cache eviction, with no TTL at all (cache.genTtlMs: 0)', async () => {
     const w = await world({ cache: { genTtlMs: 0, readerMax: 1 } });
     await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [7], {
       registry: w.registry,
@@ -151,7 +155,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     });
   });
 
-  it('intersect: a live combine straddling a publish and the TTL poisons the pin the same way', async () => {
+  it('intersect: nor does a live combine straddling a publish and the TTL', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     // A superset of both generations, so the intersection is exactly whatever `s` was served.
     const everyId = [...GEN0, ...GEN1];
@@ -180,7 +184,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     });
   });
 
-  it('has: a one-chunk read does it when the TTL boundary falls between its resolve and its fetch', async () => {
+  it('has: nor a one-chunk read whose TTL boundary falls between its resolve and its fetch', async () => {
     let atMiss: (() => void) | undefined;
     const metrics: IMetricsSink = {
       onEvent(event) {
@@ -208,7 +212,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     });
   });
 
-  it('a generation swept mid-call heals the live read forward, and the pin answers instead of failing', async () => {
+  it('a generation swept mid-call heals the live read forward, and the pin fails rather than answer from the next', async () => {
     const w = await world({ cache: { genTtlMs: 0 } }); // no TTL involved
     const snap = await w.store.segment('s').pin();
 
@@ -234,7 +238,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     const settle = (p: Promise<unknown>): Promise<unknown> =>
       p.then(
         (v) => v,
-        () => 'threw',
+        (e: unknown) => (e instanceof NotFoundError ? 'NotFoundError' : String(e)),
       );
     // Every chunk the live read fetched after the sweep is probed, chunk 1 as well as chunk 2.
     expect({
@@ -244,11 +248,11 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
       hasGen0Id: await settle(snap.has(2 * C + 30)),
       hasGen1Id: await settle(snap.has(2 * C + 40)),
     }).toEqual({
-      count: 'threw',
-      chunk1Gen0Id: 'threw',
-      chunk1Gen1Id: 'threw',
-      hasGen0Id: 'threw',
-      hasGen1Id: 'threw',
+      count: 'NotFoundError',
+      chunk1Gen0Id: 'NotFoundError',
+      chunk1Gen1Id: 'NotFoundError',
+      hasGen0Id: 'NotFoundError',
+      hasGen1Id: 'NotFoundError',
     });
   });
 });
@@ -294,28 +298,111 @@ describe('a pin keeps entries of its own, and no other read pays for them', () =
   it('a live read makes the same calls on its source with a chunk cache as without one', async () => {
     // Deciding whether to cache a fetched chunk costs no call at all — in particular no re-resolve, which, for a
     // segment the reader cache evicted mid-read, would be a registry read and a reopen.
+    // Spelled out, so a call added after a fetch fails here whether or not it depends on the cache: the shape,
+    // the version the op keys by, then one fetch for each chunk.
     const withCache = await coldReadCalls(true);
-    expect(withCache).toEqual(await coldReadCalls(false));
-    expect(withCache.filter((c) => c === 'getChunk')).toHaveLength(3); // one fetch for each chunk
+    expect(withCache).toEqual([
+      'listChunkKeys',
+      'currentVersion',
+      'getChunk',
+      'getChunk',
+      'getChunk',
+    ]);
+    expect(await coldReadCalls(false)).toEqual(withCache);
   });
 
   it("costs a pin one GET for a chunk a live read of its version cached, and hands it the pin's own bytes", async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     const live = w.store.segment('s');
     const snap = await live.pin();
+    // Both readers open first, the pin's by its own index read, so what is counted below is chunk reads alone.
+    expect(await live.count()).toBe(GEN0.length);
+    expect(await snap.count()).toBe(GEN0.length);
     let reads = 0;
-    const inner = w.storage.getRange.bind(w.storage);
+    const [range, tail] = [w.storage.getRange.bind(w.storage), w.storage.getTail.bind(w.storage)];
     w.storage.getRange = (key, offset, length) => {
       reads += 1;
-      return inner(key, offset, length);
+      return range(key, offset, length);
+    };
+    w.storage.getTail = (key, max) => {
+      reads += 1;
+      return tail(key, max);
     };
 
     expect(await live.has(2 * C + 30)).toBe(true); // the live read caches chunk 2 at generation 0's version
     const afterLive = reads;
-    expect(await snap.has(2 * C + 30)).toBe(true); // the pin's own entry: one more read of the bucket
+    expect(await snap.has(2 * C + 30)).toBe(true); // the pin's own entry: one GET for the chunk
     expect(reads).toBe(afterLive + 1);
     expect(await snap.has(2 * C + 31)).toBe(true); // and a hit after that
     expect(await live.has(2 * C + 31)).toBe(true); // as the live read's entry still is
     expect(reads).toBe(afterLive + 1);
+  });
+});
+
+describe('a pin across incarnations, a segment held twice, and a transient fault', () => {
+  it('two pins of generation 0 in two incarnations of a name never share a cached chunk', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [1, 2, 3], { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, [7], { registry });
+    const store = new CloudRoaring({ storage: backend, cache: { readerMax: 1 } });
+    expect(await (await store.segment('s').pin()).has(1)).toBe(true); // caches chunk 0 under the first pin
+    // The name is purged and loaded again, starting again at generation 0, beside the store.
+    for await (const key of storage.list(REF)) await storage.delete(key);
+    await registry.delete(REF);
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, [9], { registry });
+    expect(await store.segment('other').has(7)).toBe(true); // evicts the first pin's reader
+    const second = await store.segment('s').pin();
+    expect([await second.has(1), await second.has(9)]).toEqual([false, true]);
+  });
+
+  it('refuses a combine that holds one segment at two generations, rather than answer for one of them', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const live = w.store.segment('s');
+    const snap0 = await live.pin();
+    await w.publishGen1();
+    w.clock.advance(TTL);
+    const snap1 = await live.pin();
+    // Refused when the call is made, as its other arguments are; an async wrapper catches it either way.
+    for (const call of [
+      async () => collect(snap0.andNot([snap1])),
+      async () => collect(snap0.intersect([snap1])),
+      async () => collect(live.andNot([snap0])),
+    ]) {
+      await expect(call()).rejects.toThrow(ValidationError);
+      await expect(call()).rejects.toThrow(/in this combine twice/);
+    }
+    // The same pin twice is one generation, and fine.
+    expect(await collect(snap0.intersect([snap0]))).toEqual(GEN0);
+  });
+
+  it("retries a pinned read's transient fault, as it would a live one's", async () => {
+    const w = await world();
+    const snap = await w.store.segment('s').pin();
+    expect(await snap.count()).toBe(GEN0.length); // the pinned reader is open
+    let faults = 1;
+    const range = w.storage.getRange.bind(w.storage);
+    w.storage.getRange = (key, offset, length) => {
+      if (faults > 0) {
+        faults -= 1;
+        return Promise.reject(new TransientError('storage blip'));
+      }
+      return range(key, offset, length);
+    };
+    expect(await snap.has(2 * C + 30)).toBe(true);
+    expect(faults).toBe(0);
+  });
+
+  it('opens a pinned generation on one read of the registry row', async () => {
+    const w = await world();
+    const snap = await w.store.segment('s').pin();
+    let gets = 0;
+    const get = w.registry.get.bind(w.registry);
+    w.registry.get = (ref) => {
+      gets += 1;
+      return get(ref);
+    };
+    expect(await snap.count()).toBe(GEN0.length);
+    expect(gets).toBe(1);
   });
 });

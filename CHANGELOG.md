@@ -147,19 +147,37 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   before the fetch, a publish had landed and `cache.genTtlMs` had lapsed, or the reader cache had evicted the
   segment, or a sweep had made the read heal forward, the chunk came from the newer generation, and was cached under
   the older one's key. A handle pinned at the older generation read that same key, so it was handed the newer
-  generation's chunk: a torn read — its `iterate()` mixed two generations while its `count()` still reported the
-  pinned one's total — and, after a sweep had collected its generation, a pinned `has()` answered from the newer one
-  where it should have failed. A pinned handle now caches its chunks under keys of its own, which no live read
-  writes, and fills them only from the generation it pinned. Live reads pay nothing for it; a pin pays one GET for a
-  chunk that a live read of its generation had already cached, which it used to share. Unpinned reads were not
-  affected: every way the library moves a read to a newer generation also makes it the one later reads resolve. Five
-  tests reproduce it, across `iterate`, `intersect` and `has` and the three ways the generation can move, and each
-  failed before the fix.
-- **A cold read could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
+  generation's chunk: its `iterate()` mixed two generations while its `count()` still reported the pinned one's
+  total, and, after a sweep had collected its generation, a pinned `has()` answered from the newer one where it
+  should have failed. A pinned handle now caches its chunks under keys of its own, which no live read writes, and
+  fills them only from the generation it pinned. Live reads make no extra call for it. What it costs:
+  - a pin pays one GET for a chunk that a live read of its generation had already cached, which it used to share;
+  - a pin's entries share the chunk cache's bound with the live ones, so under a small `cache.maxChunks` each can
+    evict the other;
+  - a pin whose generation has been swept now fails even for a chunk a live read had cached from it, where it could
+    answer from that entry before.
+
+  Unpinned reads were not affected: every way the library moves a read to a newer generation also makes it the one
+  later reads resolve. Five tests reproduce it, across `iterate`, `intersect` and `has` and the three ways the
+  generation can move, and each failed before the fix.
+- **A combine that held one segment at two generations answered for one of them.** One call reads a segment at one
+  generation, and a combine keyed its pins by segment, so `snap0.andNot([snap1])` — the difference between two
+  snapshots of one segment — returned no ids at all, and `live.andNot([snap])` read the live handle at the pin. Such
+  a combine is now refused with `ValidationError`, pointing at the `*Into` verbs to materialise one side first.
+- **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
+  that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
+  reads now go through the store's retries. Opening a pinned generation also reads the registry row once, where it
+  read it twice.
+- **A cold `has()` could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
   it fetches a chunk, a read looks up each operand's version, and that lookup did not heal a swept generation the
-  way a chunk fetch and `currentGeneration()` do. Id erasure passes `keep: 0`, so its sweep can land microseconds
+  way a chunk fetch and `currentGeneration()` do. `count`, `iterate` and `intersect` survived the same race, since
+  their index read heals first; a `has()` failed. Id erasure passes `keep: 0`, so its sweep can land microseconds
   after the publish. The lookup now re-resolves once and reads the newer generation; a second miss still fails the
   read, as it does everywhere else.
+- **A generation whose footer names another generation is refused.** Every writer stamps a generation's footer with
+  its key's number, and the chunk cache is keyed by it, so an object that disagrees — written under another key, or
+  altered — now fails with `IntegrityError` when it is opened, where it was read as the generation its footer
+  claimed.
 
 ## [0.10.0] — 2026-09-21
 

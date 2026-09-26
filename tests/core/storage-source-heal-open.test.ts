@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   CloudRoaring,
   CrbmStorageChunkSource,
+  IntegrityError,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
@@ -206,5 +207,28 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
       'registry unavailable',
     );
     expect(regGet).toBe(1); // not 2: a generic fault is not a swept generation
+    // And the version lookup every read begins with keeps to the same rule.
+    const fresh = new CrbmStorageChunkSource(storage, { registry: faulting });
+    await expect(fresh.currentVersion(SEG)).rejects.toThrow('registry unavailable');
+    expect(regGet).toBe(2);
+  });
+});
+
+describe("a generation's footer must name the generation it is stored as", () => {
+  it('refuses an object stored under one generation whose footer says another', async () => {
+    const storage = freshStorage();
+    const registry = new MemoryRegistryDriver();
+    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
+    // Generation 0's bytes, written again under generation 1, as a copy under the wrong key would be.
+    const tail = await storage.getTail({ ...SEG, generation: 0 }, 1 << 20);
+    await storage.putImmutable({ ...SEG, generation: 1 }, async (sink) => {
+      await sink.write(tail.bytes);
+    });
+    await registry.compareAndSwap(SEG, (await registry.get(SEG))!.token, { currentGen: 1 });
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(IntegrityError);
+    await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
+      /generation 1: its footer says generation 0/,
+    );
   });
 });
