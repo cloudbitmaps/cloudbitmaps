@@ -232,8 +232,8 @@ export interface CacheOptions {
    * all it does. The store still moves a segment on to whatever generation is current when its reader cache
    * evicts the segment, when a read has to fetch from a generation a sweep deleted, and when it is invalidated,
    * as its own `load`, `rollback`, `eraseSubject` and `*Into` writes do and {@link CloudRoaring.invalidate} does.
-   * A read its caches can answer touches no storage, so a sweep alone moves nothing. What it gives up is the bound:
-   * it notices another process's publish, erasure or drop only through one of those, whenever that happens. To read
+   * A read its caches can answer touches no storage, so a sweep alone moves nothing. What `0` gives up is the bound:
+   * the store notices another process's publish, erasure or drop only through one of those, whenever that happens. To read
    * one generation for as long as you need it, take a {@link Segment.pin}.
    */
   readonly genTtlMs?: number;
@@ -1321,8 +1321,8 @@ export class CloudRoaring {
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses. A reader that never
-   * touched it sees empty at once. **That bound needs a clock and `cache.genTtlMs > 0`.** A store built without a
-   * clock, or with `cache.genTtlMs: 0`, has no timed refresh. It notices the drop only when a read has to fetch
+   * touched it sees empty at once. **That bound needs a registry and `cache.genTtlMs > 0`.** A store built on a bare
+   * `IStorageDriver`, with no registry, or with `cache.genTtlMs: 0`, has no timed refresh. It notices the drop only when a read has to fetch
    * from a deleted generation or its reader cache evicts the segment, and until then a chunk it has cached
    * answers without reaching storage, so it can keep answering `true` for a dropped segment indefinitely. Tell
    * it with {@link invalidate}, or restart it.
@@ -1468,18 +1468,18 @@ export class CloudRoaring {
    * that advances `currentGen`**, which the snapshot TTL notices and the generation-keyed cache misses on.
    * Neither notices an event that *destroys* what they were derived from.
    *
-   * The verbs on this class handle themselves — `eraseSubject`, `dropSegment` and `retireExpired` invalidate
-   * what they touch. This method is for the cases they cannot see:
+   * The verbs on this class handle themselves: `load`, `rollback`, the `*Into` verbs, `eraseSubject`, `dropSegment`
+   * and `retireExpired` invalidate what they touch. This method is for the cases they cannot see:
    *
    * - **`destroySegment` / `eraseNamespace`**, which are free functions over raw drivers rather than methods
    *   here, so a crypto-shred performed beside this store invalidates nothing in it. It keeps its open reader and
    *   the unwrapped DEK, and decrypts with them, chunks it had never fetched before the shred included, until its
-   *   snapshot re-resolves: within `cache.genTtlMs` when the store has a clock, a registry and a `genTtlMs` above
-   *   0, and otherwise only when its caches let the segment go. A pin answers with no timed bound, until it is told
-   *   or both caches let it go.
+   *   snapshot re-resolves: within `cache.genTtlMs` when the store has a registry and a `genTtlMs` above 0, and
+   *   otherwise only when its caches let the segment go or a read has to fetch from a generation a sweep collected.
+   *   A pin answers with no timed bound, until it is told or both caches let it go.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
-   *   staleness by `cache.genTtlMs`, and a store built with no clock, no registry or `cache.genTtlMs: 0` has no
-   *   bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
+   *   staleness by `cache.genTtlMs`, and a store built on a bare `IStorageDriver`, with no registry, or with
+   *   `cache.genTtlMs: 0` has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
@@ -1878,14 +1878,19 @@ export class Segment {
    * A segment with no current generation pins nothing and reads empty, exactly as it would unpinned. A pinned
    * segment whose row is later dropped or destroyed fails rather than go empty part-way through a call. **A pin
    * keeps the key its reader unwrapped for as long as that reader stays open, and answers from the chunks it
-   * decoded for as long as they stay cached.** This store invalidates a pin: `eraseSubject` a pin of every segment it
-   * scans, and `dropSegment` and `retireExpired` a pin of each segment they remove. The pin then opens its object
-   * again, and fails if that object is gone or its segment was dropped. Anything else leaves the pin as it is: after
-   * a `destroySegment` beside this store, or any of those verbs through another store, in this process or another,
-   * the pin answers from what it holds until this store's reader cache evicts its reader and the chunk cache its
-   * chunks, or {@link CloudRoaring.invalidate} is called on this store. Where an erasure or a drop has deleted the
-   * object the pin reads, a chunk the pin has not cached fails at once. No timed refresh bounds any of that, as none
-   * bounds anything else a pin holds.
+   * decoded for as long as they stay cached.** This store invalidates a pin:
+   *
+   * - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
+   * - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment its ledger
+   *   lists;
+   * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
+   *
+   * An invalidated pin opens its object again, and fails if that object is gone or its segment was dropped. Anything
+   * else leaves the pin as it is: after a `destroySegment` beside this store, or a write through another store, in
+   * this process or another, the pin answers from what it holds until this store's reader cache evicts its reader
+   * and its chunk cache evicts its chunks, or {@link CloudRoaring.invalidate} is called on this store. Where the
+   * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
+   * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
    *
    * `pin()` reads the registry row and opens the generation at once, so the pin knows its object before its first
    * read. With a registry, pins of one generation taken while its row is unchanged share one reader while the store

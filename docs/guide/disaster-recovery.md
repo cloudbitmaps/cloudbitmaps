@@ -176,10 +176,10 @@ process to stop. If you cannot quiesce, re-run the scan to confirm a reported te
 A store that has resolved a segment keeps serving that generation for up to `cache.genTtlMs` (default 2 s) before
 it re-reads the pointer, and decoded chunks sit in the cache for as long as the cache keeps them. After a
 restore or a manual `currentGen` roll, a long-lived process may therefore keep answering from the generation it
-resolved *before* the restore for that window. Two cases need more than waiting: a store built **without a
-clock**, or with **`cache: { genTtlMs: 0 }`**, has no timed refresh, so nothing bounds how long it keeps the
-generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments in each, as part
-of the procedure. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
+resolved *before* the restore for that window. Some stores need more than waiting: one built **without a clock**,
+on a bare `IStorageDriver` with **no registry**, or with **`cache: { genTtlMs: 0 }`** has no timed refresh, so nothing
+bounds how long it keeps the generation it resolved — restart those readers, or `store.invalidate(ref)` the restored
+segments in each, as part of the procedure. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
 predecessor on return) re-resolves on its next read; that is the documented cost of physical deletion on return,
 not a fault. A `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading
 its own generation while that object is there, and once the object is gone or replaced it answers only from what it

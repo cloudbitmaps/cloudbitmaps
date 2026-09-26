@@ -92,6 +92,11 @@ function checkedFooter(
   tail: Uint8Array,
   size: number,
 ): { footer: Uint8Array; fview: DataView; storedFooterCrc: number } {
+  // The size is the tier's word too: one that is not a whole byte count its own tail fits in would turn off every
+  // bounds check an open makes against it.
+  if (!Number.isSafeInteger(size) || size < tail.length) {
+    throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
+  }
   if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
     throw new IntegrityError(`.crbm too small: ${size}B`);
   }

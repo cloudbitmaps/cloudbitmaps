@@ -1590,7 +1590,7 @@ describe("a cold intersect's request count does not depend on the network", () =
     expect(timed.ids).toEqual(shared);
     // On the default TTL the slow link reads the pointers again part-way through: the network is in the count.
     expect(byDefault.pointerReads).toBeGreaterThan(2);
-    // Pinned, it is two — one per operand — however long the intersect takes.
+    // With the timed refresh off, it is two — one per operand — however long the intersect takes.
     expect(timed.pointerReads).toBe(2);
   });
 });

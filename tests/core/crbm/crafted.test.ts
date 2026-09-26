@@ -251,6 +251,30 @@ describe('crafted (hostile) index — reader-side guards', () => {
     await expect(CrbmReader.fingerprintOf(new BufferReader(flipped(at)))).rejects.toThrow(message);
   });
 
+  it('refuses a footer alone, with no preamble before it, as too small', async () => {
+    const whole = wellFormed({});
+    const footerOnly = whole.slice(whole.length - FOOTER_BYTES);
+    await expect(open(footerOnly)).rejects.toThrow(/too small/);
+    await expect(CrbmReader.fingerprintOf(new BufferReader(footerOnly))).rejects.toThrow(
+      /too small/,
+    );
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 10])(
+    'refuses a size of %s, which is not a byte count the tail fits in',
+    async (size) => {
+      const inner = new BufferReader(wellFormed({}));
+      const blob = {
+        getRange: (offset: number, length: number) => inner.getRange(offset, length),
+        getTail: async (maxBytes: number) => ({ ...(await inner.getTail(maxBytes)), size }),
+      };
+      await expect(CrbmReader.open(blob)).rejects.toThrow(/not a byte count its tail fits in/);
+      await expect(CrbmReader.fingerprintOf(blob)).rejects.toThrow(
+        /not a byte count its tail fits in/,
+      );
+    },
+  );
+
   it("gives an object's fingerprint from a footer's worth of its bytes, as an open gives it", async () => {
     const bytes = wellFormed({});
     const inner = new BufferReader(bytes);

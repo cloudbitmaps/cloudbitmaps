@@ -1119,8 +1119,8 @@ happen to point at the same bucket.
 | storage | on return — the generation holding it is deleted |
 | the store that performed the erasure | on return, and its pins then fail |
 | another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
-| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache the chunks the pin decoded, or `store.invalidate(ref)` is called there |
-| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
+| another store with **no clock**, **no registry** (a bare `IStorageDriver`), or `cache: { genTtlMs: 0 }` | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
 `cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
 immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;

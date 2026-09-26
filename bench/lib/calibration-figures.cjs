@@ -616,7 +616,7 @@ function shapesOf(f) {
 const WORDS = {
   measured: /\bmedian\b|\bmeasured\b|\bthis run\b|\bas the run\b|\blaptop\b/gi,
   expected:
-    /\bexpected\b|\bread once\b|\binside the region\b|\bin-region\b|\bpinned\b|\bpins\b|\bwould\b|\bshould\b/gi,
+    /\bexpected\b|\bread once\b|\binside the region\b|\bin-region\b|\brefresh off\b|\bwould\b|\bshould\b/gi,
   chunkShare: /\bchunks?\b|\bby count\b|\bof them\b/gi,
   byteShare: /\bobjects?'?|\bbytes?\b|\bpayload\b|\btail\b|\bMB\b|\bKB\b|\bKiB\b|\bleft S3\b/gi,
   getShare: /\bGETs?\b|\bbill\b|\brequests?\b/gi,
@@ -627,7 +627,7 @@ const WORDS = {
   rereads: /\bre-?reads?\b|\bfold\w*|\bsave\w*/gi,
   dollar: /\bdollar\b|\bbuys?\b/gi,
   write: /\bwrit\w*|\bpublish\w*/gi,
-  once: /\bonce\b|\binside the region\b|\bin-region\b|\bpinned\b|\bpins\b/gi,
+  once: /\bonce\b|\binside the region\b|\bin-region\b|\brefresh off\b/gi,
   object: /\bobjects?'?/gi,
   storeLoad: /store\.load\(\)|\bloadSegment\b/g,
   median: /\bmedian\b/gi,
