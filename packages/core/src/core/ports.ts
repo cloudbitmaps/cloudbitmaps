@@ -60,8 +60,8 @@ export interface StorageChunkSource {
    * keys its chunk cache by this so a generation bump (a load's publish) is observed — a new generation
    * misses the cache instead of serving a stale decoded chunk, and an erased id can't resurrect from a cached
    * superseded chunk. Cheap: served from the source's own (short-TTL-refreshed) snapshot, **not** a fresh
-   * backend read per call. A source that pins one immutable generation for its whole lifetime and never
-   * refreshes may omit this — the engine then keys the cache without a generation.
+   * backend read per call. A source that only ever serves one immutable generation may omit this — the engine
+   * then keys the cache without a generation.
    */
   currentGeneration?(ref: SegmentRef): Promise<number | null>;
   /**
@@ -72,8 +72,8 @@ export interface StorageChunkSource {
    * `currentGen`**. Neither covers an event that *destroys* what the cache was derived from: an erasure that
    * deletes the generation holding the bit, a `dropSegment`, a crypto-shred, a retirement. After one of those
    * a source that had already resolved the segment keeps answering from memory — with no backend read at all,
-   * so no storage-side control can close the window — until its TTL lapses, and **never** if it has no clock
-   * or `cache.genTtlMs: 0` ("pin forever").
+   * so no storage-side control can close the window — until its TTL lapses, and with no bound at all if it has
+   * no clock or `cache.genTtlMs: 0`.
    *
    * Callers that destroy or retire a segment must call this. It is synchronous and best-effort: dropping
    * memoized state cannot fail, and a source that memoizes nothing may omit the method entirely.
@@ -104,8 +104,8 @@ export interface StorageChunkSource {
    * Note that putting the incarnation in the *object key* would not fix this: the new incarnation still starts
    * at generation 0, so the cache key collides either way. The identity has to reach the cache.
    *
-   * Returns `null` when the segment resolves to no generation. A source that pins one immutable generation for
-   * its lifetime may omit this, and the engine falls back to the generation alone.
+   * Returns `null` when the segment resolves to no generation. A source that only ever serves one immutable
+   * generation may omit this, and the engine falls back to the generation alone.
    */
   currentVersion?(ref: SegmentRef): Promise<string | null>;
 }

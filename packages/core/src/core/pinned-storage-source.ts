@@ -21,14 +21,30 @@
  * caller happened to start from.
  */
 import type { ChunkRef, StorageChunkSource, SegmentRef, SegmentSize } from './ports';
-import type { CrbmStorageChunkSource } from './crbm-storage-source';
+import type { CrbmStorageChunkSource, PinnedObject } from './crbm-storage-source';
 import { segmentKey } from './keys';
 
-/** What a pin holds for one segment: the generation, and the version identifying those exact bytes. */
+/**
+ * What a pin holds for one segment: the generation, the version identifying those exact bytes, and the pinned
+ * object's fingerprint, so a read can tell that the generation it opens is still that object.
+ *
+ * `fingerprint` is optional so that a pin built by hand, before there was one, still compiles; such a pin is
+ * checked by version only, and so cannot tell a name purged and loaded again from the segment it pinned.
+ * `seg.pin()` always records it.
+ */
 export interface PinnedAt {
   readonly generation: number | null;
   readonly version: string | null;
+  readonly fingerprint?: string | null;
 }
+
+/** The part of a pin a pinned read checks the object against; none for a pin of no generation. */
+const heldBy = (pin: PinnedAt): PinnedObject | undefined => {
+  if (pin.version === null) return undefined;
+  return pin.fingerprint == null
+    ? { version: pin.version }
+    : { version: pin.version, fingerprint: pin.fingerprint };
+};
 
 export class PinnedStorageChunkSource implements StorageChunkSource {
   constructor(
@@ -58,7 +74,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.getChunk(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.getChunkAt(ref, pin.generation, pin.version ?? undefined);
+      : this.inner.getChunkAt(ref, pin.generation, heldBy(pin));
   }
 
   listChunkKeys(ref: SegmentRef): Promise<number[]> {
@@ -66,7 +82,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.listChunkKeys(ref);
     return pin.generation === null
       ? Promise.resolve([])
-      : this.inner.listChunkKeysAt(ref, pin.generation, pin.version ?? undefined);
+      : this.inner.listChunkKeysAt(ref, pin.generation, heldBy(pin));
   }
 
   sizeOf(ref: SegmentRef): Promise<SegmentSize | null> {
@@ -74,7 +90,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.sizeOf(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.sizeOfAt(ref, pin.generation, pin.version ?? undefined);
+      : this.inner.sizeOfAt(ref, pin.generation, heldBy(pin));
   }
 
   cardinalities(ref: SegmentRef): Promise<ReadonlyMap<number, number> | null> {
@@ -82,7 +98,7 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     if (pin === undefined) return this.inner.cardinalities(ref);
     return pin.generation === null
       ? Promise.resolve(null)
-      : this.inner.cardinalitiesAt(ref, pin.generation, pin.version ?? undefined);
+      : this.inner.cardinalitiesAt(ref, pin.generation, heldBy(pin));
   }
 
   currentGeneration(ref: SegmentRef): Promise<number | null> {
@@ -94,11 +110,11 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
    * A pinned segment reports the version captured when it was pinned, marked as a pin's, so its decoded chunks
    * are cached under keys that no live read writes. A live read keys its fetches by the version it resolved when
    * it began, but is served whatever generation the live source holds when each fetch lands — after a publish
-   * and a lapsed `cache.genTtlMs`, a reader-cache eviction, or a sweep that heals the read forward, a newer one —
-   * so an entry under a live version can hold a newer generation's chunk. Invariant 3 lets that live call see
-   * it, and later live reads resolve the newer version and never look the entry up; a pin sharing the key would
-   * be handed it, and return a read that mixed two generations. A pinned read fetches exactly its own generation, so the entries it
-   * fills are always that generation's.
+   * and a lapsed `cache.genTtlMs`, a reader-cache eviction, a sweep that heals the read forward, or an
+   * invalidation, a different one — so an entry under a live version can hold another generation's chunk.
+   * Invariant 3 lets that live call see it, and later live reads resolve the current version and never look the
+   * entry up; a pin sharing the key would be handed it, and return a read that mixed two generations. A pinned
+   * read fetches exactly its own generation, so the entries it fills are always that generation's.
    *
    * The pin still shares the store's chunk cache, and its memory ceiling; what it gives up is a hit on a chunk a
    * live read of the same version cached, which costs a pin one GET per such chunk. Live reads make no call for it,

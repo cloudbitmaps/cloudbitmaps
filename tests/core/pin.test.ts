@@ -146,7 +146,7 @@ describe('pin holds one segment at one generation', () => {
     for (let i = 0; i < 12; i++) expect(await pins[i]!.has(i)).toBe(true);
   });
 
-  it('a transient fault does not poison a pin for its lifetime', async () => {
+  it('a transient fault does not poison a pin for good', async () => {
     // The memoized-rejection bug: `this.reader ??= open()` cached a REJECTED promise, so one fault made the pin
     // the single read path in the library with no resilience.
     const real = new MemoryStorageDriver();
@@ -167,9 +167,18 @@ describe('pin holds one segment at one generation', () => {
     const store = new CloudRoaring({
       storage: createBackend({ storage, registry }),
       retry: false,
+      cache: { readerMax: 1 },
     });
+    // pin() opens the generation it pins: a fault there fails that pin, and is not remembered for the next.
+    fail = true;
+    await expect(store.segment('s').pin()).rejects.toThrow('transient');
+    fail = false;
     const snap = await store.segment('s').pin();
+    expect(await snap.count()).toBe(3);
 
+    // And a reopen after the pin's reader was evicted: a fault fails that read, and the next one recovers.
+    await bulkLoadCrbmGeneration(real, { segment: 'other', generation: 0 }, [7], { registry });
+    expect(await store.segment('other').has(7)).toBe(true);
     fail = true;
     await expect(snap.count()).rejects.toThrow('transient');
     fail = false;

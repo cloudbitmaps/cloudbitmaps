@@ -49,8 +49,9 @@ describe('destructive verbs invalidate what this store derived from the segment'
     ]);
   });
 
-  it('a pinned store (cache.genTtlMs: 0) converges too — it never would on the TTL', async () => {
-    // "Pin forever" is a documented setting. Without an explicit signal this window never closes at all.
+  it('a store with no timed refresh (cache.genTtlMs: 0) converges too — no TTL would ever move it', async () => {
+    // No timed refresh is a documented setting. Without an explicit signal nothing bounds this window: only an
+    // eviction or a sweep would ever close it.
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, IDS, { registry });

@@ -177,11 +177,13 @@ export class SegmentEngine {
    * Generation-consistent within the call (normal case): each operand's current generation is resolved **once**
    * up front (before the fan-out) and threaded into every chunk read, so a concurrent load can't corrupt or tear
    * the result — every chunk read is a whole, checksum-verified, immutable generation. The edge a *long* call can
-   * hit: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an operand's not-yet-read
-   * chunks may re-resolve forward to the newer generation (a generation hop within one long call) — the call
-   * never crashes or returns a torn object, but may mix generations. A shorter call is unaffected **unless the
-   * reader cache evicts an operand mid-call** (`maxOpenSegments`): the re-read re-resolves fresh (bypassing the
-   * TTL), which can hop generations even sub-TTL — still whole/immutable per read, never torn.
+   * hit is invariant 3's: if it straddles a mid-call `cache.genTtlMs` boundary and a load has published, an
+   * operand's not-yet-read chunks may re-resolve forward to the newer generation (a generation hop within one long
+   * call) — the call never crashes or returns a torn object, but may mix generations. Three things hop it without
+   * waiting for the TTL, so a shorter call can meet them too: **the reader cache evicting an operand mid-call**
+   * (`maxOpenSegments`), whose re-read re-resolves fresh; a sweep deleting the generation it was reading, which
+   * heals the read forward; and an invalidation, which this store's own `load`, `rollback` and `eraseSubject` make
+   * and `invalidate()` makes on request. Still whole/immutable per read, never torn.
    */
   intersect(segs: readonly SegmentRef[], options?: CombineOptions): AsyncGenerator<number> {
     return this.combine(segs, options?.exclude ?? [], 'all', 'intersect', options);
@@ -535,7 +537,7 @@ export class SegmentEngine {
    * keyed by it, so a load that advances the generation misses the cache and re-reads the new bytes instead of
    * serving a stale decoded chunk (an erased id can't resurrect from a cached superseded chunk). `gen === null`
    * ⇒ the source reports no current generation ⇒ no storage bytes for any chunk, so skip the fetch entirely.
-   * `gen === undefined` ⇒ the source can't report a generation (pins one for its lifetime) ⇒ the key stays
+   * `gen === undefined` ⇒ the source can't report a generation (it only ever serves one) ⇒ the key stays
    * generation-free. Superseded-generation entries age out under the LRU ceiling — no active purge.
    *
    * The returned instance is **shared** (it may be the cached one): callers read it or clone it, never mutate it.

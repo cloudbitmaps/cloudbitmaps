@@ -5,12 +5,13 @@ import {
   CloudRoaring,
   CrbmStorageChunkSource,
   IntegrityError,
+  eraseIdFromSegment,
   LocalFsStorageDriver,
   MemoryRegistryDriver,
   bulkLoadCrbmGeneration,
   createBackend,
 } from '@/index';
-import { SafeBitmap } from '@/roaring-codec';
+import { SafeBitmap, roaringCodec } from '@/roaring-codec';
 import type { IStorageDriver, IRegistryDriver, RegistryRecord, SegmentRef } from '@/index';
 
 const SEG: SegmentRef = { segment: 's' };
@@ -215,20 +216,45 @@ describe('the heal is bounded to exactly two resolve-and-open round trips', () =
 });
 
 describe("a generation's footer must name the generation it is stored as", () => {
-  it('refuses an object stored under one generation whose footer says another', async () => {
+  /** Generation `from`'s bytes written again under generation `to`, as a copy under the wrong key would be. */
+  async function misfiled(from: number, to: number) {
     const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
-    await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
-    // Generation 0's bytes, written again under generation 1, as a copy under the wrong key would be.
-    const tail = await storage.getTail({ ...SEG, generation: 0 }, 1 << 20);
-    await storage.putImmutable({ ...SEG, generation: 1 }, async (sink) => {
+    for (let g = 0; g <= Math.max(from, to); g++) {
+      if (g !== to) {
+        await bulkLoadCrbmGeneration(storage, { ...SEG, generation: g }, [1, 2, g + 10], {
+          registry,
+        });
+      }
+    }
+    const tail = await storage.getTail({ ...SEG, generation: from }, 1 << 20);
+    await storage.putImmutable({ ...SEG, generation: to }, async (sink) => {
       await sink.write(tail.bytes);
     });
-    await registry.compareAndSwap(SEG, (await registry.get(SEG))!.token, { currentGen: 1 });
-    const source = new CrbmStorageChunkSource(storage, { registry });
-    await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(IntegrityError);
-    await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
-      /generation 1: its footer says generation 0/,
-    );
+    await registry.compareAndSwap(SEG, (await registry.get(SEG))!.token, { currentGen: to });
+    return { storage, registry };
+  }
+
+  it.each([
+    [0, 1],
+    [2, 1],
+  ])(
+    'refuses a read of generation %s stored as %s, whichever way they differ',
+    async (from, to) => {
+      const { storage, registry } = await misfiled(from, to);
+      const source = new CrbmStorageChunkSource(storage, { registry });
+      await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(IntegrityError);
+      await expect(source.getChunk({ segment: 's', chunkKey: 0 })).rejects.toThrow(
+        new RegExp(`generation ${to}: its footer says generation ${from}`),
+      );
+    },
+  );
+
+  it('refuses it on the write paths too: an erasure does not rewrite from a misfiled generation', async () => {
+    const { storage, registry } = await misfiled(0, 1);
+    await expect(
+      eraseIdFromSegment(SEG, 1, { storage, registry, codec: roaringCodec }),
+    ).rejects.toThrow(IntegrityError);
+    expect((await registry.get(SEG))!.currentGen).toBe(1); // nothing was published
   });
 });

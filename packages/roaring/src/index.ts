@@ -29,6 +29,7 @@ import {
   CrbmStorageChunkSource,
   DEFAULT_BUDGET,
   DEFAULT_RETRY_POLICY,
+  withRetry,
   isStorageBackend,
   NOOP_METRICS,
   RetryingStorageChunkSource,
@@ -223,10 +224,16 @@ export interface CacheOptions {
   /**
    * How long (ms) the store trusts a segment's resolved `currentGen` before re-resolving it on the next read
    * (default 2000) — the bound on read staleness after a load publishes a new generation. Applies when
-   * `storage` is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. A store
-   * wired with a bare `IStorageDriver` has no registry at all and pins the generation for the source's
-   * lifetime. Lazy — no timer; ≤ one registry read per segment per window, opening a new reader only when the
-   * generation actually advanced.
+   * `storage` is a **backend**, whose registry supplies the cheap `currentGen` read the refresh needs. Lazy — no
+   * timer; ≤ one registry read per segment per window, opening a new reader only when the generation actually
+   * advanced.
+   *
+   * `0` turns this timed refresh off, and so does wiring a bare `IStorageDriver`, which has no registry. That is
+   * all it does. The store still moves a segment on to whatever generation is current when its reader cache
+   * evicts the segment, when a sweep deletes the generation it holds, and when it is invalidated, as its own
+   * `load`, `rollback` and `eraseSubject` do and {@link CloudRoaring.invalidate} does. What it gives up is the
+   * bound: another process's publish, erasure or drop reaches it only through one of those, whenever that is.
+   * To read one generation for as long as you need it, take a {@link Segment.pin}.
    */
   readonly genTtlMs?: number;
   /**
@@ -1306,9 +1313,11 @@ export class CloudRoaring {
    *
    * Reads become empty within `cache.genTtlMs` (default 2 s), not instantly: a store that had already read this
    * segment may answer from its cached generation + cached chunks until that window lapses. A reader that never
-   * touched it sees empty at once. **That bound needs a clock and `cache.genTtlMs > 0`** — a store built without a
-   * clock, or with `cache.genTtlMs: 0` ("pin forever"), holds its resolved snapshot for its own lifetime and can
-   * keep answering `true` for a dropped segment indefinitely; restart it.
+   * touched it sees empty at once. **That bound needs a clock and `cache.genTtlMs > 0`.** A store built without a
+   * clock, or with `cache.genTtlMs: 0`, has no timed refresh. It notices the drop only when a read has to fetch
+   * from a deleted generation or its reader cache evicts the segment, and until then a chunk it has cached
+   * answers without reaching storage, so it can keep answering `true` for a dropped segment indefinitely. Tell
+   * it with {@link invalidate}, or restart it.
    *
    * Needs the store built with a **backend** (throws {@link UnsupportedError} otherwise),
    * because it has to enumerate and delete generations — a pre-built `StorageChunkSource` only reads.
@@ -1458,9 +1467,9 @@ export class CloudRoaring {
    *   here, so a crypto-shred performed beside this store leaves it holding an open reader and an unwrapped
    *   DEK. Until it is told, it keeps decrypting — including chunks it had never fetched before the shred.
    * - **Another process.** Erasing on one box invalidates nothing on the others; each store bounds its own
-   *   staleness by `cache.genTtlMs`, and a store built with no clock or `cache.genTtlMs: 0` ("pin forever") never
-   *   converges at all. If a compliance deadline depends on every reader converging, you need to signal them —
-   *   this is the call to make when your own fan-out delivers.
+   *   staleness by `cache.genTtlMs`, and a store built with no clock or `cache.genTtlMs: 0` has no bound at
+   *   all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
+   *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
@@ -1490,8 +1499,13 @@ export class CloudRoaring {
           'that cannot resolve a generation has nothing to pin)',
       );
     }
-    const at = await crbm.pinGeneration(ref);
-    const pinnedAt: PinnedAt = { generation: at?.generation ?? null, version: at?.version ?? null };
+    // Under the store's retries, as its reads are: a transient fault resolving the pin must not fail pin().
+    const at = await this.withRetries(() => crbm.pinGeneration(ref));
+    const pinnedAt: PinnedAt = {
+      generation: at?.generation ?? null,
+      version: at?.version ?? null,
+      fingerprint: at?.fingerprint ?? null,
+    };
     const pins = new Map([[segmentKey(ref), pinnedAt]]);
     return new Segment(
       this.engineWithPins(pins),
@@ -1548,22 +1562,35 @@ export class CloudRoaring {
    * instant, and say nothing: diffing two snapshots of a segment returned no ids at all.
    */
   private engineForCombine(handles: readonly Segment[]): SegmentEngine | undefined {
+    // A combine that pins nothing — nearly every one — cannot hold a segment twice at two generations, so it pays
+    // one pass over its handles and nothing more.
+    if (!handles.some((h) => h.pinnedAt !== undefined)) return undefined;
     const pins = new Map<string, PinnedAt>();
-    const held = new Map<string, string>();
+    const held = new Map<string, PinnedAt | undefined>();
     for (const h of handles) {
+      const key = h.key();
       const at = h.pinnedAt;
-      const as = at === undefined ? 'live' : `pinned at generation ${at.generation ?? 'none'}`;
-      const before = held.get(h.key());
-      if (before !== undefined && before !== as) {
-        throw new ValidationError(
-          `the same segment is in this combine twice, ${before} and ${as}: one call reads a segment at one ` +
-            'generation, so materialise one of them into a segment of its own first (intersectInto, andNotInto)',
-        );
+      if (held.has(key)) {
+        const before = held.get(key);
+        if (!samePin(before, at)) {
+          throw new ValidationError(
+            `the same segment is in this combine twice, ${twoPins(before, at)}: one call reads a segment at one ` +
+              'generation, so materialise one of them into a segment of its own first, with ' +
+              '`intersectInto(dest, [])`',
+          );
+        }
+      } else {
+        held.set(key, at);
       }
-      held.set(h.key(), as);
-      if (at !== undefined) pins.set(h.key(), at);
+      if (at !== undefined) pins.set(key, at);
     }
-    return pins.size === 0 ? undefined : this.engineWithPins(pins);
+    return this.engineWithPins(pins);
+  }
+
+  /** `op` under the store's retries, as the store's own reads run; bare when the store has retries off. */
+  private withRetries<T>(op: () => Promise<T>): Promise<T> {
+    const r = this.retryOptions;
+    return r === undefined ? op() : withRetry(op, r.policy ?? DEFAULT_RETRY_POLICY, r);
   }
 
   /** The store's registry, or a typed error naming the operation that needs one. */
@@ -1706,6 +1733,29 @@ export interface MaterializeOptions extends CombineOptions {
   readonly keep?: number;
 }
 
+/**
+ * An id stream that fails when it is first read. A combine refuses its arguments this way, as the engine's own
+ * checks do, so a caller's try/catch around the iteration catches it.
+ */
+const failing = (err: unknown): AsyncIterable<number> => ({
+  [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }),
+});
+
+/** Whether two handles of one segment read it at one generation: both live, or both pinned to one object. */
+const samePin = (a: PinnedAt | undefined, b: PinnedAt | undefined): boolean =>
+  a === undefined || b === undefined
+    ? a === b
+    : a.generation === b.generation && a.fingerprint === b.fingerprint;
+
+/** How a refusal names two handles of one segment that read it at two generations. */
+const twoPins = (a: PinnedAt | undefined, b: PinnedAt | undefined): string => {
+  const one = (p: PinnedAt | undefined): string =>
+    p === undefined ? 'live' : `pinned at generation ${p.generation ?? 'none'}`;
+  return a !== undefined && b !== undefined && a.generation === b.generation
+    ? `pinned at generation ${a.generation ?? 'none'} of two incarnations of its name`
+    : `${one(a)} and ${one(b)}`;
+};
+
 /** The empty id stream every expired read path returns — allocated once, so an expired read costs nothing. */
 const EMPTY_IDS: AsyncIterable<number> = {
   async *[Symbol.asyncIterator]() {
@@ -1799,6 +1849,14 @@ export class Segment {
    * **Only this segment is pinned.** `snap.intersect([other])` reads `snap` at its pinned generation and
    * `other` at whatever is current — pin each segment if you want the whole query held. And a pinned handle
    * used as an *operand* is still read at its pin, never live.
+   *
+   * **One call reads a segment at one generation**, so a combine that holds this segment at two —
+   * `snap0.andNot([snap1])`, or `live.intersect([snap])` — throws {@link ValidationError} when it is read.
+   * Materialise one side first, with `intersectInto(dest, [])`.
+   *
+   * **A pin knows its object, not only its number.** A name purged and loaded again starts again at generation
+   * 0, so a pin of the old segment fails with `NotFoundError`, as a swept one does, rather than read the
+   * new segment's object of the same number.
    *
    * **It is a hold, not a lease.** Nothing here stops `gcOrphanGenerations` deleting the generation underneath
    * you: a pinned read deliberately does **not** heal forward, because silently serving a different generation
@@ -1925,8 +1983,12 @@ export class Segment {
     // only in `count()` is what keeps the surface coherent: a segment whose `count()` is 0 must not still
     // contribute members to an intersection.
     if (this.expired() || others.some((o) => o.expired())) return EMPTY_IDS;
-    const engine =
-      this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    let engine: SegmentEngine;
+    try {
+      engine = this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    } catch (err) {
+      return failing(err);
+    }
     return engine.intersect([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
@@ -1987,8 +2049,12 @@ export class Segment {
       return exclude.length > 0 ? this.andNot([...exclude], options) : this.iterate();
     }
     if (live.length !== others.length) return this.union(live, options);
-    const engine =
-      this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    let engine: SegmentEngine;
+    try {
+      engine = this.combineEngine([this, ...others, ...(options?.exclude ?? [])]) ?? this.engine;
+    } catch (err) {
+      return failing(err);
+    }
     return engine.union([this.ref, ...others.map((o) => o.ref)], this.refsIn(options));
   }
 
@@ -2023,7 +2089,12 @@ export class Segment {
     // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
     if (liveExcludes.length === 0 && excludes.length > 0) return this.iterate();
     if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
-    const engine = this.combineEngine([this, ...excludes]) ?? this.engine;
+    let engine: SegmentEngine;
+    try {
+      engine = this.combineEngine([this, ...excludes]) ?? this.engine;
+    } catch (err) {
+      return failing(err);
+    }
     return engine.andNot(
       this.ref,
       excludes.map((o) => o.ref),

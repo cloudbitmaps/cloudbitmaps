@@ -144,9 +144,9 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 - **A pinned handle could read chunks of a later generation than the one it pinned.** A live read of the same
   segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,
-  before the fetch, a publish had landed and `cache.genTtlMs` had lapsed, or the reader cache had evicted the
-  segment, or a sweep had made the read heal forward, the chunk came from the newer generation, and was cached under
-  the older one's key. A handle pinned at the older generation read that same key, so it was handed the newer
+  before the fetch, a publish had landed and `cache.genTtlMs` had lapsed, the reader cache had evicted the segment,
+  a sweep had made the read heal forward, or the store had invalidated the segment (its own `load` does), the chunk
+  came from another generation, and was cached under the older one's key. A handle pinned at the older generation read that same key, so it was handed the newer
   generation's chunk: its `iterate()` mixed two generations while its `count()` still reported the pinned one's
   total, and, after a sweep had collected its generation, a pinned `has()` answered from the newer one where it
   should have failed. A pinned handle now caches its chunks under keys of its own, which no live read writes, and
@@ -157,17 +157,29 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   - a pin whose generation has been swept now fails even for a chunk a live read had cached from it, where it could
     answer from that entry before.
 
-  Unpinned reads were not affected: every way the library moves a read to a newer generation also makes it the one
-  later reads resolve. Five tests reproduce it, across `iterate`, `intersect` and `has` and the three ways the
-  generation can move, and each failed before the fix.
+  Unpinned reads were not affected: every way the library moves a read to another generation also makes it the one
+  later reads resolve. Six tests reproduce it, across `iterate`, `intersect` and `has` and all four ways a read can
+  move to another generation, and each failed before the fix.
 - **A combine that held one segment at two generations answered for one of them.** One call reads a segment at one
   generation, and a combine keyed its pins by segment, so `snap0.andNot([snap1])` — the difference between two
   snapshots of one segment — returned no ids at all, and `live.andNot([snap])` read the live handle at the pin. Such
-  a combine is now refused with `ValidationError`, pointing at the `*Into` verbs to materialise one side first.
+  a combine is now refused with `ValidationError`, pointing at `intersectInto(dest, [])` to materialise one side
+  first. So is one holding pins of one generation number in two incarnations of its name; two pins of one object
+  combine as before. The refusal comes when the combine is read, as its other errors do, and a combine with no pin
+  in it checks nothing.
+- **A pin held across a purge and re-load read the new segment as its own.** A name purged and loaded again starts
+  again at generation 0, and a pin knew its object only by generation number, so a pin of the old segment opened the
+  new one's object of the same number. While its reader stayed open, its `count()` gave the old total and its
+  uncached chunks failed with `IntegrityError`; once the reader was evicted, `count()` gave the new total while
+  `iterate()` returned chunks of both; and before the new segment reached the pinned number, the pin failed with
+  `NotFoundError`. `pin()` now records the object it pins, its size and footer checksum, and every later open of that
+  generation checks them, so a pin whose object has been replaced fails with `NotFoundError`, as one whose generation
+  was swept does. Two pins of one generation number in two incarnations no longer share a reader either.
 - **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
   that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
-  reads now go through the store's retries. Opening a pinned generation also reads the registry row once, where it
-  read it twice.
+  reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
+  generation's reader as it pins, which is the tail read its first read would otherwise make, and it reads the row
+  once to do both; opening a pinned generation read the row twice.
 - **A cold `has()` could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
   it fetches a chunk, a read looks up each operand's version, and that lookup did not heal a swept generation the
   way a chunk fetch and `currentGeneration()` do. `count`, `iterate` and `intersect` survived the same race, since
@@ -176,8 +188,10 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   read, as it does everywhere else.
 - **A generation whose footer names another generation is refused.** Every writer stamps a generation's footer with
   its key's number, and the chunk cache is keyed by it, so an object that disagrees — written under another key, or
-  altered — now fails with `IntegrityError` when it is opened, where it was read as the generation its footer
-  claimed.
+  altered — now fails with `IntegrityError` wherever it is opened: by a read, a pin, the load guard or the erasure
+  rewrite. It was read as the generation its footer claimed, and the erasure rewrite republished its content. The
+  one legitimate way to write such an object was 0.9.0's public `CrbmWriter`, given one generation and stored under
+  another; store it again under the generation its footer names.
 
 ## [0.10.0] — 2026-09-21
 

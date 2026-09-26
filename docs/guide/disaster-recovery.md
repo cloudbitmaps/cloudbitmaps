@@ -15,7 +15,7 @@ catches a torn restore before it bites.
 - [Backup checklist](#backup-checklist)
 - [Restore procedure](#restore-procedure)
 - [Quiesce writers during a restore](#quiesce-writers-during-a-restore)
-- [Readers pinned to a generation](#readers-pinned-to-a-generation)
+- [Readers still on an old generation](#readers-still-on-an-old-generation)
 - [Repair: an unstamped tombstone after a hard kill](#repair-an-unstamped-tombstone-after-a-hard-kill)
 - [`checkConsistency()` — verify before you serve traffic](#checkconsistency--verify-before-you-serve-traffic)
 - [Encryption & DR](#encryption--dr)
@@ -153,7 +153,7 @@ makes the coordinated restore point easy to hit rather than something you have t
 6. **Run `checkConsistency()`** (below) **before** serving traffic.
 7. If it reports `inconsistent` segments, resolve them (restore the missing generations, or roll the registry
    back to a generation that exists — see below) and re-run until clean.
-8. **Restart long-lived readers** (see [pinned readers](#readers-pinned-to-a-generation)), then route traffic.
+8. **Restart long-lived readers** (see [readers still on an old generation](#readers-still-on-an-old-generation)), then route traffic.
    Optionally run a targeted `subjectReport`/read spot-check on a few known segments.
 
 ## Quiesce writers during a restore
@@ -171,16 +171,19 @@ So: pause the calls for the duration. Nothing here is a daemon — a load, a mat
 sweep are all calls your own schedulers make — so "pause" means not invoking them, and there is no background
 process to stop. If you cannot quiesce, re-run the scan to confirm a reported tear before acting on it.
 
-## Readers pinned to a generation
+## Readers still on an old generation
 
 A store that has resolved a segment keeps serving that generation for up to `cache.genTtlMs` (default 2 s) before
 it re-reads the pointer, and decoded chunks sit in the cache for as long as the cache keeps them. After a
 restore or a manual `currentGen` roll, a long-lived process may therefore keep answering from the generation it
 resolved *before* the restore for that window. Two cases need more than waiting: a store built **without a
-clock**, or with **`cache: { genTtlMs: 0 }`** ("pin forever"), holds its resolved generation for its own lifetime —
-restart those readers as part of the procedure. A reader pinned to a generation that has since been **deleted**
-(an `eraseSubject` collects its predecessor on return) re-resolves on its next read; that is the documented cost
-of physical deletion on return, not a fault.
+clock**, or with **`cache: { genTtlMs: 0 }`**, has no timed refresh, so nothing bounds how long it keeps the
+generation it resolved — restart those readers, or `store.invalidate(ref)` the restored segments in each, as part
+of the procedure. A live read on a generation that has since been **deleted** (an `eraseSubject` collects its
+predecessor on return) re-resolves on its next read; that is the documented cost of physical deletion on return,
+not a fault. A `seg.pin()` handle is the exception on both counts: a restore does not move it, so it keeps reading
+its own generation while that object is there, and once the object is gone or replaced it fails with
+`NotFoundError` rather than re-resolve. Take new pins after a restore.
 
 ## Repair: an unstamped tombstone after a hard kill
 

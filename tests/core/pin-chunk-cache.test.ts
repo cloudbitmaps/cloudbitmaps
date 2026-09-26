@@ -7,9 +7,13 @@ import {
   ValidationError,
   bulkLoadCrbmGeneration,
   gcOrphanGenerations,
+  setSegmentRetention,
 } from '@/index';
 import type { CacheOptions, Clock, IMetricsSink, Segment, SegmentRef } from '@/index';
 import { SegmentEngine } from '@/core/engine';
+import { segmentKey } from '@/core/keys';
+import { PinnedStorageChunkSource } from '@/core/pinned-storage-source';
+import type { PinnedAt } from '@/core/pinned-storage-source';
 import { BoundedLru } from '@/core/lru';
 import { roaringCodec } from '@/roaring-codec';
 
@@ -155,6 +159,27 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     });
   });
 
+  it("iterate: nor does the store's own load, whose invalidation re-resolves the read (cache.genTtlMs: 0)", async () => {
+    const w = await world({ cache: { genTtlMs: 0 } });
+    const snap = await w.store.segment('s').pin();
+
+    const live: number[] = [];
+    for await (const id of w.store.segment('s').iterate()) {
+      live.push(id);
+      if (live.length === 1) {
+        // A load on this same store publishes generation 1 and invalidates the segment, so the read's next chunk
+        // re-resolves — with no TTL and no eviction — to a generation this call did not begin on.
+        await w.store.load(REF, GEN1);
+      }
+    }
+    expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
+
+    expect(await pinnedViews(w.store, snap)).toEqual({
+      pinned: PINNED_AT_GEN0,
+      afterInvalidate: PINNED_AT_GEN0,
+    });
+  });
+
   it('intersect: nor does a live combine straddling a publish and the TTL', async () => {
     const w = await world({ cache: { genTtlMs: TTL } });
     // A superset of both generations, so the intersection is exactly whatever `s` was served.
@@ -234,7 +259,8 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
     expect(live).toEqual([1, 2, 3, C + 20, C + 21, C + 22, 2 * C + 40, 2 * C + 41, 2 * C + 42]);
 
     // A pin whose generation has been swept must FAIL: it is a hold, not a lease, and it never heals forward,
-    // because silently serving a different generation is the one thing a pin exists to prevent.
+    // because silently serving a different generation is the one thing a pin exists to prevent. Its count still
+    // answers, from the index `pin()` read, and it is the pinned generation's own total; every chunk read fails.
     const settle = (p: Promise<unknown>): Promise<unknown> =>
       p.then(
         (v) => v,
@@ -248,7 +274,7 @@ describe('a pin is never handed a chunk a live read fetched across a change of g
       hasGen0Id: await settle(snap.has(2 * C + 30)),
       hasGen1Id: await settle(snap.has(2 * C + 40)),
     }).toEqual({
-      count: 'NotFoundError',
+      count: GEN0.length,
       chunk1Gen0Id: 'NotFoundError',
       chunk1Gen1Id: 'NotFoundError',
       hasGen0Id: 'NotFoundError',
@@ -393,16 +419,133 @@ describe('a pin across incarnations, a segment held twice, and a transient fault
     expect(faults).toBe(0);
   });
 
-  it('opens a pinned generation on one read of the registry row', async () => {
-    const w = await world();
-    const snap = await w.store.segment('s').pin();
+  it('pins, and opens the pinned generation, on one read of the registry row', async () => {
+    const w = await world({ cache: { readerMax: 1 } });
+    await bulkLoadCrbmGeneration(w.storage, { segment: 'other', generation: 0 }, [7], {
+      registry: w.registry,
+    });
     let gets = 0;
     const get = w.registry.get.bind(w.registry);
     w.registry.get = (ref) => {
       gets += 1;
       return get(ref);
     };
-    expect(await snap.count()).toBe(GEN0.length);
+    const snap = await w.store.segment('s').pin(); // resolves the row, and opens the generation from it
+    expect(await snap.count()).toBe(GEN0.length); // served by the reader pin() opened
     expect(gets).toBe(1);
+    expect(await w.store.segment('other').has(7)).toBe(true); // evicts the pin's reader
+    gets = 0;
+    expect(await snap.count()).toBe(GEN0.length); // a reopen: one read of the row
+    expect(gets).toBe(1);
+  });
+
+  /** A backend holding `s` at generation 0, and a way to purge the name and load it again from outside the store. */
+  async function purgeable(ids: number[]) {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, ids, { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, [7], { registry });
+    const reload = async (next: number[]): Promise<void> => {
+      for await (const key of storage.list(REF)) await storage.delete(key);
+      await registry.delete(REF);
+      await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, next, { registry });
+    };
+    return { backend, reload };
+  }
+
+  it('a pin whose segment was purged and loaded again fails, rather than read the new one beside the old', async () => {
+    const OLD = [1, 2, C + 1, C + 2, 2 * C + 1];
+    const NEW = [1, 2, 3, C + 5, C + 6, C + 7, 2 * C + 5];
+    const w = await purgeable(OLD);
+    const store = new CloudRoaring({ storage: w.backend, cache: { readerMax: 1 } });
+    const snap = await store.segment('s').pin();
+    expect(await snap.has(1)).toBe(true); // caches chunk 0 of the old segment under the pin
+    await w.reload(NEW);
+    expect(await store.segment('other').has(7)).toBe(true); // evicts the pin's reader
+    // Its reopen finds another object at generation 0, and says so, for the shape and for every uncached chunk.
+    await expect(snap.count()).rejects.toThrow(NotFoundError);
+    await expect(collect(snap.iterate())).rejects.toThrow(
+      /no longer the object this handle pinned/,
+    );
+    await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
+    // A new pin holds the new segment, and reads it whole.
+    expect(await collect((await store.segment('s').pin()).iterate())).toEqual(NEW);
+  });
+
+  it('two pins of one generation in two incarnations never share a reader, even with no eviction between', async () => {
+    const w = await purgeable([1, 2, 3]);
+    const store = new CloudRoaring({ storage: w.backend });
+    const first = await store.segment('s').pin();
+    expect(await first.count()).toBe(3);
+    await w.reload([9]);
+    const second = await store.segment('s').pin();
+    expect([await second.count(), await second.has(9), await second.has(1)]).toEqual([
+      1,
+      true,
+      false,
+    ]);
+  });
+
+  it('combines two pins of one object taken either side of a write that moved the row, and refuses two incarnations', async () => {
+    const w = await purgeable([1, 2, 3]);
+    const store = new CloudRoaring({ storage: w.backend });
+    const before = await store.segment('s').pin();
+    await setSegmentRetention(
+      REF,
+      { registry: w.backend.registry },
+      { expiresAt: Date.now() + 86_400_000 },
+    );
+    const after = await store.segment('s').pin(); // the same generation and object, under a new row token
+    expect(await collect(before.intersect([after]))).toEqual([1, 2, 3]);
+    await w.reload([9]);
+    const other = await store.segment('s').pin();
+    await expect(collect(before.union([other]))).rejects.toThrow(/two incarnations of its name/);
+  });
+
+  it('refuses when the combine is read, not when it is made, as its other arguments are', async () => {
+    const w = await world({ cache: { genTtlMs: TTL } });
+    const snap0 = await w.store.segment('s').pin();
+    await w.publishGen1();
+    w.clock.advance(TTL);
+    const snap1 = await w.store.segment('s').pin();
+    const refused = snap0.andNot([snap1]); // no throw here
+    await expect(collect(refused)).rejects.toThrow(ValidationError);
+    // Nothing is written by a materialisation whose combine is refused.
+    const dest = w.store.segment('dest');
+    await expect(snap0.intersectInto(dest, [snap1])).rejects.toThrow(ValidationError);
+    expect(await dest.count()).toBe(0);
+  });
+
+  it('reads through a pin built by hand without a fingerprint, the shape a PinnedAt had before it gained one', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, GEN0, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    // Typed without a `fingerprint`: if the field became required again, this file would stop compiling.
+    const pin: PinnedAt = { generation: 0, version: await crbm.currentVersion(REF) };
+    const engine = new SegmentEngine({
+      storage: new PinnedStorageChunkSource(crbm, new Map([[segmentKey(REF), pin]])),
+      codec: roaringCodec,
+    });
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 1 }, GEN1, { registry });
+
+    expect(await engine.count(REF)).toBe(GEN0.length);
+    expect(await collect(engine.iterate(REF))).toEqual(GEN0);
+  });
+
+  it("retries pin()'s own read of the row, as the store's reads are retried", async () => {
+    const w = await world();
+    let faults = 1;
+    const get = w.registry.get.bind(w.registry);
+    w.registry.get = (ref) => {
+      if (faults > 0) {
+        faults -= 1;
+        return Promise.reject(new TransientError('registry blip'));
+      }
+      return get(ref);
+    };
+    const snap = await w.store.segment('s').pin();
+    expect(await snap.count()).toBe(GEN0.length);
+    expect(faults).toBe(0);
   });
 });

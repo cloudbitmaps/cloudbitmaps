@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -36,6 +36,11 @@ const EXTS = ['.ts', '.md', '.html', '.txt', '.cjs', '.mjs'];
 const GAP = String.raw`\s+(?:[>*#]\s*)?`;
 const g = (src: string): string => src.replace(/ /g, GAP);
 
+const NO_TIMED_REFRESH =
+  '`cache.genTtlMs: 0`, no clock or no registry turns off the timed refresh, and nothing more: the store still ' +
+  're-resolves on an eviction, a sweep of its generation, or an invalidation. Say "no timed refresh", and ' +
+  'point at `seg.pin()` for one instant';
+
 /** Phrases that describe behaviour this library used to have. Each carries what to say instead. */
 const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
@@ -54,15 +59,45 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     claim: new RegExp(g(String.raw`does \*\*not\*\* yet cover these verbs`), 'i'),
     why: 'the load guard covers the *Into verbs now',
   },
+  // A store with no timed refresh was called a pin — "pin forever", "pins the generation for its lifetime" —
+  // across the guide, both privacy notes, shipped doc-comments and the tests. It stopped being true once such a
+  // store still moved on: its reader cache evicting the segment, a sweep deleting the generation it holds, and an
+  // invalidation (its own `load`, `rollback` and `eraseSubject`, or `invalidate()`) each re-resolve it.
+  // `seg.pin()` is the one thing that holds a generation, and the copies taught readers to reach for
+  // `cache.genTtlMs: 0` instead. The verb may be bold: `**pins**` is how one copy escaped a first sweep.
+  {
+    claim: new RegExp(g(String.raw`\bpin(?:s|ned|ning)?[*_]* (?:[\w'-]+ ){0,3}forever\b`), 'i'),
+    why: NO_TIMED_REFRESH,
+  },
+  {
+    claim: new RegExp(
+      g(
+        String.raw`\b(?:pin(?:s|ned|ning)?|holds|held)\b[*_]* (?:[^.;:]{1,60}? )?(?:for|per) (?:[\w'-]+ ){0,2}lifetime\b`,
+      ),
+      'i',
+    ),
+    why: NO_TIMED_REFRESH,
+  },
+  {
+    claim: new RegExp(
+      String.raw`\b(?:pins|pinned|pinning)\b(?:(?!\.\s)[^;]){0,80}?genTtlMs:?\s*0\b|` +
+        String.raw`genTtlMs:?\s*0\b(?:(?!\.\s)[^;]){0,80}?\b(?:pins|pinned|pinning)\b`,
+      'i',
+    ),
+    why: NO_TIMED_REFRESH,
+  },
 ];
 
 /**
  * Files that DEFINE the rule and so must spell the retired phrases out — this one, and nothing else.
  * CHANGELOG.md is exempt as a whole: its old entries describe what was true when they were written, and
- * rewriting history to match today would make it a worse record.
+ * rewriting history to match today would make it a worse record. So is a calibration run's report, for the
+ * same reason and one more: `calibration-reports.test.ts` fails one that was edited after it was committed.
  */
 const DEFINES_THE_RULE = new Set([join('tests', 'docs', 'superseded-behaviour-claims.test.ts')]);
 const HISTORY = new Set(['CHANGELOG.md']);
+const isHistory = (rel: string): boolean =>
+  HISTORY.has(rel) || rel.startsWith(join('bench', 'calibration') + sep);
 
 function textFiles(): string[] {
   const out: string[] = [];
@@ -77,7 +112,7 @@ function textFiles(): string[] {
     }
   };
   walk('.');
-  return out.filter((f) => !DEFINES_THE_RULE.has(f) && !HISTORY.has(f));
+  return out.filter((f) => !DEFINES_THE_RULE.has(f) && !isHistory(f));
 }
 
 describe('no document claims behaviour this library has retired', () => {
@@ -92,12 +127,37 @@ describe('no document claims behaviour this library has retired', () => {
     expect(files.length).toBeGreaterThan(150);
   });
 
+  // Both directions: each retired form is caught however it wraps, and the sentences that must stay legal are not.
+  it.each([
+    'with `cache: { genTtlMs: 0 }` ("pin forever"), holds',
+    'instead of pinning one generation\n   * forever.',
+    'the source **pins** the\n   * first-resolved generation for its lifetime',
+    'holds its resolved snapshot for its own lifetime',
+    "the fixture pins a segment's generation for the store's lifetime",
+    '(pinned per source lifetime)',
+    "Each timed intersect now pins its store's pointers (`cache.genTtlMs: 0`)",
+  ])('catches the retired form %j', (text) => {
+    expect(RETIRED.some(({ claim }) => claim.test(text))).toBe(true);
+  });
+
+  it.each([
+    'Pass `purgeTombstones: false` to keep every tombstone forever',
+    '`seg.pin()` holds a segment at the generation current when you call it, for the life of the handle',
+    "a monotonic move forward within that segment's lifetime, never a torn object",
+    'a segment approaching ~2³² lifetime chunk-seals',
+    '`cache: { genTtlMs: 0 }` turns the timed refresh off. A pinned handle is what holds one generation',
+  ])('leaves %j alone', (text) => {
+    expect(
+      RETIRED.filter(({ claim }) => claim.test(text)).map(({ claim }) => claim.source),
+    ).toEqual([]);
+  });
+
   it.each(files)('%s', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
     const hits: string[] = [];
+    // Every hit, not the first of each: a file holding three copies should say so the first time it fails.
     for (const { claim, why } of RETIRED) {
-      const m = claim.exec(src);
-      if (m) {
+      for (const m of src.matchAll(new RegExp(claim.source, `${claim.flags}g`))) {
         const line = src.slice(0, m.index).split('\n').length;
         hits.push(`${rel}:${line} — "${m[0].replace(/\s+/g, ' ')}" is no longer true. ${why}`);
       }
