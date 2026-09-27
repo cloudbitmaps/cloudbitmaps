@@ -22,7 +22,8 @@ import { collect, loadedStore, seededStore } from '../helpers/loaded';
  * Anchors covered here: count() → 0 payload reads (cheap count), intersection byte-savings, at-rest ≤10% of
  * Redis-HA, the read-crossover vs the published rates, and the estimator never understating the chunk GETs the
  * engine actually issued for point reads — chunk reads only: a single-bucket store's pointer and tail reads are not
- * counted by the metrics sink, and the estimator has no term for them yet.
+ * counted by the metrics sink. `tests/core/cost.test.ts` holds the estimator's count of those, and of what a load
+ * and the pointer refresh cost, to the requests the engine makes instead.
  */
 
 const SECONDS_PER_MONTH = 730 * 3600; // matches the estimator's convention

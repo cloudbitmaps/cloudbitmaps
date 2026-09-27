@@ -134,6 +134,17 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     }
   });
 
+  // The cost model prices a GCS pointer read as two requests (`requestsPerSizedRead: 2`): the metadata carries the
+  // generation fence and the size, then a pinned download. Held here, so the model moves if the driver does.
+  it('reads a row in two requests: the metadata, then the pinned download', async () => {
+    const storage = new FakeGcs();
+    const d = driverOver(storage);
+    await d.create(ref, { currentGen: 0 });
+    const before = storage.reads;
+    await d.get(ref);
+    expect(storage.reads - before).toBe(2);
+  });
+
   it('advertises strongRead', () => {
     const storage = new FakeGcs() as unknown as Storage;
     expect(new GcsRegistryDriver({ storage, bucket: 'b' }).capabilities()).toEqual({
