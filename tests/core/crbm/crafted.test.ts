@@ -308,4 +308,12 @@ describe('crafted (hostile) index — reader-side guards', () => {
     expect(other.length).toBe(bytes.length);
     expect(await CrbmReader.sameObject(blob, (await open(other)).fingerprint)).toBe(false);
   });
+
+  it('tells an object whose size is a prefix of the pinned size apart by its size alone', async () => {
+    const bytes = wellFormed({});
+    const pinned = (await open(bytes)).fingerprint;
+    const size = String(bytes.length);
+    const shorter = new Uint8Array(Number(size.slice(0, -1))); // 194 bytes pinned, 19 bytes now
+    expect(await CrbmReader.sameObject(new BufferReader(shorter), pinned)).toBe(false);
+  });
 });

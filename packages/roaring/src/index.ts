@@ -1886,11 +1886,12 @@ export class Segment {
    * decoded for as long as they stay cached.** This store invalidates a pin:
    *
    * - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
-   * - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment it retires,
-   *   neither on a dry run;
+   * - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment its ledger
+   *   lists, retired or not, neither on a dry run;
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
-   * An invalidated pin opens its object again, and fails if that object is gone, or its row is gone or destroyed.
+   * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
+   * destroyed.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or

@@ -1656,4 +1656,272 @@ describe('what a pin found out about its object, and how it forgets', () => {
     await expect(snap.has(C + 1)).rejects.toThrow(NotFoundError);
     expect(await snap.has(C + 1)).toBe(true);
   });
+  /** A backend holding OLD as generation 0 of `s` with its registry, and a store over it whose calls are recorded. */
+  async function recorded(cache?: CacheOptions) {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    await bulkLoadCrbmGeneration(backend.storage, { segment: 'other', generation: 0 }, [7], {
+      registry: backend.registry,
+    });
+    const calls: string[] = [];
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counted(backend.storage, 'storage', calls),
+        registry: counted(backend.registry, 'registry', calls),
+      }),
+      ...(cache === undefined ? {} : { cache }),
+    });
+    return { backend, calls, store };
+  }
+
+  /** A promise and the function that settles it. */
+  function latch(): { open: () => void; opened: Promise<void> } {
+    let open = (): void => undefined;
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    return { open, opened };
+  }
+
+  /** Holds the next tail read of `storage`, once it has read, until `release` is called. */
+  function holdNextTail(storage: MemoryStorage['storage']) {
+    const tail = storage.getTail.bind(storage);
+    const reached = latch();
+    const released = latch();
+    storage.getTail = async (key, maxBytes) => {
+      storage.getTail = tail;
+      const got = await tail(key, maxBytes);
+      reached.open();
+      await released.opened;
+      return got;
+    };
+    return { reached: reached.opened, release: released.open };
+  }
+
+  it('keeps what it found against a pin through the pin taken next, which holds the object under the key', async () => {
+    const { backend, calls, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    // A pin taken now, with no invalidation, holds what is under the key now, not the reader found replaced…
+    const next = await store.segment('s').pin();
+    expect(await collect(next.iterate())).toEqual(NEW);
+    // …and taking it forgot nothing the store found against the first: its reads still cost no request.
+    calls.length = 0;
+    await expect(first.has(2 * C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(calls).toEqual([]);
+  });
+
+  it('lets a check of a reader finish when a pin that joins that reader is taken meanwhile', async () => {
+    const { backend, calls, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    const { reached, release } = holdNextTail(backend.storage);
+    const read = first.has(C + 1).then(
+      () => 'read',
+      (err: Error) => err.message,
+    );
+    await reached; // a chunk read failed on the replacing object's bytes, and its footer check has read
+    await store.segment('s').pin(); // joins the reader under check, having read nothing of its own
+    release();
+    expect(await read).toMatch(NOT_PINNED);
+    calls.length = 0;
+    await expect(first.has(2 * C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(calls).toEqual([]); // what the check found was kept
+  });
+
+  it("keeps the reader a pin shares with a replaced pin's reopen, so its first read is a chunk read alone", async () => {
+    const { backend, calls, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    store.invalidate(REF);
+    const { reached, release } = holdNextTail(backend.storage);
+    const read = first.has(C + 1).then(
+      () => 'read',
+      (err: Error) => err.message,
+    );
+    await reached; // the replaced pin's reopen has installed its reader, of the object that replaced the pinned one
+    const joining = store.segment('s').pin(); // with a registry, the pins of one version share that open
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    const [outcome, next] = await Promise.all([read, joining]);
+    expect(outcome).toMatch(NOT_PINNED);
+    calls.length = 0;
+    expect(await next.has(C + 3)).toBe(true);
+    expect(calls).toEqual(['storage.getRange']);
+  });
+
+  it('remembers a replacement its reopen finds though the reader cache evicts the reopen meanwhile', async () => {
+    const { backend, calls, store } = await recorded({ readerMax: 1 });
+    const snap = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    store.invalidate(REF);
+    const { reached, release } = holdNextTail(backend.storage);
+    const read = snap.has(C + 1).then(
+      () => 'read',
+      (err: Error) => err.message,
+    );
+    await reached;
+    expect(await store.segment('other').has(7)).toBe(true); // a live read, which evicts the reopen's reader
+    release();
+    expect(await read).toMatch(NOT_PINNED);
+    calls.length = 0;
+    await expect(snap.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(calls).toEqual([]);
+  });
+
+  it("leaves another pin's reader of its version in place when a replaced pin reads through it", async () => {
+    const { backend, calls, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    store.invalidate(REF);
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    const second = await store.segment('s').pin(); // of the object now under the key
+    expect(await second.has(C + 3)).toBe(true);
+    store.invalidate(REF); // forgets what was found against the first, and drops the second's reader
+    const third = await store.segment('s').pin(); // opens the same object again, and keeps its reader
+    expect(third.pinnedAt?.fingerprint).toBe(second.pinnedAt?.fingerprint);
+    // The first pin now reads through the third's reader, which it did not open, and must leave it to the third.
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    calls.length = 0;
+    expect(await third.has(2 * C + 3)).toBe(true);
+    expect(calls).toEqual(['storage.getRange']);
+  });
+
+  it('lets a check an invalidation forgot neither end the check asked for since, nor keep what it found', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    const mine = await wholeOf(storage);
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    const pin = await crbm.pinGeneration(REF);
+    if (pin === null) throw new Error('the fixture pins generation 0');
+    await putObject(storage, await objectOf(NEW));
+    // Tail reads in order: the first check's footer read, the reopen after the invalidation, and the second check's
+    // footer read. The two checks are held once they have read.
+    const tail = storage.getTail.bind(storage);
+    const first = { reached: latch(), released: latch() };
+    const second = { reached: latch(), released: latch() };
+    let n = 0;
+    storage.getTail = async (key, maxBytes) => {
+      const which = n++;
+      const got = await tail(key, maxBytes);
+      const check = which === 0 ? first : which === 2 ? second : undefined;
+      if (check !== undefined) {
+        check.reached.open();
+        await check.released.opened;
+      }
+      return got;
+    };
+    // The pinned reader reads chunk 1 of the object that replaced its own, and its check reads that one's footer.
+    const a = crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, pin).then(
+      () => 'read',
+      (err: Error) => err.message,
+    );
+    await first.reached.opened;
+    await putObject(storage, mine); // a restore, and the store told of it: the first check is forgotten
+    crbm.invalidate(REF);
+    const range = storage.getRange.bind(storage);
+    let damaged = 1;
+    storage.getRange = async (key, offset, length) => {
+      const bytes = await range(key, offset, length);
+      if (damaged-- <= 0) return bytes;
+      return Uint8Array.from(bytes, (b, i) => (i === 0 ? b ^ 0xff : b));
+    };
+    // The reopen reads the restored object; one damaged chunk read then asks a second check.
+    const b = crbm.getChunkAt({ ...REF, chunkKey: 2 }, 0, pin).then(
+      () => 'read',
+      (err: Error) => err.name,
+    );
+    await second.reached.opened;
+    first.released.open(); // the forgotten check ends while the second is the one asked for
+    expect(await a).toMatch(NOT_PINNED);
+    second.released.open();
+    expect(await b).toBe('IntegrityError'); // the same object, read damaged
+    // Nothing the forgotten check found may stand: the object under the key is the pinned one again.
+    expect(await crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, pin)).not.toBeNull();
+  });
+
+  it('ends a check that finds the same object, so a replacement found later is remembered', async () => {
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+    });
+    const store = new CloudRoaring({ storage: backend, retry: false });
+    const snap = await store.segment('s').pin();
+    const range = backend.storage.getRange.bind(backend.storage);
+    let damaged = 1;
+    backend.storage.getRange = async (key, offset, length) => {
+      const bytes = await range(key, offset, length);
+      if (damaged-- <= 0) return bytes;
+      return Uint8Array.from(bytes, (b, i) => (i === 0 ? b ^ 0xff : b));
+    };
+    await expect(snap.has(C + 1)).rejects.toThrow(IntegrityError); // damage: the footer names the pinned object
+    await putObject(backend.storage, await objectOf(NEW));
+    await expect(snap.has(2 * C + 1)).rejects.toThrow(NOT_PINNED);
+  });
+
+  it('pays for no footer read for a pin built with no fingerprint, on a chunk read or on a reopen', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    const crbm = new CrbmStorageChunkSource(storage, { registry });
+    const pinned = await crbm.pinGeneration(REF);
+    const byHand = { version: pinned?.version ?? '' };
+    let tails = 0;
+    const tail = storage.getTail.bind(storage);
+    storage.getTail = (key, maxBytes) => {
+      tails += 1;
+      return tail(key, maxBytes);
+    };
+    storage.getRange = () => Promise.reject(new IntegrityError('bad bytes'));
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).rejects.toThrow('bad bytes');
+    expect(tails).toBe(0);
+    crbm.invalidate(REF);
+    tails = 0;
+    let damaged = 1;
+    storage.getTail = async (key, maxBytes) => {
+      tails += 1;
+      const got = await tail(key, maxBytes);
+      if (damaged-- <= 0) return got;
+      const bytes = Uint8Array.from(got.bytes);
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff; // the reopen reads a damaged footer
+      return { bytes, size: got.size };
+    };
+    await expect(crbm.getChunkAt({ ...REF, chunkKey: 1 }, 0, byHand)).rejects.toThrow(
+      IntegrityError,
+    );
+    expect(tails).toBe(1); // the reopen's own tail read, and no check after it
+  });
+
+  it.each(['NotFoundError', 'TransientError'] as const)(
+    "makes no footer read when a reopen fails with another copy of core's %s",
+    async (name) => {
+      const backend = new MemoryStorage();
+      await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+        registry: backend.registry,
+      });
+      const store = new CloudRoaring({ storage: backend, retry: false });
+      const snap = await store.segment('s').pin();
+      store.invalidate(REF);
+      // Branded as core brands its errors, by `Symbol.for`, and no instance of this copy's classes.
+      const foreign = Object.assign(Object.create(Error.prototype) as Error, {
+        name,
+        message: `foreign ${name}`,
+        [Symbol.for('cloud-roaring.error')]: true,
+        ...(name === 'TransientError'
+          ? { [Symbol.for('cloud-roaring.error.transient')]: true }
+          : {}),
+      });
+      let tails = 0;
+      let failing = 1;
+      const tail = backend.storage.getTail.bind(backend.storage);
+      backend.storage.getTail = (key, maxBytes) => {
+        tails += 1;
+        return failing-- > 0 ? Promise.reject(foreign) : tail(key, maxBytes);
+      };
+      await expect(snap.has(C + 1)).rejects.toThrow(`foreign ${name}`);
+      expect(tails).toBe(1); // the reopen's own tail read, and no footer check
+    },
+  );
 });

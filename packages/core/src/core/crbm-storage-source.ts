@@ -209,6 +209,13 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * read. One forgotten before it ends, by {@link invalidate} or a pin, keeps nothing it finds.
    */
   private readonly checking = new Map<string, Promise<boolean>>();
+  /**
+   * How many times {@link invalidate} has run, so a read that waited can tell whether the store was told something
+   * meanwhile. An eviction from the reader cache is not an invalidation, and what a read found stands through one. It
+   * counts every segment's invalidations: a read that waited through another segment's only costs a later read the
+   * check again.
+   */
+  private invalidations = 0;
   private readonly registry: IRegistryDriver | undefined;
   private readonly keystore: IKeystore | undefined;
   private readonly requireEncryption: boolean;
@@ -383,6 +390,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * storage side can close the window; with no registry, no clock or `cache.genTtlMs: 0`, nothing bounds it at all.
    */
   invalidate(ref: SegmentRef): void {
+    this.invalidations += 1;
     const key = segmentKey(ref);
     this.snapshots.delete(key);
     // …and every PINNED reader of the same segment, which is memoized under `<key>@<generation>`. Dropping
@@ -448,8 +456,8 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     ref: SegmentRef,
   ): Promise<({ generation: number } & Required<PinnedObject>) | null> {
     // Resolved FRESH, not through the snapshot memo. "The generation current right now" is the whole promise
-    // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no clock,
-    // arbitrarily far behind, since nothing refreshes it on a timer. Pinning through it made a pin on such a store
+    // of a pin, and the memo is allowed to be up to `cache.genTtlMs` behind — or, on a store with no timed refresh,
+    // arbitrarily far behind. Pinning through it made a pin on such a store
     // return whatever generation the store happened to hold, however old.
     const target = await this.resolveTarget(ref);
     if (target === null) return null;
@@ -462,22 +470,44 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
     // while the store keeps the reader. Without a registry the version is the bare generation number, which two
     // incarnations share, so every pin opens the object afresh and reads its fingerprint.
     let reader: CrbmReader | null;
+    let opened = true;
     if (target.lineage === undefined) {
       reader = await this.openForTarget(ref, target);
       this.install(this.pinnedKey(ref, version, reader.fingerprint), Promise.resolve(reader));
     } else {
+      const epoch = this.invalidations;
       const key = this.pinnedKey(ref, version);
-      reader = await (this.snapshots.get(key) ?? this.install(key, this.openForTarget(ref, target)))
-        .reader;
+      let entry = this.snapshots.get(key);
+      opened = entry === undefined;
+      entry ??= this.install(key, this.openForTarget(ref, target));
+      reader = await entry.reader;
       // A pinned read's reopen of this version, already under way, found the row gone or destroyed: the segment
       // resolves no generation now, so this pin pins nothing, as one taken a moment later would.
       if (reader === null) return null;
+      // The open this pin shared can be gone by now: a replaced pin's reopen removes the reader it opened. With no
+      // invalidation in between, that reader is still of the object under the key, and this pin keeps it memoised.
+      if (this.invalidations === epoch && this.snapshots.peek(key) === undefined) {
+        this.install(key, Promise.resolve(reader));
+      }
+      // A memoised reader is of the object that was under the key when it was opened. One the store has since found
+      // replaced is not what is there now, so this pin opens the object afresh rather than pin a replaced one.
+      if (
+        !opened &&
+        this.replacedPins.get(this.heldKey(ref, version, reader.fingerprint)) !== undefined
+      ) {
+        if (this.snapshots.peek(key) === entry) this.snapshots.delete(key);
+        reader = await this.install(key, this.openForTarget(ref, target)).reader;
+        if (reader === null) return null;
+        opened = true;
+      }
     }
-    // The object under the key is this one now, whatever was found there before: a restore puts back what a
-    // replacement took, and a verdict kept against it would fail this pin's reads.
-    const held = this.heldKey(ref, version, reader.fingerprint);
-    this.replacedPins.delete(held);
-    this.checking.delete(held);
+    // Only an open this call made has read what is under the key. The object there is that one now, whatever was
+    // found before: a restore puts back what a replacement took, and a verdict kept against it would fail this pin.
+    if (opened) {
+      const held = this.heldKey(ref, version, reader.fingerprint);
+      this.replacedPins.delete(held);
+      this.checking.delete(held);
+    }
     return { generation: target.generation, version, fingerprint: reader.fingerprint };
   }
 
@@ -536,6 +566,7 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
   ): Promise<CrbmReader | null> {
     const at = version ?? String(generation);
     const key = this.pinnedKey(ref, at, fingerprint);
+    const epoch = this.invalidations;
     let entry = this.snapshots.get(key);
     const opening = entry === undefined;
     if (entry === undefined) {
@@ -569,13 +600,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       );
     }
     if (fingerprint !== undefined && reader.fingerprint !== fingerprint) {
-      // Kept only while what this read opened is still installed: an invalidation since forgot the segment's
-      // verdicts, as after a restore, and this one is from before it. What this read opened is the object now under
-      // the key, which is not the pin's: left memoised under the pin's key, it would hold a place in the reader
-      // cache, and the key it unwrapped, for reads that can only fail.
-      if (this.snapshots.peek(key) === entry) {
+      // Kept only if nothing was invalidated while this read waited: an invalidation forgets the segment's verdicts,
+      // as after a restore, and this one is from before it. An eviction from the reader cache is no reason to
+      // forget it. What this read opened is the object now under the key, which is not the pin's: left memoised
+      // under the pin's key, it would hold a place in the reader cache, and the key it unwrapped, for reads that
+      // can only fail.
+      if (this.invalidations === epoch) {
         this.replacedPins.set(this.heldKey(ref, at, fingerprint), true);
-        if (opening) this.snapshots.delete(key);
+        if (opening && this.snapshots.peek(key) === entry) this.snapshots.delete(key);
       }
       throw notThePinned(ref, generation);
     }
