@@ -126,9 +126,17 @@ produced the package they installed**. The controls:
   version, or the release fails.
 - **Reproducible, frozen installs.** Both CI and the release build use `pnpm install --frozen-lockfile` (fails
   on a stale lockfile). Consumers get the same guarantee with **`npm ci`** against a committed lockfile.
-- **SHA-pinned GitHub Actions.** Every `uses:` in every workflow is pinned to a **full commit SHA** (with a
-  `# vX` comment for readability), so a hijacked or force-moved tag on a third-party Action cannot inject code
-  into our build. Bumps are deliberate (Dependabot's `github-actions` ecosystem, monthly + grouped).
+- **SHA-pinned GitHub Actions.** Every third-party `uses:`, in every workflow and in the composite actions under
+  `.github/actions/`, is pinned to a **full commit SHA** (with a `# vX` comment for readability), so a hijacked or
+  force-moved tag on a third-party Action cannot inject code into our build. A local action
+  (`uses: ./.github/actions/…`) is read from the same commit as the workflow that uses it, so it has no tag to move.
+  Bumps are deliberate (Dependabot's `github-actions` ecosystem, monthly + grouped, over the workflows and the
+  composite actions).
+- **The Actions cache is trusted like the code.** CI restores pnpm's store and the container images its jobs run
+  from the Actions cache, and runs what it restores. Only runs on `main` write entries every run can restore; a pull
+  request's runs write entries only its own later runs read. So after anything untrusted has run in a workflow on
+  `main`, such as a compromised dependency or Action, delete every cache entry (`gh cache delete --all`) as well as
+  reverting it: an entry it wrote would be restored by later runs.
 - **The native addon, from source (optional, for the most cautious).** CloudBitmaps ships **pure JS/TS** — the
   only native code is its runtime dependency **`roaring`** (CRoaring), which the *consumer* installs. Consumers
   who prefer not to trust `roaring`'s prebuilt binary can build it **from source** at install time

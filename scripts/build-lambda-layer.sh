@@ -28,6 +28,7 @@ command -v docker >/dev/null 2>&1 || {
 # shellcheck source=scripts/lib/docker-pull.sh
 . "$ROOT/scripts/lib/docker-pull.sh"
 docker_pull_with_backoff "$IMAGE"
+RUN_IMAGE="$(docker_image_run_name "$IMAGE")" # a copy loaded from the cache runs by this name
 
 echo "build-lambda-layer: build + pack"
 pnpm build >/dev/null
@@ -58,7 +59,7 @@ mkdir -p "$OUT"
 # Mount the tarball read-only and an output dir read-write; build + zip the layer inside the AL2023 runtime.
 echo "build-lambda-layer: install (from source) + zip inside $IMAGE"
 docker run --rm --entrypoint bash \
-  -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$OUT:/out" "$IMAGE" -lc '
+  -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$OUT:/out" "$RUN_IMAGE" -lc '
     set -e
     # Same treatment as the npm line below, and for the same reason: this is a network fetch from a
     # shared runner IP, and suppressed-with-no-retry is how a throttled AL2023 mirror reds the gate

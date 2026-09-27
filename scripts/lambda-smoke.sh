@@ -29,6 +29,7 @@ command -v docker >/dev/null 2>&1 || {
 # shellcheck source=scripts/lib/docker-pull.sh
 . "$ROOT/scripts/lib/docker-pull.sh"
 docker_pull_with_backoff "$IMAGE"
+RUN_IMAGE="$(docker_image_run_name "$IMAGE")" # a copy loaded from the cache runs by this name
 
 echo "lambda-smoke: build + pack the codec and the engine"
 pnpm build >/dev/null
@@ -61,7 +62,7 @@ trap 'rm -rf "$PACKDIR"' EXIT
 # /var/folders is NOT shared). We only read the tarball + the in-container script; the install writes to a
 # container-local temp dir.
 echo "lambda-smoke: install + run inside $IMAGE"
-docker run --rm --entrypoint bash -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$ROOT/scripts/lambda-smoke.mjs:/w/lambda-smoke.mjs:ro" "$IMAGE" -lc '
+docker run --rm --entrypoint bash -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w/core.tgz:ro" -v "$ROARING_TGZ:/w/roaring.tgz:ro" -v "$ROOT/scripts/lambda-smoke.mjs:/w/lambda-smoke.mjs:ro" "$RUN_IMAGE" -lc '
   set -e
   # Provide the toolchain so roaring compiles for the target, and FORCE the build-from-source path
   # (npm_config_build_from_source=true) rather than relying on the absence of a prebuilt — this both guarantees

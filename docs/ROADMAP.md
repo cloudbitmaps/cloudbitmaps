@@ -136,7 +136,7 @@ is a dependency of both and is never installed directly. The storage drivers are
   previewable (`dryRun`), shardable across replicas, reports a per-segment ledger instead of throwing, and
   cleans up the tombstone rows its own retirements leave. Setting a policy before the first load mints the
   registry row, so the policy is recorded ahead of the data.
-- **Supply chain** — every GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
+- **Supply chain** — every third-party GitHub Action SHA-pinned, a blocking dependency audit, npm **build provenance**
   on publish, and continuous coverage-guided fuzzing over the untrusted-`.crbm` boundary (nightly, plus a
   weekly deep run).
 - Reporting: [`SECURITY.md`](../SECURITY.md). The trust boundary, retention/residency contracts, and a
