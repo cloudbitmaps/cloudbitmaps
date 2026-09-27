@@ -1969,6 +1969,90 @@ describe('what a pin found out about its object, and how it forgets', () => {
     await expect(b.has(2 * C + 1)).rejects.toThrow(NotFoundError);
   });
 
+  it('pins the object under the key when the reader cache evicts the replaced one while the pin resumes', async () => {
+    // Every interleaving of the pin with an unrelated read that evicts it, one microtask apart.
+    const failing: string[] = [];
+    for (let hops = 0; hops < 40; hops += 1) {
+      const { backend, store } = await recorded({ readerMax: 1 });
+      const first = await store.segment('s').pin();
+      await putObject(backend.storage, await objectOf(NEW));
+      await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+      const evicting = async (): Promise<boolean> => {
+        for (let i = 0; i < hops; i += 1) await null;
+        return store.segment('other').has(7);
+      };
+      const [pin] = await Promise.all([store.segment('s').pin(), evicting()]);
+      const read = await pin.has(C + 3).then(String, (err: Error) => err.name);
+      if (read !== 'true') failing.push(`${hops}: ${read}`);
+    }
+    expect(failing).toEqual([]);
+  });
+
+  it('opens afresh when the reader another pin put back under the key is the replaced one', async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    const held = await source.pinGeneration(REF);
+    if (held === null) throw new Error('no pin');
+    await putObject(storage, await objectOf(NEW));
+    await expect(source.getChunkAt({ ...REF, chunkKey: 1 }, 0, held)).rejects.toThrow(NOT_PINNED);
+    // As a pin that resumed before the replacement was found would: the replaced reader, put back in a new entry
+    // while the next pin waits on the old one.
+    type Memo = {
+      get(key: string): unknown;
+      peek(key: string): unknown;
+      delete(key: string): void;
+    };
+    const inner = source as unknown as {
+      snapshots: Memo;
+      install(key: string, reader: Promise<unknown>): unknown;
+    };
+    const key = `${segmentKey(REF)}@${held.version}`;
+    const get = inner.snapshots.get.bind(inner.snapshots);
+    inner.snapshots.get = (k: string) => {
+      const entry = get(k) as { reader: Promise<unknown> } | undefined;
+      if (k === key && entry !== undefined) {
+        inner.snapshots.get = get;
+        queueMicrotask(() => {
+          inner.snapshots.delete(key);
+          inner.install(key, entry.reader);
+        });
+      }
+      return entry;
+    };
+    const next = await source.pinGeneration(REF);
+    expect(next?.fingerprint).not.toBe(held.fingerprint);
+    await expect(
+      source.getChunkAt({ ...REF, chunkKey: 1 }, 0, next ?? undefined),
+    ).resolves.toBeDefined();
+  });
+
+  it("drops a replaced reopen's reader when another segment's invalidation lands while it runs", async () => {
+    const backend = new MemoryStorage();
+    const { storage, registry } = backend;
+    await bulkLoadCrbmGeneration(storage, { ...REF, generation: 0 }, OLD, { registry });
+    await bulkLoadCrbmGeneration(storage, { segment: 'other', generation: 0 }, [7], { registry });
+    const source = new CrbmStorageChunkSource(storage, { registry });
+    const held = await source.pinGeneration(REF);
+    if (held === null) throw new Error('no pin');
+    await putObject(storage, await objectOf(NEW));
+    source.invalidate(REF); // so the next pinned read reopens, and finds the object replaced
+    const { reached, release } = holdNextTail(storage);
+    const read = source.getChunkAt({ ...REF, chunkKey: 1 }, 0, held).then(
+      () => 'read',
+      (err: Error) => err.message,
+    );
+    await reached;
+    source.invalidate({ segment: 'other' });
+    release();
+    expect(await read).toMatch(NOT_PINNED);
+    // The reader it opened is of the object under the key now, not the pin's: kept, it would hold a place in the
+    // reader cache for reads that can only fail.
+    const memo = (source as unknown as { snapshots: { peek(key: string): unknown } }).snapshots;
+    expect(memo.peek(`${segmentKey(REF)}@${held.version}`)).toBeUndefined();
+  });
+
   it('keeps the fresh reader a pin installs while an evicted reopen is still under way', async () => {
     const { backend, calls, store } = await recorded({ readerMax: 1 });
     const first = await store.segment('s').pin();

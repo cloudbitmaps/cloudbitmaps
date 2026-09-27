@@ -1891,16 +1891,18 @@ export class Segment {
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
    * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
-   * destroyed. A replacement a pin has found is remembered, so its later reads fail with no request, until the store
-   * forgets it: an invalidation of the segment does, as does a later `pin()` of the same version that opens the object
-   * again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back,
-   * call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again.
+   * destroyed.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
    * {@link CloudRoaring.invalidate} is called on this store. Where the
    * object the pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at
    * once. No timed refresh bounds any of that, as none bounds anything else a pin holds.
+   *
+   * A replacement a pin has found is remembered, so its later chunk reads fail with no request, until the store
+   * forgets it: an invalidation of the segment does, as does a later `pin()` of the same version that opens the object
+   * again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back,
+   * call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again.
    *
    * `pin()` reads the registry row and opens the generation at once, so the pin knows its object before its first
    * read. With a registry, pins of one generation taken while its row is unchanged share one reader while the store

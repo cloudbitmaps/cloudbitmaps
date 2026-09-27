@@ -175,8 +175,8 @@ four things re-resolve a segment part-way through one, and its later chunks then
 current. They are a `cache.genTtlMs` boundary after a publish; the reader cache evicting an operand; a sweep
 collecting the generation it was reading, which heals the read forward; and an invalidation, which the store's own
 `load`, `rollback`, `eraseSubject` and `*Into` make and `invalidate()` makes on request. `dropSegment` and
-`retireExpired` invalidate too: a read of a segment they retire ends rather than moves on, and a read of one
-`retireExpired` lists but skips moves on. The timed refresh needs a
+`retireExpired` invalidate too: a read of a segment that then no longer resolves ends rather than moves on, and a
+read of one `retireExpired` lists but leaves live moves on. The timed refresh needs a
 `registry` and a `cache.genTtlMs` above 0 (default 2000 ms): after a load publishes, such a store serves the previous
 generation for at most that long, then converges. The cache is keyed by generation, so a new generation is never
 served from stale decoded chunks. To read one instant, pin: `seg.pin()`.

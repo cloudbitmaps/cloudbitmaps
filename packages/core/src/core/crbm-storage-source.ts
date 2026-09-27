@@ -485,27 +485,34 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       // A pinned read's reopen of this version, already under way, found the row gone or destroyed: the segment
       // resolves no generation now, so this pin pins nothing, as one taken a moment later would.
       if (reader === null) return null;
-      // The open this pin shared can be gone by now: a replaced pin's reopen removes the reader it opened. With no
-      // invalidation in between, that reader is still of the object under the key, and this pin keeps it memoised.
-      if (this.invalidations === epoch && this.snapshots.peek(key) === undefined) {
-        this.install(key, Promise.resolve(reader));
-      }
+      const replaced = (r: CrbmReader) =>
+        this.replacedPins.get(this.heldKey(ref, version, r.fingerprint)) !== undefined;
       // A memoised reader is of the object that was under the key when it was opened. One the store has since found
       // replaced is not what is there now, so this pin opens the object afresh rather than pin a replaced one, and
       // pins taken at the same moment share that one open. The replaced pin's reader goes from the memo with it, so
       // that pin's index answers, its `count()` among them, end here: what is under its key is another object now.
-      if (
-        !opened &&
-        this.replacedPins.get(this.heldKey(ref, version, reader.fingerprint)) !== undefined
-      ) {
+      const known = !opened && replaced(reader);
+      // The open this pin shared can be gone by now: a replaced pin's reopen removes the reader it opened, and the
+      // reader cache can evict it. With no invalidation in between, and no replacement found, that reader is still of
+      // the object under the key, and this pin keeps it memoised.
+      if (!known && this.invalidations === epoch && this.snapshots.peek(key) === undefined) {
+        this.install(key, Promise.resolve(reader));
+      }
+      if (known) {
         const current = this.snapshots.peek(key);
-        const fresh =
+        let fresh =
           current !== undefined && current !== entry
             ? current
             : this.install(key, this.openForTarget(ref, target));
         reader = await fresh.reader;
         // A reopen of this version, already under way, found the row gone or destroyed.
         if (reader === null) return null;
+        // What another pin put there can be the replaced reader too, put back before its verdict was known.
+        if (fresh === current && replaced(reader)) {
+          fresh = this.install(key, this.openForTarget(ref, target));
+          reader = await fresh.reader;
+          if (reader === null) return null;
+        }
         opened = fresh !== current;
       }
     }

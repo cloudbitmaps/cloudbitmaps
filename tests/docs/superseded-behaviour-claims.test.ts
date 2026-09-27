@@ -55,7 +55,9 @@ const EXTS = [
  * a claim in two paragraphs into one hit.
  */
 // A gap takes its whole run of blanks: a run a pattern could split among its parts costs a scan per way to split it.
-const GAP = String.raw`(?:[^\S\n]+|[^\S\n]*\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?)(?![^\S\n])`;
+// One that crosses a line end ends at text, never at a margin or a second line end, so it cannot stop inside a blank
+// line, where nothing after it would see the blank.
+const GAP = String.raw`(?:[^\S\n]+(?![^\S\n]|\n)|[^\S\n]*\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?(?![\s>*#]|\/\/))`;
 const g = (src: string): string => src.replace(/ /g, GAP);
 
 const NO_TIMED_REFRESH =
@@ -91,6 +93,8 @@ const codePoint = (entity: string, n: number): string => {
 /** A tag that ends a block or a positioned run of text, so the words either side of it are two words. */
 const BLOCK_TAG =
   /^<\/?(?:text|tspan|td|th|tr|li|p|div|h[1-6]|dt|dd|blockquote|section|title|desc)\b/i;
+/** Of those, a tag that ends a block of its own, so the words either side of it are two sentences. A row's cells pair. */
+const BREAK_TAG = /^<\/?(?:tr|li|p|div|h[1-6]|dt|dd|blockquote|section)\b/i;
 /** An attribute whose value a reader is shown, and so reads. */
 const SHOWN_ATTRIBUTE = /\b(?:content|alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
@@ -108,7 +112,7 @@ const plain = (src: string): string =>
     // or shown too.
     .replace(/<\/?[a-z][^<>]*>/gi, (tag) => {
       // A tag that ends a block or a positioned run of text, `</td>` or `</text>`, is the gap between two words.
-      let shown = BLOCK_TAG.test(tag) ? ' ' : '';
+      let shown = BREAK_TAG.test(tag) ? '. ' : BLOCK_TAG.test(tag) ? ' ' : '';
       let read = 0; // how much of the tag is behind us
       for (const a of tag.matchAll(SHOWN_ATTRIBUTE)) {
         const value = a[1] ?? a[2] ?? '';
@@ -209,18 +213,19 @@ const TTL_ZERO = String.raw`(?:(?:genTtlMs|\bTTL)(?:\s*[:=]\s*|[^\S\n]*\|[^\S\n]
  * An alternative whose first word is common opens on the rarer word it must have, and looks back for the first: the
  * same words, found in a fraction of the time.
  */
-const NO_TIMED_REFRESH_SUBJECT = String.raw`(?:${TTL_ZERO}|\b(?:no|neither(?: an?| the| any)?|without (?:an?|the|any)) (?:injected )?(?:seams\.)?(?:clock|registry|backend)\b(?! (?:reads?|calls?|requests?|round trips?|writes?)\b)|\b(?:registry|clock)-?less\b|\bno-(?:registry|clock)\b|\b(?:bare|raw|plain)-driver\b|\bIStorageDriver\b(?<=\b(?:bare|raw|plain) IStorageDriver)|\bno timed refresh\b|\btimed refresh(?: (?:is |turned |switched )?(?:off|disabled)\b|(?<=\b(?:disabl(?:e|es|ed|ing)|turn(?:s|ed|ing)? off|switch(?:es|ed|ing)? off) (?:the |its |their )?timed refresh)))`;
+const NO_TIMED_REFRESH_SUBJECT = String.raw`(?:${TTL_ZERO}|\b(?:no|neither(?: an?| the| any)?|without (?:an?|the|any)) (?:injected )?(?:clock|registry|backend)\b(?! (?:reads?|calls?|requests?|round trips?|writes?)\b(?! (?:the|its|a|an|no|one|each|every|nothing)\b))|\b(?:registry|clock)-?less\b|\bno-(?:registry|clock)\b|\b(?:bare|raw|plain)-driver\b|\bIStorageDriver\b(?<=\b(?:bare|raw|plain) IStorageDriver)|\bno timed refresh\b|\btimed refresh(?: (?:is |turned |switched )?(?:off|disabled)\b|(?<=\b(?:disabl(?:e|es|ed|ing)|turn(?:s|ed|ing)? off|switch(?:es|ed|ing)? off) (?:the |its |their )?timed refresh)))`;
 /** The end of a table row: its last cell's edge and the line end after it, or a line end before another row. */
 const ROW_END = String.raw`\|[^\S\n]*(?:\n|$)|\n(?=[^\n]*\|)`;
 /** What follows a line end to make a blank line: blanks, or a comment's bare margin (` *`, `>`, `//`, `#`), then another. */
 const BLANK_REST = String.raw`[^\S\n]*(?:(?:\*|>|\/\/|#)[^\S\n]*)?\n`;
 /**
- * At most `n` characters of one sentence between a claim's words: never past a blank line or the end of a table row,
+ * At most `n` characters of one sentence between a claim's words: never past a full stop, one that closes bold or
+ * italics included, a blank line or the end of a table row,
  * though past a semicolon and an "e.g.", which end no sentence. A row's cells pair, since a settings table says what a
  * setting does in the cell beside it.
  */
 const within = (n: number): string =>
-  String.raw`(?:(?!(?<!\b(?:e\.g|i\.e))\.\s|\n${BLANK_REST}|${ROW_END})[\s\S]){0,${n}}?`;
+  String.raw`(?:(?!(?<!\b(?:e\.g|i\.e))\.(?:\*{1,2}|_{1,2})?\s|\n${BLANK_REST}|${ROW_END})[\s\S]){0,${n}}?`;
 /** Up to a clause of one paragraph, for a claim whose words may sit apart. */
 const SPAN = String.raw`(?:(?!\n${BLANK_REST}|${ROW_END})[^.;:])`;
 /** Not after a word that negates the claim: "nothing pins a generation forever" is not it. */
@@ -277,9 +282,9 @@ const ANOTHER_NEVER = String.raw`\bnever\b(?! (?:[\w'-]+ ){1,4}?on a timer\b)`;
  */
 const CONNECTOR = String.raw`[,;]?[^\S\n]*(?:\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?)?(?:-[^\S\n]+)?(?:(?:or|nor|either|neither|let alone|much less)\b|(?:and )?not\b|and ${ANOTHER_NEVER})`;
 /** A verb for moving on, as it follows "does not" or "cannot": "re-resolve", "re-read its pointer", "see a publish". */
-const MOVE_ON = String.raw`(?:re-resolve|refresh|converge|reload|re-(?:read|check) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|move on|resolve (?:[\w'-]+ ){0,3}again|(?:observe|see|notice|pick up) ${NEWER})`;
+const MOVE_ON = String.raw`(?:re-resolve|refresh|converge|re-(?:read|check) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|move on|resolve (?:[\w'-]+ ){0,3}again|(?:observe|see|notice|pick up) ${NEWER})`;
 /** The same verb as it follows "never": "re-resolves", "re-reads its pointer", "sees a publish". */
-const MOVES_ON = String.raw`(?:re-resolves?|refresh(?:es)?|converges?|reloads?|re-(?:reads?|checks?) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|moves? on|resolves? (?:[\w'-]+ ){0,3}again|(?:observes?|sees?|notices?|picks? up) ${NEWER})`;
+const MOVES_ON = String.raw`(?:re-resolves?|refresh(?:es)?|converges?|re-(?:reads?|checks?) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|moves? on|resolves? (?:[\w'-]+ ){0,3}again|(?:observes?|sees?|notices?|picks? up) ${NEWER})`;
 /** A word between "never" and its verb that changes nothing: "never really re-resolves", "does not ever re-resolve". */
 const EVER = String.raw`(?:(?:actually|again|ever|really|even|truly|once|automatically) )?`;
 /**
@@ -306,10 +311,15 @@ const A_PIN = String.raw`(?:(?:a|an|the|one) )?(?:\w+\.)?${PIN_NAMED}`;
  * pin", "makes `seg.pin()` redundant".
  */
 const IN_PLACE_OF_A_PIN = String.raw`(?:\b(?:(?:instead of|in place of|in lieu of|rather than|in preference to)(?: (?:taking|take|using|use|calling|call|holding|hold))?|over|no need (?:for|of|to(?: (?:take|call|use))?)) ${A_PIN}|\b(?:makes?|making|made|renders?|rendering|rendered)(?<!(?:\bnot|\bnever|n't) \w+) ${A_PIN} (?:redundant|unnecessary|needless|superfluous|obsolete|moot)\b|${PIN_NAMED} (?:is|are|becomes?) (?:then |thus |therefore |now )?(?:redundant|unnecessary|needless|superfluous|obsolete|moot|not needed|unneeded)\b|${PIN_NAMED} (?:isn't|aren't) needed\b|\b(?:do not|don't|does not|doesn't|no longer) need ${A_PIN})`;
+/**
+ * What ends a hold, named in the clause that states it: "until an eviction, a swept read or an invalidation". A
+ * claim that says so is the correction, and true.
+ */
+const UNTIL_MOVED = String.raw`(?:(?: [\w'-]+){0,6})? until (?:(?:an?|the|its|it is) )?(?:evict|swept|sweep|invalidat|reader cache evicts|\`?(?:store\.)?invalidate)`;
 /** Said never to change: "never changes", "does not advance", "is fixed", "stays frozen". */
-const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes?|moves?|advances?)|(?:is|are|stays?|remains?) (?:fixed|frozen))`;
+const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes?|moves?|advances?)|(?:is|are|stays?|remains?) (?:fixed|frozen))(?!${UNTIL_MOVED})`;
 /** Said to stay on a generation, by any verb but "pins": "stays on its first generation", "freezes each segment". */
-const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b`;
+const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:(?!(?:newest|latest) )[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b(?!${UNTIL_MOVED})`;
 
 /** Phrases that describe behaviour this library used to have, each with what to say instead. */
 const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
@@ -344,11 +354,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   // sentence a program builds other than from string literals joined by `+`, as prettier wraps them.
   {
     claim: new RegExp(
-      g(
-        String.raw`(?=${PIN_WORD})` +
-          NOT_NEGATED +
-          String.raw`${PIN_WORD} (?:[\w'(),-]+ ){0,5}${FOR_GOOD}\b`,
-      ),
+      g(NOT_NEGATED + String.raw`${PIN_WORD} (?:[\w'(),-]+ ){0,5}${FOR_GOOD}\b`),
       'i',
     ),
     why: NO_TIMED_REFRESH,
@@ -359,7 +365,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
       g(
         String.raw`\b(?:keeps?|kept|holds?|held|reads?|serves?|served|answers? from) (?:[\w'-]+ ){0,2}?(?:its|their|the|one|a|that)(?: (?:first|first-resolved|resolved|current|same|single|own))? ` +
           String.raw`(?:generation|pointer|snapshot|reader)s? (?:[\w'(),-]+ ){0,3}` +
-          String.raw`(?:${FOR_GOOD}|for the life of the (?:store|source|process|reader|cache|client|app|service|server|pod|program)|(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime)\b`,
+          String.raw`(?:${FOR_GOOD}|for the life of the (?:store|source|process|reader|cache|client)|(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime)\b`,
       ),
       'i',
     ),
@@ -369,8 +375,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // "For good" is the idiom only where it ends its clause: "held for good reason" is not the claim.
     claim: new RegExp(
       g(
-        String.raw`(?=${PIN_WORD})` +
-          NOT_NEGATED +
+        NOT_NEGATED +
           String.raw`${PIN_WORD} (?:${SPAN}{1,60}? )?(?:(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime\b|for good\b(?! \w)|for the life of the (?:store|source|process|reader|cache)\b)`,
       ),
       'i',
@@ -433,8 +438,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // A pin holds a generation; a pointer is what a store re-reads. In either order: "its pointer pinned".
     claim: new RegExp(
       g(
-        String.raw`(?=\bp(?:in|ointer))` +
-          NOT_NEGATED +
+        NOT_NEGATED +
           String.raw`\b(?:pin(?:s|ned|ning)? (?:each|every|its|their|the|a|one|that) (?:[\w'-]+ )?pointers?|pinned pointers?|pointers? (?:is |are |stays? |kept |held |left )?pinned)\b`,
       ),
       'i',
@@ -481,10 +485,11 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   },
   {
     // One of the four things that re-resolve a segment, said to be the only one: "re-resolves only on a timer", "only
-    // when its TTL lapses", "only when invalidated". Said of a verb that moves a store on: "runs only on a timer" is not.
+    // when its TTL lapses", "moves on only when invalidated". Said of a verb that moves a store on, or sees or picks up
+    // a change: "runs only on a timer" is not.
     claim: new RegExp(
       g(
-        String.raw`\b(?:re-resolv|refresh|re-read|re-check|reload|converg|resolv)\w*\b${within(60)}\bonly (?:on|at|with|by|after|through|when|once|if|upon) (?:(?:it is|it's|it has been|they are|they're) )?(?:(?:a|an|the|its|their) )?(?:(?:timed refresh(?:es)?|timer|(?:TTL|genTtlMs) (?:lapses|has lapsed|expires|has expired|elapses|runs out)|invalidat(?:ed|ions?))\b|invalidate\(\))`,
+        String.raw`\b(?:(?:re-resolv|refresh|re-read|re-check|converg|resolv)\w*|mov(?:e|es|ed|ing) (?:on|to)|sees?|picks? up|advances?|changes?|(?:is|are) updated|goes)\b${within(60)}\bonly (?:on|at|with|by|after|through|when|once|if|upon) (?:(?:it is|it's|it has been|they are|they're) )?(?:(?:a|an|the|its|their) )?(?:(?:timed refresh(?:es)?|timer|(?:TTL|genTtlMs) (?:lapses|has lapsed|expires|has expired|elapses|runs out)|invalidat(?:ed|ions?))\b|invalidate\(\))`,
       ),
       'i',
     ),
@@ -856,8 +861,6 @@ describe('no document claims behaviour this library has retired', () => {
     'A store with no clock can never re-resolve.',
     'Stores with no clock do not re-resolve.',
     "Stores with no clock don't re-resolve.",
-    'A store with no clock never reloads.',
-    'A store with no clock cannot reload.',
     'A store with no clock does not re-read `currentGen`.',
     'A store with no clock never re-reads `currentGen`.',
     'A store with no clock never sees updates.',
@@ -869,7 +872,6 @@ describe('no document claims behaviour this library has retired', () => {
     'With a TTL of 0ms, a store never re-resolves.',
     'A no-registry store never re-resolves.',
     'A raw-driver store never re-resolves.',
-    'With no `seams.clock`, a store never re-resolves.',
     'With `genTtlMs: 0`, a live handle is essentially a pinned handle.',
     'With `genTtlMs: 0`, a live handle is in effect a pin.',
     'A store with `genTtlMs: 0` functions as a pin.',
@@ -907,6 +909,35 @@ describe('no document claims behaviour this library has retired', () => {
     "notes.push('Pinned: none');",
     "['Pinned: none', 'x']",
     '| Pinned: no refresh at all | $0.00 |',
+    // "Only" after the other verbs that move a store on, or see or pick up a change.
+    'A store with `genTtlMs: 0` moves on only when it is invalidated.',
+    'With no clock, a store moves to a new generation only after an invalidation.',
+    'A store with no registry sees a publish only after an invalidation.',
+    'With `cache.genTtlMs: 0`, a store picks up a new generation only when invalidated.',
+    'With `genTtlMs: 0`, a segment is updated only on an invalidation.',
+    "With no clock, a segment's generation advances only when it is invalidated.",
+    'A store with no clock changes generation only when invalidated.',
+    'With `genTtlMs: 0` the store goes to the next generation only after an invalidation.',
+    'A store with a registry moves on only on a timer.',
+    // "Reads" and "writes" as verbs, with their object: the subject stands.
+    'A store with no registry reads no pointer, so it never re-resolves.',
+    'A store with no registry reads the bucket, so it never re-resolves.',
+    'A store with no clock reads its generation once and never re-resolves.',
+    'A store with no registry writes nothing and never sees a publish.',
+    // The next clause's "nor" or "neither", past a clause of its own.
+    'A store with no clock never re-resolves on a timer; an eviction moves it no more, nor does an invalidation.',
+    'A store with no clock never re-resolves on a timer; it moves on after neither an eviction nor a sweep.',
+    "notes = ['a', 'Pinned: none'];",
+    'A store with no clock keeps using the generation it first resolved.',
+    'A store with no clock keeps reading its first generation.',
+    'With no clock, a store keeps its first generation until the container restarts.',
+    'With no clock, a store keeps its first generation until the server restarts.',
+    'With no clock, a store keeps its first generation until the service restarts.',
+    'With no clock, a store keeps its first generation until the app restarts.',
+    'A store with `genTtlMs: 0` is much like a pin.',
+    "const note = 'A store with no clock never' +\n  're-resolves a segment.';",
+    "const note = 'A store with no clock never re' +\n  '-resolves a segment.';",
+    'A store with no clock never re-resolves on a timer; on an eviction, neither.',
     // A label with a full stop.
     '// Pinned. The model bills none.',
     // A claim in a string whose quote is escaped or doubled, read as the program or the YAML prints it.
@@ -992,6 +1023,32 @@ describe('no document claims behaviour this library has retired', () => {
     'The calibration job runs only on a timer.',
     'Until it is called, the source keeps serving that snapshot with no backend read at all.',
     "A store with no clock doesn't keep serving the old generation once it is invalidated.",
+    // The correction, with what ends the hold named in its clause.
+    'A store with no clock stays on its first generation until an eviction, a swept read or an invalidation.',
+    'A store with no clock remains on its first generation until an eviction, a swept read or an invalidation.',
+    'One with `cache: { genTtlMs: 0 }` keeps serving that generation until an eviction, a swept read or an invalidation moves it.',
+    'With `genTtlMs: 0`, the generation is fixed until an eviction, a swept read or an invalidation moves it.',
+    'With `genTtlMs: 0`, the generation never changes until an eviction, a swept read or an invalidation.',
+    // A store with no registry, as the DR runbook describes it: the newest generation in the bucket.
+    'With no registry, a store keeps using the newest generation in the bucket, whatever the pointer says.',
+    'With no registry, a store keeps reading the newest generation in the bucket after a rollback.',
+    'With no registry, a store remains on the newest generation in the bucket, not the restored pointer.',
+    // "Reload" as loading again, and a store with no `seams.clock`, which uses the system clock.
+    'A store with no backend cannot reload a segment: loading needs a registry.',
+    'With no registry, do not reload the store to pick up a publish: call `invalidate()`.',
+    'With no `seams.clock`, a test cannot see a publish until the real TTL lapses.',
+    'The store keeps its reader cache for the life of the app, bounded by `cache.readerMax`.',
+    // A sentence ended by a full stop that closes bold, and the words of a noun that takes no object.
+    '- **With no registry, a misfiled generation read as damage.** Once the generation is fixed, the store reads it.',
+    'Until it is called, the source keeps serving that snapshot with no backend call at all.',
+    'Until it is called, the source keeps serving that snapshot with no registry request.',
+    'Until it is called, the source keeps serving that snapshot with no backend round trip.',
+    'Until it is called, the source keeps serving that snapshot with no backend write.',
+    // Paragraphs of a doc comment, and list items, are apart.
+    ' * ### How a store pins\n *\n * The reader cache lives for the life of the store.',
+    ' * A reader pins each chunk\n *\n * it decodes, which lives for the life of the store.',
+    ' * A store with no clock never re-resolves on a timer\n *\n * Or set `genTtlMs` above 0 for a timed refresh.',
+    '<ul><li>A store with no clock never re-resolves on a timer</li><li>or reads a chunk twice</li></ul>',
     // An apostrophe in a quoted string, escaped or doubled, is the possessive it prints: it opens no quotation.
     "description: 'Two incarnations'' pins stay apart on a store with no registry.'",
     "it('keeps two incarnations\\' pins apart on a store with no registry', () => {});",
@@ -1045,6 +1102,14 @@ describe('no document claims behaviour this library has retired', () => {
     [
       'A pinned handle describes one instant; a store with `genTtlMs: 0` does not.',
       'A pinned handle describes one instant. A store with `genTtlMs: 0` does not.',
+    ],
+    [
+      'With `genTtlMs: 0`, a live read still moves on after an eviction; a pinned handle never sees a newer version.',
+      'With `genTtlMs: 0`, a live read still moves on after an eviction. A pinned handle never sees a newer version.',
+    ],
+    [
+      'A store with no registry is not refreshed on a timer, not even when another process publishes.',
+      "A store with no registry is not refreshed on a timer, and another process's publish does not move it.",
     ],
     [
       'A store with no clock never re-resolves on a timer, but an eviction or an invalidation still moves it.',
@@ -1207,6 +1272,7 @@ describe('no document claims behaviour this library has retired', () => {
       ['a doc-comment link never closed', `{@link a${' '.repeat(100_000)}`],
       ['blanks before a label', `${'x'.repeat(50_000)}${' '.repeat(50_000)}Pinned: none`],
       ['split literals, then blanks', `${"'a' +".repeat(20_000)}${' '.repeat(2_000)}x`],
+      ['one split literal, then blanks', `'a' +${' '.repeat(100_000)}x`],
       ['blanks after a pin word', `pins${' '.repeat(100_000)}`],
       ['a wide table', `| pins${' '.repeat(100)}| `.repeat(950)],
     ] as const) {

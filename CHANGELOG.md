@@ -205,7 +205,7 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   from damage by reading the object's footer, which needs no key; an object of another size counts as another
   object, damaged or not. A replacement written under a key the store lacks is therefore found too, including after
   the pin's reader was dropped. The reads that ask at once share that footer read, and once found, a replacement
-  costs later reads no request until the store forgets it: an invalidation of the pin's store does, as does a later
+  costs later reads no request until the store forgets it: an invalidation of the pin's segment does, as does a later
   `pin()` of the same version that opens the pinned object again, and the store remembers at most `cache.readerMax`
   of them. So once a restore puts the object back, invalidate the pin's store: the pin then reads it again, and a
   pin taken after that reads the object then stored as its generation. An object found gone is not remembered,
