@@ -11,7 +11,7 @@ import {
   bulkLoadCrbmGeneration,
   runConsistencyCheck,
 } from '@/index';
-import type { SegmentRef } from '@/index';
+import type { Segment, SegmentRef } from '@/index';
 
 /**
  * Executable DR drill — the [disaster-recovery runbook](docs/guide/disaster-recovery.md)
@@ -19,8 +19,8 @@ import type { SegmentRef } from '@/index';
  *
  * Unlike `tests/core/consistency.test.ts` (in-memory drivers, a *structural* tear via `compareAndSwap`), this
  * drives the REAL `LocalFs` storage + registry tiers on a temp filesystem and corrupts actual on-disk objects, so
- * it exercises what an operator would really do. It covers both failure detectors and both documented
- * resolutions:
+ * it exercises what an operator would really do. It covers both failure detectors, both documented
+ * resolutions, and the runbook's advice for readers:
  *
  *   • Torn cross-tier restore (registry recovered *ahead of* storage) and a lost `.crbm` are the **one class**
  *     `checkConsistency` reports — `missing-storage-generation`. Resolved by rolling `currentGen` back to an
@@ -29,6 +29,9 @@ import type { SegmentRef } from '@/index';
  *     (it verifies a generation is present, not its bytes); the trust boundary catches it on **read**, failing
  *     closed with `IntegrityError` (CRC). The drill asserts both the honest blind spot and the read-time catch,
  *     then restores from backup.
+ *   • The runbook's readers: a store on a bare `IStorageDriver` follows the bucket, not a rolled-back pointer,
+ *     until the generations above the pointer are deleted; and a `seg.pin()` handle whose object is replaced
+ *     keeps refusing it after a restore until its store is invalidated, then reads it again.
  *
  * The objects and the registry back up / restore independently — which is the whole reason a torn restore
  * exists — so every segment here is one published generation, and each failure signal stays crisp.
@@ -55,11 +58,17 @@ function stores(root: string) {
   return { storage, registry, store };
 }
 
-async function members(store: CloudRoaring, seg: string): Promise<number[]> {
+async function idsOf(segment: Segment): Promise<number[]> {
   const out: number[] = [];
-  for await (const id of store.segment(seg).iterate()) out.push(id);
+  for await (const id of segment.iterate()) out.push(id);
   return out.sort((a, b) => a - b);
 }
+
+const members = (store: CloudRoaring, seg: string): Promise<number[]> => idsOf(store.segment(seg));
+
+/** A store on the bare storage driver, with no registry: what a reader wired without a backend gets. */
+const bareStore = (root: string) =>
+  new CloudRoaring({ storage: new LocalFsStorageDriver(root), retry: false });
 
 describe('DR drill — backup → corrupt → restore → verify', () => {
   let root: string;
@@ -176,5 +185,65 @@ describe('DR drill — backup → corrupt → restore → verify', () => {
     const healed = await runConsistencyCheck({ storage, registry });
     expect(healed).toEqual({ checked: 3, inconsistent: [], errored: [] });
     expect(await members(stores(root).store, 'alpha')).toEqual(FLEET.alpha);
+  });
+
+  it('Readers — a store with no registry follows the bucket, not a rolled-back pointer, until the generations above the pointer are deleted', async () => {
+    const ref: SegmentRef = { segment: 'alpha' };
+    const { storage, registry, store } = stores(root);
+    const bad = [4, 5, 6];
+    await bulkLoadCrbmGeneration(storage, { segment: 'alpha', generation: 1 }, bad, { registry });
+    const bare = bareStore(root);
+    expect(await members(bare, 'alpha')).toEqual(bad);
+
+    // The operator undoes the bad load. A backend's reads follow the pointer at once.
+    await store.rollback(ref, 0);
+    expect(await members(store, 'alpha')).toEqual(FLEET.alpha);
+    // One with no registry reads no pointer: it serves the newest generation in the bucket, so neither an
+    // invalidation nor a restart moves it back while generation 1 is there.
+    bare.invalidate(ref);
+    expect(await members(bare, 'alpha')).toEqual(bad);
+    expect(await members(bareStore(root), 'alpha')).toEqual(bad);
+
+    // The runbook's remedy: once generation 1 is not wanted, delete it, then invalidate or restart.
+    rmSync(crbmPath(root, 'alpha', 1));
+    bare.invalidate(ref);
+    expect(await members(bare, 'alpha')).toEqual(FLEET.alpha);
+    expect(await members(bareStore(root), 'alpha')).toEqual(FLEET.alpha);
+    expect(await runConsistencyCheck({ storage, registry })).toEqual({
+      checked: 3,
+      inconsistent: [],
+      errored: [],
+    });
+  });
+
+  it('Readers — a pin whose object is replaced refuses it, still refuses once a restore puts it back, and reads it again when its store is invalidated', async () => {
+    const ref: SegmentRef = { segment: 'alpha' };
+    const alphaCrbm = crbmPath(root, 'alpha', 0);
+    const { store } = stores(root);
+    const pin = await store.segment('alpha').pin();
+    expect(await pin.has(1)).toBe(true); // reads the chunk holding 1, 2 and 3
+
+    // Another object lands under the pinned key, out of band: a name purged and loaded again, say.
+    const elsewhere = `${root}.elsewhere`;
+    try {
+      await bulkLoadCrbmGeneration(
+        new LocalFsStorageDriver(elsewhere),
+        { segment: 'alpha', generation: 0 },
+        [1, 2, 70_001],
+      );
+      cpSync(crbmPath(elsewhere, 'alpha', 0), alphaCrbm);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+    // It answers from what it has already read, and refuses the rest rather than read another object.
+    expect(await pin.has(2)).toBe(true);
+    await expect(pin.has(70_000)).rejects.toThrow(/no longer the object this handle pinned/);
+
+    // A restore puts the pinned object back. What the store found about the pin still stands until it is told.
+    cpSync(crbmPath(backup, 'alpha', 0), alphaCrbm);
+    await expect(pin.has(70_000)).rejects.toThrow(/no longer the object this handle pinned/);
+    store.invalidate(ref);
+    expect(await idsOf(pin)).toEqual(FLEET.alpha);
+    expect(await idsOf(await store.segment('alpha').pin())).toEqual(FLEET.alpha);
   });
 });

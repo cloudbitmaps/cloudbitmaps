@@ -410,6 +410,11 @@ resolution:
   the generation is *present*, not its bytes. The drill confirms the sweep stays clean **and** that a read fails
   closed with `IntegrityError` (the per-chunk CRC), so the corruption surfaces at the trust boundary, not as a
   wrong answer. Spot-checking a read after restore (step 8) is what catches this class.
+- **Readers still on an old generation.** After a `rollback`, a store on a bare `IStorageDriver` answers from the
+  newest generation in the bucket through an invalidation and a restart, and from the restored pointer's once the
+  generation above it is deleted. A `seg.pin()` handle whose object is replaced out of band answers from what it has
+  read and refuses the rest; once a restore puts the object back, it refuses until its store is invalidated, and
+  then reads the whole object again.
 
 ## Encryption & DR
 
