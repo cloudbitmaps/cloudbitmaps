@@ -903,6 +903,7 @@ count is one the engine is tested to make.
 
 **Planning** (pure, no instance needed — sizing, sales, what-if):
 
+<!-- SIZING:GUIDE_EXAMPLE:START -->
 ```ts
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
@@ -917,11 +918,13 @@ const report = CloudRoaring.estimateCost({
     hotSegments: 2, // segments a long-lived reader keeps reading: each refreshes its pointer every 2 s
   },
 });
-report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.03, loads: ≈0.0007, pointerRefresh: ≈1.05 }
-report.monthlyUSD.total; // ≈ 68 — vs $346 flat Redis-HA
+report.monthlyUSD.byOp; // { reads: ≈42, intersects: ≈25.2, storage: ≈0.0257, loads: ≈0.000708, pointerRefresh: ≈1.05 }
+report.monthlyUSD.total; // ≈68.4
+report.redisBaseline; // $142.35 a month: the cheapest cluster in the catalogue that holds 1.12 GiB, 1 shard of 3 cache.t4g.medium nodes
 report.verdict; // 'win' — 'win-big' | 'win' | 'lose-zone', never hides the lose case
-report.redisCrossover.readsPerSec; // ≈ 1,641 sustained reads/s at THIS report's 80% cache-hit rate (≈ 329 at 0%)
+report.redisCrossover.readsPerSec; // ≈ 672 sustained reads/s at THIS report's 80% cache-hit rate (≈ 134 at 0%)
 ```
+<!-- SIZING:GUIDE_EXAMPLE:END -->
 
 **Grounded** (real sizes from the `.crbm` index — exact, no payload reads):
 
@@ -933,23 +936,51 @@ report.assumptions.grounded; // true — storage is this segment's real, measure
 ```
 
 Rates are a pluggable `PricingProfile` — `{ name, storage: { getPerMillion, putPerMillion, storagePerGiBMonth },
-redis: { monthlyUSD } }`, default `aws-us-east-1-ondemand` from the fact-checked published pricing; override it
-for your region/cloud. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
+redis }`, default `aws-us-east-1-ondemand` from the fact-checked published pricing; override it for your
+region/cloud. [What it compares against](#what-it-compares-against) covers `redis`. The report is honest: `verdict` always includes the lose-zone, and `assumptions.notes`
 lists the model's simplifications (same-region egress free; request cost from your supplied workload rates —
 deriving it from live metrics is a later refinement; how many GETs each intersection was priced at; and, when you
 leave `loadsPerMonth` or `hotSegments` unset, that **loads** or **the pointer refresh are not modeled** — disclosed
-rather than silently under-counted).
+rather than silently under-counted; and, last, which Redis it compared with and how it priced it).
+
+### What it compares against
+
+The verdict compares the bill with **the Redis that would hold the data**: the cheapest ElastiCache cluster that
+holds the report's stored bytes, in memory or, on a data-tiering node, in memory and SSD. `report.redisBaseline`
+names it: its monthly price, the node type, the shards, the nodes, and whether they tier to SSD.
+<!-- SIZING:COMPARES:START -->
+Every shard is a primary and two replicas, AWS's best practice, and each node keeps back the 25% of its memory ElastiCache reserves by default, at AWS's us-east-1 on-demand prices (`ELASTICACHE_REDIS_US_EAST_1_ONDEMAND`). So 200 MB is priced as three `cache.t4g.micro` nodes at $35.04 a month, 20 GB as three `cache.r6g.xlarge` nodes at $900 a month, and 2 TB as three `cache.r6gd.16xlarge` nodes at $27,325 a month: a data-tiering node, which keeps the values read least recently on its SSD.
+<!-- SIZING:COMPARES:END -->
+
+<!-- SIZING:GUIDE_LEANINGS:START -->
+It is the cheapest cluster of one kind, not the least Redis could cost, and its choices lean both ways. Toward Redis: the data is held at its compressed size, where a native Redis bitmap is sized by its highest id, so sparse ids take more memory than this; among node types the cheapest fit wins; a data-tiering node counts its SSD in full, though ElastiCache [moves no item larger than 128 MiB](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/data-tiering.html) to it; and every node keeps back only the 25% reserved by default, where AWS [advises 30% on small nodes and 50% on micro ones](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/redis-memory-management.html) in production. Toward CloudBitmaps: the nodes are on-demand, every shard has two replicas, the engine is Redis OSS, and burstable `t4g` nodes are priced only as one shard. Reserved nodes, fewer replicas, or [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), which AWS prices 20% lower a node, each cost less, and against them the saving is smaller. It prices nodes, not quotas: a cluster of more than 90 nodes needs AWS to raise ElastiCache's [default quota](https://docs.aws.amazon.com/general/latest/gr/elasticache-service.html#limits_elasticache), which it [raises to at most 500 nodes a cluster](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/Shards.html) on Redis OSS 5.0.6 and later, and data that needs more is several clusters, at the same price a node.
+<!-- SIZING:GUIDE_LEANINGS:END -->
+
+A report on one segment sizes its Redis to that segment alone, so the baselines of a store's segments do not add up
+to the store's. To judge a store, price all its segments in one `estimateCost()`. To alarm on one, sum the
+segments' `monthlyUSD.total` and compare the sum with the Redis you would run for the store, as
+[the cost gauge](dashboards.md#2-cost-gauge-costreport--a-scheduled-sample) does: a per-segment verdict against that
+whole price fires only when one segment alone costs more than all of it. Two ways to compare differently:
+
+- **One cluster you name**, whatever the data size: `pricing: { ...AWS_US_EAST_1_ONDEMAND, redis: { monthlyUSD } }`.
+  <!-- SIZING:ONE_CLUSTER:START -->
+  `ONE_REDIS_HA_CLUSTER` is the one the benchmarks page charts: a primary and two replicas of `cache.m7g.large`, $346 a month. The catalogue leaves that node type out: three `cache.m6g.large` of 6.38 GiB each cost $326, so it is a fixed point to compare with, not a price the estimator picks.
+  <!-- SIZING:ONE_CLUSTER:END -->
+- **Your own prices**: `redis: { sizedToData: { source, nodeTypes, replicasPerShard, reservedMemoryFraction } }`,
+  each node type `{ name, memoryGiB, hourlyUSD }` with `ssdGiB` for a data-tiering node and `maxShards` to cap it.
+  [ElastiCache for Valkey](https://aws.amazon.com/elasticache/pricing/), also Redis-compatible, costs AWS's stated
+  20% less a node than the Redis OSS prices the default uses.
 
 ### The read crossover
 
-`redisCrossover.readsPerSec` is the sustained point-read rate at which pay-per-use GETs cost more than the flat
-always-on baseline, once storage and the pointer refresh are taken out of it. It is not a ceiling on the library —
-it is a property of three inputs:
+`redisCrossover.readsPerSec` is the sustained point-read rate at which pay-per-use GETs cost more than
+`redisBaseline`, once storage and the pointer refresh are taken out of it. It is not a ceiling on the library —
+it is a property of three inputs, and of the data size, which sets the Redis:
 
 | Input | Default | Change it and |
 | --- | --- | --- |
 | `cacheHitRate` | `0` | Every read is billed. A working cache moves the crossover by the reciprocal of the miss rate — 80% hits is 5× the reads for the same bill; 100% is `Infinity`. |
-| `hotSegments` | `0` | The pointer refresh comes out of the baseline before any read is priced, like storage: a hundred hot segments at the default refresh spend about $53 of the $346. |
+| `hotSegments` | `0` | The pointer refresh comes out of the baseline before any read is priced, like storage: a hundred hot segments at the default refresh cost about $53 a month, which can be more than the whole Redis a small store is compared with, and the crossover is then 0. |
 | `pricing.storage.getPerMillion` | `$0.40` | Your region's or your committed rate; the formula is the spec, the rate is yours. |
 
 ### What each term counts
@@ -990,9 +1021,12 @@ the drivers' own tests pin the two requests GCS and Azure make, so the model mov
 [benchmarks page](../benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) has the request shapes measured
 on real S3.
 
-**See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats a flat
-Redis-HA node — drawn from this same `estimateCost()` and turned into build-breaking CI assertions, so the
-numbers can never drift ahead of reality.
+**See it at three sizes.** [What it costs at your size](sizing.md) prices a small, a medium and a large deployment
+with this function, term by term, and says where a standing cache still wins.
+
+**See it plotted.** The [benchmarks page](../benchmarks.md) charts exactly where pay-per-use beats one Redis-HA
+cluster, `ONE_REDIS_HA_CLUSTER`, whatever the data size — drawn from this same `estimateCost()` and turned into
+build-breaking CI assertions, so the numbers can never drift ahead of reality.
 
 ## 12. Audit trail: security & compliance events
 

@@ -84,8 +84,8 @@ ships, measured it at **$0.14 per million** without the pointer.
 
 The trade is stated plainly rather than buried: a membership check that misses the cache costs a ranged GET
 against object storage, where an in-process RAM store costs a memory read. If you need a sub-millisecond p99 on a
-working set that fits a bounded cache, use Redis. If your sets are large, mostly read, and shouldn't cost
-$346/month to keep warm, use this.
+working set that fits a bounded cache, use Redis. If your sets are large, mostly read, and shouldn't pay
+for a standing Redis cluster to keep them warm, use this.
 
 ## Coming from Redis bitmaps?
 
