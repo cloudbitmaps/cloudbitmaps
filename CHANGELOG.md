@@ -28,16 +28,20 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
   per-prefix rate, and overlap — and lists the planned work that addresses them, none of it built yet; the roadmap
   holds the same directions. `pnpm bench:sizing:check` now also refuses, outside the generated regions of a page that
   says its figures are generated, what could be a figure no gate compares: a digit in any form Unicode counts as a
-  number, but in a few names, definitions and link targets it lists, such as `us-east-1`; HTML, an image, a code
-  fence, a currency sign, or an emoji GitHub shows as a digit; and a share, a multiple, a dollar amount or a request
-  count in words. It reads no markdown structure, and refuses what it knows: a figure in words passes in a spelling
-  it has no pattern for. It reads the README's section from its one `## Why CloudBitmaps` line, and refuses another
-  heading of that title, HTML or a fence above it, and a heading that shows nothing where it ends. It keeps the rest
-  of the README to the phrases it lists, each a measurement quoted where it is explained, and refuses a share or a
-  multiple there however emphasis, an escape, an invisible character or HTML falls across it; it refuses an entity
-  GitHub decodes on any page it writes into, and an image under `bench/` that a page shows and no generator draws;
-  and `scripts/site-figures.cjs` reads `SIZING` markers with the same reader, which takes every comment shaped like
-  a marker for one.
+  number, but in a few names, definitions and link targets it lists, such as `us-east-1`; a number word from two up,
+  but in a few phrases it lists, such as "the three deployments"; a share or a multiple's sign, a currency sign, and
+  any character but plain ASCII, `§` and `—`; HTML, an image, a code fence, or an emoji GitHub shows as a digit; and
+  a share, a multiple or a dollar amount in words. It is a check against drift, an honest edit that types a figure by
+  hand, and not a bar to one written on purpose in a form it has never seen: on those pages it reads no markdown
+  structure, and refuses what it cannot read. It reads the README's section from its one `## Why CloudBitmaps` line,
+  and refuses another heading that would show as that one, in markdown or in HTML, HTML or a fence above it, and a
+  heading that shows nothing where it ends. It keeps the rest of the README to the phrases it lists, each a
+  measurement quoted where it is explained, and refuses a share or a multiple there however emphasis, an escape, a
+  link, a footnote, a blockquote's wrap, an invisible character or HTML falls across it; it refuses an entity GitHub
+  decodes, a legacy name without its semicolon included, on any page it writes into, and an image under `bench/` that
+  a page shows and no generator draws; it holds each region's END marker to ending its line; and
+  `scripts/site-figures.cjs` reads `SIZING` markers with the same reader, which takes every comment shaped like a
+  marker for one.
 - **What it costs at your size**, a new guide page, `docs/guide/sizing.md`. It prices a small, a medium and a
   large deployment with `estimateCost()`, term by term, against the Redis that would hold each one's data, and says
   how much room each has before its bill meets that Redis: illustrative workloads, labelled as such, with every

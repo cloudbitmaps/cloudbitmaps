@@ -70,6 +70,11 @@ function regionsOf(doc, text, names, docs) {
         `${doc}: SIZING:${open.name}:START must begin its line, after a list's or a quote's indentation only`,
       );
     }
+    // What follows a marker on its line is part of the HTML block the comment opens, and shown as HTML, not markdown.
+    const eol = text.indexOf('\n', close.end);
+    if (text.slice(close.end, eol < 0 ? text.length : eol).trim() !== '') {
+      throw new Error(`${doc}: SIZING:${open.name}:END must end its line`);
+    }
     out[open.name] = { i: open.end, j: close.at, indent };
   }
   for (const name of names) {

@@ -288,6 +288,170 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       refused({ [WHY]: intoWhy(text) }, /holds a number, .*outside its SIZING regions/);
     });
 
+    // The check catches the drift an honest edit makes: a figure typed by hand, however it is spelled, marked up or
+    // split. It is not built to stop someone writing one on purpose in a form it has never seen; on the three pages
+    // whose figures are all generated it refuses what it cannot read instead, so the forms it knows are few there.
+    describe('a drift check, closed where it can be', () => {
+      /** The rest of the README, below its Why section, with `text` written into it. */
+      const intoRest = (text: string): string => {
+        const edited = readme.replace(
+          '## Your data stays yours',
+          () => `## Your data stays yours\n\n${text}\n`,
+        );
+        expect(edited).not.toBe(readme);
+        return edited;
+      };
+
+      it.each([
+        ['&pound', ' Its Redis bills &pound forty a month.'],
+        ['&times', ' Redis costs 12&times as much.'],
+        ['&frac14', ' It costs &frac14 as much.'],
+        ['&nbsp', ' It is cheap&nbsp&nbsp enough.'],
+        ['&cent', ' It costs a &cent.'],
+        ['&not', ' It is &notin the bill.'],
+      ])('refuses %s with no semicolon, which GitHub decodes inside HTML', (name, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds an entity, "${name}`));
+        refused(
+          { [GUIDE]: guideText.replace('\n## ', () => `\n${text}\n\n## `) },
+          /holds an entity/,
+        );
+      });
+
+      it('passes an ampersand no entity begins', () => {
+        const text = ' See [x](https://example.org/?a=b&label=c&logo=d), for Q&A.';
+        const r = sizingCheck({ [WHY]: intoWhy(text) });
+        expect(r.code, r.out).toBe(0);
+      });
+
+      it('holds an END marker to ending its line, since what follows it there is shown as HTML', () => {
+        const edited = sizing.replace(
+          /(<!-- SIZING:[A-Z0-9_]+:END -->)/,
+          '$1 Its Redis bills a lot.',
+        );
+        expect(edited).not.toBe(sizing);
+        refused({ [SIZING]: edited }, /SIZING:[A-Z0-9_]+:END must end its line/);
+      });
+
+      it.each([
+        ['a sign after a letter that looks like a digit', ' It costs lO% less.'],
+        ['a sign after a Cyrillic letter', ' It costs З× as much.'],
+        ['a sign after Roman numerals', ' It costs XII× as much.'],
+        ['a sign after an escape', ' Storage is S3\\% of the bill.'],
+        ['a sign in bold after a token', ' It is 65,536 ids **×** more.'],
+      ])("refuses a share or a multiple's sign outright on those pages: %s", (_what, text) => {
+        refused({ [WHY]: intoWhy(text) }, /holds a share or a multiple's sign/);
+      });
+
+      it.each([
+        ['a braille blank', ' It costs less⠀overall.'],
+        ['an accented letter', ' It costs less, naïvely.'],
+        ['an emoji', ' It costs less \u{1F680}.'],
+      ])('refuses any character but plain ASCII, § and — on those pages: %s', (_what, text) => {
+        refused({ [WHY]: intoWhy(text) }, /holds a character other than plain ASCII, § or —/);
+      });
+
+      it.each([
+        ['twenty-seven', ' It costs twenty-seven thousand a month.'],
+        ['two', ' It makes two more requests than S3.'],
+        ['two', ' It makes two HEAD requests.'],
+        ['hundreds', ' It costs hundreds of times as much.'],
+        ['four', ' The four workloads differ.'],
+      ])('refuses a number word from two up outside the phrases it lists: "%s"', (word, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds a number in words, "${word}"`));
+      });
+
+      it.each([
+        ['in half', ' It cuts the Redis bill in half.'],
+        ['doubles', ' It doubles the bill.'],
+        ['a third less', ' It costs a third less.'],
+        ['a dollar', ' It costs under a dollar a week.'],
+      ])('refuses a share or an amount in a word on those pages: "%s"', (figure, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds a figure in words, "${figure}"`));
+      });
+
+      it.each([
+        ['twice as much', ' Redis costs [tw](a(b))ice as much.'],
+        ['sixty times', ' Redis costs [six](a "x)")ty times as much.'],
+      ])('reads a link whose target holds parentheses or a quoted ")": "%s"', (figure, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds a figure in words, "${figure}"`));
+      });
+
+      // Each a true sentence the rules refuse, with a way to write it that passes.
+      it.each([
+        [' S3 bills its GETs per million requests.', ' S3 bills its GETs by the request.'],
+        [
+          ' The two halves of an id are its chunk key and its offset.',
+          ' Each half of an id is its chunk key or its offset.',
+        ],
+        [
+          ' Both share a bucket, the two in one place.',
+          ' Both share a bucket, together in one place.',
+        ],
+      ])('refuses "%s", and passes "%s"', (refusedText, reworded) => {
+        refused({ [WHY]: intoWhy(refusedText) }, /outside its SIZING regions/);
+        const r = sizingCheck({ [WHY]: intoWhy(reworded) });
+        expect(r.code, r.out).toBe(0);
+      });
+
+      it.each([
+        ['a blockquote continued onto a line', '> Redis costs 12\n> times as much.'],
+        ['a braille blank before a sign', 'CloudBitmaps costs 90⠀% less.'],
+        ['a braille blank before "times"', 'Redis costs 12⠀times as much.'],
+        ['a footnote reference', 'Redis costs 12[^r] times as much.\n\n[^r]: As priced.'],
+        [
+          'a link with parentheses in its target',
+          'CloudBitmaps costs 90[](a(b))% less than Redis.',
+        ],
+        ['a link inside "times"', 'Redis costs 12 [ti](a(b))mes as much.'],
+        ['the Arabic percent sign', 'CloudBitmaps costs 90٪ less.'],
+        ['a Cyrillic х', 'Redis costs 12х as much.'],
+        ['another ×', 'Redis costs 12⨉ as much.'],
+        ["the × emoji's shortcode", 'Redis costs 12 :heavy_multiplication_x: as much.'],
+        ['math', 'Redis costs $12{\\times}$ as much.'],
+        [
+          "a badge's underscores",
+          '![](https://img.shields.io/badge/Redis_costs-12_times_more-red)',
+        ],
+      ])(
+        'refuses a share or a multiple in the rest of the README however it is split: %s',
+        (_what, text) => {
+          refused({ [README]: intoRest(text) }, /holds a share or a multiple/);
+        },
+      );
+
+      it('passes "times out" after a number word in the rest of the README, where number words are words', () => {
+        const r = sizingCheck({
+          [README]: intoRest('If either of the two times out, the reader retries.'),
+        });
+        expect(r.code, r.out).toBe(0);
+      });
+
+      it.each([
+        ['a braille blank', '## Why CloudBitmaps⠀'],
+        ['a Cyrillic а', '## Why CloudBitmаps'],
+        ['punctuation', '## Why Cloud-Bitmaps?'],
+      ])("refuses a heading that shows as the Why section's, with %s", (_what, heading) => {
+        const edited = readme.replace(
+          '## Why CloudBitmaps\n',
+          () => `${heading}\n\nText.\n\n## Why CloudBitmaps\n`,
+        );
+        expect(edited).not.toBe(readme);
+        refused(
+          { [README]: edited },
+          /could show as the heading of its "Why CloudBitmaps" section/,
+        );
+      });
+
+      it("refuses an HTML heading of the Why section's title, and passes one of another", () => {
+        refused(
+          { [README]: intoRest('<h2>Why CloudBitmaps</h2>') },
+          /has an HTML heading that shows as its "Why CloudBitmaps" section's/,
+        );
+        const r = sizingCheck({ [README]: intoRest('<h2>Why it is cheap</h2>') });
+        expect(r.code, r.out).toBe(0);
+      });
+    });
+
     // A title is shown, as a tooltip, so the words in one are read like the text around it.
     it('refuses a figure in words in a link title, however the title is quoted', () => {
       for (const text of [
@@ -452,7 +616,6 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         '"double" and "twice" as words',
         ' It can double as a lock, twice as a check, twice the first time.',
       ],
-      ['"times out" after a number word', ' If either of the two times out, the reader retries.'],
       ['a count of one', ' One request per pointer read, and a one-request tail read.'],
       [
         '"one" and "two" as words',
