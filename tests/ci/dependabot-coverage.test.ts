@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { parse } from 'yaml';
+import { ROOT, compositeActionFiles } from '../helpers/workflows';
 
 /**
  * Every lockfile in the repo, and every composite action, is covered by a Dependabot entry.
@@ -17,8 +17,6 @@ import { parse } from 'yaml';
  * require a Dependabot directory for each. A future `bench/` or `examples/` with its own install is covered
  * the day it lands, which is the only version of this check worth having.
  */
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Tracked lockfiles, as directories relative to the repo root (`/` for the root one). */
 const LOCKFILE_DIRS = execFileSync('git', ['ls-files', '*pnpm-lock.yaml', 'pnpm-lock.yaml'], {
@@ -52,13 +50,7 @@ const ACTIONS_DIRS = dirsOf('github-actions');
  * github-actions entry for `/` reads `.github/workflows` and a root `action.yml` and nothing below
  * `.github/actions`, so an action pinned there is bumped by nothing unless an entry names its directory.
  */
-const ACTIONS = join(ROOT, '.github', 'actions');
-const COMPOSITE_DIRS = existsSync(ACTIONS)
-  ? readdirSync(ACTIONS, { recursive: true, encoding: 'utf8' })
-      .filter((f) => /(?:^|\/)action\.ya?ml$/.test(f))
-      .map((f) => `/.github/actions/${dirname(f)}`)
-      .sort()
-  : [];
+const COMPOSITE_DIRS = compositeActionFiles().map((f) => `/${dirname(f)}`);
 
 /** Whether a Dependabot directory names `dir`: `*` stands for one path segment and `**` for any number. */
 function names(pattern: string, dir: string): boolean {
@@ -85,6 +77,22 @@ describe('dependabot covers every install in the repo', () => {
         `(entries: ${[...NPM_DIRS].join(', ')}). An install nothing updates is an install running the ` +
         'oldest dependencies in the repo, silently.',
     ).toBe(true);
+  });
+
+  it('reads a directory glob as Dependabot does: `*` is one path segment, `**` any number', () => {
+    const cases: [string, string, boolean][] = [
+      ['/', '/', true],
+      ['/.github/actions/*', '/.github/actions/docker-images-save', true],
+      ['/.github/actions/*', '/.github/actions/group/one', false],
+      ['/.github/actions/*', '/.github/actions', false],
+      ['/.github/actions', '/.github/actions/docker-images-save', false],
+      ['/.github/actions/**', '/.github/actions/group/one', true],
+      ['/.github/actions/*', '/.github/actions/docker-images-save/more', false],
+      ['/fuzz', '/fuzzy', false],
+      ['/a.b', '/axb', false],
+    ];
+    for (const [pattern, dir, want] of cases)
+      expect(names(pattern, dir), `${pattern} ~ ${dir}`).toBe(want);
   });
 
   it.each(COMPOSITE_DIRS)('%s', (dir) => {

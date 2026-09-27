@@ -49,7 +49,8 @@ STAGE="$ROOT/.rss-stage"
 
 # Not `node:22` from Docker Hub: GitHub-hosted runners share an IP pool that is routinely over Docker Hub's
 # anonymous pull limit, and the gate died on HTTP 429 before running anything. `public.ecr.aws/docker/library`
-# is AWS's official mirror of the same Docker Official Images — same digests, no auth, no rate limit.
+# is AWS's official mirror of the same Docker Official Images — same digests, no auth. It limits anonymous pulls
+# too, to one a second and 500 GB a month an IP, which is what the backoff below and CI's image cache are for.
 # Overridable so a local run can point at a warm Docker Hub cache instead.
 STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
 
@@ -59,6 +60,7 @@ STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
 # shellcheck source=scripts/lib/docker-pull.sh
 . "$ROOT/scripts/lib/docker-pull.sh"
 docker_pull_with_backoff "$STAGE_IMAGE"
+STAGE_RUN="$(docker_image_run_name "$STAGE_IMAGE")" # a copy loaded from the cache runs by this name
 
 # The stage is populated by a container running as root. On a Linux bind mount those files really are owned by
 # root, so the host user cannot delete them and a plain `rm -rf` fails with "Permission denied" on every path —
@@ -69,7 +71,7 @@ docker_pull_with_backoff "$STAGE_IMAGE"
 clean_stage() {
   [ -e "$STAGE" ] || return 0
   rm -rf "$STAGE" 2>/dev/null && return 0
-  docker run --rm -v "$ROOT:/w" "$STAGE_IMAGE" rm -rf /w/.rss-stage >/dev/null 2>&1 || true
+  docker run --rm -v "$ROOT:/w" "$STAGE_RUN" rm -rf /w/.rss-stage >/dev/null 2>&1 || true
   # Report rather than mask: a leftover stage is a dirty tree for the next run and for `git status`.
   [ -e "$STAGE" ] && echo "rss-gate: WARNING — could not remove $STAGE (root-owned?); remove it manually" >&2
   return 0
@@ -82,7 +84,7 @@ trap clean_stage EXIT
 # is not what we gate). The full node image ships the C/C++ toolchain node-gyp needs. Output is kept so a build
 # failure is diagnosable (only piped away on success would hide the error) — `set -e` fails the gate on error.
 echo "rss-gate: stage build (roaring ${ROARING_VER} from source, uncapped)"
-docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_IMAGE" bash -lc '
+docker run --rm -e ROARING_VER="$ROARING_VER" -v "$ROOT:/w:ro" -v "$STAGE:/stage" "$STAGE_RUN" bash -lc '
   set -e
   cd /stage
   npm init -y >/dev/null 2>&1
@@ -113,7 +115,7 @@ echo "rss-gate: run soak under a hard ${MEM} RSS ceiling (swap off)"
 docker run --rm \
   --memory="$MEM" --memory-swap="$MEM" \
   -e SOAK_SECONDS="$SECONDS_" -e SOAK_SEGMENTS="$SEGMENTS" -e SOAK_CAP="$CAP" \
-  -v "$STAGE:/stage" "$STAGE_IMAGE" bash -lc '
+  -v "$STAGE:/stage" "$STAGE_RUN" bash -lc '
     cd /stage
     # NOTE: soak spawns a reader-child; if the child alone were OOM-killed, soak.cjs treats it as a bonus and
     # the parent still runs — so a read-path blowup is caught by the parent hitting the ceiling / the creep

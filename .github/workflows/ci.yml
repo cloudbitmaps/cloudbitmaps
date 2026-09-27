@@ -154,13 +154,15 @@ jobs:
         with:
           name: integration
           files: docker-compose.yml
-      # An image the cache cannot give is pulled one at a time, with backoff, before anything starts: `docker compose
-      # up` pulls them all at once, and every public registry throttles a shared GitHub-runner IP. Failing here is a
-      # real failure: the retries are what make the difference between throttling and a broken image.
-      - name: Load or pull backend images (serial, with backoff)
+      # An image the cache does not serve is pulled one at a time, with backoff, before anything starts: `docker
+      # compose up` pulls them all at once, and every public registry throttles a shared GitHub-runner IP. Failing
+      # here is a real failure: the retries are what make the difference between throttling and a broken image.
+      - id: images
+        name: Load or pull backend images (serial, with backoff)
         run: scripts/ci-backend-images.sh "$RUNNER_TEMP/backend-images.yml"
-      # Saved before the tests run, so an image pulled for a run whose tests then fail is kept all the same.
-      - if: always()
+      # Saved before the tests run, so a run whose tests then fail keeps its images all the same; and only once every
+      # image is local, because no later run this month can add one the saved key lacks.
+      - if: steps.images.outcome == 'success'
         uses: ./.github/actions/docker-images-save
       # `--wait-timeout` so a stuck backend (e.g. an Azurite container that never goes healthy) fails the step fast
       # with a clear signal instead of hanging until the job timeout. Every image is local by now, the override runs
@@ -187,7 +189,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Its image kept in the Actions cache, as the integration job's are.
+      # Its image is kept in the Actions cache, as the integration job's are.
       - uses: ./.github/actions/docker-images-restore
         with:
           name: lambda-smoke
@@ -221,8 +223,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Its image kept in the Actions cache, as the integration job's are: public.ecr.aws answers `Data limit
-      # exceeded` once the runners' shared IPs pass its anonymous quota, and failed this job so in September 2026.
+      # Its image is kept in the Actions cache, as the integration job's are: public.ecr.aws answers `Data limit
+      # exceeded` once the runners' shared IPs pass its anonymous quota, and failed this job that way on 2026-09-26.
       - uses: ./.github/actions/docker-images-restore
         with:
           name: rss-gate

@@ -60,11 +60,12 @@ See [`RELEASING.md`](../RELEASING.md) for how these fit together into a release.
 
 ## The integration backends
 
-`pnpm test:integration` runs against real storage services, which `docker-compose.yml` starts.
+`pnpm test:integration` runs against the storage services `docker-compose.yml` starts: MinIO, and emulators of Google
+Cloud Storage and Azure Blob Storage.
 
 | script | what it does | when |
 |---|---|---|
-| `ci-backend-images.sh` | Makes every image `docker-compose.yml` names local before the `integration` job starts it, one at a time through `lib/docker-pull.sh`, so each comes from the copy the Actions cache keeps or from a pull with backoff. It writes a compose override that runs each service on that local copy, because a copy of an image named by digest comes back from `docker load` without the digest, and compose asks for MinIO by digest. | CI — the `integration` job |
+| `ci-backend-images.sh` | Makes every image `docker-compose.yml` names local before the `integration` job starts it, one at a time through `lib/docker-pull.sh`, so each comes from the copy the Actions cache keeps or from a pull with backoff. It writes a compose override that runs each service on that local copy, because a loaded image answers only to the names it was saved under and a digest is not one, and compose asks for MinIO by digest. It reads `docker-compose.yml` alone, as `ci.yml` starts it, and fails if that declares no services. | CI — the `integration` job |
 
 ## The site
 
@@ -82,7 +83,7 @@ See [`RELEASING.md`](../RELEASING.md) for how these fit together into a release.
 
 | file | what it is |
 |---|---|
-| `lib/docker-pull.sh` | Pulls a container image, retrying with a linear backoff to absorb a registry's rate limit, then re-running the last attempt with its output shown, so an image that genuinely does not exist fails with the registry's own error rather than a timeout. Shared rather than copied because the CI integration job had grown this retry and the scripts that `docker run` an image directly had not, so they kept failing on a throttle a short wait absorbs. With `DOCKER_IMAGE_CACHE` set, as CI sets it, each image it pulls is also kept in a directory CI saves to the Actions cache, and a later run uses that copy: always for an image named by digest, for a tag until the month turns, and for any image a registry refuses. Unset, as it is by hand, it pulls exactly as before. Sourced by `rss-gate.sh`, `lambda-smoke.sh`, `build-lambda-layer.sh`, `ci-backend-images.sh`, and the `docker-images-save` action in `.github/actions/`. |
+| `lib/docker-pull.sh` | Pulls a container image, retrying with a linear backoff to absorb a registry's rate limit, then re-running the last attempt with its output shown, so an image that genuinely does not exist fails with the registry's own error rather than a timeout, unless CI kept a copy of it (below). Shared rather than copied because the CI integration job had grown this retry and the scripts that `docker run` an image directly had not, so they kept failing on a throttle a short wait absorbs. With `DOCKER_IMAGE_CACHE` set, as CI sets it, each image it pulls is also kept in a directory CI saves to the Actions cache. A later run uses that copy without asking the registry until the month turns or a file that names the images changes; then it asks again, and uses the copy only if the registry refuses, with a warning on the run. `docker_image_run_name` gives the name to run an image by, since a loaded image answers only to the names it was saved under and a digest is not one. Unset, as it is by hand, it pulls exactly as before. Sourced by `rss-gate.sh`, `lambda-smoke.sh`, `build-lambda-layer.sh`, `ci-backend-images.sh`, the `docker-images-save` action in `.github/actions/`, and `tests/ci`. |
 
 ## Conventions
 
