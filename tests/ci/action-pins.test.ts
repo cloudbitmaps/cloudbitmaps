@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROOT, compositeActionFiles, jobs, workflowFiles } from '../helpers/workflows';
+import {
+  ROOT,
+  compositeActionFiles,
+  isActionFile,
+  jobs,
+  workflowFiles,
+} from '../helpers/workflows';
 
 /**
  * Every third-party action CI uses is pinned to a full commit SHA, with a `# vX` comment naming its release, as
@@ -71,6 +77,20 @@ describe('every third-party action CI uses is pinned to a commit', () => {
         .map((l) => l.uses)
         .sort(),
     ).toEqual(parsedUses(file).sort());
+  });
+
+  it('reads every workflow and every composite action, at any depth', () => {
+    expect(compositeActionFiles().length).toBeGreaterThan(0);
+    expect(FILES).toEqual(expect.arrayContaining([...workflowFiles(), ...compositeActionFiles()]));
+    for (const [path, want] of [
+      ['docker-images-save/action.yml', true],
+      ['group/one/action.yaml', true],
+      ['group\\one\\action.yml', true],
+      ['docker-images-save/README.md', false],
+      ['my-action.yml', false],
+    ] as const) {
+      expect(isActionFile(path), path).toBe(want);
+    }
   });
 
   it('finds third-party actions in workflows and in composite actions (an empty sweep would prove nothing)', () => {

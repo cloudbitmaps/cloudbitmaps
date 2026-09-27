@@ -51,7 +51,7 @@ docker_pull_with_backoff() {
       echo "docker-pull: the copy of $img the cache kept did not load; pulling it" >&2
     fi
   fi
-  local attempt=1 rc
+  local attempt=1 rc did why stalls=0
   while :; do
     # Tested, not run bare: the callers run under `set -e`, which a failed attempt must not end.
     if docker_pull_attempt -q "$img" >/dev/null 2>&1; then rc=0; else rc=$?; fi
@@ -60,27 +60,39 @@ docker_pull_with_backoff() {
       docker_image_keep "$img" "$cached"
       return 0
     fi
-    # A pull that stalls is not a throttle, and waiting on more of them only runs down the job's timeout: with a copy
-    # kept, use it now.
-    if [ "$rc" -eq 124 ] && [ -n "$cached" ] && [ -f "$cached" ]; then
-      echo "docker-pull: the pull of $img stalled" >&2
-      docker_image_fall_back "$img" "$cached" "stalled" && return 0
+    # A pull that stalls is not a throttle, and waiting on more of them only runs down the job's timeout. With a copy
+    # kept, use it now. With none that loads, a second stall ends the tries: each costs DOCKER_PULL_TIMEOUT, and the
+    # attempts left would outlast the job's own timeout, which would then end the job with no word of why.
+    if [ "$rc" -eq 124 ]; then
+      stalls=$((stalls + 1))
+      if [ -n "$cached" ] && [ -f "$cached" ]; then
+        echo "docker-pull: the pull of $img stalled" >&2
+        docker_image_fall_back "$img" "$cached" "stalled" && return 0
+      fi
+      if [ "$stalls" -ge 2 ]; then
+        echo "docker-pull: FAILED: the pull of $img stalled twice, and no copy the cache kept could stand in" >&2
+        return 1
+      fi
     fi
     if [ "$attempt" -ge "$attempts" ]; then
       echo "docker-pull: FAILED after $attempts attempts: $img" >&2
       echo "docker-pull: re-running once with output so the real error is visible ↓" >&2
-      if docker_pull_attempt "$img" >&2; then
+      if docker_pull_attempt "$img" >&2; then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 0 ]; then
         docker_image_keep "$img" "$cached"
         return 0
       fi
       if [ -n "$cached" ] && [ -f "$cached" ]; then
-        docker_image_fall_back "$img" "$cached" "refused it" && return 0
+        if [ "$rc" -eq 124 ]; then did="stalled"; else did="refused it"; fi
+        docker_image_fall_back "$img" "$cached" "$did" && return 0
       fi
       return 1
     fi
-    # Linear backoff: a per-second rate limit clears in moments, so 10s/20s/30s/40s is ample and keeps the
-    # worst case (100s) well inside a job timeout. Exponential would buy nothing here and risks the timeout.
-    echo "docker-pull: $img throttled or unavailable (attempt $attempt/$attempts) — waiting $((attempt * 10))s" >&2
+    # Linear backoff: a per-second rate limit clears in moments, so 10s/20s/30s/40s is ample: 100s of waiting at most,
+    # well inside a job timeout, beside at most two stalls. Exponential would buy nothing here and risks the timeout.
+    why="throttled or unavailable"
+    [ "$rc" -eq 124 ] && why="stalled"
+    echo "docker-pull: $img $why (attempt $attempt/$attempts) — waiting $((attempt * 10))s" >&2
     sleep $((attempt * 10))
     attempt=$((attempt + 1))
   done
@@ -146,7 +158,7 @@ docker_image_run_name() {
 docker_pull_warning() {
   echo "docker-pull: $1" >&2
   if [ "${GITHUB_ACTIONS:-}" = true ]; then
-    echo "::warning title=A registry refused a container image::$1" >&2
+    echo "::warning title=A registry did not serve a container image::$1" >&2
   fi
   return 0
 }
@@ -162,7 +174,7 @@ docker_image_keep() {
   if [ -f "$2" ]; then
     docker_image_cache_used "$2"
   else
-    : 2>/dev/null >"$DOCKER_IMAGE_CACHE/.incomplete" || true
+    docker_image_cache_incomplete
   fi
   return 0
 }
@@ -187,7 +199,16 @@ docker_image_load() {
 }
 
 # Which files this run used, so the ones it did not are dropped before the cache is saved (docker_image_cache_prune).
-docker_image_cache_used() { basename "$1" >>"$DOCKER_IMAGE_CACHE/.used"; }
+# One that cannot be recorded, as on a full disk, is said, and stops the save, since the prune would drop it unrecorded.
+# It is not a failed pull: the callers run under `set -e`, and the image is local either way.
+docker_image_cache_used() {
+  { basename "$1" >>"$DOCKER_IMAGE_CACHE/.used"; } 2>/dev/null && return 0
+  echo "docker-pull: could not record that this run used $(basename "$1"); the cache will not be saved" >&2
+  docker_image_cache_incomplete
+}
+
+# Mark the cache as lacking something this run needed, so it is not saved (docker_image_cache_prune).
+docker_image_cache_incomplete() { : 2>/dev/null >"$DOCKER_IMAGE_CACHE/.incomplete" || true; }
 
 # Drop every file this run did not use, so an image re-pinned away leaves the cache. Prints whether the cache is worth
 # saving: some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then.

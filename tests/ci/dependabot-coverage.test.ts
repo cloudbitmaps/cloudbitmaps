@@ -60,9 +60,12 @@ const COMPOSITE_DIRS = compositeActionFiles().map((f) => `/${dirname(f)}`);
 /**
  * Whether a Dependabot directory names `dir`. Dependabot expands the glob with Ruby's `Dir.glob`, dotfiles included:
  * `**` followed by a slash spans any number of path segments, and `*` stays inside one, as does a `**` with no slash
- * after it. Any other glob syntax is read literally, so it makes this test fail rather than wave a directory through.
+ * after it. Dotfiles included means `.` too, so a pattern that ends in a `*` also names the directory before it. Any
+ * other glob syntax is read literally, so it makes this test fail rather than wave a directory through.
  */
 function names(pattern: string, dir: string): boolean {
+  const parent = /\/\*\*?$/.exec(pattern);
+  if (parent !== null && names(pattern.slice(0, parent.index) || '/', dir)) return true;
   const source = pattern
     .split(/(\*\*\/|\*+)/)
     .map((p) =>
@@ -99,7 +102,8 @@ describe('dependabot covers every install in the repo', () => {
       ['/', '/', true],
       ['/.github/actions/*', '/.github/actions/docker-images-save', true],
       ['/.github/actions/*', '/.github/actions/group/one', false],
-      ['/.github/actions/*', '/.github/actions', false],
+      // `Dir.glob('.github/actions/*', File::FNM_DOTMATCH)` returns `.github/actions/.` as well.
+      ['/.github/actions/*', '/.github/actions', true],
       ['/.github/actions', '/.github/actions/docker-images-save', false],
       ['/.github/actions/*', '/.github/actions/docker-images-save/more', false],
       // Ruby reads a `**` with no slash after it as a `*`: only `**/` recurses.
@@ -107,11 +111,14 @@ describe('dependabot covers every install in the repo', () => {
       ['/.github/actions/**', '/.github/actions/group/one', false],
       ['/.github/actions/**/*', '/.github/actions/docker-images-save', true],
       ['/.github/actions/**/*', '/.github/actions/group/one', true],
-      ['/.github/actions/**/*', '/.github/actions', false],
+      ['/.github/actions/**/*', '/.github/actions/a/b/c', true],
+      ['/.github/actions/**/*', '/.github/actions', true],
+      ['/.github/actions/*', '/.github', false],
       ['/fuzz', '/fuzzy', false],
       ['/a.b', '/axb', false],
       // Glob syntax this does not model reads literally, so the test fails rather than wave a directory through.
       ['/.github/action?', '/.github/actions', false],
+      ['/.github/actions/docker-images-savee?', '/.github/actions/docker-images-save', false],
     ];
     for (const [pattern, dir, want] of cases)
       expect(names(pattern, dir), `${pattern} ~ ${dir}`).toBe(want);

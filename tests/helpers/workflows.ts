@@ -19,6 +19,8 @@ export interface Step {
   shell?: string;
   with?: Record<string, string>;
   env?: Record<string, string>;
+  /** A step that may fail without failing its job. */
+  'continue-on-error'?: boolean | string;
 }
 
 export interface Job {
@@ -43,12 +45,18 @@ export function workflowFiles(): string[] {
     .map((f) => `.github/workflows/${f}`);
 }
 
+/** Whether a path, with either separator, is an action's metadata file. */
+export function isActionFile(path: string): boolean {
+  return /(?:^|\/)action\.ya?ml$/.test(path.replace(/\\/g, '/'));
+}
+
 /** Every composite action's metadata file, at any depth under `.github/actions`, relative to the root. */
 export function compositeActionFiles(): string[] {
   const dir = join(ROOT, '.github/actions');
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, encoding: 'utf8' })
-    .filter((f) => /(?:^|\/)action\.ya?ml$/.test(f))
+    .map((f) => f.replace(/\\/g, '/'))
+    .filter(isActionFile)
     .sort()
     .map((f) => `.github/actions/${f}`);
 }

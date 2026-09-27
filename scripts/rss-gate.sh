@@ -50,7 +50,7 @@ STAGE="$ROOT/.rss-stage"
 # Not `node:22` from Docker Hub: GitHub-hosted runners share an IP pool that is routinely over Docker Hub's
 # anonymous pull limit, and the gate died on HTTP 429 before running anything. `public.ecr.aws/docker/library`
 # is AWS's official mirror of the same Docker Official Images — same digests, no auth. It limits anonymous pulls
-# too, to one a second and 500 GB a month an IP, which is what the backoff below and CI's image cache are for.
+# too: one a second in a region, and 500 GB a month from each IP, which the backoff below and CI's image cache absorb.
 # Overridable so a local run can point at a warm Docker Hub cache instead.
 STAGE_IMAGE="${RSS_GATE_IMAGE:-public.ecr.aws/docker/library/node:22}"
 

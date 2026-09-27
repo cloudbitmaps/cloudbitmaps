@@ -1,6 +1,15 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { ROOT, compositeActionFiles, jobs, readYaml } from '../helpers/workflows';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { ROOT, compositeActionFiles, jobs, readYaml, type Job } from '../helpers/workflows';
 
 // Every place that runs a container must absorb a registry throttle. This test exists because the rule was
 // implemented in exactly one of the three places that needed it.
@@ -80,11 +89,21 @@ function problems(sh: string): string[] {
     code.some((c) => /^(?:\.|source)\s.*docker-pull\.sh\b/.test(c)) &&
     code.some((c) => /\bdocker_pull_with_backoff\b/.test(c));
   // The variables that hold a name to run an image by: a copy loaded from the cache runs by its local name alone.
-  const runNames = [...sh.matchAll(/\b([A-Za-z_]\w*)="\$\(docker_image_run_name\b/g)].map(
+  const runNames = [...sh.matchAll(/\b([A-Za-z_]\w*)="?\$\(docker_image_run_name\b/g)].map(
     (m) => m[1] ?? '',
   );
-  const byRunName = (c: string) => runNames.some((v) => new RegExp(`\\$\\{?${v}\\b`).test(c));
+  const byRunName = (c: string) =>
+    /\$\(docker_image_run_name\b/.test(c) ||
+    runNames.some((v) => new RegExp(`\\$\\{?${v}\\b`).test(c));
   const found: string[] = [];
+  // The local name exists only once the pull has made the image local: taken before it, a digest's run name is the
+  // digest, which a loaded copy does not answer to.
+  const pulledAt = code.findIndex((c) => /\bdocker_pull_with_backoff\b/.test(c));
+  code.forEach((c, i) => {
+    if (pulledAt >= 0 && i < pulledAt && /\$\(docker_image_run_name\b/.test(c)) {
+      found.push(`takes a run name before the pull that makes the image local: ${c}`);
+    }
+  });
   for (const c of code) {
     const kind = dockerKind(c);
     const sub = kind === 'compose' ? composeSubcommand(c) : undefined;
@@ -106,15 +125,41 @@ function problems(sh: string): string[] {
 }
 
 /** Every shell script a job can run: under `scripts/` at any depth, and beside a composite action. */
-function shellScripts(): string[] {
+function shellScripts(root = ROOT): string[] {
   const under = (dir: string) =>
-    existsSync(join(ROOT, dir))
-      ? readdirSync(join(ROOT, dir), { recursive: true, encoding: 'utf8' })
+    existsSync(join(root, dir))
+      ? readdirSync(join(root, dir), { recursive: true, encoding: 'utf8' })
+          .map((f) => f.replace(/\\/g, '/'))
           .filter((f) => f.endsWith('.sh'))
           .map((f) => `${dir}/${f}`)
       : [];
   // The helper itself is the one place a bare pull belongs.
   return [...under('scripts'), ...under('.github/actions')].filter((f) => f !== HELPER).sort();
+}
+
+interface ActionMeta {
+  runs?: { using?: string; image?: string; steps?: unknown[] };
+}
+
+/** What in one job the runner pulls itself, or a step runs, with no helper behind it. */
+function jobProblems(where: string, job: Job): string[] {
+  const found: string[] = [];
+  if (job.services !== undefined || job.container !== undefined) {
+    found.push(`${where}: the runner pulls its services or container itself`);
+  }
+  for (const step of job.steps ?? []) {
+    const name = `${where} › ${step.name ?? step.id ?? step.uses ?? '(unnamed step)'}`;
+    if (step.uses?.startsWith('docker://')) found.push(`${name}: the runner pulls ${step.uses}`);
+    for (const p of problems(step.run ?? '')) found.push(`${name}: ${p}`);
+  }
+  return found;
+}
+
+/** Whether an action runs in a container, which the runner pulls or builds itself. */
+function actionProblems(file: string, meta: ActionMeta): string[] {
+  return meta.runs?.using === 'docker'
+    ? [`${file}: the runner pulls or builds its image itself`]
+    : [];
 }
 
 describe('registry throttling is absorbed everywhere a container is started', () => {
@@ -125,7 +170,8 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     // with output so the registry's actual message reaches the log, then return non-zero.
     expect(src).toMatch(/return 1/);
     expect(src).toMatch(/docker_pull_attempt "\$img" >&2/);
-    expect(src).toMatch(/sleep \$\(\(attempt \* 10\)\)/);
+    // Waited out, not sent to the background, where the next attempt would not wait for it.
+    expect(src).toMatch(/^[ \t]*sleep \$\(\(attempt \* 10\)\)[ \t]*$/m);
   });
 
   it('reads commands, not text: each pulling form is caught, and its look-alikes are not', () => {
@@ -159,9 +205,25 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       'docker build .',
       'docker buildx build .',
       'docker image build .',
+      'docker compose up -d --pull always',
+      'docker compose up -d --pull missing',
+      'docker compose --profile ci up -d',
+      'docker -H tcp://127.0.0.1:2375 run --rm "$IMAGE" true',
     ]) {
       expect(problems(`${helped}\n${sh}`), sh).toHaveLength(1);
     }
+    // A run by the name docker_image_run_name gives, however the name is written.
+    expect(problems(`${helped}\ndocker run --rm "$(docker_image_run_name "$IMAGE")" true`)).toEqual(
+      [],
+    );
+    expect(
+      problems(
+        `. ${HELPER}\ndocker_pull_with_backoff "$IMAGE"\nRUN=$(docker_image_run_name "$IMAGE")\ndocker run "$RUN"`,
+      ),
+    ).toEqual([]);
+    expect(
+      problems(`${helped}\ndocker -H tcp://127.0.0.1:2375 run --rm "$RUN_IMAGE" true`),
+    ).toEqual([]);
     for (const sh of [
       'docker compose up -d --pull never --wait',
       'docker compose up -d --pull=never',
@@ -183,10 +245,41 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       expect(problems(sh), sh).toEqual([]);
     }
     // Sourcing the helper is not enough without the call, and the call is not enough without the source.
-    expect(problems(`. ${HELPER}\ndocker run alpine`)).toHaveLength(1);
+    const runs = 'RUN_IMAGE="$(docker_image_run_name x)"\ndocker run "$RUN_IMAGE"';
+    const unhelped = ['pulls without the shared helper: docker run "$RUN_IMAGE"'];
+    expect(problems(`. ${HELPER}\n${runs}`)).toEqual(unhelped);
+    expect(problems(`# . ${HELPER}\ndocker_pull_with_backoff x\n${runs}`)).toEqual(unhelped);
+    expect(problems(`. ${HELPER}\ndocker_pull_with_backoff x\n${runs}`)).toEqual([]);
     expect(
-      problems('# . scripts/lib/docker-pull.sh\ndocker_pull_with_backoff x\ndocker run x'),
-    ).toHaveLength(1);
+      problems(
+        `. ${HELPER}\nRUN_IMAGE="$(docker_image_run_name x)"\ndocker_pull_with_backoff x\ndocker run "$RUN_IMAGE"`,
+      ),
+    ).toEqual([
+      'takes a run name before the pull that makes the image local: RUN_IMAGE="$(docker_image_run_name x)"',
+    ]);
+  });
+
+  it('sweeps scripts at any depth under scripts/ and beside a composite action, but not the helper', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pull-gate-'));
+    try {
+      for (const f of [
+        'scripts/a.sh',
+        'scripts/sub/b.sh',
+        'scripts/lib/docker-pull.sh',
+        'scripts/README.md',
+        '.github/actions/x/run.sh',
+      ]) {
+        mkdirSync(join(root, dirname(f)), { recursive: true });
+        writeFileSync(join(root, f), '');
+      }
+      expect(shellScripts(root)).toEqual([
+        '.github/actions/x/run.sh',
+        'scripts/a.sh',
+        'scripts/sub/b.sh',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('finds scripts that run containers, so a rename cannot make this suite vacuous', () => {
@@ -226,27 +319,31 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     //    pull that nothing retries.
     // 4. It read `run:` text only. A job's `services:` or `container:`, a `uses: docker://` step and a composite
     //    action that runs in a container are pulled by the runner itself, where no helper and no cache can reach.
-    const offenders: string[] = [];
-    let reading = 0;
-    for (const { where, job } of jobs()) {
-      if (job.services !== undefined || job.container !== undefined) {
-        offenders.push(`${where}: the runner pulls its services or container itself`);
-      }
-      for (const step of job.steps ?? []) {
-        const name = `${where} › ${step.name ?? step.id ?? step.uses ?? '(unnamed step)'}`;
-        if (step.uses?.startsWith('docker://'))
-          offenders.push(`${name}: the runner pulls ${step.uses}`);
-        const run = step.run ?? '';
-        if (/\bdocker\s/.test(run)) reading += 1;
-        for (const p of problems(run)) offenders.push(`${name}: ${p}`);
-      }
-    }
-    for (const file of compositeActionFiles()) {
-      if (readYaml<{ runs?: { using?: string } }>(file).runs?.using === 'docker') {
-        offenders.push(`${file}: the runner pulls or builds its image itself`);
-      }
-    }
-    expect(reading, 'no workflow step runs docker — has the shape changed?').toBeGreaterThan(0);
+    const offenders = [
+      ...jobs().flatMap(({ where, job }) => jobProblems(where, job)),
+      ...compositeActionFiles().flatMap((file) => actionProblems(file, readYaml<ActionMeta>(file))),
+    ];
+    const reading = jobs()
+      .flatMap(({ job }) => job.steps ?? [])
+      .filter((s) => /\bdocker\s/.test(s.run ?? ''));
+    expect(reading.length, 'no workflow step runs docker — has the shape changed?').toBeGreaterThan(
+      0,
+    );
     expect(offenders).toEqual([]);
+  });
+
+  it('reads a job and an action the way the runner does, and flags what the runner pulls itself', () => {
+    expect(jobProblems('j', { steps: [{ run: 'pnpm test' }] })).toEqual([]);
+    expect(jobProblems('j', { services: { redis: { image: 'redis:7' } }, steps: [] })).toHaveLength(
+      1,
+    );
+    expect(jobProblems('j', { container: 'node:22', steps: [] })).toHaveLength(1);
+    expect(jobProblems('j', { steps: [{ uses: 'docker://alpine:3' }] })).toHaveLength(1);
+    expect(jobProblems('j', { steps: [{ run: 'docker run --rm alpine true' }] })).toHaveLength(1);
+    expect(actionProblems('a', { runs: { using: 'composite', steps: [] } })).toEqual([]);
+    expect(
+      actionProblems('a', { runs: { using: 'docker', image: 'docker://alpine:3' } }),
+    ).toHaveLength(1);
+    expect(actionProblems('a', { runs: { using: 'docker', image: 'Dockerfile' } })).toHaveLength(1);
   });
 });

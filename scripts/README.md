@@ -65,7 +65,7 @@ Cloud Storage and Azure Blob Storage.
 
 | script | what it does | when |
 |---|---|---|
-| `ci-backend-images.sh` | Makes every image `docker-compose.yml` names local before the `integration` job starts it, one at a time through `lib/docker-pull.sh`, so each comes from the copy the Actions cache keeps or from a pull with backoff. It writes a compose override that runs each service on that local copy, because a loaded image answers only to the names it was saved under and a digest is not one, and compose asks for MinIO by digest. It reads `docker-compose.yml` alone, as `ci.yml` starts it, and fails if that declares no services. | CI — the `integration` job |
+| `ci-backend-images.sh` | Makes every image `docker-compose.yml` names local before the `integration` job starts it, one at a time through `lib/docker-pull.sh`, so each comes from the copy the Actions cache keeps or from a pull with backoff. It writes a compose override that runs each service on that local copy, or on the image itself when no copy could be kept, because a loaded image answers only to the names it was saved under and a digest is not one, and compose asks for MinIO by digest. It reads `docker-compose.yml` alone, as `ci.yml` starts it, and fails if that declares no services. | CI — the `integration` job |
 
 ## The site
 
