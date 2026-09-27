@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   ROOT,
   compositeActionFiles,
@@ -82,6 +83,25 @@ describe('every third-party action CI uses is pinned to a commit', () => {
   it('reads every workflow and every composite action, at any depth', () => {
     expect(compositeActionFiles().length).toBeGreaterThan(0);
     expect(FILES).toEqual(expect.arrayContaining([...workflowFiles(), ...compositeActionFiles()]));
+    const root = mkdtempSync(join(tmpdir(), 'action-pins-'));
+    try {
+      for (const f of [
+        'one/action.yml',
+        'group/two/action.yaml',
+        'a/b/c/action.yml',
+        'one/README.md',
+      ]) {
+        mkdirSync(join(root, '.github/actions', dirname(f)), { recursive: true });
+        writeFileSync(join(root, '.github/actions', f), '');
+      }
+      expect(compositeActionFiles(root)).toEqual([
+        '.github/actions/a/b/c/action.yml',
+        '.github/actions/group/two/action.yaml',
+        '.github/actions/one/action.yml',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
     for (const [path, want] of [
       ['docker-images-save/action.yml', true],
       ['group/one/action.yaml', true],

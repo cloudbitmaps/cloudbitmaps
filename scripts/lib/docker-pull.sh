@@ -40,15 +40,18 @@
 docker_pull_with_backoff() {
   local img="${1:?docker_pull_with_backoff: image required}"
   local attempts="${2:-5}"
-  local cached=""
+  # `usable` is the copy the cache kept, while it may still load: one that has failed to is not tried again.
+  local cached="" usable=""
   if [ -n "${DOCKER_IMAGE_CACHE:-}" ]; then
     cached="$(docker_image_cache_file "$img")"
-    if [ -f "$cached" ] && [ "${DOCKER_IMAGE_CACHE_HIT:-}" = true ]; then
+    [ -f "$cached" ] && usable="$cached"
+    if [ -n "$usable" ] && [ "${DOCKER_IMAGE_CACHE_HIT:-}" = true ]; then
       if docker_image_load "$img" "$cached"; then
         echo "docker-pull: $img from the cache" >&2
         return 0
       fi
       echo "docker-pull: the copy of $img the cache kept did not load; pulling it" >&2
+      usable=""
     fi
   fi
   local attempt=1 rc did why stalls=0
@@ -61,13 +64,15 @@ docker_pull_with_backoff() {
       return 0
     fi
     # A pull that stalls is not a throttle, and waiting on more of them only runs down the job's timeout. With a copy
-    # kept, use it now. With none that loads, a second stall ends the tries: each costs DOCKER_PULL_TIMEOUT, and the
-    # attempts left would outlast the job's own timeout, which would then end the job with no word of why.
+    # kept, use it now. With none that loads, a second stall, in all and not only in a row, ends the tries: each costs
+    # DOCKER_PULL_TIMEOUT, three minutes by default, and six would take 18 of the integration job's 20, leaving its
+    # timeout to end the job with no word of why.
     if [ "$rc" -eq 124 ]; then
       stalls=$((stalls + 1))
-      if [ -n "$cached" ] && [ -f "$cached" ]; then
+      if [ -n "$usable" ]; then
         echo "docker-pull: the pull of $img stalled" >&2
         docker_image_fall_back "$img" "$cached" "stalled" && return 0
+        usable=""
       fi
       if [ "$stalls" -ge 2 ]; then
         echo "docker-pull: FAILED: the pull of $img stalled twice, and no copy the cache kept could stand in" >&2
@@ -82,10 +87,13 @@ docker_pull_with_backoff() {
         docker_image_keep "$img" "$cached"
         return 0
       fi
-      if [ -n "$cached" ] && [ -f "$cached" ]; then
+      if [ -n "$usable" ]; then
         if [ "$rc" -eq 124 ]; then did="stalled"; else did="refused it"; fi
         docker_image_fall_back "$img" "$cached" "$did" && return 0
       fi
+      # A stall prints nothing of its own, so the log would otherwise end at the line above.
+      [ "$rc" -eq 124 ] &&
+        echo "docker-pull: FAILED: the last pull of $img stalled (no answer in ${DOCKER_PULL_TIMEOUT:-180}s)" >&2
       return 1
     fi
     # Linear backoff: a per-second rate limit clears in moments, so 10s/20s/30s/40s is ample: 100s of waiting at most,
@@ -211,7 +219,9 @@ docker_image_cache_used() {
 docker_image_cache_incomplete() { : 2>/dev/null >"$DOCKER_IMAGE_CACHE/.incomplete" || true; }
 
 # Drop every file this run did not use, so an image re-pinned away leaves the cache. Prints whether the cache is worth
-# saving: some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then.
+# saving: some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then. A
+# save cut short with no earlier copy beside it is an image unkept too, which it says even when the marker could not be
+# written.
 docker_image_cache_prune() {
   local file kept=false
   for file in "$DOCKER_IMAGE_CACHE"/*.tar; do
@@ -223,6 +233,9 @@ docker_image_cache_prune() {
     fi
   done
   [ -e "$DOCKER_IMAGE_CACHE/.incomplete" ] && kept=false
+  for file in "$DOCKER_IMAGE_CACHE"/*.part; do
+    [ -e "$file" ] && [ ! -e "${file%.part}" ] && kept=false
+  done
   rm -f "$DOCKER_IMAGE_CACHE/.used" "$DOCKER_IMAGE_CACHE/.incomplete" "$DOCKER_IMAGE_CACHE"/*.part
   echo "$kept"
 }

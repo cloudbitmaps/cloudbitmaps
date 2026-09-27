@@ -51,8 +51,8 @@ export function isActionFile(path: string): boolean {
 }
 
 /** Every composite action's metadata file, at any depth under `.github/actions`, relative to the root. */
-export function compositeActionFiles(): string[] {
-  const dir = join(ROOT, '.github/actions');
+export function compositeActionFiles(root = ROOT): string[] {
+  const dir = join(root, '.github/actions');
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, encoding: 'utf8' })
     .map((f) => f.replace(/\\/g, '/'))

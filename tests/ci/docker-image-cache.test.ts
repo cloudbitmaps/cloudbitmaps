@@ -84,6 +84,10 @@ exit 2
 const STUB_TIMEOUT = String.raw`#!/usr/bin/env bash
 echo "$1" >>"$STUB/timeouts"
 shift
+n="$(wc -l <"$STUB/timeouts" | tr -d ' ')"
+for k in $STUB_STALL_AT; do
+  if [ "$k" = "$n" ]; then echo "$*" >>"$STUB/stalls"; exit 124; fi
+done
 for f in $STUB_STALL; do
   for a; do
     if [ "$a" = "$f" ]; then echo "$*" >>"$STUB/stalls"; exit 124; fi
@@ -138,7 +142,8 @@ function world(): World {
     '#!/usr/bin/env bash\necho "$*" >>"$STUB/date-calls"\necho 2026-09\n',
   );
   // `timeout` as coreutils has it, except that a pull of an image named in STUB_STALL stalls: 124, as on a timeout.
-  // STUB_STALL_LOUD stalls only the last, loud pull, the one run without `-q`.
+  // STUB_STALL_LOUD stalls only the last, loud pull, the one run without `-q`, and STUB_STALL_AT the attempts it
+  // numbers, counting from 1.
   writeFileSync(join(bin, 'timeout'), STUB_TIMEOUT);
   for (const tool of ['docker', 'sleep', 'date', 'timeout']) chmodSync(join(bin, tool), 0o755);
   const cache = join(dir, 'cache');
@@ -395,12 +400,27 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   });
 
   it("keeps a pull it cannot record as used, says so, and saves nothing, under the callers' `set -e`", () => {
-    mkdirSync(join(w.cache, '.used'), { recursive: true }); // a list that cannot be appended to, as on a full disk
+    // One image is recorded. The list then cannot be appended to, as on a full disk, for the second pull alone, and
+    // is back by the prune: had the second gone unmarked, the prune would drop its copy and call the rest worth saving.
+    expect(w.run(pull(DIGEST), CACHE()).code).toBe(0);
+    const used = join(w.cache, '.used');
+    const recorded = readFileSync(used, 'utf8');
+    rmSync(used);
+    mkdirSync(used);
     const r = w.run(`set -euo pipefail; ${pull(TAG)}; echo pulled`, CACHE());
+    rmSync(used, { recursive: true });
+    writeFileSync(used, recorded);
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain('pulled');
     expect(r.out).toContain(`could not record that this run used ${idOf(TAG)}.tar`);
     expect(w.run(prune, CACHE()).stdout).toBe('false\n');
+  });
+
+  it('saves nothing when a save was cut short with no earlier copy, even when that could not be marked', () => {
+    w.run(pull(DIGEST), CACHE());
+    writeFileSync(`${tarOf(w, TAG)}.part`, 'a save cut short'); // and no .incomplete: it could not be written
+    expect(w.run(prune, CACHE()).stdout).toBe('false\n');
+    expect(existsSync(`${tarOf(w, TAG)}.part`)).toBe(false);
   });
 
   it('keeps going when neither the pull nor the older copy can be recorded, and saves nothing', () => {
@@ -430,6 +450,22 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     expect(r.out).toContain(
       `::warning title=A registry did not serve a container image::using the copy of ${TAG} the cache kept from an earlier run: the registry stalled`,
     );
+  });
+
+  it('says the last pull stalled when it did and no copy is kept', () => {
+    const r = w.run(pull(TAG), { ...CACHE(), STUB_FAIL_QUIET_PULLS: TAG, STUB_STALL_LOUD: TAG });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`FAILED: the last pull of ${TAG} stalled (no answer in 180s)`);
+  });
+
+  it('counts stalls in all, not in a row: a stall, a refusal and a stall end the tries at the third attempt', () => {
+    const r = w.run(pull(TAG), { ...CACHE(), STUB_STALL_AT: '1 3', STUB_FAIL_PULLS: TAG });
+    expect(r.code).toBe(1);
+    expect(readFileSync(join(w.dir, 'timeouts'), 'utf8').split('\n').filter(Boolean)).toHaveLength(
+      3,
+    );
+    expect(r.out).toContain(`${TAG} throttled or unavailable (attempt 2/5)`);
+    expect(r.out).toContain(`the pull of ${TAG} stalled twice`);
   });
 
   it('falls back at once on a pull that stalls when a copy is kept, rather than wait out the job', () => {
@@ -470,6 +506,8 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     expect(r.code).toBe(1);
     expect(w.stalls()).toHaveLength(2);
     expect(r.out).toContain(`the copy of ${TAG} the cache kept did not load either`);
+    // A copy that has failed to load is not tried again at the next stall.
+    expect(w.calls().filter((c) => c.startsWith('load'))).toHaveLength(1);
   });
 
   it('fails when the copy it has does not load and the registry refuses too, and says both', () => {
@@ -495,6 +533,14 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     writeFileSync(tarOf(w, TAG), 'corrupt');
     const r = w.run(pull(TAG), THIS_MONTH());
     expect(r.out).toContain(`the copy of ${TAG} the cache kept did not load; pulling it`);
+  });
+
+  it('does not load a copy again as a fall-back once it has failed to load', () => {
+    mkdirSync(w.cache, { recursive: true });
+    writeFileSync(tarOf(w, TAG), 'corrupt');
+    const r = w.run(pull(TAG), { ...THIS_MONTH(), STUB_FAIL_PULLS: TAG });
+    expect(r.code).toBe(1);
+    expect(w.calls().filter((c) => c.startsWith('load'))).toHaveLength(1);
   });
 
   it('drops what this run did not use before the cache is saved, and prints on stdout whether anything is left', () => {
@@ -550,11 +596,17 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
       expect(w.has(TAG)).toBe(true);
     });
 
-    it('runs a backend on the image itself when its copy could not be kept', () => {
+    it('runs a backend on the image itself when the helper could not name it', () => {
       writeFileSync(join(w.dir, 'a-file'), '');
       const r = w.run(script(), { DOCKER_IMAGE_CACHE: join(w.dir, 'a-file', 'cache') });
       expect(r.code, r.out).toBe(0);
       expect(override()).toEqual({ minio: { image: DIGEST }, 'fake-gcs': { image: TAG } });
+    });
+
+    it('runs a backend on its local name when the save of its copy failed after naming it', () => {
+      const r = w.run(script(), { ...CACHE(), STUB_FAIL_SAVE: idOf(DIGEST) });
+      expect(r.code, r.out).toBe(0);
+      expect(override().minio?.image).toBe(localName(DIGEST));
     });
 
     it('reads docker-compose.yml alone, as ci.yml starts it', () => {
@@ -714,12 +766,20 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
   const scripts = packageScripts();
   /** Whether a script's text pulls through the helper, whatever its image is written as. */
   const pullsThroughHelper = (text: string) => /\bdocker_pull_with_backoff\s+\S/.test(text);
-  /** A script at any depth under `scripts/` that pulls through the helper, the helper itself aside. */
-  const pullingScript = (file: string) =>
-    /^scripts\/(?:[\w.-]+\/)*[\w.-]+\.sh$/.test(file) &&
-    file !== 'scripts/lib/docker-pull.sh' &&
-    existsSync(join(ROOT, file)) &&
-    pullsThroughHelper(readFileSync(join(ROOT, file), 'utf8'));
+  /** A repo file's text, or nothing for a file that is not there. */
+  const repoFile = (file: string): string | undefined =>
+    existsSync(join(ROOT, file)) ? readFileSync(join(ROOT, file), 'utf8') : undefined;
+  /**
+   * The scripts a shell text runs that pull through the helper, the helper itself aside: each such script it runs,
+   * and each one a script it runs runs in turn, at any depth under `scripts/`. `read` gives a file's text.
+   */
+  const pullingScriptsIn = (run: string, read = repoFile, depth = 0): string[] =>
+    scriptsIn(run).flatMap((file) => {
+      const text = file === 'scripts/lib/docker-pull.sh' ? undefined : read(file);
+      if (text === undefined) return [];
+      if (pullsThroughHelper(text)) return [file];
+      return depth < 3 ? pullingScriptsIn(text, read, depth + 1) : [];
+    });
   /** The flags of each tool that take a value, so the word after one is not read as the script. */
   const VALUE_FLAGS = {
     pnpm: /^(?:-C|--dir|--filter|-F|--reporter|--loglevel|--workspace-concurrency)$/,
@@ -748,7 +808,7 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     const text = run.replace(/\\\r?\n/g, ' ');
     const found = [
       ...text.matchAll(
-        /(?:^|[\s;&|("'=]|\.\/|\$\{?\w+\}?\/|\}\}\/)(scripts\/(?:[\w.-]+\/)*[\w.-]+\.sh)\b/g,
+        /(?:^|[\s;&|("'=]|\.\/|\$\{?\w+\}?["']?\/|\}\}["']?\/)(scripts\/(?:[\w.-]+\/)*[\w.-]+\.sh)\b/g,
       ),
     ].map((m) => m[1] ?? '');
     if (depth < 3) {
@@ -762,6 +822,22 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
   const stepName = (s: Step) => s.name ?? s.run ?? s.uses ?? '(unnamed step)';
   /** A condition that is the default, `success()`, spelled out or left out. */
   const ON_SUCCESS = /^\s*(?:\$\{\{\s*)?success\(\)\s*(?:\}\})?\s*$/;
+  /**
+   * A save condition that still waits for every step before it. GitHub puts `success() &&` before a condition that
+   * names no status function, so `github.ref == 'refs/heads/main'` does; so does `success() && …` with nothing that
+   * could let a failure through after it.
+   */
+  const savesOnlyOnSuccess = (condition: string) =>
+    !/\b(?:success|failure|always|cancelled)\(\)/.test(condition) ||
+    ON_SUCCESS.test(condition) ||
+    (/^\s*(?:\$\{\{\s*)?success\(\)\s*&&[^|]*$/.test(condition) &&
+      !/\b(?:failure|always|cancelled)\(\)/.test(condition));
+  /**
+   * A condition under which a step runs on every run whose save runs, or on none: nothing that can skip a test while
+   * the save goes ahead.
+   */
+  const RUNS_WITH_THE_SAVE =
+    /^\s*(?:\$\{\{\s*)?(?:success\(\)|always\(\)|!\s*cancelled\(\)|failure\(\)|success\(\)\s*\|\|\s*failure\(\))\s*(?:\}\})?\s*$/;
   /** A condition under which a step also runs after one that failed: a cleanup, which tests no image. */
   const CLEANUP = /\balways\(\)|!\s*cancelled\(\)|\bfailure\(\)/;
   /**
@@ -771,10 +847,10 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
    * runs only when every step before it passed: the job then has every image, and each has passed the tests. Nothing
    * but a cleanup runs after it, and nothing before it may fail without failing the job.
    */
-  const problemsOf = (job: Job): string[] => {
+  const problemsOf = (job: Job, read = repoFile): string[] => {
     const steps = job.steps ?? [];
     const at = steps.flatMap((s, i) => {
-      const script = scriptsIn(s.run ?? '').find(pullingScript);
+      const [script] = pullingScriptsIn(s.run ?? '', read);
       return script === undefined ? [] : [{ i, script, run: s.run ?? '' }];
     });
     const first = at[0];
@@ -789,8 +865,15 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     if (save < 0 || save < last.i) found.push('saves no cache after its last pull');
     else {
       const condition = steps[save]?.if;
-      if (condition !== undefined && !ON_SUCCESS.test(condition)) {
-        found.push(`saves its cache if ${condition}, not only when every step before it passed`);
+      if (condition !== undefined && !savesOnlyOnSuccess(condition)) {
+        found.push(`saves its cache if ${condition}, which can save after a step failed`);
+      }
+      for (const between of steps.slice(Math.max(restore, 0) + 1, save)) {
+        if (between.if !== undefined && !RUNS_WITH_THE_SAVE.test(between.if)) {
+          found.push(
+            `runs ${stepName(between)} only if ${between.if}, and saves whether or not it ran`,
+          );
+        }
       }
       for (const later of steps.slice(save + 1)) {
         if (!CLEANUP.test(later.if ?? '')) found.push(`runs ${stepName(later)} after the save`);
@@ -801,9 +884,14 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
           found.push(`lets ${stepName(earlier)} fail and still saves`);
         }
       }
-      const tests = steps.findIndex((s) => /\bpnpm (?:run )?test:integration\b/.test(s.run ?? ''));
-      if (first.script === 'scripts/ci-backend-images.sh' && save < tests) {
-        found.push('saves before its tests run');
+      const tests = steps.findIndex((s) =>
+        [...(s.run ?? '').matchAll(/\bpnpm\s+([^;&|\n]*)/g)].some(
+          (m) => packageScriptOf('pnpm', m[1] ?? '') === 'test:integration',
+        ),
+      );
+      if (first.script === 'scripts/ci-backend-images.sh') {
+        if (tests < 0) found.push('runs no tests before its save');
+        else if (save < tests) found.push('saves before its tests run');
       }
     }
     // The key hashes the file that names the images, which must exist: a missing one drops out of the hash, and a
@@ -813,7 +901,7 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       first.script === 'scripts/ci-backend-images.sh' ? 'docker-compose.yml' : first.script;
     if (restore >= 0 && files !== want) {
       found.push(`hashes ${files || 'no file'}, not ${want}, which names its images`);
-    } else if (restore >= 0 && !existsSync(join(ROOT, files))) {
+    } else if (restore >= 0 && read(files) === undefined) {
       found.push(`hashes ${files}, which does not exist`);
     }
     // The legs of a matrix run at once and would race to save one key, each with its own images.
@@ -844,7 +932,7 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       names.filter((b) => a !== b && b.startsWith(`${a}-`)).map((b) => `${a} begins ${b}`),
     );
   const pulling = jobs().filter(({ job }) =>
-    (job.steps ?? []).some((s) => scriptsIn(s.run ?? '').some(pullingScript)),
+    (job.steps ?? []).some((s) => pullingScriptsIn(s.run ?? '').length > 0),
   );
 
   it('finds the jobs, derived from every workflow, so a rename cannot make this vacuous', () => {
@@ -863,6 +951,8 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       ['bash -e scripts/ci/pull.sh', ['scripts/ci/pull.sh']],
       ['bash "$GITHUB_WORKSPACE/scripts/lambda-smoke.sh"', ['scripts/lambda-smoke.sh']],
       ['bash ${{ github.workspace }}/scripts/lambda-smoke.sh', ['scripts/lambda-smoke.sh']],
+      ['bash "$GITHUB_WORKSPACE"/scripts/rss-gate.sh', ['scripts/rss-gate.sh']],
+      ["bash '${{ github.workspace }}'/scripts/rss-gate.sh", ['scripts/rss-gate.sh']],
       ['pnpm --silent lambda-smoke', ['scripts/lambda-smoke.sh']],
       ['pnpm -s run rss-gate', ['scripts/rss-gate.sh']],
       ['pnpm run --silent rss-gate', ['scripts/rss-gate.sh']],
@@ -879,6 +969,20 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     }
     expect(pullsThroughHelper('# docker_pull_with_backoff is sourced below')).toBe(true);
     expect(pullsThroughHelper('docker_pull_with_backoff() {')).toBe(false);
+    // A script that runs a pulling script pulls too: the one found is the one that names the images.
+    const tree: Record<string, string> = {
+      'scripts/ci-gates.sh': 'bash scripts/nested/gates.sh',
+      'scripts/nested/gates.sh': 'set -e\n./scripts/rss-gate.sh',
+      'scripts/rss-gate.sh':
+        '. scripts/lib/docker-pull.sh\ndocker_pull_with_backoff "$STAGE_IMAGE"',
+      'scripts/lib/docker-pull.sh': 'docker_pull_with_backoff "$1"',
+      'scripts/quiet.sh': 'echo nothing to pull',
+    };
+    const read = (f: string) => tree[f];
+    expect(pullingScriptsIn('scripts/ci-gates.sh', read)).toEqual(['scripts/rss-gate.sh']);
+    expect(pullingScriptsIn('bash scripts/quiet.sh && scripts/lib/docker-pull.sh', read)).toEqual(
+      [],
+    );
   });
 
   it('reads a job for each way it could keep its images wrongly, and passes the ways that are right', () => {
@@ -902,6 +1006,18 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
         job(restore, pull, save, { if: 'success() || failure()', run: 'x' }),
       ],
       ['a log dump on failure', job(restore, pull, save, { if: 'failure()', run: 'x' })],
+      [
+        'a log dump on failure before the save',
+        job(restore, pull, { if: 'failure()', run: 'x' }, save),
+      ],
+      [
+        'a save on main alone, which GitHub runs only on success',
+        job(restore, pull, { ...save, if: "github.ref == 'refs/heads/main'" }),
+      ],
+      [
+        'a save on success and a push',
+        job(restore, pull, { ...save, if: "success() && github.event_name == 'push'" }),
+      ],
       ['a save on success, spelled out', job(restore, pull, { ...save, if: 'success()' })],
       [
         'a save on success, as an expression',
@@ -942,6 +1058,14 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
         job(restore, save, { ...pull, if: 'always()' }),
       ],
       ['a save whatever happened', job(restore, pull, { ...save, if: 'always()' })],
+      [
+        'a save on success or a push',
+        job(restore, pull, { ...save, if: "success() || github.event_name == 'push'" }),
+      ],
+      [
+        'a step before the save that runs only on a push',
+        job(restore, pull, { run: 'pnpm test', if: "github.event_name == 'push'" }, save),
+      ],
       ['a step after the save', job(restore, pull, save, { run: 'pnpm test' })],
       ['the pull allowed to fail', job(restore, { ...pull, 'continue-on-error': true }, save)],
       [
@@ -963,6 +1087,42 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       ],
     ];
     for (const [what, j] of wrong) expect(problemsOf(j), what).toHaveLength(1);
+    // A wrapper script that runs a pulling one is a pulling job too, and the key hashes the script that names the
+    // images.
+    const planted: Record<string, string> = {
+      'scripts/ci-gates.sh': 'bash scripts/nested.sh',
+      'scripts/nested.sh': 'docker_pull_with_backoff "$X"',
+      'scripts/ci-backend-images.sh': 'docker_pull_with_backoff "$image"',
+    };
+    const read = (f: string): string | undefined => planted[f];
+    const wrapped: Step = { run: 'bash scripts/ci-gates.sh' };
+    expect(problemsOf(job(wrapped), read)).toEqual([
+      'restores no cache before its first pull',
+      'saves no cache after its last pull',
+    ]);
+    const hashed: Step = { uses: RESTORE, with: { name: 'gates', files: 'scripts/nested.sh' } };
+    expect(problemsOf(job(hashed, wrapped, save), read)).toEqual([]);
+    expect(
+      problemsOf(
+        job({ ...hashed, with: { name: 'gates', files: 'scripts/ci-gates.sh' } }, wrapped, save),
+        read,
+      ),
+    ).toEqual(['hashes scripts/ci-gates.sh, not scripts/nested.sh, which names its images']);
+    // A file the key hashes must exist: a missing one drops out of the hash.
+    expect(
+      problemsOf(
+        job(
+          { uses: RESTORE, with: { name: 'integration', files: 'docker-compose.yml' } },
+          { run: 'scripts/ci-backend-images.sh "$RUNNER_TEMP/o.yml"' },
+          {
+            run: 'docker compose -f docker-compose.yml -f "$RUNNER_TEMP/o.yml" up -d --pull never',
+          },
+          { run: 'pnpm test:integration' },
+          save,
+        ),
+        read,
+      ),
+    ).toEqual(['hashes docker-compose.yml, which does not exist']);
     const backends: Step = { run: 'scripts/ci-backend-images.sh "$RUNNER_TEMP/o.yml"' };
     const up: Step = {
       run: 'docker compose -f docker-compose.yml -f "$RUNNER_TEMP/o.yml" up -d --pull never',
@@ -991,6 +1151,17 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       problemsOf(job(kept, backends, up, save, tests)),
       'a save before the tests',
     ).toHaveLength(2);
+    expect(problemsOf(job(kept, backends, up, save)), 'no tests').toEqual([
+      'runs no tests before its save',
+    ]);
+    expect(
+      problemsOf(job(kept, backends, up, { ...tests, if: "github.event_name == 'push'" }, save)),
+      'tests only on a push',
+    ).toHaveLength(1);
+    expect(
+      problemsOf(job(kept, backends, up, { run: 'pnpm -s test:integration' }, save)),
+      'tests run with a flag',
+    ).toEqual([]);
     expect(
       problemsOf(job(kept, backends, { run: 'docker compose up -d --pull never' }, tests, save)),
     ).toHaveLength(1);
@@ -1008,6 +1179,10 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       'lambda begins lambda-smoke',
     ]);
     expect(prefixClashes(['lambda-smoke', 'lambda-layer'])).toEqual([]);
+    expect(
+      prefixClashes(['rss', 'rssx']),
+      'a name and a dash begin another, not a name alone',
+    ).toEqual([]);
     const names = pulling.map(
       ({ job }) => (job.steps ?? []).find((s) => s.uses === RESTORE)?.with?.name ?? '',
     );

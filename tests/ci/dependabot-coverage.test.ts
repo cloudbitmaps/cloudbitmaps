@@ -60,12 +60,12 @@ const COMPOSITE_DIRS = compositeActionFiles().map((f) => `/${dirname(f)}`);
 /**
  * Whether a Dependabot directory names `dir`. Dependabot expands the glob with Ruby's `Dir.glob`, dotfiles included:
  * `**` followed by a slash spans any number of path segments, and `*` stays inside one, as does a `**` with no slash
- * after it. Dotfiles included means `.` too, so a pattern that ends in a `*` also names the directory before it. Any
- * other glob syntax is read literally, so it makes this test fail rather than wave a directory through.
+ * after it. Dotfiles included means `.` too, so a pattern whose last segment matches `.`, as a `*` does, also names
+ * the directory that segment is in, as `dir/.`. A `*` before the last that matches `.` is not modelled, so a directory
+ * only it would name fails this test. Any other glob syntax is read literally, so it makes this test fail rather than wave a directory
+ * through.
  */
 function names(pattern: string, dir: string): boolean {
-  const parent = /\/\*\*?$/.exec(pattern);
-  if (parent !== null && names(pattern.slice(0, parent.index) || '/', dir)) return true;
   const source = pattern
     .split(/(\*\*\/|\*+)/)
     .map((p) =>
@@ -76,7 +76,8 @@ function names(pattern: string, dir: string): boolean {
           : p.replace(/[.+?^${}()|[\]\\]/g, '\\$&'),
     )
     .join('');
-  return new RegExp(`^${source}$`).test(dir);
+  const re = new RegExp(`^${source}$`);
+  return re.test(dir) || re.test(`${dir === '/' ? '' : dir}/.`);
 }
 
 describe('dependabot covers every install in the repo', () => {
@@ -114,6 +115,9 @@ describe('dependabot covers every install in the repo', () => {
       ['/.github/actions/**/*', '/.github/actions/a/b/c', true],
       ['/.github/actions/**/*', '/.github/actions', true],
       ['/.github/actions/*', '/.github', false],
+      // Only the last `*` names the directory it is in: `Dir.glob` returns `.github/actions/a/b`, not `…/./.`.
+      ['/.github/actions/*/*', '/.github/actions', false],
+      ['/*', '/', true],
       ['/fuzz', '/fuzzy', false],
       ['/a.b', '/axb', false],
       // Glob syntax this does not model reads literally, so the test fails rather than wave a directory through.

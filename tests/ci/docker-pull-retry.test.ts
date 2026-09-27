@@ -49,6 +49,12 @@ const DOCKER_FLAG_WITH_VALUE =
 const COMPOSE_FLAG_WITH_VALUE =
   /^(?:-f|--file|-p|--project-name|--project-directory|--profile|--env-file|--ansi|--progress|--parallel)$/;
 const NEVER_PULLS = /\s--pull(?:\s+|=)["']?never["']?(?=\s|$)/;
+/**
+ * The flags of `docker run` and `docker create` that take a value as a word of its own: the image is the first word
+ * past them. One missing from here has its value read as the image, which refuses the command rather than pass it.
+ */
+const RUN_FLAG_WITH_VALUE =
+  /^(?:-[acehlmpuvw]|--(?:add-host|attach|cap-add|cap-drop|cgroupns|cidfile|cpus|device|dns|entrypoint|env|env-file|expose|gpus|group-add|health-cmd|hostname|ipc|label|label-file|link|log-driver|log-opt|memory|memory-swap|mount|name|net|network|pid|platform|publish|pull|restart|runtime|security-opt|shm-size|stop-signal|stop-timeout|storage-opt|sysctl|tmpfs|ulimit|user|userns|uts|volume|volumes-from|workdir))$/;
 
 /** The first two words of a command after `start`, past flags, and the values of the flags `withValue` names. */
 function words(command: string, start: RegExp, withValue: RegExp): string[] {
@@ -73,8 +79,33 @@ function dockerKind(command: string): 'pull' | 'run' | 'build' | 'compose' | und
   const verb = first === 'container' || first === 'image' || first === 'buildx' ? second : first;
   if (verb === 'pull') return 'pull';
   if (verb === 'run' || verb === 'create') return 'run';
-  if (verb === 'build') return 'build';
+  if (verb === 'build' || (first === 'buildx' && verb === 'bake')) return 'build';
   return first === 'compose' ? 'compose' : undefined;
+}
+
+/** The image a `docker run` or `docker create` runs: its first word past the flags and their values. */
+function runOperand(command: string): string | undefined {
+  const all = (/(?:^|[\s(])docker\s+(.*)$/.exec(command)?.[1] ?? '').trim().split(/\s+/);
+  let i = 0;
+  for (; i < all.length; i++) {
+    const w = all[i] ?? '';
+    if (DOCKER_FLAG_WITH_VALUE.test(w)) i++;
+    else if (!w.startsWith('-')) break;
+  }
+  if (all[i] === 'container') i++;
+  if (all[i] !== 'run' && all[i] !== 'create') return undefined;
+  for (i++; i < all.length; i++) {
+    const w = all[i] ?? '';
+    if (RUN_FLAG_WITH_VALUE.test(w)) i++;
+    else if (!w.startsWith('-')) return w;
+  }
+  return undefined;
+}
+
+/** The first argument a call of `fn` in a command is given, unquoted. */
+function argumentOf(command: string, fn: string): string | undefined {
+  const m = new RegExp(`\\b${fn}\\s+("[^"]*"|'[^']*'|[^\\s)]+)`).exec(command);
+  return m?.[1]?.replace(/^["']|["']$/g, '');
 }
 
 /** The subcommand of a `docker compose` command, past its global flags and their values. */
@@ -84,7 +115,10 @@ function composeSubcommand(command: string): string | undefined {
 
 /** What is wrong with a shell text, one entry per command at fault. */
 function problems(sh: string): string[] {
-  const code = commands(sh);
+  // The standalone `docker-compose` of Compose v1 is read as `docker compose`: it starts and pulls alike.
+  const code = commands(sh).map((c) =>
+    c.replace(/(^|[\s(])docker-compose(?=\s|$)/g, '$1docker compose'),
+  );
   const usesHelper =
     code.some((c) => /^(?:\.|source)\s.*docker-pull\.sh\b/.test(c)) &&
     code.some((c) => /\bdocker_pull_with_backoff\b/.test(c));
@@ -92,15 +126,28 @@ function problems(sh: string): string[] {
   const runNames = [...sh.matchAll(/\b([A-Za-z_]\w*)="?\$\(docker_image_run_name\b/g)].map(
     (m) => m[1] ?? '',
   );
-  const byRunName = (c: string) =>
-    /\$\(docker_image_run_name\b/.test(c) ||
-    runNames.some((v) => new RegExp(`\\$\\{?${v}\\b`).test(c));
+  // The image a command runs, not any word of it: `-e X="$RUN_IMAGE" alpine` runs alpine.
+  const byRunName = (c: string) => {
+    const image = runOperand(c) ?? '';
+    return (
+      /^"?\$\(docker_image_run_name\b/.test(image) ||
+      runNames.some((v) => new RegExp(`^"?\\$\\{?${v}\\}?"?$`).test(image))
+    );
+  };
   const found: string[] = [];
-  // The local name exists only once the pull has made the image local: taken before it, a digest's run name is the
-  // digest, which a loaded copy does not answer to.
-  const pulledAt = code.findIndex((c) => /\bdocker_pull_with_backoff\b/.test(c));
+  // The local name exists only once the pull of that image has made it local: taken before it, a digest's run name
+  // is the digest, which a loaded copy does not answer to. Each run name is paired with a pull of its own image.
+  const pulls = code.flatMap((c, i) => {
+    const image = argumentOf(c, 'docker_pull_with_backoff');
+    return image === undefined ? [] : [{ i, image }];
+  });
   code.forEach((c, i) => {
-    if (pulledAt >= 0 && i < pulledAt && /\$\(docker_image_run_name\b/.test(c)) {
+    const image = argumentOf(c, 'docker_image_run_name');
+    if (
+      pulls.length > 0 &&
+      image !== undefined &&
+      !pulls.some((p) => p.image === image && p.i < i)
+    ) {
       found.push(`takes a run name before the pull that makes the image local: ${c}`);
     }
   });
@@ -209,6 +256,12 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       'docker compose up -d --pull missing',
       'docker compose --profile ci up -d',
       'docker -H tcp://127.0.0.1:2375 run --rm "$IMAGE" true',
+      'docker-compose up -d',
+      'docker-compose pull',
+      'docker buildx bake',
+      // The run name is mentioned, and another image is run.
+      'docker run --rm -e X="$RUN_IMAGE" alpine true',
+      'docker run --rm --entrypoint "$RUN_IMAGE" alpine',
     ]) {
       expect(problems(`${helped}\n${sh}`), sh).toHaveLength(1);
     }
@@ -224,6 +277,14 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     expect(
       problems(`${helped}\ndocker -H tcp://127.0.0.1:2375 run --rm "$RUN_IMAGE" true`),
     ).toEqual([]);
+    for (const sh of [
+      'docker run --rm --entrypoint bash -e V="$V" -v "$A:/a:ro" "$RUN_IMAGE" -lc true',
+      'docker run --rm --memory="$MEM" --memory-swap="$MEM" -v "$S:/stage" "${RUN_IMAGE}" bash',
+      'docker container run -d --name x -p 80:80 $RUN_IMAGE',
+      'docker-compose up -d --pull never',
+    ]) {
+      expect(problems(`${helped}\n${sh}`), sh).toEqual([]);
+    }
     for (const sh of [
       'docker compose up -d --pull never --wait',
       'docker compose up -d --pull=never',
@@ -256,6 +317,18 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       ),
     ).toEqual([
       'takes a run name before the pull that makes the image local: RUN_IMAGE="$(docker_image_run_name x)"',
+    ]);
+    // Paired with the pull of its own image: after one image's pull and before another's is too early for the second.
+    const two = (order: string) =>
+      problems(`. ${HELPER}\n${order}\ndocker run "$A_RUN"\ndocker run "$B_RUN"`);
+    const pullA = 'docker_pull_with_backoff "$A"';
+    const pullB = 'docker_pull_with_backoff "$B"';
+    const nameA = 'A_RUN="$(docker_image_run_name "$A")"';
+    const nameB = 'B_RUN="$(docker_image_run_name "$B")"';
+    expect(two([pullA, pullB, nameA, nameB].join('\n'))).toEqual([]);
+    expect(two([pullA, nameA, pullB, nameB].join('\n'))).toEqual([]);
+    expect(two([pullA, nameA, nameB, pullB].join('\n'))).toEqual([
+      `takes a run name before the pull that makes the image local: ${nameB}`,
     ]);
   });
 

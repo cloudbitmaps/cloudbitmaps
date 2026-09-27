@@ -4,8 +4,9 @@
 # Each image comes through docker_pull_with_backoff, one at a time, which with DOCKER_IMAGE_CACHE set uses the copy
 # CI keeps in the Actions cache (scripts/lib/docker-pull.sh says when). A copy of an image named by digest is found
 # after a load only under its local name, since a loaded image answers only to the names it was saved under, and
-# compose asks for MinIO by digest. So the override points each service at the name its image is kept under, and at
-# the image itself when there is no cache or its copy could not be kept.
+# compose asks for MinIO by digest. So the override points each service at the local name the helper gives an image it
+# keeps or loads, which it has even when the save of it failed part-way, and at the image itself when there is no
+# cache or the helper could not name it.
 #
 # It reads docker-compose.yml alone, as ci.yml starts it: with no `-f`, compose would also read an override file or
 # COMPOSE_FILE, and ready images the job never starts.
