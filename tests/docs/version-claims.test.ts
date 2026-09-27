@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url';
 // It covers two surfaces, `site/` and the markdown docs, because the hole it was written to close turned out
 // to be in both. See MARKDOWN_DOCS for why the second half is scoped differently from the first.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const SITE = join(ROOT, 'site');
+/** Both trees: `site/`, which Pages publishes, and `site-next/`, the display-tier rebuild beside it until it replaces it. */
+const SITE_DIRS = ['site', 'site-next'];
 
 const version = (
   JSON.parse(readFileSync(join(ROOT, 'packages/roaring/package.json'), 'utf8')) as {
@@ -226,7 +227,7 @@ function filesUnder(dir: string, exts: readonly string[], prefix = ''): string[]
   });
 }
 
-const pages = htmlPagesUnder(SITE);
+const pages = SITE_DIRS.flatMap((dir) => htmlPagesUnder(join(ROOT, dir), dir));
 
 /**
  * Non-HTML files under `site/` that could name the release — DERIVED, not listed.
@@ -240,7 +241,7 @@ const pages = htmlPagesUnder(SITE);
  * all still unread. None carries a version today, and a one-element list is exactly what stops being true the
  * day one does. Enumerating the directory means a new served file is covered on the day it is added.
  */
-const VERSIONED_TEXT_FILES = ['llms.txt'];
+const VERSIONED_TEXT_FILES = SITE_DIRS.map((dir) => `${dir}/llms.txt`);
 
 /**
  * Every other non-HTML file served from `site/`.
@@ -254,9 +255,9 @@ const VERSIONED_TEXT_FILES = ['llms.txt'];
  * all served from the same origin. None carries a version today, and a hardcoded list is precisely what
  * stops being true on the day one does.
  */
-const OTHER_SERVED_FILES = filesUnder(SITE, ['.txt', '.xml', '.js', '.json']).filter(
-  (f) => !VERSIONED_TEXT_FILES.includes(f),
-);
+const OTHER_SERVED_FILES = SITE_DIRS.flatMap((dir) =>
+  filesUnder(join(ROOT, dir), ['.txt', '.xml', '.js', '.json'], dir),
+).filter((f) => !VERSIONED_TEXT_FILES.includes(f));
 
 /**
  * Markdown that describes the CURRENT release, and therefore must name the current release.
@@ -337,7 +338,7 @@ describe('site version badges', () => {
     // Named explicitly because the depth-one version of this suite passed while silently excluding a nested
     // page. "Every page" has to mean every page at any depth, and the assertion that says so should fail if the
     // walk ever regresses to one level — not merely cover fewer files without comment.
-    const nested = pages.filter((p) => p.includes('/'));
+    const nested = pages.filter((p) => p.split('/').length > 2);
     expect(
       nested.length,
       `no nested page found under site/ — did the walk stop recursing?`,
@@ -346,7 +347,7 @@ describe('site version badges', () => {
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
     // Same line-scoped forward-reference rule as the HTML pages: see NEXT_MINOR.
-    const found = badgeVersions(readFileSync(join(SITE, file), 'utf8'));
+    const found = badgeVersions(readFileSync(join(ROOT, file), 'utf8'));
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,
@@ -357,7 +358,7 @@ describe('site version badges', () => {
   });
 
   it.each(OTHER_SERVED_FILES)('%s names no version but ours', (file) => {
-    for (const v of badgeVersions(readFileSync(join(SITE, file), 'utf8'))) {
+    for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'))) {
       expect(
         v,
         `${file} names ${v}, but the packages are at ${version}. It is served from the same origin as the ` +
@@ -367,7 +368,7 @@ describe('site version badges', () => {
   });
 
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
-    const found = badgeVersions(readFileSync(join(SITE, page), 'utf8'));
+    const found = badgeVersions(readFileSync(join(ROOT, page), 'utf8'));
     for (const v of found) {
       expect(
         v,
@@ -383,7 +384,7 @@ describe('site version badges', () => {
     // stops doing so is either a copy regression or a deliberate change that should come here first.
     for (const p of pages) {
       expect(
-        badgeVersions(readFileSync(join(SITE, p), 'utf8')).length,
+        badgeVersions(readFileSync(join(ROOT, p), 'utf8')).length,
         `${p} names no version anywhere — was a footer badge dropped?`,
       ).toBeGreaterThan(0);
     }
@@ -399,7 +400,7 @@ describe('site version badges', () => {
     // how one rule becomes two that drift.
     const all = [
       ...[...pages, ...VERSIONED_TEXT_FILES, ...OTHER_SERVED_FILES].map((f) =>
-        readFileSync(join(SITE, f), 'utf8'),
+        readFileSync(join(ROOT, f), 'utf8'),
       ),
       ...MARKDOWN_DOCS.map((f) => readFileSync(join(ROOT, f), 'utf8')),
     ].join('\n');

@@ -133,8 +133,8 @@ const axisKeys = 2 * chunks; // A occupies the low half, B's disjoint tail the h
  * `file://`. The cost is a second place a number can live, so the check covers it: if the page and the
  * benchmark disagree, the gate fails rather than the argument.
  */
-function checkPage() {
-  const PAGE = path.join(ROOT, 'site', 'demo.html');
+function checkPage(dir) {
+  const PAGE = path.join(ROOT, dir, 'demo.html');
   let html;
   try {
     html = fs.readFileSync(PAGE, 'utf8');
@@ -253,9 +253,12 @@ function checkPage() {
   return problems;
 }
 
-const pageProblems = checkPage();
-if (pageProblems.length) {
-  fail(`site/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
+// `site-next/` is the display-tier rebuild beside `site/` until it replaces it; its demo replays the same run.
+for (const dir of ['site', 'site-next']) {
+  const pageProblems = checkPage(dir);
+  if (pageProblems.length) {
+    fail(`${dir}/demo.html disagrees with the benchmark:\n  - ${pageProblems.join('\n  - ')}`);
+  }
 }
 console.log(
   `site-replay: demo.html agrees with the benchmark — ${shared}/${chunks} keys aligned · ` +

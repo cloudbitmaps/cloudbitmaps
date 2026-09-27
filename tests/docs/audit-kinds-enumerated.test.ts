@@ -31,6 +31,7 @@ function auditKinds(): string[] {
 const ENUMERATING_PAGES = [
   join('docs', 'guide', 'dashboards.md'),
   join('site', 'architecture.html'),
+  join('site-next', 'architecture.html'),
 ] as const;
 
 describe('a page that lists the audit kinds lists all of them', () => {

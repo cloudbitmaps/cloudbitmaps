@@ -300,7 +300,7 @@ async function parent() {
   if (process.env.SCALE_INJECT === '1') {
     write('bench/scale-results.json', JSON.stringify(results, null, 2) + '\n');
     inject('docs/benchmarks.md', mdTable);
-    inject('site/benchmarks.html', htmlTable);
+    for (const page of SITE_PAGES) inject(page, htmlTable);
   } else {
     console.log(
       '  (dry run — set SCALE_INJECT=1 to persist bench/scale-results.json + inject the docs)',
@@ -419,6 +419,9 @@ function scaleRegion(rel) {
     after: s.slice(j),
   };
 }
+// The benchmarks pages that carry the table: `site/`, and `site-next/`, the display-tier rebuild beside it until it
+// replaces it.
+const SITE_PAGES = ['site/benchmarks.html', 'site-next/benchmarks.html'];
 function inject(rel, body) {
   const { before, after } = scaleRegion(rel);
   fs.writeFileSync(path.join(ROOT, rel), before + '\n' + body + '\n' + after);
@@ -445,7 +448,7 @@ function doInject() {
   const { mdTable, htmlTable, summary } = render(results);
   console.log('\n' + summary + '\n');
   inject('docs/benchmarks.md', mdTable);
-  inject('site/benchmarks.html', htmlTable);
+  for (const page of SITE_PAGES) inject(page, htmlTable);
 }
 
 // ── check-only: the published table is exactly what the committed results render ─────────────────────
@@ -458,7 +461,7 @@ function doCheck() {
   const { mdTable, htmlTable } = render(results);
   const stale = [
     ['docs/benchmarks.md', mdTable],
-    ['site/benchmarks.html', htmlTable],
+    ...SITE_PAGES.map((page) => [page, htmlTable]),
   ].filter(([rel, body]) => scaleRegion(rel).region !== '\n' + body + '\n');
   if (stale.length > 0) {
     console.error(
@@ -467,7 +470,7 @@ function doCheck() {
     );
     process.exit(1);
   }
-  console.log('bench:scale:check: both at-scale tables are what bench/scale-results.json renders.');
+  console.log('bench:scale:check: every at-scale table is what bench/scale-results.json renders.');
 }
 
 // ── entry ────────────────────────────────────────────────────────────────────────────────────────────

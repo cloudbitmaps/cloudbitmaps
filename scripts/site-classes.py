@@ -22,7 +22,11 @@ import re, sys, glob, os
 sys.dont_write_bytecode = True
 import site_markup  # noqa: E402
 
-ROOT = 'site'
+# Which tree: `site/` is what Cloudflare Pages publishes, `site-next/` the display-tier rebuild beside it until it
+# replaces it. `SITE_DIR=site-next python3 scripts/site-classes.py` checks the second.
+ROOT = os.environ.get('SITE_DIR', 'site')
+if ROOT not in ('site', 'site-next'):
+    sys.exit(f'SITE_DIR must be site or site-next, not {ROOT}')
 
 css = open(f'{ROOT}/cloudbitmaps.css').read()
 css_no_comments = re.sub(r'/\*.*?\*/', '', css, flags=re.S)

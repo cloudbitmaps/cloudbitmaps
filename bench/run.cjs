@@ -305,7 +305,9 @@ write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
 // The site takes the svg inline (so it inherits the page's theme tokens); the docs take it as an <img> and
 // carry the stats table the site hand-writes. Only the regions passed are touched, so a file is not required
 // to host every marker pair — but a marker pair that IS named must exist, or replaceRegion throws.
-inject('site/benchmarks.html', { CHART: svg });
+// `site-next/` is the display-tier rebuild that sits beside `site/` until it replaces it; its benchmarks page takes the
+// same chart, and `--check` holds both.
+for (const page of ['site/benchmarks.html', 'site-next/benchmarks.html']) inject(page, { CHART: svg });
 inject('docs/benchmarks.md', {
   CHART: `![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)`,
   STATS: mdTable,
@@ -362,8 +364,8 @@ if (check) {
     process.exit(1);
   }
   console.log(
-    'bench:check: bench/crossover.svg, bench/results.json and the BENCH regions of site/benchmarks.html and ' +
-      'docs/benchmarks.md are current.',
+    'bench:check: bench/crossover.svg, bench/results.json and the BENCH regions of site/benchmarks.html, ' +
+      'site-next/benchmarks.html and docs/benchmarks.md are current.',
   );
 } else {
   console.log(

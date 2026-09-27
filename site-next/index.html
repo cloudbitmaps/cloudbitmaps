@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      // Applied BEFORE first paint, deliberately inline and unminified: a deferred or external script would
+      // let the default dark ground paint and then flip. `prefers-color-scheme` is consulted only when
+      // nothing has been stored — an explicit choice wins. (The design prototypes theme via `support.js`,
+      // which is a design-tool harness and must not ship.)
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <title>CloudBitmaps — set operations at object-storage prices</title>
+    <meta
+      name="description"
+      content="Large id-sets kept as immutable bitmap objects in storage you already own, reading only the chunks a query can match — 100 of 2,000. has, count, iterate, intersect, union and andNot are the calls you know; 1.2 GiB at rest is $0.03 a month against $346 for a three-node Redis cluster standing by. Past 329.15 reads/s the cluster is cheaper, and we publish the crossover."
+    />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
+         the tag silently un-verifies the property, which drops the sitemap and coverage reports with no
+         warning. Not a secret (it is public HTML) and it identifies the property, not an account. -->
+    <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
+    <link rel="canonical" href="https://cloudbitmaps.pages.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps — set operations at object-storage prices" />
+    <meta
+      property="og:description"
+      content="Roaring Bitmaps over object storage — a bounded RAM cache over write-once .crbm generations in your own bucket, and Redis has no Roaring type at all. 1.2 GiB of ID sets at rest costs $0.03/mo against $346 standing for reserved RAM; past 329.15 reads/s, use a standing cluster."
+    />
+    <meta property="og:url" content="https://cloudbitmaps.pages.dev/" />
+    <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CloudBitmaps — set operations at object-storage prices" />
+    <meta
+      name="twitter:description"
+      content="Roaring Bitmaps over immutable object storage. $0.03/mo at rest against $346 standing for reserved RAM — and we publish the read rate past which a standing cluster is cheaper."
+    />
+    <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <!-- Progressive bit reduction: the mark's nine bits survive at 64px and turn to mud below it, so 32
+         carries five and 16 carries three. Declared by size so the browser picks. -->
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html">
+          <!-- The letterform is `currentColor` so it inverts with the theme; the nine bits are the brand's
+               own blues, literal hex, identical in both themes — exactly as delivered. They are NOT tokens:
+               an earlier pass wired them to `--cb-bit-*`, which this sheet never defines, so all nine
+               painted black over the glyph. -->
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
+          <a class="active" href="index.html" aria-current="page">Overview</a>
+          <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps" target="_blank" rel="noopener" aria-label="GitHub (opens in a new tab)">GitHub</a>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The headline states what you get, not what the thing is. The cost comparison is the hero FIGURE
+           rather than a section further down, because it is the whole argument. -->
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <!-- Codec-neutral on purpose. The eyebrow said "Roaring Bitmaps" and the lede led with
+                 "the bitmap engine", which hard-codes one flavor into the product's own pitch — and
+                 @cloudbitmaps/core is codec-agnostic. "bitmaps" is the right noun: it is the umbrella
+                 name, and Roaring is named as the shipped flavor rather than as the product.
+                 UPDATE 2026-07-31: the reason given here for avoiding "compressed bitmaps" was that it
+                 would exclude the committed bitset flavor. That flavor is now decided against, so the
+                 phrasing survives on a different and better ground — a Roaring chunk stores itself
+                 uncompressed whenever that is smaller, so "compressed" mis-describes our own default.
+
+                 The mechanism clause is the codec-neutral half of the pitch, which is why it leads:
+                 /architecture already states that chunk-key skipping does not depend on the codec, so
+                 it stays true for every flavor.
+
+                 The old lede's "a billion-id segment costs cents per month" is gone, and deliberately.
+                 It was never a sourced figure — our anchor is 1.2 GiB -> $0.03/mo, and a billion ids
+                 lands anywhere from ~0.12 GiB dense to ~2 GiB sparse, so the price was not pinned to
+                 the quantity. It slipped past site-figures.cjs only because "cents" is not a dollar
+                 amount the money regex can see. Every figure below is a gated anchor.
+
+                 The headline counts SIX calls, and they are the READ surface. A segment changes only by
+                 publishing a whole new generation, so there is no `add` or `remove` to count. The
+                 write model is the one thing that does not carry over from a Redis bitmap, which is why
+                 the second meta line below says so in the hero rather than three sections down. -->
+            <p class="eyebrow">Distributed, cloud-native bitmaps · roaring shipped · v0.10.0</p>
+            <h1>Big sets, the same six calls, and no bill while idle.</h1>
+            <p class="hero-lede">
+              CloudBitmaps keeps large id-sets as immutable objects in storage you already own, and
+              reads only the chunks a query can match — <strong>100 of 2,000</strong>. The reads are
+              the calls you know — <span class="m">has</span>, <span class="m">count</span>,
+              <span class="m">iterate</span>, <span class="m">intersect</span>,
+              <span class="m">union</span>, <span class="m">andNot</span> — and the bill is the part
+              that changes: <strong>1.2 GiB</strong> at rest is <strong>$0.03</strong> a month,
+              against <strong>$346</strong> for a three-node Redis cluster standing by.
+            </p>
+            <!-- "How do I get it" was answered five sections down, in the closing install panel. For a library
+                 that is the first question, so the command moves up here as one line. It stays ONE line on
+                 purpose: the rest of the story (the other two storage packages, and that each brings its own
+                 SDK) belongs with the closing panel, and repeating it here would make the hero a second
+                 install section rather than a pointer to one. The command must stay COMPLETE though — an
+                 earlier version showed only the codec, which does not get you a bucket. -->
+            <p class="hero-install">
+              <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
+              <span class="label">A codec and a storage · memory drivers need no setup</span>
+                          </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="usage.html">See the quickstart →</a>
+              <a class="btn" href="architecture.html">How it works</a>
+              <a class="btn" href="flavors.html">Choose a flavor</a>
+            </p>
+            <!-- `zero-dependency core` is the SCOPED form, matching the spec strip further down. The
+                 unscoped forms it replaced — "1 runtime dependency", then "1 third-party dependency" — were
+                 true only before the package split: the codec adds `roaring` and each storage package its own
+                 cloud SDK, so no single number describes the project. The install line two rows up asks for
+                 TWO packages, which is exactly why the count has to say whose it is.
+                 Both places are gated by scripts/site-figures.cjs — the counts appear twice on purpose, once
+                 at a glance for a skimmer and once in context beside the tiering, and gating both is what
+                 makes the duplication safe rather than two chances to drift. -->
+            <p class="meta">
+              Apache-2.0 · zero-dependency core · 4 storage drivers · published tokenlessly via OIDC
+            </p>
+            <!-- MUST stay BELOW the counts line above. `scripts/site-figures.cjs` gates the hero's
+                 figures by matching the FIRST `<p class="meta">` in this file, so a meta line inserted above
+                 that one silently shadows it — the gate caught exactly that when this line was added higher
+                 up. Two meta lines in the hero is fine; the order is not optional.
+
+                 On the content: "Redis bitmap alternative" is the JOB people search for, and claiming it
+                 unqualified would be falsifiable within an hour by anyone who ports a SETBIT loop and reads
+                 their bill. So the limit travels with the claim, and the detail lives one click away rather
+                 than in the hero. -->
+            <p class="meta">
+              Reaching for <span class="m">SETBIT</span> on a big key? This is a durable home for
+              set-shaped work, computed in batches upstream — not a drop-in replacement.
+              <a href="flavors/roaring.html#coming-from-redis-bitmaps"
+                >What carries over, and what doesn't →</a
+              >
+            </p>
+          </div>
+
+          <aside class="panel">
+            <div class="panel-head label">The same workload, two bills</div>
+            <div class="bills-grid">
+              <div class="bill is-win">
+                <span class="label">CloudBitmaps</span>
+                <span class="bill-fig">$82.40</span>
+                <span class="bill-cap"
+                  >per 1M cold A&nbsp;∩&nbsp;B sharing 100 chunks, from a run on S3<small
+                    >cold: nothing cached · metered — nothing when idle</small
+                  ></span
+                >
+              </div>
+              <div class="bill is-compare">
+                <span class="label">Reserved RAM</span>
+                <span class="bill-fig">$346</span>
+                <span class="bill-cap"
+                  >per month, standing — ElastiCache HA<small>whether you read it or not</small></span
+                >
+              </div>
+            </div>
+            <p class="panel-row">
+              1.2 GiB at rest, no traffic: <span class="is-live">$0.03/mo</span> — 0.008% of a Redis
+              node
+            </p>
+            <!-- The headline is the single-bucket run's cold intersect, as measured: the crown-jewel
+                 operation, on the topology that ships, with every request the pointer adds in it. It
+                 replaced the July run's count() figure, which left the pointer out. Its counter-case sits
+                 right under it, because a per-request bill against a standing one is only half a
+                 comparison without the rate at which they cross.
+
+                 The last row replaces the write figure this panel used to headline. A load is the only way
+                 data enters a segment, so its price is the other half of the bill a reader pays — and it
+                 bills per OBJECT, which is why it reads per million rather than per id. It is the write and
+                 the publish, pointer included; store.load()'s listings come on top. -->
+            <p class="panel-row">
+              $346 a month buys 4.2 million of those intersects — past 1.6 a second, sustained, the cluster is
+              cheaper
+            </p>
+            <p class="panel-row is-pair">
+              <span>Writing and publishing a segment, pointer included, with <span class="m">store.load()</span>
+                about twice that</span><span>$11.20&nbsp;per&nbsp;1M</span>
+            </p>
+            <p class="link-row"><a href="benchmarks.html">Method, the crossover and caveats →</a></p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── THE JOBS ───────────────────────────────────────────────────────
+           Ported from the design delivery. It answers "is this my problem?", which is why it sits ahead
+           of the use-this/use-Redis pair below — that one answers "should I use it?", and a reader asks
+           these in that order. The pair was NOT replaced: its equal-weight bezel is the site's whole
+           stance on the counter-case, and demoting it from position two to deep-page would give that up.
+
+           Three changes from the delivery:
+
+             · Its heading was "Any large id-set you read a fraction of the time" — a noun fragment, and
+               "a fraction of the time" reads temporally when the sense is "only part of it, and only
+               sometimes". The shape TEST is the strongest line in the section, so it becomes the
+               heading and a reader can self-select from it alone.
+             · Suppression lists mapped to `add · has`. Suppression is the andNot case: you load the
+               list and then subtract it from an audience. `has` implies checking one id at a time,
+               which is a different and worse pattern. Fixed — and it is the only place andNot appears
+               on this page, despite being a real export. (`add` has no place on that row either: the
+               list grows by being reloaded whole.)
+             · The section's whole premise is scale and it quoted no figure, so "large" was undefined.
+               The panel foot now grounds it in the measured run. -->
+      <section id="jobs">
+        <h2>Many use cases, one shape.</h2>
+        <p class="lede">
+          Many ids, computed in batches, mostly idle, and it has to survive a restart. That&rsquo;s the
+          shape — these five are just where it turns up most often. If it describes a list you maintain,
+          it fits, whatever you call it.
+        </p>
+        <div class="tpanel">
+          <!-- Not "five common shapes": the heading now says ONE shape, and the band below adds five
+               more fits, so that label contradicted its own section twice over. It says what the table
+               is a selection of instead. -->
+          <div class="tpanel-head">
+            <span class="label">Where it fits</span><span class="label">The five most common</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>The job</th>
+                  <th>What&rsquo;s in the set</th>
+                  <th>You call</th>
+                  <th>How it&rsquo;s used</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Audience segmentation</td>
+                  <td class="from">
+                    user ids who bought in the last 90 days AND opened the app this week
+                  </td>
+                  <td><span class="call is-key">intersect</span></td>
+                  <td class="from">rebuilt on a schedule, read on a fraction of requests</td>
+                </tr>
+                <tr>
+                  <td>Feature-flag &amp; experiment cohorts</td>
+                  <td class="from">the ids assigned to each variant</td>
+                  <td><span class="call">has</span></td>
+                  <td class="from">read on nearly every request, written rarely</td>
+                </tr>
+                <tr>
+                  <td>Permission &amp; entitlement sets</td>
+                  <td class="from">ids allowed to see a given resource</td>
+                  <td><span class="call">has</span></td>
+                  <td class="from">read constantly, and must survive a restart</td>
+                </tr>
+                <tr>
+                  <td>Recommendation candidate pools</td>
+                  <td class="from">ids eligible before ranking narrows them</td>
+                  <td><span class="call is-key">intersect</span></td>
+                  <td class="from">narrowed per request instead of scanned</td>
+                </tr>
+                <tr>
+                  <td>Suppression lists</td>
+                  <td class="from">never-contact, opted-out, already-seen</td>
+                  <td><span class="call is-key">andNot</span></td>
+                  <td class="from">reloaded whole, then subtracted inside the read</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- Both bands are .tpanel-foot now. This one used .also — a 13px SANS block sitting directly
+               above an 11.5px MONO one, which is why the two looked like different components when they
+               are the same thing: a footnote under a table. Same fault as .trade-foot last commit, so the
+               same resolution — one treatment, not a third.
+
+               Breadth without diluting the five: many rows at equal weight turns an argument into a
+               directory, so the additional fits sit under the table rather than in it.
+
+               count() earns the last slot on merit. The usual way to count a huge distinct set cheaply is
+               a probabilistic sketch, which buys the saving with an error bar; we read cardinality from
+               the metadata beside the chunk keys, so it is cheap AND exact. -->
+          <p class="tpanel-foot">
+            <span class="label">Also fits</span> Fraud and abuse blocklists · batch deduplication, the
+            “which of these have I already processed?” set · follower and social-graph edges · consent and
+            regional-eligibility registries · and distinct-count reporting, where
+            <span class="m">count()</span> is <strong>exact</strong> rather than a sketch with an error
+            bar.
+          </p>
+          <!-- The u32 constraint, which was documented NOWHERE on the site once it came off the
+               counter-case panel. It is a hard adoption blocker — someone should meet it before
+               `npm i`, not after — but it is a fact about the input, not an argument against the
+               library, so a footnote under "what this is for" is the right weight for it. -->
+          <p class="tpanel-foot">
+            <span class="label">Ids must be u32</span> An id is a 32-bit unsigned integer: it splits
+            into a 16-bit chunk key and a 16-bit remainder, and anything else raises a
+            <span class="m">ValidationError</span>. UUIDs and string keys need a dense-integer mapping
+            that you own and operate — worth knowing before you install, not after.
+          </p>
+          <p class="tpanel-foot">
+            <span class="call is-key">intersect</span> and
+            <span class="call is-key">andNot</span> are marked because they are the operations the
+            tiering exists for — the ones that would otherwise pull whole sets into memory.
+            <strong>Large</strong> means the measured run behind this page: two 2,000,000-id segments,
+            of which an intersection fetches <strong>100 chunks of 2,000</strong>.
+            <a href="demo.html">Step through it</a>.
+          </p>
+        </div>
+
+        <!-- ── THE TRADE, in the same section ────────────────────────────────
+             Folded in rather than given its own <section>, because `section` carries a bottom border and
+             a rule between "where it fits" and "should you use it" implied they were separate arguments.
+             They are one: the table says whether this is your problem, the pair says whether to reach for
+             this to solve it. -->
+        <div class="trade">
+          <!-- Both halves use the same title + body pair, three each. A flat bullet list opposite two
+               title/body pairs is why these did not read as peers — same bezel, different grammar.
+
+               Seven bullets folded into three: "large and mostly read" absorbs "bigger than you want
+               resident"; "survives a restart" absorbs the stateless-compute and no-node points; "the data
+               stays yours" absorbs the erasure case. The exact-cardinality bullet is gone rather than
+               folded — the Also fits band above already carries it ("distinct-count reporting, where
+               count() is exact rather than a sketch with an error bar"), so repeating it here was the
+               page arguing with itself. -->
+          <div class="trade-half">
+            <div class="label is-live">Use this when</div>
+            <p class="trade-title">The set is large, mostly read, and computed in batches.</p>
+            <p class="trade-body">
+              Audience lists, feature cohorts, permission sets — bigger than you want to keep resident,
+              or heading that way, and produced by something upstream: a warehouse query, a nightly
+              job, a combine of two other segments. You load the result.
+            </p>
+            <p class="trade-title">It has to survive a restart, and cost nothing while idle.</p>
+            <p class="trade-body">
+              The corpus outlives any one process, your compute is stateless, and you would rather not run
+              a node at all just so the set is there when something asks.
+            </p>
+            <p class="trade-title">The data has to stay yours.</p>
+            <p class="trade-body">
+              Your own storage account, a documented format, and a way out that does not involve us — and
+              someone may have to be <strong>erased</strong> on request, which here rewrites the
+              generation without them and deletes the one that held the bit.
+            </p>
+          </div>
+          <div class="trade-half">
+            <!-- "Use something else when", not "Use Redis instead when". Naming one product as the label
+                 was wrong on both counts: the second disqualifier below has nothing to do with Redis at
+                 all, and the distinction worth drawing is between Redis as your set store and Redis in
+                 front of one — which is where per-id writes genuinely belong. Redis stays in the body as
+                 the example rather than as the label.
+
+                 Deliberately SHORT. The equal-weight rule means the counter-case gets the same bezel and
+                 the same type as the case for us — it does not mean it should be longer, and two
+                 full-length arguments against ourselves out-weighed the seven bullets opposite. Both
+                 items keep their point and lose their elaboration.
+
+                 The p99 item also used to overstate itself: it said "on a working set that fits a bounded
+                 cache", but our cache tier IS in-process RAM, so on a hit there is nothing between us.
+                 The limit is the tail. Its old "10–20× faster" is gone — never a sourced figure — and so
+                 are the p50/p99 milliseconds that replaced it: they were metered on a tier the library no
+                 longer has, and no in-region latency figure is published until an in-region run measures
+                 one. The second item is now the WRITE MODEL rather than a write rate, because a write
+                 rate is not the trade any more: there is no per-id write to run at a rate. -->
+            <div class="label is-peer">Use something else when</div>
+            <p class="trade-title">You need a sub-millisecond p99.</p>
+            <p class="trade-body">
+              Not just on hits. Our cache tier is in-process RAM, but a miss is a ranged
+              <span class="m">GET</span> against object storage, where a resident set is a memory read.
+              A sub-millisecond tail needs the whole set resident, which is a different machine — and we
+              publish no in-region latency figure until an in-region run measures one.
+            </p>
+            <p class="trade-title">The set changes one id at a time.</p>
+            <p class="trade-body">
+              There is no <span class="m">add</span> and no <span class="m">remove</span> here: a
+              segment changes only by publishing a whole new generation. Accumulate per-id writes where
+              they arrive — Redis is genuinely good at that — and load the set on a cadence.
+            </p>
+            <p class="trade-foot">
+              For the first one that usually means Redis — Redis as <strong>your set store</strong>,
+              which is a different thing from Redis in front of one. And past <b>329.15</b> reads a
+              second, every one of them a cache miss, metered GETs cost more than a cluster standing by:
+              <a href="benchmarks.html#crossover">the cache hit rate is what moves that line</a>.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── TWO TIERS AND ONE POINTER ──────────────────────────────────────
+           The animation and the cards tell one story, in motion and at rest. Merged rather than given a
+           section of its own: the figure carries the movement, the cards below stay as its legend, and the
+           page gains a moment without gaining a section.
+
+           Three rows for two tiers: the third carries the REGISTRY, which is the piece that makes two
+           immutable tiers behave like one mutable set, and it belongs in the legend for the same reason
+           the tiers do — a reader cannot reason about a generation without it. That row keeps the amber
+           `r-gen`/`t-gen` hooks deliberately: `--cb-storage` and `--cb-cyan` are the same hex, so a third
+           row painted cyan would be indistinguishable from the storage one, and the figure's whole job is
+           that its three parts are told apart.
+
+           The rows run in the order a load actually happens — object, then pointer, then the cache a
+           later read fills — rather than in read-priority order, because the stage is titled for where
+           the bytes land and a load never lands in RAM. -->
+      <section>
+        <h2>Two tiers, one pointer, one API</h2>
+        <p class="lede">
+          A segment is immutable objects in your bucket plus one row saying which of them is current.
+          You call <span class="m">has()</span>; the store decides whether that costs a read at all.
+        </p>
+
+        <!-- One write, followed the whole way across. `aria-hidden` because every id, key and tier in it is
+             stated in the lede and the cards — a screen reader gets the content, not a diagram it cannot
+             see. -->
+        <div class="pipeline" aria-hidden="true">
+          <div class="pstage">
+            <div class="pstage-label"><span>Your call</span></div>
+            <div class="pstage-body">
+              <p class="pstage-code">store.load(ref,&nbsp;ids)</p>
+              <ul class="ids">
+                <li><i class="pk b1"></i><span>75</span><em>&rarr; key 0x0000</em></li>
+                <li><i class="pk b4"></i><span>99_999</span><em>&rarr; key 0x0001</em></li>
+                <li><i class="pk b7"></i><span>1_234_567_890</span><em>&rarr; key 0x4996</em></li>
+              </ul>
+              <p class="pstage-note">3 ids · 1 object · grouped by key before the write</p>
+            </div>
+          </div>
+          <div class="pipe p1">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b1"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Chunk keys</span><b>3 of 2,000</b></div>
+            <div class="pstage-body">
+              <div class="keygrid">
+                <i class="k"></i><i></i><i></i><i class="k k2"></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ><i class="k k3"></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p class="pstage-note">32-bit id &rarr; 16-bit key + 16-bit remainder</p>
+            </div>
+          </div>
+          <div class="pipe p2">
+            <span class="pipe-line"></span><span class="pipe-head"></span>
+            <span class="pipe-car c1"><i class="pk b4"></i></span>
+            <span class="pipe-car c2"><i class="pk b7"></i></span>
+          </div>
+          <div class="pstage">
+            <div class="pstage-label"><span>Where the bytes land</span></div>
+            <div class="pstage-body">
+              <div class="trow r-storage">
+                <span class="tkey">Storage · .crbm</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i
+                  ><i class="f"></i><i class="f"></i><i class="f"></i
+                ></span>
+                <p class="tnote">one write-once .crbm object</p>
+              </div>
+              <div class="trow r-gen">
+                <span class="tkey">Registry</span>
+                <span class="tfill"
+                  ><i></i><i></i><i></i><i></i><i></i><i></i><i class="f"></i><i></i
+                ></span>
+                <p class="tnote">currentGen &rarr; 7 · compare-and-swap, forward-only</p>
+              </div>
+              <div class="trow r-cache">
+                <span class="tkey">Cache · RAM</span>
+                <span class="tfill"
+                  ><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ></span>
+                <p class="tnote">bounded LRU · keyed by generation · filled by reads</p>
+              </div>
+              <span class="gen-chip">publish &rarr; segment.7.crbm</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- The read climbing back out, right to left, so the round trip is one figure rather than two. -->
+        <div class="rail" aria-hidden="true">
+          <span class="rail-line"></span><span class="rail-head"></span>
+          <span class="rail-car rc1"><i></i></span>
+          <span class="rail-car rc2"><i></i></span>
+          <span class="rail-car rc3"><i></i></span>
+          <p class="rail-cap">
+            <b>The read comes back out</b>
+            <span class="rail-fig">shoppers.intersect([active])</span>
+            <span>fetches <span class="rail-fig">100 / 2,000</span> chunks —</span>
+            <span><span class="rail-fig">1,900</span> are never requested</span>
+            <span class="rail-result">&rarr; 100,000 ids</span>
+          </p>
+        </div>
+
+        <div class="tiers">
+          <div class="tier">
+            <span class="tier-chip t-storage">STORAGE · .crbm</span>
+            <p>
+              Immutable, generation-keyed objects in your own bucket. Documented format, one-command
+              export.
+            </p>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-gen">REGISTRY · POINTER</span>
+            <p>
+              One small row per segment, saying which generation is current. A publish moves it
+              forward by compare-and-swap, and never back.
+            </p>
+          </div>
+          <div class="tier">
+            <span class="tier-chip t-cache">CACHE · RAM</span>
+            <p>
+              A bounded LRU of decoded chunks inside your process. Nothing is pinned, and a new
+              generation misses rather than serving stale bytes.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── THE MOAT ───────────────────────────────────────────────────────
+           The design leaves this figure static; it is the approved key-alignment animation, so it moves. -->
+      <section>
+        <div class="moat">
+          <div>
+            <!-- `∩` is U+2229. Verified covered by Helvetica Neue rather than assumed — a missing glyph
+                 would silently substitute another family, which is a font change by accident. It is also
+                 part of WGL4, so Arial and Liberation Sans carry it on the other platforms. Kept in the sans
+                 heading and NOT set in mono: the width test that proves coverage cannot work in a monospace
+                 stack, where every glyph has the same advance by definition, so coverage there is unproven.
+                 aria-label because a screen reader announcing "A B without downloading A or B" is useless,
+                 and symbol pronunciation varies between them. -->
+            <h2 aria-label="A intersect B, without downloading A or B">
+              A ∩ B without downloading A or B
+            </h2>
+            <p class="lede">
+              Intersecting two 2,000,000-id segments does not download two segments. Chunk keys are
+              compared first, and only chunks whose keys appear in <strong>both</strong> are ever
+              fetched — 100 of 2,000, in 24.6 ms. The other 1,900 are never fetched, and never billed.
+            </p>
+            <figure class="keys">
+              <div class="label">Chunk keys · shared only</div>
+              <div class="keys-grid" aria-hidden="true">
+                <i class="on"></i><i></i><i></i><i></i><i class="on d2"></i><i></i><i></i><i></i
+                ><i></i><i class="on d3"></i><i></i><i></i><i></i><i></i><i></i><i class="on d4"></i
+                ><i></i><i></i><i></i><i></i>
+              </div>
+              <figcaption class="keys-foot">
+                <span>1,900 never requested</span><span class="is-live">100 / 2,000 · 24.6 ms</span>
+              </figcaption>
+              <a class="keys-link" href="architecture.html">See the full walk-through →</a>
+            </figure>
+            <!-- Absorbed from the design's own version of this section. It reads as a spec strip, but it is
+                 also load-bearing for the composition: the merged code panel is 17 lines where the old one
+                 was 10, and without this the left column ended 157px short of it. (It was 15 lines until the
+                 load call replaced `addMany`: writing a generation and publishing it is two lines longer than
+                 mutating a segment, and that IS the change.) The dependency count is
+                 `@cloudbitmaps/core`'s, deliberately: it is the one package every install pulls in, and the
+                 only one with nothing behind it. The codec and each storage package add one dependency each,
+                 so a project-wide number would be false however it was totalled. The package is NAMED here
+                 because this strip is the only place on Home a reader can learn what "core" refers to.
+                 The final section's meta line used to carry these two figures; it no longer does, so each is
+                 stated once. -->
+            <p class="keys-stats">
+              <span><strong>2</strong> tiers</span>
+              <span><strong>4</strong> drivers</span>
+              <span><strong>0</strong> dependencies in @cloudbitmaps/core</span>
+            </p>
+          </div>
+          <div class="code">
+            <!-- The design shipped this as its own section, `segments.ts`, beside a near-identical
+                 prose+code grid. Folded in here rather than kept separate, because the two made the same
+                 point twice — and because it fixes a real mismatch: the old `quickstart.ts` sat under an
+                 argument about intersection and never called `intersect`.
+
+                 Three things are deliberate. The import wraps: on one line it was 94 characters and 163px
+                 of it sat outside the panel, so the first line of the page's main sample needed a sideways
+                 drag to read. The setup lines stay, because the final section says "the quickstart above
+                 runs as-is" and that sentence points here. And it is `intersect([opened])`, not the
+                 design's `intersect(opened)` — the signature is `intersect(others: Segment[], options?)`,
+                 checked against the export rather than copied.
+
+                 The sample loads a generation, which is the whole write path rather than a variant of
+                 it. Two ids rather than three, and the ref hoisted to its
+                 own line, because the load call is what sets the panel's width: at 12.5px mono the
+                 usable measure is ~72 characters and the three-id form ran to 82. -->
+            <div class="code-head label"><span>segments.ts</span><span>No setup</span></div>
+            <pre><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
+
+<span class="c">// one write-once object, and then the pointer moves to it</span>
+<span class="k">await</span> store.load({ segment: <span class="s">'bought-last-90d'</span> }, [<span class="n">75</span>, <span class="n">99_999</span>]);
+
+<span class="k">const</span> bought = store.segment(<span class="s">'bought-last-90d'</span>);
+<span class="k">const</span> opened = store.segment(<span class="s">'opened-this-week'</span>);
+<span class="c">// fetches only the chunks that can contribute</span>
+<span class="k">for await</span> (<span class="k">const</span> id <span class="k">of</span> bought.intersect([opened])) { … }</code></pre>
+            <p class="code-link"><a href="usage.html">Full usage, drivers and API →</a></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── WHAT THE TIERING HAS TO GET RIGHT ──────────────────────────────
+           Placed AFTER the moat on purpose: what makes the tiering hard only lands once the reader has seen
+           what the tiering DOES.
+
+           This was "You could build this yourself. Here's the part that takes a year." over a left column
+           headed "Rolling it yourself". Three faults, all in the framing rather than the content:
+
+             · The heading was about the reader's hypothetical failure, not about the product — and it told a
+               visitor their attempt would be naive, which is a strange thing to say to someone evaluating you.
+             · "a weekend" and "a year" were invented durations sitting inches from a gated money figure.
+               Unsourced quantities next to measured ones borrow credibility they have not earned, and
+               that is the one thing this site cannot afford to do.
+             · The left column described a naive implementation nobody had proposed and then beat it. A reader
+               who has actually thought about the problem notices a rigged comparison, and the suspicion
+               carries into the right column, which is the part worth reading.
+
+           The ROWS did not change, because they were already right: each left row is precisely the problem its
+           right row solves, all four pair 1:1. Only the axis labels were wrong. So the left column now states
+           each problem as a property of the domain, and the ✓/✕ glyphs are gone — red-and-green scoring in two
+           columns reads as a vendor comparison chart regardless of what it actually says.
+
+           The heading names the PROTOCOL, because that is where the hard part actually is: with one write
+           path and immutable objects, the difficulty is not keeping concurrent writers honest, it is how a
+           new set becomes visible — all at once, without a reader ever seeing half of it. The
+           pairs still map 1:1 onto the lede's four problems, in order, and three of the four now restate a
+           numbered invariant (write-once and forward-only, one generation per read, untrusted tier bytes)
+           rather than a design intention. The format row keeps its place unchanged: portability is the one
+           property a reader cannot go back and verify later.
+
+           The layout changed too, and not by choice. As two independent lists the columns lined up only where
+           a pair happened to wrap to the same number of lines — row 4 was already 24px out, and rewording made
+           it three rows instead of one. Text tuned to make a layout look aligned comes apart at the next width,
+           font size or zoom level, so the pairing is structural now: one grid, one row per pair. Measured 0px
+           drift on all four pairs at 1024-1600px. -->
+      <section>
+        <h2>The hard part is the protocol, not the compression.</h2>
+        <p class="lede">
+          Roaring already solves the compression. Putting it in object storage creates four problems that have
+          nothing to do with bit math: a format something other than your own code can read, a refresh that
+          cannot be half-visible, a read that cannot straddle two versions of the same set, and a delete that
+          actually deletes.
+        </p>
+        <!-- One grid, not two lists. The section's whole claim is that each left row is the problem its right
+             row solves, and two independent <ul>s could only ever align by coincidence — they were 24px out on
+             row 4 before this rewrite, and rewording pushed three rows out instead of one. A pair that shares a
+             grid row aligns because of how it is built, at any width and any font size.
+
+             <dl> rather than divs: these ARE term/description pairs, so a screen reader announces the pairing
+             instead of eight unrelated blocks. The column labels sit outside the list because they label the
+             columns, not the terms. -->
+        <div class="ba">
+          <p class="label ba-h">The problem</p>
+          <p class="label ba-h">What CloudBitmaps does</p>
+          <dl class="ba-pairs">
+            <!-- Row 1's left text is deliberately long enough to wrap to two lines, matching its partner. With
+                 the shared-row grid this is cosmetic only — alignment holds at any length, so if a future edit
+                 makes it one line again the pairs stay correct and the row simply gains whitespace. That is the
+                 difference between tuning text for rhythm and tuning it to fake a layout. -->
+            <dt>
+              <i>!</i
+              ><span
+                >A private chunk layout leaves the data only as portable as the code that wrote it, and
+                unreadable by anything else you own</span
+              >
+            </dt>
+            <dd>
+              <i>✓</i
+              ><span
+                >A documented <span class="m">.crbm</span> format, generation-keyed and immutable, with a
+                one-command export</span
+              >
+            </dd>
+
+            <dt>
+              <i>!</i
+              ><span
+                >A refresh that writes over the live bytes leaves a reader a set that is
+                <strong>neither the old one nor the new one</strong></span
+              >
+            </dt>
+            <dd>
+              <i>✓</i
+              ><span
+                >Nothing overwrites a stored object: a load writes a <strong>new generation</strong> and then
+                moves the pointer forward, so a crash before the publish leaves the previous set live</span
+              >
+            </dd>
+
+            <dt>
+              <i>!</i
+              ><span
+                >A read assembled from more than one source is <strong>torn</strong> by a write that lands
+                mid-flight</span
+              >
+            </dt>
+            <dd>
+              <i>✓</i
+              ><span
+                >One generation per read, resolved <strong>once</strong> before any fan-out — and every chunk
+                is CRC32C-verified before it reaches the deserializer</span
+              >
+            </dd>
+
+            <dt>
+              <i>!</i
+              ><span
+                >Immutable objects make one person's erasure the hard case, and
+                <strong>masking a bit is not deleting it</strong></span
+              >
+            </dt>
+            <dd>
+              <i>✓</i
+              ><span
+                ><span class="m">eraseSubject()</span> rewrites the generation without that id and deletes the
+                one that held it — <strong>gone from the bucket</strong> when the call returns</span
+              >
+            </dd>
+          </dl>
+          <!-- Was "1,156 of them run on every commit", which was both ungated and already wrong — the suite
+               was at 1,161. An exact test total is the worst possible thing to publish: it changes on almost
+               every commit, so gating it would break CI for anyone who adds a test, and NOT gating it means it
+               is stale within a day. The invariant count is the stable figure, it is the one that actually
+               carries the claim, and it is derived in scripts/site-figures.cjs. -->
+          <p class="ba-foot">
+            All four rest on a protocol written down as <strong>7 hard correctness invariants</strong> —
+            write-once generations published forward-only, one generation per read, a GC that never touches
+            the current one, every tier byte untrusted. Each has named tests, and they run on every commit.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────────
+           The page used to end on a code block, which left a reader who had scrolled the whole way with
+           nowhere obvious to go. Same two-column proportion as the hero, so the page opens and shuts on the
+           same shape. -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>A codec, a storage, one bucket.</h2>
+            <p class="lede" style="margin: 0">
+              Install the codec you want and the storage you have — each storage package brings its own cloud
+              SDK, so nothing is an optional peer and no install carries an SDK you never use. The memory
+              drivers need nothing at all — the <span class="m">segments.ts</span> sample above runs as-is, so
+              you can see the shape before you point it at a bucket.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
+              <a class="btn" href="usage.html#api">Browse the API</a>
+              <a class="btn" href="benchmarks.html">See the benchmarks</a>
+            </div>
+            <!-- The driver and dependency counts moved up to the `keys-stats` strip so each is stated once.
+                 `Apache-2.0` and the version stay together on one line on purpose — that pairing is the
+                 anchor `tests/docs/site-version.test.ts` matches on to find a badge at all. -->
+            <p class="meta">Apache-2.0 · v0.10.0</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+
+<span class="c"># the codec you want, and the storage you have</span>
+<span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span></code></pre>
+            <p class="link-row"><a href="flavors.html">Every driver package →</a></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-inner">
+        <span>CloudBitmaps · v0.10.0 · Apache-2.0</span>
+        <a href="flavors.html">Flavors</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="usage.html">Usage</a>
+        <a href="benchmarks.html">Benchmarks</a>
+        <span class="right"
+          >Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></span
+        >
+      </div>
+    </footer>
+    <script src="theme.js"></script>
+  </body>
+</html>

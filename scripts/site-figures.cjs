@@ -47,7 +47,14 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const RESULTS = path.join(ROOT, 'bench', 'results.json');
 const DOC = path.join(ROOT, 'docs', 'benchmarks.md');
-const SITE = path.join(ROOT, 'site');
+// Which tree to check. `site/` is what Cloudflare Pages publishes; `site-next/` is the display-tier rebuild beside it
+// until it replaces it, held to the same checks: `SITE_DIR=site-next node scripts/site-figures.cjs`.
+const SITE_DIR = process.env.SITE_DIR ?? 'site';
+if (!['site', 'site-next'].includes(SITE_DIR)) {
+  console.error(`site-figures: SITE_DIR must be site or site-next, not ${SITE_DIR}`);
+  process.exit(2);
+}
+const SITE = path.join(ROOT, SITE_DIR);
 
 const problems = [];
 const fail = (m) => problems.push(m);
@@ -311,7 +318,7 @@ function checkDriverCountEverywhere(want) {
       const stated = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS.indexOf(token);
       if (stated !== want) {
         fail(
-          `site/${rel} says "${m[0].trim()}" but the source has ${want} (${correctWord}) — ` +
+          `${SITE_DIR}/${rel} says "${m[0].trim()}" but the source has ${want} (${correctWord}) — ` +
             'a spelled-out count drifts exactly like a digit one',
         );
       }
@@ -360,7 +367,7 @@ const anchors = [
   [
     'July · 1M segment publishes',
     publishCost === null ? null : `$${publishCost.toFixed(2)}`,
-    { onlyOn: ['site/benchmarks.html', 'docs/benchmarks.md'] },
+    { onlyOn: [`${SITE_DIR}/benchmarks.html`, 'docs/benchmarks.md'] },
   ],
   ['at rest, monthly', `$${atRestShown}`],
   ['at rest, size', `${results.atRest.sizeGiB} GiB`],
@@ -453,13 +460,13 @@ const WRITE_1M = 'per million single-part write-and-publishes';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
   // the per-PUT $5 the estimator once quoted — fails even where the replacement is a value some source accounts for.
-  { rel: 'site/benchmarks.html', requireAll: true },
-  { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
-  { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },
-  { rel: 'site/usage.html', requireAll: false },
-  { rel: 'site/flavors.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
-  { rel: 'site/flavors/roaring.html', requireAll: false },
-  { rel: 'site/llms.txt', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  { rel: `${SITE_DIR}/benchmarks.html`, requireAll: true },
+  { rel: `${SITE_DIR}/index.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: `${SITE_DIR}/architecture.html`, requireAll: false, mustState: [WRITE_1M] },
+  { rel: `${SITE_DIR}/usage.html`, requireAll: false },
+  { rel: `${SITE_DIR}/flavors.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
+  { rel: `${SITE_DIR}/flavors/roaring.html`, requireAll: false },
+  { rel: `${SITE_DIR}/llms.txt`, requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
   { rel: 'README.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
   {
     rel: 'packages/roaring/README.md',
@@ -668,7 +675,7 @@ for (const page of PAGES) {
     // Home only. "$0" is the standing charge — the ABSENCE of a charge, which is the whole pitch of layer 03.
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
-    ...(page.rel === 'site/index.html' ? ['$0'] : []),
+    ...(page.rel === `${SITE_DIR}/index.html` ? ['$0'] : []),
   ]);
   // A figure the latest calibration run accounts for passes at the precision it is written, by the same matcher
   // that holds the run's report to its evidence — `$82` for $82.40 as readily as the full figure. Its latency
@@ -740,23 +747,23 @@ for (const page of PAGES) {
 // The whole-page check above reads money only. The panel is the one place the site restates the run in detail —
 // counts, shares, sizes — so inside it every figure is held to the evidence, and its rows to the derivation's.
 if (singleBucket !== null) {
-  const html = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
+  const html = fs.readFileSync(path.join(SITE, 'benchmarks.html'), 'utf8');
   const open = html.indexOf('id="single-bucket"');
   const close = open === -1 ? -1 : html.indexOf('</div>\n\n', open);
   if (open === -1 || close === -1) {
-    fail('site/benchmarks.html no longer has its #single-bucket panel');
+    fail(`${SITE_DIR}/benchmarks.html no longer has its #single-bucket panel`);
   } else {
     const panel = html.slice(open, close).replace(/<!--[\s\S]*?-->/g, '');
     const text = panel.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ');
     for (const figure of calibration.unaccounted(text, singleBucket.pageValues)) {
       fail(
-        `site/benchmarks.html's #single-bucket panel states ${figure}, which the run does not account for`,
+        `${SITE_DIR}/benchmarks.html's #single-bucket panel states ${figure}, which the run does not account for`,
       );
     }
     // Rows: Operation | Per million | Requests. A row that bills a GET or a PUT is one of the derivation's rows,
     // with its cost, and says "expected" if the derivation labels it so; each derived row appears once.
     const body = /<tbody\b[^>]*>([\s\S]*?)<\/tbody>/.exec(panel)?.[1] ?? '';
-    if (body === '') fail("site/benchmarks.html's #single-bucket panel has no table body");
+    if (body === '') fail(`${SITE_DIR}/benchmarks.html's #single-bucket panel has no table body`);
     const rows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
       [...m[1].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/g)].map((c) =>
         calibration.normalize(c[1].replace(/<[^>]+>/g, '')).trim(),
@@ -897,7 +904,7 @@ const specAnchors = [];
     );
   }
 
-  const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
+  const homeHtml = fs.readFileSync(path.join(SITE, 'index.html'), 'utf8');
 
   // ── no warm-scan ceiling to publish, and the site must not claim one ───────────────────────────────────
   // This block used to derive `DEFAULT_MAX_WARM_SCAN_BYTES` and gate the MiB figure /architecture and /usage
@@ -905,10 +912,10 @@ const specAnchors = [];
   // term, the chunk-aligned window, with no per-operand delta snapshot outside it. The check is inverted
   // rather than deleted — a page that still quotes a warm ceiling is quoting a bound nothing enforces.
   for (const rel of [
-    'site/architecture.html',
-    'site/usage.html',
-    'site/benchmarks.html',
-    'site/index.html',
+    `${SITE_DIR}/architecture.html`,
+    `${SITE_DIR}/usage.html`,
+    `${SITE_DIR}/benchmarks.html`,
+    `${SITE_DIR}/index.html`,
   ]) {
     const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     if (/maxWarmScanBytes/.test(html)) {
@@ -926,7 +933,7 @@ const specAnchors = [];
   const encoding = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'bench', 'encoding-results.json'), 'utf8'),
   );
-  const roaringPage = fs.readFileSync(path.join(ROOT, 'site', 'flavors', 'roaring.html'), 'utf8');
+  const roaringPage = fs.readFileSync(path.join(SITE, 'flavors', 'roaring.html'), 'utf8');
   const show = (ratio) => (ratio >= 10 ? String(Math.round(ratio)) : ratio.toFixed(2));
   for (const shape of encoding.shapes) {
     // A shape roaring LOSES is displayed as its reciprocal — the page says "1.02x larger", not "0.98x smaller",
@@ -940,7 +947,7 @@ const specAnchors = [];
     // exactly the kind of check that reports coverage it does not have.
     if (!roaringPage.includes(want)) {
       fail(
-        `site/flavors/roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
+        `${SITE_DIR}/flavors/roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
           `as "${want}" — re-run \`pnpm bench:encoding\` and update the page together`,
       );
     } else {
@@ -967,7 +974,7 @@ const specAnchors = [];
   // This exists because the gate that produces these numbers ran green on every PR for months while the figure
   // was listed as OWED: the soak ran without SOAK_INJECT, so its verdict lived only in container stdout, and
   // the stage directory is deleted on exit. A measurement nothing records is a measurement nobody has.
-  const benchPageForRss = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
+  const benchPageForRss = fs.readFileSync(path.join(SITE, 'benchmarks.html'), 'utf8');
   const rss = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'bench', 'rss-gate-results.json'), 'utf8'),
   );
@@ -989,7 +996,7 @@ const specAnchors = [];
     ]) {
       if (!benchPageForRss.includes(want)) {
         fail(
-          `site/benchmarks.html does not state "${want}" (${label}) — re-run \`pnpm rss-gate\` and update ` +
+          `${SITE_DIR}/benchmarks.html does not state "${want}" (${label}) — re-run \`pnpm rss-gate\` and update ` +
             'the RSS envelope together',
         );
       } else {
@@ -999,7 +1006,7 @@ const specAnchors = [];
   }
 
   const soak = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'soak-results.json'), 'utf8'));
-  const benchPage = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
+  const benchPage = fs.readFileSync(path.join(SITE, 'benchmarks.html'), 'utf8');
   if (soak.combines === undefined) {
     fail(
       'bench/soak-results.json has no `combines` field — it predates the combine phase. Re-run `pnpm soak` ' +
@@ -1018,7 +1025,7 @@ const specAnchors = [];
     ]) {
       if (!benchPage.includes(want)) {
         fail(
-          `site/benchmarks.html does not state "${want}" (${label}) — re-run \`pnpm soak\` with ` +
+          `${SITE_DIR}/benchmarks.html does not state "${want}" (${label}) — re-run \`pnpm soak\` with ` +
             `SOAK_INJECT=1 and update limitation 04 together`,
         );
       } else {
@@ -1051,7 +1058,7 @@ const specAnchors = [];
     }
     const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/.exec(homeHtml);
     if (!foot) {
-      fail('site/index.html no longer carries the .ba-foot line that states the invariant count');
+      fail(`${SITE_DIR}/index.html no longer carries the .ba-foot line that states the invariant count`);
     } else {
       const stated = /<strong>(\d+)\s+hard correctness invariants<\/strong>/.exec(foot[1]);
       if (!stated) {
@@ -1068,7 +1075,7 @@ const specAnchors = [];
 
   const strip = /<p class="keys-stats">([\s\S]*?)<\/p>/.exec(homeHtml);
   if (!strip) {
-    fail('site/index.html no longer carries the .keys-stats strip that states the driver count');
+    fail(`${SITE_DIR}/index.html no longer carries the .keys-stats strip that states the driver count`);
   } else {
     const stated = new Map();
     for (const m of strip[1].matchAll(/<strong>([\d,]+)<\/strong>\s*([^<]+?)\s*<\/span>/g)) {
@@ -1102,7 +1109,7 @@ const specAnchors = [];
   // two chances to drift and one place that notices. Both are covered now.
   const heroMeta = /<p class="meta">([\s\S]*?)<\/p>/.exec(homeHtml);
   if (!heroMeta) {
-    fail("site/index.html no longer carries the hero's meta line");
+    fail(`${SITE_DIR}/index.html no longer carries the hero's meta line`);
   } else {
     for (const [label, want, detail] of [
       ['storage drivers', backends.size, () => [...backends].sort().join(', ')],
@@ -1153,7 +1160,7 @@ const specAnchors = [];
     const file = path.join(SITE, rel);
     if (!fs.existsSync(file)) {
       fail(
-        `site/${rel} is in MUST_CARRY_THE_BADGE but does not exist — update the list or restore the page`,
+        `${SITE_DIR}/${rel} is in MUST_CARRY_THE_BADGE but does not exist — update the list or restore the page`,
       );
       continue;
     }
@@ -1161,7 +1168,7 @@ const specAnchors = [];
     // teaches people to route around the gate rather than to state the scope.
     if (!/zero-dependency core/i.test(fs.readFileSync(file, 'utf8'))) {
       fail(
-        `site/${rel} no longer states \`zero-dependency core\`. Every page carrying the fact strip scopes ` +
+        `${SITE_DIR}/${rel} no longer states \`zero-dependency core\`. Every page carrying the fact strip scopes ` +
           'its dependency claim: since the split the codec adds `roaring` and each storage package its own ' +
           'SDK, so an unscoped or absent count is not a smaller claim, it is a wrong one.',
       );
@@ -1178,7 +1185,7 @@ const specAnchors = [];
   const alsoChecked = checkDriverCountEverywhere(backends.size);
   if (alsoChecked < DRIVER_STATEMENT_FLOOR) {
     fail(
-      `only ${alsoChecked} driver-count statements were found across site/, down from ` +
+      `only ${alsoChecked} driver-count statements were found across ${SITE_DIR}/, down from ` +
         `${DRIVER_STATEMENT_FLOOR}. Either a page stopped stating the count, or a phrasing stopped ` +
         'matching — both are how this check has gone quiet before. Lower the floor deliberately if a page ' +
         'really was removed.',

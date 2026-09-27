@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <title>CloudBitmaps usage — zero setup, then the same code in production</title>
+    <meta
+      name="description"
+      content="The in-memory drivers need no bucket and no credentials. Swap them for S3 later and every line that loads or reads stays as it was. The full API, four drivers, and how to estimate your own bill."
+    />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
+    <link rel="canonical" href="https://cloudbitmaps.pages.dev/usage" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps usage — zero setup, then the same code in production" />
+    <meta
+      property="og:description"
+      content="The memory drivers need nothing. Swap them for S3 later and only the two driver lines change."
+    />
+    <meta property="og:url" content="https://cloudbitmaps.pages.dev/usage" />
+    <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CloudBitmaps usage — zero setup, then production" />
+    <meta
+      name="twitter:description"
+      content="The memory drivers need nothing. Only the driver lines change when you go to production."
+    />
+    <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
+          <a href="index.html">Overview</a>
+          <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a class="active" href="usage.html" aria-current="page">Usage</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps" target="_blank" rel="noopener" aria-label="GitHub (opens in a new tab)">GitHub</a>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ── HERO ─────────────────────────────────────────────────────────── -->
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Usage · @cloudbitmaps/roaring v0.10.0</p>
+            <h1>Zero setup, then the same code in production.</h1>
+            <p class="hero-lede">
+              The in-memory drivers need nothing — no bucket, no credentials. Swap them for S3 later and
+              <strong>every line that loads or reads stays as it was</strong>.
+            </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="#quickstart">The eight lines →</a>
+              <a class="btn" href="#api">The whole API</a>
+              <a class="btn" href="#drivers">Four drivers</a>
+              <a class="btn" href="#retention">Retention</a>
+            </p>
+            <p class="meta">
+              Apache-2.0 · zero-dependency core · one package per storage service, each with its own SDK
+            </p>
+          </div>
+
+          <aside class="install">
+            <div class="install-head label"><span>Install &amp; verify</span><span>OIDC + SLSA</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+
+<span class="c"># the tarball came from the commit it claims</span>
+npm audit signatures</code></pre>
+            <div class="install-alt">
+              <p class="label">Supply chain</p>
+              <p class="install-note">
+                Published tokenlessly from CI via OIDC with SLSA provenance attached.
+                <span class="m">@cloudbitmaps/core</span> has no third-party dependencies; the codec adds
+                one native dependency (<span class="m">roaring</span>, the Node binding to CRoaring), and each
+                storage package its own cloud SDK.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── QUICKSTART, THEN PRODUCTION ─────────────────────────────────────
+           Side by side on purpose. The claim is that only the two driver lines change, and two blocks a reader
+           can compare line-for-line make that checkable rather than something they have to believe. -->
+      <section id="quickstart">
+        <h2>Eight lines, then the same eight lines</h2>
+        <p class="lede">
+          The only difference between these two is which backend the first line constructs. Nothing below
+          them knows, or can know, whether the bytes are in a Map or in a bucket.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">quickstart.ts</span><span class="label">No setup</span>
+            </div>
+            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
+
+<span class="c">// the whole set, as one immutable generation</span>
+<span class="k">await</span> store.load({ segment: <span class="s">'high-value-shoppers'</span> },
+  [<span class="n">75</span>, <span class="n">99_999</span>, <span class="n">1_234_567_890</span>]);
+<span class="k">const</span> vips = store.segment(<span class="s">'high-value-shoppers'</span>);
+<span class="k">await</span> vips.has(<span class="n">1_234_567_890</span>);  <span class="c">// true</span>
+<span class="k">await</span> vips.count();            <span class="c">// exact, 0 payloads</span></code></pre>
+          </div>
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">production.ts</span><span class="label">Only the drivers</span>
+            </div>
+            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+<span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/s3'</span>;
+
+<span class="c">// one bucket holds both the data and the pointer, stated once</span>
+<span class="k">const</span> backend = <span class="k">new</span> S3Storage({
+  bucket: <span class="s">'segments'</span>, region: <span class="s">'us-east-1'</span>,
+});
+
+<span class="k">const</span> store = <span class="k">new</span> CloudRoaring({
+  storage: backend,
+  cache: { maxChunks: <span class="n">512</span> },   <span class="c">// optional bounded LRU</span>
+});
+
+<span class="c">// …every line below here is unchanged</span></code></pre>
+          </div>
+        </div>
+        <p class="note" style="max-width: 82ch">
+          The <span class="m">registry</span> is what resolves a generation in one read instead of a
+          list-scan, what makes an encrypted segment readable, and what every write and every lifecycle call
+          publishes through. <strong>You do not wire it separately.</strong> A backend —
+          <span class="m">S3Storage</span>, <span class="m">GcsStorage</span> and the rest — carries it, which
+          is why <span class="m">storage</span> is the only location key the store takes. Hand the store a bare
+          <span class="m">IStorageDriver</span> instead and there is no pointer at all: it finds the highest
+          generation in the bucket by list-scan, cleartext and read-only. Fine for a first look, not past it.
+        </p>
+      </section>
+
+      <!-- ── THE API ────────────────────────────────────────────────────────
+           One table. The `touches` column is the useful part — it is what tells you the cost of a call, which
+           is the thing this library asks you to think about that an in-memory Set does not. -->
+      <section id="api">
+        <h2>The whole API</h2>
+        <p class="lede">
+          The read verbs are deliberately the shape of an in-memory <span class="m">Set</span>. The write is
+          not: a segment changes only by getting a whole new generation. So the third column — what a call
+          costs you in backend requests — is the one worth reading.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Load, segment and store</span><span class="label">Scrolls sideways on narrow screens</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Call</th>
+                  <th>Does</th>
+                  <th>Touches</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="m">store.load(ref, ids)</span></td>
+                  <td class="from">
+                    <strong>The only way data gets in.</strong> Streams an unsorted id source into one
+                    immutable <span class="m">.crbm</span> object, then advances the segment's pointer
+                    forward-only. Grouped by chunk first, so it bills <strong>per object, not per id</strong>.
+                    On S3, a segment's first load is expected at 4 PUT-class and 7 GET requests, listings
+                    included — S3 bills a listing at the PUT rate.
+                  </td>
+                  <td class="num">4 PUT-class + 7 GET</td>
+                </tr>
+                <tr>
+                  <td><span class="m">has(id)</span></td>
+                  <td class="from">
+                    Resolves one chunk of the current generation: the cache if it is there, otherwise one
+                    ranged GET of that chunk. The first read of a segment also reads its pointer and its index.
+                    Never a merge of two sources, so it can never be torn.
+                  </td>
+                  <td class="num">cache, else 1 GET</td>
+                </tr>
+                <tr>
+                  <td><span class="m">count()</span></td>
+                  <td class="from">
+                    Sums per-chunk cardinality from the <span class="m">.crbm</span> index.
+                    <strong>Exact, not estimated</strong> — no HyperLogLog — and it never opens a payload. A
+                    segment's first read also reads its pointer.
+                  </td>
+                  <td class="num">the index</td>
+                </tr>
+                <tr>
+                  <td><span class="m">intersect(others, { exclude })</span></td>
+                  <td class="from">
+                    Async-iterates the intersection. Compares chunk keys first and requests only shared chunks;
+                    the storage payload footprint is bounded by
+                    <span class="m">concurrency × operands × chunk</span>, and that is the whole term — there
+                    is no second tier to snapshot. <span class="m">exclude</span> subtracts suppression
+                    segments in the same pass.
+                  </td>
+                  <td class="num">the shared chunks</td>
+                </tr>
+                <tr>
+                  <td>
+                    <span class="m">intersectInto(dest, others)</span><br /><span class="m">unionInto</span> ·
+                    <span class="m">andNotInto</span>
+                  </td>
+                  <td class="from">
+                    Publishes the result as a <strong>new generation of <span class="m">dest</span></strong>
+                    rather than streaming it to you — superseded, not added to — and hands back
+                    <span class="m">{ generation, cardinality, chunkCount, size }</span>.
+                  </td>
+                  <td class="num">storage + registry</td>
+                </tr>
+                <tr>
+                  <td><span class="m">store.eraseSubject(id)</span></td>
+                  <td class="from">
+                    Rewrites every segment holding the id without it and deletes the generation that held the
+                    bit, so it is <strong>physically gone from the bucket</strong> when the call returns. A
+                    compliance operation, not a hot-path verb — there is no per-id write.
+                  </td>
+                  <td class="num">storage + registry</td>
+                </tr>
+                <tr>
+                  <td><span class="m">store.retireExpired()</span></td>
+                  <td class="from">
+                    The retention sweep: everything whose <span class="m">expiresAt</span> has passed, each
+                    through <span class="m">dropSegment</span>. <strong>A call, not a daemon</strong> —
+                    bounded, previewable, and it returns a per-segment ledger instead of throwing.
+                  </td>
+                  <td class="num">registry, then storage</td>
+                </tr>
+                <tr>
+                  <td><span class="m">store.exportSegments(sink)</span></td>
+                  <td class="from">
+                    Writes every registered segment out as cross-language
+                    <span class="m">roaring</span> or newline-delimited <span class="m">ndjson</span>, using
+                    only public read APIs. The one-command exit, and there is a CLI that wraps it.
+                  </td>
+                  <td class="num">storage</td>
+                </tr>
+                <tr>
+                  <td><span class="m">estimateCost(input)</span></td>
+                  <td class="from">
+                    Your region and rates in, projected bill out. The
+                    <a href="benchmarks.html">benchmarks page</a> is generated from this same function.
+                  </td>
+                  <td class="num">nothing — pure</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <span class="label">No per-id TTL, by design</span> A <em>segment</em> can expire — record
+            <span class="m">setRetention(ref, { expiresAt })</span> and a <span class="m">retireExpired()</span>
+            sweep retires it, on a schedule you own. An individual <em>id</em> cannot, because a bitmap stores ids
+            and not <span class="m">(id, timestamp)</span> pairs — an expiry per id costs 4&ndash;8 bytes each
+            and takes the compression with it. Retention is a segment that expires, not a bit that ages.
+          </p>
+        </div>
+
+        <!-- ── THE TWO WRITES ──────────────────────────────────────────────────
+             The table above names them; a reader porting a `SETBIT` loop needs to see them. Left is the write
+             every other write is a special case of. Right is the one that never leaves the bucket at all —
+             which is the shape an audience actually wants, because the ids do not have to come back to you to
+             be published. -->
+        <p class="lede">
+          Both writes are the same protocol: build one immutable object, then move the pointer.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">load.ts</span><span class="label">Per object, not per id</span>
+            </div>
+            <pre class="code-plain"><code><span class="c">// `store` from above — the backend is already wired.</span>
+
+<span class="k">const</span> ref = { namespace: <span class="s">'audience'</span>, segment: <span class="s">'high-value'</span> };
+
+<span class="c">// The warehouse decides the set; hand over the cursor,</span>
+<span class="c">// not an array. Re-run on a cadence — each run</span>
+<span class="c">// publishes the next generation and supersedes the last.</span>
+<span class="k">const</span> r = <span class="k">await</span> store.load(ref, athenaCursor());
+
+r.cardinality;  <span class="c">// distinct ids now published</span></code></pre>
+          </div>
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">audience.ts</span><span class="label">The bytes never come to you</span>
+            </div>
+            <pre class="code-plain"><code><span class="k">const</span> seg = (name) =&gt;
+  store.segment(name, { namespace: <span class="s">'audience'</span> });
+
+<span class="k">const</span> vips = seg(<span class="s">'high-value'</span>);
+<span class="k">const</span> eu = seg(<span class="s">'eu-residents'</span>);
+<span class="k">const</span> optedOut = seg(<span class="s">'opted-out'</span>);
+<span class="k">const</span> target = seg(<span class="s">'eu-vips'</span>);
+
+<span class="c">// Suppression folds into the same pass, and the result</span>
+<span class="c">// becomes a new generation of `target` — unless it comes</span>
+<span class="c">// out empty, which is refused rather than wiping it.</span>
+<span class="k">const</span> res = <span class="k">await</span> vips.intersectInto(
+  target, [eu], { exclude: [optedOut] },
+);
+<span class="k">if</span> (!res.published) console.warn(res.reason); <span class="c">// 'empty'</span></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── RETENTION: THE DEDUP WINDOW ────────────────────────────────────
+           Added because the first real consumer asked for TTL, twice, and then reached for the workaround that
+           corrupts reads (a lifecycle rule alone). The absence of TTL was already stated a few lines up; what was
+           missing was the thing you do instead, spelled out in code, on the page a reader is on when they ask.
+
+           The dedup framing is the strongest version of this: the bucket key IS the re-eligibility rule, so
+           there is no per-user expiry bookkeeping at all. That is a genuinely nicer answer than TTLs, not a
+           consolation for lacking them — which is why it leads. -->
+      <section id="retention">
+        <h2>Retention: a segment that expires</h2>
+        <p class="lede">
+          Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
+          moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. The old bucket
+          retires itself once you record when it should — see <span class="m">setRetention</span> below.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">dedup.ts</span><span class="label">No per-user timers</span>
+            </div>
+            <pre class="code-plain"><code><span class="c">// The bucket IS the re-eligibility rule.</span>
+<span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: localDay };
+<span class="k">const</span> sent = store.segment(localDay, { namespace: <span class="s">'sent-daily'</span> });
+
+<span class="k">if</span> (<span class="k">await</span> sent.has(userId)) <span class="k">return</span>;  <span class="c">// already sent today</span>
+<span class="k">await</span> send(userId);                  <span class="c">// then queue the id</span>
+
+<span class="c">// On a cadence — every few minutes, or once at the end</span>
+<span class="c">// of the wave — publish the day so far as one object.</span>
+<span class="k">await</span> store.load(ref, sentToday());</code></pre>
+          </div>
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">retire.ts</span><span class="label">One call, ordered correctly</span>
+            </div>
+            <pre class="code-plain"><code><span class="c">// The namespace is part of the identity — omit it</span>
+<span class="c">// and you silently address a different segment.</span>
+<span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: oldDay };
+
+<span class="c">// Preview first — dryRun changes nothing.</span>
+<span class="k">await</span> store.dropSegment(ref, {
+  confirmSegment: ref.segment, dryRun: <span class="k">true</span>,
+});
+
+<span class="c">// Tombstone the pointer, then sweep every generation.</span>
+<span class="k">const</span> r = <span class="k">await</span> store.dropSegment(ref, {
+  confirmSegment: ref.segment,
+});
+<span class="c">// r.reason === 'absent' means you named it wrong.</span></code></pre>
+          </div>
+        </div>
+        <p class="note">
+          <strong>The check is exactly as fresh as the cadence.</strong> A read sees the published generation,
+          so an id queued since the last load is not in <span class="m">sent</span> yet — this is at-most-once
+          per <em>published</em> set, not against the last millisecond. Where the window is a day and the
+          cadence is minutes, that is the right trade; where the answer has to be true the instant an id is
+          claimed, claim it where the ids are queued and keep the segment as the durable record.
+        </p>
+        <p class="note">
+          <strong>Names</strong> —
+          any non-empty string, segment and namespace alike. <span class="m">sent:2026-08-01</span>,
+          <span class="m">orders/2026</span> and <span class="m">user@example.com</span> are all legal; each
+          storage layer escapes what it cannot take literally. The only limits are non-empty and 256 characters
+          once encoded for a storage key. The namespace split is still the better shape for a family: listing
+          the namespace enumerates exactly that family&rsquo;s buckets, which is the list a retention sweep
+          wants.
+        </p>
+        <p class="note">
+          <strong>Do not reach for an object-store lifecycle rule on its own.</strong> It deletes the bytes while
+          the registry still points at them — the torn state a DR runbook says not to serve traffic on — and it
+          surfaces <em>intermittently</em>, because a read checks the in-process cache before storage. It
+          passes in a process whose cache is already populated and starts failing after a restart.
+          <span class="m">dropSegment</span> exists so the ordering cannot be got wrong: the pointer is
+          tombstoned first, then the objects are swept — and it hands back
+          <span class="m">generationsRemaining</span>, which is non-empty exactly when bytes survived and the
+          drop should be re-run. A lifecycle rule is a fine backstop for orphans — just give it a longer
+          window than your retention.
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/getting-started.md#135-retention-ttl-and-pruning--what-exists-and-what-doesnt" target="_blank" rel="noopener" aria-label="Retention guide (opens in a new tab)">The guide has the rest</a>.
+        </p>
+        <div class="tpanel">
+          <p class="tpanel-foot">
+            The <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md" target="_blank" rel="noopener" aria-label="API reference (opens in a new tab)">API reference</a> is checked against the
+            real exports by CI, so it cannot drift from the package.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── DRIVERS ────────────────────────────────────────────────────────
+           A matrix rather than a list of names. Which ROLES a backend can fill is the question a reader
+           actually has, and a flat list of logos does not answer it. -->
+      <section id="drivers">
+        <h2>Four drivers, each carrying both halves</h2>
+        <p class="lede">
+          A backend carries the immutable generation objects <em>and</em> the pointer row, from one bucket and
+          one prefix — so a deployment names one service, not two. Anything with a cheap ranged read and a
+          write-once put can serve as storage; anything with a cheap compare-and-swap can serve as the pointer;
+          each of the four below does both. Need them apart?
+          <span class="m">createBackend({ storage, registry })</span> still composes a storage driver and a registry
+          driver by hand. Each
+          backend's SDK is a <strong>real dependency</strong> of its own package — install only the storage you
+          use.
+        </p>
+        <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
+             seen that page can reasonably arrive here looking for Redis in the table and read its absence as
+             an omission. It is a baseline, not a backend; saying so is ours to do, not theirs to work out. -->
+        <p class="note" style="max-width: 82ch">
+          <strong>Redis is not in this table.</strong> It is the line the
+          <a href="benchmarks.html">benchmarks page</a> prices against, not a backend this library writes to —
+          the storage here is your own bucket plus one small pointer row per segment. It is still a good
+          neighbour: when your set is defined by events arriving one at a time, accumulate them where they
+          arrive — Redis is genuinely good at that — and load the set on a cadence.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Drivers</span><span class="label">Storage · registry</span>
+          </div>
+          <div class="tscroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Backend</th>
+                  <th>Package</th>
+                  <th>Roles</th>
+                  <th>Cloud SDK (a real dependency)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>S3</td>
+                  <td><span class="m">@cloudbitmaps/s3</span></td>
+                  <td class="from">storage · registry</td>
+                  <td class="num">@aws-sdk/client-s3 &gt;=3.645.0 &lt;4</td>
+                </tr>
+                <tr>
+                  <td>Google Cloud Storage</td>
+                  <td><span class="m">@cloudbitmaps/gcs</span></td>
+                  <td class="from">storage · registry</td>
+                  <td class="num">@google-cloud/storage ^7 || ^8</td>
+                </tr>
+                <tr>
+                  <td>Azure Blob</td>
+                  <td><span class="m">@cloudbitmaps/azure-blob</span></td>
+                  <td class="from">storage · registry</td>
+                  <td class="num">@azure/storage-blob ^12</td>
+                </tr>
+                <tr>
+                  <td>Filesystem</td>
+                  <td class="from">main entry</td>
+                  <td class="from">storage · registry</td>
+                  <td class="num">none</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <strong>Memory</strong> drivers ship in the main entry too and need nothing — they are what the
+            quickstart uses. An <strong>S3-compatible</strong> endpoint (R2, MinIO) works through the S3 driver
+            by pointing the client's <span class="m">endpoint</span> at it.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── YOUR OWN BILL ──────────────────────────────────────────────── -->
+      <section>
+        <h2>Estimate your own bill</h2>
+        <p class="lede">
+          Our published numbers are <span class="m">us-east-1</span> on-demand. Yours are not. Feed your own
+          rates in and get your own crossover — the site's modelled figures call this same function, so they
+          cannot drift ahead of the library. It counts the pointer too — the object beside your data that says
+          which generation is current — and each operand's index, so pass
+          <span class="m">chunksPerIntersect</span> as the chunks your intersects fetch, and
+          <span class="m">hotSegments</span> for the segments each long-lived reader keeps reading, with
+          <span class="m">readerProcesses</span> for how many readers: each re-reads its pointers every
+          <span class="m">cache.genTtlMs</span>.
+        </p>
+        <div class="prov">
+          <div class="tpanel">
+            <div class="tpanel-head">
+              <span class="label">estimate.ts</span><span class="label">Pure — touches nothing</span>
+            </div>
+            <pre class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
+  <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+
+<span class="k">const</span> bill = estimateCost({
+  segments: [{ sizeBytes: <span class="n">60_000_000</span>, count: <span class="n">20</span> }],
+  workload: { readsPerSec: <span class="n">800</span>, loadsPerMonth: <span class="n">900</span>, hotSegments: <span class="n">20</span> },
+  pricing: myPricingProfile,  <span class="c">// or the AWS default</span>
+});
+bill.redisCrossover.readsPerSec;</code></pre>
+          </div>
+          <ul class="rowlist">
+            <li>
+              <span class="rl-mark">01</span>
+              <span class="rl-what">Schedule the retention sweep</span>
+              <span class="rl-fig is-live">retireExpired()</span>
+              <span class="rl-note">
+                The only scheduled work there is — no daemon, no compaction pass, no lifecycle worker. An
+                EventBridge rule, a Kubernetes <span class="m">CronJob</span> or a queue job all do; nothing
+                here starts a timer.
+              </span>
+            </li>
+            <li>
+              <span class="rl-mark">02</span>
+              <span class="rl-what">Bound the cache to what your runtime can hold</span>
+              <span class="rl-fig is-live">cache.maxChunks</span>
+              <span class="rl-note">
+                An LRU with a hard ceiling — 1,024 decoded chunks by default — and the ceiling is yours to
+                choose. Correctness does not depend on it either way.
+              </span>
+            </li>
+            <li>
+              <span class="rl-mark">03</span>
+              <span class="rl-what">Collect superseded generations, keeping one</span>
+              <span class="rl-fig">$0.03/mo · 1.2 GiB</span>
+              <span class="rl-note">
+                Every load leaves its predecessor in the bucket, still billed, and nothing deletes it for you.
+                <span class="m">gcOrphanGenerations</span> does — keeping the newest superseded one by default
+                as a grace window, so a read still fetching from it saves a round trip. Storage is the only cost
+                of that window. It is not a snapshot facility: no setting here holds a long job on one
+                generation.
+              </span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ── THE EXIT ───────────────────────────────────────────────────────
+           This was two cards, one of which led with "the real risk is operational maturity". That disclosure
+           belongs on the site — an evaluator finds pre-1.0 and single-maintainer from the version number and
+           the contributor count whether we say it or not, and saying it first is the difference between being
+           told and finding out. But it is ALREADY on this page in the footer, and /benchmarks carries the
+           caveats in full. A third statement of it, framed as a risk, at the moment somebody is about to
+           install, is redundant weight in the worst possible place.
+
+           So the section is the exit instead, which is the load-bearing reassurance and is three facts rather
+           than one. -->
+      <section>
+        <h2>Your data is not held hostage</h2>
+        <p class="lede">
+          The reason to be comfortable adopting a pre-1.0 library is not a promise about the library. It is
+          that leaving costs you one command, and the bytes were never anywhere you could not reach.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">The bytes are in your bucket, immutable</span>
+            <span class="rl-fig">your account</span>
+            <span class="rl-note">
+              Storage objects are generation-keyed and never mutated in place. Nothing is stored anywhere we
+              control, and there is no service to be shut off.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">The format is documented</span>
+            <span class="rl-fig"><span class="m">.crbm</span></span>
+            <span class="rl-note">
+              <strong>Chunked Remote BitMap</strong> — chunked because 16-bit chunks are the data model, remote
+              because every choice in it assumes the bytes are far away and billed per request. A sequence of
+              per-chunk payloads behind a footer index; every chunk carries a CRC32C in its index entry, verified
+              <strong>before</strong> any deserialize, and the index and footer carry their own. The container is
+              codec-independent — only the payload bytes belong to a flavor. Specified rather than
+              reverse-engineered.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark is-held">&#10003;</span>
+            <span class="rl-what">One command writes everything out</span>
+            <span class="rl-fig is-live">exportSegments()</span>
+            <span class="rl-note">
+              Cross-language <span class="m">roaring</span> or newline-delimited
+              <span class="m">ndjson</span>, via public read APIs only, with an
+              <span class="m">export-segments</span> CLI that wraps it. The exit is a shipped feature, not a
+              migration project.
+            </span>
+          </li>
+        </ul>
+        <p class="note" style="max-width: 82ch">
+          The <a href="benchmarks.html">benchmarks page</a> carries the rate past which a flat tier is cheaper, the
+          methodology, and what each measurement does and does not establish.
+        </p>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Start with the memory drivers.</h2>
+            <p class="lede" style="margin: 0">
+              They need no account and no configuration, and the code you write against them is the code you
+              keep. Point it at a bucket when you are ready.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="demo.html">See an intersection →</a>
+              <a class="btn" href="architecture.html">How it works</a>
+              <a class="btn" href="benchmarks.html">Benchmarks</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.10.0 · zero-dependency core · 4 storage drivers</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
+            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+
+<span class="c"># the codec you want, and the storage you have.</span>
+<span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span></code></pre>
+            <p class="link-row"><a href="flavors.html">Compare flavors →</a></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-inner">
+        <p class="meta">
+          CloudBitmaps · v0.10.0 · Apache-2.0 <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a> <a href="architecture.html">Architecture</a>
+          <a href="benchmarks.html">Benchmarks</a>
+        </p>
+        <p class="meta">Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></p>
+      </div>
+    </footer>
+
+    <script src="theme.js"></script>
+  </body>
+</html>

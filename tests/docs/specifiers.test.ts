@@ -65,6 +65,7 @@ function publicFacingFiles(): string[] {
   // separate, private tree — dead weight here, and removed with it.)
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
+  walk('site-next', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));
   // The published source. Its doc-comments are user-facing twice over — on hover in an editor, and inside the
   // `.d.ts` files and sourcemaps that ship in the tarball.

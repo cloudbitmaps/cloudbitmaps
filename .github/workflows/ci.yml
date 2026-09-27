@@ -67,6 +67,11 @@ jobs:
       # Markup must not reference a class the stylesheet never declares, and no internal link may 404.
       - run: python3 scripts/site-classes.py
       - run: python3 scripts/site-links.py
+      # site-next/ is the display-tier rebuild beside site/ until it replaces it, held to the same two checks.
+      - run: python3 scripts/site-classes.py
+        env: { SITE_DIR: site-next }
+      - run: python3 scripts/site-links.py
+        env: { SITE_DIR: site-next }
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

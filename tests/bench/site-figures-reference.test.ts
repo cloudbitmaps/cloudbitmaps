@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SCRIPT = join(ROOT, 'scripts', 'site-figures.cjs');
 const requireFromScript = createRequire(SCRIPT);
-const PAGE = 'site/benchmarks.html';
+/** Both trees: `site/`, which Pages publishes, and `site-next/`, the display-tier rebuild beside it until it replaces it. */
+const SITE_DIRS = ['site', 'site-next'] as const;
 
 class Exit extends Error {
   constructor(readonly code: number) {
@@ -20,7 +21,10 @@ class Exit extends Error {
   }
 }
 
-function siteFigures(files: Record<string, string> = {}): { code: number; out: string } {
+function siteFigures(
+  dir: (typeof SITE_DIRS)[number],
+  files: Record<string, string> = {},
+): { code: number; out: string } {
   const realFs = requireFromScript('node:fs') as typeof import('node:fs');
   const rel = (p: unknown): string => relative(ROOT, String(p));
   const fs = {
@@ -36,6 +40,7 @@ function siteFigures(files: Record<string, string> = {}): { code: number; out: s
   };
   const proc = {
     argv: ['node', SCRIPT],
+    env: { SITE_DIR: dir },
     exit: (code: number): never => {
       throw new Exit(code);
     },
@@ -55,52 +60,56 @@ function siteFigures(files: Record<string, string> = {}): { code: number; out: s
   }
 }
 
-describe("site:figures holds the reference set's Redis to bench/results.json", () => {
-  const html = readFileSync(join(ROOT, PAGE), 'utf8');
+describe.each(SITE_DIRS)(
+  "site:figures on %s/ holds the reference set's Redis to bench/results.json",
+  (dir) => {
+    const PAGE = `${dir}/benchmarks.html`;
+    const html = readFileSync(join(ROOT, PAGE), 'utf8');
 
-  it('passes the page as committed', () => {
-    const r = siteFigures();
-    expect(r.code, r.out).toBe(0);
-  });
-
-  it.each([
-    ['its cluster', '3 × cache.t4g.medium', '3 × cache.t4g.small'],
-    ['the line against it', '<strong>135.42</strong>', '<strong>135.4</strong>'],
-  ])('fails the page when it misstates %s', (name, right, wrong) => {
-    expect(html).toContain(right);
-    const r = siteFigures({ [PAGE]: html.replace(right, wrong) });
-    expect(r.code, r.out).toBe(1);
-    expect(r.out).toContain(`never states reference set · ${name}`);
-  });
-
-  describe('and leaves exactly the SIZING regions bench/sizing.cjs writes to it', () => {
-    const README = 'README.md';
-    const readme = readFileSync(join(ROOT, README), 'utf8');
-    const before = (text: string): string =>
-      readme.replace('## Your data stays yours', () => `${text}\n\n## Your data stays yours`);
-
-    it.each([
-      '<!-- SIZING:NOPE:START -->\n<!-- SIZING:NOPE:END -->',
-      '<!--SIZING:NOPE:START-->\n<!--SIZING:NOPE:END-->',
-      '<!-- SIZING:NOPE2:START -->\n<!-- SIZING:NOPE2:END -->',
-    ])('refuses a marker the page is not given, however it is spelled: %s', (marker) => {
-      const r = siteFigures({ [README]: before(marker) });
-      expect(r.code, r.out).toBe(1);
-      expect(r.out).toMatch(/README\.md(?: holds a SIZING:NOPE2? region|: malformed marker)/);
+    it('passes the page as committed', () => {
+      const r = siteFigures(dir);
+      expect(r.code, r.out).toBe(0);
     });
 
-    it.each(['', 'Between `<!-- SIZING:WHY_SIZES:START -->` and its end. '])(
-      'reads the prose around an owned region, however the page quotes its marker: "%s"',
-      (quote) => {
-        const r = siteFigures({
-          [README]: readme.replace(
-            'What it costs at three',
-            () => `${quote}It saves $99,999 a month.\n\nWhat it costs at three`,
-          ),
-        });
+    it.each([
+      ['its cluster', '3 × cache.t4g.medium', '3 × cache.t4g.small'],
+      ['the line against it', '<strong>135.42</strong>', '<strong>135.4</strong>'],
+    ])('fails the page when it misstates %s', (name, right, wrong) => {
+      expect(html).toContain(right);
+      const r = siteFigures(dir, { [PAGE]: html.replace(right, wrong) });
+      expect(r.code, r.out).toBe(1);
+      expect(r.out).toContain(`never states reference set · ${name}`);
+    });
+
+    describe('and leaves exactly the SIZING regions bench/sizing.cjs writes to it', () => {
+      const README = 'README.md';
+      const readme = readFileSync(join(ROOT, README), 'utf8');
+      const before = (text: string): string =>
+        readme.replace('## Your data stays yours', () => `${text}\n\n## Your data stays yours`);
+
+      it.each([
+        '<!-- SIZING:NOPE:START -->\n<!-- SIZING:NOPE:END -->',
+        '<!--SIZING:NOPE:START-->\n<!--SIZING:NOPE:END-->',
+        '<!-- SIZING:NOPE2:START -->\n<!-- SIZING:NOPE2:END -->',
+      ])('refuses a marker the page is not given, however it is spelled: %s', (marker) => {
+        const r = siteFigures(dir, { [README]: before(marker) });
         expect(r.code, r.out).toBe(1);
-        expect(r.out).toContain('README.md states $99,999');
-      },
-    );
-  });
-});
+        expect(r.out).toMatch(/README\.md(?: holds a SIZING:NOPE2? region|: malformed marker)/);
+      });
+
+      it.each(['', 'Between `<!-- SIZING:WHY_SIZES:START -->` and its end. '])(
+        'reads the prose around an owned region, however the page quotes its marker: "%s"',
+        (quote) => {
+          const r = siteFigures(dir, {
+            [README]: readme.replace(
+              'What it costs at three',
+              () => `${quote}It saves $99,999 a month.\n\nWhat it costs at three`,
+            ),
+          });
+          expect(r.code, r.out).toBe(1);
+          expect(r.out).toContain('README.md states $99,999');
+        },
+      );
+    });
+  },
+);

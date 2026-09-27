@@ -25,7 +25,11 @@ import re, sys, glob, os
 sys.dont_write_bytecode = True
 import site_markup  # noqa: E402
 
-ROOT = 'site'
+# Which tree: `site/` is what Cloudflare Pages publishes, `site-next/` the display-tier rebuild beside it until it
+# replaces it. `SITE_DIR=site-next python3 scripts/site-links.py` checks the second.
+ROOT = os.environ.get('SITE_DIR', 'site')
+if ROOT not in ('site', 'site-next'):
+    sys.exit(f'SITE_DIR must be site or site-next, not {ROOT}')
 # Recursive: the site is no longer flat. `site/flavors/roaring.html` exists so that the `/flavors/roaring` URL
 # the page has always declared as its canonical actually resolves, and a depth-one glob would have quietly
 # excluded it from every check in this file.
