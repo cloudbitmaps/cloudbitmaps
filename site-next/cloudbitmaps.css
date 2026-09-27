@@ -415,19 +415,23 @@ h3,
   font-size: 13px;
 }
 
-/* A band's lead: label 16 · head 16 · lede, then 40 to the data. On the inner pages the section's own children
-   carry it: the head, the lede, then whatever the band argues with. */
-main > section > h2 {
-  margin-bottom: 16px;
+/* A band's rhythm, for the inner pages, whose sections hold their blocks directly: head 16 · lede, then 40 between
+   blocks, and a note 16 under the block it annotates. The homepage's bands are flex stacks with their own gap. */
+main > section:not(.cb-stack) > * + * {
+  margin-top: 40px;
 }
 
-main > section > h2 + :not(.lede),
-main > section > .lede {
-  margin-bottom: 40px;
+main > section > h1 + *,
+main > section > h2 + .lede {
+  margin-top: 16px;
 }
 
-main > section > h2 + :not(.lede) {
+main > section > h1 + * {
   margin-top: 24px;
+}
+
+main > section > * + .note {
+  margin-top: 16px;
 }
 
 .note {
@@ -648,6 +652,13 @@ main > section > h2 + :not(.lede) {
   font-variant-numeric: tabular-nums;
   color: var(--cb-ink);
   text-align: right;
+}
+
+/* A value that is words, not a figure, reads at the row's own size. */
+.panel-row.is-pair > .is-word {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .link-row {
@@ -1235,16 +1246,35 @@ svg .crossing {
    informative frame) and each panel on --cb-cell, so it takes the ground on a surface band.
    ══════════════════════════════════════════════════════════════════════════════ */
 /* ── the tier figure ─────────────────────────────────────────────────────── */
-.tiers {
+/* Card grids are seams: adjacent cards share one rule, drawn by the grid's gap, and never draw their own. */
+.tiers,
+.limits,
+.matters {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
+  gap: 1px;
+  background: var(--cb-rule);
+  border: 1px solid var(--cb-rule);
 }
 
-.tier {
-  border: 1px solid var(--cb-rule);
+.tiers {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.limits,
+.matters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* An odd card out spans the row, so the seam never shows a hole. */
+.limits > :last-child:nth-child(odd),
+.matters > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.tier,
+.limit {
   background: var(--cb-cell);
-  padding: 20px;
+  padding: 24px;
 }
 
 .tier-chip {
@@ -1334,17 +1364,24 @@ svg .crossing {
    page opens and shuts on the same shape. No animation: a closing panel that moves
    competes with the exit it is offering.
    ══════════════════════════════════════════════════════════════════════════════ */
+/* The quiet band, on the homepage's columns: the copy in six, the panel in the other six. */
 .close-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 460px;
-  gap: 56px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: 20px;
+  row-gap: 32px;
   align-items: start;
 }
 
 .close-copy {
+  grid-column: span 6;
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.close-grid > :last-child {
+  grid-column: 7 / span 6;
 }
 
 .install {
@@ -1794,18 +1831,6 @@ svg .crossing {
 /* ── the limits panel ─────────────────────────────────────────────────────────
    Same bezel and padding as the tier cards. What a demo cannot prove is content,
    not an apology, so it is not styled down. */
-.limits {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-}
-
-.limit {
-  border: 1px solid var(--cb-rule);
-  background: var(--cb-cell);
-  padding: 20px;
-}
-
 .limit p:not(.label) {
   margin: 12px 0 0;
   font-size: 14px;
@@ -1814,7 +1839,6 @@ svg .crossing {
 }
 
 @media (max-width: 1000px) {
-  .limits,
   .tally {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1870,29 +1894,17 @@ svg .crossing {
   background: var(--cb-cell);
 }
 
-/* Two panels in a row sat flush, two hairlines touching and reading as one frame — the fault `.matters` below
-   already had. The same 28px block rhythm separates them. */
-.tpanel + .tpanel {
-  margin-top: 28px;
-}
-
 /* ── the generated crossover chart ────────────────────────────────────────────
-   The svg is injected INLINE by `pnpm bench` (not linked as an <img>) for one reason: inline, its
-   `var(--cb-surface)` / `var(--cb-ink)` / `var(--cb-cyan)` fills resolve against this sheet, so the chart
-   follows the theme toggle like everything else on the page. The same generator also writes
-   bench/crossover.svg as a standalone file for the docs, where no stylesheet is in scope and every var()
-   falls back to its literal — which is why the fallbacks in bench/run.cjs are a light palette.
-
-   The svg carries its own 760-unit viewBox and its own panel border, so this wrapper deliberately adds no
-   frame of its own — a .tpanel border here would double the hairline. */
+   Injected inline by `pnpm bench` as bench/run.cjs's display-tier variant, so its classes resolve against this sheet
+   and it follows the theme. The figure frames it as a seam cell would. */
 .chart {
   margin: 0;
 }
 
-.chart svg {
-  display: block;
-  width: 100%;
-  height: auto;
+.chart > .cb-svg {
+  border: 1px solid var(--cb-rule);
+  background: var(--cb-cell);
+  padding: 24px 20px 16px;
 }
 
 .chart figcaption {
@@ -2005,18 +2017,17 @@ svg .crossing {
   color: var(--cb-faint);
 }
 
+/* Words are sans, as everywhere in the display tier: only the leading label and any names in it are mono. */
 .tpanel-foot {
   border-top: 1px solid var(--cb-rule);
   padding: 14px 16px;
-  font-family: var(--cb-mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--cb-faint);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--cb-muted);
 }
 
 .tpanel-foot strong {
   color: var(--cb-ink);
-  font-weight: 400;
 }
 
 /* The band's leading label runs INLINE with the prose that follows it, so it needs the gap a block
@@ -2256,20 +2267,6 @@ svg .crossing {
 
 /* Four cards, two by two. Reuses `.limit` for the card itself rather than
    declaring a near-identical box: same bezel, same padding, same label. */
-.matters {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-
-/* `gap` spaces the cards from EACH OTHER and nothing spaces the grid from what follows it, so the calibration
-   panel added after this grid sat flush against the cards' bottom border — two hairlines touching, reading as
-   one broken frame. 28px is the sheet's existing block rhythm (.lede's margin-bottom).
-
-   Scoped with :not(:last-child) so the common case, where .matters ends its section, gains no trailing space. */
-.matters:not(:last-child) {
-  margin-bottom: 28px;
-}
 
 @media (max-width: 900px) {
   .matters {
@@ -2845,15 +2842,9 @@ svg .crossing {
 .dgm-formula {
   border-top: 1px solid var(--cb-rule);
   padding: 14px 16px;
-  font-family: var(--cb-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--cb-muted);
-}
-
-.dgm-formula b {
-  font-weight: 400;
-  color: var(--cb-ink);
 }
 
 .dgm-legend {
@@ -3026,9 +3017,12 @@ svg .crossing {
     margin-top: 32px;
   }
   .cb-cols-3,
-  .close-grid,
   .tiers {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .close-copy,
+  .close-grid > :last-child {
+    grid-column: 1 / -1;
   }
   main > section {
     padding-block: 72px;

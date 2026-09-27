@@ -261,6 +261,59 @@ function panel(top, title, xLabel, costFn, crossover, xTicks, xMax) {
   return out.join('\n');
 }
 
+// ── The display-tier chart, for site-next/ ───────────────────────────────────────────────────────
+// site-next/ is the Instrument display-tier rebuild that sits beside site/ until it replaces it, and it draws charts
+// in that tier's register: structure in the foreground at 1px, our line in --cb-cyan, the flat cluster in the
+// foreground at the same 2.5 stroke, the half where the cluster wins hatched rather than tinted, since a loss is a
+// peer and not an alert, and every label in mono. Only classes, which that sheet defines, so the chart follows the
+// page's theme. It is drawn from the same curve, crossover and baseline as the chart above, and inlined at a width
+// where its 13px labels render at 13px. Same two marks the figures gate reads: the crossover and the baseline.
+function instrumentChart() {
+  const VW = 1176;
+  const VH = 440;
+  const plotL = 72;
+  const plotR = VW - 24;
+  const plotT = 40;
+  const plotB = 360;
+  const plotW = plotR - plotL;
+  const plotH = plotB - plotT;
+  const px = (x) => plotL + (x / X_MAX_READS) * plotW;
+  const py = (v) => plotB - (Math.min(v, Y_MAX) / Y_MAX) * plotH;
+  const pts = [];
+  for (let i = 0; i <= 80; i++) {
+    const x = (i / 80) * X_MAX_READS;
+    pts.push(`${px(x).toFixed(1)},${py(costReads(x)).toFixed(1)}`);
+  }
+  const crX = px(readCross);
+  const redisY = py(REDIS);
+  const f = (n) => n.toFixed(1);
+  return [
+    `<svg class="cb-svg is-chart" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $${REDIS} a month at ${readCross.toFixed(0)} reads a second, past which the cluster is cheaper">`,
+    `<defs><pattern id="bench-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern></defs>`,
+    `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotH}" fill="url(#bench-hatch)"/>`,
+    `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
+    `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
+    `<polyline class="line-ours" points="${pts.join(' ')}"/>`,
+    `<path class="s" d="M${plotL} ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="${plotL + 16}" y="${plotT + 24}">CLOUDBITMAPS COSTS LESS</text>`,
+    `<text class="tl" x="${f(crX + 16)}" y="${plotT + 24}">A FLAT CLUSTER COSTS LESS</text>`,
+    `<text class="t" x="${plotL + 16}" y="${f(redisY - 12)}">Redis-HA cluster · flat · $${REDIS}/mo</text>`,
+    `<text class="t is-ours" x="${f(px(X_MAX_READS * 0.3))}" y="${f(py(costReads(X_MAX_READS * 0.3)) + 28)}">CloudBitmaps · pay-per-use</text>`,
+    `<rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/>`,
+    `<text class="t crossing" x="${f(crX + 16)}" y="${f(redisY + 32)}">crossover ≈ ${readCross.toFixed(readCross < 100 ? 1 : 0)} /s</text>`,
+    ...Y_TICKS.map(
+      (t) =>
+        `<text class="tf" x="${plotL - 10}" y="${f(py(t) + 4)}" text-anchor="end">$${t}</text>`,
+    ),
+    ...X_TICKS_READS.map(
+      (t) => `<text class="tf" x="${f(px(t))}" y="${plotB + 22}" text-anchor="middle">${t}</text>`,
+    ),
+    `<text class="tf" x="${plotL}" y="${plotT - 16}">$ / MONTH</text>`,
+    `<text class="tf" x="${plotR}" y="${plotB + 52}" text-anchor="end">SUSTAINED POINT READS · OBJECT GETS, CACHE OFF · ${esc(P.name).toUpperCase()} · READS/S →</text>`,
+    `</svg>`,
+  ].join('\n');
+}
+
 // ── Stats tables ─────────────────────────────────────────────────────────────────────────────────
 const rows = [
   [
@@ -305,9 +358,9 @@ write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
 // The site takes the svg inline (so it inherits the page's theme tokens); the docs take it as an <img> and
 // carry the stats table the site hand-writes. Only the regions passed are touched, so a file is not required
 // to host every marker pair — but a marker pair that IS named must exist, or replaceRegion throws.
-// `site-next/` is the display-tier rebuild that sits beside `site/` until it replaces it; its benchmarks page takes the
-// same chart, and `--check` holds both.
-for (const page of ['site/benchmarks.html', 'site-next/benchmarks.html']) inject(page, { CHART: svg });
+inject('site/benchmarks.html', { CHART: svg });
+// `site-next/` is the display-tier rebuild beside `site/` until it replaces it: the same figures, drawn in its register.
+inject('site-next/benchmarks.html', { CHART: instrumentChart() });
 inject('docs/benchmarks.md', {
   CHART: `![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)`,
   STATS: mdTable,

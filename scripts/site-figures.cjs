@@ -1038,6 +1038,76 @@ const specAnchors = [];
     }
   }
 
+  // ── the memory band: heap and discovery at fleet scale, bars included ─────────────────────────────────
+  // site-next/'s homepage quotes bench/scale-results.json in its "does this fall over" band: per fleet, the retained
+  // heap and the discovery scan, each with a bar. The figures are held to the file, and so are the bars, since a bar
+  // drawn off its axis says a different number than the one beside it: heap on a 0–10 MiB axis, the scan on one that
+  // ends at the largest fleet's scan, both 360 units wide. Checked in both directions: every fleet the file has is on
+  // the page, and every cell the page has is a fleet the file has.
+  const memCells = [
+    ...homeHtml.matchAll(
+      /<div class="cb-mem" data-segments="(\d+)">([\s\S]*?)(?=<div class="cb-mem"|<\/div>\s*<\/div>\s*<div class="cb-head">)/g,
+    ),
+  ];
+  if (SITE_DIR === 'site-next' || memCells.length > 0) {
+    const scale = JSON.parse(
+      fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8'),
+    );
+    const scanShown = (ms) =>
+      ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toPrecision(3)} s`;
+    const maxScan = Math.max(...scale.fleets.map((f) => f.discoveryMs));
+    const bar = (value, axis) => Math.max(1, Math.round((value / axis) * 360));
+    const shown = new Set(memCells.map((m) => Number(m[1])));
+    for (const fleet of scale.fleets) {
+      if (!shown.has(fleet.n))
+        fail(`${SITE_DIR}/index.html's memory band has no cell for the ${fleet.n}-segment fleet`);
+    }
+    if (memCells.length === 0)
+      fail(`${SITE_DIR}/index.html no longer carries its memory band (.cb-mem cells)`);
+    for (const [, n, cell] of memCells) {
+      const fleet = scale.fleets.find((f) => f.n === Number(n));
+      if (!fleet) {
+        fail(
+          `${SITE_DIR}/index.html's memory band shows a ${n}-segment fleet bench/scale-results.json does not have`,
+        );
+        continue;
+      }
+      const heap = /<p class="cb-figure-l">([\d.]+)<span class="cb-unit">MiB<\/span><\/p>/.exec(
+        cell,
+      );
+      const scan = /<p class="cb-figure-m">([^<]+)<\/p>/.exec(cell);
+      const widths = [...cell.matchAll(/<rect class="(heap|scanbar)" width="(\d+)"/g)];
+      const want = [
+        ['retained heap', heap?.[1], fleet.heapRetainedMiB.toFixed(1)],
+        ['discovery scan', scan?.[1], scanShown(fleet.discoveryMs)],
+        [
+          'heap bar',
+          widths.find((w) => w[1] === 'heap')?.[2],
+          String(bar(fleet.heapRetainedMiB, 10)),
+        ],
+        [
+          'scan bar',
+          widths.find((w) => w[1] === 'scanbar')?.[2],
+          String(bar(fleet.discoveryMs, maxScan)),
+        ],
+      ];
+      for (const [what, got, expected] of want) {
+        if (got !== expected) {
+          fail(
+            `${SITE_DIR}/index.html's ${n}-segment cell shows ${what} ${got ?? '(none)'}, but bench/scale-results.json ` +
+              `gives ${expected}`,
+          );
+        } else {
+          specAnchors.push([`Home memory · ${n} · ${what}`, expected]);
+        }
+      }
+    }
+    const axis = `0–${scanShown(maxScan).replace(/ s$/, '')} s axis`;
+    if (memCells.length > 0 && !homeHtml.includes(axis)) {
+      fail(`${SITE_DIR}/index.html's memory caption does not name the scan bars' axis, ${axis}`);
+    }
+  }
+
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
   // Home's correctness panel used to close on "1,156 of them run on every commit". That was ungated AND already
   // wrong — the suite was at 1,161. An exact test total is the worst figure to publish: it moves on nearly every
