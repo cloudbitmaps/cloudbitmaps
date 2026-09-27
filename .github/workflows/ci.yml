@@ -53,10 +53,13 @@ jobs:
       - run: pnpm lint
       - run: pnpm lint:arch
       - run: pnpm format:check
-      # The /demo page claims to replay a MEASURED benchmark run. This fails if site/assets/replay.json
-      # or the page's own numbers have drifted from bench/scale-results.json — including a figure the
-      # benchmark cannot account for at all, which is how an invented number got onto a page once already.
+      # The /demo page claims to replay a MEASURED benchmark run. This fails if the page's numbers have drifted
+      # from bench/scale-results.json — including a figure the benchmark cannot account for at all, which is
+      # how an invented number got onto a page once already.
       - run: pnpm site:replay:check
+      # The at-scale table on /benchmarks and in docs/benchmarks.md is rendered from the same file. This fails
+      # if either copy is not what that file renders: a hand edit, or new results rendered into one page only.
+      - run: pnpm bench:scale:check
       # /benchmarks claims every figure on it is gated. This is that gate: each cost anchor is checked against
       # bench/results.json and docs/benchmarks.md, and the check ALSO fails on a figure the sources cannot
       # account for — so a number cannot quietly improve without evidence.

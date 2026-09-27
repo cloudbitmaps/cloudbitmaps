@@ -60,3 +60,6 @@ bench/calibration/*.partial.json
 # Local review artifact from `pnpm site:screenshots` — regenerable, and 12 MB of PNGs that go stale
 # silently: the committed set still showed a tier removed two releases earlier.
 .site-screenshots/
+
+# Python bytecode, should a maintenance script's import ever leave one
+__pycache__/

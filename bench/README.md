@@ -42,7 +42,7 @@ figure is published from it with no check behind it, the row says that too.
 |---|---|---|
 | `results.json` | `run.cjs` | `scripts/site-figures.cjs`, which checks the site's money figures against it |
 | `crossover.svg` | `run.cjs` | `docs/benchmarks.md`, as an image. The site does **not** read this file: `run.cjs` inlines its own copy of the chart into `site/benchmarks.html`, where the page's colour tokens resolve so the chart follows light and dark |
-| `scale-results.json` | `scale.cjs` | `scripts/site-replay.cjs`, which derives `site/assets/replay.json` from it and holds `demo.html`'s figures to it. **The at-scale table is not checked against it:** regenerate that table with `pnpm bench:scale:render`, which renders it from this file, rather than editing it by hand |
+| `scale-results.json` | `scale.cjs` | `scripts/site-replay.cjs`, which holds `demo.html`'s figures to it, and `scale.cjs` itself: `pnpm bench:scale:render` renders the at-scale table in `docs/benchmarks.md` and `site/benchmarks.html` from it, and `pnpm bench:scale:check` fails in CI if either copy is not what it renders |
 | `soak-results.json` | `soak.cjs` | `scripts/site-figures.cjs`, against the combine count and native-memory creep `site/benchmarks.html` quotes |
 | `encoding-results.json` | `encoding.cjs` | `scripts/site-figures.cjs`, against the sizes `site/flavors/roaring.html` quotes |
 | `rss-gate-results.json` | `scripts/rss-gate.sh` | `scripts/site-figures.cjs` — the hard RSS ceiling on the benchmarks page |
