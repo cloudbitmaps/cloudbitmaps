@@ -201,11 +201,36 @@ try {
     }
   }
 } finally {
-  // Chrome writes to its profile as it exits, so the profile goes only once the process has.
-  const exited = new Promise((r) => proc.once('exit', r));
-  proc.kill();
-  await Promise.race([exited, sleep(5_000)]);
-  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  // Chrome is closed through the protocol, not by a signal. A signal ends the browser process but not at once its
+  // helpers, and on Linux they went on writing to the profile after it exited: removing the profile raced them and
+  // failed a run whose every page had passed. `Browser.close` shuts the helpers down and flushes the profile first.
+  const gone = () => proc.exitCode !== null || proc.signalCode !== null;
+  const exited = gone() ? Promise.resolve() : new Promise((r) => proc.once('exit', r));
+  const exitWithin = (ms) => Promise.race([exited.then(() => true), sleep(ms).then(() => false)]);
+  try {
+    const { webSocketDebuggerUrl } = await (
+      await fetch(`http://127.0.0.1:${PORT}/json/version`)
+    ).json();
+    const browser = connect(webSocketDebuggerUrl);
+    await browser.ready;
+    // Chrome may exit before it replies, which is a close that worked.
+    await browser.send('Browser.close', {}, 3_000).catch(() => {});
+  } catch {
+    proc.kill();
+  }
+  if (!(await exitWithin(10_000))) {
+    proc.kill('SIGKILL');
+    await exitWithin(5_000);
+  }
+  // What this reports is the pages, not the cleanup: a profile left in the temp directory is warned about, and
+  // does not fail a run.
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    console.warn(
+      `site-text-floor: left the Chrome profile at ${profile} (${err.code ?? err.message})`,
+    );
+  }
 }
 
 if (problems.length > 0) {
