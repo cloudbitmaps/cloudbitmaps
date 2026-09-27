@@ -84,6 +84,11 @@ function isOlderLine(mm: string): boolean {
  */
 const FOREIGN_VERSIONS = new Map<string, string>([
   [
+    '5.0.6',
+    "the Redis OSS version from which ElastiCache allows up to 500 nodes a cluster, in the getting-started guide's " +
+      'note on the node quota the estimator prices past. A third-party version, not a claim about our release',
+  ],
+  [
     '0.9.0',
     "the PREVIOUS release, named in the API reference's paragraph on which option spellings are now refused " +
       'and in the migration guide throughout. Those are claims about what 0.9.x had, not badges advertising ' +

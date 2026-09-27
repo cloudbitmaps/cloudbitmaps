@@ -1,0 +1,55 @@
+name: Restore the images a job runs
+description: >-
+  Restores from the Actions cache the images an earlier run of this job pulled, and points scripts/lib/docker-pull.sh at
+  them, so a registry that refuses or throttles a pull fails the job only when no copy is kept. docker-images-save
+  skips a key already saved, so the key changes whenever what it holds should: with the month, so each image is asked
+  for again once a month; with the runner image, whose Docker keeps images its own way; with the files that name the
+  images, so a re-pinned image is kept at once rather than when the month turns; and with the helper, which decides
+  how a copy is named. The exact key is looked for first, in this branch and then in the base branch, and an older
+  entry of this job's only when neither has it: a pull request's own older entry would otherwise win over the base
+  branch's current one. Pair it with docker-images-save.
+inputs:
+  name:
+    description: >-
+      A name for this job's images: lowercase letters, digits and dashes, and unlike any other job's, including by
+      prefix, since an older entry is found by the name and a dash (`lambda` would find `lambda-smoke`'s).
+    required: true
+  files:
+    description: The file that names the images, as hashFiles() takes it.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        FILES: ${{ hashFiles(inputs.files, 'scripts/lib/docker-pull.sh') }}
+      run: |
+        if ! [[ "$NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+          echo "docker-images-restore: name must be lowercase letters, digits and dashes, not: $NAME" >&2
+          exit 1
+        fi
+        echo "key=docker-images-$NAME-${ImageOS:-unknown}-$(date -u +%Y-%m)-$FILES" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/docker-images
+        key: ${{ steps.key.outputs.key }}
+    - id: older
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/docker-images
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: docker-images-${{ inputs.name }}-
+    - shell: bash
+      env:
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+        KEY: ${{ steps.key.outputs.key }}
+      run: |
+        {
+          echo "DOCKER_IMAGE_CACHE=$RUNNER_TEMP/docker-images"
+          echo "DOCKER_IMAGE_CACHE_HIT=$HIT"
+          echo "DOCKER_IMAGE_CACHE_KEY=$KEY"
+        } >> "$GITHUB_ENV"

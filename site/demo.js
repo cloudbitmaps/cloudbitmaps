@@ -78,23 +78,14 @@
 
   // ── beat states ─────────────────────────────────────────────────────────────────────────────────────────
   // Each entry is the figure's RESTING state for that beat: where the playhead sits, what the counters read,
-  // and which classes the stage carries. `sweep` marks the one beat whose transition is worth animating.
+  // and whether the keys have been compared, which is what turns the shared band into the answer. `sweep` marks
+  // the one beat whose transition is worth animating. The fetch and result beats change the counters, not the
+  // stage: two further stage classes were set here once, and no rule in the stylesheet ever styled them.
   var STATES = [
-    { head: 0, tally: [0, 0, 0, 0], cls: '', sweep: false },
-    { head: 1, tally: [AXIS, SHARED, 0, 0], cls: 'is-compared', sweep: true },
-    {
-      head: 1,
-      tally: [AXIS, SHARED, SKIPPED, BYTES],
-      cls: 'is-compared is-fetched',
-      sweep: false,
-      count: true,
-    },
-    {
-      head: 1,
-      tally: [AXIS, SHARED, SKIPPED, BYTES],
-      cls: 'is-compared is-fetched is-done',
-      sweep: false,
-    },
+    { head: 0, tally: [0, 0, 0, 0], compared: false, sweep: false },
+    { head: 1, tally: [AXIS, SHARED, 0, 0], compared: true, sweep: true },
+    { head: 1, tally: [AXIS, SHARED, SKIPPED, BYTES], compared: true, sweep: false, count: true },
+    { head: 1, tally: [AXIS, SHARED, SKIPPED, BYTES], compared: true, sweep: false },
   ];
 
   var current = -1;
@@ -199,9 +190,7 @@
 
     // classList, not `className =`: assigning the whole attribute wiped `is-interactive` (added just before
     // the first show()) and silently reverted the figure to its no-JS presentation.
-    ['is-compared', 'is-fetched', 'is-done'].forEach(function (c) {
-      root.classList.toggle(c, s.cls.indexOf(c) !== -1);
-    });
+    root.classList.toggle('is-compared', s.compared);
     cells.forEach(function (c) {
       c.el.classList.toggle('is-seen', i >= 1);
     });

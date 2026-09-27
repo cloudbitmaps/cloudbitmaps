@@ -59,6 +59,11 @@ export class PinnedStorageChunkSource implements StorageChunkSource {
     private readonly pins: ReadonlyMap<string, PinnedAt>,
   ) {}
 
+  /** The unpinned segments refresh as the store's own source does; a pinned one never does. */
+  get pointerRefreshMs(): number {
+    return this.inner.pointerRefreshMs;
+  }
+
   /**
    * The pin for this segment, or `undefined` if it is not pinned here.
    *

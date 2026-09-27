@@ -215,3 +215,34 @@ describe('AzureBlobStorageDriver write-once (fake ContainerClient, emulator-inde
     expect(await countBlocksForTenBytes({ blockBytes: 10, maxObjectBytes: 100_001 })).toBe(1);
   });
 });
+
+// The cost model prices a segment's tail read on Azure Blob as two requests (`requestsPerSizedRead: 2`): the
+// properties for the blob's size, then a ranged download, where S3's suffix-range GET is one. Held here against the
+// driver. (The registry's own two-request read is pinned in registry.test.ts.)
+describe('AzureBlobStorageDriver — what a tail read costs', () => {
+  it('makes two requests: the properties, then the ranged download', async () => {
+    const calls: string[] = [];
+    const body = new Uint8Array(100).fill(7);
+    const blob = {
+      getProperties: async () => {
+        calls.push('getProperties');
+        return { contentLength: body.length };
+      },
+      download: async (offset: number, count: number) => {
+        calls.push('download');
+        const bytes = body.subarray(offset, offset + count);
+        return {
+          readableStreamBody: (async function* () {
+            yield Buffer.from(bytes);
+          })(),
+        };
+      },
+    };
+    const containerClient = { getBlockBlobClient: () => blob } as unknown as ContainerClient;
+    const driver = new AzureBlobStorageDriver({ containerClient });
+    const tail = await driver.getTail({ segment: 's', generation: 0 }, 40);
+    expect(tail.size).toBe(100);
+    expect(tail.bytes.length).toBe(40);
+    expect(calls).toEqual(['getProperties', 'download']);
+  });
+});

@@ -8,12 +8,13 @@ name: cloud-roaring
 # Usage: `docker compose up -d` then `pnpm test:integration`.
 #
 # REGISTRIES: everything that can avoid Docker Hub does. GitHub-hosted runners share an IP pool that sits
-# permanently over Docker Hub's anonymous pull limit, so pulling nine images from there failed the integration
-# job with HTTP 429 on every run. `public.ecr.aws/docker/library/*` is AWS's official mirror of the same Docker
-# Official Images (same content, no auth, no rate limit); azurite comes from mcr, first-party, and MinIO from
-# Chainguard's build of it (below). `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous pull
-# is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one to deal with, either by
-# authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
+# permanently over Docker Hub's anonymous pull limit, and pulling nine images from there used to fail the
+# integration job with HTTP 429 on every run. Azurite comes from mcr, first-party, and MinIO from Chainguard's
+# build of it (below). `fake-gcs-server` is the lone exception — it has no non-Docker-Hub home — and one anonymous
+# pull is a far smaller target than a whole compose file's worth. If Docker Hub 429s return, that image is the one
+# to deal with, either by authenticating or by mirroring it; do not "tidy" the others back to bare Docker Hub names.
+# CI also keeps every image here in the Actions cache (scripts/lib/docker-pull.sh), so a registry that refuses a
+# pull fails a run only when no copy is kept.
 services:
   minio:
     # PINNED (not `:latest`), like fake-gcs and azurite below and for the same reason: every run otherwise
@@ -23,10 +24,13 @@ services:
     #
     # FROM CHAINGUARD, because MinIO's own image can no longer be pulled without a login: quay.io/minio/minio
     # began answering `unauthorized` to anonymous pulls in late September 2026 (this job passed on 2026-09-23 and
-    # failed on every run from 2026-09-25), and the tag pinned here was never on Docker Hub. cgr.dev/chainguard/minio is MinIO itself, built from source by Chainguard, and pulls without a
-    # login. Its free tier serves only `latest`, so this pins the multi-arch index DIGEST that `latest` was on
-    # 2026-09-25 (MinIO RELEASE.2026-09-22T19-25-18Z). If a pull by this digest ever fails, re-pin to the
-    # current `latest` digest and re-run the integration suite; do not switch to `:latest` itself.
+    # failed on every run from 2026-09-25), and the tag pinned here was never on Docker Hub.
+    # cgr.dev/chainguard/minio is MinIO itself, built from source by Chainguard, and pulls without a login. Its
+    # free tier publishes only `latest` and `latest-dev`, so this pins the multi-arch index DIGEST that
+    # `latest` was on 2026-09-25 (MinIO RELEASE.2026-09-22T19-25-18Z). Chainguard lets anyone pull by digest but
+    # does not say for how long. If a pull by this digest ever fails, re-pin to the current `latest` digest and
+    # re-run the integration suite; do not switch to `:latest` itself. CI would not go red first: it keeps a copy,
+    # asks for the digest once a month, and warns on the run that asks if the registry refuses it.
     image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     container_name: cloud-roaring-minio
     ports:

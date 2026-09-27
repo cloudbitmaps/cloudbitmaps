@@ -136,6 +136,11 @@ export class SegmentEngine {
     return typeof this.storage.sizeOf === 'function';
   }
 
+  /** How often the Storage source re-reads a pointer while reading (cost reporting); undefined if it does not say. */
+  get pointerRefreshMs(): number | undefined {
+    return this.storage.pointerRefreshMs;
+  }
+
   /** Grounded Storage size of a segment's current generation (cost reporting), or null if it has no generation. */
   segmentSize(seg: SegmentRef): Promise<SegmentSize | null> {
     return this.storage.sizeOf ? this.storage.sizeOf(seg) : Promise.resolve(null);

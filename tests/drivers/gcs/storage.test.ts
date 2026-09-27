@@ -167,3 +167,28 @@ describe('GcsStorageDriver write-once (fake Storage, emulator-independent)', () 
     );
   });
 });
+
+// The cost model prices a segment's tail read on GCS as two requests (`requestsPerSizedRead: 2`): the metadata for
+// the object's size, then a ranged download, where S3's suffix-range GET is one. Held here against the driver.
+describe('GcsStorageDriver — what a tail read costs', () => {
+  it('makes two requests: the metadata, then the ranged download', async () => {
+    const calls: string[] = [];
+    const body = new Uint8Array(100).fill(7);
+    const file = {
+      getMetadata: async () => {
+        calls.push('getMetadata');
+        return [{ size: String(body.length) }];
+      },
+      download: async (opts: { start: number; end: number }) => {
+        calls.push('download');
+        return [Buffer.from(body.subarray(opts.start, opts.end + 1))];
+      },
+    };
+    const storage = { bucket: () => ({ file: () => file }) } as unknown as Storage;
+    const driver = new GcsStorageDriver({ storage, bucket: 'b' });
+    const tail = await driver.getTail({ segment: 's', generation: 0 }, 40);
+    expect(tail.size).toBe(100);
+    expect(tail.bytes.length).toBe(40);
+    expect(calls).toEqual(['getMetadata', 'download']);
+  });
+});

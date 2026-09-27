@@ -497,6 +497,32 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
       'a store re-resolves a segment on four things, and this names one of them as the only one: a timed refresh, ' +
       'an eviction, a read that finds its generation swept, and an invalidation each re-resolve it',
   },
+  // estimateCost() once priced a load as its object's PUT alone and an intersect as its chunk reads alone, and the
+  // docs told a reader to fold the pointer's requests into requestsPerLoad and chunksPerIntersect by hand.
+  {
+    claim: new RegExp(g(String.raw`(?:does not|doesn't) count the pointer`), 'i'),
+    why: 'estimateCost() counts the pointer, the index and the pointer refresh now',
+  },
+  {
+    claim: new RegExp(g('has no term (?:yet )?for the pointer'), 'i'),
+    why: 'estimateCost() has a term for each of the pointer, the tail read and the refresh now',
+  },
+  {
+    claim: /requestsPerLoad: (?:2\.24|4\.56|4\.64|4\.72)\b|`4\.(?:56|64|72)`/,
+    why: "requestsPerLoad is the object's own PUT-class requests again; the model adds what store.load() makes",
+  },
+  {
+    claim: /chunksPerIntersect: 204\b/,
+    why: "chunksPerIntersect is the chunks an intersect fetches; the model adds each operand's pointer and tail read",
+  },
+  {
+    claim: new RegExp(g('until it counts them itself'), 'i'),
+    why: 'estimateCost() counts the pointer, the index and the pointer refresh now',
+  },
+  {
+    claim: new RegExp(g(String.raw`(?:does not|doesn't) add (?:this )?for you yet`), 'i'),
+    why: "estimateCost() adds the pointer, the tail reads and store.load()'s requests itself now",
+  },
 ];
 
 /**
