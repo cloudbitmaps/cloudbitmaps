@@ -199,9 +199,10 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
    * Pins ({@link heldKey}) whose object has been found replaced: another object is under its generation's key. Kept,
    * and bounded as the readers are, so that a pin's later chunk reads and any reopen fail at once rather than pay for
    * the check again. A replacement can be undone, by a restore that puts the pinned object back, so
-   * {@link invalidate} forgets the segment's, and a pin taken of an object forgets the one against it. An object
-   * found gone is not kept: that is the open's own `NotFoundError`, and a 404 can pass. A reader still memoised keeps
-   * answering from the index it holds, so the pin's `count()` does.
+   * {@link invalidate} forgets the segment's, and a pin of the same version that opens the object forgets the one
+   * against it. An object found gone is not kept: that is the open's own `NotFoundError`, and a 404 can pass. A
+   * reader still memoised keeps answering from the index it holds, so the pin's `count()` does, until a later pin of
+   * that version opens the object now under the key, which takes its place.
    */
   private readonly replacedPins: BoundedLru<string, true>;
   /**
@@ -490,15 +491,22 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
         this.install(key, Promise.resolve(reader));
       }
       // A memoised reader is of the object that was under the key when it was opened. One the store has since found
-      // replaced is not what is there now, so this pin opens the object afresh rather than pin a replaced one.
+      // replaced is not what is there now, so this pin opens the object afresh rather than pin a replaced one, and
+      // pins taken at the same moment share that one open. The replaced pin's reader goes from the memo with it, so
+      // that pin's index answers, its `count()` among them, end here: what is under its key is another object now.
       if (
         !opened &&
         this.replacedPins.get(this.heldKey(ref, version, reader.fingerprint)) !== undefined
       ) {
-        if (this.snapshots.peek(key) === entry) this.snapshots.delete(key);
-        reader = await this.install(key, this.openForTarget(ref, target)).reader;
+        const current = this.snapshots.peek(key);
+        const fresh =
+          current !== undefined && current !== entry
+            ? current
+            : this.install(key, this.openForTarget(ref, target));
+        reader = await fresh.reader;
+        // A reopen of this version, already under way, found the row gone or destroyed.
         if (reader === null) return null;
-        opened = true;
+        opened = fresh !== current;
       }
     }
     // Only an open this call made has read what is under the key. The object there is that one now, whatever was
@@ -600,15 +608,14 @@ export class CrbmStorageChunkSource implements StorageChunkSource {
       );
     }
     if (fingerprint !== undefined && reader.fingerprint !== fingerprint) {
-      // Kept only if nothing was invalidated while this read waited: an invalidation forgets the segment's verdicts,
-      // as after a restore, and this one is from before it. An eviction from the reader cache is no reason to
-      // forget it. What this read opened is the object now under the key, which is not the pin's: left memoised
-      // under the pin's key, it would hold a place in the reader cache, and the key it unwrapped, for reads that
-      // can only fail.
-      if (this.invalidations === epoch) {
+      // The verdict is kept only if nothing was invalidated while this read waited: an invalidation forgets the
+      // segment's verdicts, as after a restore, and this one is from before it. An eviction from the reader cache is
+      // no reason to forget it. What this read opened is the object now under the key, which is not the pin's: left
+      // memoised under the pin's key, it would hold a place in the reader cache, and the key it unwrapped, for reads
+      // that can only fail, so it goes whatever was invalidated.
+      if (this.invalidations === epoch)
         this.replacedPins.set(this.heldKey(ref, at, fingerprint), true);
-        if (opening && this.snapshots.peek(key) === entry) this.snapshots.delete(key);
-      }
+      if (opening && this.snapshots.peek(key) === entry) this.snapshots.delete(key);
       throw notThePinned(ref, generation);
     }
     return reader;

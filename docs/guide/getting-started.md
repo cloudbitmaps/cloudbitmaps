@@ -1528,8 +1528,10 @@ also exits non-zero when it's non-empty).
 
 Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
 disappeared — export to a **fresh directory** for a clean dump. For a *current* dump, run against a freshly-built
-store (a long-lived store may be up to `cache.genTtlMs` behind a publish — the CLI builds a fresh store per run);
-for a *consistent* dump across segments, pause your loads or export from a quiet window. This is also a building
+store (a long-lived store with a registry and a `cache.genTtlMs` above 0 may be up to that long behind a publish,
+and one without either has no such bound — the CLI builds a fresh store per run). Each segment is read live, so a
+publish while a long segment exports can leave its file holding chunks of two generations; for a *consistent* dump,
+of one segment or across segments, pause your loads or export from a quiet window. This is also a building
 block for a **data-portability** response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's "Your data stays
 yours".
 

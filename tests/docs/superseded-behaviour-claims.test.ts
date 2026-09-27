@@ -18,6 +18,12 @@ import { fileURLToPath } from 'node:url';
  *
  * Adding an entry is the cheap half of retiring a behaviour. Removing one is only correct if the behaviour
  * came back.
+ *
+ * WHAT IT IS NOT. It catches honest drift: a stale copy, a paraphrase of it, the same claim wrapped, split or marked
+ * up differently. It is not built to stop someone writing the claim on purpose in words it has never seen, and no
+ * list of phrases could be. Where the claim's own words are also the words of a true sentence, the true sentence is
+ * sometimes refused; each such case below has the rewording that passes, and a narrow collision is fixed by
+ * rewording the sentence, not by loosening the pattern.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SKIP = new Set(['node_modules', 'dist', '.git', 'coverage', '.worktrees', 'build', 'golden']);
@@ -48,7 +54,8 @@ const EXTS = [
  * one line end at most: a sentence does not run on past a blank line, and a gap that did would join two copies of
  * a claim in two paragraphs into one hit.
  */
-const GAP = String.raw`(?:[^\S\n]+|[^\S\n]*\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?)`;
+// A gap takes its whole run of blanks: a run a pattern could split among its parts costs a scan per way to split it.
+const GAP = String.raw`(?:[^\S\n]+|[^\S\n]*\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?)(?![^\S\n])`;
 const g = (src: string): string => src.replace(/ /g, GAP);
 
 const NO_TIMED_REFRESH =
@@ -81,6 +88,9 @@ const codePoint = (entity: string, n: number): string => {
   return /[\n\u2028\u2029]/.test(decoded) ? ' ' : decoded;
 };
 
+/** A tag that ends a block or a positioned run of text, so the words either side of it are two words. */
+const BLOCK_TAG =
+  /^<\/?(?:text|tspan|td|th|tr|li|p|div|h[1-6]|dt|dd|blockquote|section|title|desc)\b/i;
 /** An attribute whose value a reader is shown, and so reads. */
 const SHOWN_ATTRIBUTE = /\b(?:content|alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
@@ -97,7 +107,8 @@ const plain = (src: string): string =>
     // line it is on: a `<meta>` description is a search result's text, and `alt`, `title` and `aria-label` are read
     // or shown too.
     .replace(/<\/?[a-z][^<>]*>/gi, (tag) => {
-      let shown = '';
+      // A tag that ends a block or a positioned run of text, `</td>` or `</text>`, is the gap between two words.
+      let shown = BLOCK_TAG.test(tag) ? ' ' : '';
       let read = 0; // how much of the tag is behind us
       for (const a of tag.matchAll(SHOWN_ATTRIBUTE)) {
         const value = a[1] ?? a[2] ?? '';
@@ -112,12 +123,8 @@ const plain = (src: string): string =>
     .replace(/!?\[([^[\]\n]*)\](?:\([^()\n]*\)|\[[^[\]\n]*\])/g, '$1')
     // A doc-comment link reads as its text, or as its target when it has none, wrapped or not: the margin a wrap
     // brings, ` * `, goes with the separator, and each line end stays on the side of the text it was on.
-    .replace(
-      /(\{@link(?:code|plain)?\s+(?:\*(?!\/)\s+)?)([^\s|{}]+)((?:\s*(?:\*(?!\/)\s*)?\||\s+(?:\*(?!\/)\s+)?)?)(\s*)([^{}]*?)(\s*)\}/g,
-      (_, open: string, name: string, sep: string, lead: string, text: string, trail: string) =>
-        text === ''
-          ? `${lineEnds(open)}${name}${lineEnds(sep + lead + trail)}`
-          : `${lineEnds(open + name + sep + lead)}${text}${lineEnds(trail)}`,
+    .replace(/(\{@link(?:code|plain)?)(\s[^{}]*)\}/g, (_, open: string, body: string) =>
+      linkText(open, body),
     )
     .replace(/`[^`\n]*`/g, (span) => span.replace(/\|/g, '\u00a6')) // a pipe in code, `number | null`, ends no row
     .replace(/`/g, '')
@@ -140,13 +147,40 @@ const plain = (src: string): string =>
     .replace(/\u00a0/g, ' ')
     .replace(/[\u2013\u2014]/g, ' - '); // a dash reads as the gap it is, and stays a mark a label is told by
 
+/** Blanks and a wrap's ` * ` margin, as one run: each character is one or the other, so the run matches one way. */
+const MARGIN = /^(?:\s|\*(?!\/))*/;
+/**
+ * A doc-comment link's body read as its text, or as its target when it has none, wrapped or not: the margin a wrap
+ * brings goes with the separator, and each line end stays on the side of the text it was on. Plain string work, not a
+ * pattern, so a body of any length costs one scan of it.
+ */
+function linkText(open: string, body: string): string {
+  const lead = MARGIN.exec(body)?.[0] ?? '';
+  let rest = body.slice(lead.length);
+  const nameEnd = rest.search(/[\s|]/);
+  const name = nameEnd < 0 ? rest : rest.slice(0, nameEnd);
+  rest = nameEnd < 0 ? '' : rest.slice(nameEnd);
+  let sep = MARGIN.exec(rest)?.[0] ?? '';
+  rest = rest.slice(sep.length);
+  if (rest.startsWith('|')) {
+    const after = MARGIN.exec(rest.slice(1))?.[0] ?? '';
+    sep += `|${after}`;
+    rest = rest.slice(1 + after.length);
+  }
+  const text = rest.trimEnd();
+  const trail = rest.slice(text.length);
+  return text === ''
+    ? `${lineEnds(open + lead)}${name}${lineEnds(sep + trail)}`
+    : `${lineEnds(open + lead + name + sep)}${text}${lineEnds(trail)}`;
+}
+
 /** A string a program prints, split across literals: a closing quote, the `+`, a line end or none, an opening quote. */
-const SPLIT = /(['"`])[^\S\n]*\+[^\S\n]*\n?[^\S\n]*(['"`])/g;
+const SPLIT = /(['"`])[^\S\n]*\+[^\S\n]*(?:\n[^\S\n]*)?(['"`])/g;
 /**
  * The same, between two letters and across a line end: `'…an empty gen' +`, then `'eration'` and the rest of its word.
  * Not after an escape, `'…\n' +`, whose letter is a line end the program prints.
  */
-const SPLIT_WORD = /(?<=(?<!\\)\w)(['"`])[^\S\n]*\+[^\S\n]*\n[^\S\n]*(['"`])(\w+)/g;
+const SPLIT_WORD = /(?<=(?<!\\)[\w-])(['"`])[^\S\n]*\+[^\S\n]*\n[^\S\n]*(['"`])([\w-]+)/g;
 /**
  * Each way a reader can be given a file, through `plain()`. A string a program prints, split across literals, is one
  * sentence, `'…never ' +` then `'re-resolves'`, and a line end the join takes out stays where it was. Split between two
@@ -175,18 +209,20 @@ const TTL_ZERO = String.raw`(?:(?:genTtlMs|\bTTL)(?:\s*[:=]\s*|[^\S\n]*\|[^\S\n]
  * An alternative whose first word is common opens on the rarer word it must have, and looks back for the first: the
  * same words, found in a fraction of the time.
  */
-const NO_TIMED_REFRESH_SUBJECT = String.raw`(?:${TTL_ZERO}|\b(?:no|neither(?: an?| the| any)?|without (?:an?|the|any)) (?:injected )?(?:clock|registry|backend)\b|\b(?:registry|clock)-?less\b|\bIStorageDriver\b(?<=\b(?:bare|raw|plain) IStorageDriver)|\bno timed refresh\b|\btimed refresh(?: (?:is |turned |switched )?(?:off|disabled)\b|(?<=\b(?:disabl(?:e|es|ed|ing)|turn(?:s|ed|ing)? off|switch(?:es|ed|ing)? off) (?:the |its |their )?timed refresh)))`;
+const NO_TIMED_REFRESH_SUBJECT = String.raw`(?:${TTL_ZERO}|\b(?:no|neither(?: an?| the| any)?|without (?:an?|the|any)) (?:injected )?(?:seams\.)?(?:clock|registry|backend)\b(?! (?:reads?|calls?|requests?|round trips?|writes?)\b)|\b(?:registry|clock)-?less\b|\bno-(?:registry|clock)\b|\b(?:bare|raw|plain)-driver\b|\bIStorageDriver\b(?<=\b(?:bare|raw|plain) IStorageDriver)|\bno timed refresh\b|\btimed refresh(?: (?:is |turned |switched )?(?:off|disabled)\b|(?<=\b(?:disabl(?:e|es|ed|ing)|turn(?:s|ed|ing)? off|switch(?:es|ed|ing)? off) (?:the |its |their )?timed refresh)))`;
 /** The end of a table row: its last cell's edge and the line end after it, or a line end before another row. */
 const ROW_END = String.raw`\|[^\S\n]*(?:\n|$)|\n(?=[^\n]*\|)`;
+/** What follows a line end to make a blank line: blanks, or a comment's bare margin (` *`, `>`, `//`, `#`), then another. */
+const BLANK_REST = String.raw`[^\S\n]*(?:(?:\*|>|\/\/|#)[^\S\n]*)?\n`;
 /**
  * At most `n` characters of one sentence between a claim's words: never past a blank line or the end of a table row,
  * though past a semicolon and an "e.g.", which end no sentence. A row's cells pair, since a settings table says what a
  * setting does in the cell beside it.
  */
 const within = (n: number): string =>
-  String.raw`(?:(?!(?<!\b(?:e\.g|i\.e))\.\s|\n\s*\n|${ROW_END})[\s\S]){0,${n}}?`;
+  String.raw`(?:(?!(?<!\b(?:e\.g|i\.e))\.\s|\n${BLANK_REST}|${ROW_END})[\s\S]){0,${n}}?`;
 /** Up to a clause of one paragraph, for a claim whose words may sit apart. */
-const SPAN = String.raw`(?:(?!\n\s*\n|${ROW_END})[^.;:])`;
+const SPAN = String.raw`(?:(?!\n${BLANK_REST}|${ROW_END})[^.;:])`;
 /** Not after a word that negates the claim: "nothing pins a generation forever" is not it. */
 const NOT_NEGATED = String.raw`(?<!\b(?:nothing|never|not|no|cannot|can't) )`;
 /** A pin as a verb, or "acts as a pin". Not "a pinned handle", which is `seg.pin()`, nor "pins nothing". */
@@ -213,7 +249,7 @@ const PINS = `(?:${[
   // "pin" the verb, on what a store resolves: "set it to 0 to pin every segment". Not the noun, "the pin a segment holds".
   String.raw`\bpin(?<!\b(?:a|the|each|every|one|its|their|this|that|your) pin) (?:each|every|all|its|their|the|a|one|your) (?:[\w'-]+ )?(?:segments?|generations?)\b`,
   // Said to be like one: "acts as a pinned handle", "works just like a pin", "is equivalent to `seg.pin()`".
-  String.raw`\b(?:(?:act|acts|behave|behaves|work|works|function|functions) (?:(?:just|exactly|much|essentially|effectively|basically) )?(?:as|like)|(?:is|are|becomes?) (?:(?:just|exactly|essentially|effectively|basically) )?(?:equivalent|identical|equal|tantamount|akin|the same) (?:to|as)|amounts? to) (?:a |an |one )?(?:[\w'-]+ )?${LIKE_A_PIN}`,
+  String.raw`\b(?:(?:act|acts|behave|behaves|work|works|function|functions) (?:(?:just|exactly|much|essentially|effectively|basically) )?(?:as|like)|(?:is|are|becomes?) (?:(?:just|exactly|much|essentially|effectively|basically) )?like|(?:is|are|becomes?) (?:(?:just|exactly|essentially|effectively|basically) )?(?:equivalent|identical|equal|tantamount|akin|the same) (?:to|as)|(?:is|are) (?:the )?equivalent of|amounts? to) (?:a |an |one )?(?:[\w'-]+ )?${LIKE_A_PIN}`,
   // Said to be one: "every handle is a pinned handle", "is a store-wide `seg.pin()`", "is effectively a pin". The bare
   // noun only after "is a": "gives each pin its own reader" says nothing about a store.
   String.raw`\b(?:is|are|returns?|becomes?|gives?) ${IN_EFFECT}(?:a |an |every |each )?(?:[\w'-]+ )?(?:pinned handles?|(?:\w+\.)?pin\(\))`,
@@ -225,26 +261,27 @@ const PINS = `(?:${[
  * What a store is said never to see: a newer generation, a publish, a change, or what another store, process or
  * writer destroys ("another writer's drop").
  */
-const NEWER = String.raw`(?:(?:a|an|the|any|another)(?: other)? )?(?:[\w-]+(?:'s|s') )?(?:(?:new|newer|later|next) (?:generation|publish|pointer|change)s?|publish(?:es)?|changes?|drops?|erasures?|writes?|deletions?|(?:crypto-)?shreds?)`;
+const NEWER = String.raw`(?:(?:a|an|the|any|another)(?: other)? )?(?:[\w-]+(?:'s|s') )?(?:(?:new|newer|later|next) (?:generation|publish|pointer|change|version)s?|publish(?:es)?|changes?|updates?|drops?|erasures?|writes?|deletions?|(?:crypto-)?shreds?)`;
 /**
  * The rest of a clause: up to a full stop, a semicolon, a colon, a dash or a blank line. It runs on across a line end,
  * since the repo's prose is hard-wrapped and a claim's "or otherwise" lands on the next line as often as not; and it
  * stops after 200 characters, which is longer than any clause here and keeps a long unbroken line from taking seconds.
  */
-const CLAUSE = String.raw`(?:(?! - )(?:[^.;:\n]|\n(?!\s*\n))){0,200}`;
+const CLAUSE = String.raw`(?:(?! - )(?:[^.;:\n]|\n(?!${BLANK_REST}))){0,200}`;
 /** A second "never", not itself one on a timer: "…, and an eviction never moves it". */
 const ANOTHER_NEVER = String.raw`\bnever\b(?! (?:[\w'-]+ ){1,4}?on a timer\b)`;
 /**
  * An "or" that joins the next clause straight after "on a timer": across a comma, a semicolon, a dash, or a wrap and its
- * margin. "; nor does an eviction move it" is one, and so is "— and never on an eviction".
+ * margin, and a dash opening the next line. "; nor does an eviction move it" is one, and so are "— and never on an
+ * eviction", ", not even after an eviction" and ", and not on an eviction".
  */
-const CONNECTOR = String.raw`(?:[,;]|[^\S\n]+-)?[^\S\n]*\n?[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?(?:(?:or|nor|either|neither)\b|and ${ANOTHER_NEVER})`;
+const CONNECTOR = String.raw`[,;]?[^\S\n]*(?:\n[^\S\n]*(?:(?:[>*#]|\/\/)[^\S\n]*)?)?(?:-[^\S\n]+)?(?:(?:or|nor|either|neither|let alone|much less)\b|(?:and )?not\b|and ${ANOTHER_NEVER})`;
 /** A verb for moving on, as it follows "does not" or "cannot": "re-resolve", "re-read its pointer", "see a publish". */
-const MOVE_ON = String.raw`(?:re-resolve|refresh|converge|re-(?:read|check) (?:(?:the|its|a|each) )?(?:pointer|segment)s?|move on|resolve (?:[\w'-]+ ){0,3}again|(?:observe|see|notice|pick up) ${NEWER})`;
+const MOVE_ON = String.raw`(?:re-resolve|refresh|converge|reload|re-(?:read|check) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|move on|resolve (?:[\w'-]+ ){0,3}again|(?:observe|see|notice|pick up) ${NEWER})`;
 /** The same verb as it follows "never": "re-resolves", "re-reads its pointer", "sees a publish". */
-const MOVES_ON = String.raw`(?:re-resolves?|refresh(?:es)?|converges?|re-(?:reads?|checks?) (?:(?:the|its|a|each) )?(?:pointer|segment)s?|moves? on|resolves? (?:[\w'-]+ ){0,3}again|(?:observes?|sees?|notices?|picks? up) ${NEWER})`;
+const MOVES_ON = String.raw`(?:re-resolves?|refresh(?:es)?|converges?|reloads?|re-(?:reads?|checks?) (?:(?:the|its|a|each) )?(?:pointer|segment|currentGen)s?|moves? on|resolves? (?:[\w'-]+ ){0,3}again|(?:observes?|sees?|notices?|picks? up) ${NEWER})`;
 /** A word between "never" and its verb that changes nothing: "never really re-resolves", "does not ever re-resolve". */
-const EVER = String.raw`(?:(?:actually|again|ever|really|even|truly|once) )?`;
+const EVER = String.raw`(?:(?:actually|again|ever|really|even|truly|once|automatically) )?`;
 /**
  * What a claim that a store never moves on says it never does, actively ("never re-resolves", "cannot re-resolve") or
  * passively ("is never refreshed"). Only "on a timer" ending the claim, just after the verb or its object, is true and
@@ -253,9 +290,9 @@ const EVER = String.raw`(?:(?:actually|again|ever|really|even|truly|once) )?`;
  * "never" in its clause or the next one, after a semicolon or a dash ("…, and an eviction never moves it"), makes it
  * the claim again.
  */
-const NEVER_MOVES = String.raw`(?:(?:never|no longer) ${EVER}${MOVES_ON}|(?:(?:is|are) (?:never|not|no longer)|isn't|aren't) ${EVER}(?:re-resolved|refreshed|re-read|re-checked)|(?:cannot|can't|can never|does not|doesn't|will not|won't) ${EVER}${MOVE_ON})\b(?! (?:(?:a|the|its|each) (?:segment|pointer|generation)s? )?on a timer\b(?!${CONNECTOR}|${CLAUSE}\b(?:or|nor|either|neither|at all|otherwise)\b|${CLAUSE}(?:(?:;| - )${CLAUSE})?${ANOTHER_NEVER}))`;
+const NEVER_MOVES = String.raw`(?:(?:never|no longer) ${EVER}${MOVES_ON}|(?:(?:is|are) (?:never|not|no longer)|isn't|aren't) ${EVER}(?:re-resolved|refreshed|re-read|re-checked)|(?:cannot|can't|can never|does not|doesn't|do not|don't|will not|won't) ${EVER}${MOVE_ON})\b(?! (?:(?:a|the|its|each) (?:segment|pointer|generation)s? )?on a timer\b(?!${CONNECTOR}|${CLAUSE}\b(?:or|nor|either|neither|at all|otherwise)\b|${CLAUSE}(?:(?:;| - )${CLAUSE})?${ANOTHER_NEVER}|${CLAUSE}(?:;| - )${CLAUSE}\b(?:either|neither|nor)\b))`;
 /** Until the store or its process ends: "until it restarts", "until you restart it", "until the process exits". */
-const UNTIL_IT_ENDS = String.raw`until (?:(?:it|the (?:process|store))(?: is)? (?:restart(?:s|ed)|exits|ends|stops|dies|killed|terminates|shuts down)|(?:you|they|we|someone|an operator) restarts? (?:it|them|the (?:process|store))|(?:a|the|the next|its next) restart|restarted)`;
+const UNTIL_IT_ENDS = String.raw`until (?:(?:it|the (?:process|store|pod|container|server|service|app))(?: is)? (?:restart(?:s|ed)|exits|ends|stops|dies|killed|terminates|shuts down)|(?:you|they|we|someone|an operator) restarts? (?:it|them|the (?:process|store))|(?:a|the|the next|its next) restart|restart(?:ed)?)`;
 /** Held for good, one way or another: "forever", "indefinitely", "until the next restart". */
 const FOR_GOOD = String.raw`(?:forever|permanently|indefinitely|for all time|${UNTIL_IT_ENDS})`;
 /** Said to give one instant, which is what `seg.pin()` is for: "describes one instant", "reads a single instant". */
@@ -268,9 +305,11 @@ const A_PIN = String.raw`(?:(?:a|an|the|one) )?(?:\w+\.)?${PIN_NAMED}`;
  * Offered in a pin's place, or said to make one needless: "instead of `seg.pin()`", "over `seg.pin()`", "no need for a
  * pin", "makes `seg.pin()` redundant".
  */
-const IN_PLACE_OF_A_PIN = String.raw`(?:\b(?:instead of|in place of|in lieu of|rather than|over|in preference to|no need (?:for|of|to(?: (?:take|call|use))?)) ${A_PIN}|\b(?:makes?|making|made|renders?|rendering|rendered)(?<!(?:\bnot|\bnever|n't) \w+) ${A_PIN} (?:redundant|unnecessary|needless|superfluous|obsolete|moot)\b|${PIN_NAMED} (?:is|are|becomes?) (?:then |thus |therefore |now )?(?:redundant|unnecessary|needless|superfluous|obsolete|moot|not needed|unneeded)\b)`;
+const IN_PLACE_OF_A_PIN = String.raw`(?:\b(?:(?:instead of|in place of|in lieu of|rather than|in preference to)(?: (?:taking|take|using|use|calling|call|holding|hold))?|over|no need (?:for|of|to(?: (?:take|call|use))?)) ${A_PIN}|\b(?:makes?|making|made|renders?|rendering|rendered)(?<!(?:\bnot|\bnever|n't) \w+) ${A_PIN} (?:redundant|unnecessary|needless|superfluous|obsolete|moot)\b|${PIN_NAMED} (?:is|are|becomes?) (?:then |thus |therefore |now )?(?:redundant|unnecessary|needless|superfluous|obsolete|moot|not needed|unneeded)\b|${PIN_NAMED} (?:isn't|aren't) needed\b|\b(?:do not|don't|does not|doesn't|no longer) need ${A_PIN})`;
+/** Said never to change: "never changes", "does not advance", "is fixed", "stays frozen". */
+const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes?|moves?|advances?)|(?:is|are|stays?|remains?) (?:fixed|frozen))`;
 /** Said to stay on a generation, by any verb but "pins": "stays on its first generation", "freezes each segment". */
-const STAYS = String.raw`\b(?:stays?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b`;
+const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b`;
 
 /** Phrases that describe behaviour this library used to have, each with what to say instead. */
 const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
@@ -305,7 +344,11 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   // sentence a program builds other than from string literals joined by `+`, as prettier wraps them.
   {
     claim: new RegExp(
-      g(NOT_NEGATED + String.raw`${PIN_WORD} (?:[\w'(),-]+ ){0,5}${FOR_GOOD}\b`),
+      g(
+        String.raw`(?=${PIN_WORD})` +
+          NOT_NEGATED +
+          String.raw`${PIN_WORD} (?:[\w'(),-]+ ){0,5}${FOR_GOOD}\b`,
+      ),
       'i',
     ),
     why: NO_TIMED_REFRESH,
@@ -316,7 +359,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
       g(
         String.raw`\b(?:keeps?|kept|holds?|held|reads?|serves?|served|answers? from) (?:[\w'-]+ ){0,2}?(?:its|their|the|one|a|that)(?: (?:first|first-resolved|resolved|current|same|single|own))? ` +
           String.raw`(?:generation|pointer|snapshot|reader)s? (?:[\w'(),-]+ ){0,3}` +
-          String.raw`(?:${FOR_GOOD}|for the life of the (?:store|source|process|reader|cache)|(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime)\b`,
+          String.raw`(?:${FOR_GOOD}|for the life of the (?:store|source|process|reader|cache|client|app|service|server|pod|program)|(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime)\b`,
       ),
       'i',
     ),
@@ -326,7 +369,8 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // "For good" is the idiom only where it ends its clause: "held for good reason" is not the claim.
     claim: new RegExp(
       g(
-        NOT_NEGATED +
+        String.raw`(?=${PIN_WORD})` +
+          NOT_NEGATED +
           String.raw`${PIN_WORD} (?:${SPAN}{1,60}? )?(?:(?:for|per|throughout) (?:[\w'-]+ ){0,2}lifetime\b|for good\b(?! \w)|for the life of the (?:store|source|process|reader|cache)\b)`,
       ),
       'i',
@@ -378,8 +422,8 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // The generation a store with no timed refresh reads, said never to change.
     claim: new RegExp(
       g(
-        String.raw`${NO_TIMED_REFRESH_SUBJECT}${within(80)}\b(?:generation|pointer|snapshot)s? (?:never|does not|doesn't|will not|won't) (?:changes?|moves?|advances?)\b|` +
-          String.raw`\b(?:generation|pointer|snapshot)s? (?:never|does not|doesn't|will not|won't) (?:changes?|moves?|advances?)\b${within(60)}${NO_TIMED_REFRESH_SUBJECT}`,
+        String.raw`${NO_TIMED_REFRESH_SUBJECT}${within(80)}\b(?:generation|pointer|snapshot)s? ${FIXED}\b|` +
+          String.raw`\b(?:generation|pointer|snapshot)s? ${FIXED}\b${within(60)}${NO_TIMED_REFRESH_SUBJECT}`,
       ),
       'i',
     ),
@@ -389,7 +433,8 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // A pin holds a generation; a pointer is what a store re-reads. In either order: "its pointer pinned".
     claim: new RegExp(
       g(
-        NOT_NEGATED +
+        String.raw`(?=\bp(?:in|ointer))` +
+          NOT_NEGATED +
           String.raw`\b(?:pin(?:s|ned|ning)? (?:each|every|its|their|the|a|one|that) (?:[\w'-]+ )?pointers?|pinned pointers?|pointers? (?:is |are |stays? |kept |held |left )?pinned)\b`,
       ),
       'i',
@@ -401,7 +446,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     // refresh at all", "Pinned, it is two", "Pinned (no refresh)", "Pinned — none", "Pinned. The model bills none",
     // `name: "Pinned: …"`. Capitalised, as a label is: `pinned:` in code is a key. Of a real pin, say "a pinned handle".
     claim:
-      /(?<=(?:^|[.!?][^\S\n]+|\n|[:=][^\S\n]*)[^\S\n]*(?:(?:\/\/|\*|#+|>|-|\d+\.)[^\S\n]*)?)Pinned(?:[^\S\n]*[:,(]|\.(?!\w)|[^\S\n]+-[^\S\n])/,
+      /Pinned(?<=(?:^|\n|[:=([,|]|[.!?](?=[^\S\n]))[^\S\n]*(?:(?:\/\/|\*|#+|>|-|\d+\.)[^\S\n]*)?Pinned)(?:[^\S\n]*[:,(]|\.(?!\w)|[^\S\n]+-[^\S\n])/,
     why: NO_TIMED_REFRESH,
   },
   {
@@ -435,11 +480,11 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     why: NO_TIMED_REFRESH,
   },
   {
-    // One of the four things that re-resolve a segment, said to be the only one: "only on a timer", "only when its TTL
-    // lapses", "only when invalidated".
+    // One of the four things that re-resolve a segment, said to be the only one: "re-resolves only on a timer", "only
+    // when its TTL lapses", "only when invalidated". Said of a verb that moves a store on: "runs only on a timer" is not.
     claim: new RegExp(
       g(
-        String.raw`\bonly (?:on|at|with|by|after|through|when|once|if|upon) (?:(?:it is|it's|it has been|they are|they're) )?(?:(?:a|an|the|its|their) )?(?:(?:timed refresh(?:es)?|timer|(?:TTL|genTtlMs) (?:lapses|has lapsed|expires|has expired|elapses|runs out)|invalidat(?:ed|ions?))\b|invalidate\(\))`,
+        String.raw`\b(?:re-resolv|refresh|re-read|re-check|reload|converg|resolv)\w*\b${within(60)}\bonly (?:on|at|with|by|after|through|when|once|if|upon) (?:(?:it is|it's|it has been|they are|they're) )?(?:(?:a|an|the|its|their) )?(?:(?:timed refresh(?:es)?|timer|(?:TTL|genTtlMs) (?:lapses|has lapsed|expires|has expired|elapses|runs out)|invalidat(?:ed|ions?))\b|invalidate\(\))`,
       ),
       'i',
     ),
@@ -785,6 +830,83 @@ describe('no document claims behaviour this library has retired', () => {
     'Setting `genTtlMs: 0` makes `seg.pin()` redundant.',
     'With `genTtlMs: 0`, `seg.pin()` is unnecessary.',
     'Prefer `cache.genTtlMs: 0` over `seg.pin()` for a long export.',
+    // Across a line end, where a claim's "or" or second "never" lands when the prose is wrapped, and after a dash that
+    // opens the next line.
+    'A store with no clock never re-resolves on a timer, and\n * an eviction never moves it.',
+    'A store with no clock never re-resolves on a timer, not on an eviction\n * or otherwise.',
+    'A store with no clock never re-resolves on a timer when it is idle\n * or otherwise.',
+    'A store with no clock never re-resolves on a timer;\n * nor does an eviction move it.',
+    'A store with no clock never re-resolves on a timer\n— or on an eviction.',
+    '> A store with no clock never re-resolves on a timer\n> — or on an eviction.',
+    ' * A store with no clock never re-resolves on a timer\n * — or on an eviction.',
+    'A store with no clock never re-resolves on a timer when the workload is quiet, or otherwise.',
+    'A store with no clock never re-resolves on a timer, not even after an eviction.',
+    'A store with no clock never re-resolves on a timer, and not on an eviction.',
+    'A store with no clock never re-resolves on a timer, let alone on an eviction.',
+    'A store with no clock never re-resolves on a timer, much less on an eviction.',
+    'A store with no clock never re-resolves on a timer; an eviction does not move it either.',
+    // Each word the patterns know, alone.
+    'A store with no clock never truly re-resolves.',
+    'A store with no clock never once re-resolves.',
+    'A store with no clock never automatically re-resolves.',
+    "With no clock, a segment isn't re-resolved.",
+    'With no clock, a segment is no longer refreshed.',
+    'A store with no clock cannot converge.',
+    'A store with no clock does not re-check its pointer.',
+    'A store with no clock can never re-resolve.',
+    'Stores with no clock do not re-resolve.',
+    "Stores with no clock don't re-resolve.",
+    'A store with no clock never reloads.',
+    'A store with no clock cannot reload.',
+    'A store with no clock does not re-read `currentGen`.',
+    'A store with no clock never re-reads `currentGen`.',
+    'A store with no clock never sees updates.',
+    'A store with no clock never sees a newer version.',
+    "A store with no clock never sees any other store's publish.",
+    'Turn off the timed refresh and a store never re-resolves.',
+    'Switch off the timed refresh and the store never re-resolves.',
+    'With neither the clock nor a registry, a store never re-resolves.',
+    'With a TTL of 0ms, a store never re-resolves.',
+    'A no-registry store never re-resolves.',
+    'A raw-driver store never re-resolves.',
+    'With no `seams.clock`, a store never re-resolves.',
+    'With `genTtlMs: 0`, a live handle is essentially a pinned handle.',
+    'With `genTtlMs: 0`, a live handle is in effect a pin.',
+    'A store with `genTtlMs: 0` functions as a pin.',
+    'A store with `genTtlMs: 0` is the same as a pinned handle.',
+    'A store with `genTtlMs: 0` behaves essentially like a pin.',
+    'A store with `genTtlMs: 0` is like a pin.',
+    'A store with `genTtlMs: 0` is the equivalent of a pin.',
+    '`genTtlMs: 0` pins nothing besides the generation each segment first resolved.',
+    'With `genTtlMs: 0`, a live handle serves one generation for the life of the handle.',
+    'With no clock, a long export reads a single instant.',
+    'Use `cache.genTtlMs: 0` in place of `seg.pin()`.',
+    'Set `cache.genTtlMs: 0` rather than take a pin.',
+    'Setting `genTtlMs: 0` renders `seg.pin()` redundant.',
+    "With `genTtlMs: 0` you don't need `seg.pin()`.",
+    "With `genTtlMs: 0`, a pin isn't needed.",
+    'With no clock, the store pins each segment until the process dies.',
+    'With no clock, a store keeps its first generation until the pod restarts.',
+    'With no clock, a store keeps its first generation until restart.',
+    'With no clock, a store keeps its first generation until an operator restarts it.',
+    'With no clock, a store keeps its first generation until the process is killed.',
+    'With no clock, the store holds its first generation for the life of the client.',
+    'A store with no clock remains on its first generation.',
+    'A store with no clock keeps serving the generation it first resolved.',
+    "With no clock, each segment's generation is fixed.",
+    "With no clock, each segment's generation stays frozen.",
+    'A store with no clock re-resolves a segment only if it is invalidated.',
+    'A store with no clock re-resolves only upon an invalidation.',
+    'A store re-resolves a segment only once its TTL expires.',
+    // Split across literals at a hyphen, and across tags that each hold a run of text.
+    "const note = 'A store with no clock never re-' +\n  'resolves a segment.';",
+    '<text>A store with no clock never</text><text>re-resolves a segment.</text>',
+    '<td>cache.genTtlMs: 0</td><td>pins each segment forever</td>',
+    // A label inside a call, an array or a table cell.
+    "expect(note).toBe('Pinned: no refresh at all');",
+    "notes.push('Pinned: none');",
+    "['Pinned: none', 'x']",
+    '| Pinned: no refresh at all | $0.00 |',
     // A label with a full stop.
     '// Pinned. The model bills none.',
     // A claim in a string whose quote is escaped or doubled, read as the program or the YAML prints it.
@@ -864,6 +986,12 @@ describe('no document claims behaviour this library has retired', () => {
     'The timed refresh re-reads the pointer when its TTL lapses.',
     '| cache.genTtlMs | 0 | no timed refresh: an eviction still re-resolves |',
     '// Pinned so a casual edit is deliberate.',
+    // A claim's words in the next paragraph, a blank comment line included, and a verb that moves nothing.
+    'A store with no clock never re-resolves on a timer\n\nOr set `genTtlMs` above 0 for a timed refresh.',
+    ' * ### With no clock\n *\n * The loader pins every chunk it reads to its generation.',
+    'The calibration job runs only on a timer.',
+    'Until it is called, the source keeps serving that snapshot with no backend read at all.',
+    "A store with no clock doesn't keep serving the old generation once it is invalidated.",
     // An apostrophe in a quoted string, escaped or doubled, is the possessive it prints: it opens no quotation.
     "description: 'Two incarnations'' pins stay apart on a store with no registry.'",
     "it('keeps two incarnations\\' pins apart on a store with no registry', () => {});",
@@ -917,6 +1045,22 @@ describe('no document claims behaviour this library has retired', () => {
     [
       'A pinned handle describes one instant; a store with `genTtlMs: 0` does not.',
       'A pinned handle describes one instant. A store with `genTtlMs: 0` does not.',
+    ],
+    [
+      'A store with no clock never re-resolves on a timer, but an eviction or an invalidation still moves it.',
+      'A store with no clock never re-resolves on a timer. An eviction and an invalidation still move it.',
+    ],
+    [
+      'A store with no clock never re-resolves on a timer\n * and is moved on only by an eviction, a swept read or an invalidation.',
+      'A store with no clock never re-resolves on a timer.\n * An eviction, a swept read and an invalidation still move it.',
+    ],
+    [
+      'The timed refresh re-reads the pointer only when its TTL lapses.',
+      'The timed refresh re-reads the pointer each time its TTL lapses.',
+    ],
+    [
+      '# Pinned (full commit SHA): a moved tag cannot inject code.',
+      '# Pinned to a full commit SHA: a moved tag cannot inject code.',
     ],
     [
       'A store with no clock re-resolves a segment only when it is invalidated, evicted or swept.',
@@ -1056,6 +1200,19 @@ describe('no document claims behaviour this library has retired', () => {
       const started = performance.now();
       hitsIn('x.md', line);
       expect(performance.now() - started, JSON.stringify(unit)).toBeLessThan(2000);
+    }
+    // And a long run of blanks where a pattern could split it among its parts: each once took seconds, and grew
+    // faster than the run.
+    for (const [what, line] of [
+      ['a doc-comment link never closed', `{@link a${' '.repeat(100_000)}`],
+      ['blanks before a label', `${'x'.repeat(50_000)}${' '.repeat(50_000)}Pinned: none`],
+      ['split literals, then blanks', `${"'a' +".repeat(20_000)}${' '.repeat(2_000)}x`],
+      ['blanks after a pin word', `pins${' '.repeat(100_000)}`],
+      ['a wide table', `| pins${' '.repeat(100)}| `.repeat(950)],
+    ] as const) {
+      const started = performance.now();
+      hitsIn('x.md', line);
+      expect(performance.now() - started, what).toBeLessThan(2000);
     }
   });
 

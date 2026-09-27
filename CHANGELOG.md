@@ -203,15 +203,14 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   reads that object only: what it has already read still answers, as the instant it pinned, and anything it would
   have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. A pin tells a replacement
   from damage by reading the object's footer, which needs no key; an object of another size counts as another
-  object, damaged or not. A replacement written under a key the store lacks
-  is therefore found too, including after the pin's reader was dropped. The reads that ask at once share that
-  footer read, and once found, a replacement costs later reads no request until the store forgets it: an
-  invalidation of the pin's store does, as does a later `pin()` that opens the pinned object again, and the store
-  remembers only as many as its reader cache keeps readers. So once a restore puts the object back, the pin's store
-  is invalidated: the pin then reads it again, and a pin taken after that reads the object then stored as its
-  generation. An object found gone is not remembered, since a 404 can pass. Two pins
-  of one generation number in two incarnations never share a reader or a cached chunk, with a registry or without
-  one.
+  object, damaged or not. A replacement written under a key the store lacks is therefore found too, including after
+  the pin's reader was dropped. The reads that ask at once share that footer read, and once found, a replacement
+  costs later reads no request until the store forgets it: an invalidation of the pin's store does, as does a later
+  `pin()` of the same version that opens the pinned object again, and the store remembers at most `cache.readerMax`
+  of them. So once a restore puts the object back, invalidate the pin's store: the pin then reads it again, and a
+  pin taken after that reads the object then stored as its generation. An object found gone is not remembered,
+  since a 404 can pass. Two pins of one generation number in two incarnations never share a reader or a cached
+  chunk, with a registry or without one.
 - **A pin whose segment was dropped or destroyed went empty part-way through a read.** A pinned `iterate()` that
   straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
   `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now

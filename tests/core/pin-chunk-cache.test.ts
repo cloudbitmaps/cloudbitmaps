@@ -1924,4 +1924,68 @@ describe('what a pin found out about its object, and how it forgets', () => {
       expect(tails).toBe(1); // the reopen's own tail read, and no footer check
     },
   );
+  it('shares one fresh open among the pins taken together after a replacement was found', async () => {
+    const { backend, calls, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    calls.length = 0;
+    const pins = await Promise.all(Array.from({ length: 20 }, () => store.segment('s').pin()));
+    expect(calls.filter((c) => c === 'storage.getTail')).toHaveLength(1);
+    for (const pin of pins) expect(await pin.has(C + 3)).toBe(true);
+  });
+
+  it("ends a replaced pin's index answers once a later pin opens the object now under its key", async () => {
+    const { backend, store } = await recorded();
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    await expect(first.has(C + 1)).rejects.toThrow(NOT_PINNED);
+    expect(await first.count()).toBe(OLD.length); // its reader, of the object it pinned, is still held
+    await store.segment('s').pin(); // takes the key, for the object under it now
+    await expect(first.count()).rejects.toThrow(NOT_PINNED);
+  });
+
+  it('keeps no reader that decrypts for pins in flight across a crypto-shred and its invalidation', async () => {
+    const keystore = new InProcessKeystore({
+      keys: { k1: new Uint8Array(32).fill(7) },
+      activeKeyId: 'k1',
+    });
+    const backend = new MemoryStorage();
+    await bulkLoadCrbmGeneration(backend.storage, { ...REF, generation: 0 }, OLD, {
+      registry: backend.registry,
+      keystore,
+    });
+    const store = new CloudRoaring({ storage: backend, encryption: { keystore }, retry: false });
+    const { reached, release } = holdNextTail(backend.storage);
+    const first = store.segment('s').pin();
+    await reached;
+    const second = store.segment('s').pin(); // joins the open in flight
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await destroySegment(REF, { registry: backend.registry }, { confirmSegment: 's' });
+    store.invalidate(REF);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    await expect(a.has(C + 1)).rejects.toThrow(NotFoundError);
+    await expect(b.has(2 * C + 1)).rejects.toThrow(NotFoundError);
+  });
+
+  it('keeps the fresh reader a pin installs while an evicted reopen is still under way', async () => {
+    const { backend, calls, store } = await recorded({ readerMax: 1 });
+    const first = await store.segment('s').pin();
+    await putObject(backend.storage, await objectOf(NEW));
+    store.invalidate(REF);
+    const { reached, release } = holdNextTail(backend.storage);
+    const read = first.has(C + 1).then(
+      () => 'read',
+      (err: Error) => err.name,
+    );
+    await reached;
+    expect(await store.segment('other').has(7)).toBe(true); // evicts the reopen
+    const next = await store.segment('s').pin(); // opens the object under the key now, and keeps it
+    release();
+    expect(await read).toBe('NotFoundError');
+    calls.length = 0;
+    expect(await next.has(C + 3)).toBe(true);
+    expect(calls).toEqual(['storage.getRange']);
+  });
 });

@@ -1483,8 +1483,8 @@ export class CloudRoaring {
    *   `cache.genTtlMs: 0`, or on a storage source built with no clock has no bound at all: it converges only when a read happens to miss its caches. If a compliance deadline depends on every
    *   reader converging, you need to signal them — this is the call to make when your own fan-out delivers.
    *
-   * It also forgets any replacement this store found of a pin's object, so once a restore puts that object back, the
-   * pin reads it again.
+   * It also forgets any replacement this store found of a pin's object, so once it is called after a restore puts that
+   * object back, the pin reads it again.
    *
    * Synchronous, best-effort, and safe to call for a segment this store has never read.
    *
@@ -1891,7 +1891,10 @@ export class Segment {
    * - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
    *
    * An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
-   * destroyed.
+   * destroyed. A replacement a pin has found is remembered, so its later reads fail with no request, until the store
+   * forgets it: an invalidation of the segment does, as does a later `pin()` of the same version that opens the object
+   * again, and the store remembers at most `cache.readerMax` of them. So once a restore puts the pinned object back,
+   * call {@link CloudRoaring.invalidate} on this store: the pin then reads the object again.
    * Anything else leaves the pin as it is: after a `destroySegment` beside this store, or an erasure, a drop or a
    * retirement through another store, in this process or another, the pin answers from what it holds until this
    * store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or
