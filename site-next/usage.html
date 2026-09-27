@@ -46,6 +46,7 @@
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html">
@@ -84,7 +85,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ─────────────────────────────────────────────────────────── -->
       <section>
         <div class="hero-grid">
@@ -171,7 +172,7 @@ npm audit signatures</code></pre>
 <span class="c">// …every line below here is unchanged</span></code></pre>
           </div>
         </div>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           The <span class="m">registry</span> is what resolves a generation in one read instead of a
           list-scan, what makes an encrypted segment readable, and what every write and every lifecycle call
           publishes through. <strong>You do not wire it separately.</strong> A backend —
@@ -196,7 +197,7 @@ npm audit signatures</code></pre>
           <div class="tpanel-head">
             <span class="label">Load, segment and store</span><span class="label">Scrolls sideways on narrow screens</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="quickstart.ts">
             <table>
               <thead>
                 <tr>
@@ -207,7 +208,7 @@ npm audit signatures</code></pre>
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="m">store.load(ref, ids)</span></td>
+                  <th scope="row"><span class="m">store.load(ref, ids)</span></th>
                   <td class="from">
                     <strong>The only way data gets in.</strong> Streams an unsorted id source into one
                     immutable <span class="m">.crbm</span> object, then advances the segment's pointer
@@ -218,7 +219,7 @@ npm audit signatures</code></pre>
                   <td class="num">4 PUT-class + 7 GET</td>
                 </tr>
                 <tr>
-                  <td><span class="m">has(id)</span></td>
+                  <th scope="row"><span class="m">has(id)</span></th>
                   <td class="from">
                     Resolves one chunk of the current generation: the cache if it is there, otherwise one
                     ranged GET of that chunk. The first read of a segment also reads its pointer and its index.
@@ -227,7 +228,7 @@ npm audit signatures</code></pre>
                   <td class="num">cache, else 1 GET</td>
                 </tr>
                 <tr>
-                  <td><span class="m">count()</span></td>
+                  <th scope="row"><span class="m">count()</span></th>
                   <td class="from">
                     Sums per-chunk cardinality from the <span class="m">.crbm</span> index.
                     <strong>Exact, not estimated</strong> — no HyperLogLog — and it never opens a payload. A
@@ -236,7 +237,7 @@ npm audit signatures</code></pre>
                   <td class="num">the index</td>
                 </tr>
                 <tr>
-                  <td><span class="m">intersect(others, { exclude })</span></td>
+                  <th scope="row"><span class="m">intersect(others, { exclude })</span></th>
                   <td class="from">
                     Async-iterates the intersection. Compares chunk keys first and requests only shared chunks;
                     the storage payload footprint is bounded by
@@ -247,10 +248,10 @@ npm audit signatures</code></pre>
                   <td class="num">the shared chunks</td>
                 </tr>
                 <tr>
-                  <td>
+                  <th scope="row">
                     <span class="m">intersectInto(dest, others)</span><br /><span class="m">unionInto</span> ·
                     <span class="m">andNotInto</span>
-                  </td>
+                  </th>
                   <td class="from">
                     Publishes the result as a <strong>new generation of <span class="m">dest</span></strong>
                     rather than streaming it to you — superseded, not added to — and hands back
@@ -259,7 +260,7 @@ npm audit signatures</code></pre>
                   <td class="num">storage + registry</td>
                 </tr>
                 <tr>
-                  <td><span class="m">store.eraseSubject(id)</span></td>
+                  <th scope="row"><span class="m">store.eraseSubject(id)</span></th>
                   <td class="from">
                     Rewrites every segment holding the id without it and deletes the generation that held the
                     bit, so it is <strong>physically gone from the bucket</strong> when the call returns. A
@@ -268,7 +269,7 @@ npm audit signatures</code></pre>
                   <td class="num">storage + registry</td>
                 </tr>
                 <tr>
-                  <td><span class="m">store.retireExpired()</span></td>
+                  <th scope="row"><span class="m">store.retireExpired()</span></th>
                   <td class="from">
                     The retention sweep: everything whose <span class="m">expiresAt</span> has passed, each
                     through <span class="m">dropSegment</span>. <strong>A call, not a daemon</strong> —
@@ -277,7 +278,7 @@ npm audit signatures</code></pre>
                   <td class="num">registry, then storage</td>
                 </tr>
                 <tr>
-                  <td><span class="m">store.exportSegments(sink)</span></td>
+                  <th scope="row"><span class="m">store.exportSegments(sink)</span></th>
                   <td class="from">
                     Writes every registered segment out as cross-language
                     <span class="m">roaring</span> or newline-delimited <span class="m">ndjson</span>, using
@@ -286,7 +287,7 @@ npm audit signatures</code></pre>
                   <td class="num">storage</td>
                 </tr>
                 <tr>
-                  <td><span class="m">estimateCost(input)</span></td>
+                  <th scope="row"><span class="m">estimateCost(input)</span></th>
                   <td class="from">
                     Your region and rates in, projected bill out. The
                     <a href="benchmarks.html">benchmarks page</a> is generated from this same function.
@@ -457,7 +458,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <!-- Spelled out because /benchmarks compares against an always-on Redis node, and a reader who has
              seen that page can reasonably arrive here looking for Redis in the table and read its absence as
              an omission. It is a baseline, not a backend; saying so is ours to do, not theirs to work out. -->
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           <strong>Redis is not in this table.</strong> It is the line the
           <a href="benchmarks.html">benchmarks page</a> prices against, not a backend this library writes to —
           the storage here is your own bucket plus one small pointer row per segment. It is still a good
@@ -468,7 +469,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           <div class="tpanel-head">
             <span class="label">Drivers</span><span class="label">Storage · registry</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="load.ts">
             <table>
               <thead>
                 <tr>
@@ -480,25 +481,25 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
               </thead>
               <tbody>
                 <tr>
-                  <td>S3</td>
+                  <th scope="row">S3</th>
                   <td><span class="m">@cloudbitmaps/s3</span></td>
                   <td class="from">storage · registry</td>
                   <td class="num">@aws-sdk/client-s3 &gt;=3.645.0 &lt;4</td>
                 </tr>
                 <tr>
-                  <td>Google Cloud Storage</td>
+                  <th scope="row">Google Cloud Storage</th>
                   <td><span class="m">@cloudbitmaps/gcs</span></td>
                   <td class="from">storage · registry</td>
                   <td class="num">@google-cloud/storage ^7 || ^8</td>
                 </tr>
                 <tr>
-                  <td>Azure Blob</td>
+                  <th scope="row">Azure Blob</th>
                   <td><span class="m">@cloudbitmaps/azure-blob</span></td>
                   <td class="from">storage · registry</td>
                   <td class="num">@azure/storage-blob ^12</td>
                 </tr>
                 <tr>
-                  <td>Filesystem</td>
+                  <th scope="row">Filesystem</th>
                   <td class="from">main entry</td>
                   <td class="from">storage · registry</td>
                   <td class="num">none</td>
@@ -629,7 +630,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             </span>
           </li>
         </ul>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           The <a href="benchmarks.html">benchmarks page</a> carries the rate past which a flat tier is cheaper, the
           methodology, and what each measurement does and does not establish.
         </p>
@@ -640,7 +641,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
         <div class="close-grid">
           <div class="close-copy">
             <h2>Start with the memory drivers.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               They need no account and no configuration, and the code you write against them is the code you
               keep. Point it at a bucket when you are ready.
             </p>

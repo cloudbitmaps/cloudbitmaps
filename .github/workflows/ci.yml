@@ -72,6 +72,9 @@ jobs:
         env: { SITE_DIR: site-next }
       - run: python3 scripts/site-links.py
         env: { SITE_DIR: site-next }
+      # Nothing on site-next/ is drawn below 9.5px at any of six widths, SVG labels included: it loads each page in the
+      # runner's Chrome and measures what renders, since a diagram's labels shrink with its viewBox.
+      - run: pnpm site:text-floor
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

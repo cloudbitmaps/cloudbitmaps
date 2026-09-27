@@ -315,43 +315,6 @@
   // reads as something having been missed.
   show(0, { animate: false });
 
-  /**
-   * Autoplay, but only once and only when the figure is actually on screen.
-   *
-   * Three things it deliberately does NOT do. It does not loop — a figure that restarts while you are reading
-   * beat 03 pulls you back to the beginning, and this one is an argument with an ending. It does not start
-   * while scrolled past, which is why the trigger is an IntersectionObserver rather than a timer. And it does
-   * not autoplay under `prefers-reduced-motion`: the reader who asked for less motion gets beat 01 at rest
-   * with the rail and controls right there.
-   *
-   * Any interaction cancels it for good — once you have taken the wheel, the page must not take it back.
-   */
-  var autoplayed = false;
-  function startAutoplay() {
-    if (autoplayed || reduced || playing) return;
-    autoplayed = true;
-    setPlaying(true);
-  }
-  ['click', 'keydown'].forEach(function (evt) {
-    root.addEventListener(evt, function () {
-      autoplayed = true;
-    });
-  });
-  if (typeof window.IntersectionObserver === 'function') {
-    var io = new window.IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (en) {
-          if (en.isIntersecting) {
-            io.disconnect();
-            // A short beat before it moves, so the figure is legible at rest first.
-            window.setTimeout(startAutoplay, 700);
-          }
-        });
-      },
-      { threshold: 0.35 },
-    );
-    io.observe(root);
-  } else {
-    window.setTimeout(startAutoplay, 900);
-  }
+  // No autoplay. The replay moves only when a reader steps it or presses Play: a figure that starts itself as it
+  // scrolls into view is reveal-on-scroll, which the display tier rules out, and beat 01 at rest is legible.
 })();

@@ -46,6 +46,7 @@
     <link rel="apple-touch-icon" href="../assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="../index.html">
@@ -97,7 +98,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ─────────────────────────────────────────────────────────── -->
       <section>
         <div class="hero-grid">
@@ -170,7 +171,7 @@
             </p>
           </div>
         </div>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           That is the entire idea, and everything below is how the second half of it works. And note
           what Roaring does when a chunk really is dense: it stores that chunk <em>as</em> a flat
           bitset. The flat shape is not an alternative to this design, it is one of the three things
@@ -192,7 +193,12 @@
             <span class="label">And this is why “just use Redis” is a different question</span>
             <span class="label">Structure, not price</span>
           </div>
-          <div class="tscroll">
+          <div
+            class="tscroll"
+            tabindex="0"
+            role="region"
+            aria-label="And this is why “just use Redis” is a different question"
+          >
             <table>
               <thead>
                 <tr>
@@ -203,7 +209,9 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Redis <span class="m">SETBIT</span> / <span class="m">BITOP</span></td>
+                  <th scope="row">
+                    Redis <span class="m">SETBIT</span> / <span class="m">BITOP</span>
+                  </th>
                   <td class="from">
                     A String treated as a bit array. That is all a Redis “bitmap” is.
                   </td>
@@ -213,7 +221,9 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Redis <span class="m">SADD</span> / <span class="m">SINTER</span></td>
+                  <th scope="row">
+                    Redis <span class="m">SADD</span> / <span class="m">SINTER</span>
+                  </th>
                   <td class="from">
                     A hash table of members. Small all-integer sets get a packed encoding, but that
                     converts away as the set grows.
@@ -224,7 +234,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Roaring</td>
+                  <th scope="row">Roaring</th>
                   <td class="from">
                     A per-chunk decision between array, bitset and run — the figure below.
                   </td>
@@ -296,7 +306,7 @@
             <span class="label">The calls you already make</span>
             <span class="label">Same operations · different storage</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="The calls you already make">
             <table>
               <thead>
                 <tr>
@@ -307,7 +317,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="m">SETBIT key id 1</span></td>
+                  <th scope="row"><span class="m">SETBIT key id 1</span></th>
                   <td class="from"><strong>No equivalent</strong> — no per-id write exists.</td>
                   <td class="from">
                     Ids are u32, same as a bit offset, but a segment changes only by getting a new
@@ -316,34 +326,36 @@
                   </td>
                 </tr>
                 <tr>
-                  <td><span class="m">GETBIT key id</span></td>
+                  <th scope="row"><span class="m">GETBIT key id</span></th>
                   <td><span class="call">has</span></td>
                   <td class="from">None in meaning.</td>
                 </tr>
                 <tr>
-                  <td><span class="m">BITCOUNT key</span></td>
+                  <th scope="row"><span class="m">BITCOUNT key</span></th>
                   <td><span class="call">count</span></td>
                   <td class="from">Exact, and read from the index without fetching payloads.</td>
                 </tr>
                 <tr>
-                  <td><span class="m">BITOP AND</span></td>
+                  <th scope="row"><span class="m">BITOP AND</span></th>
                   <td><span class="call is-key">intersect</span></td>
                   <td class="from">Streams, and never fetches a chunk that cannot contribute.</td>
                 </tr>
                 <tr>
-                  <td><span class="m">BITOP OR</span></td>
+                  <th scope="row"><span class="m">BITOP OR</span></th>
                   <td><span class="call">union</span></td>
                   <td class="from">None in meaning.</td>
                 </tr>
                 <tr>
-                  <td><span class="m">BITOP DIFF</span> <span class="from">(Redis 8.2+)</span></td>
+                  <th scope="row">
+                    <span class="m">BITOP DIFF</span> <span class="from">(Redis 8.2+)</span>
+                  </th>
                   <td><span class="call">andNot</span></td>
                   <td class="from">
                     None in meaning. Reads each suppression list only where it overlaps.
                   </td>
                 </tr>
                 <tr>
-                  <td><span class="m">BITOP AND dest a b</span></td>
+                  <th scope="row"><span class="m">BITOP AND dest a b</span></th>
                   <td><span class="call is-key">intersectInto</span></td>
                   <td class="from">
                     The destination form, which is the only form Redis has. The result becomes a
@@ -356,7 +368,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td><span class="m">EXPIRE key ttl</span></td>
+                  <th scope="row"><span class="m">EXPIRE key ttl</span></th>
                   <td>
                     <span class="call">setRetention</span> +
                     <span class="call">retireExpired</span>
@@ -436,7 +448,7 @@
           </div>
         </div>
 
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           <strong>What genuinely does not carry over: the bytes.</strong> A
           <span class="m">.crbm</span> object is not a flat bit array, so anything that reads your
           Redis bitmap's raw string — a job that <span class="m">GET</span>s the key and indexes
@@ -449,13 +461,12 @@
       </section>
 
       <!-- ── THE CODEC FIGURE ───────────────────────────────────────────────
-           The only animation on this page, and it explains only the codec. The tiering and chunk-skipping
-           story lives once, on /architecture, because it is codec-independent — which is also why a second
-           flavor drops its own version of THIS figure into THIS slot and changes nothing else.
+           It explains only the codec. The tiering and chunk-skipping story lives once, on /architecture,
+           because it is codec-independent — which is also why a second flavor drops its own version of THIS
+           figure into THIS slot and changes nothing else.
 
-           All four stages stay fully legible at all times and only a marker moves. The delivery dims inactive
-           stages to .34 to cycle attention; full opacity is strictly better here, because dimmed body text
-           stops clearing AA and a figure has no business hiding information to direct attention. -->
+           All four stages stay fully legible and none is marked out: dimmed text stops clearing AA, and the
+           "← smallest" label on stage 03 carries the conclusion. Nothing on this page moves. -->
       <section>
         <h2>How a chunk picks its representation</h2>
         <p class="lede">
@@ -493,7 +504,7 @@
               </div>
             </div>
 
-            <div class="cstage is-focus">
+            <div class="cstage">
               <p class="cstage-label"><span class="cstage-n">03</span> Choose</p>
               <div class="cstage-body">
                 <!-- Chunk 0x4996, the 9,001-id one. Bars are proportional to the cost, so the winner is the
@@ -527,9 +538,9 @@
               <p class="cstage-label"><span class="cstage-n">04</span> Store</p>
               <div class="cstage-body">
                 <ul class="cstore">
-                  <li><span>0x0000</span><b class="c-arr">array</b></li>
-                  <li><span>0x0001</span><b class="c-bit">bitset</b></li>
-                  <li><span>0x4996</span><b class="c-bit">bitset</b></li>
+                  <li><span>0x0000</span><b>array</b></li>
+                  <li><span>0x0001</span><b>bitset</b></li>
+                  <li><span>0x4996</span><b>bitset</b></li>
                 </ul>
                 <p class="cstage-note">one segment, mixed containers</p>
               </div>
@@ -541,7 +552,7 @@
           </figcaption>
         </figure>
 
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           The numbers above are a <strong>worked example</strong> on a stated premise — a chunk
           holding 9,001 ids across 6,102 runs — not a measurement of your data. Every cost is the
           arithmetic beside it, so you can check all three. The <a href="../demo.html">demo</a> is
@@ -607,7 +618,7 @@
         <div class="close-grid">
           <div class="close-copy">
             <h2>Six lines, no configuration.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               The container choice needs nothing from you, and neither do the memory drivers. This
               runs as written.
             </p>

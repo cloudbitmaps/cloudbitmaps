@@ -17,6 +17,8 @@
  *   - bench/crossover.svg           self-contained chart (used by docs/benchmarks.md)
  *   - bench/results.json            the numbers behind the chart
  *   - site/benchmarks.html          chart inlined (between BENCH markers)
+ *   - site-next/benchmarks.html     the same chart in the display tier's register (BENCH:CHART)
+ *   - site-next/index.html          the homepage's crossover, generated (BENCH:HOMECHART)
  *   - docs/benchmarks.md            chart <img> + stats table (between BENCH markers)
  *
  * `require()` loads @cloudbitmaps/core, which ships ESM only, through Node's `require(esm)` — unflagged from 22.12,
@@ -288,7 +290,7 @@ function instrumentChart() {
   const redisY = py(REDIS);
   const f = (n) => n.toFixed(1);
   return [
-    `<svg class="cb-svg is-chart" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $${REDIS} a month at ${readCross.toFixed(0)} reads a second, past which the cluster is cheaper">`,
+    `<svg class="cb-svg is-wide" viewBox="0 0 ${VW} ${VH}" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $${REDIS} a month at ${readCross.toFixed(0)} reads a second, past which the cluster is cheaper">`,
     `<defs><pattern id="bench-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern></defs>`,
     `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotH}" fill="url(#bench-hatch)"/>`,
     `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
@@ -296,7 +298,7 @@ function instrumentChart() {
     `<polyline class="line-ours" points="${pts.join(' ')}"/>`,
     `<path class="s" d="M${plotL} ${plotT} V${plotB} H${plotR}"/>`,
     `<text class="tl" x="${plotL + 16}" y="${plotT + 24}">CLOUDBITMAPS COSTS LESS</text>`,
-    `<text class="tl" x="${f(crX + 16)}" y="${plotT + 24}">A FLAT CLUSTER COSTS LESS</text>`,
+    `<text class="tl on-hatch" x="${f(crX + 16)}" y="${plotT + 24}">A FLAT CLUSTER COSTS LESS</text>`,
     `<text class="t" x="${plotL + 16}" y="${f(redisY - 12)}">Redis-HA cluster · flat · $${REDIS}/mo</text>`,
     `<text class="t is-ours" x="${f(px(X_MAX_READS * 0.3))}" y="${f(py(costReads(X_MAX_READS * 0.3)) + 28)}">CloudBitmaps · pay-per-use</text>`,
     `<rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/>`,
@@ -310,6 +312,51 @@ function instrumentChart() {
     ),
     `<text class="tf" x="${plotL}" y="${plotT - 16}">$ / MONTH</text>`,
     `<text class="tf" x="${plotR}" y="${plotB + 52}" text-anchor="end">SUSTAINED POINT READS · OBJECT GETS, CACHE OFF · ${esc(P.name).toUpperCase()} · READS/S →</text>`,
+    `</svg>`,
+  ].join('\n');
+}
+
+// ── The homepage's crossover, for site-next/ ─────────────────────────────────────────────────────
+// The display-tier homepage's chart, drawn as its design draws it: a 700-unit plot whose x axis runs to twice the
+// crossover, so the lines meet mid-plot, and whose y axis holds our line from nothing to where it ends. Generated
+// rather than hand-drawn so its geometry is the estimator's: the flat line sits at the baseline, the rising one is
+// the same curve as the chart above, and they cross at the published rate. Its reveal (`x-cover`, `x-dot`) is the
+// homepage's one drawn animation; the cover slides the plot's 612 units, which the sheet's keyframe names.
+function homeChart() {
+  const plotL = 71;
+  const plotR = 680;
+  const plotT = 30;
+  const plotB = 380;
+  const xMax = 2 * readCross;
+  const px = (x) => plotL + (x / xMax) * (plotR - plotL);
+  const yScale = (plotB - 34) / costReads(xMax);
+  const py = (v) => plotB - v * yScale;
+  const f = (n) => n.toFixed(1);
+  const crX = px(readCross);
+  const redisY = py(REDIS);
+  const rate = readCross.toFixed(2);
+  const labelX = 214;
+  const labelY = py(costReads(((labelX - plotL) / (plotR - plotL)) * xMax)) + 25;
+  return [
+    `<svg class="cb-svg is-chart" viewBox="0 0 700 440" role="img" aria-label="Cost per month against read rate. CloudBitmaps rises from nothing; the Redis cluster is flat at $${REDIS}; they cross at ${rate} GETs a second, above which the cluster is cheaper.">`,
+    `<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="71" y="28" width="612" height="351"/></clipPath></defs>`,
+    `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotB - plotT}" fill="url(#hx)"/>`,
+    `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
+    `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
+    `<path class="line-ours" d="M${plotL} ${f(py(costReads(0)))} L${plotR} ${f(py(costReads(xMax)))}"/>`,
+    `<g clip-path="url(#plot)"><rect class="cover x-cover" x="71" y="28" width="612" height="351"/></g>`,
+    `<path class="s" d="M70 ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="86" y="56">CLOUDBITMAPS COSTS LESS</text>`,
+    `<text class="tl on-hatch" x="${f(crX + 16)}" y="56">A FLAT CLUSTER COSTS LESS</text>`,
+    `<text class="t" x="86" y="${f(redisY - 11)}">Redis-HA cluster · flat</text>`,
+    `<text class="t is-ours" x="${labelX}" y="${f(labelY)}">CloudBitmaps · metered</text>`,
+    `<g class="x-dot"><rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/><text class="t crossing" x="${f(crX + 16)}" y="${f(redisY + 33)}">${rate} GETs/s</text></g>`,
+    `<text class="tf" x="60" y="${f(redisY + 4)}" text-anchor="end">$${REDIS}</text>`,
+    `<text class="tf" x="60" y="${plotB + 4}" text-anchor="end">$0</text>`,
+    `<text class="tf" x="70" y="18">$ / MONTH</text>`,
+    `<text class="tf" x="70" y="${plotB + 20}" text-anchor="middle">0</text>`,
+    `<text class="tf" x="${f(crX)}" y="${plotB + 20}" text-anchor="middle">${rate}</text>`,
+    `<text class="tf" x="${plotR}" y="428" text-anchor="end">GETS/S, EVERY READ A CACHE MISS →</text>`,
     `</svg>`,
   ].join('\n');
 }
@@ -361,6 +408,7 @@ write('bench/results.json', JSON.stringify(results, null, 2) + '\n');
 inject('site/benchmarks.html', { CHART: svg });
 // `site-next/` is the display-tier rebuild beside `site/` until it replaces it: the same figures, drawn in its register.
 inject('site-next/benchmarks.html', { CHART: instrumentChart() });
+inject('site-next/index.html', { HOMECHART: homeChart() });
 inject('docs/benchmarks.md', {
   CHART: `![CloudBitmaps against one Redis-HA cluster: where the cost crosses](../bench/crossover.svg)`,
   STATS: mdTable,

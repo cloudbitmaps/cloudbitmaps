@@ -1,22 +1,21 @@
 /*
  * CloudBitmaps — the stylesheet, with the Instrument display tier.
  *
- * The display tier is lifted from the Claude Design delivery "Instrument, display tier": its homepage in light
- * and dark, and the extension page that states the language. That delivery generalised /demo's treatment into
- * the shared sheet: a display type tier, a band rhythm and a figure table, with five diagrams drawn in that
- * register. Nothing else of Instrument changes: radius 0 for layout (2–3px only on chunks), 1px rules shared
- * between adjacent panels, no shadows, no accent bars, light designed rather than inverted.
+ * The display tier generalises /demo's treatment into the shared sheet: a display type tier, a band rhythm and a
+ * figure table, with the diagrams drawn in that register. Nothing else of Instrument changes: radius 0 for layout
+ * (2–3px only on chunks), 1px rules shared between adjacent panels, no shadows, no accent bars, light designed
+ * rather than inverted.
  *
- * The site's own token names are kept, mapped onto the delivery's: --cb-surface is its --cb-panel,
- * --cb-surface-2 its --cb-sunk, --cb-ink its --cb-fg, --cb-signal-fill its --cb-fill. The delivery's system
- * stacks and antialiased smoothing are taken as delivered.
+ * The site's token names are kept, mapped onto the design's: --cb-surface is its --cb-panel, --cb-surface-2 its
+ * --cb-sunk, --cb-ink its --cb-fg, --cb-signal-fill its --cb-fill. Its system stacks and antialiased smoothing are
+ * taken as designed.
  *
  * Motion: two animations on the whole site, both on the homepage, both `opacity` and `transform` only, both with
  * a reduced-motion final frame that keeps every label: the crossover drawing itself once, and chunk-skipping on
  * a 12s loop. /demo's stepper moves only when a reader drives it. Nothing else moves.
  *
- * Nothing below 9.5px. `--cb-signal` never sits under white text: #0F62E8 is the one fill allowed under a white
- * label.
+ * Nothing below 9.5px, SVG labels included, at any width: scripts/site-text-floor.mjs measures every rendered text
+ * run. White text sits only on #0F62E8 and its hover, #0B4FCC.
  */
 
 :root {
@@ -28,7 +27,6 @@
   --cb-ink: #e6e9ee;
   --cb-muted: #9ba3ae;
   --cb-faint: #8a929e; /* 6.16:1 on --cb-bg */
-  --cb-signal: #176fff; /* borders and soft fills. NEVER text, NEVER under white text: 4.42:1. */
   --cb-signal-fill: #0f62e8; /* the one fill allowed under a white label, in both themes: 5.0:1 */
   --cb-signal-press: #0b4fcc; /* the primary button's hover, in both themes */
   --cb-cyan: #19c5f4; /* links, our own line in a chart */
@@ -36,7 +34,7 @@
   --cb-hatch: rgba(230, 233, 238, 0.16); /* the half of a chart where the other side wins */
 
   /* A panel's fill. It is the surface on a ground band and the ground on a surface band, so adjacent panels and
-     the band behind them never share a colour: the delivery's `.cb-band-panel .cb-seam > *` rule, as a token. */
+     the band behind them never share a colour: the design's rule that a seam's cells take the ground on a surface band, as a token. */
   --cb-cell: var(--cb-surface);
 
   /* Tier ramp — semantics, not brand. Only ever labels a tier, never a product, a button, a heading or a hero. */
@@ -44,19 +42,9 @@
   --cb-warm: #d7b25a;
   --cb-storage: #19c5f4;
 
-  /* The mark's seven blues, from its nine squares: the ordinal scale for chunk grids and charts. Literal hex in both
-     themes, as the mark is. Never decoration, never a gradient behind text. */
-  --cb-bit-1: #176fff;
-  --cb-bit-2: #1676ff;
-  --cb-bit-3: #178cff;
-  --cb-bit-4: #18a8ff;
-  --cb-bit-5: #19b7ff;
-  --cb-bit-6: #1bb8ff;
-  --cb-bit-7: #19c5f4;
-
-  /* Consumed by the crossover chart `bench/run.cjs` inlines into benchmarks.html, as the fill of the "cheaper than
-     Redis" zone. No rule in this file references it: the generator is the consumer. */
-  --cb-ok: #4fb477;
+  /* A chunk that is fetched: the mark's #176FFF, literal in both themes, as the mark's squares are. Idle chunks are
+     --cb-idle. Wherever a square means a chunk, these two are its colours, and nothing else is. */
+  --cb-chunk: #176fff;
 
   --cb-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Helvetica, sans-serif;
   --cb-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
@@ -73,14 +61,12 @@
   --cb-ink: #12151a;
   --cb-muted: #4b5361;
   --cb-faint: #666e7b; /* 4.84:1 */
-  --cb-signal: #0b4fcc;
   --cb-cyan: #0a6c90; /* re-picked for paper: #19C5F4 cannot hold 4.5:1 on it */
   --cb-idle: #dfe3e9;
   --cb-hatch: rgba(18, 21, 26, 0.16);
   --cb-cache: #a94d18; /* 4.98:1 on --cb-surface-2 */
   --cb-warm: #8a6a12;
   --cb-storage: #0a6c90;
-  --cb-ok: #1f7a46;
 }
 
 @media (max-width: 720px) {
@@ -110,19 +96,41 @@ a:hover {
   outline-offset: 2px;
 }
 
+/* A focused element never lands under the sticky bar: 64px and its rule, and room to breathe. */
+html {
+  scroll-padding-top: 96px;
+}
+
+/* No leading on the body, as the design sets none: each type component declares its own, so a box that holds one
+   line is as tall as the design's. */
 body {
   margin: 0;
   background: var(--cb-bg);
   color: var(--cb-ink);
   font-family: var(--cb-sans);
   font-size: 16px;
-  line-height: 1.62;
+  line-height: normal;
   -webkit-font-smoothing: antialiased;
 }
 
 p {
   margin: 0;
-  text-wrap: pretty;
+}
+
+/* The first stop for a keyboard: past the bar, to the page. */
+.skip {
+  position: absolute;
+  left: -10000px;
+  top: 8px;
+  z-index: 60;
+  padding: 8px 12px;
+  background: var(--cb-ink);
+  color: var(--cb-bg);
+  font-size: 14px;
+}
+
+.skip:focus {
+  left: 8px;
 }
 
 code,
@@ -154,11 +162,6 @@ em {
   z-index: 50;
   background: var(--cb-bg);
   border-bottom: 1px solid var(--cb-rule);
-}
-
-/* Every in-page anchor target clears the sticky bar: 64px and its rule, and room to breathe. */
-main [id] {
-  scroll-margin-top: 84px;
 }
 
 .topbar-inner {
@@ -200,14 +203,9 @@ main [id] {
 .nav {
   margin-left: auto;
   display: flex;
-  gap: 28px;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  gap: 8px 28px;
   white-space: nowrap;
-  scrollbar-width: none;
-}
-
-.nav::-webkit-scrollbar {
-  display: none;
 }
 
 .nav a {
@@ -225,7 +223,7 @@ main [id] {
   text-decoration: none;
 }
 
-/* The delivery's segmented control, on the site's radio inputs: `theme.js` keeps them in step with the page. */
+/* The design's segmented control, on the site's radio inputs: `theme.js` keeps them in step with the page. */
 .theme-toggle {
   display: flex;
   flex: none;
@@ -295,8 +293,7 @@ main > section:last-of-type {
 /* ── the display tier ──────────────────────────────────────────────────────
    Ratio between tiers ≈ 1.6–1.85. Figures are always mono and tabular; words are always sans. A page gets one
    96px heading, its h1; every band gets one 52px head or one row of 40px figures, never both leading at once. */
-h1,
-.cb-display-xl {
+h1 {
   margin: 0;
   font-size: clamp(44px, 6.667vw, 96px);
   line-height: 0.96;
@@ -304,8 +301,7 @@ h1,
   letter-spacing: -0.045em;
 }
 
-h2,
-.cb-display {
+h2 {
   margin: 0;
   font-size: clamp(34px, 3.612vw, 52px);
   line-height: 1.02;
@@ -321,8 +317,7 @@ h2,
   letter-spacing: -0.025em;
 }
 
-h3,
-.cb-h3 {
+h3 {
   margin: 0;
   font-size: 20px;
   line-height: 1.3;
@@ -339,6 +334,12 @@ h3,
   line-height: 1.6;
   color: var(--cb-muted);
   max-width: 62ch;
+}
+
+.cb-lede code,
+.cb-body code,
+.lede code {
+  color: var(--cb-ink);
 }
 
 .cb-body {
@@ -362,10 +363,6 @@ h3,
 
 .label.is-live {
   color: var(--cb-cyan);
-}
-
-.label.is-peer {
-  color: var(--cb-muted);
 }
 
 .cb-figure-xl,
@@ -413,6 +410,7 @@ h3,
 
 .cb-note.is-caption {
   font-size: 13px;
+  max-width: 110ch;
 }
 
 /* A band's rhythm, for the inner pages, whose sections hold their blocks directly: head 16 · lede, then 40 between
@@ -421,17 +419,15 @@ main > section:not(.cb-stack) > * + * {
   margin-top: 40px;
 }
 
-main > section > h1 + *,
-main > section > h2 + .lede {
+main > section:not(.cb-stack) > h2 + .lede,
+main > section:not(.cb-stack) > h3 + .lede,
+main > section:not(.cb-stack) > * + .note {
   margin-top: 16px;
 }
 
-main > section > h1 + * {
+main > section:not(.cb-stack) > h1 + *,
+main > section:not(.cb-stack) > .replay-badge + h1 {
   margin-top: 24px;
-}
-
-main > section > * + .note {
-  margin-top: 16px;
 }
 
 .note {
@@ -439,7 +435,7 @@ main > section > * + .note {
   font-size: 14px;
   line-height: 1.55;
   color: var(--cb-muted);
-  max-width: 74ch;
+  max-width: 82ch;
 }
 
 /* ── buttons, chips, meta ──────────────────────────────────────────────── */
@@ -453,13 +449,13 @@ main > section > * + .note {
 .btn {
   display: inline-flex;
   align-items: center;
-  height: 44px;
+  height: 46px;
   padding: 0 18px;
   font-size: 14px;
   font-weight: 600;
   line-height: normal;
   border: 1px solid var(--cb-rule);
-  background: var(--cb-cell);
+  background: var(--cb-surface);
   color: var(--cb-ink);
 }
 
@@ -488,7 +484,7 @@ main > section > * + .note {
   padding: 6px 10px;
   border: 1px solid var(--cb-rule);
   color: var(--cb-ink);
-  background: var(--cb-cell);
+  background: var(--cb-surface);
 }
 
 .meta {
@@ -666,8 +662,7 @@ main > section > * + .note {
   padding: 14px 24px;
 }
 
-.link-row a,
-.code-link a {
+.link-row a {
   font-family: var(--cb-mono);
   font-size: 12px;
 }
@@ -702,7 +697,7 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   THE HOMEPAGE — the delivery's markup, its inline styles made classes.
+   THE HOMEPAGE — the design's markup, its inline styles made classes.
    ══════════════════════════════════════════════════════════════════════════════ */
 .cb-grid12 {
   display: grid;
@@ -856,7 +851,7 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  background: var(--cb-bit-1);
+  background: var(--cb-chunk);
 }
 
 .cb-plate {
@@ -893,18 +888,18 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   grid-template-columns: repeat(12, minmax(0, 1fr));
 }
 
-.cb-cross-table {
-  display: flex;
-  flex-direction: column;
-}
-
+/* The chart sits in the middle of its cell when the table beside it is the taller of the two. */
 .cb-cross-chart {
   grid-column: span 7;
   padding: 24px 20px 16px;
+  display: flex;
+  align-items: center;
 }
 
 .cb-cross-table {
   grid-column: span 5;
+  display: flex;
+  flex-direction: column;
   overflow-x: auto;
 }
 
@@ -1015,7 +1010,7 @@ svg .s {
 
 svg .sp {
   stroke: var(--cb-ink);
-  fill: var(--cb-cell);
+  fill: var(--cb-surface);
   stroke-width: 1;
 }
 
@@ -1064,7 +1059,7 @@ svg .idle {
 }
 
 svg .hot {
-  fill: var(--cb-bit-1);
+  fill: var(--cb-chunk);
 }
 
 svg .hatch {
@@ -1088,8 +1083,17 @@ svg .guide {
   stroke: var(--cb-faint);
 }
 
+/* The reveal's cover is the colour of the cell it sits in, so what the reader sees is the lines drawing. */
 svg .cover {
-  fill: var(--cb-bg);
+  fill: var(--cb-cell);
+}
+
+/* A label over the hatch is knocked out of it, so the stripes never cross its letters. */
+svg .tl.on-hatch {
+  paint-order: stroke;
+  stroke: var(--cb-cell);
+  stroke-width: 4px;
+  stroke-linejoin: round;
 }
 
 svg .heap {
@@ -1098,6 +1102,11 @@ svg .heap {
 
 svg .scanbar {
   fill: var(--cb-ink);
+}
+
+/* Process RSS, the one of the three that grows: muted, so the bounded heap beside it leads. */
+svg .rssbar {
+  fill: var(--cb-muted);
 }
 
 svg .crossing {
@@ -1294,7 +1303,7 @@ svg .crossing {
 }
 
 .tier-chip.t-gen {
-  color: var(--cb-warm);
+  color: var(--cb-ink);
 }
 
 .tier-chip.t-storage {
@@ -1306,57 +1315,6 @@ svg .crossing {
   font-size: 14px;
   line-height: 1.58;
   color: var(--cb-muted);
-}
-
-/* ── code ────────────────────────────────────────────────────────────────── */
-.code {
-  border: 1px solid var(--cb-rule);
-  background: var(--cb-cell);
-}
-
-.code-head {
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--cb-rule);
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.code pre {
-  margin: 0;
-  padding: 18px 16px;
-  overflow-x: auto;
-  font-family: var(--cb-mono);
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--cb-ink);
-}
-
-.code pre code {
-  font: inherit;
-}
-
-/* Numeric literals. Same colour as the block's own text by design — the token exists so the runs match the
-   delivery's and so the intent is legible in the markup, not to introduce a new colour. */
-.code .n {
-  color: var(--cb-ink);
-}
-
-.code .k {
-  color: var(--cb-cyan);
-}
-
-.code .s {
-  color: var(--cb-muted);
-}
-
-.code .c {
-  color: var(--cb-faint);
-}
-
-.code-link {
-  border-top: 1px solid var(--cb-rule);
-  padding: 14px 16px;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -1374,10 +1332,21 @@ svg .crossing {
 }
 
 .close-copy {
-  grid-column: span 6;
+  grid-column: span 5;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
+}
+
+.close-copy h2 {
+  font-size: 32px;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+
+.close-copy .lede {
+  font-size: 16px;
+  line-height: 1.62;
 }
 
 .close-grid > :last-child {
@@ -1453,7 +1422,7 @@ svg .crossing {
    ══════════════════════════════════════════════════════════════════════════════ */
 .replay-badge {
   display: inline-block;
-  margin: 0 0 20px;
+  margin: 0;
   padding: 5px 10px;
   border: 1px solid var(--cb-cyan);
   font-family: var(--cb-mono);
@@ -1470,15 +1439,11 @@ svg .crossing {
 }
 
 /* ── the beat rail ─────────────────────────────────────────────────────────── */
+/* The rail wraps rather than scrolling, so no tab hides and no focus ring is clipped by a scroller's edge. */
 .replay-rail {
   display: flex;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--cb-rule);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.replay-rail::-webkit-scrollbar {
-  display: none;
 }
 
 .beat-tab {
@@ -1511,8 +1476,8 @@ svg .crossing {
 
 /* The active beat is marked by BOTH a rule and full-ink text, never colour alone. */
 .beat-tab.is-on {
-  color: var(--cb-ink);
-  border-bottom-color: var(--cb-cyan);
+  background: var(--cb-ink);
+  color: var(--cb-bg);
 }
 
 .beat-n {
@@ -1520,7 +1485,7 @@ svg .crossing {
 }
 
 .beat-tab.is-on .beat-n {
-  color: var(--cb-cyan);
+  color: var(--cb-bg);
 }
 
 /* The rail is a stepper, so it is only meaningful once the script runs. */
@@ -1586,7 +1551,7 @@ svg .crossing {
 }
 
 .replay.is-compared .b-shared {
-  background: var(--cb-cyan);
+  background: var(--cb-chunk);
 }
 
 .b-none {
@@ -1646,7 +1611,7 @@ svg .crossing {
 }
 
 .replay.is-compared .axis-legend .b-shared {
-  background: var(--cb-cyan);
+  background: var(--cb-chunk);
 }
 
 /* ── the check-it-yourself inset ───────────────────────────────────────────── */
@@ -1665,11 +1630,10 @@ svg .crossing {
 .icell {
   aspect-ratio: 1;
   display: block;
-  background: var(--cb-surface-2);
-  border: 1px solid var(--cb-rule);
-  /* Only `opacity` and `transform` animate anywhere on this site, so the arrival
-     of a cell is a transform — and it is a transition rather than a keyframe
-     because the script drives it, not a loop. */
+  background: var(--cb-idle);
+  border-radius: 2px;
+  /* Only `opacity` and `transform` move anywhere on this site, so the arrival of a cell is a transform, and a
+     transition rather than a keyframe because the reader's step drives it. */
   transition:
     transform 160ms ease-out,
     opacity 160ms ease-out;
@@ -1683,8 +1647,7 @@ svg .crossing {
 }
 
 .icell.is-shared {
-  background: var(--cb-cyan);
-  border-color: var(--cb-cyan);
+  background: var(--cb-chunk);
 }
 
 .icell.is-a {
@@ -1710,35 +1673,31 @@ svg .crossing {
 /* ── the counters ──────────────────────────────────────────────────────────── */
 .tally {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--cb-rule);
   border: 1px solid var(--cb-rule);
 }
 
 .tally-cell {
-  padding: 16px 18px;
-  border-right: 1px solid var(--cb-rule);
+  padding: 20px 24px 24px;
+  background: var(--cb-cell);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
 }
 
-.tally-cell:last-child {
-  border-right: 0;
-}
-
-/* Mono, and wide enough for the largest value each cell can hold, so a climbing
-   number cannot reflow the row it sits in. */
+/* Wide enough for the largest value each cell can hold, so a climbing number cannot reflow the row. */
 .tally-fig {
   font-family: var(--cb-mono);
-  font-size: 22px;
-  line-height: normal;
+  font-size: 40px;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
   color: var(--cb-ink);
-  min-width: 7ch;
-}
-
-.tally-fig.is-live {
-  color: var(--cb-cyan);
+  min-width: 5ch;
 }
 
 .tally-note {
@@ -1820,6 +1779,10 @@ svg .crossing {
   background: var(--cb-signal-fill);
 }
 
+.replay-controls .btn.btn-primary:hover {
+  background: var(--cb-signal-press);
+}
+
 .replay-hint {
   margin-left: auto;
   font-family: var(--cb-mono);
@@ -1879,7 +1842,7 @@ svg .crossing {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   TABLES — lifted from the delivery's own treatment, which is a bordered PANEL
+   TABLES — lifted from the design's own treatment, which is a bordered PANEL
    with a mono head strip rather than a bare `<table>`. The panel is what makes a
    table read as a figure instead of as leftover markup; without it the rows float
    in the page with nothing holding them, which is exactly how /demo's provenance
@@ -1901,7 +1864,7 @@ svg .crossing {
   margin: 0;
 }
 
-.chart > .cb-svg {
+.chart > .cb-scroll {
   border: 1px solid var(--cb-rule);
   background: var(--cb-cell);
   padding: 24px 20px 16px;
@@ -1955,14 +1918,27 @@ svg .crossing {
   white-space: nowrap;
 }
 
-.tpanel td {
+.tpanel td,
+.tpanel tbody th {
   padding: 14px 16px;
-  border-bottom: 1px solid var(--cb-rule-soft);
+  border-bottom: 1px solid var(--cb-rule);
   line-height: 1.5;
   color: var(--cb-ink);
 }
 
-.tpanel tbody tr:last-child td {
+/* A row's first cell is its head, for a screen reader; it reads as a cell. */
+.tpanel tbody th {
+  font-family: var(--cb-sans);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  white-space: normal;
+}
+
+.tpanel tbody tr:last-child td,
+.tpanel tbody tr:last-child th {
   border-bottom: 0;
 }
 
@@ -1982,6 +1958,7 @@ svg .crossing {
 .tpanel th.num {
   text-align: right;
   font-size: 10px;
+  font-weight: 400;
   color: var(--cb-faint);
 }
 
@@ -2003,6 +1980,10 @@ svg .crossing {
 
 .code-plain code {
   font: inherit;
+}
+
+.code-plain .n {
+  color: var(--cb-ink);
 }
 
 .code-plain .k {
@@ -2037,13 +2018,21 @@ svg .crossing {
   margin-right: 6px;
 }
 
-/* Two provenance panels side by side at full width, stacked when the columns would
-   force either table to scroll. */
-.prov {
+/* Panels side by side are a seam: one rule between them, drawn by the grid's gap, and their bottoms line up. */
+.prov,
+.dgms {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
+  gap: 1px;
+  background: var(--cb-rule);
+  border: 1px solid var(--cb-rule);
+}
+
+.prov > *,
+.dgms > * {
+  border: 0;
+  background: var(--cb-cell);
+  min-width: 0;
 }
 
 @media (max-width: 1000px) {
@@ -2126,7 +2115,6 @@ svg .crossing {
   color: var(--cb-muted);
 }
 
-/* Half the gap each, so the pair stays centred while it opens. */
 .split-out {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2195,10 +2183,10 @@ svg .crossing {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   FLAVOR STATUS — a WORD in a bezel, never a colour alone. Whether a package can
-   be installed today is the single most load-bearing fact in that table, and
-   encoding it in hue would put it out of reach of exactly the readers who most
-   need it unambiguous. The colour is a second cue; all three are AA text.
+   STATUS — a WORD in a bezel. Whether a package ships, whether a failure is retried, and what a cost row means
+   are all said by the word, so no chip carries a colour of its own: not the tier ramp, which only labels tiers,
+   and no alert tone, since a row where a flat cluster is cheaper is a peer of a row where we win. Two steps
+   down in tone mark what cannot be acted on: a flavor under research, and a failure that is never retried.
    ══════════════════════════════════════════════════════════════════════════════ */
 .status {
   display: inline-block;
@@ -2210,50 +2198,15 @@ svg .crossing {
   padding: 4px 9px;
   border: 1px solid currentColor;
   white-space: nowrap;
-}
-
-.status.is-shipped {
-  color: var(--cb-cyan);
-}
-
-.status.is-coming {
-  color: var(--cb-warm);
-}
-
-/* Faint, deliberately: a flavor under research cannot be acted on and should not look
-   like it can. It is on the page for shape, not for choosing. */
-.status.is-research {
-  color: var(--cb-faint);
-}
-
-/* The counter-case: the point past which you should use something else. A DIFFERENT
-   colour, never a quieter one — /benchmarks states that the crossover rows carry the
-   same weight as the wins, and a faint verdict chip beside a cyan one would make the
-   page contradict itself in the only place that matters. This shared the research
-   chip's rule until the rename exposed it. */
-.status.is-counter {
-  color: var(--cb-cache);
-}
-
-/* ── retry policy, its own axis ───────────────────────────────────────────────
-   These three answer "would trying again help?", which is NOT the shipping-status axis above. They get their
-   own modifiers even though two of them resolve to colours already in use, because the alternative is what
-   already went wrong once on this site: is-spec was doing double duty for two unrelated meanings, so restyling
-   it for one silently restyled the other page. A shared hook between unrelated axes is a latent bug, not reuse.
-
-   is-never is deliberately NEUTRAL rather than cache. "Never retried" is the correct and intended behaviour for a
-   corruption or a shredded key — colouring it like a warning would tell the reader something is wrong when the
-   library is doing exactly the right thing. */
-.status.is-auto {
-  color: var(--cb-cyan);
-}
-
-.status.is-manual {
-  color: var(--cb-warm);
+  color: var(--cb-ink);
 }
 
 .status.is-never {
   color: var(--cb-muted);
+}
+
+.status.is-research {
+  color: var(--cb-faint);
 }
 
 /* The second line of a table's first cell — what the thing IS, under its name. */
@@ -2265,9 +2218,7 @@ svg .crossing {
   color: var(--cb-muted);
 }
 
-/* Four cards, two by two. Reuses `.limit` for the card itself rather than
-   declaring a near-identical box: same bezel, same padding, same label. */
-
+/* Two by two, as a seam, until the cards get too narrow to read as pairs. */
 @media (max-width: 900px) {
   .matters {
     grid-template-columns: minmax(0, 1fr);
@@ -2280,11 +2231,10 @@ svg .crossing {
    what makes a second flavor cheap — it drops its own version of this figure into
    this slot and changes nothing else on the site.
 
-   ALL FOUR STAGES STAY FULLY LEGIBLE. The delivery dims the inactive ones to .34
-   to cycle attention; full opacity is strictly better, for two reasons. Dimmed
-   body text stops clearing AA, and a figure whose job is to explain has no
-   business hiding information in order to direct the eye. Attention is directed by
-   a marker instead — one rule, on one stage.
+   ALL FOUR STAGES STAY FULLY LEGIBLE, and none is marked out: dimmed body text
+   stops clearing AA, a figure whose job is to explain has no business hiding
+   information to direct the eye, and an accent rule on one stage would be an
+   accent bar on a card. The "← smallest" label on stage 03 carries the conclusion.
 
    Stage 03's three cost bars make the ranking visible before it is read: the
    winner is simply the shortest bar.
@@ -2321,12 +2271,6 @@ svg .crossing {
   border-right: 0;
 }
 
-/* The marker. A rule on the stage being explained, not a dimming of the others. */
-.cstage.is-focus {
-  border-top-color: var(--cb-cyan);
-  background: var(--cb-surface-2);
-}
-
 .cstage-label {
   display: flex;
   align-items: baseline;
@@ -2343,10 +2287,6 @@ svg .crossing {
 
 .cstage-n {
   color: var(--cb-faint);
-}
-
-.cstage.is-focus .cstage-n {
-  color: var(--cb-cyan);
 }
 
 .cstage-body {
@@ -2403,14 +2343,6 @@ svg .crossing {
   font-weight: 400;
   color: var(--cb-ink);
   text-align: right;
-}
-
-.cstore .c-arr {
-  color: var(--cb-warm);
-}
-
-.cstore .c-bit {
-  color: var(--cb-cyan);
 }
 
 /* ── stage 03 · the measurement ─────────────────────────────────────────────── */
@@ -2587,14 +2519,14 @@ svg .crossing {
 .ak {
   aspect-ratio: 1;
   display: block;
-  background: var(--cb-rule);
+  background: var(--cb-idle);
   border-radius: 2px;
 }
 
 /* Lit = present in both. Cyan means "this is the answer" here exactly as it does on
    /demo's axis — one meaning, two figures. */
 .ak.on {
-  background: var(--cb-cyan);
+  background: var(--cb-chunk);
 }
 
 .ak.one {
@@ -2630,7 +2562,12 @@ svg .crossing {
 }
 
 .align-legend .b-shared {
-  background: var(--cb-cyan);
+  background: var(--cb-chunk);
+}
+
+/* In neither segment: an idle chunk, as the cells it names are drawn. */
+.swatch.sw-idle {
+  background: var(--cb-idle);
 }
 
 .swatch.ak-one {
@@ -2706,10 +2643,6 @@ svg .crossing {
   color: var(--cb-ink);
   text-align: right;
   white-space: nowrap;
-}
-
-.rl-fig.is-live {
-  color: var(--cb-ink);
 }
 
 .rl-note {
@@ -2828,7 +2761,7 @@ svg .crossing {
    about, and filling it in would make it look like any other member */
 .dgm-cells i.tomb {
   background: none;
-  border: 2px solid var(--cb-cache);
+  border: 2px solid var(--cb-ink);
 }
 
 /* That bit in the NEXT generation: cleared, where every neighbour was carried
@@ -2836,7 +2769,7 @@ svg .crossing {
    the only reason the figure is worth having. */
 .dgm-cells i.gone {
   background: none;
-  border-color: var(--cb-rule);
+  border: 1px dashed var(--cb-ink);
 }
 
 .dgm-formula {
@@ -2871,7 +2804,12 @@ svg .crossing {
 
 .swatch.sw-tomb {
   background: none;
-  border: 2px solid var(--cb-cache);
+  border: 2px solid var(--cb-ink);
+}
+
+.swatch.sw-gone {
+  background: none;
+  border: 1px dashed var(--cb-ink);
 }
 
 /* ── the publish: a generation flip ────────────────────────────────────────────── */
@@ -2885,7 +2823,6 @@ svg .crossing {
   display: block;
   height: 100%;
   background: var(--cb-cyan);
-  transform-origin: left center;
 }
 
 .dgm-objs {
@@ -2931,13 +2868,6 @@ svg .crossing {
   color: var(--cb-cyan);
 }
 
-.dgms {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
-}
-
 @media (max-width: 1040px) {
   .dgms {
     grid-template-columns: minmax(0, 1fr);
@@ -2952,7 +2882,7 @@ svg .crossing {
 }
 
 /* ── an API call named in a table cell ─────────────────────────────────────────
-   The delivery boxes these, and the box is what makes the "you call" column scan as API rather than
+   The design boxes these, and the box is what makes the "you call" column scan as API rather than
    as prose. `.is-key` marks the one operation the tiering exists for.
 
    That highlight is EXPLAINED in the panel's own footnote. Two chips in one column looking different
@@ -2984,19 +2914,69 @@ svg .crossing {
   padding: 0;
 }
 /* ── narrow ────────────────────────────────────────────────────────────────
-   The delivery is drawn at 1440. Below it: the 12-column rows stack, the figure rows go to two up and then one, and
-   anything wider than the screen scrolls inside its own container. The body never scrolls sideways. */
-@media (max-width: 1100px) {
-  .cb-cols-4 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+   The design is drawn at 1440. Below it: the 12-column rows stack, the figure rows go to two up and then one, and
+   anything that cannot shrink without dropping a label below 9.5px keeps its width and scrolls inside its own
+   frame. The body never scrolls sideways. scripts/site-text-floor.mjs measures every rendered text run, SVG
+   labels at their drawn size included, at six widths. */
+.cb-scroll {
+  overflow-x: auto;
+}
+
+/* Each diagram's narrowest width that keeps its smallest label, 10 units, at 9.5px: viewBox width x 9.5 / 10. */
+.cb-scroll > .cb-svg.is-wide,
+.chart > .cb-scroll > .cb-svg {
+  min-width: 1118px;
+}
+
+.cb-scroll > .cb-svg.is-chart {
+  min-width: 666px;
+}
+
+.cb-scroll > .cb-svg.is-op {
+  min-width: 380px;
+}
+
+@media (max-width: 1280px) {
   .cb-cross-chart,
   .cb-cross-table {
     grid-column: 1 / -1;
   }
 }
 
+@media (max-width: 1240px) {
+  /* The three "what you operate" diagrams are drawn 400 wide: stacked, each keeps its labels, at a width that
+     reads as one diagram rather than a poster. */
+  .cb-op-set {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cb-op .cb-scroll {
+    max-width: 560px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .cb-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The bar goes to two rows before its links run out of room, and wraps rather than hiding any. */
 @media (max-width: 1000px) {
+  .topbar-inner {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 12px;
+    padding-block: 14px;
+  }
+  .nav {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
+    gap: 8px 20px;
+  }
+  .theme-toggle {
+    margin-left: auto;
+  }
   .hero-copy,
   .hero-grid > aside,
   .cb-hero-copy,
@@ -3053,37 +3033,18 @@ svg .crossing {
   .cb-phase {
     text-align: left;
   }
-  .topbar-inner {
-    height: auto;
-    flex-wrap: wrap;
-    row-gap: 12px;
-    padding-block: 14px;
-  }
-  .nav {
-    order: 3;
-    flex-basis: 100%;
-    margin-left: 0;
-    gap: 20px;
-  }
-  .theme-toggle {
-    margin-left: auto;
-  }
   .foot-inner .right {
     margin-left: 0;
   }
-}
-
-/* A diagram drawn for 1176px keeps its proportions and scrolls in its own frame rather than shrinking its labels
-   below the 9.5px floor. */
-.cb-scroll {
-  overflow-x: auto;
-}
-
-@media (max-width: 900px) {
-  .cb-scroll > .cb-svg.is-wide {
-    min-width: 820px;
+  /* A row list's figure wraps under its statement rather than holding the line open past the screen. */
+  .rl-fig {
+    white-space: normal;
   }
-  .cb-scroll > .cb-svg.is-chart {
-    min-width: 560px;
+}
+
+/* The stepper's cells arrive by transition when a reader steps; with less motion asked for, they simply appear. */
+@media (prefers-reduced-motion: reduce) {
+  .icell {
+    transition: none;
   }
 }

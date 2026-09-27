@@ -46,6 +46,7 @@
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html">
@@ -84,7 +85,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ───────────────────────────────────────────────────────────
            The headline is an instruction, not a description: a reader arriving here has a choice to make and
            the page exists to make it for them in one line. The panel beside it lists what does NOT vary,
@@ -104,7 +105,7 @@
               <a class="btn btn-primary" href="flavors/roaring.html">How Roaring works →</a>
               <a class="btn" href="usage.html">Zero-setup quickstart</a>
             </p>
-            <p class="meta">Choose on the shape of your id space, not on a benchmark.</p>
+            <p class="cb-note">Choose on the shape of your id space, not on a benchmark.</p>
           </div>
 
           <aside class="panel">
@@ -135,7 +136,7 @@
           <div class="tpanel-head">
             <span class="label">Flavors</span><span class="label">Scrolls sideways on narrow screens</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="Flavors">
             <table>
               <thead>
                 <tr>
@@ -147,11 +148,11 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>
+                  <th scope="row">
                     <a href="flavors/roaring.html" class="m">@cloudbitmaps/roaring</a>
                     <span class="row-sub">Adaptive containers — array, bitset, run</span>
-                  </td>
-                  <td><span class="status is-shipped">Shipped · v0.10.0</span></td>
+                  </th>
+                  <td><span class="status">Shipped · v0.10.0</span></td>
                   <td class="from">
                     Ids are sparse or clustered and adaptive containers do real compression work. The default:
                     if you are moving off Redis sets, start here.
@@ -159,13 +160,13 @@
                   <td class="from">A native dependency and its platform matrix.</td>
                 </tr>
                 <tr>
-                  <td>
+                  <th scope="row">
                     <span class="m">@cloudbitmaps/bitset</span>
                     <!-- Was "Plain bitset — one bit per id, no branches" back when the package was called
                          @cloudbitmaps/bitmap and the subtitle had to do the naming's job. The name says
                          "bitset" now, so the subtitle can say something the name does not. -->
                     <span class="row-sub">One bit per id — no containers, no branches</span>
-                  </td>
+                  </th>
                   <td><span class="status is-never">Not planned</span></td>
                   <td class="from">
                     Nothing, and that is a measured result rather than an opinion. Above about
@@ -180,10 +181,10 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>
+                  <th scope="row">
                     <span class="m">@cloudbitmaps/soaring</span>
                     <span class="row-sub">A separate algorithm, unproven</span>
-                  </td>
+                  </th>
                   <td><span class="status is-research">Research</span></td>
                   <td class="from">
                     Under research, with nothing to install. It ships only if the algorithm proves out against
@@ -263,7 +264,7 @@
         <div class="close-grid">
           <div class="close-copy">
             <h2>Start with roaring.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               It is the one that ships, and it is the right default unless you already know your ids are
               dense. The memory drivers need no configuration, so the quickstart runs before you decide
               anything about storage.

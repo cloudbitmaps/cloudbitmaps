@@ -31,9 +31,10 @@
  * Run: `pnpm bench:scale` (builds first). HEAVY + machine-dependent (wall-clock + RSS) — so, exactly like
  * bench/run.cjs, the MEASUREMENT is not a CI gate; measured numbers live here, the deterministic claims are gated
  * in tests/bench/anchors.test.ts. What CI does check is the published table: `pnpm bench:scale:check`
- * (`SCALE_TASK=check`) re-renders it from the committed results and fails if either page's copy differs. With SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND
- * injects the table into docs/benchmarks.md + site/benchmarks.html (between BENCH:SCALE markers); a plain run is
- * a dry-run that only prints (so a quick small-scale validation can't clobber the committed 100K results).
+ * (`SCALE_TASK=check`) re-renders it from the committed results and fails if any page's copy differs. With
+ * SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND injects the table into docs/benchmarks.md,
+ * site/benchmarks.html and site-next/benchmarks.html (between BENCH:SCALE markers); a plain run is a dry-run that
+ * only prints (so a quick small-scale validation can't clobber the committed 100K results).
  *
  * IMPORTANT on a laptop: the 100K run takes tens of minutes, and `process.hrtime` counts SUSPEND time as
  * elapsed — if the machine sleeps mid-run the wall-clock numbers are silently inflated (memory numbers are
@@ -300,7 +301,7 @@ async function parent() {
   if (process.env.SCALE_INJECT === '1') {
     write('bench/scale-results.json', JSON.stringify(results, null, 2) + '\n');
     inject('docs/benchmarks.md', mdTable);
-    for (const page of SITE_PAGES) inject(page, htmlTable);
+    for (const [page, markup] of SITE_PAGES) inject(page, htmlTable(markup));
   } else {
     console.log(
       '  (dry run — set SCALE_INJECT=1 to persist bench/scale-results.json + inject the docs)',
@@ -361,23 +362,30 @@ function render(r) {
   // list explaining what is bounded, what is not, and what degrades. Repeating those explanations under the
   // table would say the same thing twice in two voices. What only the run knows — the machine, the node
   // version, the seed rate, the intersect result — stays.
-  const htmlRows = rows
-    .map(
-      (row) =>
-        `<tr><td>${row[0]}</td><td class="num">${row[1]}</td><td class="num">${row[2]}</td>` +
-        `<td class="num">${row[3]}</td></tr>`,
-    )
-    .join('');
-  const htmlTable =
+  //
+  // `a11y` is `site-next/`'s markup: each row's fleet is its row header, and the scroll frame is a named region a
+  // keyboard can reach. `site/` keeps the markup it publishes until the two converge.
+  const htmlTable = ({ a11y }) =>
     `<div class="tpanel">` +
     // The cap is already in the heap column's own header, where it qualifies the column it applies to —
     // repeating it here said "1024" twice on one panel. The head carries the axis instead.
     `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
     `<span class="label">Measured &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
     `${fleetHi.toLocaleString('en-US')} segments</span></div>` +
-    `<div class="tscroll"><table><thead><tr>` +
+    (a11y
+      ? `<div class="tscroll" tabindex="0" role="region" aria-label="Memory at fleet scale">`
+      : `<div class="tscroll">`) +
+    `<table><thead><tr>` +
     header.map((h, i) => `<th${i > 0 ? ' class="num"' : ''}>${esc(h)}</th>`).join('') +
-    `</tr></thead><tbody>${htmlRows}</tbody></table></div>` +
+    `</tr></thead><tbody>` +
+    rows
+      .map(
+        (row) =>
+          (a11y ? `<tr><th scope="row">${row[0]}</th>` : `<tr><td>${row[0]}</td>`) +
+          `<td class="num">${row[1]}</td><td class="num">${row[2]}</td><td class="num">${row[3]}</td></tr>`,
+      )
+      .join('') +
+    `</tbody></table></div>` +
     `<p class="tpanel-foot">A <strong>${fleetFactor}&times;</strong> larger fleet moved retained heap by ` +
     `<strong>${heapSpread} MiB</strong>. Intersection of two ` +
     `${r.intersect.idsPerSegment.toLocaleString('en-US')}-id segments ` +
@@ -421,7 +429,10 @@ function scaleRegion(rel) {
 }
 // The benchmarks pages that carry the table: `site/`, and `site-next/`, the display-tier rebuild beside it until it
 // replaces it.
-const SITE_PAGES = ['site/benchmarks.html', 'site-next/benchmarks.html'];
+const SITE_PAGES = [
+  ['site/benchmarks.html', { a11y: false }],
+  ['site-next/benchmarks.html', { a11y: true }],
+];
 function inject(rel, body) {
   const { before, after } = scaleRegion(rel);
   fs.writeFileSync(path.join(ROOT, rel), before + '\n' + body + '\n' + after);
@@ -448,7 +459,7 @@ function doInject() {
   const { mdTable, htmlTable, summary } = render(results);
   console.log('\n' + summary + '\n');
   inject('docs/benchmarks.md', mdTable);
-  for (const page of SITE_PAGES) inject(page, htmlTable);
+  for (const [page, markup] of SITE_PAGES) inject(page, htmlTable(markup));
 }
 
 // ── check-only: the published table is exactly what the committed results render ─────────────────────
@@ -461,7 +472,7 @@ function doCheck() {
   const { mdTable, htmlTable } = render(results);
   const stale = [
     ['docs/benchmarks.md', mdTable],
-    ...SITE_PAGES.map((page) => [page, htmlTable]),
+    ...SITE_PAGES.map(([page, markup]) => [page, htmlTable(markup)]),
   ].filter(([rel, body]) => scaleRegion(rel).region !== '\n' + body + '\n');
   if (stale.length > 0) {
     console.error(

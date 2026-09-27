@@ -49,6 +49,7 @@
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html">
@@ -87,20 +88,20 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ───────────────────────────────────────────────────────────
            The badge is the first thing on the page, before the headline, because what this page IS matters
            more than what it shows. A demo that overstates its own nature is worth less than no demo. -->
       <section>
         <p class="replay-badge">Replay of a measured run</p>
         <h1>100 of 2,000 keys. The rest are never read.</h1>
-        <p class="hero-lede" style="max-width: 74ch">
+        <p class="hero-lede">
           Two segments of <strong>2,000,000 ids</strong> each. Intersecting them reads
           <strong>3,000 bytes</strong> and returns <strong>100,000 ids</strong> in
           <strong>24.6 ms</strong> — because keys are compared before any bytes move, and
           <strong>3,800</strong> chunk reads simply never happen.
         </p>
-        <p class="note" style="max-width: 78ch">
+        <p class="note">
           Every number on this page comes from one recorded run of
           <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
           and nothing is computed live — this is a replay, and it says so because the distinction is the
@@ -152,12 +153,12 @@
           </div>
         </figure>
 
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
           replay below compares 4,000 keys and fetches 100 payloads.
         </p>
 
-        <h3 style="margin-top: 44px">Then each chunk picks its own shape</h3>
+        <h3>Then each chunk picks its own shape</h3>
         <p class="lede">
           A chunk holds up to 65,536 remainders, and how it stores them depends on how many there are. All
           three shapes answer the same question &mdash; <span class="m">is this id present?</span> &mdash; so
@@ -189,7 +190,7 @@
             <span class="cbytes">4 bytes &times; runs</span>
           </div>
         </div>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           The two costs cross at <strong>4,096 ids</strong>, and that is arithmetic rather than a tuning
           choice: 4,096 &times; 2 bytes is <strong>8 KiB</strong>, exactly what a bitset costs. Below it an
           array is smaller; above it a bitset is. <a href="flavors.html">The flavors page</a> walks all three
@@ -382,105 +383,40 @@
           against each other by a build gate, so neither can quietly stop being true.
         </p>
         <div class="prov">
-          <div class="tpanel">
-            <div class="tpanel-head">
-              <span class="label">Measured</span><span class="label">Observed by the run</span>
-            </div>
-            <div class="tscroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Quantity</th>
-                    <th class="num">Value</th>
-                    <th>Reported by</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Chunk keys per segment</td>
-                    <td class="num">2,000</td>
-                    <td class="from">benchmark parameter</td>
-                  </tr>
-                  <tr>
-                    <td>Ids per segment</td>
-                    <td class="num">2,000,000</td>
-                    <td class="from">benchmark parameter</td>
-                  </tr>
-                  <tr>
-                    <td>Chunks fetched</td>
-                    <td class="num">100</td>
-                    <td class="from">metrics sink</td>
-                  </tr>
-                  <tr>
-                    <td>Chunk reads skipped</td>
-                    <td class="num">3,800</td>
-                    <td class="from">metrics sink</td>
-                  </tr>
-                  <tr>
-                    <td>Storage bytes read</td>
-                    <td class="num">3,000</td>
-                    <td class="from">metrics sink</td>
-                  </tr>
-                  <tr>
-                    <td>Wall time</td>
-                    <td class="num">24.6 ms</td>
-                    <td class="from">timer around the drained stream</td>
-                  </tr>
-                  <tr>
-                    <td>Ids returned</td>
-                    <td class="num">100,000</td>
-                    <td class="from">counted while draining</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p class="tpanel-foot">Source: <strong>bench/scale-results.json</strong></p>
+          <div>
+            <table class="cb-ftable">
+              <thead>
+                <tr><th scope="col">Measured · observed by the run</th><th scope="col">Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">Chunk keys per segment<span class="cb-note">benchmark parameter</span></th><td>2,000</td></tr>
+                <tr><th scope="row">Ids per segment<span class="cb-note">benchmark parameter</span></th><td>2,000,000</td></tr>
+                <tr><th scope="row">Chunks fetched<span class="cb-note">metrics sink</span></th><td>100</td></tr>
+                <tr><th scope="row">Chunk reads skipped<span class="cb-note">metrics sink</span></th><td>3,800</td></tr>
+                <tr><th scope="row">Storage bytes read<span class="cb-note">metrics sink</span></th><td>3,000</td></tr>
+                <tr><th scope="row">Wall time<span class="cb-note">timer around the drained stream</span></th><td>24.6 ms</td></tr>
+                <tr><th scope="row">Ids returned<span class="cb-note">counted while draining</span></th><td>100,000</td></tr>
+              </tbody>
+            </table>
+            <p class="cb-ftable-foot cb-note">Source: <strong>bench/scale-results.json</strong></p>
           </div>
-
-          <div class="tpanel">
-            <div class="tpanel-head">
-              <span class="label">Derived</span><span class="label">Arithmetic, not observation</span>
-            </div>
-            <div class="tscroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Quantity</th>
-                    <th class="num">Value</th>
-                    <th>From</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td>Ids per chunk key</td>
-                    <td class="num">1,000</td>
-                    <td class="from">2,000,000 ids &divide; 2,000 keys</td>
-                  </tr>
-                  <tr>
-                    <td>Bytes per fetched key</td>
-                    <td class="num">30</td>
-                    <td class="from">3,000 bytes &divide; 100 keys (both operands)</td>
-                  </tr>
-                  <tr>
-                    <td>Key-space extent</td>
-                    <td class="num">4,000</td>
-                    <td class="from">B&rsquo;s tail is offset past A&rsquo;s range</td>
-                  </tr>
-                  <tr>
-                    <td>Keys in neither segment</td>
-                    <td class="num">100</td>
-                    <td class="from">the offset leaves a gap of that width</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p class="tpanel-foot">
-              A derived number is only as good as the construction behind it &mdash;
-              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.
-            </p>
+          <div>
+            <table class="cb-ftable">
+              <thead>
+                <tr><th scope="col">Derived · arithmetic, not observation</th><th scope="col">Value</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">Ids per chunk key<span class="cb-note">2,000,000 ids &divide; 2,000 keys</span></th><td>1,000</td></tr>
+                <tr><th scope="row">Bytes per fetched key<span class="cb-note">3,000 bytes &divide; 100 keys (both operands)</span></th><td>30</td></tr>
+                <tr><th scope="row">Key-space extent<span class="cb-note">B&rsquo;s tail is offset past A&rsquo;s range</span></th><td>4,000</td></tr>
+                <tr><th scope="row">Keys in neither segment<span class="cb-note">the offset leaves a gap of that width</span></th><td>100</td></tr>
+              </tbody>
+            </table>
+            <p class="cb-ftable-foot cb-note">A derived number is only as good as the construction behind it &mdash;
+              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.</p>
           </div>
         </div>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           The check is a build gate rather than a promise:
           <span class="m">scripts/site-replay.cjs</span> fails if the reads the benchmark
           <em>reported</em> stop matching what its construction <em>implies</em>, fails if this page drifts
@@ -540,7 +476,7 @@
         <div class="close-grid">
           <div class="close-copy">
             <h2>Six lines, no cloud account.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               Everything above ran against the in-memory drivers, which ship inside the package and need no
               configuration at all. So the quickstart runs as-is, and you can see the shape before you point
               anything at a bucket.

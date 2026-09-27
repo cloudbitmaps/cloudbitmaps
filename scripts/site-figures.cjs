@@ -650,6 +650,72 @@ for (const page of PAGES) {
     }
   }
 
+  // ── rates, shares, and a cold intersect's requests, wherever a site page states them ─────────────────
+  // The inverse check below sees only dollar amounts, and a figure some source accounts for passes it anywhere. These
+  // three kinds of figure are each held to their one source on every page of the tree, so a rate retyped in a
+  // heading, a share changed in a cell, or a cold intersect's request count edited in a table row fails wherever it
+  // stands: a crossover rate written to two places is one of the published crossovers; a share of the Redis line is
+  // the at-rest share; and in a paragraph, list item or row about a cold A ∩ B, a count of GETs is one the run
+  // measured and a rate per second is the run's cold intersects a second against the cluster.
+  if (page.rel.startsWith(`${SITE_DIR}/`) && isHtml) {
+    const flat = visible.replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ');
+    const rates = new Set(
+      [results.readCrossoverPerSec, results.referenceRedis.readCrossoverPerSec].map((n) =>
+        n.toFixed(2),
+      ),
+    );
+    for (const m of flat.matchAll(/(?<![$\d,.])\d{3}\.\d{2}(?![\d%])/g)) {
+      if (!rates.has(m[0])) {
+        fail(
+          `${page.rel} states the rate ${m[0]}, which is neither published crossover (${[...rates].join(', ')})`,
+        );
+      }
+    }
+    const share = `${results.atRest.pctOfRedis}%`;
+    for (const m of flat.matchAll(/\b0\.\d{3} ?%/g)) {
+      if (m[0].replace(' ', '') !== share) {
+        fail(
+          `${page.rel} states the share ${m[0]}, but the at-rest share of the Redis line is ${share}`,
+        );
+      }
+    }
+    if (singleBucket !== null) {
+      const gets = new Set(
+        [
+          'GETs the median cold intersect made',
+          'GETs a cold intersect makes with each pointer read once',
+        ].map((name) => singleBucketFigure(name)),
+      );
+      const perSec = singleBucket.parity.intersectsPerSec.toFixed(1);
+      const blocks = [
+        ...withoutComments.matchAll(/<(p|li|tr|h[1-6]|figcaption)\b[^>]*>([\s\S]*?)<\/\1>/g),
+      ].map((m) =>
+        m[2]
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;|&#160;/g, ' ')
+          .replace(/\s+/g, ' '),
+      );
+      for (const block of blocks.filter((b) => /\bcold\b/i.test(b) && /A ∩ B/.test(b))) {
+        for (const m of block.matchAll(/(?<![\d.,$])(\d[\d,]*) ?GETs\b/g)) {
+          if (!gets.has(`${m[1]} GETs`)) {
+            fail(
+              `${page.rel} says a cold A ∩ B makes ${m[0]}; the run measured ${[...gets].join(' and ')}`,
+            );
+          }
+        }
+        for (const m of block.matchAll(
+          /(?<![\d.,$])(\d+\.\d)(?!\d) ?(?:a second|\/s\b|A ∩ B ?\/s)/g,
+        )) {
+          if (m[1] !== perSec) {
+            fail(
+              `${page.rel} says cold A ∩ B crosses the cluster at ${m[1]} a second; the run gives ${perSec}`,
+            );
+          }
+        }
+      }
+    }
+  }
+
   // 1 · every anchor must be stated — on /benchmarks, which is the page that owns them — and each page's own
   for (const name of page.mustState ?? []) {
     const want = singleBucketFigure(name);
@@ -1038,33 +1104,167 @@ const specAnchors = [];
     }
   }
 
-  // ── the memory band: heap and discovery at fleet scale, bars included ─────────────────────────────────
-  // site-next/'s homepage quotes bench/scale-results.json in its "does this fall over" band: per fleet, the retained
-  // heap and the discovery scan, each with a bar. The figures are held to the file, and so are the bars, since a bar
-  // drawn off its axis says a different number than the one beside it: heap on a 0–10 MiB axis, the scan on one that
-  // ends at the largest fleet's scan, both 360 units wide. Checked in both directions: every fleet the file has is on
-  // the page, and every cell the page has is a fleet the file has.
-  const memCells = [
-    ...homeHtml.matchAll(
-      /<div class="cb-mem" data-segments="(\d+)">([\s\S]*?)(?=<div class="cb-mem"|<\/div>\s*<\/div>\s*<div class="cb-head">)/g,
-    ),
-  ];
-  if (SITE_DIR === 'site-next' || memCells.length > 0) {
-    const scale = JSON.parse(
-      fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8'),
+  // ── the display-tier homepage: every figure it states, held to the file it comes from ─────────────────
+  // site-next/'s homepage quotes its figures in cells and table rows, where a figure stands without the sentence that
+  // would let the inverse check above judge it, and any figure some source accounts for passes that check anywhere.
+  // So each one is held to its own source by where it stands. Which trees carry which homepage is a per-tree fact,
+  // stated here, so that moving site-next/ to site/ flips an entry rather than silently dropping a check.
+  const HOME_IS_DISPLAY_TIER = { site: false, 'site-next': true }[SITE_DIR];
+  const scale = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8'));
+  const textOf = (html) =>
+    html
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;|&#160;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const expect = (what, got, want) => {
+    if (got !== want) {
+      fail(
+        `${SITE_DIR}/index.html's ${what} shows ${got ?? '(none)'}, but its source gives ${want}`,
+      );
+    } else {
+      specAnchors.push([`Home · ${what}`, want]);
+    }
+  };
+  if (HOME_IS_DISPLAY_TIER) {
+    const atRestMo = `$${atRestShown}/mo`;
+    const redisMo = `$${results.redisBaselineUSD}/mo`;
+    const pct = `${results.atRest.pctOfRedis}%`;
+    const rate = `${results.readCrossoverPerSec}/s`;
+    const intersectRate = singleBucket
+      ? `${singleBucket.parity.intersectsPerSec.toFixed(1)}/s`
+      : null;
+
+    // The hero's four figures, by their labels.
+    const heroRow =
+      /<div class="cb-seam cb-cols-4">([\s\S]*?)<\/div>\s*<div class="cb-seam cb-cols-2">/.exec(
+        homeHtml,
+      );
+    const heroCells = new Map(
+      [
+        ...(heroRow?.[1] ?? '').matchAll(
+          /<p class="label">([^<]+)<\/p>\s*<p class="cb-figure-xl">([\s\S]*?)<\/p>/g,
+        ),
+      ].map((m) => [m[1].trim(), textOf(m[2])]),
     );
+    for (const [label, want] of [
+      ['At rest', atRestMo],
+      ['Against', redisMo],
+      ['Ratio', pct],
+      ['Where we lose', rate],
+    ]) {
+      expect(`hero figure "${label}"`, heroCells.get(label), want);
+    }
+    if (heroCells.size !== 4) {
+      fail(`${SITE_DIR}/index.html's hero figure row has ${heroCells.size} cells, not 4`);
+    }
+
+    // The figure table, row by row: the row's head says what the figure is, so the head picks its source.
+    const table = /<table class="cb-ftable">([\s\S]*?)<\/table>/.exec(homeHtml)?.[1] ?? '';
+    const rows = [
+      ...table.matchAll(/<tr>\s*<th scope="row">([\s\S]*?)<\/th>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/g),
+    ].map((m) => [
+      textOf(m[1].replace(/<span class="cb-note">[\s\S]*?<\/span>/, '')),
+      textOf(m[2]),
+      textOf(m[1]),
+    ]);
+    const TABLE = [
+      ['At rest', atRestMo],
+      ['Cold A ∩ B, 100 chunks shared', singleBucketFigure(MEASURED_1M)],
+      ['Write and publish', singleBucketFigure(WRITE_1M)],
+      ['Redis-HA cluster', redisMo],
+      ['Against that line', pct],
+      ['Crossover, in GETs', rate],
+      ['…as cold A ∩ B', intersectRate],
+    ];
+    for (const [head, want] of TABLE) {
+      expect(`figure table row "${head}"`, rows.find(([h]) => h === head)?.[1], want);
+    }
+    if (rows.length !== TABLE.length) {
+      fail(
+        `${SITE_DIR}/index.html's figure table has ${rows.length} rows; this check knows ${TABLE.length}`,
+      );
+    }
+    const median = singleBucketFigure('GETs the median cold intersect made');
+    const asCold = rows.find(([h]) => h === '…as cold A ∩ B')?.[2] ?? null;
+    expect(
+      "figure table's cold A ∩ B request count",
+      asCold?.includes(`${median} each`) ? `${median} each` : asCold,
+      `${median} each`,
+    );
+
+    // Chunk-skipping: the band's figures and headline, and the grid it draws, counted from the drawing.
+    const { chunksPerSegment, fetchedChunks, skippedChunks } = scale.intersect;
+    const perOperand = (skippedChunks / 2).toLocaleString('en-US');
+    const total = chunksPerSegment.toLocaleString('en-US');
+    const band =
+      /<section id="demo" class="cb-stack">([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '';
+    const bandFigures = new Map(
+      [
+        ...band.matchAll(/<p class="label">([^<]+)<\/p>\s*<p class="cb-figure-l">([\s\S]*?)<\/p>/g),
+      ].map((m) => [m[1].trim(), textOf(m[2])]),
+    );
+    expect('chunk band "Fetched"', bandFigures.get('Fetched'), String(fetchedChunks));
+    expect('chunk band "Never requested"', bandFigures.get('Never requested'), perOperand);
+    expect(
+      'chunk band headline',
+      textOf(/<h2>([\s\S]*?)<\/h2>/.exec(band)?.[1] ?? ''),
+      `${fetchedChunks} of ${total} chunks. The other ${perOperand} are never requested.`,
+    );
+    const CELL = 15;
+    const cells = (w, h) => ((Number(w) + 3) / CELL) * ((Number(h) + 3) / CELL);
+    const grid = /<rect x="0" y="0" width="(\d+)" height="(\d+)" fill="url\(#ci\)"/.exec(band);
+    const lit = [
+      ...(/<g class="k-hot">([\s\S]*?)<\/g>/.exec(band)?.[1] ?? '').matchAll(
+        /width="(\d+)" height="(\d+)"/g,
+      ),
+    ];
+    expect(
+      'chunk grid, cells drawn',
+      grid ? String(cells(grid[1], grid[2])) : null,
+      String(chunksPerSegment),
+    );
+    expect(
+      'chunk grid, cells lit',
+      String(lit.reduce((n, m) => n + cells(m[1], m[2]), 0)),
+      String(fetchedChunks),
+    );
+    for (const m of textOf(homeHtml.replace(/<!--[\s\S]*?-->/g, '')).matchAll(
+      /\b\d[\d,]* of \d[\d,]*\b/g,
+    )) {
+      expect(`"${m[0]}"`, m[0], `${fetchedChunks} of ${total}`);
+    }
+
+    // The memory band: per fleet the retained heap, peak RSS and discovery scan, each with a bar, and the axes the
+    // bars are drawn on. Checked in both directions: every fleet the file has is on the page, and every cell the
+    // page has is a fleet the file has; a cell's own label is read, not only its data attribute.
+    const memCells = [
+      ...homeHtml.matchAll(
+        /<div class="cb-mem" data-segments="(\d+)">([\s\S]*?)(?=<div class="cb-mem"|<\/div>\s*<\/div>\s*<div class="cb-head">)/g,
+      ),
+    ];
     const scanShown = (ms) =>
       ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toPrecision(3)} s`;
+    const HEAP_AXIS = 10;
     const maxScan = Math.max(...scale.fleets.map((f) => f.discoveryMs));
+    const maxRss = Math.max(...scale.fleets.map((f) => f.rssPeakMiB));
     const bar = (value, axis) => Math.max(1, Math.round((value / axis) * 360));
     const shown = new Set(memCells.map((m) => Number(m[1])));
     for (const fleet of scale.fleets) {
-      if (!shown.has(fleet.n))
+      if (!shown.has(fleet.n)) {
         fail(`${SITE_DIR}/index.html's memory band has no cell for the ${fleet.n}-segment fleet`);
+      }
+      if (fleet.heapRetainedMiB > HEAP_AXIS) {
+        fail(
+          `the ${fleet.n}-segment fleet's heap, ${fleet.heapRetainedMiB} MiB, is past the memory band's ` +
+            `0–${HEAP_AXIS} MiB axis: widen the axis and its caption`,
+        );
+      }
     }
-    if (memCells.length === 0)
+    if (memCells.length === 0) {
       fail(`${SITE_DIR}/index.html no longer carries its memory band (.cb-mem cells)`);
-    for (const [, n, cell] of memCells) {
+    }
+    for (const [, n, body] of memCells) {
       const fleet = scale.fleets.find((f) => f.n === Number(n));
       if (!fleet) {
         fail(
@@ -1072,39 +1272,54 @@ const specAnchors = [];
         );
         continue;
       }
-      const heap = /<p class="cb-figure-l">([\d.]+)<span class="cb-unit">MiB<\/span><\/p>/.exec(
-        cell,
+      expect(
+        `${n}-segment cell's label`,
+        textOf(/^\s*<p class="label">([^<]+)<\/p>/.exec(body)?.[1] ?? ''),
+        `${fleet.n.toLocaleString('en-US')} segments`,
       );
-      const scan = /<p class="cb-figure-m">([^<]+)<\/p>/.exec(cell);
-      const widths = [...cell.matchAll(/<rect class="(heap|scanbar)" width="(\d+)"/g)];
-      const want = [
-        ['retained heap', heap?.[1], fleet.heapRetainedMiB.toFixed(1)],
-        ['discovery scan', scan?.[1], scanShown(fleet.discoveryMs)],
+      for (const [label, cls, figure, value, axis] of [
         [
-          'heap bar',
-          widths.find((w) => w[1] === 'heap')?.[2],
-          String(bar(fleet.heapRetainedMiB, 10)),
+          'Retained heap',
+          'heap',
+          `${fleet.heapRetainedMiB.toFixed(1)}MiB`,
+          fleet.heapRetainedMiB,
+          HEAP_AXIS,
         ],
-        [
-          'scan bar',
-          widths.find((w) => w[1] === 'scanbar')?.[2],
-          String(bar(fleet.discoveryMs, maxScan)),
-        ],
-      ];
-      for (const [what, got, expected] of want) {
-        if (got !== expected) {
-          fail(
-            `${SITE_DIR}/index.html's ${n}-segment cell shows ${what} ${got ?? '(none)'}, but bench/scale-results.json ` +
-              `gives ${expected}`,
-          );
-        } else {
-          specAnchors.push([`Home memory · ${n} · ${what}`, expected]);
-        }
+        ['Peak RSS', 'rssbar', `${fleet.rssPeakMiB.toFixed(1)} MiB`, fleet.rssPeakMiB, maxRss],
+        ['Discovery scan', 'scanbar', scanShown(fleet.discoveryMs), fleet.discoveryMs, maxScan],
+      ]) {
+        const m = new RegExp(
+          `<p class="label">${label}</p>\\s*<p class="(?:cb-figure-l|cb-figure-m)">([\\s\\S]*?)</p>\\s*` +
+            `<svg class="cb-bar" viewBox="([^"]+)"[^>]*><rect class="idle" width="(\\d+)"[^>]*/><rect class="(\\w+)" width="(\\d+)"`,
+        ).exec(body);
+        expect(`${n}-segment ${label}`, m ? textOf(m[1]) : null, figure);
+        expect(
+          `${n}-segment ${label} bar track`,
+          m ? `${m[2]} / ${m[3]}` : null,
+          '0 0 360 8 / 360',
+        );
+        expect(
+          `${n}-segment ${label} bar`,
+          m && m[4] === cls ? m[5] : null,
+          String(bar(value, axis)),
+        );
       }
     }
-    const axis = `0–${scanShown(maxScan).replace(/ s$/, '')} s axis`;
-    if (memCells.length > 0 && !homeHtml.includes(axis)) {
-      fail(`${SITE_DIR}/index.html's memory caption does not name the scan bars' axis, ${axis}`);
+    const caption = textOf(
+      /<p class="cb-note is-caption">([\s\S]*?)<\/p>/.exec(homeHtml)?.[1] ?? '',
+    );
+    for (const axis of [
+      `0–${HEAP_AXIS} MiB axis`,
+      `0–${maxRss.toFixed(1)} MiB one`,
+      `0–${scanShown(maxScan)} one`,
+    ]) {
+      if (!caption.includes(axis)) {
+        fail(`${SITE_DIR}/index.html's memory caption does not name the axis "${axis}"`);
+      }
+    }
+    const cap = `capped at ${scale.cap.toLocaleString('en-US')} segments`;
+    if (!textOf(homeHtml).includes(cap)) {
+      fail(`${SITE_DIR}/index.html's memory band does not state the cap, "${cap}"`);
     }
   }
 
@@ -1152,18 +1367,19 @@ const specAnchors = [];
   // site-next/'s homepage is the display-tier delivery's, which has no spec strip: its install band states the driver
   // count once, on the meta line checked below, and the zero-dependency premise is proved above for every tree. So
   // the strip is required where it exists by design, on site/, and refused on site-next/ rather than read if found.
-  const HOME_HAS_SPEC_STRIP = SITE_DIR === 'site';
-  const strip = /<p class="keys-stats">([\s\S]*?)<\/p>/.exec(homeHtml);
+  const HOME_HAS_SPEC_STRIP = { site: true, 'site-next': false }[SITE_DIR];
+  const specStrip = /<p class="keys-stats">([\s\S]*?)<\/p>/.exec(homeHtml);
   if (!HOME_HAS_SPEC_STRIP) {
-    if (strip)
+    if (/class="[^"]*\bkeys-stats\b/.test(homeHtml)) {
       fail(`${SITE_DIR}/index.html carries a .keys-stats strip, which its design does not have`);
-  } else if (!strip) {
+    }
+  } else if (!specStrip) {
     fail(
       `${SITE_DIR}/index.html no longer carries the .keys-stats strip that states the driver count`,
     );
   } else {
     const stated = new Map();
-    for (const m of strip[1].matchAll(/<strong>([\d,]+)<\/strong>\s*([^<]+?)\s*<\/span>/g)) {
+    for (const m of specStrip[1].matchAll(/<strong>([\d,]+)<\/strong>\s*([^<]+?)\s*<\/span>/g)) {
       stated.set(m[2].trim(), Number(m[1].replace(/,/g, '')));
     }
     // Checked in BOTH directions, which is the flaw every earlier gate on this site shipped with. Comparing a

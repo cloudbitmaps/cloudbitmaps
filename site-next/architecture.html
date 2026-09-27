@@ -46,6 +46,7 @@
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html">
@@ -84,7 +85,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ───────────────────────────────────────────────────────────
            The headline is the claim, not the topic. "How it's built" describes a page; this describes what the
            build BUYS, which is the only reason to read it. -->
@@ -104,7 +105,7 @@
               <a class="btn btn-primary" href="demo.html">Step through a measured run →</a>
               <a class="btn" href="usage.html">The API that does it</a>
             </p>
-            <p class="meta">
+            <p class="cb-note">
               None of this depends on the codec, so it stays true for every
               <a href="flavors.html">flavor</a>.
             </p>
@@ -154,7 +155,7 @@
           <p class="align-legend">
             <span><i class="swatch b-shared"></i><b>5</b> in both &mdash; fetched</span>
             <span><i class="swatch ak-one"></i><b>6</b> in one segment only &mdash; skipped</span>
-            <span><i class="swatch b-none"></i><b>7</b> in neither</span>
+            <span><i class="swatch sw-idle"></i><b>7</b> in neither</span>
             <span class="align-total">18 keys, one pass</span>
           </p>
           <figcaption class="align-foot">
@@ -215,7 +216,7 @@
             </span>
           </li>
         </ol>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           There is deliberately no code on this page. What it owes you is the sequence and its costs; the calls
           that produce it are on <a href="usage.html">usage</a>, once, where they can be copied.
         </p>
@@ -236,7 +237,7 @@
             <span class="label">Two tiers, one pointer</span
             ><span class="label">Scrolls sideways on narrow screens</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="Two tiers, one pointerScrolls sideways on narrow screens">
             <table>
               <thead>
                 <tr>
@@ -247,7 +248,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="tier-chip t-cache">CACHE · RAM</span></td>
+                  <th scope="row"><span class="tier-chip t-cache">CACHE · RAM</span></th>
                   <td class="from">
                     A bounded LRU of decoded chunks in your own process, keyed by generation. Optional and
                     evictable — <strong>correctness never depends on it</strong>, only latency.
@@ -255,7 +256,7 @@
                   <td class="num">your memory</td>
                 </tr>
                 <tr>
-                  <td><span class="tier-chip t-storage">STORAGE · .crbm</span></td>
+                  <th scope="row"><span class="tier-chip t-storage">STORAGE · .crbm</span></th>
                   <td class="from">
                     Immutable, generation-keyed objects in your bucket. Never mutated in place, so a reader
                     always sees a whole generation and a superseded one can be kept as a snapshot.
@@ -263,7 +264,7 @@
                   <td class="num">$0.03/mo · 1.2 GiB</td>
                 </tr>
                 <tr>
-                  <td><span class="tier-chip t-gen">GEN · REGISTRY</span></td>
+                  <th scope="row"><span class="tier-chip t-gen">GEN · REGISTRY</span></th>
                   <td class="from">
                     Not a tier: one small row per segment holding <span class="m">currentGen</span>. It stores
                     no bits — it is the compare-and-swap target a publish advances, and the thing a read
@@ -276,7 +277,7 @@
           </div>
         </div>
 
-        <div class="matters" style="margin-top: 26px">
+        <div class="matters">
           <div class="limit">
             <p class="label">Loading a generation</p>
             <p>
@@ -340,7 +341,7 @@
             <p class="dgm-legend">
               <span><i class="swatch sw-set"></i>in generation 6</span>
               <span><i class="swatch sw-tomb"></i>the id being erased</span>
-              <span><i class="swatch b-none"></i>cleared in generation 7</span>
+              <span><i class="swatch sw-gone"></i>cleared in generation 7</span>
             </p>
             <p class="dgm-formula">
               <span class="m">eraseSubject</span> streams the current generation, clears <b>one bit</b>,
@@ -426,7 +427,7 @@
             </span>
           </li>
         </ul>
-        <p class="note" style="max-width: 82ch">
+        <p class="note">
           Every hard correctness invariant carries named tests — property tests checking a loaded generation
           against a plain <span class="m">Set</span> oracle, and crash and race tests over the
           write-then-publish path — and the whole suite runs on every commit. The test count is deliberately
@@ -454,7 +455,7 @@
             <span class="label">What you will catch</span>
             <span class="label">5 of 11 exported types</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="What you will catch">
             <table>
               <thead>
                 <tr>
@@ -465,22 +466,22 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="m">TransientError</span></td>
+                  <th scope="row"><span class="m">TransientError</span></th>
                   <td class="from">
                     The backend was briefly unavailable — throttled, a dropped connection, a 5xx.
                   </td>
-                  <td><span class="status is-auto">Automatic</span></td>
+                  <td><span class="status">Automatic</span></td>
                 </tr>
                 <tr>
-                  <td><span class="m">WriteConflictError</span></td>
+                  <th scope="row"><span class="m">WriteConflictError</span></th>
                   <td class="from">
                     Another writer already took the generation number you were writing. Write-once storage
                     refusing to be overwritten — working, not failing.
                   </td>
-                  <td><span class="status is-manual">New generation</span></td>
+                  <td><span class="status">New generation</span></td>
                 </tr>
                 <tr>
-                  <td><span class="m">IntegrityError</span></td>
+                  <th scope="row"><span class="m">IntegrityError</span></th>
                   <td class="from">
                     Bytes came back that do not match their checksum. Something is corrupt; the same request
                     will return the same corruption.
@@ -488,7 +489,7 @@
                   <td><span class="status is-never">Never</span></td>
                 </tr>
                 <tr>
-                  <td><span class="m">KeyUnavailableError</span></td>
+                  <th scope="row"><span class="m">KeyUnavailableError</span></th>
                   <td class="from">
                     An encrypted segment's key is gone or unreachable. If it was crypto-shredded, this is the
                     correct and permanent answer.
@@ -496,7 +497,7 @@
                   <td><span class="status is-never">Never</span></td>
                 </tr>
                 <tr>
-                  <td><span class="m">ValidationError</span></td>
+                  <th scope="row"><span class="m">ValidationError</span></th>
                   <td class="from">A bad argument reached a boundary. Your bug, and it fails immediately.</td>
                   <td><span class="status is-never">Never</span></td>
                 </tr>
@@ -636,7 +637,7 @@
         <div class="close-grid">
           <div class="close-copy">
             <h2>See it on a real run.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               The demo steps through the intersection above with the recorded counters, and the benchmarks
               carry the measured costs, the real-cloud calibration, and the rate past which a flat node is
               cheaper.

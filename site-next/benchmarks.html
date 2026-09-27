@@ -46,6 +46,7 @@
     <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
   </head>
   <body>
+    <a class="skip" href="#main">Skip to the page</a>
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="index.html">
@@ -84,7 +85,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <!-- ── HERO ───────────────────────────────────────────────────────────
            The headline names both halves. A benchmarks page that only says what a thing costs is an ad; the
            second clause is what makes the first one worth believing. -->
@@ -102,7 +103,7 @@
               <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
               <a class="btn" href="#limits">What they do not establish</a>
             </p>
-            <p class="meta">
+            <p class="cb-note">
               Modelled figures come from the shipped <span class="m">estimateCost()</span>, measured ones from
               each run's committed record — neither can drift ahead of its source.
             </p>
@@ -152,7 +153,7 @@
           <div class="tpanel-head">
             <span class="label">Cost anchors</span><span class="label">estimateCost() + the AWS runs</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="Cost anchors">
             <table>
               <thead>
                 <tr>
@@ -164,7 +165,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>1M <span class="m">count()</span> calls</td>
+                  <th scope="row">1M <span class="m">count()</span> calls</th>
                   <td class="num">$0.14</td>
                   <td class="from">
                     Zero payload reads — summed straight from the <span class="m">.crbm</span> index, and exact
@@ -172,27 +173,27 @@
                     resolves the segment's current generation was billed to a NoSQL registry that no longer
                     ships, so it is <strong>not</strong> in this figure.
                   </td>
-                  <td><span class="status is-shipped">Win</span></td>
+                  <td><span class="status">Win</span></td>
                 </tr>
                 <tr>
-                  <td>1.2 GiB at rest, no traffic</td>
+                  <th scope="row">1.2 GiB at rest, no traffic</th>
                   <td class="num">$0.03 /mo</td>
                   <td class="from">
                     0.008% of the $346 cluster. Nothing is billed while nobody is asking.
                   </td>
-                  <td><span class="status is-shipped">Win big</span></td>
+                  <td><span class="status">Win big</span></td>
                 </tr>
                 <tr>
-                  <td>A ∩ B over two 2M-id segments</td>
+                  <th scope="row">A ∩ B over two 2M-id segments</th>
                   <td class="num">100 / 2,000</td>
                   <td class="from">
                     Chunks fetched in 24.6 ms — 1,900 per segment never requested.
                     <a href="demo.html">Step through it</a>.
                   </td>
-                  <td><span class="status is-shipped">Win big</span></td>
+                  <td><span class="status">Win big</span></td>
                 </tr>
                 <tr>
-                  <td>1M cold A&nbsp;∩&nbsp;B on real S3</td>
+                  <th scope="row">1M cold A&nbsp;∩&nbsp;B on real S3</th>
                   <td class="num">$82.40</td>
                   <td class="from">
                     Two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median — a tail read
@@ -201,17 +202,17 @@
                     size, while each index fits the 256 KiB tail read. Every one cold, and every one exact. Its
                     crossover is the last row. <a href="#single-bucket">The single-bucket run</a>.
                   </td>
-                  <td><span class="status is-shipped">Win</span></td>
+                  <td><span class="status">Win</span></td>
                 </tr>
                 <tr>
-                  <td>1M loads, written and published</td>
+                  <th scope="row">1M loads, written and published</th>
                   <td class="num">$11.20</td>
                   <td class="from">
                     A generation written once, then the pointer moved to it: 2 PUT + 3 GET, measured on real S3
                     with the pointer in the same bucket. <span class="m">store.load()</span> also lists and
                     collects, which about doubles it. The meter counts objects, not ids — so batch a refresh.
                   </td>
-                  <td><span class="status is-coming">Batch it</span></td>
+                  <td><span class="status">Batch it</span></td>
                 </tr>
                 <!-- This row names its AXIS — "read throughput" — because a reader scanning the verdict column
                      will otherwise generalise a threshold on one axis into a verdict on the library. The chip is
@@ -219,17 +220,17 @@
                      billing, not this engine: a cache that actually hits moves the line out by the
                      reciprocal of the miss rate. See #crossover directly below.
 
-                     Still .is-counter, still --cb-cache: this page's whole stance is that the counter-case gets a
-                     DIFFERENT colour, never a quieter one. Relabelling it does not demote it. -->
+                     The same chip as every other verdict on this table: the word says which way the row goes, and
+                     a row where a flat cluster is cheaper is a peer of a row where we win. -->
                 <tr>
-                  <td>Sustained read throughput above</td>
+                  <th scope="row">Sustained read throughput above</th>
                   <td class="num">329.15 /s<br />1.6 A&nbsp;∩&nbsp;B/s</td>
                   <td class="from">
                     Object GETs with the cache off — the pessimal posture, chosen deliberately — against a
                     standing three-node Redis-HA cluster at $346 /mo. The same line, for cold intersects of the run's shape at
                     206 GETs each, is 1.6 a second. <a href="#crossover">What moves this line</a>.
                   </td>
-                  <td><span class="status is-counter">Use a flat tier</span></td>
+                  <td><span class="status">Use a flat tier</span></td>
                 </tr>
               </tbody>
             </table>
@@ -289,7 +290,7 @@
             <span class="label">What moves this line</span>
             <span class="label">All five are inputs, not constants</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="What moves this line">
             <table>
               <thead>
                 <tr>
@@ -300,7 +301,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Cache hit rate</td>
+                  <th scope="row">Cache hit rate</th>
                   <td class="num">0</td>
                   <td class="from">
                     Every read billed — the pessimal value, chosen so the figure cannot flatter us. A cache that
@@ -310,7 +311,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Per-GET request rate</td>
+                  <th scope="row">Per-GET request rate</th>
                   <td class="num">on-demand</td>
                   <td class="from">
                     The profile's <span class="m">storage.getPerMillion</span>, at the published
@@ -321,7 +322,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Stored bytes</td>
+                  <th scope="row">Stored bytes</th>
                   <td class="num">zero</td>
                   <td class="from">
                     The first of the three set in <em>our</em> favour, so it is stated: storage is subtracted
@@ -331,7 +332,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>Hot segments</td>
+                  <th scope="row">Hot segments</th>
                   <td class="num">none</td>
                   <td class="from">
                     The second set in our favour. A long-lived reader re-reads the pointer of each segment it
@@ -342,7 +343,7 @@
                   </td>
                 </tr>
                 <tr>
-                  <td>The baseline itself</td>
+                  <th scope="row">The baseline itself</th>
                   <td class="num">$346 /mo</td>
                   <td class="from">
                     The third: three nodes rather than one, and more than the reference 1.2 GiB set needs. The
@@ -436,8 +437,9 @@
           hatched half is where the cluster is cheaper.
         </p>
         <figure class="chart">
+          <div class="cb-scroll" tabindex="0" role="region" aria-label="The crossover chart, scrollable">
           <!-- BENCH:CHART:START -->
-<svg class="cb-svg is-chart" viewBox="0 0 1176 440" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $346 a month at 329 reads a second, past which the cluster is cheaper">
+<svg class="cb-svg is-wide" viewBox="0 0 1176 440" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $346 a month at 329 reads a second, past which the cluster is cheaper">
 <defs><pattern id="bench-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern></defs>
 <rect x="783.0" y="40" width="369.0" height="320" fill="url(#bench-hatch)"/>
 <path class="s sd guide" d="M783.0 40 V360"/>
@@ -445,7 +447,7 @@
 <polyline class="line-ours" points="72.0,360.0 85.5,356.5 99.0,353.0 112.5,349.5 126.0,346.0 139.5,342.5 153.0,339.0 166.5,335.5 180.0,332.0 193.5,328.5 207.0,325.0 220.5,321.5 234.0,318.0 247.5,314.4 261.0,310.9 274.5,307.4 288.0,303.9 301.5,300.4 315.0,296.9 328.5,293.4 342.0,289.9 355.5,286.4 369.0,282.9 382.5,279.4 396.0,275.9 409.5,272.4 423.0,268.9 436.5,265.4 450.0,261.9 463.5,258.4 477.0,254.9 490.5,251.4 504.0,247.9 517.5,244.4 531.0,240.9 544.5,237.4 558.0,233.9 571.5,230.4 585.0,226.8 598.5,223.3 612.0,219.8 625.5,216.3 639.0,212.8 652.5,209.3 666.0,205.8 679.5,202.3 693.0,198.8 706.5,195.3 720.0,191.8 733.5,188.3 747.0,184.8 760.5,181.3 774.0,177.8 787.5,174.3 801.0,170.8 814.5,167.3 828.0,163.8 841.5,160.3 855.0,156.8 868.5,153.3 882.0,149.8 895.5,146.3 909.0,142.8 922.5,139.2 936.0,135.7 949.5,132.2 963.0,128.7 976.5,125.2 990.0,121.7 1003.5,118.2 1017.0,114.7 1030.5,111.2 1044.0,107.7 1057.5,104.2 1071.0,100.7 1084.5,97.2 1098.0,93.7 1111.5,90.2 1125.0,86.7 1138.5,83.2 1152.0,79.7"/>
 <path class="s" d="M72 40 V360 H1152"/>
 <text class="tl" x="88" y="64">CLOUDBITMAPS COSTS LESS</text>
-<text class="tl" x="799.0" y="64">A FLAT CLUSTER COSTS LESS</text>
+<text class="tl on-hatch" x="799.0" y="64">A FLAT CLUSTER COSTS LESS</text>
 <text class="t" x="88" y="163.5">Redis-HA cluster · flat · $346/mo</text>
 <text class="t is-ours" x="396.0" y="303.9">CloudBitmaps · pay-per-use</text>
 <rect class="hot" x="777.0" y="169.5" width="12" height="12" rx="2"/>
@@ -464,6 +466,7 @@
 <text class="tf" x="1152" y="412" text-anchor="end">SUSTAINED POINT READS · OBJECT GETS, CACHE OFF · AWS-US-EAST-1-ONDEMAND · READS/S →</text>
 </svg>
 <!-- BENCH:CHART:END -->
+          </div>
           <figcaption>
             Generated by <span class="m">pnpm bench</span> from
             <span class="m">estimateCost()</span> — the same function the library ships, so the chart cannot
@@ -597,7 +600,7 @@
           claim — memory is a function of the cap you set, not of how much data you own.
         </p>
         <!-- BENCH:SCALE:START -->
-<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><td>1,000 segments</td><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><td>10,000 segments</td><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><td>100,000 segments</td><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">A <strong>100&times;</strong> larger fleet moved retained heap by <strong>0.9 MiB</strong>. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms. Fleet seeded at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
+<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll" tabindex="0" role="region" aria-label="Memory at fleet scale"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><th scope="row">1,000 segments</th><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><th scope="row">10,000 segments</th><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><th scope="row">100,000 segments</th><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">A <strong>100&times;</strong> larger fleet moved retained heap by <strong>0.9 MiB</strong>. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms. Fleet seeded at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
 <!-- BENCH:SCALE:END -->
         <ul class="rowlist">
           <li>
@@ -710,7 +713,7 @@
             <span class="label" id="single-bucket-title">The single-bucket bill · measured, and expected where marked</span>
             <span class="label">2026-09-23 · us-east-1 · run 2026-09-23-94416</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="2026-09-23 · us-east-1 · run 2026-09-23-94416">
             <table aria-labelledby="single-bucket-title">
               <thead>
                 <tr>
@@ -721,27 +724,27 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>Cold A&nbsp;∩&nbsp;B, 100 of 1,999 chunks shared, the median</td>
+                  <th scope="row">Cold A&nbsp;∩&nbsp;B, 100 of 1,999 chunks shared, the median</th>
                   <td class="num">$82.40</td>
                   <td class="num">206 GETs</td>
                 </tr>
                 <tr>
-                  <td>The same, each pointer read once — expected</td>
+                  <th scope="row">The same, each pointer read once — expected</th>
                   <td class="num">$81.60</td>
                   <td class="num">204 GETs</td>
                 </tr>
                 <tr>
-                  <td>Write and publish a segment</td>
+                  <th scope="row">Write and publish a segment</th>
                   <td class="num">$11.20</td>
                   <td class="num">2 PUT + 3 GET</td>
                 </tr>
                 <tr>
-                  <td>Write and publish, multipart</td>
+                  <th scope="row">Write and publish, multipart</th>
                   <td class="num">$26.20</td>
                   <td class="num">5 PUT-class + 3 GET</td>
                 </tr>
                 <tr>
-                  <td>A segment's first <span class="m">store.load()</span> — expected</td>
+                  <th scope="row">A segment's first <span class="m">store.load()</span> — expected</th>
                   <td class="num">$22.80</td>
                   <td class="num">4 PUT-class + 7 GET</td>
                 </tr>
@@ -781,7 +784,7 @@
             <span class="label">What the metered requests cost · the object-store half</span>
             <span class="label">2026-07-25 · us-east-1 · run 2026-07-25-60291</span>
           </div>
-          <div class="tscroll">
+          <div class="tscroll" tabindex="0" role="region" aria-label="What the metered requests cost · the object-store half">
             <table>
               <thead>
                 <tr>
@@ -792,12 +795,12 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>S3 PUT / LIST</td>
+                  <th scope="row">S3 PUT / LIST</th>
                   <td class="num">22</td>
                   <td class="num">$0.000110</td>
                 </tr>
                 <tr>
-                  <td>S3 GET</td>
+                  <th scope="row">S3 GET</th>
                   <td class="num">23</td>
                   <td class="num">$0.000009</td>
                 </tr>
@@ -898,7 +901,7 @@
         <div class="close-grid">
           <div class="close-copy">
             <h2>Run it against your own rates.</h2>
-            <p class="lede" style="margin: 0">
+            <p class="lede">
               The cost model is a shipped, pure function. Ours is one pricing profile; yours will move every
               number on this page, including which side of the crossover you are on.
             </p>
