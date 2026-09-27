@@ -1353,12 +1353,12 @@ const FRACTION_WORD = String.raw`(?:half|halves|thirds?|quarters?|fourths?|fifth
  */
 const SHARE_OR_MULTIPLE = [
   // With the signs that look like them: the Arabic percent sign, another ×, and a Cyrillic х.
-  String.raw`\d[\d,.]*\s*[%‰٪×✕✖⨯⨉хХ]`,
+  String.raw`(?<![\d,.])\d[\d,.]*\s*[%‰٪×✕✖⨯⨉хХ]`,
   String.raw`[×✕✖⨯⨉хХ]\s*\d`,
   // Not after a letter or a dot: "S3 times out" is no multiple, nor is the 2 of a version, 7.2.4.
-  String.raw`(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:x\b|per[\s-]*cent\b|pct\b|times\b(?!\s+out\b)|-?fold\b|-times\b)`,
+  String.raw`(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:x\b(?!\.(?:png|jpe?g|svg|webp|gif|avif)\b)|per[\s-]*cent\b|pct\b|times\b(?!\s+out\b)|-?fold\b|-times\b)`,
   String.raw`\bper[\s-]*cent\b(?!-)`,
-  String.raw`\d(?:[\d,.]*\d)?\s*percentage\s+points?\b`,
+  String.raw`(?<![\d,.])\d(?:[\d,.]*\d)?\s*percentage\s+points?\b`,
   String.raw`\bby\s+a\s+factor\s+of\s+(?:\d|${NUMBER_WORD}\b)`,
   String.raw`\b(?:twice|thrice|double|triple|half)\s+(?:as\s+(?:much|many|large|big|high|long|expensive|costly|cheap|fast|slow)|the\s+(?:bill|cost|price|requests|GETs|rate|reads|bytes|size|money|load|figure|time|latency|memory|storage)|(?:of\s+)?what)\b`,
   String.raw`\b${NUMBER_WORD}(?:\s+times\b(?!\s+out\b)|[\s-]*fold\b)`,
@@ -1379,8 +1379,8 @@ const AMOUNT_OR_COUNT = [
 ];
 /**
  * A share or a multiple as a verb or a fraction says it, which the hand-written text of a page whose figures are
- * generated may not hold: `doubles the bill`, `cuts it in half`, `a third less`. The rest of the README may: "doubles
- * as" and "half the time" are ordinary words there.
+ * generated may not hold: `doubles the bill`, `cuts it in half`, `a third less`. The rest of the README may: "in
+ * half" and "doubles the work" are ordinary words there.
  */
 const SHARE_IN_A_WORD = [
   String.raw`\b(?:doubles|doubled|doubling|triples|tripled|tripling|quadruples|quadrupled|halves|halved|halving)\b`,
@@ -1393,11 +1393,13 @@ const FIGURE_IN_WORDS = new RegExp(
   'i',
 );
 /**
- * Every number word from two up, plurals included: on a page whose figures are generated, a figure in words is
- * refused however it is spelled, as a digit is, but in the phrases NUMBER_WORD_PHRASES lists.
+ * Every number word from two up, its plurals and "tens", and the words for a multiple or a half: on a page whose
+ * figures are generated, these are refused as a digit is, but in the phrases NUMBER_WORD_PHRASES lists. "Double as"
+ * is a use, not a multiple. A figure in a spelling this does not know still passes.
  */
 const ANY_NUMBER_WORD = new RegExp(
-  String.raw`\b(?:${NUMBER_WORD}|(?:hundred|thousand|million|billion|dozen)s|dozen)\b`,
+  String.raw`\b(?:${NUMBER_WORD}|(?:hundred|thousand|million|billion|trillion|dozen)s|dozen|trillion|tens|` +
+    String.raw`twice|thrice|triple[sd]?|quadruple[sd]?|half|halves|double(?!\s+as\b)[sd]?)\b`,
   'i',
 );
 /**
@@ -1424,15 +1426,17 @@ const HTML_CONSTRUCT = new RegExp(
     String.raw`<!\[CDATA\[[\s\S]*?\]\]>`,
     String.raw`<\?[\s\S]*?\?>`,
     String.raw`<![A-Za-z][^>]*>`,
-    String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
+    String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
   ].join('|'),
   'g',
 );
 /**
- * A link's target and title, `](…)` or `](…)` holding parentheses of its own or quotes around its title, or a
- * reference, `][…]`.
+ * A link's target and title, as CommonMark reads them: a destination in `<…>` or with no space, holding balanced
+ * parentheses or escapes, then a title in quotes or parentheses, which is group 1; or a reference, `][…]`. A `](`
+ * whose destination holds a space is no link, and its words are shown.
  */
-const LINK_TARGET = /\]\((?:[^()"'\\]|\\[\s\S]|"[^"]*"|'[^']*'|\([^()]*\))*\)|\]\[[^\]]*\]/g;
+const LINK_TARGET =
+  /\]\(\s*(?:<[^<>\n]*>|(?:[^\s()\\]|\\[\s\S]|\((?:[^()\s\\]|\\[\s\S])*\))*)(?:\s+("[^"]*"|'[^']*'|\([^()]*\)))?\s*\)|\]\[[^\]]*\]/g;
 /**
  * Some text's words as a reader is shown them: compatibility forms folded (NFKC), invisible characters and a
  * keycap's enclosing mark dropped, a blockquote's markers and a footnote's reference taken out, markdown's emphasis,
@@ -1445,7 +1449,7 @@ const LINK_TARGET = /\]\((?:[^()"'\\]|\\[\s\S]|"[^"]*"|'[^']*'|\([^()]*\))*\)|\]
 function wordsOf(text, { html = false, links = true } = {}) {
   let s = text.normalize('NFKC').replace(/[\p{Default_Ignorable_Code_Point}\u20E3]/gu, '');
   if (html) s = s.replace(HTML_CONSTRUCT, '');
-  s = s.replace(/^[ \t]*(?:>[ \t]?)+/gm, '').replace(/\[\^[^\]\s]*\]/g, ' ');
+  s = s.replace(/^[ \t]*(?:>[ \t]?)+/gm, '').replace(/\[\^[^\]\s[]*\]/g, ' ');
   if (links) s = s.replace(LINK_TARGET, ']');
   return s
     .replace(/:heavy_multiplication_x:/g, '×')
@@ -1503,10 +1507,13 @@ const LEGACY_ENTITY_NAMES =
  * An entity GitHub decodes: a numeric one, `&#36;`, `&#x24;`, and `&#36` too, which it decodes without the semicolon
  * inside HTML; a named one, `&dollar;`; and a legacy name without its semicolon, `&pound`. A page a generator writes
  * into holds none, so no figure or image path can be spelled with one. Any other name without its semicolon is shown
- * as it is written, so `Q&A`, `AT&T`, a Rust `&str` and a URL's `&label=` are text. The names are matched as HTML
- * spells them, case and all.
+ * as it is written, so `Q&A`, `AT&T`, a Rust `&str` and a URL's `&label=` are text, and so is a query parameter a
+ * legacy name begins, `&region=` or `&timestamp=`, which GitHub shows as written in a link or an attribute. The names
+ * are matched as HTML spells them, case and all.
  */
-const ENTITY = new RegExp(String.raw`&(?:#|[A-Za-z][A-Za-z0-9]*;|(?:${LEGACY_ENTITY_NAMES}))`);
+const ENTITY = new RegExp(
+  String.raw`&(?:#|[A-Za-z][A-Za-z0-9]*;|(?:${LEGACY_ENTITY_NAMES})(?![A-Za-z0-9_-]*=))`,
+);
 /**
  * The names and definitions a page whose figures are generated may write in digits outside its regions, each as the
  * page uses it: a name stands anywhere, and a token that holds a count, such as `65,536 ids`, only in the words around
@@ -1564,9 +1571,9 @@ const PLAIN = /[^\x20-\x7E\t\n\r§—]/u;
  * printable ASCII, § and —. It reads no markdown structure: a reading of markdown can be wrong, and a figure it
  * misread would stand where nothing checks it, so what it cannot read, it refuses.
  *
- * It is a check against drift: a figure an honest edit types by hand, however it is spelled, marked up or split. It
- * is not built to stop someone writing a figure on purpose in a form it has never seen, and no list of forms could
- * be. What it refuses on these pages is broad for that reason, and a true sentence it refuses is reworded: its tests
+ * It is a check against drift: a figure an honest edit types by hand, in the spellings it knows, however it is marked
+ * up or split. It is not built to stop someone writing a figure on purpose in a form it has never seen, and no list
+ * of forms could be. What it refuses on these pages is broad for that reason, and a true sentence it refuses is reworded: its tests
  * pair each such sentence with a rewording that passes.
  */
 function handWrittenFigure(text) {
@@ -1587,8 +1594,13 @@ function handWrittenFigure(text) {
   const words =
     FIGURE_IN_WORDS.exec(wordsOf(shown)) ?? FIGURE_IN_WORDS.exec(wordsOf(shown, { links: false }));
   if (words !== null) return { figure: words[0], what: 'a figure in words' };
+  // With the link targets taken out, and the titles, which are shown, read after them.
+  const titles = [...shown.normalize('NFKC').matchAll(LINK_TARGET)].map((m) => m[1] ?? '');
   const counted = ANY_NUMBER_WORD.exec(
-    NUMBER_WORD_PHRASES.reduce((kept, re) => kept.replace(re, ' '), wordsOf(shown)),
+    NUMBER_WORD_PHRASES.reduce(
+      (kept, re) => kept.replace(re, ' '),
+      `${wordsOf(shown)} ${wordsOf(titles.join(' '))}`,
+    ),
   );
   if (counted !== null) return { figure: counted[0], what: 'a number in words' };
   const sign = /[%‰٪×✕✖⨯⨉]/u.exec(t);
@@ -1599,12 +1611,13 @@ function handWrittenFigure(text) {
     };
   }
   const other = PLAIN.exec(t);
-  return other === null
-    ? null
-    : {
-        figure: t.slice(other.index, other.index + 24).split('\n')[0],
-        what: 'a character other than plain ASCII, § or —',
-      };
+  if (other === null) return null;
+  // Named by its code point, since a no-break or zero-width space shows as nothing.
+  const point = `U+${(other[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`;
+  return {
+    figure: `${point}, in ${t.slice(other.index, other.index + 24).split('\n')[0]}`,
+    what: 'a character other than plain ASCII, § or —',
+  };
 }
 /** The run of non-space characters around `at`, which is how a number is written. */
 const numberAt = (s, at) => /\S*$/.exec(s.slice(0, at))[0] + /^\S*/.exec(s.slice(at))[0];
@@ -1669,7 +1682,7 @@ function sectionOf(doc, text, title) {
     );
   }
   const next = lines.findIndex((line, n) => n > starts[0] && line.startsWith('## '));
-  if (next >= 0 && !/[\p{L}\p{N}]/u.test(named(lines[next].slice(3)))) {
+  if (next >= 0 && !/[\p{L}\p{N}]/u.test(wordsOf(lines[next].slice(3), { html: true }))) {
     throw new Error(
       `sizing: ${doc} line ${next + 1} ends its "${title}" section with a heading that shows nothing, so the ` +
         'section a reader sees runs on past the one this check reads',

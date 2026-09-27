@@ -361,6 +361,76 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       });
 
       it.each([
+        ['twice', ' The hot dashboard costs twice the Redis.'],
+        ['twice', ' It costs twice its Redis on a hot dashboard.'],
+        ['double', ' Redis costs double the CloudBitmaps bill.'],
+        ['triple', ' Redis costs triple its own bill.'],
+        ['quadruple', ' Redis costs quadruple its own.'],
+        ['half', ' Storage is half of the bill.'],
+        ['half', ' CloudBitmaps costs about half.'],
+        ['half', ' It costs one and a half times the Redis.'],
+        ['tens', ' A cold intersect waits tens of milliseconds a request.'],
+        ['trillion', ' S3 holds over a trillion objects.'],
+        ['thousands', ' It reads thousands of chunks.'],
+        ['millions', ' It reads millions of ids.'],
+        ['billions', ' It reads billions of ids.'],
+        ['dozens', ' It reads dozens of chunks.'],
+        ['dozen', ' It reads the dozen chunks it needs.'],
+        ['three', ' Redis keeps three replicas.'],
+        ['eleven', ' It keeps eleven segments open.'],
+        ['two', ' Neither of the two is cheap.'],
+        ['twenty', ' See [the guide](sizing.md "about twenty").'],
+        ['twenty', ' See [the guide](twenty thousand a month).'],
+      ])('refuses a number or a multiple in a word it knows: "%s"', (word, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds a number in words, "${word}`, 'i'));
+      });
+
+      it.each([
+        ['a penny', ' It costs a penny a day.'],
+        ['halved', ' It halved the bill.'],
+        ['a third more', ' It costs a third more.'],
+        ['twice as much', ' Redis costs [tw](a\\)b)ice as much.'],
+      ])('refuses a share or an amount it knows however a link falls: "%s"', (figure, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds a figure in words, "${figure}"`));
+      });
+
+      it.each([
+        ['&frac12', ' It costs &frac12 as much.'],
+        ['&yen', ' It costs &yen a month.'],
+        ['&divide', ' It is the bill &divide two.'],
+        ['&sup2', ' It grows as n&sup2 does.'],
+        ['&COPY', ' It is &COPY the vendor.'],
+      ])('refuses the legacy name %s, capitals and all', (name, text) => {
+        refused({ [WHY]: intoWhy(text) }, new RegExp(`holds an entity, "${name}`));
+      });
+
+      it('passes a query parameter a legacy name begins, which GitHub shows as written', () => {
+        for (const text of [
+          ' See [the console](https://console.example.com/s3/home?bucket=b&region=us-east-1).',
+          ' See [the docs](https://example.org/a?b=1&section=c&timestamp=d&notify=e).',
+        ]) {
+          const r = sizingCheck({ [GUIDE]: guideText.replace('\n## ', () => `\n${text}\n\n## `) });
+          expect(r.code, r.out).toBe(0);
+        }
+        refused({ [WHY]: intoWhy(' Its Redis bills &pound forty.') }, /holds an entity, "&pound/);
+      });
+
+      it('names a character it refuses by its code point, which a no-break space would not show', () => {
+        refused({ [WHY]: intoWhy(' It costs\u00a0less.') }, /"U\+00A0, in /);
+        refused({ [WHY]: intoWhy(' It’s cheap.') }, /"U\+2019, in /);
+      });
+
+      it.each([
+        ['[^', '[^'],
+        ['[^a', '[^a'],
+        ['](', ']('],
+      ])('reads 100 KB of %s well inside 2 s', (_what, unit) => {
+        const started = performance.now();
+        sizingCheck({ [WHY]: intoWhy(` ${unit.repeat(Math.ceil(100_000 / unit.length))}`) });
+        expect(performance.now() - started).toBeLessThan(2000);
+      });
+
+      it.each([
         ['in half', ' It cuts the Redis bill in half.'],
         ['doubles', ' It doubles the bill.'],
         ['a third less', ' It costs a third less.'],
@@ -378,10 +448,20 @@ describe('bench:sizing:check fails what it exists to catch', () => {
 
       // Each a true sentence the rules refuse, with a way to write it that passes.
       it.each([
+        [
+          ' It reads the chunks its two operands share.',
+          ' It reads the chunks both its operands share.',
+        ],
+        [' A store holds thousands of segments.', ' A store holds many segments.'],
+        [' It splits each id in half.', ' It splits each id into a chunk key and an offset.'],
+        [
+          ' A dollar amount typed by hand is refused.',
+          ' Every dollar amount typed by hand is refused.',
+        ],
         [' S3 bills its GETs per million requests.', ' S3 bills its GETs by the request.'],
         [
           ' The two halves of an id are its chunk key and its offset.',
-          ' Each half of an id is its chunk key or its offset.',
+          ' An id splits into its chunk key and its offset.',
         ],
         [
           ' Both share a bucket, the two in one place.',
@@ -408,6 +488,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['another ×', 'Redis costs 12⨉ as much.'],
         ["the × emoji's shortcode", 'Redis costs 12 :heavy_multiplication_x: as much.'],
         ['math', 'Redis costs $12{\\times}$ as much.'],
+        ['math with dollar signs alone', 'Redis costs 12$\\times$ as much.'],
+        ['a sign before the digit', 'Redis costs \u2A0912 as much.'],
+        ["a quote in a link's title", "CloudBitmaps costs 90[](a 'x)')% less."],
         [
           "a badge's underscores",
           '![](https://img.shields.io/badge/Redis_costs-12_times_more-red)',
@@ -418,6 +501,24 @@ describe('bench:sizing:check fails what it exists to catch', () => {
           refused({ [README]: intoRest(text) }, /holds a share or a multiple/);
         },
       );
+
+      it('passes an image whose name ends in _2x, and a heading in another script where the section ends', () => {
+        const r = sizingCheck({ [README]: intoRest('![logo](docs/img/logo_2x.png)') });
+        expect(r.code, r.out).toBe(0);
+        const edited = readme.replace(
+          '## Your data stays yours',
+          '## 日本語\n\n## Your data stays yours',
+        );
+        expect(sizingCheck({ [README]: edited }).out).not.toMatch(/shows nothing/);
+      });
+
+      it('reads 100 KB of digits, or of an unclosed tag, in the rest of the README well inside 2 s', () => {
+        for (const text of ['1'.repeat(100_000), '<h2 '.repeat(25_000)]) {
+          const started = performance.now();
+          sizingCheck({ [README]: intoRest(text) });
+          expect(performance.now() - started).toBeLessThan(2000);
+        }
+      });
 
       it('passes "times out" after a number word in the rest of the README, where number words are words', () => {
         const r = sizingCheck({
@@ -430,6 +531,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         ['a braille blank', '## Why CloudBitmaps⠀'],
         ['a Cyrillic а', '## Why CloudBitmаps'],
         ['punctuation', '## Why Cloud-Bitmaps?'],
+        ['a Greek ο', '## Why Cl\u03bfudBitmaps'],
+        ['an accent', '## Why CloudB\u00edtmaps'],
       ])("refuses a heading that shows as the Why section's, with %s", (_what, heading) => {
         const edited = readme.replace(
           '## Why CloudBitmaps\n',
@@ -447,6 +550,9 @@ describe('bench:sizing:check fails what it exists to catch', () => {
           { [README]: intoRest('<h2>Why CloudBitmaps</h2>') },
           /has an HTML heading that shows as its "Why CloudBitmaps" section's/,
         );
+        for (const html of ['<h3>Why CloudBitmaps</h3>', '<h2>Why CloudBitmaps\n\nText.']) {
+          refused({ [README]: intoRest(html) }, /has an HTML heading that shows as its/);
+        }
         const r = sizingCheck({ [README]: intoRest('<h2>Why it is cheap</h2>') });
         expect(r.code, r.out).toBe(0);
       });
@@ -612,10 +718,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ],
       ['"S3 times out"', ' If S3 times out, the reader retries.'],
       ['a service as the subject of "times"', ' S3 times each request from its first byte.'],
-      [
-        '"double" and "twice" as words',
-        ' It can double as a lock, twice as a check, twice the first time.',
-      ],
+      ['"double as", which is a use', ' It can double as a lock.'],
       ['a count of one', ' One request per pointer read, and a one-request tail read.'],
       [
         '"one" and "two" as words',
