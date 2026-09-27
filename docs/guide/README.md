@@ -1,7 +1,9 @@
 # CloudBitmaps guide
 
 User-facing documentation — how to actually use CloudBitmaps. Kept accurate to what's **shipped**, and
-grown one capability per phase (so it never describes vapor).
+grown one capability per phase, so it never describes vapor: the planned work it mentions, in
+[what it saves](why-cloudbitmaps.md#what-is-planned-for-each-weakness), is said there not to be built, and the
+[roadmap](../ROADMAP.md#planned--exploring) is the whole list.
 
 - [**Getting started**](getting-started.md) — install status, the in-memory quick start, the persistent
   local-filesystem setup, loading a generation, and the operation reference.
@@ -12,8 +14,12 @@ grown one capability per phase (so it never describes vapor).
 - [**Migrating from 0.9.x**](../../MIGRATING.md) — the cloud drivers became their own packages
   (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), the packages are ESM-only on Node ≥ 22.12, and two
   constructors changed.
+- [**What it saves, and where it doesn't**](why-cloudbitmaps.md) — CloudBitmaps against an always-on Redis: where
+  each bill's money goes, what each grows with, a chart of where each costs less, and what is planned for each
+  weakness.
 - [**What it costs at your size**](sizing.md) — a small, a medium and a large deployment priced by `estimateCost()`,
-  term by term, the levers that move the large one's bill, and where a standing cache still wins.
+  term by term, against the Redis that would hold each one's data, the levers that move the large one's bill, and
+  where a standing cache still wins.
 - [**Dashboards**](dashboards.md) — wiring the metrics + audit sinks into your observability stack.
 - [**Disaster recovery**](disaster-recovery.md) — what to back up, the coordinated-restore procedure, RPO/RTO,
   and the `checkConsistency()` torn-restore check.

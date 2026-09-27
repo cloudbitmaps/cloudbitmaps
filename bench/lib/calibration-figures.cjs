@@ -926,7 +926,7 @@ function mergeValues(a, b) {
  * wrapped across two lines is still one figure.
  */
 function normalize(text) {
-  return (
+  return plain(
     text
       // A link's target and title, and an element's id, name a place, not a figure: `#3-bytes-on-the-wire` is not
       // 3 bytes, and a tooltip is not the text a reader is given.
@@ -935,7 +935,17 @@ function normalize(text) {
         /\s(?:href|id|src|class|for|name|title|alt|aria-labelledby|aria-describedby)="[^"]*"/g,
         '',
       )
-      .replace(/<\/?(?:strong|b|em|i|span|code|mark|sup|sub|small|abbr)\b[^>]*>/gi, '')
+      .replace(/<\/?(?:strong|b|em|i|span|code|mark|sup|sub|small|abbr)\b[^>]*>/gi, ''),
+  );
+}
+
+/**
+ * The same spellings made plain, and no markup taken away: for text whose markup is already gone, where what looks
+ * like a tag or a link is text a reader is shown.
+ */
+function plain(text) {
+  return (
+    text
       .replace(/&#0*36;|&#x0*24;|&dollar;/gi, '$')
       .replace(/&#0*37;|&#x0*25;|&percnt;/gi, '%')
       .replace(/&#0*8776;|&#x2248;|&asymp;|&thickapprox;/gi, '≈')
