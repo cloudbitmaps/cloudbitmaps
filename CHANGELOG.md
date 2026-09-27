@@ -15,8 +15,32 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ## [Unreleased]
 
+### Breaking
+
+Each of these makes a call throw where it used to return, and each fixes a wrong answer: the entries under
+**Fixed** say what the call returned before.
+
+- **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
+  part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
+  `retireExpired` or a crypto-shred.
+- **A combine that holds one segment at two generations throws `ValidationError`** when it is read: pins of two
+  generations, pins of one generation number that are two different objects, or a pin and a live handle, as in
+  `live.intersect([snap])` with nothing moved since the pin. Materialise one side first, with
+  `intersectInto(dest, [])`.
+- **`pin()` opens the generation it pins**, so it fails where the pin's first read used to: `NotFoundError` for a
+  pointer at a missing object, `IntegrityError` for a damaged one.
+- **An object whose footer names another generation is refused with `IntegrityError`** wherever it is opened, a pin
+  included, so a default load onto a segment whose current generation is misfiled fails its guard. To move past it,
+  roll the segment back to an earlier generation that opens, or load with `allowEmpty: true` and no
+  `guard.minRetained`, which then does not read the current generation.
+
 ### Added
 
+- **`PinnedAt` names the object a pin holds.** It gains an optional `fingerprint`: the pinned object's size and
+  footer checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it.
+  `CrbmReader` gains `fingerprint`, and `CrbmReader.sameObject(blob, fingerprint)`, which says from one footer's
+  worth, with no key, whether the object behind `blob` is the one a fingerprint names. A fingerprint is opaque:
+  compare two for equality, and do not parse one.
 - **What it saves, and where it doesn't**, a new guide page, `docs/guide/why-cloudbitmaps.md`, and the README now
   opens with the same comparison. It sets CloudBitmaps against an always-on Redis: what each is for, where each
   bill's money goes, what each grows with, and where each costs less, with two charts that `bench/sizing.cjs` draws
@@ -173,7 +197,7 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
     a second. `pnpm bench:check` fails CI when the chart, the page or `bench/results.json` drifts from the
     estimator.
 - **The calibration harness counts what the library does, not what the network does.** Each timed intersect now
-  pins its store's pointers (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
+  turns off its store's timed pointer refresh (`cache.genTtlMs: 0`). On the default 2 s refresh, an intersect slower than that reads
   each pointer again, so run `2026-09-23-94416` — 83 ms from the region — counted 206 GETs for its median
   intersect, where the same intersect inside the region is expected to make 204, and that used up the projection's
   whole allowance for an intersect. The projection now also allows every pointer read a load can make: three with
@@ -214,6 +238,101 @@ All notable, user-facing changes to CloudBitmaps are recorded here. The format f
 
 ### Fixed
 
+- **A pinned handle could read chunks of another generation than the one it pinned.** A live read of the same
+  segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,
+  before the fetch, a publish had landed and `cache.genTtlMs` had lapsed, the reader cache had evicted the segment,
+  a sweep had made the read heal forward, or the store had invalidated the segment (its own `load`, `rollback` and
+  erasure do), the chunk came from another generation, and was cached under the key of the one the read began on. A
+  handle pinned at that generation read the same key, so it was handed the other generation's chunk: its
+  `iterate()` mixed two generations while its `count()` still reported the pinned one's total, and, after a sweep
+  had collected its generation, a pinned `has()` answered from the newer one where it should have failed. A pinned
+  handle now caches its chunks under keys of its own, which no live read writes, and fills them only from the object
+  it pinned. Live reads make no extra call for it. What it costs:
+  - a pin pays one GET for a chunk that a live read of its generation had already cached, which it used to share;
+  - a pin's entries share the chunk cache's bound with the live ones, so under a small `cache.maxChunks` each can
+    evict the other;
+  - a pin whose generation has been swept now fails even for a chunk a live read had cached from it, where it could
+    answer from that entry before.
+
+  Unpinned reads were not affected: every way the library moves a read to another generation also makes it the one
+  later reads resolve. Six tests reproduce it, across `iterate`, `intersect` and `has` and all four ways a read can
+  move to another generation, and each failed before the fix.
+- **A combine that held one segment at two generations answered for one of them.** One call reads a segment at one
+  generation, and a combine keyed its pins by segment, so `snap0.andNot([snap1])` — the difference between two
+  snapshots of one segment — returned no ids at all, and `live.andNot([snap])` read the live handle at the pin. Such
+  a combine is now refused with `ValidationError`, pointing at `intersectInto(dest, [])` to materialise one side
+  first. So is one holding two pins of one generation number that are two different objects; two pins of one object
+  combine as before. The refusal comes when the combine is read, as its other errors do, and before an `*Into`
+  materialisation reads anything; a combine with no pin in it checks nothing. It includes `live.intersect([snap])`
+  when nothing has moved since the pin, which answered correctly by chance and now throws.
+- **A pin held across a purge and re-load read the new segment as its own.** A name purged and loaded again starts
+  again at generation 0, and a pin knew its object only by generation number, so a pin of the old segment opened the
+  new one's object of the same number. Once its reader was evicted, its `count()` gave the new total while
+  `iterate()` returned chunks of both; while the reader stayed open, its uncached chunks failed with an
+  `IntegrityError` that read as damage, or a `ValidationError` when the new object was smaller; and on a store with
+  no registry, a new pin of the name was handed the old
+  pin's reader and cached chunks. `pin()` now records the object it pins, its size and footer checksum, and a pin
+  reads that object only: what it has already read still answers, as the instant it pinned, and anything it would
+  have to fetch from a replaced object fails with `NotFoundError`, as a swept pin's does. A pin tells a replacement
+  from damage by reading the object's footer, which needs no key; an object of another size counts as another
+  object, damaged or not. A replacement written under a key the store lacks is therefore found too, including after
+  the pin's reader was dropped. The reads that ask at once share that footer read, and once found, a replacement
+  costs later reads no request until the store forgets it: an invalidation of the pin's segment does, as does a later
+  `pin()` of the same version that opens the pinned object again, and the store remembers at most `cache.readerMax`
+  of them. So once a restore puts the object back, invalidate the pin's store: the pin then reads it again, and a
+  pin taken after that reads the object then stored as its generation. An object found gone is not remembered,
+  since a 404 can pass. Two pins of one generation number in two incarnations never share a reader or a cached
+  chunk, with a registry or without one.
+- **A pin whose segment was dropped or destroyed went empty part-way through a read.** A pinned `iterate()` that
+  straddled `dropSegment` on its store returned the ids it had read so far and stopped, with no error, and its
+  `count()` then said 0. A pin describes one instant, so its read of a segment whose row is gone or destroyed now
+  fails with `NotFoundError`. A pin keeps the key its reader unwrapped while that reader stays open, and answers from
+  the chunks it decoded while they stay cached. The pin's own store invalidates it:
+  - a `load`, a `rollback` or an `*Into` invalidates a pin of the segment it writes;
+  - `dropSegment` invalidates a pin of the segment it drops, and `retireExpired` a pin of each segment its ledger
+    lists, retired or not, neither on a dry run;
+  - `eraseSubject` invalidates a pin of each segment it scans that is not already destroyed.
+
+  An invalidated pin opens its object again, and fails if that object is gone or replaced, or its row is gone or
+  destroyed.
+  Anything else leaves the pin as it is: after a `destroySegment` beside the pin's store, or an erasure, a drop or a
+  retirement through another store, in the same process or another, the pin answers from what it holds until its
+  store's reader cache evicts the pin's reader and the store's chunk cache evicts the chunks the pin decoded, or
+  `invalidate()` is called on the pin's store. Where the object the
+  pin reads has been deleted, by an erasure, a drop or a sweep, a chunk the pin has not cached fails at once. The
+  privacy notes now say so.
+- **Pinned reads were not retried.** A pinned handle's engine read the storage source directly, so a transient fault
+  that a live read retries failed a pinned read, and every live operand of a combine that included a pin. Pinned
+  reads now go through the store's retries, and so does `pin()`'s own read of the row. `pin()` also opens the pinned
+  generation's reader as it pins, and reads the row once to do both; opening a pinned generation read the row twice.
+  With a registry, pins of one generation taken while its row is unchanged share that reader while the store keeps
+  it open, as they did before, pins taken at the same moment included, so only the first costs a tail read, and a
+  key unwrap for an encrypted segment, even if it is never read. Without a registry every `pin()` lists the segment's
+  objects and makes the tail read, since only the object can tell two incarnations of a name apart there.
+  A `pin()` whose generation is swept before it can
+  open it, as a publish and a `keep: 0` sweep can do, pins the generation current then rather than fail.
+- **A store read its own materialisation's predecessor.** `intersectInto`, `unionInto` and `andNotInto` published a
+  new generation of `dest` without dropping what the store held of the old one, so the same store went on answering
+  from the old generation: until `cache.genTtlMs` lapsed, and indefinitely with no timed refresh. They now
+  invalidate `dest` as `load()` does, and what that costs a pin is what a `load()` costs it: a pin of `dest` on the
+  same store drops its open reader and decoded chunks at each of them, one its guard refuses included, and reads
+  them again. If that call's `keep` collected its generation, it then fails even for a chunk it had read.
+- **A cold `has()` could fail with `NotFoundError` when a publish and a `keep: 0` sweep landed as it began.** Before
+  it fetches a chunk, a read looks up each operand's version, and that lookup did not heal a swept generation the
+  way a chunk fetch and `currentGeneration()` do. `count`, `iterate` and `intersect` survived the same race, since
+  their index read heals first; a `has()` failed. Id erasure passes `keep: 0`, so its sweep can land microseconds
+  after the publish. The lookup now re-resolves once and reads the newer generation; a second miss still fails the
+  read, as it does everywhere else.
+- **A generation whose footer names another generation is refused.** Every writer stamps a generation's footer with
+  its key's number, and the chunk cache is keyed by it, so an object that disagrees — written under another key, or
+  altered — now fails with `IntegrityError` wherever it is opened: by a read, a pin, the load guard, the erasure
+  rewrite and its search of superseded generations, and a write's re-read of what it wrote. It was read as the
+  generation its footer claimed, and the erasure rewrite republished its content. A default load onto a segment
+  whose current generation is misfiled now fails in its guard: roll the segment back to an earlier generation that
+  opens, or load with `allowEmpty: true` and no `guard.minRetained`, which then does not read the current
+  generation. The one way to write such an
+  object was `CrbmWriter`, public through 0.9.0, given one generation and stored under another, which was never a
+  valid object.
 - **`estimateCost()` counts the pointer, the index and the pointer refresh, which it had left out.** On a
   single-bucket store, the topology that ships, it under-quoted both operations it prices: a load as its object's
   PUT-class requests alone, and an intersect as its chunk reads alone.

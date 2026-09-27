@@ -117,8 +117,8 @@ export interface RetireExpiredOptions {
    * `destroyed` row as an attestation.
    *
    * Two knobs rather than one `number | 'never'`, deliberately: `0` would have had to mean "purge immediately"
-   * here while `cache.genTtlMs: 0` in this same library means "pin forever", and one option whose zero is the
-   * opposite of another's is a reading hazard for whoever tunes both.
+   * here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer", and one option whose
+   * zero is the opposite of another's is a reading hazard for whoever tunes both.
    */
   readonly purgeTombstones?: boolean;
   /** How long a retirement's tombstone must age before this sweep deletes it (default 24 h). */

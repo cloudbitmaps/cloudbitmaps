@@ -255,7 +255,8 @@ describe('dropSegment', () => {
     //
     // Asserted as a bound rather than a timing: a FRESH store over the same drivers must see empty at once,
     // which pins the cause on caching rather than on the drop having failed. (The fixture passes no clock, so
-    // this store pins its snapshot for its lifetime — the documented `cache.genTtlMs: 0` case.)
+    // this store has no timed refresh — the documented `cache.genTtlMs: 0` case — and nothing here evicts or sweeps
+    // the segment.)
     const w = await world();
     await seed(w, [1, 2, 3]);
     await expect(handle(w).has(1)).resolves.toBe(true); // warms the snapshot + LRU
@@ -685,10 +686,10 @@ describe('store.dropSegment (facade)', () => {
 
 describe('gcOrphanGenerations on a destroyed segment', () => {
   it('collects EVERY generation, because a tombstoned segment has no reader to protect', async () => {
-    // The grace window exists for readers pinned to a just-superseded generation. A destroyed segment resolves no
-    // generation at all, so nothing is or can become pinned — and nothing else would ever collect these: the
-    // reconcile path that deletes generations above `currentGen` returns early on a destroyed row. Without this,
-    // a residual left by a drop whose sweep failed is billed forever.
+    // The grace window exists for reads still fetching from a just-superseded generation. A destroyed segment
+    // resolves no generation at all, so no new read or pin can resolve one — and nothing else would ever collect
+    // these: the reconcile path that deletes generations above `currentGen` returns early on a destroyed row.
+    // Without this, a residual left by a drop whose sweep failed is billed forever.
     const w = await world();
     await seed(w, [1]);
     const storage = hook(w.storage, 'delete', async () => {

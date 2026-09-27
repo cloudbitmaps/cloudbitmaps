@@ -49,7 +49,7 @@ async function world(keystore?: IKeystore) {
       encryption: { keystore },
     },
   );
-  /** A FRESH store per call: the fixture pins a segment's resolved generation for the store's lifetime. */
+  /** A FRESH store per call: the fixture's stores have no timed refresh, so an old one keeps what it resolved. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: w.backend,

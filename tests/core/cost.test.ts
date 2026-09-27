@@ -1111,14 +1111,15 @@ describe('pointer refresh cost term', () => {
     expect(idle.verdict).toBe('win-big');
   });
 
-  it('bills nothing for a pinned pointer (genTtlMs 0)', () => {
+  it('bills nothing when there is no timed refresh (genTtlMs 0)', () => {
     const r = estimateCost({
       segments: [{ sizeBytes: 0 }],
       workload: { hotSegments: 1000, readsPerSec: 1000, genTtlMs: 0 },
     });
     expect(r.monthlyUSD.byOp.pointerRefresh).toBe(0);
     expect(r.assumptions.notes).toContain(
-      'Pointer refresh: none — genTtlMs 0 pins each pointer while the reader keeps the segment open.',
+      'Pointer refresh: none — genTtlMs 0 turns the timed refresh off. A reader still re-reads a pointer on an ' +
+        'eviction, a swept generation or an invalidation, which this does not price.',
     );
   });
 
@@ -1386,7 +1387,7 @@ describe('the estimator counts the requests the engine makes', () => {
       expect(modelled(undefined, run.reads)).toBeGreaterThanOrEqual(run.pointerReads - 1e-9);
     }
 
-    // Pinned: no refresh at all, and the model bills none.
+    // With no timed refresh the reads re-read no pointer, and the model bills none.
     expect((await readFor(0, 100)).pointerReads).toBe(0);
     expect(price({ hotSegments: 1, readsPerSec: 10, genTtlMs: 0 }).pointerRefresh).toBe(0);
   });
@@ -1408,7 +1409,7 @@ describe('the estimator counts the requests the engine makes', () => {
       (SECONDS_PER_MONTH * 1000) / 60_000,
       3,
     );
-    // Pinned, it never refreshes, and the report bills none.
+    // With no timed refresh, the report bills none.
     expect(await at({ seams: { clock }, cache: { genTtlMs: 0 } })).toBe(0);
     // A workload that states its own TTL wins.
     expect(

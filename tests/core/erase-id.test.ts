@@ -34,7 +34,7 @@ async function world(keystore?: IKeystore) {
     },
   );
   const deps = { storage: w.storage, registry: w.registry, codec: roaringCodec, keystore };
-  /** A FRESH store: the fixture pins a segment's generation for the store's lifetime (no clock ⇒ TTL 0). */
+  /** A FRESH store: the fixture has no clock, so nothing refreshes a store's generation on a timer. */
   const reader = (): CloudRoaring =>
     new CloudRoaring({
       storage: w.backend,

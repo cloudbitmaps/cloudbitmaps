@@ -420,10 +420,18 @@ await store.segment('active').count(); // → 3, generation resolved from the re
 segment's current generation on a short TTL (`cache.genTtlMs`, default **2000 ms**), so reads are **bounded
 eventually-consistent**: after a load publishes a new generation, a reader may serve the prior one for up to the
 TTL, then converges — no restart needed. Tune it down for fresher reads, up to trade a little staleness for fewer
-registry reads (`0` pins the first generation resolved for the store's lifetime). The cache is keyed by
+registry reads. `0` turns the timed refresh off: the store then re-resolves a segment only when its reader cache
+evicts it, when a read has to fetch from a generation a sweep deleted, or when it is invalidated — by this store's
+own `load`, `rollback`, `eraseSubject` or `*Into` writes, or by `store.invalidate(ref)` — so another process's
+publish reaches it with no bound at all. The cache is keyed by
 generation, so a new generation is never served from stale decoded chunks. Within one read op — one `count`, one
-`intersect` — the generation is resolved **once** and every chunk comes from it, so a load landing mid-call cannot
-tear the result. Without a registry the generation is pinned for the source's lifetime (single-process/local use).
+`intersect` — the generation is resolved **once**, before any chunk is fetched, and every chunk is a whole,
+checksum-verified chunk of one generation, so a load landing mid-call never tears a chunk. A long call can still
+read its later chunks from another generation — if it straddles a TTL boundary, the reader cache evicts the segment
+mid-call, a sweep collects the generation it was reading, or the store invalidates the segment — and its answer then
+describes two instants ([§8](#8-generation-bookkeeping-what-a-load-leaves-behind) says when); `seg.pin()` holds one.
+Without a registry, a store finds the generation by listing the bucket when it opens a segment, and keeps it until
+the reader cache evicts that segment, a read finds it swept, or it is invalidated (single-process/local use).
 
 **Registry backends** — `registry` is a pluggable seam (`IRegistryDriver`), independent of your storage choice; pick
 per deployment:
@@ -684,15 +692,18 @@ Who calls it today:
 | `retireExpired` | **yes**, for tombstoned segments only — it collects a straggler generation before purging the tombstone row |
 | `dropSegment` | deletes every generation of the segment it drops (and reports any it could not in `generationsRemaining`) |
 
-**Read staleness, restated for the whole picture.** With a registry and a clock, a store notices a new
-generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never serves a
-stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
-consistent. A **long** call is the one shape where the generation can move underneath you — a resolved snapshot
-is re-checked once the TTL elapses, and the reader cache can evict an operand mid-call and force a fresh
-resolve even sooner — so a long `intersect` across a publish may read its later chunks from the newer
-generation: every chunk whole, immutable and checksum-verified, never torn, but the answer describing two
-instants rather than one, with nothing in the result saying so. That is what a snapshot handle is for, and it
-is [on the way to 1.0](../ROADMAP.md#on-the-way-to-10) rather than shipped.
+**Read staleness, restated for the whole picture.** With a registry and a `cache.genTtlMs` above 0, a store
+notices a new generation within `cache.genTtlMs` (default 2 s) and its cache is keyed by generation, so it never
+serves a stale decoded chunk for a new generation. A `count()` is a single index read, so it is always internally
+consistent. A **long** call is the one shape where the generation can move underneath you. A resolved snapshot
+is re-checked once the TTL elapses, and three things force a fresh resolve even sooner: the reader cache evicting
+an operand mid-call, a sweep collecting the generation the call was reading, and an invalidation (this store's own
+`load`, `rollback`, `eraseSubject` or `*Into` writes, or `store.invalidate(ref)`). So a long `intersect` across a publish may read
+its later chunks from another generation: every chunk whole, immutable and checksum-verified, never torn, but the
+answer describing two instants rather than one, with nothing in the result saying so. `cache.genTtlMs: 0` removes
+only the timed re-check, so it is no way to get one instant. That is what a snapshot handle is for:
+`seg.pin()` holds a segment at the generation current when you call it, for the life of the handle it returns
+([API reference](api-reference.md#the-segment-verbs-the-90-of-daily-use)), so a long export or reconciliation describes one instant.
 
 ### Sizing `keep`
 
@@ -707,12 +718,13 @@ pathological (GC outrunning resolution) and propagates rather than fabricating a
 that answers empty instead of throwing is a segment with no generation left to serve at all — dropped or
 crypto-shredded, where reading empty is the documented outcome.
 
-**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every
-`cache.genTtlMs`, so at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a
-read actually uses — **one**, at the 2 s default, against any realistic publish cadence. A sixty-second
-`intersect` does not need a sixty-second window. The exception is a source that never re-resolves — no clock
-injected, no registry, or `cache: { genTtlMs: 0 }` ("pin forever") — which holds one generation for its whole
-lifetime; there no finite `keep` covers it, and the re-read above is the mechanism that keeps it correct.
+**The exposure window is the TTL, not the length of your call.** A snapshot is re-checked every `cache.genTtlMs`, so
+at most `ceil(genTtlMs ÷ gap between publishes)` publishes can land under any snapshot a read actually uses — **one**,
+at the 2 s default, against any realistic publish cadence. A sixty-second `intersect` does not need a sixty-second
+window. The exception is a store with no timed refresh — no registry, `cache: { genTtlMs: 0 }`, or a storage source
+built with no clock — whose snapshot lasts until an eviction, a read that finds its generation swept, or an
+invalidation moves it on, however long that takes; there no finite `keep` covers it, and the re-read above is the
+mechanism that keeps it correct.
 
 **Each retained generation is a whole copy of the segment, billed.** `keep: 3` over a 40 GB segment holds
 160 GB of object storage, not 40. That is the cost of a wide window, and the reason the default is `1`.
@@ -726,9 +738,10 @@ Which gives:
 | a large segment where a rare re-read is cheaper than a second copy | `0` |
 | a long job that must see **one** instant, not merely succeed | none of the above — see below |
 
-**What no value of `keep` gives you is a single instant.** The generation hop above is caused by
-*re-resolution*, not by collection: a read whose TTL elapses moves to the newer generation whether or not the
-old one still exists. Retaining more copies changes nothing about it. A job that needs one instant (an export,
+**What no value of `keep` gives you is a single instant.** The generation hop above has four causes, and
+collection is one of them: a read whose TTL elapses, whose reader is evicted, or whose store is invalidated moves to
+another generation whether or not the old one still exists. Retaining more copies removes only the sweep's heal,
+and not even that after an erasure, whose rewrite collects the erased generation whatever `keep` says. A job that needs one instant (an export,
 a reconciliation, a send that must match the count you reported) needs a snapshot handle.
 
 There is deliberately **no time-based floor** on collection ("keep nothing younger than 24 h"). It would read
@@ -779,8 +792,8 @@ on the lower-level free functions' deps) — any cleartext write/read then throw
 **A segment's encryption is decided at its first generation, and cannot be switched later.** Wiring a keystore
 does not retroactively encrypt a segment that already has a cleartext generation: that load stays cleartext, and
 with `encryption: { required: true }` it is refused with a `ValidationError` rather than silently downgraded. The reason
-is that one segment cannot be half-encrypted — a reader pinned to a superseded cleartext generation would find
-bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
+is that one segment cannot be half-encrypted — a pin of a superseded cleartext generation, once its reader is
+reopened, would find bytes its key cannot open, and `destroySegment` would attest that shredding one DEK made every copy unreadable
 while the older cleartext objects stay readable from any of them. The same rule from the other side: publishing
 an encrypted generation onto a segment whose row carries no key material is refused, because the only two silent
 outcomes are an unreadable generation or an over-attesting audit trail.
@@ -1005,8 +1018,8 @@ it is a property of three inputs, and of the data size, which sets the Redis:
   each reader keeps reading, and **`readerProcesses`** for how many readers keep them: each refreshes on its own,
   so ten processes reading the same hundred segments pay ten times one's refresh.
   `segment.costReport()` prices it at the store's own `cache.genTtlMs`. Raising the TTL lowers it, at the price of
-  a new load taking longer to become visible; `0` pins each pointer for as long as the reader keeps the segment
-  open.
+  a new load taking longer to become visible; `0` turns the timed refresh off, and the term with it: a reader then
+  re-reads a pointer only on an eviction, a read that finds its generation swept, or an invalidation.
 
   It assumes each hot segment stays open in the reader's cache: 1,024 segments by default (`cache.readerMax`), and
   64 MiB of parsed index (`cache.readerMaxBytes`). A read of a segment the cache evicted opens it again, a pointer
@@ -1151,21 +1164,24 @@ racing erasure).
 
 **Who stops seeing the id, and when.** The erasure is immediate in storage and immediate in the store that
 performed it — that store drops what it had cached about the segment before returning, so it cannot keep
-answering from memory. Other processes are a different question, and this library ships nothing that could
-answer it for you: there is no daemon and no bus, only stores that happen to point at the same bucket.
+answering from memory. Every other store is a different question, in this process or another, and this library
+ships nothing that could answer it for you: there is no daemon, no bus, and no connection between two stores that
+happen to point at the same bucket.
 
 | | when the id stops being readable |
 |---|---|
 | storage | on return — the generation holding it is deleted |
-| the store that performed the erasure | on return |
-| another store, with a clock and a registry | within `cache.genTtlMs` (default 2 s) |
-| another store with **no clock**, or `cache: { genTtlMs: 0 }` | **never**, until something tells it |
+| the store that performed the erasure | on return, and its pins then fail |
+| another store, with a registry and a `cache.genTtlMs` above 0 | within `cache.genTtlMs` (default 2 s) |
+| a pinned handle (`seg.pin()`) in another store | **no bound** — until that store's reader cache evicts the pin's reader and its chunk cache evicts the chunks the pin decoded, or `store.invalidate(ref)` is called there |
+| another store with **no registry** (a bare `IStorageDriver`), with `cache: { genTtlMs: 0 }`, or on a storage source built with **no clock** | **no bound** — only when its caches happen to let the segment go, or something tells it |
 
-`cache: { genTtlMs: 0 }` means "pin forever" and is a reasonable setting for a read-only replica of immutable data —
-but a segment pinned that way never observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
+`cache: { genTtlMs: 0 }` turns the timed refresh off, and is a reasonable setting for a read-only replica of
+immutable data — but a store set that way has no bound on when it observes an erasure or a crypto-shred. `store.invalidate(ref)` is the hook;
 fanning the reference out to your fleet is yours, because the transport is yours. The same applies to
-`destroySegment` and `eraseNamespace`, which are free functions over raw drivers: a store beside them holds the
-**unwrapped** key and keeps reading until it is told.
+`destroySegment` and `eraseNamespace`, which are free functions over raw drivers and invalidate no store: every
+store beside them, in the same process or not, is one of the other stores in the table above, and keeps the
+**unwrapped** key for as long as that table's row for it says.
 
 **What a rewrite does not reach.** Backups, replicas and noncurrent object versions hold the old object until
 their own lifecycle removes it. For an at-rest guarantee that survives those, encrypt and crypto-shred
@@ -1327,10 +1343,11 @@ Two limits worth knowing before you automate it:
 - **A drop is final for the name.** The tombstone fences every later load of that segment (refused with
   `ValidationError`), which is what makes step 2 converge. To reuse a name, let `retireExpired` purge the
   tombstone (below), or use a fresh dated name — which is the pattern anyway.
-- **"Reads as empty" needs a clock.** The `cache.genTtlMs` bound applies to a reader whose storage source has a
-  clock, a registry, *and* a positive TTL. Built without a clock, or with `cache: { genTtlMs: 0 }` ("pin forever"), a
-  reader holds its snapshot for its own lifetime and can answer `true` for a dropped segment indefinitely —
-  restart it.
+- **"Reads as empty" needs a timed refresh.** The `cache.genTtlMs` bound applies to a reader with a registry *and* a
+  positive TTL, on a storage source with a clock, which every source a store builds for itself has. With no registry
+  (a bare `IStorageDriver`), or with `cache: { genTtlMs: 0 }`, a reader has no timed refresh: it notices the drop only
+  when a read has to fetch from a deleted generation or its reader cache evicts the segment, and can answer `true`
+  from its cache for a dropped segment indefinitely — call `store.invalidate(ref)` on it, or restart it.
 
 > ⚠️ **The tempting shortcut breaks reads: an object-store lifecycle rule alone.** It deletes the bytes while
 > the registry still points at them, which is exactly the state
@@ -1502,7 +1519,7 @@ because deleting the row is what makes the name writable again:
 
 Pass `purgeTombstones: false` to keep every tombstone — the right choice if something outside this library treats
 the presence of a `destroyed` row as an attestation. (Two options rather than one `number | 'never'` on purpose:
-`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "pin forever",
+`0` would have to mean "purge immediately" here while `cache.genTtlMs: 0` in this same library means "never refresh on a timer",
 and one option whose zero is the opposite of another's is a trap for whoever tunes both.)
 
 ## 14. Export / eject your data
@@ -1565,8 +1582,10 @@ also exits non-zero when it's non-empty).
 
 Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
 disappeared — export to a **fresh directory** for a clean dump. For a *current* dump, run against a freshly-built
-store (a long-lived store may be up to `cache.genTtlMs` behind a publish — the CLI builds a fresh store per run);
-for a *consistent* dump across segments, pause your loads or export from a quiet window. This is also a building
+store (a long-lived store with a registry and a `cache.genTtlMs` above 0 may be up to that long behind a publish,
+and one missing either has no such bound — the CLI builds a fresh store per run). Each segment is read live, so a
+publish while a long segment exports can leave its file holding chunks of two generations; for a *consistent* dump,
+of one segment or across segments, pause your loads or export from a quiet window. This is also a building
 block for a **data-portability** response. See [`PRIVACY.md`](../../PRIVACY.md) and the README's "Your data stays
 yours".
 

@@ -125,9 +125,11 @@ const errMessage = (err: unknown): string => (err instanceof Error ? err.message
  *
  * Re-running overwrites the segments it re-exports but does **not** prune files for segments that have since
  * disappeared — export to a fresh directory for a clean dump. For a *current* image, run against a
- * freshly-constructed store: a store's storage source re-resolves each segment's generation on a short TTL (or pins
- * it for its lifetime when built without a clock or registry), so a long-lived store may export a view one load
- * behind.
+ * freshly-constructed store: a store's storage source re-resolves each segment's generation on a short TTL, or, with
+ * no registry, with `cache.genTtlMs: 0`, or built without a clock, only when an eviction, a sweep or an invalidation
+ * makes it, so a long-lived store may export a view one load behind, or more. Each segment is read live, not pinned:
+ * a publish while a long segment exports can re-resolve it part-way, and its file then holds chunks of two
+ * generations, each whole and verified. For one generation per file, export from a quiet window.
  */
 export async function runExport(
   reader: SegmentReader,

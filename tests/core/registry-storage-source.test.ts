@@ -61,8 +61,8 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2, 3], { registry });
     // Write a newer generation on disk but DON'T publish it — registry-aware reads stay on gen 0.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3, 4, 5]);
-    expect(await count(new CrbmStorageChunkSource(storage, { registry }))).toBe(3); // pinned to published gen 0
-    // Now publish gen 1; a FRESH source picks it up (pinned per source lifetime).
+    expect(await count(new CrbmStorageChunkSource(storage, { registry }))).toBe(3); // reads published gen 0
+    // Now publish gen 1; a FRESH source picks it up (no clock, so nothing refreshes an old one on a timer).
     await publishGeneration(registry, { ...SEG, generation: 1 });
     expect(await count(new CrbmStorageChunkSource(storage, { registry }))).toBe(5);
   });
@@ -125,12 +125,12 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     expect(gets - primed).toBe(1); // …from a single registry read, not eight
   });
 
-  it('self-heals when GC sweeps the exact generation a reader pinned mid-read (no torn read)', async () => {
+  it('self-heals when GC sweeps the exact generation a live read resolved, mid-read (no torn read)', async () => {
     const storage = freshStorage();
     const registry = new MemoryRegistryDriver();
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 0 }, [1, 2], { registry });
 
-    // A long-lived source pins gen 0 (resolved on first read).
+    // A long-lived source keeps gen 0, resolved on its first read: with no clock it has no timed refresh.
     const source = new CrbmStorageChunkSource(storage, { registry });
     const first = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);

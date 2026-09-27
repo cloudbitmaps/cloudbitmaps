@@ -87,6 +87,41 @@ function magicMatches(bytes: Uint8Array, offset: number): boolean {
   );
 }
 
+/** What names an object: its size, then its footer's CRC. One spelling, for an open reader and a footer read alone. */
+const sizePart = (size: number): string => `${size}:`;
+const fingerprintFor = (size: number, footerCrc: number): string => `${sizePart(size)}${footerCrc}`;
+
+/**
+ * Refuses a `size` that is not a whole byte count its own tail fits in. The size is the tier's word too: one that
+ * is not would turn off every bounds check an open makes against it.
+ */
+function checkSize(tail: Uint8Array, size: number): void {
+  if (!Number.isSafeInteger(size) || size < tail.length) {
+    throw new IntegrityError(`.crbm size is not a byte count its tail fits in: ${size}`);
+  }
+}
+
+/** The footer at the end of `tail`, once its size, magic and CRC hold, with its view and its CRC. */
+function checkedFooter(
+  tail: Uint8Array,
+  size: number,
+): { footer: Uint8Array; fview: DataView; storedFooterCrc: number } {
+  checkSize(tail, size);
+  if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
+    throw new IntegrityError(`.crbm too small: ${size}B`);
+  }
+  const footer = tail.subarray(tail.length - FOOTER_BYTES);
+  if (!magicMatches(footer, FOOTER.endMagic)) {
+    throw new IntegrityError('.crbm end magic mismatch');
+  }
+  const fview = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
+  const storedFooterCrc = fview.getUint32(FOOTER.footerCrc32c, true);
+  if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
+    throw new IntegrityError('.crbm footer CRC mismatch');
+  }
+  return { footer, fview, storedFooterCrc };
+}
+
 /** Read a u64 footer field, rejecting values past JS safe-integer range (precision would be lost). */
 function readU64(view: DataView, offset: number, field: string): number {
   const big = view.getBigUint64(offset, true);
@@ -110,7 +145,18 @@ export class CrbmReader {
     readonly servedFromTail: boolean,
     /** Set iff the object is encrypted — used to decrypt each chunk payload in {@link getChunk}. */
     private readonly crypto: CrbmCrypto | undefined,
+    /** The footer's own CRC, as verified at open: it covers the index's CRC, the chunk count and the generation. */
+    private readonly footerCrc: number,
   ) {}
+
+  /**
+   * Which object this reader opened, as its size and its footer's CRC. The footer covers the index's CRC, so two
+   * objects with the same fingerprint hold the same chunks, as far as a CRC can tell; a pin compares it to know that
+   * the object it reopens is the one it pinned, since a purged and reloaded name reuses the generation number.
+   */
+  get fingerprint(): string {
+    return fingerprintFor(this.objectSize, this.footerCrc);
+  }
 
   /** Total object bytes (from the one-GET tail read) — for grounded storage cost. */
   get sizeBytes(): number {
@@ -133,27 +179,28 @@ export class CrbmReader {
     return out;
   }
 
+  /**
+   * Whether the object behind `blob` is the one `fingerprint` names ({@link fingerprint}), from one tail read of a
+   * footer's worth, with no key and no index, since the footer is stored in the clear and checked by its own CRC.
+   * Another size is another object, whatever its bytes hold: a short one that is no `.crbm` at all is not the one
+   * pinned. At the same size the footer's CRC says, and a footer that fails its own checks says nothing about which
+   * object is there, so this throws, as an open would. What a pin asks, to tell the object it opened from one that
+   * has since been stored under its key, whoever wrote it.
+   */
+  static async sameObject(blob: BlobReader, fingerprint: string): Promise<boolean> {
+    const { bytes: tail, size } = await blob.getTail(FOOTER_BYTES);
+    checkSize(tail, size);
+    if (!fingerprint.startsWith(sizePart(size))) return false;
+    return fingerprintFor(size, checkedFooter(tail, size).storedFooterCrc) === fingerprint;
+  }
+
   static async open(blob: BlobReader, options: CrbmReaderOptions = {}): Promise<CrbmReader> {
     // Always fetch at least a footer's worth, regardless of a smaller caller request.
     const tailBytes = Math.max(options.tailBytes ?? DEFAULT_TAIL_BYTES, FOOTER_BYTES);
     const maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     const maxIndexBytes = options.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     const { bytes: tail, size } = await blob.getTail(tailBytes);
-
-    if (size < PREAMBLE_BYTES + FOOTER_BYTES || tail.length < FOOTER_BYTES) {
-      throw new IntegrityError(`.crbm too small: ${size}B`);
-    }
-
-    // --- Footer (last 104 bytes of the tail) ---
-    const footer = tail.subarray(tail.length - FOOTER_BYTES);
-    if (!magicMatches(footer, FOOTER.endMagic)) {
-      throw new IntegrityError('.crbm end magic mismatch');
-    }
-    const fview = new DataView(footer.buffer, footer.byteOffset, footer.byteLength);
-    const storedFooterCrc = fview.getUint32(FOOTER.footerCrc32c, true);
-    if (crc32c(footer.subarray(0, FOOTER_CRC_COVERAGE)) !== storedFooterCrc) {
-      throw new IntegrityError('.crbm footer CRC mismatch');
-    }
+    const { footer, fview, storedFooterCrc } = checkedFooter(tail, size);
     const versionMajor = footer[FOOTER.versionMajor]!;
     if (versionMajor !== VERSION_MAJOR) {
       throw new UnsupportedError(`.crbm major version ${versionMajor} not supported`);
@@ -291,6 +338,7 @@ export class CrbmReader {
       orderedKeys,
       servedFromTail,
       options.crypto,
+      storedFooterCrc,
     );
   }
 

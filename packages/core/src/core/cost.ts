@@ -233,8 +233,9 @@ export interface Workload {
   readonly readerProcesses?: number;
   /**
    * How long the reader trusts a pointer, in ms: the store's `cache.genTtlMs`. Default 2000, the store's own
-   * default; `segment.costReport()` uses the store's. `0` pins each pointer for as long as the reader keeps the
-   * segment open, which is then not refreshed.
+   * default; `segment.costReport()` uses the store's. `0` turns the timed refresh off, and the model bills none: a
+   * reader then re-reads a pointer only when its cache evicts the segment, a read finds its generation swept, or a
+   * write invalidates it, none of which this term prices.
    */
   readonly genTtlMs?: number;
 }
@@ -630,7 +631,7 @@ function buildReport(input: {
   const intersects = intersectsPerSec * S;
 
   // A reader re-reads a pointer only when it reads the segment after the TTL has lapsed, so the refresh is at most
-  // one per hot segment per TTL, and at most one per point read. A pinned pointer (`genTtlMs: 0`) is not refreshed.
+  // one per hot segment per TTL, and at most one per point read. With no timed refresh (`genTtlMs: 0`) it is none.
   const refreshes =
     genTtlMs > 0
       ? Math.min((readerProcesses * hotSegments * S * 1000) / genTtlMs, readsPerSec * S)
@@ -733,7 +734,8 @@ function buildReport(input: {
       ? genTtlMs > 0
         ? `Pointer refresh modeled: ${hotSegments} hot segment(s) in each of ${readerProcesses} reader ` +
           `process(es), each re-reading its pointer at most every ${genTtlMs} ms, and at most once a point read.`
-        : 'Pointer refresh: none — genTtlMs 0 pins each pointer while the reader keeps the segment open.'
+        : 'Pointer refresh: none — genTtlMs 0 turns the timed refresh off. A reader still re-reads a pointer on an ' +
+          'eviction, a swept generation or an invalidation, which this does not price.'
       : readsPerSec > 0
         ? 'The pointer refresh is NOT modeled — set workload.hotSegments to the segments each long-lived reader ' +
           'keeps reading, and workload.readerProcesses to how many readers there are.'

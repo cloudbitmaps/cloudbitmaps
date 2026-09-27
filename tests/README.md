@@ -74,6 +74,7 @@ reader.
 | `override-hygiene.test.ts` | A `pnpm.overrides` entry binds to nothing, or `SECURITY.md` describes a different set of overrides from the ones that exist. |
 | `owed-work-claims.test.ts` | The loaded-store benchmarks, which the roadmap still lists as **owed**, are described anywhere else as done. It keys on that one roadmap entry: once the entry stops saying owed, the per-file checks stand down and this gate fails until it is deleted or re-anchored, so it cannot linger as a guard that checks nothing. |
 | `previous-release-claims.test.ts` | A page presents an identifier as the old form that did not actually exist in the old release. |
+| `privacy-note-sync.test.ts` | The **published** privacy note, `packages/roaring/PRIVACY.md`, says something the repository's `PRIVACY.md` no longer says, or leaves out something it does. The two differ only in the published copy's header and its absolute links. |
 | `public-jsdoc.test.ts` | A public method on the facade has no JSDoc of its own. |
 | `sdk-floor-claims.test.ts` | A driver package's cloud-SDK range differs between its manifest, its README and `site/usage.html` — or the S3 range admits a version below the one its correctness depends on. |
 | `specifiers.test.ts` | A user-facing file still tells a reader to install or import the retired unscoped package name. |

@@ -68,7 +68,8 @@ rather than local disk. It has paid one of them:
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first publishable
    run, [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop. A request count, and so the bill for
    requests, does not depend on where the client is, with one exception that run found: an intersect slower than
-   the pointer refresh reads each pointer again. The harness now pins the pointer for each timed intersect. Bytes
+   the pointer refresh reads each pointer again. The harness's timed store now turns the pointer refresh off
+   (`cache.genTtlMs: 0`). Bytes
    read out of the region are billed as transfer, which the harness counts and does not price.
 
 ### It spends money, so it is hard to run by accident
@@ -181,10 +182,10 @@ hang-up on a real pseudo-terminal that is then closed, and the whole path by int
   SDK's retries, on a second client metered into the same bill: a transient failure there would otherwise leave
   the bucket behind.
 - **Cold reads only, and a count the network cannot move.** Each intersect gets a fresh store, so no cache can
-  answer it, and the store's pointers are pinned for its lifetime (`cache.genTtlMs: 0`). On the default 2 s
-  refresh, an intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the
-  region, measured 206 GETs for its median intersect where the same intersect in-region would make 204 — so a count
-  taken on the default would describe the network. A test drives the real engine on a slow clock to prove the pin holds.
+  answer it, and the store's timed pointer refresh is off (`cache.genTtlMs: 0`). On the default 2 s refresh, an
+  intersect slower than that reads each pointer again — run `2026-09-23-94416`, 83 ms from the region, measured 206
+  GETs for its median intersect where the same intersect in-region would make 204 — so a count taken on the default
+  would describe the network. A test drives the real engine on a slow clock to prove each pointer is read once.
 - **Exact content.** Every pair of segments shares a planned set of ids, so each intersect must return precisely
   that set — the count *and* the sum — or the run refuses to report a latency.
 - **The published shape.** 500,000-id segments spanning ~2,000 chunks with 100 shared, so the run tests the "100

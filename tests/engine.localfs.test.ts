@@ -60,9 +60,9 @@ describe('engine over LocalFs storage (.crbm)', () => {
     expect(await seg.has(42)).toBe(false);
   });
 
-  it('is consistent under the cache: a store pins its generation, a fresh store sees the newer one', async () => {
+  it('is consistent under the cache: a store keeps its generation, a fresh store sees the newer one', async () => {
     // Regression for the cache-staleness hazard: the engine caches decoded Storage chunks keyed by generation,
-    // so the storage source MUST present an immutable (pinned) view for as long as its snapshot is pinned.
+    // so the storage source MUST present an immutable view for as long as it keeps its snapshot.
     const storage = new LocalFsStorageDriver(root);
     await writeCrbmGeneration(storage, { segment: 'seg', generation: 1 }, [
       { chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) },

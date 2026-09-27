@@ -71,7 +71,11 @@ export {
   bulkLoadCrbmGeneration,
   publishGeneration,
 } from './core/crbm-storage-source';
-export type { BulkLoadResult, CrbmStorageChunkSourceOptions } from './core/crbm-storage-source';
+export type {
+  BulkLoadResult,
+  CrbmStorageChunkSourceOptions,
+  PinnedObject,
+} from './core/crbm-storage-source';
 // A pinned view of one segment at one generation — everything else passes through to the live source.
 export { PinnedStorageChunkSource } from './core/pinned-storage-source';
 export type { PinnedAt } from './core/pinned-storage-source';

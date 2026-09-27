@@ -67,7 +67,8 @@ export async function nextGeneration(ref: SegmentRef, deps: GenerationDeps): Pro
  * residual, and this is what eventually collects it from the retention sweep.
  *
  * `keep: 0` is how a subject-erasure rewrite makes a bit **physically** gone on return: the generation that held
- * it is collected the moment the rewrite is current. A reader pinned to it re-resolves on its next read.
+ * it is collected the moment the rewrite is current. A live read still fetching from it heals forward to the
+ * rewrite, and a pin of it (`seg.pin()`) fails with `NotFoundError` for any chunk it has yet to read.
  */
 export async function gcOrphanGenerations(
   ref: SegmentRef,

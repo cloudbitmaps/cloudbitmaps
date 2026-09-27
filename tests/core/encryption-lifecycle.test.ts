@@ -22,9 +22,9 @@ const k = (): Uint8Array => randomBytes(32);
  * A world of storage objects + a registry, plus the two things that write generations: `load` (a bulk load at the
  * next generation) and the erasure rewrite's deps.
  *
- * `store(ks)` opens a *fresh* reader each call, which is deliberate: a store pins the generation it resolved
- * (`cache.genTtlMs: 0` below), so re-reading through a new store is how a test observes a generation published
- * since — the honest model of a different reader, with no clock to advance.
+ * `store(ks)` opens a *fresh* reader each call, which is deliberate: a store with no timed refresh
+ * (`cache.genTtlMs: 0` below) keeps the generation it resolved, so re-reading through a new store is how a test
+ * observes a generation published since — the honest model of a different reader, with no clock to advance.
  */
 function world(keystore?: IKeystore) {
   const storage = new MemoryStorageDriver();
