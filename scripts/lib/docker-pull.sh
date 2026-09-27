@@ -65,8 +65,8 @@ docker_pull_with_backoff() {
     fi
     # A pull that stalls is not a throttle, and waiting on more of them only runs down the job's timeout. With a copy
     # kept, use it now. With none that loads, a second stall, in all and not only in a row, ends the tries: each costs
-    # DOCKER_PULL_TIMEOUT, three minutes by default, and six would take 18 of the integration job's 20, leaving its
-    # timeout to end the job with no word of why.
+    # DOCKER_PULL_TIMEOUT, three minutes by default, and six would take 18 minutes for one image. With the cap, an image
+    # gives up after about six, and the integration job's three stay just inside its 20, each failure said.
     if [ "$rc" -eq 124 ]; then
       stalls=$((stalls + 1))
       if [ -n "$usable" ]; then
@@ -91,9 +91,9 @@ docker_pull_with_backoff() {
         if [ "$rc" -eq 124 ]; then did="stalled"; else did="refused it"; fi
         docker_image_fall_back "$img" "$cached" "$did" && return 0
       fi
-      # A stall prints nothing of its own, so the log would otherwise end at the line above.
+      # A pull cut off prints no error of its own, so the log would otherwise end at its progress lines.
       [ "$rc" -eq 124 ] &&
-        echo "docker-pull: FAILED: the last pull of $img stalled (no answer in ${DOCKER_PULL_TIMEOUT:-180}s)" >&2
+        echo "docker-pull: FAILED: the last pull of $img stalled (cut off after ${DOCKER_PULL_TIMEOUT:-180}s)" >&2
       return 1
     fi
     # Linear backoff: a per-second rate limit clears in moments, so 10s/20s/30s/40s is ample: 100s of waiting at most,
@@ -218,10 +218,9 @@ docker_image_cache_used() {
 # Mark the cache as lacking something this run needed, so it is not saved (docker_image_cache_prune).
 docker_image_cache_incomplete() { : 2>/dev/null >"$DOCKER_IMAGE_CACHE/.incomplete" || true; }
 
-# Drop every file this run did not use, so an image re-pinned away leaves the cache. Prints whether the cache is worth
-# saving: some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then. A
-# save cut short with no earlier copy beside it is an image unkept too, which it says even when the marker could not be
-# written.
+# Drop every file this run did not use, so an image re-pinned away leaves the cache, and what a save cut short left: its
+# `.part`, and the temporary file `docker save` writes before it renames it. Prints whether the cache is worth saving:
+# some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then.
 docker_image_cache_prune() {
   local file kept=false
   for file in "$DOCKER_IMAGE_CACHE"/*.tar; do
@@ -233,9 +232,7 @@ docker_image_cache_prune() {
     fi
   done
   [ -e "$DOCKER_IMAGE_CACHE/.incomplete" ] && kept=false
-  for file in "$DOCKER_IMAGE_CACHE"/*.part; do
-    [ -e "$file" ] && [ ! -e "${file%.part}" ] && kept=false
-  done
-  rm -f "$DOCKER_IMAGE_CACHE/.used" "$DOCKER_IMAGE_CACHE/.incomplete" "$DOCKER_IMAGE_CACHE"/*.part
+  rm -f "$DOCKER_IMAGE_CACHE/.used" "$DOCKER_IMAGE_CACHE/.incomplete" "$DOCKER_IMAGE_CACHE"/*.part \
+    "$DOCKER_IMAGE_CACHE"/.tmp-*
   echo "$kept"
 }

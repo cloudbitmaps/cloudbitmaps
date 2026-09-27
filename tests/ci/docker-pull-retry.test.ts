@@ -50,11 +50,99 @@ const COMPOSE_FLAG_WITH_VALUE =
   /^(?:-f|--file|-p|--project-name|--project-directory|--profile|--env-file|--ansi|--progress|--parallel)$/;
 const NEVER_PULLS = /\s--pull(?:\s+|=)["']?never["']?(?=\s|$)/;
 /**
- * The flags of `docker run` and `docker create` that take a value as a word of its own: the image is the first word
- * past them. One missing from here has its value read as the image, which refuses the command rather than pass it.
+ * The flags of `docker run` and `docker create` that take a value as a word of its own, as `docker run --help` lists
+ * them in Docker CLI 29.6, with `--net`, the older name of `--network`: the image is the first word past them. One
+ * missing from here has its value read as the image, which refuses the command rather than pass it.
  */
-const RUN_FLAG_WITH_VALUE =
-  /^(?:-[acehlmpuvw]|--(?:add-host|attach|cap-add|cap-drop|cgroupns|cidfile|cpus|device|dns|entrypoint|env|env-file|expose|gpus|group-add|health-cmd|hostname|ipc|label|label-file|link|log-driver|log-opt|memory|memory-swap|mount|name|net|network|pid|platform|publish|pull|restart|runtime|security-opt|shm-size|stop-signal|stop-timeout|storage-opt|sysctl|tmpfs|ulimit|user|userns|uts|volume|volumes-from|workdir))$/;
+const RUN_FLAG_WITH_VALUE = new RegExp(
+  `^(?:-[acehlmpuvw]|--(?:${[
+    'add-host',
+    'annotation',
+    'attach',
+    'blkio-weight',
+    'blkio-weight-device',
+    'cap-add',
+    'cap-drop',
+    'cgroup-parent',
+    'cgroupns',
+    'cidfile',
+    'cpu-period',
+    'cpu-quota',
+    'cpu-rt-period',
+    'cpu-rt-runtime',
+    'cpu-shares',
+    'cpus',
+    'cpuset-cpus',
+    'cpuset-mems',
+    'detach-keys',
+    'device',
+    'device-cgroup-rule',
+    'device-read-bps',
+    'device-read-iops',
+    'device-write-bps',
+    'device-write-iops',
+    'dns',
+    'dns-option',
+    'dns-search',
+    'domainname',
+    'entrypoint',
+    'env',
+    'env-file',
+    'expose',
+    'gpus',
+    'group-add',
+    'health-cmd',
+    'health-interval',
+    'health-retries',
+    'health-start-interval',
+    'health-start-period',
+    'health-timeout',
+    'hostname',
+    'ip',
+    'ip6',
+    'ipc',
+    'isolation',
+    'label',
+    'label-file',
+    'link',
+    'link-local-ip',
+    'log-driver',
+    'log-opt',
+    'mac-address',
+    'memory',
+    'memory-reservation',
+    'memory-swap',
+    'memory-swappiness',
+    'mount',
+    'name',
+    'net',
+    'network',
+    'network-alias',
+    'oom-score-adj',
+    'pid',
+    'pids-limit',
+    'platform',
+    'publish',
+    'pull',
+    'restart',
+    'runtime',
+    'security-opt',
+    'shm-size',
+    'stop-signal',
+    'stop-timeout',
+    'storage-opt',
+    'sysctl',
+    'tmpfs',
+    'ulimit',
+    'user',
+    'userns',
+    'uts',
+    'volume',
+    'volume-driver',
+    'volumes-from',
+    'workdir',
+  ].join('|')}))$`,
+);
 
 /** The first two words of a command after `start`, past flags, and the values of the flags `withValue` names. */
 function words(command: string, start: RegExp, withValue: RegExp): string[] {
@@ -76,10 +164,14 @@ function words(command: string, start: RegExp, withValue: RegExp): string[] {
 function dockerKind(command: string): 'pull' | 'run' | 'build' | 'compose' | undefined {
   if (/^(?:echo|printf)\b/.test(command)) return undefined;
   const [first, second] = words(command, /(?:^|[\s(])docker\s+(.*)$/, DOCKER_FLAG_WITH_VALUE);
-  const verb = first === 'container' || first === 'image' || first === 'buildx' ? second : first;
+  const verb =
+    first === 'container' || first === 'image' || first === 'buildx' || first === 'builder'
+      ? second
+      : first;
   if (verb === 'pull') return 'pull';
   if (verb === 'run' || verb === 'create') return 'run';
-  if (verb === 'build' || (first === 'buildx' && verb === 'bake')) return 'build';
+  // `docker bake` is `docker buildx bake`, and `b` is buildx's short name for `build`.
+  if (verb === 'build' || verb === 'bake' || (first === 'buildx' && verb === 'b')) return 'build';
   return first === 'compose' ? 'compose' : undefined;
 }
 
@@ -117,7 +209,7 @@ function composeSubcommand(command: string): string | undefined {
 function problems(sh: string): string[] {
   // The standalone `docker-compose` of Compose v1 is read as `docker compose`: it starts and pulls alike.
   const code = commands(sh).map((c) =>
-    c.replace(/(^|[\s(])docker-compose(?=\s|$)/g, '$1docker compose'),
+    c.replace(/(^|[\s(])(?:[\w./-]*\/)?docker-compose(?=\s|$)/g, '$1docker compose'),
   );
   const usesHelper =
     code.some((c) => /^(?:\.|source)\s.*docker-pull\.sh\b/.test(c)) &&
@@ -154,7 +246,7 @@ function problems(sh: string): string[] {
   for (const c of code) {
     const kind = dockerKind(c);
     const sub = kind === 'compose' ? composeSubcommand(c) : undefined;
-    if (sub === 'up' || sub === 'run' || sub === 'create') {
+    if (sub === 'up' || sub === 'run' || sub === 'create' || sub === 'watch') {
       if (!NEVER_PULLS.test(c)) found.push(`starts compose without --pull never: ${c}`);
     } else if (sub === 'pull') {
       found.push(`pulls through compose, which nothing retries: ${c}`);
@@ -257,8 +349,13 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       'docker compose --profile ci up -d',
       'docker -H tcp://127.0.0.1:2375 run --rm "$IMAGE" true',
       'docker-compose up -d',
+      '/usr/local/bin/docker-compose up -d',
       'docker-compose pull',
       'docker buildx bake',
+      'docker bake',
+      'docker buildx b .',
+      'docker builder build .',
+      'docker compose watch',
       // The run name is mentioned, and another image is run.
       'docker run --rm -e X="$RUN_IMAGE" alpine true',
       'docker run --rm --entrypoint "$RUN_IMAGE" alpine',
@@ -280,6 +377,7 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     for (const sh of [
       'docker run --rm --entrypoint bash -e V="$V" -v "$A:/a:ro" "$RUN_IMAGE" -lc true',
       'docker run --rm --memory="$MEM" --memory-swap="$MEM" -v "$S:/stage" "${RUN_IMAGE}" bash',
+      'docker run --rm --pids-limit 64 --cpuset-cpus 0 --network-alias x --ip6 ::1 "$RUN_IMAGE" true',
       'docker container run -d --name x -p 80:80 $RUN_IMAGE',
       'docker-compose up -d --pull never',
     ]) {

@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -56,8 +57,11 @@ case "$1" in
     exit 0 ;;
   save)
     [ "$2" = -o ] || exit 2
-    # A save that fails part-way leaves what it wrote, as docker's does once any of the image has been written.
-    if [ -n "$STUB_FAIL_SAVE" ] && [[ "$4" == *"$STUB_FAIL_SAVE"* ]]; then printf 'partial' >"$3"; exit 1; fi
+    # A save that fails leaves nothing at its path: docker writes to a temporary file beside it, and renames it only
+    # when done. A save killed part-way leaves that file.
+    if [ -n "$STUB_FAIL_SAVE" ] && [[ "$4" == *"$STUB_FAIL_SAVE"* ]]; then
+      printf 'partial' >"$(dirname "$3")/.tmp-$(basename "$3")123"; exit 1
+    fi
     [ -e "$STUB/images/$(present "$4")" ] || exit 1
     printf '%s' "$4" >"$3"
     exit 0 ;;
@@ -342,6 +346,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     const r = w.run(pull(TAG), { ...CACHE(), STUB_FAIL_PULLS: TAG });
     expect(r.code).toBe(1);
     expect(r.out).toContain(`FAILED after 5 attempts: ${TAG}`);
+    expect(r.out).not.toContain('stalled'); // a refusal is not reported as a stall
     expect(w.sleeps()).toEqual(['10', '20', '30', '40']); // a linear backoff, waited out in turn
   });
 
@@ -416,11 +421,11 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
     expect(w.run(prune, CACHE()).stdout).toBe('false\n');
   });
 
-  it('saves nothing when a save was cut short with no earlier copy, even when that could not be marked', () => {
-    w.run(pull(DIGEST), CACHE());
-    writeFileSync(`${tarOf(w, TAG)}.part`, 'a save cut short'); // and no .incomplete: it could not be written
+  it('drops the temporary file a save cut short left, so no save keeps it', () => {
+    expect(w.run(pull(TAG), { ...CACHE(), STUB_FAIL_SAVE: idOf(TAG) }).code).toBe(0);
+    expect(readdirSync(w.cache).some((f) => f.startsWith('.tmp-'))).toBe(true);
     expect(w.run(prune, CACHE()).stdout).toBe('false\n');
-    expect(existsSync(`${tarOf(w, TAG)}.part`)).toBe(false);
+    expect(readdirSync(w.cache).filter((f) => f.startsWith('.tmp-'))).toEqual([]);
   });
 
   it('keeps going when neither the pull nor the older copy can be recorded, and saves nothing', () => {
@@ -455,7 +460,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   it('says the last pull stalled when it did and no copy is kept', () => {
     const r = w.run(pull(TAG), { ...CACHE(), STUB_FAIL_QUIET_PULLS: TAG, STUB_STALL_LOUD: TAG });
     expect(r.code).toBe(1);
-    expect(r.out).toContain(`FAILED: the last pull of ${TAG} stalled (no answer in 180s)`);
+    expect(r.out).toContain(`FAILED: the last pull of ${TAG} stalled (cut off after 180s)`);
   });
 
   it('counts stalls in all, not in a row: a stall, a refusal and a stall end the tries at the third attempt', () => {
@@ -771,7 +776,8 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     existsSync(join(ROOT, file)) ? readFileSync(join(ROOT, file), 'utf8') : undefined;
   /**
    * The scripts a shell text runs that pull through the helper, the helper itself aside: each such script it runs,
-   * and each one a script it runs runs in turn, at any depth under `scripts/`. `read` gives a file's text.
+   * and each one a script it runs runs in turn, three scripts deep, under any directory of `scripts/`. `read` gives a
+   * file's text.
    */
   const pullingScriptsIn = (run: string, read = repoFile, depth = 0): string[] =>
     scriptsIn(run).flatMap((file) => {
@@ -820,6 +826,15 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
     return found;
   };
   const stepName = (s: Step) => s.name ?? s.run ?? s.uses ?? '(unnamed step)';
+  /**
+   * A condition with its status functions written as the patterns below read them. GitHub reads a function's name in
+   * any case, with space before its brackets, so `Always ()` is `always()`.
+   */
+  const statusOf = (condition: string) =>
+    condition.replace(
+      /\b(success|failure|always|cancelled)\s*\(\s*\)/gi,
+      (_m, name: string) => `${name.toLowerCase()}()`,
+    );
   /** A condition that is the default, `success()`, spelled out or left out. */
   const ON_SUCCESS = /^\s*(?:\$\{\{\s*)?success\(\)\s*(?:\}\})?\s*$/;
   /**
@@ -827,11 +842,25 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
    * names no status function, so `github.ref == 'refs/heads/main'` does; so does `success() && …` with nothing that
    * could let a failure through after it.
    */
-  const savesOnlyOnSuccess = (condition: string) =>
-    !/\b(?:success|failure|always|cancelled)\(\)/.test(condition) ||
-    ON_SUCCESS.test(condition) ||
-    (/^\s*(?:\$\{\{\s*)?success\(\)\s*&&[^|]*$/.test(condition) &&
-      !/\b(?:failure|always|cancelled)\(\)/.test(condition));
+  const savesOnlyOnSuccess = (written: string) => {
+    const condition = statusOf(written);
+    return (
+      !/\b(?:success|failure|always|cancelled)\(\)/.test(condition) ||
+      ON_SUCCESS.test(condition) ||
+      (/^\s*(?:\$\{\{\s*)?success\(\)\s*&&[^|]*$/.test(condition) &&
+        !/\b(?:failure|always|cancelled)\(\)/.test(condition))
+    );
+  };
+  /**
+   * Whether a step can let the command it runs fail and still pass: an `||` after it, `set +e`, or a shell that does
+   * not stop at a failed command. GitHub's `bash` and `sh`, and no `shell:` at all, stop at one.
+   */
+  const swallows = (step: Step) =>
+    /\|\|/.test(step.run ?? '') ||
+    /(?:^|[\s;&])set\s+\+e\b/.test(step.run ?? '') ||
+    (step.shell !== undefined &&
+      !/^\s*(?:bash|sh)\s*$/.test(step.shell) &&
+      !/\s-[a-z]*e/.test(step.shell));
   /**
    * A condition under which a step runs on every run whose save runs, or on none: nothing that can skip a test while
    * the save goes ahead.
@@ -849,14 +878,17 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
    */
   const problemsOf = (job: Job, read = repoFile): string[] => {
     const steps = job.steps ?? [];
+    // A pull written in the workflow has no file of its own for the key to hash, so a re-pin there changes no key.
+    const found = steps
+      .filter((s) => pullsThroughHelper(s.run ?? ''))
+      .map((s) => `pulls in ${stepName(s)} itself: move the pull into a script under scripts/`);
     const at = steps.flatMap((s, i) => {
       const [script] = pullingScriptsIn(s.run ?? '', read);
       return script === undefined ? [] : [{ i, script, run: s.run ?? '' }];
     });
     const first = at[0];
     const last = at.at(-1);
-    if (first === undefined || last === undefined) return [];
-    const found: string[] = [];
+    if (first === undefined || last === undefined) return found;
     const restore = steps.findIndex((s) => s.uses === RESTORE);
     const save = steps.findIndex((s) => s.uses === SAVE);
     if (restore < 0 || restore > first.i) found.push('restores no cache before its first pull');
@@ -869,19 +901,15 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
         found.push(`saves its cache if ${condition}, which can save after a step failed`);
       }
       for (const between of steps.slice(Math.max(restore, 0) + 1, save)) {
-        if (between.if !== undefined && !RUNS_WITH_THE_SAVE.test(between.if)) {
+        if (between.if !== undefined && !RUNS_WITH_THE_SAVE.test(statusOf(between.if))) {
           found.push(
             `runs ${stepName(between)} only if ${between.if}, and saves whether or not it ran`,
           );
         }
       }
       for (const later of steps.slice(save + 1)) {
-        if (!CLEANUP.test(later.if ?? '')) found.push(`runs ${stepName(later)} after the save`);
-      }
-      for (const earlier of steps.slice(0, save)) {
-        const soft = earlier['continue-on-error'];
-        if (soft !== undefined && soft !== false && soft !== 'false') {
-          found.push(`lets ${stepName(earlier)} fail and still saves`);
+        if (!CLEANUP.test(statusOf(later.if ?? ''))) {
+          found.push(`runs ${stepName(later)} after the save`);
         }
       }
       const tests = steps.findIndex((s) =>
@@ -889,6 +917,16 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
           (m) => packageScriptOf('pnpm', m[1] ?? '') === 'test:integration',
         ),
       );
+      steps.slice(0, save).forEach((earlier, i) => {
+        const soft = earlier['continue-on-error'];
+        const checked = i === tests || at.some((p) => p.i === i);
+        if (
+          (soft !== undefined && soft !== false && soft !== 'false') ||
+          (checked && swallows(earlier))
+        ) {
+          found.push(`lets ${stepName(earlier)} fail and still saves`);
+        }
+      });
       if (first.script === 'scripts/ci-backend-images.sh') {
         if (tests < 0) found.push('runs no tests before its save');
         else if (save < tests) found.push('saves before its tests run');
@@ -932,7 +970,9 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       names.filter((b) => a !== b && b.startsWith(`${a}-`)).map((b) => `${a} begins ${b}`),
     );
   const pulling = jobs().filter(({ job }) =>
-    (job.steps ?? []).some((s) => pullingScriptsIn(s.run ?? '').length > 0),
+    (job.steps ?? []).some(
+      (s) => pullingScriptsIn(s.run ?? '').length > 0 || pullsThroughHelper(s.run ?? ''),
+    ),
   );
 
   it('finds the jobs, derived from every workflow, so a rename cannot make this vacuous', () => {
@@ -1006,6 +1046,16 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
         job(restore, pull, save, { if: 'success() || failure()', run: 'x' }),
       ],
       ['a log dump on failure', job(restore, pull, save, { if: 'failure()', run: 'x' })],
+      ['a cleanup, capitalised', job(restore, pull, save, { if: 'Always()', run: 'x' })],
+      ['the pull in bash, named', job(restore, { ...pull, shell: 'bash' }, save)],
+      [
+        'the pull in a shell that stops',
+        job(restore, { ...pull, shell: 'bash --noprofile --norc -eo pipefail {0}' }, save),
+      ],
+      [
+        'an || in a step that neither pulls nor tests',
+        job(restore, { run: 'df -h || true' }, pull, save),
+      ],
       [
         'a log dump on failure before the save',
         job(restore, pull, { if: 'failure()', run: 'x' }, save),
@@ -1061,6 +1111,34 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       [
         'a save on success or a push',
         job(restore, pull, { ...save, if: "success() || github.event_name == 'push'" }),
+      ],
+      ['a save whatever happened, capitalised', job(restore, pull, { ...save, if: 'Always()' })],
+      ['a save whatever happened, spaced', job(restore, pull, { ...save, if: 'always ()' })],
+      [
+        'a save on success or failure, capitalised',
+        job(restore, pull, { ...save, if: 'Success() || Failure()' }),
+      ],
+      [
+        'a save on success on main, or on any push',
+        job(restore, pull, {
+          ...save,
+          if: "success() && github.ref == 'refs/heads/main' || github.event_name == 'push'",
+        }),
+      ],
+      ['the pull allowed to fail by ||', job(restore, { run: 'pnpm rss-gate || true' }, save)],
+      ['the pull under set +e', job(restore, { run: 'set +e\npnpm rss-gate\necho done' }, save)],
+      [
+        'the pull in a shell that does not stop',
+        job(restore, { run: 'pnpm rss-gate\necho done', shell: 'bash {0}' }, save),
+      ],
+      [
+        'a pull written in the workflow',
+        job(
+          restore,
+          pull,
+          { run: '. scripts/lib/docker-pull.sh\ndocker_pull_with_backoff alpine:3' },
+          save,
+        ),
       ],
       [
         'a step before the save that runs only on a push',
@@ -1162,6 +1240,10 @@ describe('every CI job that pulls an image keeps it in the cache', () => {
       problemsOf(job(kept, backends, up, { run: 'pnpm -s test:integration' }, save)),
       'tests run with a flag',
     ).toEqual([]);
+    expect(
+      problemsOf(job(kept, backends, up, { run: 'pnpm test:integration || echo failed' }, save)),
+      'tests allowed to fail by ||',
+    ).toEqual(['lets pnpm test:integration || echo failed fail and still saves']);
     expect(
       problemsOf(job(kept, backends, { run: 'docker compose up -d --pull never' }, tests, save)),
     ).toHaveLength(1);

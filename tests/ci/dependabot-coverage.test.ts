@@ -57,27 +57,40 @@ const ACTIONS_DIRS = dirsOf('github-actions');
  */
 const COMPOSITE_DIRS = compositeActionFiles().map((f) => `/${dirname(f)}`);
 
+/** A directory glob as a regular expression: `**` then a slash spans any number of segments, any other `*` run one. */
+const globRe = (pattern: string, star = '[^/]*') =>
+  new RegExp(
+    `^${pattern
+      .split(/(\*\*\/|\*+)/)
+      .map((p) =>
+        p === '**/'
+          ? '(?:[^/]+/)*'
+          : p.startsWith('*')
+            ? star
+            : p.replace(/[.+?^${}()|[\]\\]/g, '\\$&'),
+      )
+      .join('')}$`,
+  );
+
 /**
  * Whether a Dependabot directory names `dir`. Dependabot expands the glob with Ruby's `Dir.glob`, dotfiles included:
  * `**` followed by a slash spans any number of path segments, and `*` stays inside one, as does a `**` with no slash
- * after it. Dotfiles included means `.` too, so a pattern whose last segment matches `.`, as a `*` does, also names
- * the directory that segment is in, as `dir/.`. A `*` before the last that matches `.` is not modelled, so a directory
- * only it would name fails this test. Any other glob syntax is read literally, so it makes this test fail rather than wave a directory
- * through.
+ * after it. Dotfiles included means `.` too, but only at the first segment the glob reads with a wildcard: there a
+ * `*`, or a `**` and a slash that matched nothing and then a `*`, can be `.`, and `a/./b` names `a/b`. No later
+ * wildcard is `.`, so `/.github/actions/*` names `/.github/actions`, and a pattern with a second `*` segment after it does not. Any
+ * other glob syntax is read literally, so it makes this test fail rather than wave a directory through.
  */
 function names(pattern: string, dir: string): boolean {
-  const source = pattern
-    .split(/(\*\*\/|\*+)/)
-    .map((p) =>
-      p === '**/'
-        ? '(?:[^/]+/)*'
-        : p.startsWith('*')
-          ? '[^/]*'
-          : p.replace(/[.+?^${}()|[\]\\]/g, '\\$&'),
-    )
-    .join('');
-  const re = new RegExp(`^${source}$`);
-  return re.test(dir) || re.test(`${dir === '/' ? '' : dir}/.`);
+  if (globRe(pattern).test(dir)) return true;
+  const segments = pattern.split('/');
+  const k = segments.findIndex((s) => s.includes('*'));
+  if (k < 0 || !/^\*+$/.test(segments[k] ?? '')) return false;
+  // The first wildcard read as `.`: one `*` segment, or a `**` and the `*` after it.
+  const deeper = segments[k] === '**' && k < segments.length - 1;
+  const drop = !deeper ? 1 : /^\*+$/.test(segments[k + 1] ?? '') ? 2 : 0;
+  if (drop === 0) return false;
+  const rest = [...segments.slice(0, k), ...segments.slice(k + drop)].join('/') || '/';
+  return rest === '/' ? dir === '/' : globRe(rest, '[^/]+').test(dir);
 }
 
 describe('dependabot covers every install in the repo', () => {
@@ -115,9 +128,21 @@ describe('dependabot covers every install in the repo', () => {
       ['/.github/actions/**/*', '/.github/actions/a/b/c', true],
       ['/.github/actions/**/*', '/.github/actions', true],
       ['/.github/actions/*', '/.github', false],
-      // Only the last `*` names the directory it is in: `Dir.glob` returns `.github/actions/a/b`, not `…/./.`.
-      ['/.github/actions/*/*', '/.github/actions', false],
       ['/*', '/', true],
+      // Each of these from `Dir.glob(p, File::FNM_DOTMATCH)` on Ruby 3.4.10, over a planted tree: only the first
+      // wildcard is `.`, so `.github/actions/*/*` returns `.github/actions/./a` and never `.github/actions/./.`.
+      ['/.github/actions/*/*', '/.github/actions', false],
+      ['/.github/actions/*/*', '/.github/actions/a', true],
+      ['/*/actions/*', '/actions/z', true],
+      ['/*/actions/*', '/.github/actions', false],
+      ['/.github/*/group/*', '/.github/actions/group', false],
+      ['/.github/*/group/*', '/.github/actions/group/one', true],
+      ['/*/actions', '/actions', true],
+      ['/*/*', '/.github', true],
+      ['/*/*', '/', false],
+      ['/.github/actions/*/**/*', '/.github/actions/b/c', true],
+      ['/.github/actions/*/**/*', '/.github/actions', false],
+      ['/**/*', '/', true],
       ['/fuzz', '/fuzzy', false],
       ['/a.b', '/axb', false],
       // Glob syntax this does not model reads literally, so the test fails rather than wave a directory through.
