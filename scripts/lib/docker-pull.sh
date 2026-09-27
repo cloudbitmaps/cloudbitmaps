@@ -13,8 +13,9 @@
 #
 # Failing loudly still matters. Throttling is transient; a typo'd tag or a deleted image is not, and a retry
 # loop that swallows both is worse than no retry at all. So on the final attempt this re-runs the pull WITHOUT
-# suppressing output, putting the registry's actual error in the log. It then returns non-zero, unless CI's cache
-# (below) holds a copy of the image: then the copy stands in, and the run is warned.
+# suppressing output, putting the registry's actual error in the log. If that pull succeeds, so does the call. If
+# not, it returns non-zero, unless CI's cache (below) holds a copy of the image: then the copy stands in, and the run
+# is warned.
 #
 # THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io began refusing anonymous
 # pulls of MinIO in September 2026, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
@@ -23,13 +24,16 @@
 # With DOCKER_IMAGE_CACHE set to a directory, which CI keeps in the Actions cache, each image pulled is also saved
 # there, and a later run uses the copy:
 #   - without asking the registry when DOCKER_IMAGE_CACHE_HIT is `true`, which CI sets when it restored the entry
-#     saved this month for the files that name the images and for this helper. Otherwise the image is pulled
-#     again: a tag for its newer build, and a digest to learn whether the registry still serves it. So each image
-#     is asked for once a month, and again whenever one of those files changes;
-#   - when a pull fails after every attempt, whatever the month: the log says so, and in GitHub Actions the run
-#     carries a warning. A registry that has stopped serving an image is seen there before the cache loses its copy,
-#     which it does after a week in which no run restores it.
-# A registry that changes its rules then fails a run only when the cache holds no copy of the image at all.
+#     saved this month, on this runner image, for the files that name the images and for this helper. Otherwise the
+#     image is pulled again: a tag for its newer build, and a digest to learn whether the registry still serves it.
+#     So each image is asked for once a month, and again whenever one of those things changes;
+#   - when a pull fails after every attempt, or stalls, whatever the month: the log says so, and in GitHub Actions
+#     the run carries a warning. Only the run that asks warns: its save keeps the copy under the month's key, and
+#     the runs after it that month load the copy without asking. So a registry that has stopped serving an image is
+#     seen once a month, before the cache loses its copy, which it does after a week in which no run restores it.
+# A registry that changes its rules then fails a run only when the cache holds no copy of the image at all. CI saves
+# only from a run that passed, so a broken build of a tag is not kept. To drop a copy all the same, delete that job's
+# entries (`gh cache list --key docker-images-<job>-`, then `gh cache delete <key>`): the next run asks again.
 # Unset, as it is for anyone running these scripts by hand, the cache does nothing.
 
 # Usage: docker_pull_with_backoff <image> [max-attempts]
@@ -39,30 +43,38 @@ docker_pull_with_backoff() {
   local cached=""
   if [ -n "${DOCKER_IMAGE_CACHE:-}" ]; then
     cached="$(docker_image_cache_file "$img")"
-    if [ -f "$cached" ] && [ "${DOCKER_IMAGE_CACHE_HIT:-}" = true ] && docker_image_load "$img" "$cached"; then
-      echo "docker-pull: $img from the cache" >&2
-      return 0
+    if [ -f "$cached" ] && [ "${DOCKER_IMAGE_CACHE_HIT:-}" = true ]; then
+      if docker_image_load "$img" "$cached"; then
+        echo "docker-pull: $img from the cache" >&2
+        return 0
+      fi
+      echo "docker-pull: the copy of $img the cache kept did not load; pulling it" >&2
     fi
   fi
-  local attempt=1
+  local attempt=1 rc
   while :; do
-    if docker pull -q "$img" >/dev/null 2>&1; then
+    # Tested, not run bare: the callers run under `set -e`, which a failed attempt must not end.
+    if docker_pull_attempt -q "$img" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then
       [ "$attempt" -gt 1 ] && echo "docker-pull: ok $img (attempt $attempt)" >&2
       docker_image_keep "$img" "$cached"
       return 0
     fi
+    # A pull that stalls is not a throttle, and waiting on more of them only runs down the job's timeout: with a copy
+    # kept, use it now.
+    if [ "$rc" -eq 124 ] && [ -n "$cached" ] && [ -f "$cached" ]; then
+      echo "docker-pull: the pull of $img stalled" >&2
+      docker_image_fall_back "$img" "$cached" "stalled" && return 0
+    fi
     if [ "$attempt" -ge "$attempts" ]; then
       echo "docker-pull: FAILED after $attempts attempts: $img" >&2
       echo "docker-pull: re-running once with output so the real error is visible ↓" >&2
-      if docker pull "$img" >&2; then
+      if docker_pull_attempt "$img" >&2; then
         docker_image_keep "$img" "$cached"
         return 0
       fi
-      # The copy an earlier run kept is this image, or an earlier build of its tag: a run on it tests what the last
-      # run tested, where no image at all tests nothing.
-      if [ -n "$cached" ] && [ -f "$cached" ] && docker_image_load "$img" "$cached"; then
-        docker_pull_warning "using the copy of $img the cache kept from an earlier run: the registry refused it"
-        return 0
+      if [ -n "$cached" ] && [ -f "$cached" ]; then
+        docker_image_fall_back "$img" "$cached" "refused it" && return 0
       fi
       return 1
     fi
@@ -74,9 +86,39 @@ docker_pull_with_backoff() {
   done
 }
 
+# One pull. With DOCKER_IMAGE_CACHE set, as CI sets it, it is bounded where `timeout` exists (DOCKER_PULL_TIMEOUT
+# seconds, 180 by default): `docker pull` sets no bound of its own, so a registry that accepts a connection and then
+# stops answering would otherwise hold the job until its timeout. 124 means it stalled. By hand it is not bounded: over
+# a slow link one layer can take longer than that, and whoever is watching can stop it.
+docker_pull_attempt() {
+  if [ -n "${DOCKER_IMAGE_CACHE:-}" ] && command -v timeout >/dev/null 2>&1; then
+    timeout "${DOCKER_PULL_TIMEOUT:-180}" docker pull "$@"
+  else
+    docker pull "$@"
+  fi
+}
+
+# Load the copy an earlier run kept, in place of a pull that failed: it is this image, or an earlier build of its
+# tag, and a run on it tests what the last run tested, where no image at all tests nothing. $3 says what the
+# registry did.
+docker_image_fall_back() {
+  if docker_image_load "$1" "$2"; then
+    docker_pull_warning "using the copy of $1 the cache kept from an earlier run: the registry $3"
+    return 0
+  fi
+  echo "docker-pull: the copy of $1 the cache kept did not load either" >&2
+  return 1
+}
+
 # The part of a cache name that is the image: a hash of the reference it was pulled by, so a re-pinned image is a
 # new file and nothing pulled for one reference stands in for another.
-docker_image_cache_id() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+docker_image_cache_id() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-16
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-16 # older macOS has shasum but no sha256sum
+  fi
+}
 docker_image_cache_file() { printf '%s/%s.tar' "$DOCKER_IMAGE_CACHE" "$(docker_image_cache_id "$1")"; }
 
 # The local name a cached image is saved and loaded under. A loaded image answers only to the names it was saved
@@ -109,10 +151,20 @@ docker_pull_warning() {
   return 0
 }
 
-# Keep a pulled image in the cache, when there is one. Failing to keep it is said, and is not a failed pull.
+# Keep a pulled image in the cache, when there is one. Failing to keep it is said, and is not a failed pull. The copy
+# an earlier run kept then stays, whole, since a save writes beside it and takes its place only when done. With no
+# such copy the cache now lacks this image, so it is marked incomplete, and not saved (docker_image_cache_prune): a
+# month's entry is never written again, and one lacking an image would lack it all month.
 docker_image_keep() {
   [ -n "$2" ] || return 0
-  docker_image_save "$1" "$2" || echo "docker-pull: pulled $1, but could not keep it in the cache" >&2
+  docker_image_save "$1" "$2" && return 0
+  echo "docker-pull: pulled $1, but could not keep it in the cache" >&2
+  if [ -f "$2" ]; then
+    docker_image_cache_used "$2"
+  else
+    : 2>/dev/null >"$DOCKER_IMAGE_CACHE/.incomplete" || true
+  fi
+  return 0
 }
 
 docker_image_save() {
@@ -137,8 +189,8 @@ docker_image_load() {
 # Which files this run used, so the ones it did not are dropped before the cache is saved (docker_image_cache_prune).
 docker_image_cache_used() { basename "$1" >>"$DOCKER_IMAGE_CACHE/.used"; }
 
-# Drop every file this run did not use, so an image re-pinned away leaves the cache. Prints whether any file is left:
-# CI saves the cache only if one is.
+# Drop every file this run did not use, so an image re-pinned away leaves the cache. Prints whether the cache is worth
+# saving: some file is left, and no image this run pulled went unkept (docker_image_keep). CI saves it only then.
 docker_image_cache_prune() {
   local file kept=false
   for file in "$DOCKER_IMAGE_CACHE"/*.tar; do
@@ -149,6 +201,7 @@ docker_image_cache_prune() {
       rm -f "$file"
     fi
   done
-  rm -f "$DOCKER_IMAGE_CACHE/.used" "$DOCKER_IMAGE_CACHE"/*.part
+  [ -e "$DOCKER_IMAGE_CACHE/.incomplete" ] && kept=false
+  rm -f "$DOCKER_IMAGE_CACHE/.used" "$DOCKER_IMAGE_CACHE/.incomplete" "$DOCKER_IMAGE_CACHE"/*.part
   echo "$kept"
 }

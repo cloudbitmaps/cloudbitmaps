@@ -22,9 +22,12 @@ export interface Step {
 }
 
 export interface Job {
+  /** A job that calls a reusable workflow names it here, and has no steps of its own. */
+  uses?: string;
   steps?: Step[];
   services?: unknown;
   container?: unknown;
+  strategy?: { matrix?: unknown };
 }
 
 /** A file under the root, parsed as YAML. */

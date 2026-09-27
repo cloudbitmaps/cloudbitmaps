@@ -42,8 +42,9 @@ updates:
 
   # `/` reads .github/workflows and a root action.yml, and nothing below .github/actions, where the composite actions
   # pin actions too: those directories are named, and globbed so a new one is covered the day it lands. A group
-  # spans directories, so a minor or patch bump anywhere is still this one monthly pull request. A major, which the
-  # group leaves out, arrives as one pull request per directory it is in.
+  # spans directories, so a minor or patch bump anywhere is still this one monthly pull request. A major is grouped
+  # by name alone, so it still arrives on its own, but in one pull request for every directory that pins that action:
+  # split by directory, the restore and save actions could be merged a major apart.
   - package-ecosystem: github-actions
     directories:
       - /
@@ -60,3 +61,7 @@ updates:
         update-types:
           - minor
           - patch
+      github-actions-major:
+        group-by: dependency-name
+        update-types:
+          - major

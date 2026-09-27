@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROOT, jobs } from '../helpers/workflows';
+import { ROOT, compositeActionFiles, jobs, readYaml } from '../helpers/workflows';
 
 // Every place that runs a container must absorb a registry throttle. This test exists because the rule was
 // implemented in exactly one of the three places that needed it.
@@ -13,13 +13,15 @@ import { ROOT, jobs } from '../helpers/workflows';
 //
 // The trap is that `docker run` pulls IMPLICITLY on a cache miss. There is no pull step to notice missing, so
 // "we don't pull here" is never true — the pull happens either way, and only an explicit one can be retried.
-// Hence the shape of the assertions: a command that can pull goes through the shared helper, and a compose
-// command that starts containers is told never to pull, since the helper made its images local a step before.
+// Hence the shape of the assertions: a command that can pull goes through the shared helper and runs the image by
+// the name the helper gives, and a compose command that starts containers is told never to pull, since the helper
+// made its images local a step before.
 const HELPER = 'scripts/lib/docker-pull.sh';
 
 /**
  * The commands in a shell text: line continuations joined, full-line comments dropped, then split at line ends and
- * at `&&`, `||`, `;` and `|`. Crude, and enough to find the `docker` commands in a script or a step.
+ * at `&&`, `||`, `;` and `|`, with a trailing `# comment` cut. Crude, and enough to find the `docker` commands in a
+ * script or a step.
  */
 function commands(sh: string): string[] {
   return sh
@@ -27,26 +29,48 @@ function commands(sh: string): string[] {
     .split(/\r?\n/)
     .filter((line) => !line.trimStart().startsWith('#'))
     .flatMap((line) => line.split(/&&|\|\||;|\|/))
-    .map((c) => c.trim())
+    .map((c) => c.replace(/\s#\s.*$/, '').trim())
     .filter((c) => c !== '');
 }
 
-/** `docker pull`, and what pulls a missing image implicitly: `run` and `create`, bare or under `container`. */
-const DOCKER_PULLS = /\bdocker\s+(?:(?:container\s+)?(?:run|create)|(?:image\s+)?pull)\b/;
+/** Docker's global flags that take a value: its command is the first word past them. */
+const DOCKER_FLAG_WITH_VALUE =
+  /^(?:-c|--context|-H|--host|--config|-l|--log-level|--tlscacert|--tlscert|--tlskey)$/;
 /** Compose's global flags that take a value: its subcommand is the first word past them. */
 const COMPOSE_FLAG_WITH_VALUE =
   /^(?:-f|--file|-p|--project-name|--project-directory|--profile|--env-file|--ansi|--progress|--parallel)$/;
 const NEVER_PULLS = /\s--pull(?:\s+|=)["']?never["']?(?=\s|$)/;
 
+/** The first two words of a command after `start`, past flags, and the values of the flags `withValue` names. */
+function words(command: string, start: RegExp, withValue: RegExp): string[] {
+  const all = (start.exec(command)?.[1] ?? '').trim().split(/\s+/);
+  const found: string[] = [];
+  for (let i = 0; i < all.length && found.length < 2; i++) {
+    const w = all[i] ?? '';
+    if (withValue.test(w)) i++;
+    else if (w !== '' && !w.startsWith('-')) found.push(w);
+  }
+  return found;
+}
+
+/**
+ * What a docker command asks of a registry, bare or under `container`, `image` or `buildx`: `pull` for a pull; `run`
+ * for `run` and `create`, which pull a missing image implicitly; `build` for a build, which pulls its base image; and
+ * `compose` for compose, read apart. A message that names docker, from `echo` or `printf`, asks nothing.
+ */
+function dockerKind(command: string): 'pull' | 'run' | 'build' | 'compose' | undefined {
+  if (/^(?:echo|printf)\b/.test(command)) return undefined;
+  const [first, second] = words(command, /(?:^|[\s(])docker\s+(.*)$/, DOCKER_FLAG_WITH_VALUE);
+  const verb = first === 'container' || first === 'image' || first === 'buildx' ? second : first;
+  if (verb === 'pull') return 'pull';
+  if (verb === 'run' || verb === 'create') return 'run';
+  if (verb === 'build') return 'build';
+  return first === 'compose' ? 'compose' : undefined;
+}
+
 /** The subcommand of a `docker compose` command, past its global flags and their values. */
 function composeSubcommand(command: string): string | undefined {
-  const words = (/\bdocker\s+compose\b(.*)$/.exec(command)?.[1] ?? '').trim().split(/\s+/);
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i] ?? '';
-    if (COMPOSE_FLAG_WITH_VALUE.test(word)) i++;
-    else if (word !== '' && !word.startsWith('-')) return word;
-  }
-  return undefined;
+  return words(command, /\bdocker\s+compose\b(.*)$/, COMPOSE_FLAG_WITH_VALUE)[0];
 }
 
 /** What is wrong with a shell text, one entry per command at fault. */
@@ -55,19 +79,27 @@ function problems(sh: string): string[] {
   const usesHelper =
     code.some((c) => /^(?:\.|source)\s.*docker-pull\.sh\b/.test(c)) &&
     code.some((c) => /\bdocker_pull_with_backoff\b/.test(c));
+  // The variables that hold a name to run an image by: a copy loaded from the cache runs by its local name alone.
+  const runNames = [...sh.matchAll(/\b([A-Za-z_]\w*)="\$\(docker_image_run_name\b/g)].map(
+    (m) => m[1] ?? '',
+  );
+  const byRunName = (c: string) => runNames.some((v) => new RegExp(`\\$\\{?${v}\\b`).test(c));
   const found: string[] = [];
   for (const c of code) {
-    const sub = /\bdocker\s+compose\b/.test(c) ? composeSubcommand(c) : undefined;
+    const kind = dockerKind(c);
+    const sub = kind === 'compose' ? composeSubcommand(c) : undefined;
     if (sub === 'up' || sub === 'run' || sub === 'create') {
       if (!NEVER_PULLS.test(c)) found.push(`starts compose without --pull never: ${c}`);
     } else if (sub === 'pull') {
       found.push(`pulls through compose, which nothing retries: ${c}`);
-    } else if (
-      (sub === 'config' && /\s--images\b/.test(c)) ||
-      (sub === undefined && DOCKER_PULLS.test(c))
-    ) {
+    } else if (kind === 'build' || sub === 'build') {
+      found.push(`builds, and pulls the base image with nothing to retry it: ${c}`);
+    } else if (kind === 'pull' || kind === 'run' || (sub === 'config' && /\s--images\b/.test(c))) {
       // `config --images` fed the pull loop CI once had inline.
       if (!usesHelper) found.push(`pulls without the shared helper: ${c}`);
+      else if (kind === 'run' && !byRunName(c)) {
+        found.push(`runs an image by a name docker_image_run_name did not give: ${c}`);
+      }
     }
   }
   return found;
@@ -92,23 +124,29 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     // A retry loop that hides a typo'd tag is worse than no retry: on the last attempt it must re-run the pull
     // with output so the registry's actual message reaches the log, then return non-zero.
     expect(src).toMatch(/return 1/);
-    expect(src).toMatch(/docker pull "\$img" >&2/);
+    expect(src).toMatch(/docker_pull_attempt "\$img" >&2/);
     expect(src).toMatch(/sleep \$\(\(attempt \* 10\)\)/);
   });
 
   it('reads commands, not text: each pulling form is caught, and its look-alikes are not', () => {
+    const helped = `. ${HELPER}\ndocker_pull_with_backoff "$IMAGE"\nRUN_IMAGE="$(docker_image_run_name "$IMAGE")"`;
     for (const sh of [
       'docker run --rm alpine true',
       'docker container run alpine',
       'docker create alpine',
       'docker container create alpine',
+      'docker --context default run alpine',
       'docker pull alpine',
       'docker image pull alpine',
       'for img in $(docker compose config --images); do :; done',
     ]) {
       expect(problems(sh), sh).toHaveLength(1);
-      expect(problems(`. ${HELPER}\ndocker_pull_with_backoff "$IMAGE"\n${sh}`), sh).toEqual([]);
+      expect(problems(`${helped}\n${sh.replace(/alpine/, '"$RUN_IMAGE"')}`), sh).toEqual([]);
     }
+    // Through the helper, an image is run by the name docker_image_run_name gives: by any other, a copy the cache
+    // loaded under its local name alone is not found, and the image is pulled again with no retry.
+    expect(problems(`${helped}\ndocker run --rm "$IMAGE" true`)).toHaveLength(1);
+    expect(problems(`${helped}\ndocker run --rm busybox:1.36 true`)).toHaveLength(1);
     for (const sh of [
       'docker compose up -d',
       'docker compose -f docker-compose.yml -f "$RUNNER_TEMP/o.yml" up -d --wait',
@@ -117,8 +155,12 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       'docker compose -f a.yml \\\n  up -d',
       'docker compose up -d --pull never && docker compose -f b.yml up -d',
       'docker compose pull',
+      'docker compose build',
+      'docker build .',
+      'docker buildx build .',
+      'docker image build .',
     ]) {
-      expect(problems(sh), sh).toHaveLength(1);
+      expect(problems(`${helped}\n${sh}`), sh).toHaveLength(1);
     }
     for (const sh of [
       'docker compose up -d --pull never --wait',
@@ -129,12 +171,14 @@ describe('registry throttling is absorbed everywhere a container is started', ()
       'docker compose ps -a || echo "no backend came up"',
       'docker compose config --services',
       'docker image inspect alpine',
+      'docker image inspect alpine # then docker run it',
       'docker container ls',
       'docker save -o f.tar alpine',
       'docker load -q -i f.tar',
       'docker tag a b',
       '# docker run alpine, in a comment',
       'echo "docker-pull: using the copy"',
+      'echo "run: docker run alpine"',
     ]) {
       expect(problems(sh), sh).toEqual([]);
     }
@@ -147,7 +191,7 @@ describe('registry throttling is absorbed everywhere a container is started', ()
 
   it('finds scripts that run containers, so a rename cannot make this suite vacuous', () => {
     const running = shellScripts().filter((f) =>
-      commands(readFileSync(join(ROOT, f), 'utf8')).some((c) => DOCKER_PULLS.test(c)),
+      commands(readFileSync(join(ROOT, f), 'utf8')).some((c) => dockerKind(c) === 'run'),
     );
     expect(running).toEqual(
       expect.arrayContaining([
@@ -158,9 +202,12 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     );
   });
 
-  it.each(shellScripts())('%s pulls only through the helper, and never through compose', (file) => {
-    expect(problems(readFileSync(join(ROOT, file), 'utf8'))).toEqual([]);
-  });
+  it.each(shellScripts())(
+    '%s pulls only through the helper, runs by its name, and never pulls through compose',
+    (file) => {
+      expect(problems(readFileSync(join(ROOT, file), 'utf8'))).toEqual([]);
+    },
+  );
 
   it('every workflow uses the same one implementation, not a fourth copy', () => {
     // FOUR corrections to what this used to check. The first two each let a real defect through.
@@ -177,8 +224,8 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     //    compose's form. A step that starts compose runs on images a step before it made local through the
     //    helper, so it has to say `--pull never`, which makes an image that is not local a failure rather than a
     //    pull that nothing retries.
-    // 4. It read `run:` text only. A job's `services:` or `container:`, and a `uses: docker://` step, are
-    //    pulled by the runner itself, where no helper and no cache can reach.
+    // 4. It read `run:` text only. A job's `services:` or `container:`, a `uses: docker://` step and a composite
+    //    action that runs in a container are pulled by the runner itself, where no helper and no cache can reach.
     const offenders: string[] = [];
     let reading = 0;
     for (const { where, job } of jobs()) {
@@ -192,6 +239,11 @@ describe('registry throttling is absorbed everywhere a container is started', ()
         const run = step.run ?? '';
         if (/\bdocker\s/.test(run)) reading += 1;
         for (const p of problems(run)) offenders.push(`${name}: ${p}`);
+      }
+    }
+    for (const file of compositeActionFiles()) {
+      if (readYaml<{ runs?: { using?: string } }>(file).runs?.using === 'docker') {
+        offenders.push(`${file}: the runner pulls or builds its image itself`);
       }
     }
     expect(reading, 'no workflow step runs docker — has the shape changed?').toBeGreaterThan(0);
