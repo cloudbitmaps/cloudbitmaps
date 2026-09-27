@@ -1,0 +1,17 @@
+name: Save the images a job runs
+description: >-
+  Keeps the images this run used in the Actions cache for the next run, unless the cache docker-images-restore restored
+  was saved for this very key. Images the run did not use are dropped first, so a re-pinned image leaves the cache. Run
+  it with `if: always()`: an image pulled for a run whose tests then failed is the image all the same.
+runs:
+  using: composite
+  steps:
+    - id: prune
+      if: env.DOCKER_IMAGE_CACHE != '' && env.DOCKER_IMAGE_CACHE_HIT != 'true'
+      shell: bash
+      run: . scripts/lib/docker-pull.sh && echo "kept=$(docker_image_cache_prune)" >> "$GITHUB_OUTPUT"
+    - if: steps.prune.outputs.kept == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/docker-images
+        key: ${{ env.DOCKER_IMAGE_CACHE_KEY }}

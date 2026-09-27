@@ -147,26 +147,25 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Pull SERIALLY with backoff before starting anything. `docker compose up` pulls all the images at once,
-      # and every public registry throttles a shared GitHub-runner IP: Docker Hub answers with a 6-hour quota
-      # (`pull rate limit`), public.ecr.aws with a per-second rate (`Rate exceeded`). The second kind clears in
-      # moments, so the fix that actually works is to stop asking for every image simultaneously. Failing here
-      # is a real failure — the retries are what make the difference between throttling and a broken image.
-      - name: Pull backend images (serial, with backoff)
-        run: |
-          set -u
-          # One implementation of the retry, shared with rss-gate.sh and lambda-smoke.sh. It used to be inlined
-          # here only, which is precisely why those two scripts kept dying on a throttle this loop absorbs.
-          . scripts/lib/docker-pull.sh
-          rc=0
-          for img in $(docker compose config --images); do
-            docker_pull_with_backoff "$img" || rc=1
-            sleep 2 # still serial: simultaneous pulls are what provoke the rate limit in the first place
-          done
-          exit "$rc"
+      # The backends' images are kept in the Actions cache, so a registry that refuses or throttles a pull, as quay.io
+      # began refusing MinIO in September 2026 and as Docker Hub throttles the runners' shared IPs, fails a run only
+      # when the cache holds no copy (scripts/lib/docker-pull.sh says when a copy is used).
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: integration
+          files: docker-compose.yml
+      # An image the cache cannot give is pulled one at a time, with backoff, before anything starts: `docker compose
+      # up` pulls them all at once, and every public registry throttles a shared GitHub-runner IP. Failing here is a
+      # real failure: the retries are what make the difference between throttling and a broken image.
+      - name: Load or pull backend images (serial, with backoff)
+        run: scripts/ci-backend-images.sh "$RUNNER_TEMP/backend-images.yml"
+      # Saved before the tests run, so an image pulled for a run whose tests then fail is kept all the same.
+      - if: always()
+        uses: ./.github/actions/docker-images-save
       # `--wait-timeout` so a stuck backend (e.g. an Azurite container that never goes healthy) fails the step fast
-      # with a clear signal instead of hanging until the job timeout. Images are already local by now.
-      - run: docker compose up -d --wait --wait-timeout 300
+      # with a clear signal instead of hanging until the job timeout. Every image is local by now, the override runs
+      # each service on its local copy, and `--pull never` keeps compose from pulling behind the helper's back.
+      - run: docker compose -f docker-compose.yml -f "$RUNNER_TEMP/backend-images.yml" up -d --pull never --wait --wait-timeout 300
       - run: pnpm test:integration
       - if: always()
         run: docker compose down
@@ -188,7 +187,14 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Its image kept in the Actions cache, as the integration job's are.
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: lambda-smoke
+          files: scripts/lambda-smoke.sh
       - run: pnpm lambda-smoke
+      - if: always()
+        uses: ./.github/actions/docker-images-save
 
   rss-gate:
     name: hard RSS ceiling (cgroup --memory)
@@ -215,7 +221,15 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Its image kept in the Actions cache, as the integration job's are: public.ecr.aws answers `Data limit
+      # exceeded` once the runners' shared IPs pass its anonymous quota, and failed this job so in September 2026.
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: rss-gate
+          files: scripts/rss-gate.sh
       - run: pnpm rss-gate
+      - if: always()
+        uses: ./.github/actions/docker-images-save
 
   native-os-matrix:
     name: native addon (${{ matrix.os }}, node ${{ matrix.node }})
@@ -264,7 +278,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/docker-images-restore
+        with:
+          name: lambda-layer
+          files: scripts/build-lambda-layer.sh
       - run: pnpm build-lambda-layer
+      - if: always()
+        uses: ./.github/actions/docker-images-save
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cloudbitmaps-lambda-layer

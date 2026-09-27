@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
@@ -18,18 +18,50 @@ import { parse } from 'yaml';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const HELPER = 'scripts/lib/docker-pull.sh';
 
-/** Shell scripts under `scripts/` that can start a container. */
+/** A pull: `docker pull` or compose's, or `docker run`, which pulls any image that is not local. */
+const PULLS = /\bdocker\s+(?:run|pull)\b|\bdocker\s+compose\b[^\n]*\s(?:pull|config\s+--images)\b/;
+/** A compose command that starts a container, which pulls a missing image unless told never to. */
+const COMPOSE_STARTS = /\bdocker\s+compose\b[^\n]*\s(?:up|run|create)\b/;
+/** Shell with its line continuations joined, so a command split across lines is read as one. */
+const joined = (sh: string) => sh.replace(/\\\r?\n/g, ' ');
+
+/** Shell scripts under `scripts/` that can start or pull a container. */
 function scriptsThatRunContainers(): string[] {
   const dir = join(ROOT, 'scripts');
   return readdirSync(dir)
     .filter((f) => f.endsWith('.sh'))
-    .filter((f) => /\bdocker\s+run\b/.test(readFileSync(join(dir, f), 'utf8')));
+    .filter((f) => {
+      const src = joined(readFileSync(join(dir, f), 'utf8'));
+      return PULLS.test(src) || COMPOSE_STARTS.test(src);
+    });
 }
 
-/** Every workflow, not just `ci.yml`. */
-function workflowFiles(): string[] {
-  const dir = join(ROOT, '.github/workflows');
-  return readdirSync(dir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
+type Step = { name?: string; run?: string };
+
+/** The steps of every job in every workflow, not just `ci.yml`, and of every composite action here. */
+function stepLists(): { where: string; steps: Step[] }[] {
+  const workflows = join(ROOT, '.github/workflows');
+  const actions = join(ROOT, '.github/actions');
+  return [
+    ...readdirSync(workflows)
+      .filter((f) => /\.ya?ml$/.test(f))
+      .flatMap((file) => {
+        const wf = parse(readFileSync(join(workflows, file), 'utf8')) as {
+          jobs?: Record<string, { steps?: Step[] }>;
+        };
+        return Object.entries(wf.jobs ?? {}).map(([job, { steps = [] }]) => ({
+          where: `${file} › ${job}`,
+          steps,
+        }));
+      }),
+    // A composite action's steps run inside the job that uses it, so a pull there is that job's pull.
+    ...(existsSync(actions) ? readdirSync(actions) : []).map((dir) => {
+      const action = parse(readFileSync(join(actions, dir, 'action.yml'), 'utf8')) as {
+        runs?: { steps?: Step[] };
+      };
+      return { where: `.github/actions/${dir}`, steps: action.runs?.steps ?? [] };
+    }),
+  ];
 }
 
 describe('registry throttling is absorbed everywhere a container is started', () => {
@@ -58,7 +90,7 @@ describe('registry throttling is absorbed everywhere a container is started', ()
   });
 
   it('every workflow uses the same one implementation, not a fourth copy', () => {
-    // TWO corrections to what this used to check, both of which let a real defect through.
+    // THREE corrections to what this used to check. The first two each let a real defect through.
     //
     // 1. It matched `docker pull` and `docker compose config --images` — EXPLICIT pulls, which is the
     //    opposite of this file's own stated rationale. The trap named at the top is that `docker run` pulls
@@ -66,22 +98,26 @@ describe('registry throttling is absorbed everywhere a container is started', ()
     //    ci.yml's integration job passed.
     // 2. It read `ci.yml` alone. `release.yml` and `fuzz-nightly.yml` could pull unprotected, and an
     //    explicit unguarded `docker pull` in fuzz-nightly passed the whole suite.
-    //    `runtime-version-policy.test.ts` had to be widened to "EVERY workflow" for the same reason.
+    //    `runtime-version-policy.test.ts` had to be widened to "EVERY workflow" for the same reason, and the
+    //    composite actions are read with the workflows, since their steps run in the jobs that use them.
+    // 3. It passed `docker compose up` unread, and compose pulls a missing image implicitly: the same trap in
+    //    compose's form. A step that starts compose runs on images a step before it made local through the
+    //    helper, so it has to say `--pull never`, which makes an image that is not local a failure rather than a
+    //    pull that nothing retries.
     const offenders: string[] = [];
     let starting = 0;
-    for (const file of workflowFiles()) {
-      const wf = parse(readFileSync(join(ROOT, '.github/workflows', file), 'utf8')) as {
-        jobs?: Record<string, { steps?: { name?: string; run?: string }[] }>;
-      };
-      for (const [jobName, job] of Object.entries(wf.jobs ?? {})) {
-        for (const step of job.steps ?? []) {
-          const run = step.run ?? '';
-          if (!/docker\s+pull|docker\s+run|docker\s+compose\s+config\s+--images/.test(run))
-            continue;
-          starting += 1;
-          if (!run.includes('docker-pull.sh'))
-            offenders.push(`${file} › ${jobName} › ${step.name ?? '(unnamed step)'}`);
-        }
+    for (const { where, steps } of stepLists()) {
+      for (const step of steps) {
+        const run = joined(step.run ?? '');
+        const starts = COMPOSE_STARTS.test(run);
+        const pulls = PULLS.test(run);
+        if (!starts && !pulls) continue;
+        starting += 1;
+        if (
+          (starts && !/--pull[\s=]+never\b/.test(run)) ||
+          (pulls && !run.includes('docker-pull.sh'))
+        )
+          offenders.push(`${where} › ${step.name ?? '(unnamed step)'}`);
       }
     }
     expect(

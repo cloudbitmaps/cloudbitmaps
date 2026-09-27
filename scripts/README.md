@@ -13,6 +13,7 @@ code** — imported or sourced by another script or a test.
 - [Build and package](#build-and-package)
 - [Release and supply chain](#release-and-supply-chain)
 - [Deployability and memory](#deployability-and-memory)
+- [The integration backends](#the-integration-backends)
 - [The site](#the-site)
 - [`lib/`](#lib)
 - [Conventions](#conventions)
@@ -57,6 +58,14 @@ See [`RELEASING.md`](../RELEASING.md) for how these fit together into a release.
 | `build-lambda-layer.sh` | Builds a ready-to-attach Lambda **layer** holding `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, with `roaring` compiled for the Lambda runtime, so a function needs no native build at deploy. The storage drivers are left out on purpose: which one a function talks to is its own dependency, and bundling all three would put every cloud SDK in every deployment. | by hand — `pnpm build-lambda-layer`; CI's `lambda-layer` job builds and uploads it when the workflow is run manually |
 | `rss-gate.sh` | The hard memory ceiling: runs the soak (`bench/soak.cjs`) under a 384 MiB cgroup limit with swap disabled, so the limit is a true bound on resident memory — including the addon's off-heap allocations, which a heap sample cannot see. An OOM-kill fails the build, and so does the soak's own verdict on slower memory creep. Records its run to `bench/rss-gate-results.json`. | CI — `pnpm rss-gate` |
 
+## The integration backends
+
+`pnpm test:integration` runs against real storage services, which `docker-compose.yml` starts.
+
+| script | what it does | when |
+|---|---|---|
+| `ci-backend-images.sh` | Makes every image `docker-compose.yml` names local before the `integration` job starts it, one at a time through `lib/docker-pull.sh`, so each comes from the copy the Actions cache keeps or from a pull with backoff. It writes a compose override that runs each service on that local copy, because a copy of an image named by digest comes back from `docker load` without the digest, and compose asks for MinIO by digest. | CI — the `integration` job |
+
 ## The site
 
 `site/` is published as-is, and these keep it true. See [`site/README.md`](../site/README.md).
@@ -73,7 +82,7 @@ See [`RELEASING.md`](../RELEASING.md) for how these fit together into a release.
 
 | file | what it is |
 |---|---|
-| `lib/docker-pull.sh` | Pulls a container image, retrying with a linear backoff to absorb a registry's rate limit, then re-running the last attempt with its output shown, so an image that genuinely does not exist fails with the registry's own error rather than a timeout. Shared rather than copied because the CI integration job had grown this retry and the scripts that `docker run` an image directly had not, so they kept failing on a throttle a short wait absorbs. Sourced by `rss-gate.sh`, `lambda-smoke.sh`, `build-lambda-layer.sh`, and the `integration` job in `ci.yml`. |
+| `lib/docker-pull.sh` | Pulls a container image, retrying with a linear backoff to absorb a registry's rate limit, then re-running the last attempt with its output shown, so an image that genuinely does not exist fails with the registry's own error rather than a timeout. Shared rather than copied because the CI integration job had grown this retry and the scripts that `docker run` an image directly had not, so they kept failing on a throttle a short wait absorbs. With `DOCKER_IMAGE_CACHE` set, as CI sets it, each image it pulls is also kept in a directory CI saves to the Actions cache, and a later run uses that copy: always for an image named by digest, for a tag until the month turns, and for any image a registry refuses. Unset, as it is by hand, it pulls exactly as before. Sourced by `rss-gate.sh`, `lambda-smoke.sh`, `build-lambda-layer.sh`, `ci-backend-images.sh`, and the `docker-images-save` action in `.github/actions/`. |
 
 ## Conventions
 
