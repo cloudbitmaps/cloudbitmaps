@@ -466,7 +466,11 @@ const PAGES = [
   { rel: `${SITE_DIR}/usage.html`, requireAll: false },
   { rel: `${SITE_DIR}/flavors.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: `${SITE_DIR}/flavors/roaring.html`, requireAll: false },
-  { rel: `${SITE_DIR}/llms.txt`, requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
+  {
+    rel: `${SITE_DIR}/llms.txt`,
+    requireAll: false,
+    mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M],
+  },
   { rel: 'README.md', requireAll: false, mustState: [MEASURED_1M, EXPECTED_1M, WRITE_1M] },
   {
     rel: 'packages/roaring/README.md',
@@ -1058,7 +1062,9 @@ const specAnchors = [];
     }
     const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/.exec(homeHtml);
     if (!foot) {
-      fail(`${SITE_DIR}/index.html no longer carries the .ba-foot line that states the invariant count`);
+      fail(
+        `${SITE_DIR}/index.html no longer carries the .ba-foot line that states the invariant count`,
+      );
     } else {
       const stated = /<strong>(\d+)\s+hard correctness invariants<\/strong>/.exec(foot[1]);
       if (!stated) {
@@ -1073,9 +1079,18 @@ const specAnchors = [];
     }
   }
 
+  // site-next/'s homepage is the display-tier delivery's, which has no spec strip: its install band states the driver
+  // count once, on the meta line checked below, and the zero-dependency premise is proved above for every tree. So
+  // the strip is required where it exists by design, on site/, and refused on site-next/ rather than read if found.
+  const HOME_HAS_SPEC_STRIP = SITE_DIR === 'site';
   const strip = /<p class="keys-stats">([\s\S]*?)<\/p>/.exec(homeHtml);
-  if (!strip) {
-    fail(`${SITE_DIR}/index.html no longer carries the .keys-stats strip that states the driver count`);
+  if (!HOME_HAS_SPEC_STRIP) {
+    if (strip)
+      fail(`${SITE_DIR}/index.html carries a .keys-stats strip, which its design does not have`);
+  } else if (!strip) {
+    fail(
+      `${SITE_DIR}/index.html no longer carries the .keys-stats strip that states the driver count`,
+    );
   } else {
     const stated = new Map();
     for (const m of strip[1].matchAll(/<strong>([\d,]+)<\/strong>\s*([^<]+?)\s*<\/span>/g)) {
@@ -1181,7 +1196,8 @@ const specAnchors = [];
   // way: the tally quietly fell by one while the run stayed green, because a statement that stops matching
   // looks identical to a statement that was deleted. A count that can only go up without a deliberate edit
   // turns both into failures.
-  const DRIVER_STATEMENT_FLOOR = 15;
+  // Per tree: site-next/'s homepage states the count once where site/'s states it twice (the spec strip above).
+  const DRIVER_STATEMENT_FLOOR = { site: 15, 'site-next': 14 }[SITE_DIR];
   const alsoChecked = checkDriverCountEverywhere(backends.size);
   if (alsoChecked < DRIVER_STATEMENT_FLOOR) {
     fail(
