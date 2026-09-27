@@ -1334,25 +1334,77 @@ function charts() {
 
 // ── write / check ────────────────────────────────────────────────────────────────────────────────────
 /**
- * A share or a multiple, as a page might write one: `90%`, `3×`, `90 percent`, `90 pct`, `66 times`, `66x`, `66-fold`,
- * and in words, `per cent`, `twice as much`, `half the bill`, `three times`, `tenfold`, `by a factor of two`. On the
- * text `handWrittenFigure` reads, every digit is refused before this runs, so there it finds a figure in words; the
- * rest of the README is read with it alone. These are the spellings it knows, not every one there is. "S3 times out",
- * a version's number and "can double as" are not figures.
+ * The number words a figure in words is made of: "three", "sixty", "eighty-five", "a hundred", "thousand". Not "one",
+ * which a page writes as a word far more often than as a count ("one bucket"): the patterns that need it name it.
  */
-const NUMBER_WORD = String.raw`(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|fifty|a\s+hundred|a\s+thousand)`;
+const UNIT_WORD = String.raw`(?:two|three|four|five|six|seven|eight|nine)`;
+const NUMBER_WORD =
+  String.raw`(?:(?:(?:a|one)\s+)?(?:hundred|thousand|million|billion)|` +
+  String.raw`(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\s-]+(?:one|${UNIT_WORD}))?|` +
+  String.raw`ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|${UNIT_WORD}|a\s+dozen)`;
+const FRACTION_WORD = String.raw`(?:half|halves|thirds?|quarters?|fourths?|fifths?|sixths?|sevenths?|eighths?|ninths?|tenths?|hundredths?|thousandths?)`;
+/**
+ * A share or a multiple, as a page might write one: `90%`, `3×`, `90 percent`, `90 pct`, `66 times`, `66x`, `66-fold`,
+ * and in words, `per cent`, `twice as much`, `half the bill`, `twice what it costs`, `sixty times`, `ten-fold`,
+ * `a hundredfold`, `by a factor of two`, `a tenth as much`, `less than half`, `an order of magnitude`, `nine in ten`.
+ * On the text `handWrittenFigure` reads, every digit is refused before this runs, so there it finds a figure in words;
+ * the rest of the README is read with it alone. These are the spellings it knows, not every one there is. "S3 times
+ * out", a version's number and "can double as" are not figures.
+ */
 const SHARE_OR_MULTIPLE = [
   String.raw`\d[\d,.]*\s*[%‰×✕✖⨯]`,
-  String.raw`[×✕✖⨯]\s?\d`,
+  String.raw`[×✕✖⨯]\s*\d`,
   // Not after a letter or a dot: "S3 times out" is no multiple, nor is the 2 of a version, 7.2.4.
-  String.raw`(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:x\b|per[\s-]?cent\b|pct\b|times\b(?!\s+out\b)|-?fold\b|-times\b)`,
-  String.raw`\bper[\s-]?cent\b(?!-)`,
+  String.raw`(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?\s*(?:x\b|per[\s-]*cent\b|pct\b|times\b(?!\s+out\b)|-?fold\b|-times\b)`,
+  String.raw`\bper[\s-]*cent\b(?!-)`,
   String.raw`\d(?:[\d,.]*\d)?\s*percentage\s+points?\b`,
   String.raw`\bby\s+a\s+factor\s+of\s+(?:\d|${NUMBER_WORD}\b)`,
-  String.raw`\b(?:twice|thrice|double|triple|half)\s+(?:as\s+(?:much|many|large|big|high|long|expensive|costly|cheap|fast|slow)|the\s+(?:bill|cost|price|requests|GETs|rate|reads|bytes|size|money|load|figure|time|latency|memory|storage))\b`,
-  String.raw`\b${NUMBER_WORD}(?:\s+times\b(?!\s+out\b)|fold\b)`,
+  String.raw`\b(?:twice|thrice|double|triple|half)\s+(?:as\s+(?:much|many|large|big|high|long|expensive|costly|cheap|fast|slow)|the\s+(?:bill|cost|price|requests|GETs|rate|reads|bytes|size|money|load|figure|time|latency|memory|storage)|(?:of\s+)?what)\b`,
+  String.raw`\b${NUMBER_WORD}(?:\s+times\b(?!\s+out\b)|[\s-]*fold\b)`,
+  String.raw`\b(?:a|one|${NUMBER_WORD})[\s-]+${FRACTION_WORD}\s+(?:as\s+(?:much|many)|of|the|what)\b`,
+  String.raw`\b(?:less|more|fewer)\s+than\s+(?:a\s+|one\s+)?${FRACTION_WORD}\b`,
+  String.raw`\borders?\s+of\s+magnitude\b`,
+  String.raw`\b(?:one|${NUMBER_WORD})\s+(?:times\s+)?(?:in|out\s+of)\s+(?:every\s+)?(?:one|${NUMBER_WORD})\b`,
+];
+/**
+ * A dollar amount or a request count in words, which the hand-written text of a page whose figures are generated may
+ * not hold either: `eighty-five thousand dollars`, `forty cents`, `four GETs`, `two requests`, each found by the number
+ * word before its unit. A count of one is a word as much as a figure ("one request per pointer read"), so it is not
+ * refused.
+ */
+const AMOUNT_OR_COUNT = [
+  String.raw`\b(?:one|${NUMBER_WORD})\s+(?:dollars?|cents?|bucks?|euros?|pounds?|pence)\b`,
+  String.raw`\b${NUMBER_WORD}[\s-]+(?:(?:GET|PUT|LIST)s?|requests?|round[\s-]trips?|reads?|writes?)\b`,
 ];
 const SHARE = new RegExp(SHARE_OR_MULTIPLE.join('|'), 'i');
+const FIGURE_IN_WORDS = new RegExp([...SHARE_OR_MULTIPLE, ...AMOUNT_OR_COUNT].join('|'), 'i');
+/**
+ * HTML a renderer takes out of what it shows, whole: a comment (`<!-->` among them), CDATA, a processing
+ * instruction, a declaration, and a tag, however many `>` its quoted attributes hold.
+ */
+const HTML_CONSTRUCT = new RegExp(
+  [
+    String.raw`<!--(?:-?>|[\s\S]*?-->)`,
+    String.raw`<!\[CDATA\[[\s\S]*?\]\]>`,
+    String.raw`<\?[\s\S]*?\?>`,
+    String.raw`<![A-Za-z][^>]*>`,
+    String.raw`<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>\x60]+))?)*\s*\/?>`,
+  ].join('|'),
+  'g',
+);
+/**
+ * Some text's words as a reader is shown them: compatibility forms folded (NFKC), invisible characters and a
+ * keycap's enclosing mark dropped, markdown's emphasis, code, strikethrough and escape marks and a link's brackets
+ * taken out, and every run of space made one. With `links`, as by default, a link's target is taken out with its
+ * title, so a link inside a word leaves it whole; without, both are read as text, as a title is shown. With `html`,
+ * HTML is taken out too, so a tag or a comment inside a word leaves it whole.
+ */
+function wordsOf(text, { html = false, links = true } = {}) {
+  let s = text.normalize('NFKC').replace(/[\p{Default_Ignorable_Code_Point}\u20E3]/gu, '');
+  if (html) s = s.replace(HTML_CONSTRUCT, '');
+  if (links) s = s.replace(/\]\([^)]*\)|\]\[[^\]]*\]/g, ']');
+  return s.replace(/[[\]*_`~\\]/g, '').replace(/\s+/g, ' ');
+}
 /**
  * The pages that say so, and the part of each that does: the whole page, or one section of it. A page whose
  * section alone is generated keeps the rest of itself to the phrases listed here, each a measurement or a definition
@@ -1389,67 +1441,132 @@ function blankRegions(doc, text) {
   return { text: s, at };
 }
 /**
- * An entity, or what a renderer may read as one: `&#36;`, `&#36` and `&dollar;`, and `&times` with no semicolon, which
- * HTML still decodes. A page a generator writes into holds none, so no figure or image path can be spelled with one;
- * only a URL's `&name=`, which starts a query parameter, is not one.
+ * An entity GitHub decodes: a numeric one, `&#36;`, `&#x24;`, and `&#36` too, which it decodes without the semicolon
+ * inside HTML; and a named one, `&dollar;`. A page a generator writes into holds none, so no figure or image path can
+ * be spelled with one. A name without its semicolon is shown as it is written, so `Q&A`, `AT&T`, a Rust `&str` and a
+ * URL's `&label=` are text.
  */
-const ENTITY = /&(?:#|[a-z][a-z0-9]*(?![a-z0-9=]))/i;
+const ENTITY = /&(?:#|[a-z][a-z0-9]*;)/i;
 /**
- * What a page whose figures are generated may write by hand, outside its regions: its region markers and no other
- * HTML, no image, no code fence at any depth, and no digit but in the tokens below and in a link's target, which is not
- * shown. It is read as it is written, not as a renderer would show it. A reading of markdown can be wrong, and a figure
- * it misread would stand where nothing checks it, so what this cannot read, it refuses. Each token is a name or a
- * definition, not a figure; one a page needs is added here, where a review sees it.
+ * The names and definitions a page whose figures are generated may write in digits outside its regions, each as the
+ * page uses it: a name stands anywhere, and a token that holds a count, such as `65,536 ids`, only in the words around
+ * it on the page. None is read before a share or a multiple's sign, and a currency sign is refused outright (see
+ * REFUSED). One a page needs is added here, where a review sees it.
  */
+const token = (body) => new RegExp(String.raw`(?:${body})(?!\s*[%‰×✕✖⨯])`, 'gu');
 const HAND_WRITTEN_TOKENS = [
-  /`us-east-1`/g, // a region's name
-  /\bS3(?:'s)?\b/g, // a service's
-  /\bV8(?:'s)?\b/g, // an engine's
-  /\b(?:32|64)-bit\b/g, // an id's width
-  /\b65,536\b/g, // the ids a chunk holds
-  /§11\b/g, // a section of the guide
-  /\b1\.2 billion\b/g, // the README's example of a set too large to hold in one machine's memory
+  token('`us-east-1`'), // a region's name
+  token(String.raw`\bS3(?:'s)?\b`), // a service's
+  token(String.raw`\bV8(?:'s)?\b`), // an engine's
+  token(String.raw`\bids are 32-bit\b|\b64-bit ids\b`), // an id's width
+  token(String.raw`\b65,536 ids\b`), // the ids a chunk holds
+  token(String.raw`§11 of the\s+guide\b`), // a section of the guide
+  token(String.raw`\b1\.2 billion customers\b`), // the README's example of a set too large for one machine's memory
+  // Link targets, which a reader is not shown, each whole: any other target is read like the text around it.
+  token(
+    String.raw`\]\(https:\/\/docs\.aws\.amazon\.com\/AmazonS3\/latest\/userguide\/EventNotifications\.html\)`,
+  ),
+  token(String.raw`\]\(https:\/\/aws\.amazon\.com\/s3\/storage-classes\/\)`),
+  token(String.raw`\]\(getting-started\.md#11-cost-estimate-it-then-ground-it\)`),
 ];
 const MARKER_TEXT = /<!-- SIZING:[A-Z][A-Z0-9_]*:(?:START|END) -->/g;
+/** HTML: a tag, a comment, a declaration or a processing instruction opening, or a comment or CDATA closing. */
+const HTML_TEXT = /<[!?/a-z]|-->|\]\]>/i;
+/** A code fence at any depth: under a blockquote's `>`, a list item's marker, or indentation. */
+const FENCE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*(?:`{3,}|~{3,})/m;
+/**
+ * What a page whose figures are generated may not write by hand, outside its regions, though it holds no digit: HTML
+ * but its region markers, an image, a code fence, a currency sign, and an emoji GitHub shows as a digit or a sign,
+ * written as itself or as its shortcode. A shortcode with a digit in its name, `:100:`, is refused as a number.
+ */
 const REFUSED = [
-  [/<[!?/a-z]/i, 'HTML'],
+  [HTML_TEXT, 'HTML'],
   [/!\[/, 'an image'],
-  [/^[ \t>]*(?:`{3,}|~{3,})/m, 'a code fence'],
+  [FENCE, 'a code fence'],
+  [/\p{Sc}/u, 'a currency sign'],
+  [/[\u20E3\u{1F4AF}\u{1F4B2}\u{1F51F}\u{1F522}]/u, 'a number emoji'],
+  [
+    /:(?:zero|one|two|three|four|five|six|seven|eight|nine|keycap_ten|hash|asterisk|heavy_multiplication_x|heavy_dollar_sign):/i,
+    'a number emoji',
+  ],
 ];
-/** The first thing in some hand-written text that could be a figure no gate compares, and what it is, or null. */
+/**
+ * The first thing in some hand-written text that could be a figure no gate compares, and what it is, or null. What
+ * it refuses is what it knows: every character Unicode counts as a number, as written and after NFKC, but in the
+ * tokens above; what REFUSED lists; and a figure in words, in the spellings SHARE_OR_MULTIPLE and AMOUNT_OR_COUNT
+ * know. It reads no markdown structure: a reading of markdown can be wrong, and a figure it misread would stand where
+ * nothing checks it, so what it cannot read, it refuses.
+ */
 function handWrittenFigure(text) {
   const t = text.replace(MARKER_TEXT, ' ');
   for (const [pattern, what] of REFUSED) {
     const m = pattern.exec(t);
     if (m !== null) return { figure: t.slice(m.index, m.index + 24).split('\n')[0], what };
   }
-  let s = t.normalize('NFKC').replace(/\]\([^)\s]*\)/g, ']');
-  for (const token of HAND_WRITTEN_TOKENS) s = s.replace(token, ' ');
-  const digit = /\p{N}/u.exec(s);
-  if (digit !== null) return { figure: numberAt(s, digit.index), what: 'a number' };
-  // A figure in words, however emphasis, code or an escape falls across it.
-  const words = SHARE.exec(s.replace(/[*_`~\\]/g, ''));
+  const unlisted = (s) => HAND_WRITTEN_TOKENS.reduce((kept, re) => kept.replace(re, ' '), s);
+  // A digit as a reader is shown it and as it is written: NFKC reads a fullwidth ９ as 9, but a Roman Ⅻ as XII.
+  const shown = unlisted(t.normalize('NFKC'));
+  for (const s of [shown, unlisted(t)]) {
+    const digit = /\p{N}/u.exec(s);
+    if (digit !== null) return { figure: numberAt(s, digit.index), what: 'a number' };
+  }
+  // Read with a link's target taken out, so a link inside a figure leaves it whole, and with the target and its title
+  // read as text, as a title is shown.
+  const words =
+    FIGURE_IN_WORDS.exec(wordsOf(shown)) ?? FIGURE_IN_WORDS.exec(wordsOf(shown, { links: false }));
   return words === null ? null : { figure: words[0], what: 'a figure in words' };
 }
 /** The run of non-space characters around `at`, which is how a number is written. */
 const numberAt = (s, at) => /\S*$/.exec(s.slice(0, at))[0] + /^\S*/.exec(s.slice(at))[0];
 /**
- * Where a section runs in `text`: from its `## ` heading to the next line that starts one. The section itself holds
- * no code fence and no HTML, which `handWrittenFigure` refuses, so no quoted `## ` can end it early.
+ * Where a section runs in `text`: from its `## ` heading to the next line that starts one. It is read from that one
+ * line, so the page is held to showing the section there alone: a second copy of the line is refused, and so is any
+ * other line that could show as a heading of that title, at another level, with closing hashes or a trailing space,
+ * or underlined. The line that ends the section must show some text, or the section a reader sees would run on past
+ * this one. The page holds no HTML and no fence above the section or in it, which `proseFigure` refuses, so neither
+ * can hide the heading or the line that ends the section.
  */
 function sectionOf(doc, text, title) {
-  let at = 0;
-  let start = -1;
-  for (const line of text.split('\n')) {
-    if (line.startsWith('## ')) {
-      if (start >= 0) return { start, end: at };
-      if (line === `## ${title}`) start = at;
+  const heading = `## ${title}`;
+  const lines = text.split('\n');
+  const named = (s) => wordsOf(s, { html: true }).trim().toLowerCase();
+  const wanted = named(title);
+  lines.forEach((line, n) => {
+    if (line === heading) return;
+    const atx = /^[ \t>]*#{1,6}(?:[ \t]+(.*?))?[ \t#]*$/.exec(line);
+    let underlined = null;
+    if (/^[ \t>]*(?:=+|-+)[ \t]*$/.test(line)) {
+      const above = [];
+      for (let k = n - 1; k >= 0 && lines[k].trim() !== ''; k--)
+        above.unshift(lines[k].replace(/^[ \t>]*/, ''));
+      underlined = above.join(' ');
     }
-    at += line.length + 1;
-  }
-  if (start < 0)
+    for (const shown of [atx?.[1], underlined]) {
+      if (shown != null && named(shown) === wanted) {
+        throw new Error(
+          `sizing: ${doc} line ${n + 1} could show as the heading of its "${title}" section, which is read from ` +
+            `"${heading}" alone — write that line, and no other heading of the title`,
+        );
+      }
+    }
+  });
+  const starts = lines.flatMap((line, n) => (line === heading ? [n] : []));
+  if (starts.length === 0)
     throw new Error(`sizing: ${doc} no longer has the section whose figures are generated`);
-  return { start, end: text.length };
+  if (starts.length > 1) {
+    throw new Error(
+      `sizing: ${doc} has "${heading}" ${starts.length} times, where it is read once`,
+    );
+  }
+  const next = lines.findIndex((line, n) => n > starts[0] && line.startsWith('## '));
+  if (next >= 0 && !/[\p{L}\p{N}]/u.test(named(lines[next].slice(3)))) {
+    throw new Error(
+      `sizing: ${doc} line ${next + 1} ends its "${title}" section with a heading that shows nothing, so the ` +
+        'section a reader sees runs on past the one this check reads',
+    );
+  }
+  const offset = (n) => lines.slice(0, n).reduce((sum, line) => sum + line.length + 1, 0);
+  return { start: offset(starts[0]), end: next < 0 ? text.length : offset(next) };
 }
 /** The first figure in a page's prose that nothing checks, and where it stands, or null. */
 function proseFigure(doc, text) {
@@ -1467,6 +1584,20 @@ function proseFigure(doc, text) {
       );
     }
   }
+  // A comment, a block of HTML or a fence opened above the section could hide its heading from a reader, and leave the
+  // top of the section a reader sees to the rule for the rest of the page.
+  for (const [pattern, what] of [
+    [HTML_TEXT, 'HTML'],
+    [FENCE, 'a code fence'],
+  ]) {
+    const m = pattern.exec(blank.slice(0, start));
+    if (m !== null) {
+      throw new Error(
+        `sizing: ${doc} holds ${what} above its "${scope.section}" section, ` +
+          `"${blank.slice(m.index, m.index + 24).split('\n')[0]}", which could hide the section's heading`,
+      );
+    }
+  }
   const inside = handWrittenFigure(blank.slice(start, end));
   if (inside !== null) {
     return {
@@ -1474,9 +1605,7 @@ function proseFigure(doc, text) {
       where: `outside its SIZING regions, in its "${scope.section}" section`,
     };
   }
-  // The rest of the page is written as any page is, so only a share or a multiple is refused there, as it is written
-  // and with its tags taken out, since a tag can split a word a reader is shown whole.
-  let rest = (blank.slice(0, start) + blank.slice(end)).normalize('NFKC');
+  let rest = blank.slice(0, start) + blank.slice(end);
   for (const phrase of scope.elsewhere) {
     if (!rest.includes(phrase)) {
       throw new Error(
@@ -1486,7 +1615,12 @@ function proseFigure(doc, text) {
     }
     rest = rest.replace(phrase, ' '); // once: a second copy is a figure like any other
   }
-  const m = SHARE.exec(rest) ?? SHARE.exec(rest.replace(/<[^<>]*>/g, ''));
+  // The rest of the page is written as any page is, so only a share or a multiple is refused there. It is read with
+  // emphasis, code, escapes and invisible characters taken out, once with its links' targets and titles and its HTML
+  // read as text, since a title or an attribute can show a share, and once with both taken out, since a link, a tag
+  // or a comment can split one a reader is shown whole.
+  const m =
+    SHARE.exec(wordsOf(rest, { links: false })) ?? SHARE.exec(wordsOf(rest, { html: true }));
   return m === null
     ? null
     : {
@@ -1496,18 +1630,37 @@ function proseFigure(doc, text) {
       };
 }
 /**
- * The images under bench/ a page shows: any path to an image file, in a markdown image, an <img>, a <source srcset> or
- * anywhere else, read with its percent-escapes and backslash escapes undone, since a browser reads `bench/%68and.SVG`
- * and `bench/hand\.svg` as `bench/hand.svg`. The page holds no entity (see ENTITY), so none can spell one.
+ * The images under bench/ a page shows: every path ending in one of IMAGE_EXTENSIONS, in a markdown image, an <img>, a
+ * <source srcset> or anywhere else, read with its percent-escapes and backslash escapes undone, since a browser reads
+ * `bench/%68and.SVG` and `bench/hand\.svg` as `bench/hand.svg`. A path holds a space inside a markdown `<…>`
+ * destination or a quoted attribute, and `%20` anywhere; elsewhere a space ends it. GitHub decodes no entity the page
+ * can hold (see ENTITY), so none can spell one.
  */
-const shownCharts = (text) => [
-  ...new Set(
-    text
-      .replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(Number.parseInt(h, 16)))
-      .replace(/\\([!-/:-@[-`{-~])/g, '$1')
-      .match(/\bbench\/[^\s"<>[\]]*?\.(?:svg|png|jpe?g|webp|gif|avif|bmp)\b/giu) ?? [],
-  ),
-];
+const IMAGE_EXTENSIONS = String.raw`svgz?|a?png|jpe?g|jfif|pjp(?:eg)?|webp|gif|avif|bmp|ico|cur|tiff?|jxl|heic|heif`;
+const imagePath = (chars) =>
+  new RegExp(String.raw`\bbench\/${chars}*?\.(?:${IMAGE_EXTENSIONS})\b`, 'giu');
+const BARE_PATH = imagePath(String.raw`[^\s"<>[\]]`);
+const SPACED_PATH = imagePath(String.raw`[^"<>[\]\n]`);
+function shownCharts(text) {
+  const decoded = (s, { keepSpaces }) =>
+    s
+      .replace(/%([0-9a-f]{2})/gi, (escape, h) => {
+        const c = String.fromCharCode(Number.parseInt(h, 16));
+        return keepSpaces && /\s/.test(c) ? escape : c;
+      })
+      .replace(/\\([!-/:-@[-`{-~])/g, '$1');
+  const spaced = [...text.matchAll(/<[^<>\n]*>|=\s*"[^"]*"|=\s*'[^']*'/g)].map((m) =>
+    decoded(m[0], { keepSpaces: false }),
+  );
+  return [
+    ...new Set(
+      [
+        ...decoded(text, { keepSpaces: true }).matchAll(BARE_PATH),
+        ...spaced.flatMap((s) => [...s.matchAll(SPACED_PATH)]),
+      ].map((m) => m[0]),
+    ),
+  ];
+}
 
 const rendered = render();
 // A figure that failed to compute must not reach a page as a word.
@@ -1614,6 +1767,6 @@ if (check) {
   }
   console.log(
     `bench:sizing:check: every generated figure in ${Object.keys(DOCS).join(', ')}, and the charts ` +
-      `${CHARTS.join(', ')}, is current, and no figure stands outside a region.`,
+      `${CHARTS.join(', ')}, is current, and nothing the check refuses stands outside a region.`,
   );
 }

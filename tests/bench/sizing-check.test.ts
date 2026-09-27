@@ -167,7 +167,15 @@ describe('bench:sizing:check fails what it exists to catch', () => {
   });
 
   it('fails a malformed marker rather than never comparing its region', () => {
-    for (const bad of ['<!-- sizing:BILL:START -->', '<!--SIZING:BILL:START-->']) {
+    // However it is cased, spaced or separated: a marker only one spelling of which is read would hide the others.
+    for (const bad of [
+      '<!-- sizing:BILL:START -->',
+      '<!--SIZING:BILL:START-->',
+      '<!--SIZING_BILL:START-->',
+      '<!-- SIZING-BILL-START -->',
+      '<!--  SIZING:BILL:START -->',
+      '<!--\tSIZING:BILL:START -->',
+    ]) {
       refused({ [SIZING]: `${sizing}\n${bad}\n` }, /malformed marker/);
     }
   });
@@ -233,7 +241,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       }
     });
 
-    it("reads only the README's Why section, and a link's target is not a figure", () => {
+    it("reads only the README's Why section, and passes only the link targets it lists", () => {
       // The rest of the README quotes measured figures, which the site figures gate holds to their sources.
       const elsewhere = readme.replace(
         '## Your data stays yours',
@@ -242,9 +250,64 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       expect(sizingCheck({ [README]: elsewhere }).code).toBe(0);
       const linked = why.replace('[How it works]', '[How it works, in 95% of cases]');
       refused({ [WHY]: linked }, /holds a number, "95%", outside its SIZING regions/);
-      // A link's target is not shown on the page, so the digits in one are not read.
-      const r = sizingCheck({ [WHY]: intoWhy(' See [AWS](https://aws.amazon.com/?off=20%).') });
-      expect(r.code, r.out).toBe(0);
+      // A target the list names is not shown, and passes; its digits anywhere else, or any other target's, do not.
+      for (const text of [
+        ' See [what S3 sends](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).',
+        ' See [the storage classes](https://aws.amazon.com/s3/storage-classes/).',
+        ' [§11 of the guide](getting-started.md#11-cost-estimate-it-then-ground-it) has the model.',
+      ]) {
+        const r = sizingCheck({ [WHY]: intoWhy(text) });
+        expect(r.code, r.out).toBe(0);
+      }
+      for (const text of [
+        ' See [AWS](https://aws.amazon.com/?off=20%).',
+        ' See [the guide](getting-started.md#12-other).',
+        ' See [the guide](getting-started.md#11-cost-estimate-it-then-ground-it#2).',
+        ' It is getting-started.md#11-cost-estimate-it-then-ground-it.',
+        ' See (getting-started.md#11-cost-estimate-it-then-ground-it).',
+        ' See [the prices](https://aws.amazon.com/s3/pricing/).',
+        ' See [the guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html).',
+      ]) {
+        refused({ [WHY]: intoWhy(text) }, /holds a number, .*outside its SIZING regions/);
+      }
+    });
+
+    // A link's target was once passed wherever `](` began one, and these showed their digits: a target is passed
+    // only when the list names it, whole.
+    it.each([
+      ['a code span holding a link', ' It costs `[x](85,509)` a month.'],
+      ['escaped brackets', ' It costs \\[x\\](85,509) a month.'],
+      ['a ] with no [', ' It costs ](85,509) a month.'],
+      ['indented code', '\n\n    all in memory   [x](85,509) a month\n'],
+      [
+        'a table row split by | inside a "target"',
+        '\n\n| a | b | c |\n|---|---|---:|\n| Large |](|85,509|)|\n',
+      ],
+      ['a footnote reference before (…)', ' It costs [^m](85,509) a month.'],
+    ])('refuses the digits of a "target" in %s, which a reader is shown', (_what, text) => {
+      refused({ [WHY]: intoWhy(text) }, /holds a number, .*outside its SIZING regions/);
+    });
+
+    // A title is shown, as a tooltip, so the words in one are read like the text around it.
+    it('refuses a figure in words in a link title, however the title is quoted', () => {
+      for (const text of [
+        ' See [x](https://a.example "twice as much").',
+        " See [x](https://a.example 'twice as much').",
+        ' See [x](https://a.example (twice as much)).',
+      ]) {
+        refused({ [WHY]: intoWhy(text) }, /holds a figure in words, "twice as much"/);
+      }
+    });
+
+    it("refuses a fence opened on a list item's line and never closed", () => {
+      for (const text of [
+        '\n\n- ```text\n  large, all in memory: [x](85,509) a month\n\nAfter the list.\n',
+        '\n\n* ~~~\n  no figure here\n',
+        '\n\n> - ```\n>   no figure here\n',
+        '\n\n1. ```\n   no figure here\n',
+      ]) {
+        refused({ [WHY]: intoWhy(text) }, /holds a code fence/);
+      }
     });
 
     // However a figure is spelled, it is one: a digit is refused wherever it stands, in any form, and a figure in words
@@ -286,6 +349,84 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ｔｗｉｃｅ as much'],
       ['²¹ a month'],
       ['half\\ the bill'],
+      // Markup a reader never sees, inside a figure in words.
+      ['_twice_ as much'],
+      ['`twice` as much'],
+      ['~~twice~~ as much'],
+      ['[twice](#x) as much'],
+      ['tw[ice][x] as much'],
+      // Invisible characters, and a double space.
+      ['three\u200B times as much'],
+      ['tw\u00ADice as much'],
+      ['ten\u2060fold more'],
+      ['ninety per  cent less'],
+      ['ninety per\u00A0\u00A0cent less'],
+      ['ninety per- cent less'],
+      // Spellings the patterns once did not know.
+      ['a ten-fold saving'],
+      ['sixty times as much'],
+      ['sixty-five times as much'],
+      ['twenty-one times as much'],
+      ['one hundred times as much'],
+      ['a hundredfold more'],
+      ['hundredfold more'],
+      ['several hundred times as much'],
+      ['twice what CloudBitmaps does'],
+      ['half of what Redis costs'],
+      ['a tenth as much'],
+      ['two thirds of the bill'],
+      ['less than half of what Redis does'],
+      ['less than a third'],
+      ['an order of magnitude cheaper'],
+      ['orders of magnitude cheaper'],
+      ['nine in ten dollars of the bill'],
+      ['one in a hundred reads'],
+      ['nine out of ten'],
+      ['three times out of four'],
+      ['by a factor of sixty'],
+      // Dollar amounts and request counts in words.
+      ['about eighty-five thousand dollars a month'],
+      ['forty cents a million'],
+      ['one dollar a month'],
+      ['four GETs plus two for each shared chunk'],
+      ['two requests for a pointer'],
+      ['a two-request tail read'],
+      ['one hundred PUTs'],
+      // Digits a renderer shows, which NFKC turns into letters or leaves as a symbol.
+      ['Ⅻ× as much'],
+      // And symbols that are no number until NFKC shows the digit in them: ㏠ is 1日, ㎡ is m2.
+      ['㏠ of the month'],
+      ['a price per ㎡'],
+      ['٩٠% less'],
+      ['💯% of the bill'],
+      ['🔟× as much'],
+      ['🔢 a month'],
+      ['#\uFE0F\u20E3 of GETs'],
+      [':nine::zero:% less'],
+      [':keycap_ten:× as much'],
+      [':nine: a month'],
+      [':heavy_dollar_sign: a month'],
+      ['💲 a month'],
+      // A name or a definition, in words that make it a figure.
+      ['65,536 a month'],
+      ['$65,536 a month'],
+      ['1.2 billion GETs a month'],
+      ['1.2 billion a year'],
+      ['S3× as much'],
+      ['S3% of it'],
+      ['65,536 ids× over'],
+      ['12,345 ids'],
+      ['a 64-bit key'],
+      ['an S4 bucket'],
+      ["V9's heap"],
+      ['ids are 16-bit'],
+      ['ids are 32-bits'],
+      ['a 128-bit id'],
+      ['us-east-1 prices'],
+      ['[§12 of the guide](getting-started.md#what-each-term-counts)'],
+      ['§11 a month'],
+      ['3.4 billion customers'],
+      ['1-2 billion customers'],
     ])('fails %j typed outside a region', (figure) => {
       refused(
         { [WHY]: why.replace('mostly cold.', `mostly cold: ${figure}.`) },
@@ -297,13 +438,13 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     // a figure.
     it.each([
       ['a region', ' It runs in `us-east-1`.'],
-      ['a service, and its possessive', " S3's prices are S3's."],
+      ['a service, and its possessive', " S3's prices are S3's, and S3's request rate is its own."],
       ['an engine', " V8's heap holds the index."],
-      ['the width of an id', ' Ids are 32-bit, and 64-bit ones need a new format.'],
+      ['the width of an id', ' Its ids are 32-bit; 64-bit ids need a new format.'],
       ['the ids a chunk holds', ' A chunk holds up to 65,536 ids.'],
       [
         'a section of the guide',
-        ' [§11](getting-started.md#11-cost-estimate-it-then-ground-it) has more.',
+        ' [§11 of the\nguide](getting-started.md#11-cost-estimate-it-then-ground-it) has more.',
       ],
       ['"S3 times out"', ' If S3 times out, the reader retries.'],
       ['a service as the subject of "times"', ' S3 times each request from its first byte.'],
@@ -311,7 +452,15 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         '"double" and "twice" as words',
         ' It can double as a lock, twice as a check, twice the first time.',
       ],
-      ['"times out" after a number word', ' It fails three times out of four.'],
+      ['"times out" after a number word', ' If either of the two times out, the reader retries.'],
+      ['a count of one', ' One request per pointer read, and a one-request tail read.'],
+      [
+        '"one" and "two" as words',
+        ' The one or two hottest paths, in one bucket, and the two bills.',
+      ],
+      ['a script whose name holds colons', ' Run `pnpm bench:sizing:check` first.'],
+      ['a fraction as an ordinal', ' The fifth column is what holding a hot set whole takes.'],
+      ['ordinary ampersands', ' Q&A, R&D and AT&T are names, and `&str` is a type.'],
     ])('passes %s', (_what, text) => {
       const r = sizingCheck({ [WHY]: intoWhy(text) });
       expect(r.code, r.out).toBe(0);
@@ -328,10 +477,21 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['a reference definition', '\n\n[aws]: https://aws.amazon.com/?off=20%\n', /holds a number/],
       ['a comment', ' <!-- it cost less once -->', /holds HTML, "<!-- it cost less once/],
       ['a tag', ' It is <b>cheap</b>.', /holds HTML/],
+      ['a tag in capitals', ' It is <B>cheap</B>.', /holds HTML, "<B>/],
+      ['a closing tag alone', ' It is cheap</b>.', /holds HTML, "<\/b>/],
+      ['a processing instruction', ' It is <?x cheap ?>.', /holds HTML, "<\?x/],
+      ['the end of a comment', ' A comment closes with -->.', /holds HTML, "-->/],
+      ['the end of a CDATA section', ' It closes with ]]>.', /holds HTML, "\]\]>/],
       ['an autolink', ' See <https://aws.amazon.com/>.', /holds HTML/],
       ['an entity', ' It is cheap&nbsp;enough.', /holds an entity, "&nbsp"/],
+      ['an entity in capitals', ' It is AT&AMP;T.', /holds an entity, "&AMP"/],
+      ['an entity named in capitals', ' It is cheap&Tab;enough.', /holds an entity, "&Tab"/],
       ['an entity in a code span', ' Write `&#36;` for the sign.', /holds an entity, "&#36"/],
-      ['an entity with no semicolon', ' It is 3&times as much.', /holds an entity, "&times"/],
+      ['a hexadecimal entity', ' Write &#x24; for the sign.', /holds an entity, "&#x24"/],
+      // GitHub decodes a numeric reference without its semicolon inside HTML, so one is refused however written.
+      ['a numeric entity with no semicolon', ' It costs &#36 a month.', /holds an entity, "&#36"/],
+      ['a currency sign', ' It costs $lOO,OOO a month.', /holds a currency sign, "\$lOO,OOO/],
+      ['a fullwidth currency sign', ' It costs ＄ a month.', /holds a currency sign/],
       ['an image', ' ![a chart](../../bench/crossover.svg)', /holds an image/],
       ['a fence', '\n\n```text\nno figure here\n```\n', /holds a code fence/],
       ['a fence of tildes, indented', '\n\n   ~~~\nno figure here\n   ~~~\n', /holds a code fence/],
@@ -480,10 +640,61 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const bolded = readme.replace('LIST bills at 12.5× a GET', 'LIST bills at **12.5×** a GET');
       expect(bolded).not.toBe(readme);
       refused({ [README]: bolded }, /no longer says "LIST bills at 12\.5× a GET"/);
+      // Nor is it in compatibility forms, which a reader is shown as the same phrase and this reads as another.
+      refused(
+        { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in 5％ of chunks') },
+        /no longer says "overlapping in 5% of chunks"/,
+      );
       // And a phrase the README stops saying is refused, rather than left to allow a figure nobody quotes.
       refused(
         { [README]: readme.replace('overlapping in 5% of chunks', 'overlapping in a few chunks') },
         /no longer says "overlapping in 5% of chunks"/,
+      );
+    });
+
+    /** The README with `text` written into it by hand, under the heading after the Why section. */
+    const intoRest = (text: string): string => {
+      const edited = readme.replace(
+        '## Your data stays yours',
+        () => `## Your data stays yours\n\n${text}`,
+      );
+      expect(edited).not.toBe(readme);
+      return edited;
+    };
+    // Each was once read as it is written, and passed: emphasis, an escape, a code span, an invisible character, a
+    // comment or a tag holding a `>` split a share or a multiple that a reader is shown whole.
+    it.each([
+      ['Redis costs *twice* as much.', 'twice as much'],
+      ['Redis costs _twice_ as much.', 'twice as much'],
+      ['Redis costs **three** times as much.', 'three times'],
+      ['CloudBitmaps costs **90**% less than Redis.', '90%'],
+      ['Redis costs **3**× as much.', '3×'],
+      ['CloudBitmaps costs 90\\% less than Redis.', '90%'],
+      ['CloudBitmaps costs `90`% less than Redis.', '90%'],
+      ['Redis costs 66 *times* as much.', '66 times'],
+      ['Redis costs tw**ice** as much.', 'twice as much'],
+      ['CloudBitmaps costs 90\u200B% less than Redis.', '90%'],
+      ['Redis costs tw\u200Bice as much.', 'twice as much'],
+      ['CloudBitmaps costs 90<!--x>-->% less than Redis.', '90%'],
+      ['CloudBitmaps costs 90<span title=">">%</span> less than Redis.', '90%'],
+      ["CloudBitmaps costs 90<span title='>'>%</span> less than Redis.", '90%'],
+      ['CloudBitmaps costs 90<!-->% less than Redis.', '90%'],
+      ['CloudBitmaps costs 90<?x?>% less than Redis.', '90%'],
+      ['CloudBitmaps costs 90<![CDATA[x]]>% less than Redis.', '90%'],
+      ['CloudBitmaps costs 90<!X y>% less than Redis.', '90%'],
+      ['Redis costs [tw](#x)ice as much.', 'twice as much'],
+      ['Redis costs sixty ~~times~~ as much.', 'sixty times'],
+      ['CloudBitmaps costs 9\uFE0F\u20E30\uFE0F\u20E3% less than Redis.', '90%'],
+      ['Redis costs a tenth as much.', 'a tenth as much'],
+      ['CloudBitmaps costs ninety per  cent less.', 'per cent'],
+      ['See [the chart](x.png "It costs 90% less").', '90%'],
+      ["See ![the chart](x.png 'Redis costs twice as much').", 'twice as much'],
+    ])('refuses %j in the rest of the README, read as a reader is shown it', (line, figure) => {
+      refused(
+        { [README]: intoRest(line) },
+        new RegExp(
+          `"${figure.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}", outside its "Why CloudBitmaps" section`,
+        ),
       );
     });
 
@@ -540,6 +751,131 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       );
     });
 
+    // The Why section is read from its one `## Why CloudBitmaps` line. Each of these once let the section a reader
+    // sees start above that line, so the figure between the two was held to the rest of the README's weaker rule.
+    const FIG =
+      'Kept all in memory, the large deployment would be 285 nodes and USD 85,509 a month, making 4,140 GETs a second.';
+    it.each([
+      ['closing hashes', '## Why CloudBitmaps #'],
+      ['a trailing space', '## Why CloudBitmaps '],
+      ['another level', '### Why CloudBitmaps'],
+      ['indentation', '   ## Why CloudBitmaps'],
+      ['a blockquote', '> ## Why CloudBitmaps'],
+      ['emphasis', '## Why *CloudBitmaps*'],
+      ['another case', '## Why cloudbitmaps'],
+      ['fullwidth letters', '## Ｗｈｙ CloudBitmaps'],
+      ['two spaces', '## Why  CloudBitmaps'],
+      ['an underline of -', 'Why CloudBitmaps\n----------------'],
+      ['an underline of =', 'Why CloudBitmaps\n==='],
+      ['an underline under two lines', 'Why\nCloudBitmaps\n---'],
+    ])(
+      'refuses the Why heading spelled with %s, which a reader would take for its start',
+      (_what, heading) => {
+        const shifted = readme.replace(
+          '## Why CloudBitmaps\n',
+          () => `${heading}\n\n${FIG}\n\n## Why CloudBitmaps\n`,
+        );
+        refused(
+          { [README]: shifted },
+          /could show as the heading of its "Why CloudBitmaps" section/,
+        );
+      },
+    );
+
+    it('refuses HTML or a fence above the Why section, which could hide its heading', () => {
+      for (const [above, what] of [
+        ['<!-- a note -->', 'HTML'],
+        ['<details>\n<summary>More</summary>\n</details>', 'HTML'],
+        ['<![CDATA[ x ]]>', 'HTML'],
+        ['<!X a declaration >', 'HTML'],
+        ['<?x an instruction ?>', 'HTML'],
+        ['```text\nx\n```', 'a code fence'],
+        ['- ```text\n  x', 'a code fence'],
+      ]) {
+        refused(
+          {
+            [README]: readme.replace(
+              '## Why CloudBitmaps\n',
+              () => `${above}\n\n## Why CloudBitmaps\n`,
+            ),
+          },
+          new RegExp(`holds ${what} above its "Why CloudBitmaps" section`),
+        );
+      }
+      // And each way of hiding the heading line the check reads, below a heading a reader sees.
+      for (const [open, close] of [
+        ['<!--', '-->'],
+        ['<?', '?>'],
+        ['<!X', '>'],
+        ['<![CDATA[', ']]>'],
+      ]) {
+        const hidden = readme.replace(
+          '## Why CloudBitmaps\n',
+          () => `## Why CloudBitmaps #\n\n${FIG}\n\n${open}\n## Why CloudBitmaps\n${close}\n`,
+        );
+        const r = sizingCheck({ [README]: hidden });
+        expect(r.code, r.out).not.toBe(0);
+      }
+    });
+
+    it.each([['## '], ['## #'], ['## ##'], ['## <!-- -->'], ['## <b></b>'], ['## \u200B']])(
+      'refuses an empty heading %j, which would end the Why section before a reader sees it end',
+      (heading) => {
+        refused(
+          {
+            [README]: readme.replace(
+              'Where it loses:',
+              () => `${heading}\n\n${FIG}\n\nWhere it loses:`,
+            ),
+          },
+          /ends its "Why CloudBitmaps" section with a heading that shows nothing/,
+        );
+      },
+    );
+
+    it('reads the Why section once, and passes a heading that only begins like it', () => {
+      refused(
+        {
+          [README]: readme.replace(
+            '## Your data stays yours',
+            '## Why CloudBitmaps\n\n## Your data stays yours',
+          ),
+        },
+        /has "## Why CloudBitmaps" 2 times/,
+      );
+      refused(
+        { [README]: readme.replace('## Why CloudBitmaps\n', '## What CloudBitmaps is\n') },
+        /no longer has the section whose figures are generated/,
+      );
+      // A heading of another title ends the section, and what follows it is the rest's, figures of its own included.
+      const r = sizingCheck({
+        [README]: readme.replace(
+          '## Your data stays yours',
+          `## Why CloudBitmaps, measured\n\n${FIG}\n\n## Your data stays yours`,
+        ),
+      });
+      expect(r.code, r.out).toBe(0);
+      // A heading one level down does not end it: the figure under it is still the section's.
+      refused(
+        {
+          [README]: readme.replace(
+            'Where it loses:',
+            () => `### Where it loses\n\n${FIG}\n\nWhere it loses:`,
+          ),
+        },
+        /holds a number, .*in its "Why CloudBitmaps" section/,
+      );
+    });
+
+    it('refuses a name or a definition in the Why section where it reads as a figure', () => {
+      for (const text of ['It makes 1.2 billion GETs a month.', 'It holds 1.2 billion ids.']) {
+        refused(
+          { [README]: readme.replace('Where it loses:', () => `${text}\n\nWhere it loses:`) },
+          /holds a number, "1\.2", .*in its "Why CloudBitmaps" section/,
+        );
+      }
+    });
+
     // Charts are checked on every page a generator writes into, the guide among them, which has no rule for its prose.
     const intoGuide = (text: string): string => `${guideText}\n${text}\n`;
     it.each([
@@ -555,8 +891,46 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['bench/hand(1).svg'],
       ['bench/a,b.svg'],
       ["bench/it's.svg"],
+      ['bench/hand%20chart.svg'],
+      ...[
+        'apng',
+        'png',
+        'gif',
+        'jpg',
+        'jpeg',
+        'jfif',
+        'pjpeg',
+        'webp',
+        'ico',
+        'cur',
+        'tif',
+        'tiff',
+      ].map((ext) => [`bench/hand.${ext}`]),
+      ...['jxl', 'heic', 'heif', 'svgz'].map((ext) => [`bench/hand.${ext}`]),
     ])('fails a page that shows %s, an image under bench/ no generator draws', (image) => {
       refused({ [GUIDE]: intoGuide(`![a chart](../../${image})`) }, /which no generator draws/);
+    });
+
+    it('fails an image under bench/ whose path holds a space, where a path can hold one', () => {
+      for (const shown of [
+        '![a chart](<../../bench/hand chart.svg>)',
+        '[chart]: <../../bench/hand chart.svg>\n\n![a chart][chart]',
+        '<img alt="a chart" src="../../bench/hand chart.svg">',
+        '<img alt="a>b" src="../../bench/hand chart.svg">',
+        "<img alt='a chart' src='../../bench/hand chart.svg'>",
+        "<img alt='a>b' src='../../bench/hand chart.svg'>",
+        '<img\n  alt="a chart"\n  src="../../bench/hand chart.svg">',
+      ]) {
+        refused(
+          { [GUIDE]: intoGuide(shown) },
+          /shows bench\/hand chart\.svg, which no generator draws/,
+        );
+      }
+      // Outside those, a space ends a path, so prose that names bench/ and then an image file is not read as one.
+      const r = sizingCheck({
+        [GUIDE]: intoGuide('The charts in bench/ are drawn by a script, and crossover.svg is one.'),
+      });
+      expect(r.code, r.out).toBe(0);
     });
 
     it.each([
@@ -570,6 +944,34 @@ describe('bench:sizing:check fails what it exists to catch', () => {
         { [GUIDE]: intoGuide(`<img alt="a chart" src="../../${image}">`) },
         /getting-started\.md holds an entity/,
       );
+    });
+
+    // GitHub decodes a named reference only with its semicolon, so an ampersand before letters is text on any page.
+    it('passes an ampersand that is text, and refuses one GitHub decodes, on every page it writes into', () => {
+      const prose = [
+        'See the Q&A below.',
+        'Built by an R&D team.',
+        'Tested on AT&T fibre.',
+        '`fn f(s: &str)`',
+        '`type Both = A & B;`',
+        '[![npm](https://img.shields.io/badge/a-b-blue?style=flat&logo=npm)](https://www.npmjs.com/)',
+      ];
+      for (const text of prose) {
+        const r = sizingCheck({ [GUIDE]: intoGuide(text), [README]: intoRest(text) });
+        expect(r.code, `${text}\n${r.out}`).toBe(0);
+      }
+      const decoded: Array<[string, string]> = [
+        ['HTML escapes it as `&lt;`.', '&lt'],
+        ['<img src="https://img.shields.io/badge/a?b=1&amp;c=2">', '&amp'],
+        ['`type Both = A&B;`', '&B'],
+        ['It is 9&#48; here.', '&#48'],
+      ];
+      for (const [text, entity] of decoded) {
+        refused(
+          { [GUIDE]: intoGuide(text) },
+          new RegExp(`getting-started\\.md holds an entity, "${entity}"`),
+        );
+      }
     });
 
     it('fails a chart shown only through <source srcset>, or as a PNG in a folder under bench/', () => {
@@ -608,6 +1010,10 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       const wide = call(20, 1160);
       expect(wide.code, wide.out).toBe(0);
       expect(wide.out).toContain('["20","1,160","58×"]');
+      // Every comma of a rate is read, not the first alone.
+      const wider = call(1000, 1_160_000);
+      expect(wider.code, wider.out).toBe(0);
+      expect(wider.out).toContain('["1,000","1,160,000","1200×"]');
       const off = call(1.25, 1.3125);
       expect(off.code).not.toBe(0);
       expect(off.out).toMatch(/1\.31 ÷ 1\.25 does not show as 1\.1×/);
@@ -623,6 +1029,18 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     it('reads a marker quoted in code as a marker, since a page quotes none', () => {
       const quoted = `${sizing}\n\`<!-- SIZING:NOPE:START -->\`\n\n\`\`\`md\n<!-- SIZING:NOPE:END -->\n\`\`\`\n`;
       refused({ [SIZING]: quoted }, /holds a SIZING:NOPE region nothing writes/);
+    });
+
+    it('takes the text of every region out of a page for site-figures, and leaves its markers', () => {
+      const { withoutRegions } = requireFromScript('./lib/sizing-markers.cjs') as {
+        withoutRegions: (doc: string, text: string, docs: object) => string;
+      };
+      const two =
+        'a\n<!-- SIZING:X:START -->\n$1\n<!-- SIZING:X:END -->\nb\n' +
+        '<!-- SIZING:Y:START -->\n$2\n<!-- SIZING:Y:END -->\n';
+      expect(withoutRegions('q.md', two, { 'q.md': ['X', 'Y'] })).toBe(
+        'a\n<!-- SIZING:X:START --><!-- SIZING:X:END -->\nb\n<!-- SIZING:Y:START --><!-- SIZING:Y:END -->\n',
+      );
     });
 
     it('writes a region inside a blockquote with every line of it still in the quote', () => {

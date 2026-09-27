@@ -3,10 +3,11 @@
 For anyone deciding whether to keep large bitmap sets in CloudBitmaps or in an always-on Redis. Every cost here
 comes from the library's own `estimateCost()`. Every dollar amount, share, multiple and request count on the page
 written in digits, AWS's published prices among them, is written into it by `bench/sizing.cjs` and checked against it
-by CI, which refuses any other number on the page, bar a few names such as `us-east-1`, and any markup that could hide
-one. The prices are AWS's `us-east-1` list prices,
-on demand unless a sentence says otherwise, and the three deployments are illustrative workloads, not anyone's
-measured system. There is no latency figure, because none has been measured inside a region yet.
+by CI. CI refuses any other digit on the page, bar a few names such as `us-east-1`, and the HTML, images and code
+fences that could hide one; a figure written in words, it refuses in the spellings it knows. The prices are AWS's
+`us-east-1` list prices, on demand unless a sentence says otherwise, and the three deployments are illustrative
+workloads, not anyone's measured system. There is no latency figure, because none has been measured inside a region
+yet.
 
 A **segment** is a named set of ids, stored in chunks of up to 65,536 ids each. A **cold intersect** is an
 intersection that starts from an empty cache, so it fetches every chunk it needs; a **point read** is one `has()`;
@@ -192,7 +193,7 @@ proposed in an issue on this repo before it is built.
 | The pointer refresh | **Push invalidation**: object-store events tell readers a segment changed, with a longer refresh as the backstop | Most of the refresh bill goes, and a change reaches readers as fast as the events do: [typically seconds, sometimes a minute or longer](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), with the backstop as the bound |
 | Retries in a throttling storm | **Retrying at one layer**, the SDK's, for throttling | One throttled request stops multiplying into many |
 | Reader memory | **Measuring the index's real heap**, and storing it compactly | The memory bound becomes exact, and holds more segments open |
-| GCS and Azure reads | **One request per pointer read** on both, and a one-request tail read on GCS | Their pointer reads cost what S3's do, and so do GCS's index reads; an Azure tail read stays two requests |
+| GCS and Azure reads | **One request per pointer read** on both, and a one-request tail read on GCS | Their pointer reads cost what S3's do, and so do GCS's index reads; an Azure tail read does not change, since Azure Blob takes no suffix range |
 
 ## Beyond the bill
 
@@ -213,9 +214,9 @@ proposed in an issue on this repo before it is built.
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
-  again when it outlives `cache.genTtlMs` (a pointer, and an index once a load has published) or the reader cache
-  evicts its reader part-way through (a pointer and an index), and a second index read for an index larger than the
-  reader's tail read.
+  again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
+  publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second
+  index read for an index larger than the reader's tail read.
 - **Your readers' memory.** It is your own machines' cost, and not priced here.
 - **An invoice.** These are list prices applied to modeled request counts; data transfer out of the region is not
   modeled.

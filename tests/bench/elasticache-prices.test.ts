@@ -266,3 +266,121 @@ describe('the ElastiCache price reader reads each node on its full key', () => {
     );
   });
 });
+
+class Exit extends Error {
+  constructor(readonly code: number) {
+    super(`exit ${code}`);
+  }
+}
+
+/**
+ * Run `node bench/check-elasticache-prices.cjs <file>` in-process, with `offers` (path → parsed list) served in place of
+ * files on disk and `catalogue` in place of the estimator's, so the exit a person relies on is tested without the
+ * 2 MB download.
+ */
+function priceCheck(
+  argv: string[],
+  {
+    catalogue = ELASTICACHE_REDIS_US_EAST_1_ONDEMAND,
+    offers = {},
+  }: { catalogue?: object; offers?: Record<string, object> } = {},
+): { code: number; out: string } {
+  const script = join(ROOT, 'bench', 'check-elasticache-prices.cjs');
+  const realFs = require_('node:fs') as typeof import('node:fs');
+  const fs = {
+    ...realFs,
+    readFileSync: (p: string, ...rest: unknown[]) =>
+      p in offers
+        ? JSON.stringify(offers[p])
+        : (realFs.readFileSync as (...a: unknown[]) => unknown)(p, ...rest),
+  };
+  const modules: Record<string, unknown> = {
+    'node:fs': fs,
+    '@cloudbitmaps/core': { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND: catalogue },
+  };
+  const lines: string[] = [];
+  const log = (...a: unknown[]): void => {
+    lines.push(a.join(' '));
+  };
+  // A function body cannot begin with the script's `#!` line.
+  const source = realFs.readFileSync(script, 'utf8').replace(/^#!.*\n/, '');
+  try {
+    new Function('require', 'process', 'console', source)(
+      (id: string) => modules[id] ?? require_(id),
+      {
+        argv: ['node', script, ...argv],
+        exit: (code: number): never => {
+          throw new Exit(code);
+        },
+      },
+      { log, error: log },
+    );
+    return { code: 0, out: lines.join('\n') };
+  } catch (e) {
+    if (e instanceof Exit) return { code: e.code, out: lines.join('\n') };
+    throw e;
+  }
+}
+
+/** A price list that agrees with every catalogue node and reserved row, Valkey a fifth less, at `version`. */
+function fullOffer(version: string) {
+  const products: Record<string, object> = {};
+  const onDemand: Record<string, object> = {};
+  const reserved: Record<string, object> = {};
+  for (const { name, hourlyUSD } of ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes) {
+    const row = RESERVED[name]!;
+    for (const [engine, scale] of [
+      ['Redis', 1],
+      ['Valkey', 1 - VALKEY_DISCOUNT],
+    ] as const) {
+      const sku = `${name}:${engine}`;
+      products[sku] = {
+        attributes: { instanceType: name, cacheEngine: engine, usagetype: `NodeUsage:${name}` },
+      };
+      onDemand[sku] = { t: { priceDimensions: { d: hourly(String(scale * hourlyUSD)) } } };
+      reserved[sku] = {
+        one: term('1yr', 'No Upfront', { h: hourly(String(scale * row.oneYear)) }),
+        three: term('3yr', 'All Upfront', {
+          q: upfront(String(scale * row.threeYearsUpfront)),
+          h: hourly('0.0000000000'),
+        }),
+      };
+    }
+  }
+  return { version, products, terms: { OnDemand: onDemand, Reserved: reserved } };
+}
+
+describe('check-elasticache-prices exits as a person running it needs', () => {
+  const cited = citedVersion(ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.source);
+
+  it('passes a list of the cited version that agrees, and names the nodes it checked', () => {
+    const r = priceCheck(['ec.json'], { offers: { 'ec.json': fullOffer(cited) } });
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain(
+      `all ${ELASTICACHE_REDIS_US_EAST_1_ONDEMAND.nodeTypes.length} node types agree with ec.json`,
+    );
+  });
+
+  it('exits 1 on a list of another version, however well it agrees', () => {
+    const r = priceCheck(['ec.json'], { offers: { 'ec.json': fullOffer('20260801000000') } });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(
+      `the list is version 20260801000000, where the catalogue cites ${cited}`,
+    );
+  });
+
+  it('exits 2, checking nothing, on a catalogue that cites no version, or with no list to read', () => {
+    const uncited = { ...ELASTICACHE_REDIS_US_EAST_1_ONDEMAND, source: 'AWS price list' };
+    const r = priceCheck(['ec.json'], {
+      catalogue: uncited,
+      offers: { 'ec.json': fullOffer(cited) },
+    });
+    expect(r.code).toBe(2);
+    expect(r.out).toMatch(
+      /check-elasticache-prices: the catalogue's source names no price list version/,
+    );
+    const none = priceCheck([]);
+    expect(none.code).toBe(2);
+    expect(none.out).toMatch(/usage: node bench\/check-elasticache-prices\.cjs <offer\.json>/);
+  });
+});

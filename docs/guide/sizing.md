@@ -203,14 +203,14 @@ real segment at its measured size and the store's own `cache.genTtlMs`.
 
 - **Latency.** Nothing here says how fast a query returns; the in-region run is owed.
 - **A warm reader's intersects.** They are priced cold: an upper bound on their requests, but for what a call reads
-  again when it outlives `cache.genTtlMs` (a pointer, and an index once a load has published) or the reader cache
-  evicts its reader part-way through (a pointer and an index), and a second index read for an index larger than the
-  reader's tail read.
+  again when it outlives `cache.genTtlMs` (a pointer, and an index once the segment's row has changed, as a load's
+  publish changes it) or the reader cache evicts its reader part-way through (a pointer and an index), and a second
+  index read for an index larger than the reader's tail read.
 - **Memory.** What the caches above take in each reader is not priced; it is your reader's memory, not S3's bill.
 - **An invoice.** These are list prices applied to modeled request counts, not what AWS would bill; data transfer
   out of the region is not modeled.
-- **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and read a pointer or a tail
-  in two requests; set both in your own pricing profile.
+- **Other clouds' prices.** The rates are AWS's. GCS and Azure Blob charge differently, and take more requests than
+  S3 to read a pointer or a tail; set both in your own pricing profile, as [Price your own](#price-your-own) shows.
 - **What running Redis takes besides its price.** The comparison is CloudBitmaps' bill for the workload against a
   Redis sized to hold the data, not to its request rate; nor does it price the operations, the failovers or the speed
   of either.
