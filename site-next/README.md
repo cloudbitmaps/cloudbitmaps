@@ -45,8 +45,8 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
 
 ## What differs from site/
 
-- **The homepage is the display-tier design's, with what the 3B design added**, its inline styles made classes, and
-  it says what is true of the current release only. The hero's figures sit under a chunk strip, one square per 50
+- **The homepage follows the display-tier design**, its inline styles made classes, and it says what is true of
+  the current release only. The hero's figures sit under a chunk strip, one square per 50
   chunks. What you operate sets our bucket beside the alternatives a reader would weigh, a Redis cluster and a
   tiered database, each box tagged with what keeping it costs. The cost band shows what goes in, each input marked
   measured, quoted or chosen, beside what comes out with its arithmetic. The chunk grid draws one cell per ten
@@ -71,15 +71,18 @@ The gates `site/` has, on this tree too:
 
 - `site-classes.py` and `site-links.py` take `SITE_DIR`; `pnpm site:check` and CI run each on both trees.
 - `site-figures.cjs` takes `SITE_DIR`, and `pnpm site:figures` runs it on both. On this tree it also holds the
-  homepage to its sources figure by figure, through `scripts/lib/home-figures.cjs`: each check marks what it read,
-  and a number on the page that none of them read fails, since the footer says every figure here is gated in CI.
-  And it refuses the July run's figures, run id and date in every file here.
+  homepage to its sources figure by figure, through `scripts/lib/home-figures.cjs`: each check reads the page as it
+  renders and marks what it read, and a number on the page that none of them read fails, since the footer says every
+  figure on this page is gated in CI; what would show text no check reads, or hide text one did, is refused. It
+  refuses the July run's figures, run id and date in every file here, and holds the benchmarks page's comparison
+  panel row by row.
 - `site-replay.cjs` checks both trees' `demo.html`. `pnpm bench:check` holds both benchmarks pages' generated
   regions and the homepage's crossover, both drawings of it; `pnpm bench:scale:check` holds both at-scale tables
   and the homepage's strip, grid and memory panel.
 - `site-text-floor.mjs` loads every page here at six widths and fails on any text drawn below 9.5px, SVG labels
-  included, on a page that scrolls sideways, and on a region that scrolls with no way in by keyboard
-  (`pnpm site:text-floor`, in CI).
+  included, on a page that scrolls sideways or a box that cuts off text, on a region that scrolls with no way in by
+  keyboard, on a region whose name is missing, shared, or not its panel's, and, on the homepage, on any text outside
+  its generated regions that no reader can see (`pnpm site:text-floor`, in CI).
 - The docs tests that read `site/` read this tree as well.
 
 ## Comparing the two
@@ -97,8 +100,9 @@ they work locally.
 
 `git mv site-next site`, in its own pull request, and in the same change:
 
-- in `scripts/site-figures.cjs`, give `site` what `site-next` has now in each per-tree map (`HOME_IS_DISPLAY_TIER`,
-  `HOME_HAS_SPEC_STRIP`, `DRIVER_STATEMENT_FLOOR`, `STATES_THE_JULY_RUN`), then drop the `site-next` entries;
+- in `scripts/site-figures.cjs`, give `site` what `site-next` has now in each per-tree map (`HOME_HAS_SPEC_STRIP`,
+  `DRIVER_STATEMENT_FLOOR`, `STATES_THE_JULY_RUN`), then drop the `site-next` entries; the homepage's ledger needs
+  no entry, since it runs on whichever homepage carries the display-tier hero or says its figures are gated;
 - point the homepage's generated regions at `site/index.html`, in `bench/run.cjs` and in `bench/scale.cjs`'s
   `HOME_PAGE`;
 - drop `site-next` from the site gates (`site-classes.py`, `site-links.py`, `site-figures.cjs`, `site-replay.cjs`),

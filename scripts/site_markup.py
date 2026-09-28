@@ -77,7 +77,10 @@ def inline_styles(html: str) -> list[str]:
 
 
 def css_code(css: str) -> str:
-    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    """A stylesheet as the browser reads it: comments out, and escapes decoded, so `\\68ttps:` reads as `https:`."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    css = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", lambda m: chr(int(m.group(1), 16)), css)
+    return re.sub(r"\\(.)", r"\1", css)
 
 
 def site_scripts(root: str, pages: list[str]) -> list[tuple[str, str]]:

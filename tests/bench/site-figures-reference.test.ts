@@ -130,7 +130,7 @@ describe.each(SITE_DIRS)(
 
 /**
  * On `site-next/`, the homepage is held figure by figure: each check marks the span it read, and any number left
- * unmarked fails, since the footer says every figure here is gated in CI. Each case plants one wrong page and
+ * unmarked fails, since the footer says every figure on this page is gated in CI. Each case plants one wrong page and
  * expects the check that owns it to say so; the last few plant a legitimate edit and expect a pass.
  */
 describe("site:figures holds site-next/'s homepage to its sources", () => {
@@ -211,23 +211,143 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
       HEAD.replace('<h2>', '<h2 style="display:none">'),
       'sets an inline style other than a custom property',
     ],
+    [
+      'an inline style however it is written',
+      HEAD,
+      HEAD.replace('<h2>', "<h2 STYLE='--x: 1&#59 display: none'>"),
+      'sets an inline style other than a custom property',
+    ],
+    ['the hidden attribute on a self-closed tag', HEAD, `${HEAD}<p hidden/>`, 'hides an element'],
+    [
+      'the checked copy of a figure moved into a comment',
+      '<p class="cb-figure-xl">$346<span class="cb-unit">/mo</span></p>',
+      '<!-- <p class="cb-figure-xl">$346<span class="cb-unit">/mo</span></p> --><p class="cb-figure-xl">$999</p>',
+      'hero figure 2 reads "$999"',
+    ],
+    [
+      'content held in a template',
+      HEAD,
+      `${HEAD}<template><p>$999</p></template>`,
+      'holds a template',
+    ],
+    [
+      'a style element',
+      '<link rel="stylesheet" href="cloudbitmaps.css" />',
+      '<link rel="stylesheet" href="cloudbitmaps.css" /><style>h1::after { content: " 10x"; }</style>',
+      'holds a style element',
+    ],
+    [
+      'a script that writes text',
+      '      // Plays each animation once',
+      "      document.querySelector('h1').textContent += ' 10× cheaper';\n      // Plays each animation once",
+      'runs a script that writes text',
+    ],
+    [
+      'a list that numbers itself',
+      HEAD,
+      `${HEAD}<ol start="12"><li>regions</li></ol>`,
+      'a numbered list',
+    ],
+    [
+      'a figure in a field',
+      HEAD,
+      `${HEAD}<input readonly value="$999/mo">`,
+      'figure(s) no check holds',
+    ],
+    [
+      'a figure in a single-quoted label',
+      HEAD,
+      `${HEAD}<span role="img" aria-label='9 storage drivers'>★</span>`,
+      'figure(s) no check holds',
+    ],
+    [
+      'a figure in an attribute of a span a check read',
+      '<p class="cb-figure-xl">$0.03<span class="cb-unit">/mo</span></p>',
+      '<p class="cb-figure-xl">$0.03<span class="cb-unit">/mo</span></p>'.replace(
+        '$0.03<',
+        '<span role="img" aria-label="$9.99 a month">$0.03</span><',
+      ),
+      'in an attribute of an element a check read',
+    ],
+    [
+      'a second description, placed first with its attributes turned round',
+      '<meta property="og:type" content="website" />',
+      '<meta content="$9 a year" property="og:description" /><meta property="og:type" content="website" />',
+      'link-preview description is found 2 times',
+    ],
+    [
+      'structured data',
+      '<link rel="stylesheet" href="cloudbitmaps.css" />',
+      '<link rel="stylesheet" href="cloudbitmaps.css" /><script type="application/ld+json">{"ratingValue":"4.9"}</script>',
+      'carries structured data',
+    ],
+    [
+      'a headline turned round its figure',
+      "Cheaper until 329.15 GETs a second. Then it isn't.",
+      'Cheaper past 329.15 GETs a second. Below it, Redis wins.',
+      'cost headline reads',
+    ],
+    [
+      "the previous release's version in the footer",
+      'CloudBitmaps · v0.10.0 · Apache-2.0',
+      'CloudBitmaps · v0.9.0 · Apache-2.0',
+      'footer reads',
+    ],
+    [
+      'digits from another script',
+      HEAD,
+      `${HEAD}<p>$𝟿𝟿𝟿 a month, ３× cheaper</p>`,
+      'figure(s) no check holds',
+    ],
+    ['a leading-dot decimal', HEAD, `${HEAD}<p>For $.50 a month.</p>`, 'figure(s) no check holds'],
+    ['a fraction', HEAD, `${HEAD}<p>At ½ the cost.</p>`, 'figure(s) no check holds'],
+    [
+      'a licence named at the end of a sentence',
+      HEAD,
+      `${HEAD}<p>Licensed MIT.</p>`,
+      'states the licence MIT',
+    ],
   ])('fails the page on %s', (_name, right, wrong, says) => {
     const r = withPage(right, wrong);
     expect(r.code, r.out).toBe(1);
     expect(r.out).toContain(says);
   });
 
-  it('fails a stylesheet that inserts a number through content:', () => {
-    const r = siteFigures('site-next', {
-      [CSS]: `${css}\n.cb-caveats::after { content: "3x cheaper"; }\n`,
-    });
+  it.each([
+    ['a number', '.cb-caveats::after { content: "3x cheaper"; }'],
+    ['a second string', ".cb-caveats::after { content: '' ' From $1 a month.'; }"],
+    ['an attribute', '.cb-caveats::after { content: attr(data-note); }'],
+    [
+      'a counter',
+      '.cb-caveats { counter-reset: n 9; } .cb-caveats::after { content: counter(n); }',
+    ],
+    ['a variable', '.cb-caveats::after { content: var(--note); }'],
+  ])('fails a stylesheet that inserts text through content: %s', (_name, rule) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
     expect(r.code, r.out).toBe(1);
-    expect(r.out).toContain('inserts text with a number in it');
+    expect(r.out).toContain('inserts text no check reads');
+  });
+
+  it('keeps the whole ledger when the footer drops its claim', () => {
+    const r = withPage('every figure on this page is gated in CI', 'the figures are ours');
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain("footer's claim reads");
   });
 
   it.each([
     ['a class added', HEAD, HEAD.replace('<h2>', '<h2 class="is-x">')],
     ['a custom property set inline', HEAD, HEAD.replace('<h2>', '<h2 style="--x: 3">')],
+    [
+      'the word "hidden" in a label',
+      HEAD,
+      `${HEAD}<span aria-label="Nothing is hidden here">·</span>`,
+    ],
+    [
+      "a description's attributes turned round",
+      '<meta property="og:type" content="website" />',
+      '<meta content="website" property="og:type" />',
+    ],
+    ['a comment that names a figure', HEAD, `${HEAD}<!-- $999, never shown -->`],
   ])('passes a legitimate edit: %s', (_name, right, edit) => {
     const r = withPage(right, edit);
     expect(r.code, r.out).toBe(0);

@@ -166,7 +166,10 @@ const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not p
  * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
  * bare-token match would otherwise flag forever.
  */
-function badgeVersions(html: string): string[] {
+function badgeVersions(
+  html: string,
+  foreign: ReadonlyMap<string, string> = FOREIGN_VERSIONS,
+): string[] {
   return html
     .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
@@ -181,7 +184,7 @@ function badgeVersions(html: string): string[] {
         ...[...line.matchAll(VERSION_RE)]
           .filter((m) => {
             const v = m[1] as string;
-            if (FOREIGN_VERSIONS.has(v)) return false;
+            if (foreign.has(v)) return false;
             if (v !== NEXT_MINOR) return true;
             // ADJACENT, not merely same-line. On an HTML page a "line" can be a whole markup region, so any
             // stray "unreleased" anywhere on it exempted a stale badge — verified: a hero reading
@@ -367,8 +370,17 @@ describe('site version badges', () => {
     }
   });
 
+  // site-next/ describes the current release only, so none of our own releases is exempt there: the previous
+  // release's number is exactly what a release bump leaves behind. Third-party versions stay exempt everywhere.
+  const OUR_RELEASES = new Set(
+    [...readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map(
+      (m) => m[1] as string,
+    ),
+  );
+  const THIRD_PARTY = new Map([...FOREIGN_VERSIONS].filter(([v]) => !OUR_RELEASES.has(v)));
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
-    const found = badgeVersions(readFileSync(join(ROOT, page), 'utf8'));
+    const foreign = page.startsWith('site-next/') ? THIRD_PARTY : FOREIGN_VERSIONS;
+    const found = badgeVersions(readFileSync(join(ROOT, page), 'utf8'), foreign);
     for (const v of found) {
       expect(
         v,

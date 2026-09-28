@@ -317,7 +317,7 @@ function instrumentChart() {
 }
 
 // ── The homepage's crossover, for site-next/ ─────────────────────────────────────────────────────
-// The display-tier homepage's chart, full width as the 3B design draws it: 1,176 units, each line labelled with what
+// The display-tier homepage's chart, drawn the full width of its band: 1,176 units, each line labelled with what
 // it costs where it runs, and what each side of the crossover means written under the axis. The x axis runs to twice
 // the crossover, so the lines meet mid-plot, and the y axis holds our line from nothing to where it ends: the line is
 // GETs alone, with every read a cache miss, which is why it starts at $0 rather than at the storage cost. Every text
@@ -374,12 +374,14 @@ function homeChart() {
 // screen, where the full-width one would show a third of itself in its scroll frame. There is no room to label the
 // lines where they run, so a legend under the axis names them. The sheet shows one or the other by width.
 function homeChartNarrow() {
-  const W = 330;
-  const H = 300;
-  const plotL = 52;
-  const plotR = 318;
-  const plotT = 36;
-  const plotB = 210;
+  // 262 wide so that at its smallest label, 10 units, it keeps 9.5px on a 320px phone: 262 × 9.5 ÷ 10 is 249px, and
+  // the frame there is 254px. The axis title takes a row of its own and the legend starts at the left edge.
+  const W = 262;
+  const H = 294;
+  const plotL = 40;
+  const plotR = 252;
+  const plotT = 26;
+  const plotB = 190;
   const xMax = 2 * readCross;
   const px = (x) => plotL + (x / xMax) * (plotR - plotL);
   const yScale = (plotB - plotT - 8) / costReads(xMax);
@@ -398,17 +400,17 @@ function homeChartNarrow() {
     `<path class="line-ours" d="M${plotL} ${f(py(costReads(0)))} L${plotR} ${f(py(costReads(xMax)))}"/>`,
     `<g clip-path="url(#plotn)"><rect class="cover x-cover" x="${plotL}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></g>`,
     `<path class="s" d="M${plotL - 1} ${plotT} V${plotB} H${plotR}"/>`,
-    `<text class="tl" x="${plotL}" y="20">$ / MONTH</text>`,
-    `<text class="tl" x="${plotR}" y="20" text-anchor="end">GETS/S, EVERY READ A MISS</text>`,
+    `<text class="tl" x="0" y="12">$ / MONTH</text>`,
     `<g class="x-dot"><rect class="hot" x="${f(crX - 5)}" y="${f(redisY - 5)}" width="10" height="10" rx="2"/><text class="t is-bold on-hatch" x="${f(crX + 10)}" y="${f(redisY + 24)}">${rate} GETs/s</text></g>`,
-    `<text class="tf" x="${plotL - 8}" y="${f(redisY + 4)}" text-anchor="end">$${REDIS}</text>`,
-    `<text class="tf" x="${plotL - 8}" y="${plotB + 4}" text-anchor="end">$0</text>`,
-    `<text class="tf" x="${plotL}" y="${plotB + 18}" text-anchor="middle">0</text>`,
-    `<text class="tf" x="${f(crX)}" y="${plotB + 18}" text-anchor="middle">${rate}</text>`,
-    `<text class="tl" x="${plotL}" y="${plotB + 40}">METERED COSTS LESS</text>`,
-    `<text class="tl" x="${plotR}" y="${plotB + 40}" text-anchor="end">USE REDIS</text>`,
-    `<path class="line-node" d="M${plotL} ${plotB + 62} H${plotL + 18}"/><text class="tf" x="${plotL + 26}" y="${plotB + 66}">$${REDIS}/mo · a Redis-HA cluster, flat</text>`,
-    `<path class="line-ours" d="M${plotL} ${plotB + 82} H${plotL + 18}"/><text class="tf" x="${plotL + 26}" y="${plotB + 86}">$${getPrice} per million GETs · CloudBitmaps</text>`,
+    `<text class="tf" x="${plotL - 6}" y="${f(redisY + 4)}" text-anchor="end">$${REDIS}</text>`,
+    `<text class="tf" x="${plotL - 6}" y="${plotB + 4}" text-anchor="end">$0</text>`,
+    `<text class="tf" x="${plotL}" y="${plotB + 16}" text-anchor="middle">0</text>`,
+    `<text class="tf" x="${f(crX)}" y="${plotB + 16}" text-anchor="middle">${rate}</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 34}" text-anchor="end">GETS/S, EVERY READ A MISS</text>`,
+    `<text class="tl" x="${plotL}" y="${plotB + 54}">METERED COSTS LESS</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 54}" text-anchor="end">USE REDIS</text>`,
+    `<path class="line-node" d="M0 ${plotB + 72} H18"/><text class="tf" x="26" y="${plotB + 76}">$${REDIS}/mo · a Redis-HA cluster, flat</text>`,
+    `<path class="line-ours" d="M0 ${plotB + 92} H18"/><text class="tf" x="26" y="${plotB + 96}">$${getPrice} per million GETs · CloudBitmaps</text>`,
     `</svg>`,
   ].join('\n');
 }
@@ -480,7 +482,10 @@ function replaceRegion(s, name, body, rel) {
   // Throwing rather than warning is deliberate: a silently-skipped region publishes a page with a stale or
   // empty figure, which is worse than a failed run. This is exactly how the site rebuild broke `pnpm bench` —
   // the markers were dropped with the old markup and nothing noticed until the next run.
-  if (i === -1 || j === -1) throw new Error(`missing BENCH:${name} markers in ${rel}`);
+  if (i === -1 || j === -1 || j < i) throw new Error(`missing BENCH:${name} markers in ${rel}`);
+  if (s.indexOf(start, i + 1) !== -1 || s.indexOf(end, j + 1) !== -1) {
+    throw new Error(`more than one BENCH:${name} region in ${rel}`);
+  }
   return s.slice(0, i + start.length) + '\n' + body + '\n' + s.slice(j);
 }
 function write(rel, body) {

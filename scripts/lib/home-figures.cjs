@@ -2,26 +2,35 @@
 /**
  * The display-tier homepage, held figure by figure (site-next/index.html, read by scripts/site-figures.cjs).
  *
- * Every check here marks the exact span of the page it verified. What no check marked is then read for numbers:
- * the visible text, SVG labels included, and the attributes that carry prose (`aria-label`, `alt`, `title`, and the
- * descriptions a search result or a link preview shows). Any number left is a failure. So a figure is gated where it
+ * Every check here reads the page as it renders: comments, `<template>`, `<noscript>`, scripts and styles are
+ * blanked first, so a check cannot pass on a copy no reader sees. Each marks the exact span it verified. What no
+ * check marked is then read for numbers: the visible text, SVG labels included, and the attributes that carry
+ * prose (`aria-label`, `alt`, `title`, `placeholder`, `value`, and the descriptions a search result or a link
+ * preview shows), however they are quoted. Any number left is a failure, and so is a number in such an attribute
+ * inside a span a check read, since the check compared the text and not the attribute. So a figure is gated where it
  * stands: a wrong number that happens to equal a true one elsewhere on the page, a second unchecked copy of a checked
  * figure, or a new figure no check knows, all fail. That is what lets the page's footer say every figure on it is
  * gated in CI.
  *
  * Prose that carries a figure is compared whole, against a string built from the sources, so the words around a
- * figure cannot turn its meaning while the figure stays right. Where that would copy a long paragraph into this file
- * for no gain, the block's numbers are bound in order instead: each must be the one its source gives, and there must
- * be no other.
+ * figure cannot turn its meaning while the figure stays right.
  *
  * The page's drawings of the scale run and its crossover chart are generated (bench/scale.cjs, bench/run.cjs) and
  * held byte for byte by `pnpm bench:scale:check` and `pnpm bench:check`, so their regions count as verified here.
- * Figures are numerals: a number written as a word ("three nodes") is prose, and is not read.
+ * Figures are numerals, in any script's digits, fractions included: a number written as a word ("three nodes") is
+ * prose, and is not read.
+ *
+ * The page may not carry what would put text before a reader that no check reads: a `<style>` element, a sheet rule
+ * that inserts anything but a digit-free string, an element that hides or embeds content (`hidden`, `<template>`,
+ * `<details>`, `<dialog>`, `popover`, `<iframe>`, `<object>`, `<embed>`, a `data:` image), a list that numbers its
+ * own items, structured data, an inline style other than a custom property, or a script that writes text.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 
-const NUMBER = /(?<![\w.])\d[\d,]*(?:\.\d+)?/g;
+// A numeral in any script (`９`, `𝟿`), a leading-dot decimal (`$.50`) or a fraction or numeric symbol (`½`, `²`).
+// Digits glued to a letter, as in `v0.10.0` or `S3`, are part of a word; a version is held where it stands.
+const NUMBER = /(?<![\p{L}\p{N}_.])(?:\p{Nd}[\p{Nd},]*(?:\.\p{Nd}+)?|\.\p{Nd}+)|[\p{No}\p{Nl}]/gu;
 const NAMED = {
   nbsp: ' ',
   amp: '&',
@@ -47,27 +56,80 @@ const NAMED = {
   emsp: ' ',
 };
 
-/** Every character reference decoded, so `&#57;` is read as the 9 it renders. */
+/** Every character reference decoded, so `&#57;` is read as the 9 it renders, with or without its `;`, as a browser reads it. */
 function decode(s) {
   return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_, dec) => String.fromCodePoint(Number(dec)))
     .replace(/&([a-z]+);/gi, (m, name) => NAMED[name.toLowerCase()] ?? m);
 }
 
 /** An element's text as a reader gets it: tags dropped, references decoded, whitespace collapsed. */
 const textOf = (html) =>
-  decode(html.replace(/<[^>]+>/g, ''))
+  decode(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ''))
     .replace(/\s+/g, ' ')
     .trim();
 
-const numbersIn = (text) => text.match(NUMBER) ?? [];
+/** The generated regions' markers, the one kind of comment the checks read. */
+const BENCH_MARKER = /^<!-- BENCH:[A-Z]+:(?:START|END) -->$/;
 
-/** The spans of a page that checks have verified. */
-function ledger(html) {
+/**
+ * The page as it renders, the same length as the page so that every position still points at the same character:
+ * comments other than the generated regions' markers, and the elements whose content no reader sees as text, are
+ * blanked to spaces.
+ */
+function rendered(html) {
+  const blank = (m) => m.replace(/[^\n]/g, ' ');
+  return html
+    .replace(/<!--[\s\S]*?-->/g, (m) => (BENCH_MARKER.test(m) ? m : blank(m)))
+    .replace(/<(template|noscript|script|style)\b[\s\S]*?<\/\1\s*>/gi, blank);
+}
+
+/** A start tag's attributes as a browser reads them: any quoting, names in lower case, values decoded. */
+function attrsOf(tag) {
+  const out = {};
+  const inner = tag.replace(/^<[a-z][\w-]*/i, '').replace(/\/?>$/, '');
+  for (const m of inner.matchAll(
+    /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g,
+  )) {
+    const name = m[1].toLowerCase();
+    if (!(name in out)) out[name] = decode(m[2] ?? m[3] ?? m[4] ?? '');
+  }
+  return out;
+}
+
+/** Every start tag, with where it stands and its attributes. */
+const tagsOf = (html) =>
+  [...html.matchAll(/<([a-z][\w-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)].map((m) => ({
+    name: m[1].toLowerCase(),
+    start: m.index,
+    end: m.index + m[0].length,
+    attrs: attrsOf(m[0]),
+  }));
+
+/** The attributes a reader is read or shown, and the meta tags whose content is prose. */
+const PROSE_ATTRS = [
+  'aria-label',
+  'aria-description',
+  'aria-valuetext',
+  'alt',
+  'title',
+  'placeholder',
+  'value',
+  'label',
+];
+const PROSE_METAS =
+  /^(?:description|og:description|twitter:description|og:title|twitter:title|twitter:label\d|twitter:data\d)$/;
+const metaKey = (t) => (t.attrs.name ?? t.attrs.property ?? '').toLowerCase();
+
+/** The spans of a page that checks have verified, over the page as it renders. */
+function ledger(page) {
   const marks = [];
+  const html = rendered(page);
   return {
+    raw: page,
     html,
+    marks,
     mark(start, end) {
       if (start >= 0 && end > start) marks.push([start, end]);
     },
@@ -118,44 +180,78 @@ function checkHome(ctx) {
     record(what, want);
     return m;
   };
-  /** One element, found once, whose numbers must be exactly `want`, in order. Marks the group it read. */
-  const numbers = (what, re, want, group = 1) => {
-    const all = matches(html, re);
+  /** One meta tag, found once by its name, whose content must be `want`. Marks the tag. */
+  const metaExact = (what, key, want) => {
+    const all = tagsOf(html).filter((t) => t.name === 'meta' && metaKey(t) === key);
     if (all.length !== 1) {
       fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
       return;
     }
-    const m = all[0];
-    const got = numbersIn(textOf(decode(m[group])));
-    if (got.join(' | ') !== want.join(' | ')) {
-      fail(
-        `${page}'s ${what} states ${got.join(', ') || 'no figure'}, but its sources give ${want.join(', ')}`,
-      );
+    const got = (all[0].attrs.content ?? '').replace(/\s+/g, ' ').trim();
+    if (got !== want) {
+      fail(`${page}'s ${what} reads "${got}", but its sources give "${want}"`);
       return;
     }
-    L.mark(...m.indices[group]);
-    record(what, want.join(', '));
+    L.mark(all[0].start, all[0].end);
+    record(what, want);
   };
 
-  // ── the page may not carry text a reader cannot see ─────────────────────────────────────────────────────
-  // A check that verifies hidden text while the visible text is false is worse than none. So nothing is hidden by
-  // attribute, an inline style may only set a custom property (the generated drawings set a few), and the sheet
-  // may not insert a number through `content:`.
-  const body = html.slice(html.indexOf('<body'));
-  if (/<[a-z][^>]*\shidden(?=[\s>=])/i.test(body)) {
-    fail(
-      `${page} hides an element with the hidden attribute, so a check could verify text no reader sees`,
-    );
-  }
-  for (const m of body.matchAll(/\sstyle="([^"]*)"/g)) {
-    if (!/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)+$/.test(m[1])) {
-      fail(`${page} sets an inline style other than a custom property (style="${m[1]}")`);
+  // ── the page may not carry text a reader cannot see, or text no check reads ─────────────────────────────
+  // A check that verifies hidden text while the visible text is false is worse than none, and so is text that
+  // renders where no check looks. The checks read the page as it renders; what is refused here is what would hide
+  // text from a reader, or put text before one, outside that view. Read from the page itself, not the rendered view.
+  const REFUSED = {
+    style: 'a style element, whose rules no check reads',
+    template: 'a template, whose content a check could read and no reader sees',
+    noscript: 'a noscript element, shown only without a script',
+    details: 'a details element, whose content is shown only when it is opened',
+    dialog: 'a dialog, shown only when it is opened',
+    iframe: 'an embedded document, whose text no check reads',
+    object: 'an embedded object, whose text no check reads',
+    embed: 'an embedded object, whose text no check reads',
+    ol: 'a numbered list, whose numbers the browser draws and no check reads',
+  };
+  for (const t of tagsOf(L.raw)) {
+    if (REFUSED[t.name]) fail(`${page} holds ${REFUSED[t.name]} (<${t.name}>)`);
+    if ('hidden' in t.attrs) {
+      fail(
+        `${page} hides an element with the hidden attribute, so a check could verify text no reader sees`,
+      );
+    }
+    if ('popover' in t.attrs) fail(`${page} holds a popover, shown only when it is opened`);
+    if (t.attrs.style !== undefined && !/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)+$/.test(t.attrs.style)) {
+      fail(`${page} sets an inline style other than a custom property (style="${t.attrs.style}")`);
+    }
+    const source = t.attrs.src ?? t.attrs.href ?? t.attrs['xlink:href'] ?? '';
+    if ((t.name === 'img' || t.name === 'image') && /^\s*data:/i.test(source)) {
+      fail(`${page} draws an image from a data: URL, whose text no check reads`);
+    }
+    if (t.name === 'script' && /json/i.test(t.attrs.type ?? '')) {
+      fail(`${page} carries structured data, whose figures no check reads`);
     }
   }
-  const css = fs.readFileSync(path.join(ROOT, SITE_DIR, 'cloudbitmaps.css'), 'utf8');
-  for (const m of css.matchAll(/content:\s*(["'])(.*?)\1/g)) {
-    if (/\d/.test(m[2]))
-      fail(`${SITE_DIR}/cloudbitmaps.css inserts text with a number in it: content: ${m[0]}`);
+  // A script may set classes and state; one that writes text puts words on the page that no check reads.
+  const WRITES_TEXT =
+    /\.(?:textContent|innerText|outerText|innerHTML|outerHTML|nodeValue)\s*\+?=(?!=)|\.(?:append|prepend|before|after|replaceWith|replaceChildren|setHTML|insertAdjacent(?:HTML|Text|Element))\s*\(|\b(?:createTextNode|document\.write(?:ln)?)\s*\(/;
+  for (const m of L.raw.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+    const src = attrsOf(`<script${m[1]}>`).src;
+    const code = src ? fs.readFileSync(path.join(ROOT, SITE_DIR, src), 'utf8') : m[2];
+    if (
+      WRITES_TEXT.test(code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1'))
+    ) {
+      fail(`${page} runs a script that writes text (${src ?? 'inline'}), which no check reads`);
+    }
+  }
+  // The sheet may insert nothing but a digit-free string: not a number, and not an attribute, a counter or a
+  // variable, whose text no check reads.
+  const css = fs
+    .readFileSync(path.join(ROOT, SITE_DIR, 'cloudbitmaps.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const m of css.matchAll(/(?<![\w-])content\s*:\s*([^;}]*)/gi)) {
+    const value = m[1].trim().replace(/\s*!important$/i, '');
+    if (!/^(?:none|normal)$/i.test(value) && !/^(?:(?:"[^"\d\\]*"|'[^'\d\\]*')\s*)+$/.test(value)) {
+      fail(`${SITE_DIR}/cloudbitmaps.css inserts text no check reads: content: ${value}`);
+    }
   }
 
   // ── the generated regions, held byte for byte elsewhere ─────────────────────────────────────────────────
@@ -195,24 +291,27 @@ function checkHome(ctx) {
     fail('core/bit-route.ts no longer states U32_MAX in the form this check reads');
 
   // ── the head: what a search result and a link preview show ──────────────────────────────────────────────
-  numbers('meta description', /<meta\s+name="description"\s+content="([^"]*)"/, [
-    fetched,
-    total,
-    sizeGiB,
-    atRestShown,
-    String(REDIS),
-    rate,
-  ]);
-  numbers('link-preview description', /<meta\s+property="og:description"\s+content="([^"]*)"/, [
-    sizeGiB,
-    atRestShown,
-    String(REDIS),
-    rate,
-  ]);
-  numbers('card description', /<meta\s+name="twitter:description"\s+content="([^"]*)"/, [
-    atRestShown,
-    String(REDIS),
-  ]);
+  metaExact(
+    'meta description',
+    'description',
+    'Large id-sets kept as immutable objects in storage you already own, with no daemon, no second service and ' +
+      `one bucket. Requests only the chunks a query can match — ${fetched} of ${total}. ${sizeGiB} GiB at rest is ` +
+      `$${atRestShown} a month against $${REDIS} for a Redis cluster standing by, and past ${rate} GETs a second, ` +
+      'every read a cache miss, the cluster is cheaper.',
+  );
+  metaExact(
+    'link-preview description',
+    'og:description',
+    'No daemon. No second service. One bucket. Large id-sets as immutable objects in your own storage: ' +
+      `${sizeGiB} GiB at rest costs $${atRestShown}/mo against $${REDIS} standing for a Redis cluster, and past ` +
+      `${rate} GETs a second, every read a cache miss, the cluster is cheaper.`,
+  );
+  metaExact(
+    'card description',
+    'twitter:description',
+    `No daemon. No second service. One bucket. $${atRestShown}/mo at rest against $${REDIS} standing for a Redis ` +
+      'cluster — and we publish the read rate past which the cluster is cheaper.',
+  );
 
   // ── the hero ─────────────────────────────────────────────────────────────────────────────────────────────
   exact(
@@ -220,7 +319,13 @@ function checkHome(ctx) {
     /<p class="label">(Distributed, cloud-native bitmaps[\s\S]*?)<\/p>/,
     `Distributed, cloud-native bitmaps · roaring shipped · v${version.version}`,
   );
-  numbers('lede', /<h1>[\s\S]*?<p class="cb-lede">([\s\S]*?)<\/p>/, [fetched, total]);
+  exact(
+    'lede',
+    /<h1>[\s\S]*?<p class="cb-lede">([\s\S]*?)<\/p>/,
+    'CloudBitmaps keeps large id-sets as immutable objects in storage you already own, and requests only the ' +
+      `chunks a query can match — ${fetched} of ${total}. The reads are the calls you know: has · count · iterate ` +
+      '· intersect · union · andNot.',
+  );
   const HERO = [
     [atRestMo, `${sizeGiB} GiB at rest, no traffic`],
     [`$${REDIS}/mo`, 'a Redis-HA cluster, standing, whether you read it or not'],
@@ -248,7 +353,8 @@ function checkHome(ctx) {
       (heroRow[0][1].match(/<div class="cb-fig\b/g) ?? []).length !== HERO.length
     ) {
       fail(
-        `${page}'s hero figure row holds ${cells.length} readable cells; it should hold ${HERO.length}`,
+        `${page}'s hero figure row holds ${cells.length} readable cells of ` +
+          `${(heroRow[0][1].match(/<div class="cb-fig\b/g) ?? []).length}; it should hold ${HERO.length}`,
       );
     }
     HERO.forEach(([figure, caption], i) => {
@@ -276,10 +382,10 @@ function checkHome(ctx) {
   record('bands numbered', `01–${String(eyebrows.length).padStart(2, '0')}`);
 
   // ── 01 · what you operate ────────────────────────────────────────────────────────────────────────────────
-  numbers(
+  exact(
     'the Redis column foot',
     /<p class="cb-op-foot cb-note">\s*(Three nodes standing[\s\S]*?)<\/p>/,
-    [String(REDIS)],
+    `Three nodes standing, whether anything reads or not, for $${REDIS}/mo, and the planning that sizes them.`,
   );
   exact(
     'our column label',
@@ -333,10 +439,18 @@ function checkHome(ctx) {
   });
 
   // ── 04 · the cost band ───────────────────────────────────────────────────────────────────────────────────
-  numbers('cost headline', /<section id="crossover"[^>]*>[\s\S]*?<h2>([\s\S]*?)<\/h2>/, [rate]);
-  numbers('cost lede', /<section id="crossover"[^>]*>[\s\S]*?<p class="cb-lede">([\s\S]*?)<\/p>/, [
-    String(REDIS),
-  ]);
+  exact(
+    'cost headline',
+    /<section id="crossover"[^>]*>[\s\S]*?<h2>([\s\S]*?)<\/h2>/,
+    `Cheaper until ${rate} GETs a second. Then it isn't.`,
+  );
+  exact(
+    'cost lede',
+    /<section id="crossover"[^>]*>[\s\S]*?<p class="cb-lede">([\s\S]*?)<\/p>/,
+    'Our line rises from nothing with read rate, every read here a cache miss and a GET. The Redis cluster is ' +
+      `flat at $${REDIS} whether you read it or not. We publish both halves, because the half where a flat cluster ` +
+      'wins is what makes the other half checkable.',
+  );
   const prices =
     /AWS_US_EAST_1_ONDEMAND[^=]*=\s*deepFreeze\(\{[\s\S]*?storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\}/.exec(
       costSrc,
@@ -364,7 +478,7 @@ function checkHome(ctx) {
   const TABLES = [
     [
       'what goes in',
-      ['What goes in', 'Where it comes from'],
+      ['What goes in', 'Value'],
       [
         ['The reference set', 'chosen · at rest, no traffic', `${sizeGiB} GiB`],
         [
@@ -392,7 +506,7 @@ function checkHome(ctx) {
     ],
     [
       'what comes out',
-      ['What comes out', 'Derived · arithmetic'],
+      ['What comes out', 'Value'],
       [
         ['At rest', `${sizeGiB} GiB × $${storeGiB}`, atRestMo],
         ['Cold A ∩ B, per million', `${gets} GETs × ${usd2(getM)}`, coldPerM],
@@ -468,6 +582,12 @@ function checkHome(ctx) {
   const shownNum = (s) => Number(String(s).replace(/[$,%/a-z ]/gi, ''));
   for (const [what, got, want] of [
     ['at rest', (Number(sizeGiB) * storeGiB).toFixed(2), shownNum(atRestMo).toFixed(2)],
+    // The share's own operand, to its four places: rounding to cents would pass any storage price near this one.
+    [
+      'at rest, unrounded',
+      (Number(sizeGiB) * storeGiB).toFixed(4),
+      results.atRest.monthlyUSD.toFixed(4),
+    ],
     [
       'a cold intersect',
       (gets * Number(usd2(getM).slice(1)) || 0).toFixed(2),
@@ -578,7 +698,11 @@ function checkHome(ctx) {
   });
 
   // ── 07 · fit, the install and the footer ─────────────────────────────────────────────────────────────────
-  numbers("the fit band's losing case", /<h3>(You read past [\s\S]*?)<\/h3>/, [rate]);
+  exact(
+    "the fit band's losing case",
+    /<h3>(You read past [\s\S]*?)<\/h3>/,
+    `You read past ${rate} GETs a second, every one a cache miss.`,
+  );
   exact(
     'id width',
     /<p class="cb-note">\s*(Ids are \d+-bit unsigned integers\.)/,
@@ -589,27 +713,33 @@ function checkHome(ctx) {
   // pass unread, since the last check only looks for numbers.
   const licences = matches(
     html,
-    /(?<![\w-])(Apache-\d+\.\d+|MIT|ISC|BSD-\d-Clause|MPL-\d+\.\d+|(?:A|L)?GPL-\d+\.\d+(?:-only|-or-later)?)(?![\w.])/,
+    /(?<![\w-])(Apache-\d+\.\d+|MIT|ISC|BSD-\d-Clause|MPL-\d+\.\d+|BUSL-\d+\.\d+|(?:A|L)?GPL-\d+\.\d+(?:-only|-or-later)?)(?![\w-]|\.\d)/,
   );
   for (const m of licences) {
     if (m[1] !== licence)
       fail(`${page} states the licence ${m[1]}, but package.json says ${licence}`);
     else L.mark(...m.indices[1]);
   }
-  const stage = matches(html, /(Pre-1\.0)\b/);
+  const stage = matches(html, /(Pre-1\.0)\b/i);
   for (const m of stage) {
     if (!version.version.startsWith('0.'))
       fail(`${page} says ${m[1]}, but the packages are at ${version.version}`);
     else L.mark(...m.indices[1]);
   }
-  if (
-    !/every figure here is gated in CI/.test(textOf(body.replace(/<script[\s\S]*?<\/script>/g, '')))
-  ) {
-    fail(
-      `${page}'s footer no longer says every figure here is gated in CI, which this check holds`,
-    );
-  }
+  exact(
+    'footer',
+    /<footer[\s\S]*?<span>(CloudBitmaps · [\s\S]*?)<\/span>/,
+    `CloudBitmaps · v${version.version} · ${licence}`,
+  );
+  exact(
+    "footer's claim",
+    /<footer[\s\S]*?<span class="right">([\s\S]*?)<\/span>/,
+    `Pre-1.0 · single maintainer · ${CLAIM} · read the conditions`,
+  );
 }
+
+/** What the page's footer says, which the ledger exists to make true: site-figures runs it on the page that says it. */
+const CLAIM = 'every figure on this page is gated in CI';
 
 /**
  * The last check: every number the page shows, in its text or in an attribute that carries prose, lies in a span
@@ -619,13 +749,29 @@ function finish({ L, page, fail }) {
   const rest = L.rest()
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ');
-  const prose = [
-    ...rest.matchAll(/\s(?:aria-label|alt|title)="([^"]*)"/g),
-    ...rest.matchAll(
-      /<meta\s+(?:name|property)="(?:description|og:description|twitter:description|og:title|twitter:title)"\s+content="([^"]*)"/g,
-    ),
-  ].map((m) => m[1]);
-  const text = [...prose, rest.replace(/<[^>]+>/g, ' ')].map(decode).join(' \n ');
+  const proseOf = (t) => [
+    ...PROSE_ATTRS.filter((a) => t.attrs[a] !== undefined).map((a) => t.attrs[a]),
+    ...(t.name === 'meta' && PROSE_METAS.test(metaKey(t)) ? [t.attrs.content ?? ''] : []),
+  ];
+  const prose = tagsOf(rest).flatMap(proseOf);
+  // Inside a span a check read, the check compared the text, not the attributes: a number in one is unread.
+  for (const [a, b] of L.marks) {
+    const span = L.html.slice(a, b);
+    if (span.startsWith('<!-- BENCH:')) continue;
+    for (const t of tagsOf(span)) {
+      if (t.name === 'meta') continue;
+      for (const v of proseOf(t)) {
+        if ((v.match(NUMBER) ?? []).length > 0) {
+          fail(
+            `${page} states "${v}" in an attribute of an element a check read for its text alone`,
+          );
+        }
+      }
+    }
+  }
+  const text = [...prose, decode(rest.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' '))].join(
+    ' \n ',
+  );
   const left = [...text.matchAll(NUMBER)].map((m) => {
     const around = text
       .slice(Math.max(0, m.index - 40), m.index + m[0].length + 30)
@@ -635,10 +781,10 @@ function finish({ L, page, fail }) {
   });
   if (left.length > 0) {
     fail(
-      `${page} shows ${left.length} figure(s) no check holds, and its footer says every figure here is gated ` +
-        `in CI:\n      ${left.slice(0, 12).join('\n      ')}`,
+      `${page} shows ${left.length} figure(s) no check holds, and its footer says ${CLAIM}:\n      ` +
+        left.slice(0, 12).join('\n      '),
     );
   }
 }
 
-module.exports = { checkHome, finish, ledger, textOf, decode };
+module.exports = { checkHome, finish, ledger, textOf, decode, tagsOf, metaKey, CLAIM };

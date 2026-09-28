@@ -104,7 +104,8 @@
         <div class="hero-grid">
           <div class="hero-copy">
             <p class="eyebrow">
-              <a href="../flavors.html">Flavors</a> · roaring · shipped · v0.10.0
+              <a href="../flavors.html">Flavors</a> · roaring · shipped ·
+              <span class="u">v0.10.0</span>
             </p>
             <h1>Containers that pick themselves.</h1>
             <p class="hero-lede">
@@ -398,24 +399,25 @@
             paying for is the cadence, not the id count.
           </p>
           <p class="tpanel-foot">
-            <span class="label">What that costs</span> Two line items, and no third. A
+            <span class="label">What that costs</span> Requests, and storage. A
             <strong>read</strong> that misses the cache is one ranged GET, once the segment's
-            pointer and index are read; a <strong>publish</strong> is one object PUT plus the
-            pointer's own PUT and reads. Storage is the segment sitting there, which is the cheap
-            part. Nothing bills per id, and nothing bills while the segment is idle &mdash; which is
-            the whole difference from a node you keep standing. Rates are region-specific and the
-            vendor's to change; every figure we publish uses the default
-            <span class="m">aws-us-east-1-ondemand</span> rates, and
-            <span class="call">estimateCost</span> accepts your own.
+            pointer and index are read, and a segment being read re-reads its pointer at most once
+            per <span class="m">cache.genTtlMs</span>; a <strong>publish</strong> is one object PUT
+            plus the pointer's own PUT and reads, and a load's collection lists what it deletes.
+            Storage is the segment sitting there, which is the cheap part. Nothing bills per id, and
+            nothing bills while the segment is idle &mdash; which is the whole difference from a
+            node you keep standing. Rates are region-specific and the vendor's to change; every
+            figure we publish uses the default <span class="m">aws-us-east-1-ondemand</span> rates,
+            and <span class="call">estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">
             <span class="label">One way in, and nothing to run</span> A segment exists once you have
-            loaded a generation into it; before that every read answers empty rather than erroring.
-            There is no daemon, no compaction pass and no lifecycle worker &mdash; the only
-            scheduled work is the retention sweep you trigger yourself (<span class="call"
-              >retireExpired</span
-            >), plus <span class="call">gcOrphanGenerations</span> if you want superseded
-            generations collected sooner than that.
+            loaded a generation into it; before that a read of it alone answers empty, and a combine
+            refuses it unless you pass <span class="m">allowAbsentOperands</span>. There is no
+            daemon, no compaction pass and no lifecycle worker: a load collects its own superseded
+            generations, and what you schedule is housekeeping &mdash;
+            <span class="call">retireExpired</span> for segments whose retention you set, and
+            <span class="call">gcOrphanGenerations</span> for the generations a combine keeps.
           </p>
         </div>
 
@@ -426,9 +428,10 @@
               A Redis bitmap is one flat bit array. Roaring stores each 65,536-id chunk as
               <em>whichever of three encodings is smallest for that chunk</em> — and past
               <strong>4,096 ids</strong> in a chunk, <strong>6.25%</strong> of it, the winner is a
-              flat bit array. Byte for byte, the same thing you have now. The flat representation is
-              not the alternative we rejected; it is the one this codec picks whenever it is the
-              right answer. The figure below is that choice being made.
+              flat bit array, the shape you have now, unless the ids run in long stretches, which a
+              list of runs holds in less. The flat representation is not the alternative we
+              rejected; it is the one this codec picks whenever it is the right answer. The figure
+              below is that choice being made.
             </p>
           </div>
           <div class="limit">
@@ -582,12 +585,12 @@
             <p>
               This flavor wraps CRoaring through <span class="m">roaring-node</span>, so it brings a
               platform matrix and something to compile. That is the honest cost of choosing this
-              row: a prebuilt exists for common Linux and macOS targets, and anything else &mdash;
-              Graviton, an unusual libc, a locked-down build that forbids compilation &mdash;
-              compiles from source or does not install. Native addons <em>do</em> load on Deno, Bun
-              and Lambda; what they cannot enter is an isolate runtime such as Cloudflare Workers.
-              Note that today the engine itself does not run there either, for reasons that have
-              nothing to do with the codec.
+              row: the prebuilts checked here are for x64 Linux with glibc, Apple silicon macOS and
+              x64 Windows, and anything else &mdash; Graviton, an Intel Mac, an unusual libc, a
+              locked-down build that forbids compilation &mdash; compiles from source or does not
+              install. Native addons <em>do</em> load on Deno, Bun and Lambda; what they cannot
+              enter is an isolate runtime such as Cloudflare Workers. Note that today the engine
+              itself does not run there either, for reasons that have nothing to do with the codec.
             </p>
           </div>
           <div class="limit">
@@ -626,7 +629,9 @@
             <p class="meta">Apache-2.0 · v0.10.0 · zero-dependency core · 4 storage drivers</p>
           </div>
           <div class="install">
-            <div class="install-head label"><span>quickstart.ts</span><span>No setup</span></div>
+            <div class="install-head label">
+              <span class="u">quickstart.ts</span><span>No setup</span>
+            </div>
             <pre tabindex="0"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 

@@ -67,7 +67,7 @@
       <div class="topbar-inner">
         <a class="brand" href="index.html">
           <!-- The letterform is `currentColor` so it inverts with the theme; the nine bits are the brand's
-               own blues, literal hex, identical in both themes — exactly as delivered. -->
+               own blues, literal hex, identical in both themes. -->
           <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
             <path
               fill="currentColor"
@@ -209,7 +209,7 @@
            What a reader would weigh, box by box, each alternative's boxes tagged with what keeping them costs: the
            Redis cluster the $346 buys, three nodes of it, whose failover ElastiCache runs; and a tiered database keeping
            its own services in front of object storage. Ours is the bucket. Drawn as rows, not a picture, so each
-           column reflows at any width. What you may schedule is housekeeping, and the foot says which. -->
+           column reflows at any width. What you schedule is housekeeping, and the foot says which. -->
       <section id="how" class="cb-stack">
         <div class="cb-head">
           <p class="label">01 · What you operate</p>
@@ -273,8 +273,8 @@
             </div>
             <p class="cb-op-foot cb-note has-key">
               <i class="cb-key" aria-hidden="true"></i><span>The current-generation pointer, in the same bucket.
-              <strong>Nothing to deploy.</strong> What you may schedule is housekeeping: retiring segments that expire,
-              and collecting the generations a combine keeps.</span>
+              <strong>Nothing to deploy.</strong> What you schedule is housekeeping, for what you use: retiring
+              segments whose retention you set, and collecting the generations a combine keeps.</span>
             </p>
           </div>
         </div>
@@ -356,7 +356,9 @@
           </p>
         </div>
         <div class="cb-seam cb-cols-1">
-          <div data-motion>
+          <div>
+            <!-- The grid alone plays when it is seen, not the figures under it, which can be on screen without it. -->
+            <div data-motion>
             <!-- BENCH:HOMEGRID:START -->
 <div class="cb-grid-head">
   <p class="label">Chunk-key space · 2,000 keys · one cell per 10 chunks</p>
@@ -389,6 +391,7 @@
   </svg>
 </div>
 <!-- BENCH:HOMEGRID:END -->
+            </div>
             <div class="cb-seam is-inner cb-cols-3">
               <div class="cb-fig is-band">
                 <p class="label">Fetched</p>
@@ -454,25 +457,25 @@
 <text class="tl" x="92" y="406">LEFT OF THE CROSSOVER, METERED READS COST LESS</text>
 <text class="tl" x="1160" y="406" text-anchor="end">RIGHT OF IT, THE STANDING CLUSTER DOES · USE REDIS</text>
 </svg>
-<svg class="cb-svg is-chart-narrow" viewBox="0 0 330 300" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $0.40 per million GETs; the Redis cluster is flat at $346; they cross at 329.15 GETs a second, above which the cluster is cheaper.">
-<defs><pattern id="hxn" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plotn"><rect x="52" y="34" width="268" height="175"/></clipPath></defs>
-<rect x="185.0" y="36" width="133.0" height="174" fill="url(#hxn)"/>
-<path class="s sd guide" d="M185.0 36 V210"/>
-<path class="line-node" d="M52 127.0 H318"/>
-<path class="line-ours" d="M52 210.0 L318 44.0"/>
-<g clip-path="url(#plotn)"><rect class="cover x-cover" x="52" y="34" width="268" height="175"/></g>
-<path class="s" d="M51 36 V210 H318"/>
-<text class="tl" x="52" y="20">$ / MONTH</text>
-<text class="tl" x="318" y="20" text-anchor="end">GETS/S, EVERY READ A MISS</text>
-<g class="x-dot"><rect class="hot" x="180.0" y="122.0" width="10" height="10" rx="2"/><text class="t is-bold on-hatch" x="195.0" y="151.0">329.15 GETs/s</text></g>
-<text class="tf" x="44" y="131.0" text-anchor="end">$346</text>
-<text class="tf" x="44" y="214" text-anchor="end">$0</text>
-<text class="tf" x="52" y="228" text-anchor="middle">0</text>
-<text class="tf" x="185.0" y="228" text-anchor="middle">329.15</text>
-<text class="tl" x="52" y="250">METERED COSTS LESS</text>
-<text class="tl" x="318" y="250" text-anchor="end">USE REDIS</text>
-<path class="line-node" d="M52 272 H70"/><text class="tf" x="78" y="276">$346/mo · a Redis-HA cluster, flat</text>
-<path class="line-ours" d="M52 292 H70"/><text class="tf" x="78" y="296">$0.40 per million GETs · CloudBitmaps</text>
+<svg class="cb-svg is-chart-narrow" viewBox="0 0 262 294" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $0.40 per million GETs; the Redis cluster is flat at $346; they cross at 329.15 GETs a second, above which the cluster is cheaper.">
+<defs><pattern id="hxn" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plotn"><rect x="40" y="24" width="214" height="165"/></clipPath></defs>
+<rect x="146.0" y="26" width="106.0" height="164" fill="url(#hxn)"/>
+<path class="s sd guide" d="M146.0 26 V190"/>
+<path class="line-node" d="M40 112.0 H252"/>
+<path class="line-ours" d="M40 190.0 L252 34.0"/>
+<g clip-path="url(#plotn)"><rect class="cover x-cover" x="40" y="24" width="214" height="165"/></g>
+<path class="s" d="M39 26 V190 H252"/>
+<text class="tl" x="0" y="12">$ / MONTH</text>
+<g class="x-dot"><rect class="hot" x="141.0" y="107.0" width="10" height="10" rx="2"/><text class="t is-bold on-hatch" x="156.0" y="136.0">329.15 GETs/s</text></g>
+<text class="tf" x="34" y="116.0" text-anchor="end">$346</text>
+<text class="tf" x="34" y="194" text-anchor="end">$0</text>
+<text class="tf" x="40" y="206" text-anchor="middle">0</text>
+<text class="tf" x="146.0" y="206" text-anchor="middle">329.15</text>
+<text class="tl" x="252" y="224" text-anchor="end">GETS/S, EVERY READ A MISS</text>
+<text class="tl" x="40" y="244">METERED COSTS LESS</text>
+<text class="tl" x="252" y="244" text-anchor="end">USE REDIS</text>
+<path class="line-node" d="M0 262 H18"/><text class="tf" x="26" y="266">$346/mo · a Redis-HA cluster, flat</text>
+<path class="line-ours" d="M0 282 H18"/><text class="tf" x="26" y="286">$0.40 per million GETs · CloudBitmaps</text>
 </svg>
 <!-- BENCH:HOMECHART:END -->
           </div>
@@ -484,12 +487,12 @@
           <div>
             <table class="cb-ftable" aria-label="What goes in: each input, measured, quoted or chosen">
               <thead>
-                <tr><th scope="col">What goes in</th><th scope="col">Where it comes from</th></tr>
+                <tr><th scope="col">What goes in</th><th scope="col">Value</th></tr>
               </thead>
               <tbody>
                 <tr><th scope="row">The reference set<span class="cb-note">chosen · at rest, no traffic</span></th><td>1.2 GiB</td></tr>
                 <tr>
-                  <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3 in us-east-1, from a client outside it</span></th>
+                  <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3 in <span class="nw">us-east-1</span>, from a client outside it</span></th>
                   <td>206</td>
                 </tr>
                 <tr>
@@ -497,12 +500,12 @@
                   <td>2 PUT + 3 GET</td>
                 </tr>
                 <tr>
-                  <th scope="row">S3 GET · PUT, per million<span class="cb-note">quoted · AWS us-east-1 list price</span></th>
+                  <th scope="row">S3 GET · PUT, per million<span class="cb-note">quoted · AWS <span class="nw">us-east-1</span> list price</span></th>
                   <td>$0.40 · $5.00</td>
                 </tr>
-                <tr><th scope="row">S3 storage, per GiB-month<span class="cb-note">quoted · AWS us-east-1 list price</span></th><td>$0.023</td></tr>
+                <tr><th scope="row">S3 storage, per GiB-month<span class="cb-note">quoted · AWS <span class="nw">us-east-1</span> list price</span></th><td>$0.023</td></tr>
                 <tr>
-                  <th scope="row">Redis-HA cluster<span class="cb-note">quoted · 3 × cache.m7g.large, 730 hours a month</span></th>
+                  <th scope="row">Redis-HA cluster<span class="cb-note">quoted · 3 × <span class="nw">cache.m7g.large</span>, 730 hours a month</span></th>
                   <td>$346/mo</td>
                 </tr>
               </tbody>
@@ -511,7 +514,7 @@
           <div>
             <table class="cb-ftable" aria-label="What comes out: each derived figure and its arithmetic">
               <thead>
-                <tr><th scope="col">What comes out</th><th scope="col">Derived · arithmetic</th></tr>
+                <tr><th scope="col">What comes out</th><th scope="col">Value</th></tr>
               </thead>
               <tbody>
                 <tr><th scope="row">At rest<span class="cb-note">1.2 GiB × $0.023</span></th><td>$0.03/mo</td></tr>
@@ -541,7 +544,8 @@
       <!-- ── 05 · MEMORY · data band ──────────────────────────────────────
            Does this fall over, in one panel: the retained heap per fleet as bars on one 0–10 MiB axis, which reads as
            flat at a glance, beside the two that do grow, the discovery scan and peak RSS, at the same size. All from
-           bench/scale-results.json and held to it by scripts/site-figures.cjs, bars included. The invariant count
+           bench/scale-results.json, generated by bench/scale.cjs and held to it by `pnpm bench:scale:check`, bars
+           included. The invariant count
            under it is AGENTS.md's, and the gate reads it from `.ba-foot`. -->
       <section id="memory" class="cb-stack">
         <div class="cb-head">
@@ -716,7 +720,7 @@
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
-              <a class="btn" href="usage.html#api">Browse the six calls</a>
+              <a class="btn" href="usage.html#api">Browse the API</a>
               <a class="btn" href="benchmarks.html">See the benchmarks</a>
             </p>
             <p class="meta">Apache-2.0 · zero-dependency core · 4 storage drivers · published tokenlessly via OIDC</p>
@@ -750,7 +754,7 @@
         <a href="architecture.html">Architecture</a>
         <a href="usage.html">Usage</a>
         <a href="benchmarks.html">Benchmarks</a>
-        <span class="right">Pre-1.0 · single maintainer · every figure here is gated in CI · <a href="#conditions">read the conditions</a></span>
+        <span class="right">Pre-1.0 · single maintainer · every figure on this page is gated in CI · <a href="#conditions">read the conditions</a></span>
       </div>
     </footer>
     <script src="theme.js"></script>
@@ -762,8 +766,19 @@
           function (entries) {
             entries.forEach(function (entry) {
               if (!entry.isIntersecting) return;
-              entry.target.classList.add('is-played');
-              seen.unobserve(entry.target);
+              var band = entry.target;
+              band.classList.add('is-played');
+              seen.unobserve(band);
+              // Played once: when it has finished, it rests, so a drawing shown later does not play again.
+              if (!band.getAnimations) return;
+              var rest = function () {
+                band.classList.add('is-done');
+              };
+              Promise.all(
+                band.getAnimations({ subtree: true }).map(function (a) {
+                  return a.finished;
+                }),
+              ).then(rest, rest);
             });
           },
           { threshold: 0.4 },

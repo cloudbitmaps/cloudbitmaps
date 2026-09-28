@@ -90,7 +90,7 @@
       <section>
         <div class="hero-grid">
           <div class="hero-copy">
-            <p class="eyebrow">Usage · @cloudbitmaps/roaring v0.10.0</p>
+            <p class="eyebrow">Usage · <span class="u">@cloudbitmaps/roaring v0.10.0</span></p>
             <h1>Zero setup, then the same code in production.</h1>
             <p class="hero-lede">
               The in-memory drivers need nothing — no bucket, no credentials. Swap them for S3 later and
@@ -138,7 +138,7 @@ npm audit signatures</code></pre>
         <div class="prov">
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">quickstart.ts</span><span class="label">No setup</span>
+              <span class="label"><span class="u">quickstart.ts</span></span><span class="label">No setup</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
@@ -154,7 +154,7 @@ npm audit signatures</code></pre>
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">production.ts</span><span class="label">Only the drivers</span>
+              <span class="label"><span class="u">production.ts</span></span><span class="label">Only the drivers</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 <span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/s3'</span>;
@@ -197,7 +197,7 @@ npm audit signatures</code></pre>
           <div class="tpanel-head">
             <span class="label">Load, segment and store</span><span class="label">Scrolls sideways on narrow screens</span>
           </div>
-          <div class="tscroll" tabindex="0" role="region" aria-label="quickstart.ts">
+          <div class="tscroll" tabindex="0" role="region" aria-label="Load, segment and store">
             <table>
               <thead>
                 <tr>
@@ -240,9 +240,9 @@ npm audit signatures</code></pre>
                   <th scope="row"><span class="m">intersect(others, { exclude })</span></th>
                   <td class="from">
                     Async-iterates the intersection. Compares chunk keys first and requests only shared chunks;
-                    the storage payload footprint is bounded by
-                    <span class="m">concurrency × operands × chunk</span>, and that is the whole term — there
-                    is no second tier to snapshot. <span class="m">exclude</span> subtracts suppression
+                    the payload in flight is bounded by
+                    <span class="m">concurrency × operands × chunk</span>, beside the reader cache's parsed
+                    indexes and the decoded-chunk LRU, both bounded. <span class="m">exclude</span> subtracts suppression
                     segments in the same pass.
                   </td>
                   <td class="num">the shared chunks</td>
@@ -262,9 +262,11 @@ npm audit signatures</code></pre>
                 <tr>
                   <th scope="row"><span class="m">store.eraseSubject(id)</span></th>
                   <td class="from">
-                    Rewrites every segment holding the id without it and deletes the generation that held the
-                    bit, so it is <strong>physically gone from the bucket</strong> when the call returns. A
-                    compliance operation, not a hot-path verb — there is no per-id write.
+                    Rewrites every segment holding the id without it and deletes every generation that held the
+                    bit, so on return it is <strong>physically gone from the bucket</strong> for each segment its
+                    ledger does not report as an error; noncurrent object versions, replicas and backups keep it
+                    until their own lifecycle removes it. A compliance operation, not a hot-path verb — there is
+                    no per-id write.
                   </td>
                   <td class="num">storage + registry</td>
                 </tr>
@@ -317,7 +319,7 @@ npm audit signatures</code></pre>
         <div class="prov">
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">load.ts</span><span class="label">Per object, not per id</span>
+              <span class="label"><span class="u">load.ts</span></span><span class="label">Per object, not per id</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="c">// `store` from above — the backend is already wired.</span>
 
@@ -332,7 +334,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">audience.ts</span><span class="label">The bytes never come to you</span>
+              <span class="label"><span class="u">audience.ts</span></span><span class="label">The bytes never come to you</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="k">const</span> seg = (name) =&gt;
   store.segment(name, { namespace: <span class="s">'audience'</span> });
@@ -366,12 +368,13 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <p class="lede">
           Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
           moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. The old bucket
-          retires itself once you record when it should — see <span class="m">setRetention</span> below.
+          retires when the sweep you schedule runs past the date you record — see
+          <span class="m">setRetention</span> and <span class="m">retireExpired</span> below.
         </p>
         <div class="prov">
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">dedup.ts</span><span class="label">No per-user timers</span>
+              <span class="label"><span class="u">dedup.ts</span></span><span class="label">No per-user timers</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="c">// The bucket IS the re-eligibility rule.</span>
 <span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: localDay };
@@ -386,7 +389,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           </div>
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">retire.ts</span><span class="label">One call, ordered correctly</span>
+              <span class="label"><span class="u">retire.ts</span></span><span class="label">One call, ordered correctly</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="c">// The namespace is part of the identity — omit it</span>
 <span class="c">// and you silently address a different segment.</span>
@@ -469,7 +472,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           <div class="tpanel-head">
             <span class="label">Drivers</span><span class="label">Storage · registry</span>
           </div>
-          <div class="tscroll" tabindex="0" role="region" aria-label="load.ts">
+          <div class="tscroll" tabindex="0" role="region" aria-label="Drivers">
             <table>
               <thead>
                 <tr>
@@ -531,7 +534,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
         <div class="prov">
           <div class="tpanel">
             <div class="tpanel-head">
-              <span class="label">estimate.ts</span><span class="label">Pure — touches nothing</span>
+              <span class="label"><span class="u">estimate.ts</span></span><span class="label">Pure — touches nothing</span>
             </div>
             <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
@@ -549,8 +552,8 @@ bill.redisCrossover.readsPerSec;</code></pre>
               <span class="rl-what">Schedule the retention sweep</span>
               <span class="rl-fig">retireExpired()</span>
               <span class="rl-note">
-                Housekeeping you schedule if you want it, with <span class="m">gcOrphanGenerations</span> for the
-                generations a combine keeps; there is no daemon to run. An EventBridge rule, a Kubernetes
+                Housekeeping you schedule if you set retention, with <span class="m">gcOrphanGenerations</span>
+                for the generations a combine keeps; there is no daemon to run. An EventBridge rule, a Kubernetes
                 <span class="m">CronJob</span> or a queue job all do; nothing here starts a timer.
               </span>
             </li>
@@ -568,9 +571,10 @@ bill.redisCrossover.readsPerSec;</code></pre>
               <span class="rl-what">Collect superseded generations, keeping one</span>
               <span class="rl-fig">$0.03/mo · 1.2 GiB</span>
               <span class="rl-note">
-                Every load leaves its predecessor in the bucket, still billed, and nothing deletes it for you.
-                <span class="m">gcOrphanGenerations</span> does — keeping the newest superseded one by default
-                as a grace window, so a read still fetching from it saves a round trip. Storage is the only cost
+                A load collects its own, keeping the newest superseded generation by default as a grace window,
+                so a read still fetching from it saves a round trip. A combine into a destination keeps every
+                generation, so a rollback target survives it, and <span class="m">gcOrphanGenerations</span>
+                collects those. Storage is the only cost
                 of that window. It is not a snapshot facility: no setting here holds a long job on one
                 generation.
               </span>

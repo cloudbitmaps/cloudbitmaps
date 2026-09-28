@@ -6,9 +6,8 @@
  * (2–3px only on chunks), 1px rules shared between adjacent panels, no shadows, no accent bars, light designed
  * rather than inverted.
  *
- * The site's token names are kept, mapped onto the design's: --cb-surface is its --cb-panel, --cb-surface-2 its
- * --cb-sunk, --cb-ink its --cb-fg, --cb-signal-fill its --cb-fill. Its system stacks and antialiased smoothing are
- * taken as designed.
+ * The site's token names are kept: --cb-surface is a panel's fill, --cb-surface-2 a sunk one, --cb-ink the
+ * foreground, --cb-signal-fill the signal's fill. The type is set in system stacks, antialiased.
  *
  * Motion: two animations on the whole site, both on the homepage, both `opacity` and `transform` only, each played
  * once when its band comes into view and resting on a final frame that keeps every label: the crossover drawing
@@ -35,12 +34,11 @@
   --cb-hatch: rgba(230, 233, 238, 0.16); /* the half of a chart where the other side wins */
 
   /* A panel's fill. It is the surface on a ground band and the ground on a surface band, so adjacent panels and
-     the band behind them never share a colour: the design's rule that a seam's cells take the ground on a surface band, as a token. */
+     the band behind them never share a colour: a seam's cells take the ground on a surface band, held as a token. */
   --cb-cell: var(--cb-surface);
 
   /* Tier ramp — semantics, not brand. Only ever labels a tier, never a product, a button, a heading or a hero. */
   --cb-cache: #e8834a;
-  --cb-warm: #d7b25a;
   --cb-storage: #19c5f4;
 
   /* A chunk that is fetched: the mark's #176FFF, literal in both themes, as the mark's squares are. Idle chunks are
@@ -66,7 +64,6 @@
   --cb-idle: #dfe3e9;
   --cb-hatch: rgba(18, 21, 26, 0.16);
   --cb-cache: #a94d18; /* 4.98:1 on --cb-surface-2 */
-  --cb-warm: #8a6a12;
   --cb-storage: #0a6c90;
 }
 
@@ -102,8 +99,8 @@ html {
   scroll-padding-top: 96px;
 }
 
-/* No leading on the body, as the design sets none: each type component declares its own, so a box that holds one
-   line is as tall as the design's. */
+/* No leading on the body: each type component declares its own, so a box that holds one line is as tall as that
+   line. */
 body {
   margin: 0;
   background: var(--cb-bg);
@@ -293,7 +290,13 @@ main > section:last-of-type {
 
 /* ── the display tier ──────────────────────────────────────────────────────
    Ratio between tiers ≈ 1.6–1.85. Figures are always mono and tabular; words are always sans. A page gets one
-   96px heading, its h1; every band gets one 52px head or one row of 40px figures, never both leading at once. */
+   96px heading, its h1; every band gets one 52px head or one row of 40px figures, never both leading at once.
+   Heads balance their lines, so none ends on a word of its own. */
+h1,
+h2 {
+  text-wrap: balance;
+}
+
 h1 {
   margin: 0;
   font-size: clamp(44px, 6.667vw, 96px);
@@ -350,13 +353,13 @@ h3 {
   max-width: 62ch;
 }
 
-/* Mono caps labels, held to AA: the faint tone carries real information. Never below 9.5px. */
-/* A unit or an identifier inside a caps label keeps its own case: "24.6 ms", "0–10 MiB", "v0.10.0", "us-east-1". */
-.label .u,
-.cb-ftable thead .u {
+/* A unit or an identifier inside caps keeps its own case: "24.6 ms", "0–10 MiB", "v0.10.0", "us-east-1",
+   "quickstart.ts". The case is declared on the span itself, so it holds under any caps style around it. */
+.u {
   text-transform: none;
 }
 
+/* Mono caps labels, held to AA: the faint tone carries real information. Never below 9.5px. */
 .label,
 .eyebrow {
   font-family: var(--cb-mono);
@@ -543,6 +546,11 @@ main > section:not(.cb-stack) > .replay-badge + h1 {
   vertical-align: middle;
 }
 
+/* Rules between rows only: the last row meets the panel's own edge, or the foot's rule. */
+.cb-ftable tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
 .cb-ftable thead th {
   font-family: var(--cb-mono);
   font-size: 10px;
@@ -585,6 +593,7 @@ main > section:not(.cb-stack) > .replay-badge + h1 {
 .cb-ftable-foot {
   padding: 14px 24px;
   margin-top: auto;
+  border-top: 1px solid var(--cb-rule);
 }
 
 .cb-link {
@@ -710,7 +719,7 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   THE HOMEPAGE — the design's markup, its inline styles made classes.
+   THE HOMEPAGE — its components, each a class rather than an inline style.
    ══════════════════════════════════════════════════════════════════════════════ */
 .cb-grid12 {
   display: grid;
@@ -898,11 +907,8 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 .cb-pre code {
-  font-size: inherit;
-}
-
-.cb-pre code {
   display: block;
+  font-size: inherit;
 }
 
 /* Each comment a line of its own, hung on its `#`, so a comment that wraps never reads as a command. */
@@ -975,6 +981,11 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   height: 16px;
   border: 1px solid var(--cb-ink);
   border-radius: 2px;
+}
+
+/* Stacked, the bucket's drawing keeps its chunks near the size they have side by side, not three times it. */
+.cb-op-bucket .cb-svg {
+  max-width: 330px;
 }
 
 .cb-op-bucket {
@@ -1099,8 +1110,13 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   overflow-x: auto;
 }
 
-/* The cost band's two tables are read across, so neither head may wrap and push its rows out of line. */
+/* Side by side, the cost band's two tables keep their heads on one line, so the heads sit level. */
 .cb-derive .cb-ftable thead th {
+  white-space: nowrap;
+}
+
+/* A region or an instance name reads as one token, so it does not break at its hyphens or dots. */
+.nw {
   white-space: nowrap;
 }
 
@@ -1159,6 +1175,17 @@ svg .t.is-fig {
   width: 100%;
   max-width: 96px;
   height: 140px;
+}
+
+/* The table sits in a padded cell, so its outer columns take the cell's edge rather than an inset of their own. */
+.cb-memory .cb-ftable th:first-child,
+.cb-memory .cb-ftable td:first-child {
+  padding-left: 0;
+}
+
+.cb-memory .cb-ftable th:last-child,
+.cb-memory .cb-ftable td:last-child {
+  padding-right: 0;
 }
 
 .cb-memory .cb-ftable thead th:not(:first-child) {
@@ -1463,6 +1490,17 @@ svg .crossing {
 .cb-motion .is-played .k-ph1,
 .cb-motion .is-played .k-ph2 {
   animation-play-state: running;
+}
+
+/* A band that has played rests, so a drawing shown only later, as the crossover that fits a turned tablet is,
+   takes its final frame rather than playing again. */
+.cb-motion .is-done .x-cover,
+.cb-motion .is-done .x-dot,
+.cb-motion .is-done .k-scan,
+.cb-motion .is-done .k-hot .hot,
+.cb-motion .is-done .k-ph1,
+.cb-motion .is-done .k-ph2 {
+  animation: none;
 }
 
 /* Less motion asked for after the page loaded, or a printout: the final frame. */
@@ -1877,9 +1915,14 @@ svg .crossing {
   background: var(--cb-chunk);
 }
 
+/* Which keys are shared is only known once they are compared, so until the stepper reaches that beat they look
+   like every other key. */
+.replay.is-interactive:not(.is-compared) .icell.is-shared {
+  background: var(--cb-idle);
+}
+
 .icell.is-a {
   background: var(--cb-muted);
-  border-color: var(--cb-muted);
 }
 
 /* No script: the cells have never been "reached", so they must not sit at the
@@ -2033,14 +2076,6 @@ svg .crossing {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .tally-cell:nth-child(2) {
-    border-right: 0;
-  }
-
-  .tally-cell:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--cb-rule);
-  }
-
   .replay-stage {
     padding: 18px;
   }
@@ -2057,25 +2092,16 @@ svg .crossing {
   .tally {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .tally-cell {
-    border-right: 0;
-    border-bottom: 1px solid var(--cb-rule);
-  }
-
-  .tally-cell:last-child {
-    border-bottom: 0;
-  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
-   TABLES — lifted from the design's own treatment, which is a bordered PANEL
+   TABLES — a bordered PANEL
    with a mono head strip rather than a bare `<table>`. The panel is what makes a
    table read as a figure instead of as leftover markup; without it the rows float
    in the page with nothing holding them, which is exactly how /demo's provenance
    section shipped when this component did not exist.
 
-   Figures go in the right-hand column: mono, tabular, cyan, right-aligned, so a
+   Figures go in the right-hand column: mono, tabular, in ink, right-aligned, so a
    reader scans the values down a single edge instead of hunting across ragged
    text.
    ══════════════════════════════════════════════════════════════════════════════ */
@@ -2255,8 +2281,11 @@ svg .crossing {
   border: 1px solid var(--cb-rule);
 }
 
+/* A row list and a diagram are declared further down with a border of their own, so they are named here too. */
 .prov > *,
-.dgms > * {
+.dgms > *,
+.prov > .rowlist,
+.dgms > .dgm {
   border: 0;
   background: var(--cb-cell);
   min-width: 0;
@@ -2384,9 +2413,9 @@ svg .crossing {
 
 /* Container cards reuse the tier grid — it is a three-up card grid, and a second
    one would be the same CSS under a different name. Only the chip's colour differs,
-   because a container is not a tier. */
+   because a container is not a tier: it takes the ink, not a tier's colour. */
 .tier-chip.t-c {
-  color: var(--cb-cyan);
+  color: var(--cb-ink);
 }
 
 .tier .cbytes {
@@ -2750,7 +2779,7 @@ svg .crossing {
   border-radius: 2px;
 }
 
-/* Lit = present in both. Cyan means "this is the answer" here exactly as it does on
+/* Lit = present in both. The fetched chunk's colour means "this is the answer" here exactly as it does on
    /demo's axis — one meaning, two figures. */
 .ak.on {
   background: var(--cb-chunk);
@@ -3144,7 +3173,7 @@ svg .crossing {
 }
 
 /* Each diagram's narrowest width that keeps its smallest label at 9.5px: viewBox width × 9.5 ÷ that label's size,
-   10 units for most, 13 for the homepage's full-width chart, 10 for its phone one. */
+   10 units for most, 13 for the homepage's full-width chart, 10 for its phone one, whose labels are all 10. */
 .cb-scroll > .cb-svg.is-wide,
 .chart > .cb-scroll > .cb-svg {
   min-width: 1118px;
@@ -3154,31 +3183,53 @@ svg .crossing {
   min-width: 860px;
 }
 
-/* The homepage's crossover is drawn twice, full width and for a phone, and the sheet shows the one that fits. */
+/* The homepage's crossover is drawn twice, full width and for a phone, and the sheet shows the one that fits: the
+   full-width one needs 860px for its drawing and 114px of frame and gutters, so below 1,000px it is the phone's,
+   held to a size where its labels read at about the page's. */
 .cb-svg.is-chart-narrow {
   display: none;
+  max-width: 420px;
+}
+
+.cb-svg.is-chart-narrow .tf {
+  font-size: 10px;
 }
 
 .cb-scroll > .cb-svg.is-chart-narrow {
-  min-width: 314px;
+  min-width: 249px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 1000px) {
   .cb-svg.is-chart {
     display: none;
   }
   .cb-svg.is-chart-narrow {
     display: block;
   }
+}
+
+@media (max-width: 720px) {
   .cb-cross-chart {
     padding: 16px 12px 12px;
   }
 }
 
-/* The three "what you operate" columns stack once a column would drop under about 300px of rows. */
-@media (max-width: 1000px) {
+/* The three "what you operate" columns stack once a column would drop under about 330px of rows, below which a
+   row's name and its tag no longer share a line. */
+@media (max-width: 1100px) {
   .cb-op-set {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Below 1,000px the cost band's two tables stack, since side by side each row head would be a word or two wide,
+   and stacked, a head may wrap. */
+@media (max-width: 1000px) {
+  .cb-derive {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cb-derive .cb-ftable thead th {
+    white-space: normal;
   }
 }
 
@@ -3259,10 +3310,6 @@ svg .crossing {
   .cb-cols-4,
   .cb-cols-2 {
     grid-template-columns: minmax(0, 1fr);
-  }
-  /* Stacked, the cost band's tables are no longer read across, and a head that wraps keeps them on the screen. */
-  .cb-derive .cb-ftable thead th {
-    white-space: normal;
   }
   main > section {
     padding-block: 56px;

@@ -102,7 +102,7 @@
           <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note">
-          Every number on this page comes from one recorded run of
+          Every measured number on this page comes from one recorded run of
           <span class="m">SCALE_INJECT=1 pnpm bench:scale</span>, checked into the repository. Nothing here is simulated,
           and nothing is computed live — this is a replay, and it says so because the distinction is the
           point.
@@ -155,7 +155,7 @@
 
         <p class="note">
           That asymmetry is the entire trick. Keys are small and comparable; remainders are the payload. The
-          replay below compares 4,000 keys and fetches 100 payloads.
+          replay below compares 4,000 keys and fetches 100 payloads from each segment.
         </p>
 
         <h3>Then each chunk picks its own shape</h3>
@@ -207,7 +207,8 @@
         <h2>Step through it</h2>
         <p class="lede">
           The whole argument is in beat two: the keys are compared first, and at that moment
-          <strong>zero bytes have been read</strong>. Everything after it is the consequence.
+          <strong>no chunk has been requested</strong>, only each segment's pointer and its index, in one tail
+          read. Everything after it is the consequence.
         </p>
 
         <div
@@ -315,7 +316,7 @@
                 <span class="tally-note">never requested, never billed</span>
               </div>
               <div class="tally-cell">
-                <span class="label">Bytes read</span>
+                <span class="label">Chunk bytes read</span>
                 <span class="tally-fig" id="t-bytes">3,000</span>
                 <span class="tally-note">30 per fetched key, both operands</span>
               </div>
@@ -339,7 +340,7 @@
               <p>
                 Keys are compared before any chunk is requested. One hundred appear in both segments; 1,900 in each
                 segment appear in only one, and a key that exists in one segment alone cannot contribute to
-                an intersection. <strong>Bytes read at this point: still zero.</strong>
+                an intersection. <strong>Chunks requested at this point: none.</strong>
               </p>
             </article>
             <article class="beat" data-beat="2">
@@ -352,7 +353,7 @@
               </p>
             </article>
             <article class="beat" data-beat="3">
-              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.6 ms</p>
+              <p class="beat-head"><span class="beat-n">04</span> 100,000 ids in 24.6 <span class="u">ms</span></p>
               <p>
                 One hundred shared keys times 1,000 ids per key is 100,000 ids — and 100,000 is what the run
                 reported. The result is <em>derivable from the setup</em> as well as observed, which is the
@@ -413,7 +414,8 @@
               </tbody>
             </table>
             <p class="cb-ftable-foot cb-note">A derived number is only as good as the construction behind it &mdash;
-              <strong>bench/scale.cjs</strong> is 40 lines, and worth reading.</p>
+              <strong>measureIntersect</strong>, in <strong>bench/scale.cjs</strong>, is about 45 lines, and worth
+              reading.</p>
           </div>
         </div>
         <p class="note">
@@ -451,7 +453,7 @@
             <p>
               Key alignment does not care how ids sit inside a chunk, so <em>100 of 2,000</em> holds for any
               segment. The byte figure does care: this run seeds each chunk with a contiguous run, which Roaring
-              stores in a few dozen bytes. Scattered ids at the same density land nearer 2 KB per chunk. Read
+              stores in about 15 bytes. Scattered ids at the same density land nearer 2 KB per chunk. Read
               3,000 bytes as "the window is small and bounded", not as a number to plan a bill around.
             </p>
           </div>
@@ -475,7 +477,7 @@
       <section>
         <div class="close-grid">
           <div class="close-copy">
-            <h2>Six lines, no cloud account.</h2>
+            <h2>Eight lines, no cloud account.</h2>
             <p class="lede">
               Everything above ran against the in-memory drivers, which ship inside the package and need no
               configuration at all. So the quickstart runs as-is, and you can see the shape before you point
@@ -499,7 +501,7 @@
               <p class="label">Or reproduce the run above</p>
               <pre tabindex="0"><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
 pnpm install
-pnpm bench:scale  <span class="c"># writes scale-results.json</span></code></pre>
+pnpm bench:scale  <span class="c"># a dry run; SCALE_INJECT=1 writes scale-results.json</span></code></pre>
             </div>
             <p class="link-row"><a href="benchmarks.html">Methodology and caveats →</a></p>
           </div>

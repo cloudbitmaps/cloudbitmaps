@@ -10,7 +10,13 @@
  *
  * The same loads hold the two things that frame depends on, each of which also drifted twice where nothing measured
  * it: the page itself never scrolls sideways, and a region that does scroll can be reached by keyboard, through a
- * tab stop of its own or something focusable inside it. Chrome makes a scroller focusable by itself; Safari does not.
+ * tab stop of its own or something enabled and visible inside it, across or down. Chrome makes a scroller focusable
+ * by itself; Safari does not. Nor may a box cut off text that runs past it, which the page does not scroll to. And
+ * on the page that says every figure on it is gated in CI, every run of text outside its generated regions must be
+ * one a reader can see: not hidden, faded to nothing, painted clear, or moved off the page.
+ * A region is also announced by name, and its names drifted twice as well, a run of panels sharing one and a panel
+ * taking a file name from the one above it: each region needs a name of its own on the page, and one inside a panel
+ * is named for that panel's head.
  *
  * It drives Chrome over the DevTools Protocol with Node's global `WebSocket`, as `site-screenshots.mjs` does, so it
  * adds no dependency. CI runs it on `site-next/`.
@@ -18,6 +24,7 @@
  * Usage:  node scripts/site-text-floor.mjs [site|site-next]
  */
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -30,6 +37,8 @@ if (!['site', 'site-next'].includes(TREE)) {
   process.exit(2);
 }
 const FLOOR = 9.5;
+/** What the display-tier homepage's footer says; a page that says it is also held to showing what it states. */
+const { CLAIM } = createRequire(import.meta.url)('./lib/home-figures.cjs');
 const WIDTHS = [320, 390, 768, 1024, 1280, 1440];
 const PORT = 9444;
 const SITE = join(ROOT, TREE);
@@ -135,6 +144,10 @@ const MEASURE = `(() => {
       const m = el.getScreenCTM();
       if (!m) continue;
       px *= Math.hypot(m.a, m.b);
+    } else if (el.offsetWidth > 0 && box.width / el.offsetWidth < 0.98) {
+      // A transform or zoom on the element or above it draws its text at the size its box is drawn at. The width
+      // it is laid out at is a whole number, so a ratio within that rounding is no scale at all.
+      px *= box.width / el.offsetWidth;
     }
     if (px < ${FLOOR} - 0.005) {
       small.push({ px: Math.round(px * 100) / 100, text: text.slice(0, 48), cls: el.getAttribute('class') || el.tagName.toLowerCase() });
@@ -144,17 +157,101 @@ const MEASURE = `(() => {
 })()`;
 
 /** Runs in the page: how far it scrolls sideways, and each region that scrolls with no way in by keyboard. */
+/**
+ * Runs in a page that says every figure on it is gated: each run of text outside the generated regions must be
+ * one a reader can see, since a check that verified text a sheet then hides, moves off the page or paints clear
+ * proves nothing. The generated regions are held byte for byte elsewhere, and a drawing swapped for the one that
+ * fits, or a caption between two frames of an animation, is hidden there on purpose.
+ */
+const UNSEEN = `(() => {
+  const out = [];
+  const W = document.documentElement.scrollWidth;
+  const H = document.documentElement.scrollHeight;
+  const alpha = (c) => {
+    if (!c || c === 'none' || c === 'transparent') return 0;
+    const m = /rgba?\\(([^)]*)\\)/.exec(c);
+    if (!m) return 1;
+    const parts = m[1].split(/[\\s,/]+/).filter(Boolean);
+    return parts.length > 3 ? parseFloat(parts[3]) : 1;
+  };
+  let region = 0;
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === Node.COMMENT_NODE) {
+      if (/^ BENCH:[A-Z]+:START $/.test(n.data)) region++;
+      else if (/^ BENCH:[A-Z]+:END $/.test(n.data)) region--;
+      continue;
+    }
+    const text = n.data.trim();
+    const el = n.parentElement;
+    if (!text || region > 0 || !el || el.closest('script, style, [aria-hidden="true"]')) continue;
+    // A skip link is off the page until it has focus, which is what a skip link is.
+    if (el.closest('a.skip[href^="#"]') && !/\\d/.test(text)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(n);
+    const box = range.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const paint = el instanceof SVGElement ? cs.fill : cs.webkitTextFillColor || cs.color;
+    // Text further along a frame that scrolls is reachable; text past the page's own edge is not.
+    let frame = el.parentElement;
+    while (frame && !/(auto|scroll)/.test(getComputedStyle(frame).overflowX + getComputedStyle(frame).overflowY)) {
+      frame = frame.parentElement;
+    }
+    const onPage =
+      frame !== null ||
+      (box.right + scrollX > 0 && box.bottom + scrollY > 0 && box.left + scrollX < W && box.top + scrollY < H);
+    const seen =
+      el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+      box.width > 0 && box.height > 0 && onPage &&
+      alpha(paint) > 0 && alpha(cs.color) > 0;
+    if (!seen) out.push(text.slice(0, 60));
+  }
+  return out;
+})()`;
+
+/** Runs in the page once: each landmark region without a name, sharing one, or named for another panel. */
+const NAMES = `(() => {
+  const flat = (t) => (t || '').replace(/\\s+/g, ' ').trim();
+  const out = [];
+  const seen = new Map();
+  for (const r of document.querySelectorAll('[role="region"]')) {
+    const by = r.getAttribute('aria-labelledby');
+    const name = flat(by ? by.split(/\\s+/).map((id) => document.getElementById(id)?.textContent).join(' ') : r.getAttribute('aria-label'));
+    const head = flat(r.closest('.tpanel')?.querySelector(':scope > .tpanel-head > .label')?.textContent);
+    if (!name) out.push('a region has no name');
+    else if (head && name !== head) out.push('the region "' + name + '" sits in the panel headed "' + head + '"');
+    if (name) seen.set(name, (seen.get(name) || 0) + 1);
+  }
+  for (const [name, n] of seen) if (n > 1) out.push(n + ' regions share the name "' + name + '"');
+  return out;
+})()`;
+
 const LAYOUT = `(() => {
   const root = document.documentElement;
   const unreachable = [];
+  const clipped = [];
+  const nameOf = (el) => (el.tagName.toLowerCase() + '.' + (el.getAttribute('class') || '').trim().split(/\\s+/).join('.')).replace(/\\.$/, '');
+  const inOrder = (el) => {
+    const t = el.getAttribute('tabindex');
+    return t !== null && Number.parseInt(t, 10) >= 0;
+  };
+  const reachable = (el) =>
+    !el.disabled && el.checkVisibility() && !(el.hasAttribute('tabindex') && !inOrder(el));
   for (const el of document.body.querySelectorAll('*')) {
-    const ox = getComputedStyle(el).overflowX;
-    if ((ox !== 'auto' && ox !== 'scroll') || el.scrollWidth <= el.clientWidth + 1) continue;
-    const stop = el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
-    const inside = el.querySelector('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    if (!stop && !inside) unreachable.push((el.tagName.toLowerCase() + '.' + (el.getAttribute('class') || '').trim().split(/\\s+/).join('.')).replace(/\\.$/, ''));
+    if (el instanceof SVGElement) continue;
+    const cs = getComputedStyle(el);
+    const wide = el.scrollWidth > el.clientWidth + 1;
+    const tall = el.scrollHeight > el.clientHeight + 1;
+    const scrolls = (/^(auto|scroll)$/.test(cs.overflowX) && wide) || (/^(auto|scroll)$/.test(cs.overflowY) && tall);
+    if (scrolls) {
+      const inside = [...el.querySelectorAll('a[href], button, input, select, textarea, [tabindex]')].some(reachable);
+      if (!inOrder(el) && !inside) unreachable.push(nameOf(el));
+    }
+    // Text that runs past a box which cuts it off is text no reader gets: a clip is for a drawing, not for words.
+    const cuts = (/^(hidden|clip)$/.test(cs.overflowX) && wide) || (/^(hidden|clip)$/.test(cs.overflowY) && tall);
+    if (cuts && el.innerText.trim() !== '') clipped.push(nameOf(el));
   }
-  return { sideways: root.scrollWidth - root.clientWidth, unreachable };
+  return { sideways: root.scrollWidth - root.clientWidth, unreachable, clipped };
 })()`;
 
 const profile = mkdtempSync(join(tmpdir(), 'cb-text-floor-'));
@@ -227,6 +324,48 @@ try {
           `${TREE}/${page} at ${width}px: ${el} scrolls, and nothing in it can be reached by keyboard`,
         );
       }
+      for (const el of layout.clipped) {
+        problems.push(`${TREE}/${page} at ${width}px: ${el} cuts off text that runs past it`);
+      }
+      const claims = (
+        await cdp.send('Runtime.evaluate', {
+          expression: `document.body.innerText.includes(${JSON.stringify(CLAIM)})`,
+          returnByValue: true,
+        })
+      ).result.value;
+      if (claims) {
+        const unseen = (
+          await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
+        ).result.value;
+        for (const t of unseen) {
+          problems.push(
+            `${TREE}/${page} at ${width}px: "${t}" is on the page, and no reader can see it`,
+          );
+        }
+        // And as a reader who asked for less motion gets it, every animation on its final frame: a class that
+        // holds text on a first frame while motion is allowed can leave it faded out at rest.
+        await cdp.send('Emulation.setEmulatedMedia', {
+          features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+        });
+        const reloaded = cdp.once('Page.loadEventFired');
+        await cdp.send('Page.reload', { ignoreCache: true });
+        await reloaded;
+        await sleep(150);
+        const atRest = (
+          await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
+        ).result.value;
+        for (const t of atRest) {
+          problems.push(
+            `${TREE}/${page} at ${width}px, with less motion: "${t}" is on the page, and no reader can see it`,
+          );
+        }
+      }
+      if (width === WIDTHS[0]) {
+        const names = (
+          await cdp.send('Runtime.evaluate', { expression: NAMES, returnByValue: true })
+        ).result.value;
+        for (const n of names) problems.push(`${TREE}/${page}: ${n}`);
+      }
       cdp.close();
       await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
     }
@@ -277,5 +416,6 @@ if (problems.length > 0) {
 }
 console.log(
   `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths), nothing under ${FLOOR}px, ` +
-    'no page scrolling sideways, and every region that scrolls reachable by keyboard.',
+    'no page scrolling sideways or cutting off text, every region that scrolls reachable by keyboard and named for ' +
+    'itself, and every word on the page that claims its figures gated in view.',
 );

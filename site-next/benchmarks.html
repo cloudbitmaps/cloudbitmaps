@@ -92,7 +92,7 @@
       <section>
         <div class="hero-grid">
           <div class="hero-copy">
-            <p class="eyebrow">Benchmarks · aws us-east-1 on-demand · gated</p>
+            <p class="eyebrow">Benchmarks · aws <span class="u">us-east-1</span> on-demand · gated</p>
             <h1>What it costs, and where it stops paying.</h1>
             <p class="hero-lede">
               Measured against real S3 — no emulator — with the request counts read off the AWS SDK rather than
@@ -119,7 +119,7 @@
             <p class="panel-row is-pair">
               <span>1.2 GiB at rest, no traffic</span><span>$0.03 /mo</span>
             </p>
-            <p class="panel-row is-pair"><span>Share of a Redis node</span><span>0.008%</span></p>
+            <p class="panel-row is-pair"><span>Share of the Redis cluster</span><span>0.008%</span></p>
             <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared</span><span>$82.40</span></p>
             <p class="panel-row is-pair">
               <span>1M writes + publishes · <span class="m">store.load()</span> ≈ 2×</span><span>$11.20</span>
@@ -151,7 +151,7 @@
         </p>
         <div class="tpanel">
           <div class="tpanel-head">
-            <span class="label">Cost anchors</span><span class="label">estimateCost() + the AWS runs</span>
+            <span class="label">Cost anchors</span><span class="label"><span class="u">estimateCost()</span> + the AWS runs</span>
           </div>
           <div class="tscroll" tabindex="0" role="region" aria-label="Cost anchors">
             <table>
@@ -240,7 +240,7 @@
             two: a segment changes only by publishing a whole new generation, so the write side is priced per
             object PUT and a pointer — the loads row — and a writes-per-second threshold would put a rate on an
             operation the library cannot perform. Change an
-            assumption and the read line moves; <a href="#crossover">four of them are how far</a>.
+            assumption and the read line moves; <a href="#crossover">five of them are how far</a>.
           </p>
         </div>
       </section>
@@ -317,7 +317,7 @@
                     The first of the three set in <em>our</em> favour, so it is stated: storage is subtracted
                     from the baseline before the division, and publishing it at zero hands the whole node price
                     to the read axis as headroom. The reference corpus — <strong>$0.03 /mo</strong>, or
-                    <strong>0.008%</strong> of the node — is how much that flatters us.
+                    <strong>0.008%</strong> of the cluster — is how much that flatters us.
                   </td>
                 </tr>
                 <tr>
@@ -363,7 +363,7 @@
             <span class="rl-fig">the idle price</span>
             <span class="rl-note">
               One property, and it is the headline one: paying nothing while nobody is asking.
-              <strong>$0.03 /mo</strong> for 1.2 GiB at rest is <strong>0.008%</strong> of a Redis node. A flat
+              <strong>$0.03 /mo</strong> for 1.2 GiB at rest is <strong>0.008%</strong> of the Redis cluster. A flat
               tier bills you the same whether the traffic arrives or not.
             </span>
           </li>
@@ -491,8 +491,8 @@
             <span class="rl-what">In-region read latency</span>
             <span class="rl-fig">owed</span>
             <span class="rl-note">
-              Both calibration runs were driven from a laptop <em>outside</em> <span class="m">us-east-1</span>,
-              so their wall-clock was dominated by internet transit and they calibrated the <strong>cost</strong>
+              The calibration run was driven from a laptop <em>outside</em> <span class="m">us-east-1</span>,
+              so its wall-clock was dominated by internet transit and it calibrated the <strong>cost</strong>
               claim only. No percentile for <span class="m">has</span>, <span class="m">count</span> or
               <span class="m">intersect</span> is published as the library's, and the figures gate fails the
               build if such a row reappears in the benchmark record — so publishing one takes a run
@@ -700,9 +700,9 @@
         <div class="tpanel" id="single-bucket">
           <div class="tpanel-head">
             <span class="label" id="single-bucket-title">The single-bucket bill · measured, and expected where marked</span>
-            <span class="label">2026-09-23 · us-east-1 · run 2026-09-23-94416</span>
+            <span class="label">2026-09-23 · <span class="u">us-east-1</span> · run 2026-09-23-94416</span>
           </div>
-          <div class="tscroll" tabindex="0" role="region" aria-label="2026-09-23 · us-east-1 · run 2026-09-23-94416">
+          <div class="tscroll" tabindex="0" role="region" aria-labelledby="single-bucket-title">
             <table aria-labelledby="single-bucket-title">
               <thead>
                 <tr>

@@ -31,10 +31,12 @@
  * Run: `pnpm bench:scale` (builds first). HEAVY + machine-dependent (wall-clock + RSS) — so, exactly like
  * bench/run.cjs, the MEASUREMENT is not a CI gate; measured numbers live here, the deterministic claims are gated
  * in tests/bench/anchors.test.ts. What CI does check is the published table: `pnpm bench:scale:check`
- * (`SCALE_TASK=check`) re-renders it from the committed results and fails if any page's copy differs. With
- * SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND injects the table into docs/benchmarks.md,
- * site/benchmarks.html and site-next/benchmarks.html (between BENCH:SCALE markers); a plain run is a dry-run that
- * only prints (so a quick small-scale validation can't clobber the committed 100K results).
+ * (`SCALE_TASK=check`) re-renders it, and the homepage's drawings of the run, from the committed results and fails
+ * if any page's copy differs. With SCALE_INJECT=1 (publish mode) it persists bench/scale-results.json AND injects the
+ * table into docs/benchmarks.md, site/benchmarks.html and site-next/benchmarks.html (between BENCH:SCALE markers)
+ * and the strip, grid and memory panel into site-next/index.html (BENCH:HOMESTRIP, HOMEGRID, HOMEMEMORY);
+ * `SCALE_TASK=inject` does the same from the committed results. A plain run is a dry-run that only prints (so a
+ * quick small-scale validation can't clobber the committed 100K results).
  *
  * IMPORTANT on a laptop: the 100K run takes tens of minutes, and `process.hrtime` counts SUSPEND time as
  * elapsed — if the machine sleeps mid-run the wall-clock numbers are silently inflated (memory numbers are
