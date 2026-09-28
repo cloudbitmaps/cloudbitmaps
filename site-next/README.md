@@ -49,12 +49,14 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
   says what is true now: the figure table carries the S3 run's cost of a cold intersect and of a write and publish,
   not the July figures, which left the pointer out; the crossover is a rate of GETs with every read a cache miss,
   beside the cold intersect's; the middle column of "what you operate" is what 0.9.0 ran; the memory band shows peak
-  RSS beside the retained heap; and what a comparison of keys never reads is chunk bytes.
+  RSS beside the retained heap; what a comparison of keys never reads is chunk bytes; and the chunk grid draws one
+  cell per ten chunks, so the proportion reads at a glance.
 - **The inner pages keep their content** and take the language: the h1 at the display tier beside a figure table,
   each section a band on the alternating ground, card grids as seams, long prose in sans.
-- **Two animations, and nothing else moves**: the crossover drawing itself once and chunk-skipping on a 12-second
-  loop, both on the homepage, both with a reduced-motion final frame. The inner pages' figures rest on their
-  informative frame. `/demo`'s stepper moves only when a reader drives it.
+- **Two animations, and nothing else moves**: the crossover drawing itself and chunk-skipping resolving its
+  fetched cells, both on the homepage, each played once when its band comes into view and resting on its final
+  frame without a script or with less motion asked for. The inner pages' figures rest on their informative frame.
+  `/demo`'s stepper moves only when a reader drives it.
 - **The charts are generated.** The homepage's crossover and the benchmarks chart are `bench/run.cjs`'s, drawn from
   the estimator, so their geometry cannot drift from the published rate.
 

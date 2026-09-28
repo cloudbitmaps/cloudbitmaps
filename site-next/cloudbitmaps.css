@@ -10,9 +10,10 @@
  * --cb-sunk, --cb-ink its --cb-fg, --cb-signal-fill its --cb-fill. Its system stacks and antialiased smoothing are
  * taken as designed.
  *
- * Motion: two animations on the whole site, both on the homepage, both `opacity` and `transform` only, both with
- * a reduced-motion final frame that keeps every label: the crossover drawing itself once, and chunk-skipping on
- * a 12s loop. /demo's stepper moves only when a reader drives it. Nothing else moves.
+ * Motion: two animations on the whole site, both on the homepage, both `opacity` and `transform` only, each played
+ * once when its band comes into view and resting on a final frame that keeps every label: the crossover drawing
+ * itself, and chunk-skipping resolving its fetched cells. /demo's stepper moves only when a reader drives it.
+ * Nothing else moves.
  *
  * Nothing below 9.5px, SVG labels included, at any width: scripts/site-text-floor.mjs measures every rendered text
  * run. White text sits only on #0F62E8 and its hover, #0B4FCC.
@@ -880,7 +881,27 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 .cb-grid-body {
+  display: grid;
+  gap: 14px;
   padding: 24px 20px;
+}
+
+/* Spans measured in the drawing's own units: the ten lit cells take 285 of its 1,155, and the gap between two
+   cells is 5. So each label sits over the cells it names at every width. */
+.cb-grid-key {
+  display: grid;
+  grid-template-columns: calc(100% * 285 / 1155) minmax(0, 1fr);
+  column-gap: calc(100% * 5 / 1155);
+}
+
+.cb-grid-key > * {
+  padding-top: 8px;
+  border-top: 2px solid var(--cb-idle);
+}
+
+.cb-grid-key > .is-hot {
+  color: var(--cb-cyan);
+  border-top-color: var(--cb-cyan);
 }
 
 /* ── 04 · the crossover ────────────────────────────────────────────────── */
@@ -1115,14 +1136,22 @@ svg .crossing {
 }
 
 /* ── the two animations ────────────────────────────────────────────────────
-   The crossover draws itself once and holds: a cover slides off the plot, then the crossing's square appears. The
-   chunk scan loops every 12s: 0–30% the scan (0 bytes read), 31–37% the fetch, 37–92% the hold. */
+   Each plays once, when its band comes into view, and holds: the page's head script sets `cb-motion` where a
+   script will start them and motion is allowed, and the script at its foot adds `is-live` to a `[data-motion]`
+   band as it reaches the screen. Without `cb-motion` nothing is applied and each rests on its final frame, every
+   label present; with it, each is held on its first frame until `is-live`. Only opacity and transform move.
+
+   The crossover: a cover slides off the plot, so the lines draw left to right, then the crossing's square appears.
+   Chunk-skipping: a sweep crosses the key space with no chunk read (01), then the fetched cells resolve one after
+   another (02), and the grid holds. */
 @keyframes cb-reveal {
   from {
     transform: translateX(0);
+    opacity: 1;
   }
   to {
     transform: translateX(612px);
+    opacity: 1;
   }
 }
 
@@ -1135,118 +1164,88 @@ svg .crossing {
   }
 }
 
-.x-cover {
-  animation: cb-reveal 4.2s cubic-bezier(0.45, 0, 0.2, 1) 0.8s 1 both;
-}
-
-.x-dot {
-  animation: cb-appear 0.6s ease-out 5s 1 both;
-}
-
-@keyframes cb-scan {
-  0%,
-  4% {
-    transform: translateY(0);
-    opacity: 0;
-  }
-  6% {
+@keyframes cb-vanish {
+  from {
     opacity: 1;
   }
-  30% {
-    transform: translateY(360px);
-    opacity: 1;
-  }
-  33%,
-  100% {
-    transform: translateY(360px);
+  to {
     opacity: 0;
   }
 }
 
-@keyframes cb-hot {
-  0%,
-  31% {
-    opacity: 0.18;
-  }
-  37%,
-  92% {
+@keyframes cb-sweep {
+  from {
+    transform: translateX(0);
     opacity: 1;
   }
-  100% {
-    opacity: 0.18;
-  }
-}
-
-@keyframes cb-ph1 {
-  0%,
-  30% {
+  90% {
     opacity: 1;
   }
-  33%,
-  95% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-@keyframes cb-ph2 {
-  0%,
-  31% {
-    opacity: 0;
-  }
-  35%,
-  92% {
-    opacity: 1;
-  }
-  96%,
-  100% {
+  to {
+    transform: translateX(1159px);
     opacity: 0;
   }
 }
 
-.k-scan {
-  animation: cb-scan 12s linear infinite;
+/* A fetched cell starts unlit, the idle cell beneath it showing, so the grid gives nothing away before the sweep. */
+@keyframes cb-resolve {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.k-hot {
-  animation: cb-hot 12s ease-in-out infinite;
-}
-
+/* At rest: the final frame. The cover and the sweep are gone, and the second caption is the one showing. */
+.x-cover,
+.k-scan,
 .k-ph1 {
-  animation: cb-ph1 12s linear infinite;
+  opacity: 0;
 }
 
-.k-ph2 {
-  animation: cb-ph2 12s linear infinite;
+.cb-motion .x-cover {
+  animation: cb-reveal 4.2s cubic-bezier(0.45, 0, 0.2, 1) 0.3s both paused;
 }
 
-/* Both land on their final frame, every label present. */
-@media (prefers-reduced-motion: reduce) {
-  .x-cover {
+.cb-motion .x-dot {
+  animation: cb-appear 0.6s ease-out 4.5s both paused;
+}
+
+.cb-motion .k-scan {
+  animation: cb-sweep 1.6s linear 0.3s both paused;
+}
+
+.cb-motion .k-hot .hot {
+  animation: cb-resolve 0.45s ease-out calc(2s + var(--i) * 90ms) both paused;
+}
+
+.cb-motion .k-ph1 {
+  animation: cb-vanish 0.3s linear 1.8s both paused;
+}
+
+.cb-motion .k-ph2 {
+  animation: cb-appear 0.3s linear 2s both paused;
+}
+
+.cb-motion .is-live .x-cover,
+.cb-motion .is-live .x-dot,
+.cb-motion .is-live .k-scan,
+.cb-motion .is-live .k-hot .hot,
+.cb-motion .is-live .k-ph1,
+.cb-motion .is-live .k-ph2 {
+  animation-play-state: running;
+}
+
+/* Less motion asked for after the page loaded, or a printout: the final frame. */
+@media (prefers-reduced-motion: reduce), print {
+  .cb-motion .x-cover,
+  .cb-motion .x-dot,
+  .cb-motion .k-scan,
+  .cb-motion .k-hot .hot,
+  .cb-motion .k-ph1,
+  .cb-motion .k-ph2 {
     animation: none;
-    opacity: 0;
-  }
-  .x-dot {
-    animation: none;
-    opacity: 1;
-  }
-  .k-scan {
-    animation: none;
-    opacity: 0;
-  }
-  .k-hot {
-    animation: none;
-    opacity: 1;
-  }
-  .k-ph1 {
-    animation: none;
-    opacity: 0;
-  }
-  .k-ph2 {
-    animation: none;
-    opacity: 1;
   }
 }
 

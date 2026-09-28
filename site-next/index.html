@@ -24,6 +24,14 @@
       name="description"
       content="Large id-sets kept as immutable objects in storage you already own, with no daemon, no second service and one bucket. Reads only the chunks a query can match — 100 of 2,000. 1.2 GiB at rest is $0.03 a month against $346 for a Redis cluster standing by, and past 329.15 GETs a second, every read a cache miss, the cluster is cheaper."
     />
+    <script>
+      // The two animations start when their band comes into view, not at load: both bands are far below the fold,
+      // and a crossover drawn at load had finished before anyone reached it. `cb-motion` holds each on its first
+      // frame until then. Without it (no script, or less motion asked for) each rests on its final frame.
+      if ('IntersectionObserver' in window && matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+        document.documentElement.classList.add('cb-motion');
+      }
+    </script>
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <!-- Search Console ownership token. VERIFIED — leave it here: Google re-checks periodically and removing
          the tag silently un-verifies the property, which drops the sitemap and coverage reports with no
@@ -334,10 +342,12 @@
       </section>
 
       <!-- ── 03 · CHUNK-SKIPPING · data band, animated ─────────────────────
-           The measured figure, carried: 100 of 2,000 chunks fetched, 1,900 never requested per operand. The first
-           of the site's two animations: the scan compares keys with no chunk read, then the 100 are fetched and hold.
-           The keys come from each segment's index, which a cold read fetches in one tail read per operand, so what
-           the band says is never read is chunk bytes, not all bytes. -->
+           The measured figure, carried: 100 of 2,000 chunks fetched, 1,900 never requested per operand. One cell is
+           ten chunks, so the proportion reads at a glance: 200 cells, the first ten lit, because the run's operands
+           share exactly the first hundred chunk keys. The first of the site's two animations, played once when the
+           band comes into view: a sweep compares the keys with no chunk read, then the fetched cells resolve one
+           after another and hold. The keys come from each segment's index, which a cold read fetches in one tail
+           read per operand, so what the band says is never read is chunk bytes, not all bytes. -->
       <section id="demo" class="cb-stack">
         <div class="cb-head">
           <p class="label">03 · Chunk-skipping</p>
@@ -348,30 +358,39 @@
           </p>
         </div>
         <div class="cb-seam cb-cols-1">
-          <div>
+          <div data-motion>
             <div class="cb-grid-head">
-              <p class="label">Chunk-key space · 2,000 keys · one operand</p>
+              <p class="label">Chunk-key space · 2,000 keys · one cell per 10 chunks</p>
               <div class="cb-phase" aria-hidden="true">
                 <p class="label k-ph1">01 Comparing keys · 0 chunk bytes read</p>
                 <p class="label k-ph2">02 Fetched 100 · 1,900 never requested</p>
               </div>
             </div>
             <div class="cb-grid-body">
-              <svg class="cb-svg" viewBox="-2 -2 1201 376" role="img" aria-label="A grid of 2,000 chunk keys. 100 are fetched; the other 1,900 are never requested.">
+              <div class="cb-grid-key" aria-hidden="true">
+                <p class="label is-hot">100 fetched · keys 0–99</p>
+                <p class="label">1,900 never requested, never billed</p>
+              </div>
+              <svg class="cb-svg" viewBox="-2 -4 1159 108" data-chunks-per-cell="10" role="img" aria-label="The key space of one operand, one cell per 10 chunks: 200 cells, of which the first 10, the 100 chunks whose keys both operands share, are fetched. The other 1,900 chunks are never requested.">
                 <defs>
-                  <pattern id="ci" width="15" height="15" patternUnits="userSpaceOnUse">
-                    <rect class="idle" width="12" height="12" rx="2" />
-                  </pattern>
-                  <pattern id="ch" width="15" height="15" patternUnits="userSpaceOnUse">
-                    <rect class="hot" width="12" height="12" rx="2" />
+                  <pattern id="ci" width="29" height="21" patternUnits="userSpaceOnUse">
+                    <rect class="idle" width="24" height="16" rx="2" />
                   </pattern>
                 </defs>
-                <rect x="0" y="0" width="1197" height="372" fill="url(#ci)" />
+                <rect x="0" y="0" width="1155" height="100" fill="url(#ci)" />
                 <g class="k-hot">
-                  <rect x="0" y="0" width="1197" height="12" fill="url(#ch)" />
-                  <rect x="0" y="15" width="297" height="12" fill="url(#ch)" />
+                  <rect class="hot" x="0" y="0" width="24" height="16" rx="2" style="--i: 0" />
+                  <rect class="hot" x="29" y="0" width="24" height="16" rx="2" style="--i: 1" />
+                  <rect class="hot" x="58" y="0" width="24" height="16" rx="2" style="--i: 2" />
+                  <rect class="hot" x="87" y="0" width="24" height="16" rx="2" style="--i: 3" />
+                  <rect class="hot" x="116" y="0" width="24" height="16" rx="2" style="--i: 4" />
+                  <rect class="hot" x="145" y="0" width="24" height="16" rx="2" style="--i: 5" />
+                  <rect class="hot" x="174" y="0" width="24" height="16" rx="2" style="--i: 6" />
+                  <rect class="hot" x="203" y="0" width="24" height="16" rx="2" style="--i: 7" />
+                  <rect class="hot" x="232" y="0" width="24" height="16" rx="2" style="--i: 8" />
+                  <rect class="hot" x="261" y="0" width="24" height="16" rx="2" style="--i: 9" />
                 </g>
-                <rect class="k-scan scanbar" x="-2" y="-2" width="1201" height="2" />
+                <rect class="k-scan scanbar" x="-2" y="-4" width="3" height="108" />
               </svg>
             </div>
             <div class="cb-seam is-inner cb-cols-3">
@@ -415,7 +434,7 @@
           </p>
         </div>
         <div class="cb-seam cb-cross">
-          <div class="cb-cross-chart cb-scroll" tabindex="0" role="region" aria-label="The crossover chart, scrollable">
+          <div class="cb-cross-chart cb-scroll" data-motion tabindex="0" role="region" aria-label="The crossover chart, scrollable">
             <!-- BENCH:HOMECHART:START -->
 <svg class="cb-svg is-chart" viewBox="0 0 700 440" role="img" aria-label="Cost per month against read rate. CloudBitmaps rises from nothing; the Redis cluster is flat at $346; they cross at 329.15 GETs a second, above which the cluster is cheaper.">
 <defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="71" y="28" width="612" height="351"/></clipPath></defs>
@@ -661,5 +680,24 @@
       </div>
     </footer>
     <script src="theme.js"></script>
+    <script>
+      // Plays each animation once, when at least 40% of its band is on screen. See `cb-motion` in the head.
+      (function () {
+        if (!document.documentElement.classList.contains('cb-motion')) return;
+        var seen = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting) return;
+              entry.target.classList.add('is-live');
+              seen.unobserve(entry.target);
+            });
+          },
+          { threshold: 0.4 },
+        );
+        document.querySelectorAll('[data-motion]').forEach(function (el) {
+          seen.observe(el);
+        });
+      })();
+    </script>
   </body>
 </html>

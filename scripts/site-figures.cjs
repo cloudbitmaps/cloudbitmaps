@@ -1211,23 +1211,60 @@ const specAnchors = [];
       textOf(/<h2>([\s\S]*?)<\/h2>/.exec(band)?.[1] ?? ''),
       `${fetchedChunks} of ${total} chunks. The other ${perOperand} are never requested.`,
     );
-    const CELL = 15;
-    const cells = (w, h) => ((Number(w) + 3) / CELL) * ((Number(h) + 3) / CELL);
+    // The grid, counted from the drawing. The idle pattern's pitch and cell size give how many cells the key space
+    // draws, and the lit cells are drawn one by one, each in its place: the first cells, because the run's operands
+    // share the first `sharedChunks` chunk keys (bench/scale.cjs builds them so). One cell stands for
+    // `data-chunks-per-cell` chunks, and the band's own label must say so: a reader is told the unit the counts are
+    // multiplied by, and the check multiplies by the same one.
+    const { sharedChunks } = scale.intersect;
+    const perCell = Number(/data-chunks-per-cell="(\d+)"/.exec(band)?.[1] ?? NaN);
+    const pattern =
+      /<pattern id="ci" width="(\d+)" height="(\d+)"[^>]*>\s*<rect class="idle" width="(\d+)" height="(\d+)"/.exec(
+        band,
+      );
+    const [pitchX, pitchY, cellW, cellH] = (pattern ?? []).slice(1).map(Number);
     const grid = /<rect x="0" y="0" width="(\d+)" height="(\d+)" fill="url\(#ci\)"/.exec(band);
-    const lit = [
+    const drawn = grid
+      ? ((Number(grid[1]) + pitchX - cellW) / pitchX) *
+        ((Number(grid[2]) + pitchY - cellH) / pitchY)
+      : NaN;
+    const hot = [
       ...(/<g class="k-hot">([\s\S]*?)<\/g>/.exec(band)?.[1] ?? '').matchAll(
-        /width="(\d+)" height="(\d+)"/g,
+        /<rect class="hot" x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)"/g,
       ),
     ];
-    expect(
-      'chunk grid, cells drawn',
-      grid ? String(cells(grid[1], grid[2])) : null,
-      String(chunksPerSegment),
+    const misplaced = hot.findIndex(
+      ([, x, y, w, h], i) =>
+        Number(x) !== i * pitchX || Number(y) !== 0 || Number(w) !== cellW || Number(h) !== cellH,
     );
     expect(
-      'chunk grid, cells lit',
-      String(lit.reduce((n, m) => n + cells(m[1], m[2]), 0)),
-      String(fetchedChunks),
+      "chunk grid's stated unit",
+      /one cell per (\d+) chunks/.exec(textOf(band))?.[1] ?? null,
+      String(perCell),
+    );
+    expect('chunk grid, chunks drawn', String(drawn * perCell), String(chunksPerSegment));
+    expect('chunk grid, chunks lit', String(hot.length * perCell), String(fetchedChunks));
+    if (misplaced !== -1) {
+      fail(
+        `${SITE_DIR}/index.html's chunk grid draws lit cell ${misplaced + 1} out of place: the lit cells are the ` +
+          'first ones in the first row, one cell each, because the operands share the first chunk keys',
+      );
+    }
+    // The bracket over the grid names what each span is.
+    const bracket = [
+      ...(/<div class="cb-grid-key"[^>]*>([\s\S]*?)<\/div>/.exec(band)?.[1] ?? '').matchAll(
+        /<p class="label[^"]*">([\s\S]*?)<\/p>/g,
+      ),
+    ].map((m) => textOf(m[1]));
+    expect(
+      "chunk grid's fetched span",
+      bracket[0] ?? null,
+      `${fetchedChunks} fetched · keys 0–${sharedChunks - 1}`,
+    );
+    expect(
+      "chunk grid's other span",
+      bracket[1] ?? null,
+      `${perOperand} never requested, never billed`,
     );
     for (const m of textOf(homeHtml.replace(/<!--[\s\S]*?-->/g, '')).matchAll(
       /\b\d[\d,]* of \d[\d,]*\b/g,
