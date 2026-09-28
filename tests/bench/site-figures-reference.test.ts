@@ -240,13 +240,7 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
       'a script that writes text',
       '      // Plays each animation once',
       "      document.querySelector('h1').textContent += ' 10× cheaper';\n      // Plays each animation once",
-      'runs a script that writes text',
-    ],
-    [
-      'a list that numbers itself',
-      HEAD,
-      `${HEAD}<ol start="12"><li>regions</li></ol>`,
-      'a numbered list',
+      'runs a script no one has pinned (inline',
     ],
     [
       'a figure in a field',
@@ -336,12 +330,61 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ['iframe', '<iframe src="demo.html"></iframe>', 'holds an embedded document'],
     ['object', '<object data="x.svg"></object>', 'holds an embedded object'],
     ['embed', '<embed src="x.svg" />', 'holds an embedded object'],
-    ['ol', '<ol><li>x</li></ol>', 'holds a numbered list'],
     ['popover', '<div popover>x</div>', 'holds a popover'],
+    ['an image', '<img src="assets/price.svg" alt="" />', 'holds an image'],
     [
-      'data: image',
-      '<img src="data:image/png;base64,AAAA" alt="" />',
-      'draws an image from a data: URL',
+      'an image set with no src',
+      '<img srcset="data:image/png;base64,AAAA 1x" alt="" />',
+      'holds an image',
+    ],
+    ['a picture', '<picture><source srcset="assets/a.png" /></picture>', 'holds an image'],
+    ['a canvas', '<canvas width="9" height="9"></canvas>', 'holds a canvas'],
+    ['a video', '<video poster="assets/a.png"></video>', 'holds a video'],
+    ['an audio player', '<audio controls></audio>', 'holds an audio player'],
+    ['an SVG image', '<svg><image href="assets/a.png" /></svg>', 'holds an SVG image'],
+    [
+      'an SVG filter image',
+      '<svg><filter><feImage href="assets/a.png" /></filter></svg>',
+      'filter image',
+    ],
+    [
+      'another file drawn in',
+      '<svg><use href="assets/a.svg#price" /></svg>',
+      "draws another file's SVG",
+    ],
+    ['a data: link', '<a href="data:text/html,x">x</a>', 'loads a data: URL'],
+    ['HTML inside SVG', '<svg><foreignObject><p>x</p></foreignObject></svg>', 'HTML inside SVG'],
+    ['MathML', '<math><mn>9</mn></math>', 'MathML'],
+    ['an xmp', '<xmp><!-- x --></xmp>', 'an xmp element'],
+    ['a text field', '<textarea><!-- x --></textarea>', 'a text field'],
+    ['plaintext', '<plaintext>', 'a plaintext element'],
+    ['a noembed', '<noembed>x</noembed>', 'a noembed element'],
+    ['a marquee', '<marquee>x</marquee>', 'a marquee'],
+    ['a bidirectional override', '<bdo dir="rtl">x</bdo>', 'a bidirectional override'],
+    ['a bidirectional isolate', '<bdi>x</bdi>', 'a bidirectional isolate'],
+    ['a text direction', '<p dir="rtl">x</p>', 'sets a text direction'],
+    ['a right-to-left mark', '<p>12 &rlm; 34</p>', 'shows U+200F'],
+    ['a right-to-left letter', '<p>12 &#x5d0; 34</p>', 'shows U+05D0'],
+    ['a handler', '<span onmouseover="go()">x</span>', 'runs a handler'],
+    ['a script link', '<a href=" javascript:go()">x</a>', 'runs code from a link'],
+    ['a module script', '<script type="module" src="theme.js"></script>', 'of type "module"'],
+    [
+      'a script from elsewhere',
+      '<script src="https://example.invalid/x.js"></script>',
+      'from outside the tree',
+    ],
+    ['a script inside SVG', '<svg><script>go()</script></svg>', 'a script inside SVG'],
+    [
+      'a comment opened inside a script',
+      '<script><!--<script>x</script>--></script>',
+      'writes <!-- inside a script',
+    ],
+    ['a second title', '<title>x</title>', 'titles, or one in its body'],
+    ['a reference without its semicolon', '<p>Ten&sup2 ids.</p>', 'writes &sup2, a reference'],
+    [
+      'a reference glued to a digit',
+      '<p>It is &times3 cheaper.</p>',
+      'writes &times3, a reference',
     ],
     ['base URL', '<base href="https://example.invalid/" />', 'sets a base URL'],
     [
@@ -371,10 +414,61 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ['a meta the page does not name', `<meta property="og:image:alt" content="$1 a month" />`],
     ['a meta by itemprop', `<meta itemprop="description" content="9 drivers" />`],
     ['a reference without its semicolon', `<p>It costs &#x39&#x39 cents.</p>`],
+    ['a role description', `<span aria-roledescription="9 drivers">·</span>`],
+    ['an abbreviation for a header', `<table><tr><th abbr="9 drivers">x</th></tr></table>`],
+    ['a value read aloud', `<span role="meter" aria-valuenow="90">·</span>`],
+    ['a comment ended the way the browser ends it', `<!--><p>It saves $999.</p><!-- -->`],
+    ['a comment ended by --!>', `<!-- x --!><p>It saves $999.</p><!-- -->`],
+    [
+      'text between two quoted comment openers',
+      `<span title="<!--">·</span><p>$999</p><span title="-->">·</span>`,
+    ],
+    ['a < that opens no tag', `<p>For <$999 a month></p>`],
+    ['CDATA in a drawing', `<svg><text><![CDATA[$999 a month]]></text></svg>`],
+    ['an unquoted value with = in it', `<span aria-label=Costs=$999/mo>·</span>`],
   ])('reads a figure in %s', (_name, planted) => {
     const r = withPage(HEAD, `${HEAD}${planted}`);
     expect(r.code, r.out).toBe(1);
     expect(r.out).toContain('figure(s) no check holds');
+  });
+
+  it.each([
+    [
+      'a quote inside an unquoted value',
+      `<span title=a'b>·</span><p hidden>$999</p>`,
+      'hides an element',
+    ],
+    ['a > inside a quoted value', `<p title="a>b" hidden>$999</p>`, 'hides an element'],
+    [
+      'an unquoted style with = in it',
+      `<span style=--x:a=b;visibility:hidden>·</span>`,
+      'sets an inline style other than a custom property',
+    ],
+  ])('reads a tag as the browser does: %s', (_name, planted, says) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it("does not read a check's element copied into the title, which no reader sees as markup", () => {
+    const eyebrow =
+      '<p class="label">Distributed, cloud-native bitmaps · roaring shipped · <span class="u">v0.10.0</span></p>';
+    const r = siteFigures('site-next', {
+      [PAGE]: html
+        .replace(eyebrow, () => '<p class="label is-x">Distributed, cloud-native bitmaps</p>')
+        .replace('<title>', () => `<title>${eyebrow}`),
+    });
+    expect(html).toContain(eyebrow);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('eyebrow is found 0 times');
+  });
+
+  it('refuses a script that has changed since it was pinned', () => {
+    const file = 'site-next/theme.js';
+    const js = readFileSync(join(ROOT, file), 'utf8');
+    const r = siteFigures('site-next', { [file]: `${js}\n// read again\n` });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('runs a script no one has pinned (theme.js');
   });
 
   it.each(['ISC', 'BSD-3-Clause', 'MPL-2.0', 'GPL-3.0-only', 'LGPL-2.1', 'AGPL-3.0', 'BUSL-1.1'])(
@@ -398,6 +492,58 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
       ".cb-caveats::after { c\\6f ntent: '9x'; }",
       'inserts text no check reads',
     ],
+    [
+      'a unit after every figure',
+      ".cb-figure-l::after { content: 'k'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'a minus before every figure',
+      ".cb-figure-xl::before { content: '−'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'an allowed string in another rule',
+      ".cb-figure-xl::after { content: ' ← smallest'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'a rule hidden between two strings that look like a comment',
+      ".a::after { content: '/*'; } .b::after { content: '9x'; } .c::after { content: '*/'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'a picture drawn by the sheet',
+      '.cb-caveats { background: url(data:image/svg+xml,x); }',
+      'draws an image',
+    ],
+    [
+      'a bidirectional override',
+      '.cb-figure-xl { unicode-bidi: bidi-override; }',
+      'sets a text direction',
+    ],
+    ['a direction', '.cb-figure-xl { direction: rtl; }', 'sets a text direction'],
+    ['a font', "@font-face { font-family: x; src: local('x'); }", 'or a font'],
+    [
+      'a rule for a reader no pass is',
+      '@media (min-height: 1000px) { .cb-caveats { display: none; } }',
+      'a rule no pass probes',
+    ],
+    [
+      'a rule for forced colours',
+      '@media (forced-colors: active) { .cb-caveats { display: none; } }',
+      'a rule no pass probes',
+    ],
+    [
+      'a rule for other browsers',
+      '@supports not (display: grid) { .cb-caveats { display: none; } }',
+      'other browsers a page',
+    ],
+    [
+      'a scroll-driven fade',
+      '.cb-caveats { animation: x linear both; animation-timeline: view(); }',
+      'ties an animation to scrolling',
+    ],
   ])('fails a stylesheet that adds text through %s', (_name, rule, says) => {
     const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
     expect(r.code, r.out).toBe(1);
@@ -408,6 +554,15 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ['a class named content in a selector', '.cb-body .content:hover { color: inherit; }'],
     ['an escaped arrow', ".cb-caveats::after { content: '\\2192'; }"],
     ['alternative text for generated content', ".cb-caveats::after { content: '→' / ''; }"],
+    [
+      'quotation marks for a quote',
+      'q::before { content: open-quote; } q::after { content: close-quote; }',
+    ],
+    ['a comment inside a declaration', '.cb-caveats { color: /* the ink */ inherit; }'],
+    [
+      'a rule for a band of widths, which the pass loads a width inside',
+      '@media (min-width: 1441px) and (max-width: 1600px) { .cb-caveats { gap: 2px; } }',
+    ],
   ])('passes a stylesheet with %s', (_name, rule) => {
     const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
     expect(r.code, r.out).toBe(0);
@@ -475,6 +630,426 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     expect(r.out).toContain(says);
   });
 
+  it.each([
+    ['a comment ended by <!--->', `<!---><p>It saves $999.</p><!-- -->`],
+    ["a figure in a drawing's title", `<svg><title>9 drivers</title></svg>`],
+    ['a figure glued to a letter', `<p>From USD1200 a month.</p>`],
+    [
+      'CDATA after a tag whose unquoted value ends in /',
+      `<svg viewBox="0 0 200 20" x=/><text><![CDATA[It saves $999 a month]]></text></svg>`,
+    ],
+    ...[
+      'aria-valuemin',
+      'aria-valuemax',
+      'aria-placeholder',
+      'aria-setsize',
+      'aria-posinset',
+      'aria-rowcount',
+      'aria-colcount',
+      'aria-rowindex',
+      'aria-colindex',
+      'aria-rowindextext',
+      'aria-colindextext',
+      'aria-braillelabel',
+      'aria-brailleroledescription',
+    ].map((a) => [`the ${a} attribute`, `<span ${a}="9 drivers">·</span>`]),
+  ])('reads a figure in %s', (_name, planted) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('figure(s) no check holds');
+  });
+
+  it('reads a figure in the title', () => {
+    const r = withPage(
+      '<title>CloudBitmaps — big bitmaps on object storage</title>',
+      '<title>CloudBitmaps — big bitmaps on object storage, 9 drivers</title>',
+    );
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('figure(s) no check holds');
+  });
+
+  it.each([
+    ['a / between attributes', `<p/hidden>$999</p>`, 'hides an element'],
+    ['spaces around =', `<span title = "x" hidden>$999</span>`, 'hides an element'],
+    [
+      'the first of two styles, which the browser keeps',
+      `<p style="display: none" style="--x: 1">x</p>`,
+      'sets an inline style other than a custom property',
+    ],
+    ['an image button', `<input type="image" src="assets/a.png" alt="" />`, 'an image button'],
+    [
+      'a script link by xlink:href',
+      `<svg><a xlink:href="javascript:go()"><text>x</text></a></svg>`,
+      'runs code from a link',
+    ],
+    [
+      'a script link as a form action',
+      `<form action="javascript:go()"></form>`,
+      'runs code from a link',
+    ],
+    [
+      'a script link as a button action',
+      `<button formaction="javascript:go()">x</button>`,
+      'runs code from a link',
+    ],
+    ['a script link in capitals', `<a href="JavaScript:go()">x</a>`, 'runs code from a link'],
+    [
+      'a script link with a tab in it',
+      `<a href="java&#9;script:go()">x</a>`,
+      'runs code from a link',
+    ],
+    [
+      'a background attribute',
+      `<table><tr><td background="assets/a.svg">x</td></tr></table>`,
+      'a background attribute',
+    ],
+    ['an HTML tag inside SVG', `<svg><p>x</p></svg>`, 'inside SVG'],
+    [
+      'a reference in an attribute',
+      `<span title="&frac12; off">·</span>`,
+      'writes &frac12, a reference',
+    ],
+    ['a right-to-left override', `<p>12 &#x202e; 34</p>`, 'shows U+202E'],
+    ['a right-to-left embedding', `<p>12 &#x202b; 34</p>`, 'shows U+202B'],
+    ['a right-to-left isolate', `<p>12 &#x2067; 34</p>`, 'shows U+2067'],
+    [
+      'a bidirectional control in an attribute',
+      `<span title="12 &#x2066; 34">·</span>`,
+      'shows U+2066',
+    ],
+    [
+      'a Cyrillic letter that passes for a digit',
+      `<p>1,9&#x41e;&#x41e; ids</p>`,
+      'can pass for a Latin letter or a digit',
+    ],
+    [
+      'the class of a rule that inserts a word',
+      `<span class="cmeasure"><span class="is-win"><code class="cm-name">$346/mo</code></span></span>`,
+      'carries the class cmeasure',
+    ],
+  ])('refuses %s', (_name, planted, says) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    [
+      'a text direction on the page',
+      '<html lang="en">',
+      '<html lang="en" dir="rtl">',
+      'sets a text direction',
+    ],
+    [
+      'a bidirectional control in the title',
+      '<title>CloudBitmaps',
+      '<title>&#x202e;CloudBitmaps',
+      'shows U+202E',
+    ],
+    [
+      'a reference in the title',
+      '<title>CloudBitmaps',
+      '<title>&frac12; CloudBitmaps',
+      'writes &frac12, a reference',
+    ],
+    [
+      "a copy of a check's element kept in an attribute",
+      'Ids are 32-bit unsigned',
+      'Ids are sixty-four-bit unsigned',
+      'id width',
+    ],
+  ])('refuses %s', (_name, right, wrong, says) => {
+    const r = withPage(right, wrong);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it("does not read a check's copy kept in an attribute", () => {
+    const at = html.indexOf('Ids are 32-bit unsigned');
+    const open = html.lastIndexOf('<p class="cb-note">', at);
+    expect(open).toBeGreaterThan(-1);
+    const decoy = `<p class="cb-note" data-copy='<p class="cb-note">${html.slice(open + 19, html.indexOf('</p>', at))}</p>'>`;
+    const planted =
+      html.slice(0, open) +
+      decoy +
+      html
+        .slice(open + 19)
+        .replace('Ids are 32-bit unsigned', () => 'Ids are sixty-four-bit unsigned');
+    const r = siteFigures('site-next', { [PAGE]: planted });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('id width');
+  });
+
+  it.each([
+    [
+      'a string ended by a form feed',
+      '.cb-caveats { x: \'\f} .cb-caveats::after { content: "9x"; } .cb-caveats { y: \'}',
+      'inserts text no check reads',
+    ],
+    [
+      'a string ended by a carriage return',
+      '.cb-caveats { x: \'\r} .cb-caveats::after { content: "9x"; } .cb-caveats { y: \'}',
+      'inserts text no check reads',
+    ],
+    [
+      'a string ended by a line feed',
+      '.cb-caveats { x: \'\n} .cb-caveats::after { content: "9x"; } .cb-caveats { y: \'}',
+      'inserts text no check reads',
+    ],
+    [
+      'an escape inside a string',
+      ".cb-caveats::after { content: '\\39 x'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'a comment inside the value',
+      ".cb-caveats::after { content: /* none */ '9x'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'a property name in capitals',
+      ".cb-caveats::after { CONTENT: '9x'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'an escaped at-rule name',
+      '@\\73upports not (display: grid) { .cb-caveats { display: none; } }',
+      'other browsers a page',
+    ],
+    ['an escaped import', "@\\69mport 'assets/extra.css';", 'pulls in a sheet'],
+    [
+      'an allowed rule with another word',
+      ".cmeasure .is-win .cm-name::after { content: ' ← largest'; }",
+      'inserts text no check reads',
+    ],
+    [
+      'an image set',
+      ".cb-caveats { background-image: image-set('assets/a.png' 1x); }",
+      'draws an image',
+    ],
+    [
+      'a vertical writing mode',
+      '.cb-caveats { writing-mode: vertical-rl; }',
+      'sets a text direction',
+    ],
+    ['text drawn as discs', '.cb-caveats { -webkit-text-security: disc; }', 'as discs'],
+    [
+      'a marker string beside none',
+      ".cb-op-rows li { list-style: none '9 '; }",
+      'draws list markers',
+    ],
+    ['a display from a variable', '.cb-op-rows li { display: var(--d); }', 'draws list markers'],
+    [
+      'a url() that hides a rule from a comment reader',
+      '.nope:is(url(/*)) {} .cb-caveats::after { content: "9x"; } .nope:is(url(*/)) {}',
+      'names url(',
+    ],
+    ['a size that follows the height', '.cb-caveats { font-size: 2vh; }', "the viewport's height"],
+    ['arithmetic on the width', '.cb-caveats { font-size: calc(100vw - 1366px); }', 'arithmetic'],
+    [
+      'a container query',
+      '@container (min-width: 1px) { .cb-caveats { display: none; } }',
+      'to a container',
+    ],
+    [
+      'a first letter styled apart',
+      '.cb-caveats p::first-letter { font-size: 0; }',
+      'first letter or line',
+    ],
+    ['emphasis marks', ".cb-caveats { text-emphasis: '0'; }", 'draws marks over its text'],
+    [
+      'the claim, which only a page may make',
+      ".cb-caveats::after { content: 'every figure on this page is gated in CI'; }",
+      'writes the claim that every figure is gated',
+    ],
+  ])('fails a stylesheet with %s', (_name, rule, says) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    ['an orientation', '@media (orientation: landscape) { .cb-caveats { display: none; } }'],
+    ['more contrast', '@media (prefers-contrast: more) { .cb-caveats { display: none; } }'],
+    ['a colour scheme', '@media (prefers-color-scheme: dark) { .cb-caveats { display: none; } }'],
+    ['a screen without hover', '@media (hover: none) { .cb-caveats { display: none; } }'],
+    [
+      'print with another condition',
+      '@media print and (max-width: 700px) { .cb-caveats { display: none; } }',
+    ],
+  ])('fails a rule for a reader no pass becomes: %s', (_name, rule) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('a rule no pass probes');
+  });
+
+  it.each([
+    ['a shadow', '.cb-caveat h3 { box-shadow: 0 0 0 140px var(--cb-cell); }', 'does not measure'],
+    [
+      'a wide outline',
+      '.cb-caveat h3 { outline: 140px solid var(--cb-cell); }',
+      'an outline wide enough',
+    ],
+    [
+      'a gradient',
+      '.cb-caveat p { background: linear-gradient(var(--cb-cell), var(--cb-cell)); }',
+      'paints a gradient',
+    ],
+    [
+      'a text stroke',
+      '.cb-caveat p { -webkit-text-stroke: 5px var(--cb-cell); }',
+      'does not measure',
+    ],
+    [
+      'a stroke over the letters',
+      'svg .t { paint-order: fill stroke; }',
+      'paints a stroke over its text',
+    ],
+    ['a reflection', '.cb-figure-l { -webkit-box-reflect: right 4px; }', 'does not measure'],
+    ['a font size adjustment', '.cb-caveat p { font-size-adjust: 0.03; }', 'does not measure'],
+    [
+      'a hyphenation character',
+      ".cb-caveat p { hyphens: auto; hyphenate-character: '0'; }",
+      'does not measure',
+    ],
+    ['a scale', '.cb-caveat p { scale: 0.06; }', 'does not measure'],
+    ['a rotation', '.cb-figure-l { rotate: 180deg; }', 'does not measure'],
+    ['a translation', '.cb-caveats { translate: 0 -4000px; }', 'does not measure'],
+    ['a perspective', '.cb-caveats { perspective: 100px; }', 'does not measure'],
+    [
+      'a turned transform',
+      '.cb-figure-l { transform: rotate(180deg); }',
+      'turns, mirrors or tilts',
+    ],
+    ['a mirrored transform', '.cb-figure-xl { transform: scaleX(-1); }', 'turns, mirrors or tilts'],
+    [
+      'a 3D transform',
+      '.cb-caveat p { transform: perspective(100px) translateZ(-1500px); }',
+      'turns, mirrors or tilts',
+    ],
+    ['containment', '.cb-caveat p { contain: paint; max-height: 1lh; }', 'does not measure'],
+    ['a skipped rendering', '.cb-caveat p { content-visibility: hidden; }', 'does not measure'],
+    ['a blend', '.cb-caveat p { mix-blend-mode: multiply; }', 'does not measure'],
+    [
+      'a thick decoration',
+      '.cb-caveat p { text-decoration: line-through 1.7em var(--cb-cell); }',
+      'a decoration wide',
+    ],
+    [
+      'a decoration thickness',
+      '.cb-caveat p { text-decoration-thickness: 2em; }',
+      'a decoration wide',
+    ],
+    [
+      'lines laid over each other',
+      '.cb-caveat p { line-height: 0.02; }',
+      'lays its lines over each other',
+    ],
+    [
+      'pointer events that out-rank the pass',
+      '.cb-caveat::after { pointer-events: none !important; }',
+      'out-rank the browser pass',
+    ],
+    [
+      'a font the sheet does not name',
+      '.cb-figure-xl { font-family: Webdings; }',
+      'a font the sheet does not name',
+    ],
+    [
+      'a font shorthand',
+      '.cb-figure-xl { font: 20px Webdings; }',
+      'a font the sheet does not name',
+    ],
+    [
+      'a new font in a stack',
+      ':root { --cb-sans: Webdings, sans-serif; }',
+      'names a font the sheet does not',
+    ],
+    ['an animation that never ends', '.cb-caveat p { animation: x 120s infinite; }', 'never ends'],
+    [
+      'a hover rule that hides',
+      'html:hover .cb-caveat p { opacity: 0; }',
+      'hovering, focusing or following a link',
+    ],
+    [
+      'a rule for the link to a section',
+      '#conditions:target .cb-caveat p { display: none; }',
+      'hovering, focusing or following a link',
+    ],
+    [
+      'a focus rule that hides',
+      'body:focus-within .cb-caveat p { visibility: hidden; }',
+      'hovering, focusing or following a link',
+    ],
+    [
+      'a hover colour that is clear',
+      '.cb-caveats:hover p { color: transparent; }',
+      'hovering, focusing or following a link',
+    ],
+  ])('fails a stylesheet that hides text by %s', (_name, rule, says) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    [
+      'the words around the invariant count',
+      'each with named tests that run on every commit.',
+      'of which only one has a test so far.',
+      'invariant line reads',
+    ],
+    [
+      'the words around the driver count',
+      '4 storage drivers ·',
+      '4 storage drivers planned, none shipped yet ·',
+      'meta line reads',
+    ],
+    [
+      'the stage said anywhere but the footer',
+      '<h2>Where it fits, and where Redis is better.</h2>',
+      '<h2>Where it fits, and where Redis is better.</h2><p class="cb-body">We left pre-1.0 behind last spring.</p>',
+      'figure(s) no check holds',
+    ],
+  ])('fails the page on %s', (_name, right, wrong, says) => {
+    const r = withPage(right, wrong);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    ['a width in range syntax', '@media (width >= 768px) { .cb-caveats { gap: 2px; } }'],
+    ['a width in em', '@media (min-width: 48em) { .cb-caveats { gap: 2px; } }'],
+    [
+      'less motion asked for, as a bare feature',
+      '@media (prefers-reduced-motion) { .cb-caveats { gap: 2px; } }',
+    ],
+    ['a halo painted under the letters', 'svg .t { paint-order: stroke; }'],
+    ['a hover colour', '.cb-caveats a:hover { color: var(--cb-ink); }'],
+    ['print', '@media print { .cb-caveats { gap: 2px; } }'],
+  ])('passes a stylesheet with %s', (_name, rule) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(0);
+  });
+
+  it.each([
+    ['references the checks decode', `<p>&copy; &bull; &le; &ge;</p>`],
+    ['a zero-width space inside a name', `<p>estimate&zwsp;Cost()</p>`],
+    ['an empty style', `<span style="">·</span>`],
+    ['a left-to-right direction', `<p dir="ltr">x</p>`],
+  ])('passes a legitimate edit: %s', (_name, planted) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(0);
+  });
+
+  it('passes a list of steps whose markers the sheet removes', () => {
+    const r = siteFigures('site-next', {
+      [PAGE]: html.replace(HEAD, () => `${HEAD}<ol class="cb-steps"><li>install</li></ol>`),
+      [CSS]: `${css}\n.cb-steps { list-style: none; padding: 0; }\n`,
+    });
+    expect(r.code, r.out).toBe(0);
+  });
+
   it('keeps the whole ledger when the footer drops its claim', () => {
     const r = withPage('every figure on this page is gated in CI', 'the figures are ours');
     expect(r.code, r.out).toBe(1);
@@ -495,6 +1070,16 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
       '<meta content="website" property="og:type" />',
     ],
     ['a comment that names a figure', HEAD, `${HEAD}<!-- $999, never shown -->`],
+    [
+      'a comment inside a held sentence',
+      'keeps large id-sets as immutable objects',
+      'keeps large id<!-- a hyphen, not a break -->-sets as immutable objects',
+    ],
+    [
+      'an old copy of the invariant line, commented out',
+      '<p class="ba-foot">',
+      '<!-- <p class="ba-foot">Under it, <strong>6 hard correctness invariants</strong>.</p> --><p class="ba-foot">',
+    ],
   ])('passes a legitimate edit: %s', (_name, right, edit) => {
     const r = withPage(right, edit);
     expect(r.code, r.out).toBe(0);
@@ -545,6 +1130,48 @@ describe('site:figures keeps the July run off every file in site-next/', () => {
     expect(r.out).toContain(`${file} states $999, which no source accounts for`);
   });
 
+  it.each([
+    ['site', 'site/demo.html', '</title>', ' · $999 a month</title>'],
+    [
+      'site-next',
+      'site-next/demo.html',
+      '</main>',
+      '<textarea readonly>A read costs $999 a month.</textarea></main>',
+    ],
+    [
+      'site-next',
+      'site-next/demo.html',
+      '</main>',
+      '<noscript><p>A read costs $999 a month.</p></noscript></main>',
+    ],
+    ['site-next', 'site-next/demo.html', '</main>', '<xmp>A read costs $999 a month.</xmp></main>'],
+    [
+      'site-next',
+      'site-next/demo.html',
+      '</main>',
+      '<!--><p>A read costs $999 a month.</p><!-- --></main>',
+    ],
+    ['site', 'site/demo.html', '</main>', '<p>A read costs <$999 a month.</p></main>'],
+  ])('reads a figure on %s where a reader gets it: %s', (dir, file, at, planted) => {
+    const text = readFileSync(join(ROOT, file), 'utf8');
+    expect(text).toContain(at);
+    const r = siteFigures(dir as (typeof SITE_DIRS)[number], {
+      [file]: text.replace(at, () => planted),
+    });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(`${file} states $999`);
+  });
+
+  it('reads a count a comment states, since view-source is public', () => {
+    const file = 'site/demo.html';
+    const text = readFileSync(join(ROOT, file), 'utf8');
+    const r = siteFigures('site', {
+      [file]: text.replace('</main>', () => '<!-- a > b: It has 9 storage drivers. --></main>'),
+    });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('"9 storage drivers"');
+  });
+
   it('leaves the receipt where the docs keep it', () => {
     const file = 'docs/benchmarks.md';
     const text = readFileSync(join(ROOT, file), 'utf8');
@@ -555,5 +1182,44 @@ describe('site:figures keeps the July run off every file in site-next/', () => {
       ),
     });
     expect(r.code, r.out).toBe(0);
+  });
+});
+
+/** The reader's own pieces, called directly: what the ledger keeps apart, and what the browser pass is given. */
+describe('home-figures, piece by piece', () => {
+  const home = requireFromScript('./lib/home-figures.cjs') as {
+    ledger: (page: string) => { mark: (a: number, b: number) => void; strays: [number, number][] };
+    readerFigures: (html: string) => Map<string, number>;
+    widthsToProbe: (sheet: string, standard: number[]) => number[];
+    rendered: (html: string) => string;
+  };
+
+  it('keeps apart a span a check read inside an attribute', () => {
+    const page = '<p class="Ids are 32 bit">x</p>';
+    const L = home.ledger(page);
+    L.mark(page.indexOf('Ids'), page.indexOf('bit') + 3);
+    L.mark(0, page.length);
+    expect(L.strays).toEqual([[page.indexOf('Ids'), page.indexOf('bit') + 3]]);
+  });
+
+  it('blanks every attribute a check does not match on, and keeps word characters of the ones it does', () => {
+    expect(home.rendered('<p class="a b" data-x="</p><p>9">t</p>')).toBe(
+      '<p class="a b" data-x="        ">t</p>',
+    );
+  });
+
+  it('counts each figure where a reader can be given it', () => {
+    const counts = home.readerFigures(
+      '<title>v 9</title><p title="8 x">7 and USD6 in @x/s3</p><script>5</script><svg><text><![CDATA[4]]></text></svg>',
+    );
+    expect(Object.fromEntries(counts)).toEqual({ '9': 1, '8': 1, '7': 1, USD6: 1, '4': 1 });
+  });
+
+  it('loads a width inside every band a media query marks out that no standard width falls in', () => {
+    const sheet =
+      '@media (max-width: 620px) {} @media (min-width: 1921px) {} @media (700px <= width < 48em) {}';
+    expect(home.widthsToProbe(sheet, [320, 390, 768, 1024, 1280, 1440, 1920])).toEqual([
+      660, 734, 1921,
+    ]);
   });
 });

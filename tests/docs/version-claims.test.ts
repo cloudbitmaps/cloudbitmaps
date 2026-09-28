@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +19,12 @@ import { fileURLToPath } from 'node:url';
 // It covers two surfaces, `site/` and the markdown docs, because the hole it was written to close turned out
 // to be in both. See MARKDOWN_DOCS for why the second half is scoped differently from the first.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+/** The site gate's reader of markup, so a comment ends here where the browser ends it: `<!-->` is a whole comment. */
+const { withoutComments } = createRequire(import.meta.url)(
+  '../../scripts/lib/home-figures.cjs',
+) as {
+  withoutComments: (html: string) => string;
+};
 /** Both trees: `site/`, which Pages publishes, and `site-next/`, the display-tier rebuild beside it until it replaces it. */
 const SITE_DIRS = ['site', 'site-next'];
 
@@ -160,7 +167,7 @@ const NEXT_MINOR = ((): string => {
 const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;
 
 /**
- * Version tokens a reader can actually see, excluding HTML comments.
+ * Version tokens a reader can actually see, excluding HTML comments, which end where the browser ends them.
  *
  * Comments are stripped because they are not rendered, so they cannot mislead anyone — and because they
  * legitimately discuss other releases ("until 0.6.0, this table offered nothing to check it against"), which a
@@ -170,8 +177,7 @@ function badgeVersions(
   html: string,
   foreign: ReadonlyMap<string, string> = FOREIGN_VERSIONS,
 ): string[] {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, '')
+  return withoutComments(html)
     .split('\n')
     .flatMap((line) => {
       const short = [...line.matchAll(SHORT_VERSION_RE)]
@@ -391,6 +397,11 @@ describe('site version badges', () => {
           `rather than ours, add it to FOREIGN_VERSIONS with the reason.`,
       ).toBe(version);
     }
+  });
+
+  it('reads a comment where the browser ends it, so `<!-->` hides nothing after it', () => {
+    expect(badgeVersions('<p><!-->v0.9.0 is out<!-- --></p>', new Map())).toEqual(['0.9.0']);
+    expect(badgeVersions('<p><!-- v0.9.0 is out --></p>', new Map())).toEqual([]);
   });
 
   it('every page carries the release at least once', () => {

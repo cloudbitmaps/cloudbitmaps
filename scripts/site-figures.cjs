@@ -268,13 +268,8 @@ function visibleText(html) {
     .filter((m) => /name="(description|og:description)"|property="og:description"/i.test(m[0]))
     .map((m) => m[1])
     .join(' ');
-  return (described + ' ' + html)
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\s+/g, ' ');
+  // Read as the browser splits it: a comment ends where the browser ends it, and a `<` that opens no tag is text.
+  return homeFigures.scanText(described + ' ' + html, { comments: true }).replace(/\s+/g, ' ');
 }
 
 /** Every page under site/, as a [relative path, reader-visible text] pair. */
@@ -557,7 +552,8 @@ function withoutCommentsOrGenerated(text, rel) {
       fail(`${err.message}, so no gate reads the figures in it`);
     }
   }
-  return kept.replace(/<!--[\s\S]*?-->/g, '');
+  // A comment ends where the browser ends it: `<!-->` is a whole comment, not the start of one.
+  return homeFigures.withoutComments(kept);
 }
 
 function blocksOf(text, isHtml, metas, rel) {
@@ -568,13 +564,11 @@ function blocksOf(text, isHtml, metas, rel) {
       .flatMap((b) => b.split(/\n(?=\s*(?:[-*+]|\d+\.) |\s*\|)/))
       .filter((b) => b.trim() !== '');
   }
-  const html = body
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-    .replace(/<svg[\s\S]*?<\/svg>/g, ' ');
+  const html = homeFigures.withoutCode(body).replace(/<svg[\s\S]*?<\/svg>/g, ' ');
   return [
     ...html
       .split(/<\/(?:p|li|tr|h[1-6]|figcaption|dd|dt|caption|blockquote)>|<br\s*\/?>/i)
-      .map((b) => b.replace(/<[^>]+>/g, ' ')),
+      .map((b) => homeFigures.scanText(b)),
     ...metas.split(/\s{2,}/),
   ].filter((b) => b.trim() !== '');
 }
@@ -667,11 +661,9 @@ for (const page of PAGES) {
   const isHtml = page.rel.endsWith('.html');
   const withoutComments = withoutCommentsOrGenerated(html, page.rel);
   const visible = isHtml
-    ? withoutComments
-        .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/g, '')
-        .replace(/<svg[\s\S]*?<\/svg>/g, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;|&#160;/gi, ' ')
+    ? homeFigures
+        .scanText(homeFigures.withoutCode(withoutComments).replace(/<svg[\s\S]*?<\/svg>/g, ' '))
+        .replace(/\s/g, ' ')
         .concat(' ', metas, ' ', jsonLd, ' ', svgText)
     : withoutComments;
 
@@ -733,12 +725,7 @@ for (const page of PAGES) {
       const perSec = singleBucket.parity.intersectsPerSec.toFixed(1);
       const blocks = [
         ...withoutComments.matchAll(/<(p|li|tr|h[1-6]|figcaption)\b[^>]*>([\s\S]*?)<\/\1>/g),
-      ].map((m) =>
-        m[2]
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/&nbsp;|&#160;/g, ' ')
-          .replace(/\s+/g, ' '),
-      );
+      ].map((m) => homeFigures.scanText(m[2]).replace(/\s+/g, ' '));
       for (const block of blocks.filter((b) => /\bcold\b/i.test(b) && /A ∩ B/.test(b))) {
         for (const m of block.matchAll(/(?<![\d.,$])(\d[\d,]*) ?GETs\b/g)) {
           if (!gets.has(`${m[1]} GETs`)) {
@@ -863,8 +850,8 @@ if (singleBucket !== null) {
   if (open === -1 || close === -1) {
     fail(`${SITE_DIR}/benchmarks.html no longer has its #single-bucket panel`);
   } else {
-    const panel = html.slice(open, close).replace(/<!--[\s\S]*?-->/g, '');
-    const text = panel.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ');
+    const panel = homeFigures.withoutComments(html.slice(html.lastIndexOf('<', open), close));
+    const text = homeFigures.scanText(panel).replace(/\s/g, ' ');
     for (const figure of calibration.unaccounted(text, singleBucket.pageValues)) {
       fail(
         `${SITE_DIR}/benchmarks.html's #single-bucket panel states ${figure}, which the run does not account for`,
@@ -1015,13 +1002,23 @@ const specAnchors = [];
   }
 
   const homeHtml = fs.readFileSync(path.join(SITE, 'index.html'), 'utf8');
-  // The display-tier homepage is known from the page itself, by its hero or by its footer saying every figure on it
-  // is gated in CI, not from a per-tree entry that a move to site/ could leave behind. There, every check marks the
-  // span it verified, and scripts/lib/home-figures.cjs fails on any figure no check marked and holds the footer's
-  // claim word for word, so a page that drops the claim but keeps the hero fails rather than going unread. No other
-  // page may make the claim, since nothing holds another page that way.
-  const HOME_IS_DISPLAY_TIER =
-    homeFigures.claims(homeHtml) || /<section class="cb-stack is-hero">/.test(homeHtml);
+  // The display-tier homepage is known from the page itself, by its `cb-` classes or by its footer saying every figure
+  // on it is gated in CI, not from a per-tree entry that a move to site/ could leave behind. There, every check marks
+  // the span it verified, and scripts/lib/home-figures.cjs fails on any figure no check marked and holds the footer's
+  // claim word for word, so a page that drops the claim but keeps the design fails rather than going unread. No other
+  // page may make the claim, and nor may the sheet, since nothing holds another page that way.
+  const HOME_IS_DISPLAY_TIER = homeFigures.isDisplayTier(homeHtml);
+  const sheetFile = path.join(SITE, 'cloudbitmaps.css');
+  if (
+    fs.existsSync(sheetFile) &&
+    homeFigures
+      .plain(homeFigures.cssUnescape(fs.readFileSync(sheetFile, 'utf8')))
+      .includes(homeFigures.plain(homeFigures.CLAIM))
+  ) {
+    fail(
+      `${SITE_DIR}/cloudbitmaps.css writes the claim that every figure is gated, which only a page may make`,
+    );
+  }
   const homeLedger = HOME_IS_DISPLAY_TIER ? homeFigures.ledger(homeHtml) : null;
   for (const rel of fs.readdirSync(SITE, { recursive: true })) {
     if (!String(rel).endsWith('.html') || String(rel) === 'index.html') continue;
@@ -1278,6 +1275,21 @@ const specAnchors = [];
           foot.indices[1][0] + stated.indices[1][0],
           foot.indices[1][0] + stated.indices[1][1],
         );
+        // On the display tier the line is compared whole, so the words around the count cannot turn what it says.
+        const INVARIANT_LINE =
+          `Under it, the protocol is written down as ${invariantCount} hard correctness invariants — write-once ` +
+          'generations published forward-only, every chunk from one whole generation and never torn, a GC that ' +
+          'never touches the current one, every tier byte untrusted — each with named tests that run on every commit.';
+        if (homeLedger) {
+          const got = homeFigures.textOf(homeHtml.slice(...foot.indices[1]));
+          if (got !== INVARIANT_LINE) {
+            fail(
+              `${SITE_DIR}/index.html's invariant line reads "${got}", but its sources give "${INVARIANT_LINE}"`,
+            );
+          } else {
+            homeLedger.mark(...foot.indices[1]);
+          }
+        }
       }
     }
   }
@@ -1347,6 +1359,20 @@ const specAnchors = [];
           heroMeta.indices[1][0] + m.indices[1][0],
           heroMeta.indices[1][0] + m.indices[1][1],
         );
+      }
+    }
+    // On the display tier the line is compared whole, so the words around the count cannot turn what it says.
+    const META_LINE =
+      `${JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).license} · zero-dependency core · ` +
+      `${backends.size} storage drivers · published tokenlessly via OIDC`;
+    if (homeLedger) {
+      const got = homeFigures.textOf(homeHtml.slice(...heroMeta.indices[1]));
+      if (got !== META_LINE) {
+        fail(
+          `${SITE_DIR}/index.html's meta line reads "${got}", but its sources give "${META_LINE}"`,
+        );
+      } else {
+        homeLedger.mark(...heroMeta.indices[1]);
       }
     }
   }

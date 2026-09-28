@@ -71,9 +71,10 @@ The gates `site/` has, on this tree too:
 
 - `site-classes.py` and `site-links.py` take `SITE_DIR`; `pnpm site:check` and CI run each on both trees.
 - `site-figures.cjs` takes `SITE_DIR`, and `pnpm site:figures` runs it on both. On this tree it also holds the
-  homepage to its sources figure by figure, through `scripts/lib/home-figures.cjs`: each check reads the page as it
-  renders and marks what it read, and a number on the page that none of them read fails, since the footer says every
-  figure on this page is gated in CI; what would show text no check reads, or hide text one did, is refused. It
+  homepage to its sources figure by figure, through `scripts/lib/home-figures.cjs`: each check reads the page as the
+  browser parses it and marks what it read, and a number on the page that none of them read fails, since the footer
+  says every figure on this page is gated in CI; what would show text no check reads, or hide text one did, is
+  refused, and each script the page runs is pinned by its hash, so a changed one is read again before it passes. It
   refuses the July run's figures, run id and date in every file here, and holds the benchmarks page's comparison
   panel row by row.
 - `site-replay.cjs` checks both trees' `demo.html`. `pnpm bench:check` holds both benchmarks pages' generated
@@ -82,7 +83,10 @@ The gates `site/` has, on this tree too:
 - `site-text-floor.mjs` loads every page here at seven widths and fails on any text drawn below 9.5px, SVG labels
   included, on a page that scrolls sideways or a box that cuts off text, on a region that scrolls with no way in by
   keyboard, on a region whose name is missing, shared, or not its panel's, and, on the homepage, on any text outside
-  its generated regions that no reader can see (`pnpm site:text-floor`, in CI).
+  its generated regions that no reader can see, found where it is drawn once every band has played and again at
+  rest, in each colour scheme, printed and with scripts off, at the seven widths and one inside every band the
+  sheet's media queries mark out, on a generated region that hides a run it renders, on a list marker, and on a
+  figure Chrome and the figures gate count differently (`pnpm site:text-floor`, in CI).
 - The docs tests that read `site/` read this tree as well.
 
 ## Comparing the two

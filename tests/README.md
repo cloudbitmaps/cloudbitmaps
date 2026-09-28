@@ -35,7 +35,7 @@ resolves.
 | `helpers/` | Shared helpers: building loaded stores in tests, counting the requests the engine makes, which the cost model and the calibration harness are held to, and reading the repo's workflows, composite actions and `package.json` scripts for the CI tests. |
 | `integration/` | The S3, GCS and Azure Blob drivers against MinIO, fake-gcs-server and Azurite from `docker-compose.yml`. Excluded from `pnpm test`, and run in CI on every pull request. |
 | `roaring/` | The pure-JavaScript reader for the portable roaring format, judged against the native library as the oracle: on a dozen hand-picked boundary shapes, on 200 random bitmaps nobody picked, and on hostile bytes it must refuse. A second decoder is only worth having if it agrees with the first on inputs nobody chose. |
-| `scripts/` | The scripts in `scripts/`, tested like code — the leak scan against planted secrets, the changelog extractor, the bootstrap publish, the version sync — and two sweeps: no harness in `scripts/` or `bench/` builds a store with an option that has moved, and every name `scripts/`, `bench/` and `fuzz/` import from a workspace package is actually exported by it. |
+| `scripts/` | The scripts in `scripts/`, tested like code — the leak scan against planted secrets, the changelog extractor, the bootstrap publish, the version sync, the site gates' stylesheet reader against the constructs a browser reads differently — and two sweeps: no harness in `scripts/` or `bench/` builds a store with an option that has moved, and every name `scripts/`, `bench/` and `fuzz/` import from a workspace package is actually exported by it. |
 
 ## The files at the top level
 

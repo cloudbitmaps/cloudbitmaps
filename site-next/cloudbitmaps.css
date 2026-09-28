@@ -3174,7 +3174,7 @@ svg .crossing {
    The design is drawn at 1440. Below it: the 12-column rows stack, the figure rows go to two up and then one, and
    anything that cannot shrink without dropping a label below 9.5px keeps its width and scrolls inside its own
    frame. The body never scrolls sideways. scripts/site-text-floor.mjs measures every rendered text run, SVG
-   labels at their drawn size included, at six widths. */
+   labels at their drawn size included, at seven widths. */
 .cb-scroll {
   overflow-x: auto;
 }

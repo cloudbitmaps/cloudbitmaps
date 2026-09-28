@@ -2,44 +2,77 @@
 /**
  * The display-tier homepage, held figure by figure (site-next/index.html, read by scripts/site-figures.cjs).
  *
- * Every check here reads the page as it renders: comments, `<template>`, `<noscript>`, scripts and styles are
- * blanked first, so a check cannot pass on a copy no reader sees. Each marks the exact span it verified. What no
- * check marked is then read for numbers: the visible text, SVG labels included, and the attributes that carry
- * prose (`aria-label`, `alt`, `title`, `placeholder`, `value`, and the descriptions a search result or a link
- * preview shows), however they are quoted. Any number left is a failure, and so is a number in such an attribute
- * inside a span a check read, since the check compared the text and not the attribute. So a figure is gated where it
- * stands: a wrong number that happens to equal a true one elsewhere on the page, a second unchecked copy of a checked
- * figure, or a new figure no check knows, all fail. That is what lets the page's footer say every figure on it is
- * gated in CI.
+ * Every check here reads the page as the browser does. A small tokenizer splits it where the browser's does, so a
+ * comment ends at `<!-->` or `--!>`, a quote opens a value only after `=`, a `/` closes a tag only where it is its own,
+ * a script runs to its own end tag and a `<` that opens no tag is text. The view the checks match against has every
+ * comment, template, script, sheet and title blanked, and every attribute's value but `class`, `id` and `scope`, so a
+ * check cannot pass on a copy no reader sees, nor on one kept in an attribute; a check whose match still reaches into
+ * an attribute fails. Each check marks the exact span it verified. What no check marked is then read for numbers:
+ * the visible text, SVG labels and CDATA included, the title, and the attributes that carry prose (`aria-label` and
+ * the other names and values read aloud, `alt`, `title`, `placeholder`, `value`, and the descriptions a search result
+ * or a link preview shows). Any number left is a failure, and so is a number in such an attribute inside a span a
+ * check read, since the check compared the text and not the attribute. So a figure is gated where it stands: a wrong
+ * number that happens to equal a true one elsewhere on the page, a second unchecked copy of a checked figure, or a
+ * new figure no check knows, all fail. That is what lets the page's footer say every figure on it is gated in CI.
  *
  * Prose that carries a figure is compared whole, against a string built from the sources, so the words around a
  * figure cannot turn its meaning while the figure stays right.
  *
  * The page's drawings of the scale run and its crossover chart are generated (bench/scale.cjs, bench/run.cjs) and
  * held byte for byte by `pnpm bench:scale:check` and `pnpm bench:check`, so their regions count as verified here.
- * Figures are numerals, in any script's digits, fractions included: a number written as a word ("three nodes") is
- * prose, and is not read.
+ * Figures are numerals, in any script's digits, fractions included, and digits glued to a letter (`USD1200`) but for
+ * the two names the page writes that way: a number written as a word ("three nodes") is prose, and is not read.
  *
- * The page may not carry what would put text before a reader that no check reads: a `<style>` element or a second
- * sheet, a sheet rule that inserts anything but a digit-free string or draws quotation marks, list markers or
- * counters, an element that hides or embeds content (`hidden`, `<template>`, `<details>`, `<dialog>`, `popover`,
- * `<iframe>`, `<object>`, `<embed>`, a `data:` image), a list that numbers its own items, structured data, a base URL
- * or a refresh, a character reference this does not decode, an inline style other than a custom property, or a
- * script that writes text. Every meta's content is read but for a short list whose content is not prose.
+ * The page may not carry what would show a reader text no check reads, or hide what one does:
+ *
+ * - an element that hides, embeds or draws: `hidden`, `popover`, `<template>`, `<details>`, `<dialog>`, `<iframe>`,
+ *   `<object>`, `<embed>`, an image of any kind or a `background` attribute, a canvas, a video or an audio player,
+ *   HTML or MathML inside SVG, a `<use>` of another file, a `data:` URL;
+ * - markup these checks do not parse as the browser does: `<xmp>`, `<textarea>`, `<plaintext>`, `<noscript>`, a
+ *   second title or one in the body, a `<!--` inside a script, a script inside SVG, an HTML tag that ends an SVG;
+ * - a script no one has read: every script is pinned by its SHA-256, so one that changes is refused until it is read
+ *   again, and there may be no handler attribute, `javascript:` link or module;
+ * - digits drawn in another order, or passing for others: a `dir` other than `ltr`, `<bdo>`, `<bdi>`, a
+ *   bidirectional mark or override, a right-to-left letter, a letter from a script other than Latin or Greek, or a
+ *   sheet rule that sets a direction;
+ * - a sheet that adds text: a `<style>` element or a second sheet, a `content` string other than arrows and middle
+ *   dots unless it is one written for its rule, on a page that does not wear that rule's class, quotation marks, list
+ *   markers, counters, emphasis marks, a first letter or line styled apart, a `url()` anywhere, a font, an import;
+ * - a sheet that hides or turns text in a way site-text-floor does not measure: a shadow, a wide outline, a gradient,
+ *   a stroke painted over the letters, a reflection, a font size adjustment, a hyphenation character, an individual
+ *   scale, rotation or translation, a turned, mirrored or 3D transform, containment, skipped rendering, a blend, a
+ *   thick decoration, lines laid over each other, a font outside the sheet's two stacks, an animation that never
+ *   ends, or `pointer-events` with `!important`, which would out-rank the pass;
+ * - a sheet rule for a reader site-text-floor does not become: `@supports`, `@container`, a media feature other than
+ *   width and motion (the theme is the page's `data-theme` stamp, and print stands alone), a size that follows the
+ *   viewport's height or does arithmetic on its width, an animation tied to scrolling, or, for a reader hovering,
+ *   focusing or following a link, anything but a colour, a ground, a border colour, a decoration or an outline;
+ * - a base URL or a refresh, structured data, an inline style other than a custom property, or a character reference
+ *   this does not decode, in the text, an attribute or the title. Every meta's content is read but for a short list
+ *   whose content is not prose.
  *
  * What it holds, and what it does not: it holds the page against the edits a maintainer makes, a figure changed,
- * added, left stale, reworded around, moved into a comment or out of view, or copied into an attribute. It is not a
- * sandbox against a page built to deceive a static reader: markup the browser parses differently from these patterns
- * (`<!-->`), a bidirectional override that draws `329.15` backwards, a script that writes text by a route not listed
- * here. Those are review's to catch; site-text-floor's Chrome pass narrows them by checking that every word on the
- * page is one a reader can see.
+ * added, left stale, reworded around, moved into a comment or out of view, or copied into an attribute, and against
+ * the markup and sheet tricks listed above. It reads the page and the sheet, not the layout: a box laid over a
+ * figure, or a rule that fades one out after load, is site-text-floor's to catch, which finds every word on the page
+ * where Chrome draws it, and which counts the figures Chrome built into the page against the ones read here
+ * (`readerFigures`), so a construct this reader and the browser parse apart fails there. What neither reads is where
+ * the layout puts a word: a grid or an `order` that moves a held figure beside another's label. That is review's.
  */
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
 // A numeral in any script (`９`, `𝟿`), a leading-dot decimal (`$.50`) or a fraction or numeric symbol (`½`, `²`).
-// Digits glued to a letter, as in `v0.10.0` or `S3`, are part of a word; a version is held where it stands.
+// Digits glued to a letter are read by `GLUED` below.
 const NUMBER = /(?<![\p{L}\p{N}_.])(?:\p{Nd}[\p{Nd},]*(?:\.\p{Nd}+)?|\.\p{Nd}+)|[\p{No}\p{Nl}]/gu;
+/**
+ * A word with a digit glued to a letter (`USD1200`, `x3290`) says a figure too, and is read as one, but for the names
+ * the page writes that are names and not figures: a package (`@cloudbitmaps/s3`) and a percentile (`p99`). A version
+ * is held where it stands.
+ */
+const GLUED = /[\p{L}\p{N}_]*\p{L}\p{Nd}[\p{L}\p{N}_]*/gu;
+const NAMES_WITH_DIGITS = new Set(['s3', 'p99']);
 const NAMED = {
   nbsp: ' ',
   amp: '&',
@@ -59,6 +92,14 @@ const NAMED = {
   times: '×',
   divide: '÷',
   hellip: '…',
+  bull: '•',
+  copy: '©',
+  reg: '®',
+  trade: '™',
+  le: '≤',
+  ge: '≥',
+  laquo: '«',
+  raquo: '»',
   minus: '−',
   thinsp: ' ',
   ensp: ' ',
@@ -72,62 +113,313 @@ const NAMED = {
   rlm: '\u200f',
 };
 
+/** A character a numeric reference names, as a browser reads it: one out of range is the replacement character. */
+function codePoint(n) {
+  return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff)
+    ? String.fromCodePoint(n)
+    : '\ufffd';
+}
+
 /** Every character reference decoded, so `&#57;` is read as the 9 it renders, with or without its `;`, as a browser reads it. */
 function decode(s) {
   return s
-    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);?/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => codePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_, dec) => codePoint(Number(dec)))
     .replace(/&([a-z]+);/gi, (m, name) => NAMED[name.toLowerCase()] ?? m);
 }
 
-/** An element's text as a reader gets it: tags dropped, references decoded, whitespace collapsed. */
+/**
+ * The page split as a browser's tokenizer splits it, so that every check reads what the browser reads: text, start
+ * and end tags with their attributes, comments, and the raw text of the elements whose content is not markup. A
+ * subset of the HTML tokenizer, enough that no construct shows text the checks do not see or hides text they do:
+ * a comment ends where the browser ends it (`<!-->`, `<!--->`, `--!>`), a quote opens a value only after `=`, an
+ * unquoted value runs to a space or `>`, a raw-text element runs to its own end tag, CDATA is text inside SVG and
+ * MathML, and a `<` that starts no tag is text. What it does not follow, a script's escaped states and content that
+ * leaves SVG through an HTML tag, the homepage checks refuse.
+ */
+const RAW_TEXT = new Set([
+  'script',
+  'style',
+  'xmp',
+  'iframe',
+  'noembed',
+  'noframes',
+  'noscript',
+  'textarea',
+  'title',
+]);
+const SPACE = /[\t\n\f\r ]/;
+
+/**
+ * A tag's attributes from `p`, just past its name, to its `>`, as the browser reads them: the first of a name wins.
+ * With each value, where it stands (`values`), and whether the tag closes itself: a `/` that is its own, right before
+ * the `>`, not the last character of an unquoted value.
+ */
+function scanAttrs(html, p) {
+  const attrs = {};
+  const values = {};
+  const n = html.length;
+  let selfClosing = false;
+  for (;;) {
+    while (p < n && (SPACE.test(html[p]) || html[p] === '/')) {
+      selfClosing = html[p] === '/' && html[p + 1] === '>';
+      p++;
+    }
+    if (p >= n) return { attrs, values, end: n, selfClosing };
+    if (html[p] === '>') return { attrs, values, end: p + 1, selfClosing };
+    selfClosing = false;
+    let q = p + 1;
+    while (q < n && !SPACE.test(html[q]) && !'/>='.includes(html[q])) q++;
+    const name = html.slice(p, q).toLowerCase();
+    p = q;
+    while (p < n && SPACE.test(html[p])) p++;
+    let at = [p, p];
+    if (html[p] === '=') {
+      p++;
+      while (p < n && SPACE.test(html[p])) p++;
+      const quote = html[p];
+      if (quote === '"' || quote === "'") {
+        const close = html.indexOf(quote, p + 1);
+        at = [p + 1, close === -1 ? n : close];
+        p = close === -1 ? n : close + 1;
+      } else {
+        const from = p;
+        while (p < n && !SPACE.test(html[p]) && html[p] !== '>') p++;
+        at = [from, p];
+      }
+    }
+    if (!(name in attrs)) {
+      attrs[name] = decode(html.slice(...at));
+      values[name] = at;
+    }
+  }
+}
+
+/** The end of a tag's name, which runs from `p` to a space, a `/` or a `>`. */
+function nameEnd(html, p) {
+  while (p < html.length && !SPACE.test(html[p]) && html[p] !== '/' && html[p] !== '>') p++;
+  return p;
+}
+
+/**
+ * Every token of the page, in order, each with where it starts and ends: `text`, `start` (with its attributes and
+ * whether it stands inside SVG or MathML), `end`, `comment`, `doctype`, `cdata` and `raw`, the content of a
+ * raw-text element.
+ */
+function tokens(html) {
+  const out = [];
+  const n = html.length;
+  let foreign = 0;
+  let textFrom = 0;
+  let i = 0;
+  const upTo = (from, needle) => {
+    const at = html.indexOf(needle, from);
+    return at === -1 ? n : at + needle.length;
+  };
+  const push = (token) => {
+    if (token.start > textFrom) out.push({ type: 'text', start: textFrom, end: token.start });
+    out.push(token);
+    textFrom = token.end;
+  };
+  while (i < n) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1) break;
+    const next = html[lt + 1] ?? '';
+    let token = null;
+    if (html.startsWith('<!--', lt)) {
+      let end;
+      if (html[lt + 4] === '>') end = lt + 5;
+      else if (html.startsWith('->', lt + 4)) end = lt + 6;
+      else {
+        const close = /--!?>/g;
+        close.lastIndex = lt + 4;
+        const m = close.exec(html);
+        end = m ? m.index + m[0].length : n;
+      }
+      token = { type: 'comment', start: lt, end };
+    } else if (foreign > 0 && html.startsWith('<![CDATA[', lt)) {
+      const close = html.indexOf(']]>', lt + 9);
+      const stop = close === -1 ? n : close;
+      token = {
+        type: 'cdata',
+        start: lt,
+        end: close === -1 ? n : close + 3,
+        inner: [lt + 9, stop],
+      };
+    } else if (next === '!' || next === '?') {
+      const type = /^<!doctype/i.test(html.slice(lt, lt + 9)) ? 'doctype' : 'comment';
+      token = { type, start: lt, end: upTo(lt + 2, '>') };
+    } else if (next === '/') {
+      const after = html[lt + 2] ?? '';
+      if (/[a-z]/i.test(after)) {
+        const q = nameEnd(html, lt + 3);
+        const name = html.slice(lt + 2, q).toLowerCase();
+        const { values, end } = scanAttrs(html, q);
+        token = { type: 'end', name, start: lt, end, values };
+        if ((name === 'svg' || name === 'math') && foreign > 0) foreign--;
+      } else if (after === '>') {
+        token = { type: 'comment', start: lt, end: lt + 3 };
+      } else {
+        token = { type: 'comment', start: lt, end: upTo(lt + 2, '>') };
+      }
+    } else if (/[a-z]/i.test(next)) {
+      const q = nameEnd(html, lt + 2);
+      const name = html.slice(lt + 1, q).toLowerCase();
+      const { attrs, values, end, selfClosing } = scanAttrs(html, q);
+      token = { type: 'start', name, start: lt, end, attrs, values, foreign: foreign > 0 };
+      if ((name === 'svg' || name === 'math') && !selfClosing) foreign++;
+      if (!token.foreign && RAW_TEXT.has(name)) {
+        push(token);
+        const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, 'ig');
+        close.lastIndex = end;
+        const m = close.exec(html);
+        const stop = m ? m.index : n;
+        push({ type: 'raw', name, start: end, end: stop });
+        i = stop;
+        continue;
+      }
+    }
+    if (token === null) {
+      i = lt + 1; // a `<` that starts nothing is text
+      continue;
+    }
+    push(token);
+    i = token.end;
+  }
+  if (n > textFrom) out.push({ type: 'text', start: textFrom, end: n });
+  return out;
+}
+
+/** What a token shows a reader: text decoded, CDATA as written, a `<br>` a break, and everything else `between`. */
+const shown = (html, t, between) =>
+  t.type === 'text'
+    ? decode(html.slice(t.start, t.end))
+    : t.type === 'cdata'
+      ? html.slice(...t.inner)
+      : t.type === 'start' && t.name === 'br'
+        ? ' '
+        : between;
+
+/** An element's text as a reader gets it: its text and CDATA, references decoded, a `<br>` a space, spaces folded. */
 const textOf = (html) =>
-  decode(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ''))
+  tokens(html)
+    .map((t) => shown(html, t, ''))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim();
+
+/** The page's text for the last scan, every tag, comment and raw run a space, so no two figures join. */
+const proseText = (html) =>
+  tokens(html)
+    .map((t) => shown(html, t, ' '))
+    .join('');
+
+/**
+ * The text a scan of the other pages reads, where no check marks spans and more is safer than less: the text, CDATA
+ * and title, what a text field, an `<xmp>` or a fallback element holds, and with `comments`, what a comment says,
+ * since `view-source` is public too. Only a script's code and a sheet's rules are left out.
+ */
+function scanText(html, { comments = false } = {}) {
+  return tokens(html)
+    .map((t) => {
+      const inner = html.slice(t.start, t.end);
+      if (t.type === 'comment') return comments ? ` ${inner.replace(/^<!--|-->$/g, '')} ` : ' ';
+      if (t.type !== 'raw') return shown(html, t, ' ');
+      if (t.name === 'script' || t.name === 'style') return ' ';
+      if (t.name === 'title' || t.name === 'textarea') return ` ${decode(inner)} `;
+      if (t.name === 'xmp') return ` ${inner} `;
+      return ` ${scanText(inner, { comments })} `;
+    })
+    .join('');
+}
+
+/** The page with its scripts' code and sheets' rules blanked, the same length, so a pattern over it meets neither. */
+const withoutCode = (html) =>
+  blankSpans(
+    html,
+    tokens(html)
+      .filter((t) => t.type === 'raw' && (t.name === 'script' || t.name === 'style'))
+      .map((t) => [t.start, t.end]),
+  );
 
 /** The generated regions' markers, the one kind of comment the checks read. */
 const BENCH_MARKER = /^<!-- BENCH:[A-Z]+:(?:START|END) -->$/;
 
-/**
- * The page as it renders, the same length as the page so that every position still points at the same character:
- * comments other than the generated regions' markers, and the elements whose content no reader sees as text, are
- * blanked to spaces.
- */
-function rendered(html) {
-  const blank = (m) => m.replace(/[^\n]/g, ' ');
-  return html
-    .replace(/<!--[\s\S]*?-->/g, (m) => (BENCH_MARKER.test(m) ? m : blank(m)))
-    .replace(/<(template|noscript|script|style)\b[\s\S]*?<\/\1\s*>/gi, blank);
+/** The page with the given spans blanked to spaces, the same length, so every position still points where it did. */
+function blankSpans(html, spans) {
+  const chars = html.split('');
+  for (const [a, b] of spans) for (let k = a; k < b; k++) if (chars[k] !== '\n') chars[k] = ' ';
+  return chars.join('');
 }
 
-/** A start tag's attributes as a browser reads them: any quoting, names in lower case, values decoded. */
-function attrsOf(tag) {
-  const out = {};
-  const inner = tag.replace(/^<[a-z][\w-]*/i, '').replace(/\/?>$/, '');
-  for (const m of inner.matchAll(
-    /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g,
-  )) {
-    const name = m[1].toLowerCase();
-    if (!(name in out)) out[name] = decode(m[2] ?? m[3] ?? m[4] ?? '');
+/** A page without its comments, ended where the browser ends them. */
+const withoutComments = (html) =>
+  tokens(html)
+    .map((t) => (t.type === 'comment' ? '' : html.slice(t.start, t.end)))
+    .join('');
+
+/** The attributes whose values the checks match on, kept in the rendered view with only word characters left. */
+const MATCHED_ATTRS = new Set(['class', 'id', 'scope']);
+
+/**
+ * The page as it renders, the same length as the page: every comment but the generated regions' markers, every raw
+ * run (a script's code, a sheet's rules, a title's text), every template and CDATA's delimiters are blanked, and so is
+ * every attribute's value but the few the checks match on, which keep only their word characters. A check matched
+ * against this cannot match what no reader sees, nor a copy of a figure, or of an end tag, kept in an attribute.
+ */
+function rendered(html) {
+  const spans = [];
+  const scrub = [];
+  let template = null;
+  let depth = 0;
+  for (const t of tokens(html)) {
+    if (t.type === 'start' || t.type === 'end') {
+      for (const [name, at] of Object.entries(t.values))
+        (MATCHED_ATTRS.has(name) ? scrub : spans).push(at);
+    }
+    if (t.type === 'start' && t.name === 'template') {
+      if (depth++ === 0) template = t.start;
+    } else if (t.type === 'end' && t.name === 'template' && depth > 0) {
+      if (--depth === 0) spans.push([template, t.end]);
+    } else if (t.type === 'comment' && !BENCH_MARKER.test(html.slice(t.start, t.end))) {
+      spans.push([t.start, t.end]);
+    } else if (t.type === 'raw') {
+      spans.push([t.start, t.end]);
+    } else if (t.type === 'cdata') {
+      spans.push([t.start, t.inner[0]], [t.inner[1], t.end]);
+    }
   }
-  return out;
+  if (depth > 0) spans.push([template, html.length]);
+  const chars = blankSpans(html, spans).split('');
+  for (const [a, b] of scrub)
+    for (let k = a; k < b; k++) if (!/[\w -]/.test(chars[k])) chars[k] = ' ';
+  return chars.join('');
 }
 
 /** Every start tag, with where it stands and its attributes. */
-const tagsOf = (html) =>
-  [...html.matchAll(/<([a-z][\w-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)].map((m) => ({
-    name: m[1].toLowerCase(),
-    start: m.index,
-    end: m.index + m[0].length,
-    attrs: attrsOf(m[0]),
-  }));
+const tagsOf = (html) => tokens(html).filter((t) => t.type === 'start');
 
 /** The attributes a reader is read or shown, and the meta tags whose content is prose. */
 const PROSE_ATTRS = [
   'aria-label',
   'aria-description',
+  'aria-roledescription',
   'aria-valuetext',
+  'aria-valuenow',
+  'aria-valuemin',
+  'aria-valuemax',
+  'aria-placeholder',
+  'aria-setsize',
+  'aria-posinset',
+  'aria-rowcount',
+  'aria-colcount',
+  'aria-rowindex',
+  'aria-colindex',
+  'aria-rowindextext',
+  'aria-colindextext',
+  'aria-braillelabel',
+  'aria-brailleroledescription',
+  'abbr',
   'alt',
   'title',
   'placeholder',
@@ -155,32 +447,45 @@ const metaKeys = (t) =>
     .map((a) => t.attrs[a])
     .filter((v) => v !== undefined)
     .map((v) => v.toLowerCase());
-const metaKey = (t) => metaKeys(t)[0] ?? '';
 const isProseMeta = (t) =>
   t.name === 'meta' && 'content' in t.attrs && metaKeys(t).some((k) => !NON_PROSE_METAS.has(k));
+/** The prose a tag carries in its attributes: what a reader is read aloud or shown, and a meta's description. */
+const proseOf = (t) => [
+  ...PROSE_ATTRS.filter((a) => t.attrs[a] !== undefined).map((a) => t.attrs[a]),
+  ...(isProseMeta(t) ? [t.attrs.content ?? ''] : []),
+];
 
-/** The spans of a page that checks have verified, over the page as it renders. */
+/**
+ * The spans of a page that checks have verified, over the page as it renders. A span that reaches into an attribute's
+ * value without holding its whole tag is kept apart as `strays`: a check read words no reader sees as text, and
+ * `finish()` refuses it.
+ */
 function ledger(page) {
   const marks = [];
+  const strays = [];
   const html = rendered(page);
+  const values = tokens(page).flatMap((t) =>
+    t.type === 'start' || t.type === 'end'
+      ? Object.values(t.values)
+          .filter(([a, b]) => b > a)
+          .map(([a, b]) => ({ a, b, tag: [t.start, t.end] }))
+      : [],
+  );
   return {
     raw: page,
     html,
     marks,
+    strays,
     mark(start, end) {
-      if (start >= 0 && end > start) marks.push([start, end]);
+      if (!(start >= 0 && end > start)) return;
+      const inside = values.some(
+        (v) => v.a < end && start < v.b && !(start <= v.tag[0] && v.tag[1] <= end),
+      );
+      (inside ? strays : marks).push([start, end]);
     },
-    /** The page with every verified span blanked. */
+    /** The rendered view with every verified span blanked, the same length, so nothing joins across a span. */
     rest() {
-      const sorted = [...marks].sort((a, b) => a[0] - b[0]);
-      let out = '';
-      let at = 0;
-      for (const [a, b] of sorted) {
-        if (b <= at) continue;
-        out += html.slice(at, Math.max(at, a)) + ' ';
-        at = Math.max(at, b);
-      }
-      return out + html.slice(at);
+      return blankSpans(html, marks);
     },
   };
 }
@@ -190,66 +495,306 @@ const matches = (html, re) => [
   ...html.matchAll(new RegExp(re.source, [...new Set(`${re.flags}gd`)].join(''))),
 ];
 
+/** A CSS escape decoded: `\6f ` is `o`, `\'` is `'`, and an escaped line break is nothing. */
+const cssUnescape = (s) =>
+  s.replace(/\\(?:([0-9a-f]{1,6})[\t\n ]?|(\n)|([\s\S]))/gi, (_, hex, line, ch) =>
+    hex ? codePoint(parseInt(hex, 16)) : line ? '' : ch,
+  );
+
+/** A sheet's line breaks as the browser reads them before anything else: a CR, a CRLF or a form feed is a line feed. */
+const cssNewlines = (sheet) => sheet.replace(/\r\n?|\f/g, '\n');
+
 /**
- * Checks the display-tier homepage against its sources and records what it verified in `L`, the page's ledger.
- * `finish()` is called once every other check in site-figures has marked what it verified too.
+ * A stylesheet's declarations, each with the selector of the rule it sits in, read as the browser reads the sheet:
+ * line breaks are normalised first, a comment opens only outside a string and an unquoted `url()`, a string runs to
+ * its closing quote or the end of its line, and escapes are decoded after the sheet is split, in one pass, so `c\6f ntent` is `content` and `'\''` is a quote inside a string. At-rules are
+ * returned by name `@`, with their prelude as the value.
  */
-function checkHome(ctx) {
-  const { L, page, fail, record, results, scale, sb, sbFigure, MEASURED_1M, WRITE_1M } = ctx;
-  const { baselineTopology, baselineInstance, atRestShown, costSrc, ROOT, SITE_DIR } = ctx;
-  const html = L.html;
-  const n = (x) => x.toLocaleString('en-US');
-
-  /** One element, found once, whose text must be `want`. Marks the group it read. */
-  const exact = (what, re, want, group = 1) => {
-    const all = matches(html, re);
-    if (all.length !== 1) {
-      fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
-      return null;
-    }
-    const m = all[0];
-    const got = textOf(m[group]);
-    if (got !== want) {
-      fail(`${page}'s ${what} reads "${got}", but its sources give "${want}"`);
-      return null;
-    }
-    L.mark(...m.indices[group]);
-    record(what, want);
-    return m;
-  };
-  /** One meta tag, found once by its name, whose content must be `want`. Marks the tag. */
-  const metaExact = (what, key, want) => {
-    const all = tagsOf(html).filter((t) => t.name === 'meta' && metaKeys(t).includes(key));
-    if (all.length !== 1) {
-      fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
+function cssDeclarations(source) {
+  const sheet = cssNewlines(source);
+  const out = [];
+  const stack = [];
+  let buf = '';
+  let depth = 0; // parentheses, inside which `;` and braces end nothing
+  const flush = () => {
+    const text = buf.trim();
+    buf = '';
+    if (text.startsWith('@')) {
+      out.push({ selector: stack.at(-1) ?? '', name: '@', value: cssUnescape(text) });
       return;
     }
-    const got = (all[0].attrs.content ?? '').replace(/\s+/g, ' ').trim();
-    if (got !== want) {
-      fail(`${page}'s ${what} reads "${got}", but its sources give "${want}"`);
-      return;
+    const colon = text.indexOf(':');
+    if (colon === -1 || stack.length === 0) return;
+    out.push({
+      selector: stack.at(-1),
+      name: cssUnescape(text.slice(0, colon)).trim().toLowerCase(),
+      value: text.slice(colon + 1).trim(),
+    });
+  };
+  for (let i = 0; i < sheet.length; i++) {
+    const c = sheet[i];
+    if (c === '/' && sheet[i + 1] === '*') {
+      const close = sheet.indexOf('*/', i + 2);
+      i = close === -1 ? sheet.length : close + 1;
+      buf += ' ';
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < sheet.length && sheet[j] !== c && sheet[j] !== '\n')
+        j += sheet[j] === '\\' ? 2 : 1;
+      buf += c + sheet.slice(i + 1, j) + c;
+      i = j;
+    } else if (c === '\\') {
+      buf += sheet.slice(i, i + 2);
+      i++;
+    } else if (
+      /^url\(\s*[^'"\s)]/i.test(sheet.slice(i, i + 64)) &&
+      !/[\w-]/.test(sheet[i - 1] ?? '')
+    ) {
+      // An unquoted url() is one token to its `)`: a comment does not open inside it.
+      const close = sheet.indexOf(')', i);
+      const end = close === -1 ? sheet.length : close + 1;
+      buf += sheet.slice(i, end);
+      i = end - 1;
+    } else if (c === '(') {
+      depth++;
+      buf += c;
+    } else if (c === ')') {
+      depth = Math.max(0, depth - 1);
+      buf += c;
+    } else if (depth === 0 && c === '{') {
+      const prelude = cssUnescape(buf).replace(/\s+/g, ' ').trim();
+      buf = '';
+      if (prelude.startsWith('@'))
+        out.push({ selector: stack.at(-1) ?? '', name: '@', value: prelude });
+      stack.push(prelude);
+    } else if (depth === 0 && c === '}') {
+      flush();
+      stack.pop();
+    } else if (depth === 0 && c === ';') {
+      flush();
+    } else {
+      buf += c;
     }
-    L.mark(all[0].start, all[0].end);
-    record(what, want);
-  };
+  }
+  return out;
+}
 
-  // ── the page may not carry text a reader cannot see, or text no check reads ─────────────────────────────
-  // A check that verifies hidden text while the visible text is false is worse than none, and so is text that
-  // renders where no check looks. The checks read the page as it renders; what is refused here is what would hide
-  // text from a reader, or put text before one, outside that view. Read from the page itself, not the rendered view.
-  const REFUSED = {
-    style: 'a style element, whose rules no check reads',
-    template: 'a template, whose content a check could read and no reader sees',
-    noscript: 'a noscript element, shown only without a script',
-    details: 'a details element, whose content is shown only when it is opened',
-    dialog: 'a dialog, shown only when it is opened',
-    iframe: 'an embedded document, whose text no check reads',
-    object: 'an embedded object, whose text no check reads',
-    embed: 'an embedded object, whose text no check reads',
-    ol: 'a numbered list, whose numbers the browser draws and no check reads',
+/** The strings in a declaration's value, decoded, and the rest of it, decoded, with each string left as `""`. */
+function cssStrings(value) {
+  const strings = [];
+  const rest = value.replace(/(["'])((?:\\.|(?!\1)[^\\\n])*)\1?/gs, (_, _q, body) => {
+    strings.push(cssUnescape(body));
+    return ' "" ';
+  });
+  return { strings, rest: cssUnescape(rest).replace(/\s+/g, ' ').trim() };
+}
+
+/** A width in a media query, however it is written: `min-width: 48em`, `max-width: 1000px`, `width >= 768px`. */
+const WIDTH_FEATURE =
+  /\(\s*(?:(?:min|max)-width\s*:\s*[\d.]+(?:px|em)|(?:[\d.]+(?:px|em)\s*[<>]=?\s*)?width(?:\s*[<>]=?\s*[\d.]+(?:px|em))?)\s*\)/gi;
+
+/**
+ * One width inside each band the sheet's media queries mark out, for the bands none of `standard` falls in: where a
+ * rule turns on or off between two widths a pass loads, the pass loads one more. Every width feature flips at a
+ * point half a pixel from the width it names (`max-width: 1000px` holds at 1000 and not at 1001), and one width
+ * between each two flips, and one past the last, sees every combination the queries make.
+ */
+function widthsToProbe(source, standard) {
+  const flips = new Set();
+  const sheet = cssUnescape(cssNewlines(source));
+  for (const media of sheet.matchAll(/@media\b([^{]*)\{/gi)) {
+    for (const f of media[1].matchAll(WIDTH_FEATURE)) {
+      const px = (n, unit) => Number(n) * (unit.toLowerCase() === 'em' ? 16 : 1);
+      const feature = /(min|max)-width\s*:\s*([\d.]+)(px|em)/i.exec(f[0]);
+      if (feature) {
+        flips.add(px(feature[2], feature[3]) + (feature[1].toLowerCase() === 'max' ? 0.5 : -0.5));
+        continue;
+      }
+      // width OP n, and n OP width, read apart so a range (`700px <= width < 48em`) gives both: `<=` and `>` flip
+      // above n, `<` and `>=` below it, read from width's side.
+      const flip = (op, n, unit) =>
+        flips.add(px(n, unit) + (op === '<=' || op === '>' ? 0.5 : -0.5));
+      for (const m of f[0].matchAll(/width\s*([<>]=?)\s*([\d.]+)(px|em)/gi)) flip(m[1], m[2], m[3]);
+      for (const m of f[0].matchAll(/([\d.]+)(px|em)\s*([<>]=?)\s*width/gi)) {
+        flip({ '<': '>', '<=': '>=', '>': '<', '>=': '<=' }[m[3]], m[1], m[2]);
+      }
+    }
+  }
+  const sorted = [...flips].sort((a, b) => a - b);
+  const bands = sorted
+    .map((f, k) => [k === 0 ? 0 : sorted[k - 1], f])
+    .concat([[sorted.at(-1) ?? 0, Infinity]]);
+  return bands
+    .filter(([a, b]) => !standard.some((w) => w > a && w < b))
+    .map(([a, b]) => (b === Infinity ? Math.ceil(a) : Math.max(1, Math.round((a + b) / 2))))
+    .filter((w) => w >= 320 && w <= 3840);
+}
+
+/**
+ * How many times each figure stands in what a reader can be given: the text, CDATA and title, and the prose
+ * attributes and descriptions, as the checks read them. site-text-floor counts the same in the page Chrome built;
+ * where the two disagree, these checks and the browser have read the page apart, and nothing the checks held says
+ * what the reader got.
+ */
+function readerFigures(html) {
+  const counts = new Map();
+  const add = (text) => {
+    const glued = [...text.matchAll(GLUED)]
+      .map((m) => m[0])
+      .filter((w) => !NAMES_WITH_DIGITS.has(w.toLowerCase()));
+    for (const figure of [...[...text.matchAll(NUMBER)].map((m) => m[0]), ...glued]) {
+      counts.set(figure, (counts.get(figure) ?? 0) + 1);
+    }
   };
-  for (const t of tagsOf(L.raw)) {
+  for (const t of tokens(html)) {
+    if (t.type === 'text') add(decode(html.slice(t.start, t.end)));
+    else if (t.type === 'cdata') add(html.slice(...t.inner));
+    else if (t.type === 'raw' && ['title', 'textarea'].includes(t.name))
+      add(decode(html.slice(t.start, t.end)));
+    else if (t.type === 'raw' && ['xmp', 'noscript', 'noembed', 'noframes'].includes(t.name))
+      add(html.slice(t.start, t.end));
+    else if (t.type === 'start') for (const v of proseOf(t)) add(v);
+  }
+  return counts;
+}
+
+/**
+ * The strings the sheet may insert. One of arrows, middle dots and spaces cannot change what a figure beside it
+ * says. One with words can (`k` after `100` makes it a hundred thousand, `−` before `$346` makes it a credit), so
+ * each is allowed only in the one rule written for it, and a new one is added here, where its review is.
+ */
+const INSERTED = [{ selector: '.cmeasure .is-win .cm-name::after', text: ' ← smallest' }];
+const MARKS_ONLY = /^[\s\u2190-\u21ff\u00b7]*$/u;
+
+/**
+ * The scripts the homepage may run, by the SHA-256 of their code. A script can put text on the page by more routes
+ * than any pattern lists (a property set by name, a text node, a rule inserted into the sheet, a canvas), so each is
+ * read by a person and pinned here, and a script that changes is refused until it is read again.
+ */
+const PINNED_SCRIPTS = new Map([
+  [
+    '6a8c3e0b88629ee9e905ba892ddd5d14d53e25d6824109b1710c810850ed2ce7',
+    'inline, in the head: applies the theme before first paint',
+  ],
+  [
+    '4ce9aa3a3fc98dad9006d46675161f55502705b7c5ee642158a34f95530b77e3',
+    'inline, in the head: holds each animation until its band is in view',
+  ],
+  [
+    'eb82d403edb08f8b80d9eca8a41c540d84b80a6b8909334b669116796512ac5f',
+    'theme.js: the theme toggle',
+  ],
+  [
+    '3fa92856e2f96cab1660f577f392a805b26a9c3c7293862f2146202875a3158f',
+    'inline, at the foot: plays each animation once',
+  ],
+]);
+
+/**
+ * The characters a reader may be shown: Latin, Greek, zero-width spaces and joiners, and the punctuation, arrows and
+ * symbols the page writes. A right-to-left letter, or a bidirectional mark or override, draws the digits beside it in
+ * another order (`12`, a right-to-left mark and `34` show as `34 12`), and the checks read them in the order they are
+ * written; a letter from another script can pass for a Latin one or a digit (a Cyrillic `О` for `0`); and anything
+ * else is a character these checks were not written to read.
+ */
+const SHOWN_OK =
+  /^[\t\n\f\r\u0020-\u024f\u0370-\u03ff\u200b-\u200d\u2010-\u2027\u2030-\u205e\u20a0-\u20cf\u2100-\u214f\u2190-\u23ff\u2500-\u27bf]$/u;
+
+/** The HTML tags that end SVG or MathML where they stand, so what follows them is HTML to the browser. */
+const BREAKOUT = new Set(
+  'b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small span strong strike sub sup table tt u ul var'.split(
+    ' ',
+  ),
+);
+
+/** The fonts the sheet's two stacks name: a font draws the digits, and one the sheet does not name could draw others. */
+const FONTS = new Set(
+  [
+    '-apple-system',
+    'BlinkMacSystemFont',
+    'Segoe UI',
+    'Helvetica Neue',
+    'Helvetica',
+    'sans-serif',
+    'ui-monospace',
+    'SF Mono',
+    'SFMono-Regular',
+    'Menlo',
+    'Consolas',
+    'Liberation Mono',
+    'monospace',
+  ].map((f) => f.toLowerCase()),
+);
+
+/** The attributes that hold a URL the browser loads or follows. */
+const URL_ATTRS = new Set([
+  'src',
+  'srcset',
+  'href',
+  'xlink:href',
+  'poster',
+  'data',
+  'action',
+  'formaction',
+  'background',
+  'imagesrcset',
+  'cite',
+]);
+
+/** What the homepage may not carry, because it would show a reader text no check reads, or hide what one does. */
+const REFUSED = {
+  style: 'a style element, whose rules no check reads',
+  template: 'a template, whose content a check could read and no reader sees',
+  noscript: 'a noscript element, shown only without a script',
+  noembed: 'a noembed element, whose content no reader sees',
+  noframes: 'a noframes element, whose content no reader sees',
+  xmp: 'an xmp element, which shows its markup as text',
+  textarea: 'a text field, which shows its markup as text',
+  plaintext: 'a plaintext element, which shows the rest of the page as text',
+  details: 'a details element, whose content is shown only when it is opened',
+  dialog: 'a dialog, shown only when it is opened',
+  iframe: 'an embedded document, whose text no check reads',
+  frame: 'an embedded document, whose text no check reads',
+  object: 'an embedded object, whose text no check reads',
+  embed: 'an embedded object, whose text no check reads',
+  img: 'an image, whose pixels no check reads',
+  picture: 'an image, whose pixels no check reads',
+  source: 'an image or media source, whose pixels no check reads',
+  video: 'a video, whose frames no check reads',
+  audio: 'an audio player, which shows times no check reads',
+  canvas: 'a canvas, whose drawing no check reads',
+  image: 'an SVG image, whose pixels no check reads',
+  feimage: 'an SVG filter image, whose pixels no check reads',
+  foreignobject: 'HTML inside SVG, which these checks do not parse',
+  math: 'MathML, which these checks do not parse',
+  bdo: 'a bidirectional override, which draws the digits inside it in another order',
+  bdi: 'a bidirectional isolate, which can draw the digits inside it in another order',
+  marquee: 'a marquee, whose text moves out of view',
+};
+
+/** The homepage's refusals, read from the page itself rather than the rendered view, and from the sheet it loads. */
+function refuse({ L, page, fail, ROOT, SITE_DIR }) {
+  const toks = tokens(L.raw);
+  const after = (t) => toks[toks.indexOf(t) + 1];
+  const titles = toks.filter((t) => t.type === 'start' && t.name === 'title' && !t.foreign);
+  const body = toks.find((t) => t.type === 'start' && t.name === 'body');
+  if (titles.length !== 1 || (body && titles[0].start > body.start)) {
+    fail(`${page} has ${titles.length} titles, or one in its body; it needs one, in its head`);
+  }
+  for (const t of toks) {
+    if (t.type !== 'start') continue;
     if (REFUSED[t.name]) fail(`${page} holds ${REFUSED[t.name]} (<${t.name}>)`);
+    if (
+      t.foreign &&
+      (BREAKOUT.has(t.name) ||
+        (t.name === 'font' && /\b(?:color|face|size)\b/.test(Object.keys(t.attrs).join(' '))))
+    ) {
+      fail(
+        `${page} writes <${t.name}> inside SVG, which ends the drawing where these checks do not`,
+      );
+    }
+    if ('background' in t.attrs)
+      fail(`${page} draws an image with a background attribute (<${t.name}>)`);
     if ('hidden' in t.attrs) {
       fail(
         `${page} hides an element with the hidden attribute, so a check could verify text no reader sees`,
@@ -269,66 +814,418 @@ function checkHome(ctx) {
         `${page} loads a stylesheet other than cloudbitmaps.css (${t.attrs.href}), which no check reads`,
       );
     }
-    if (t.attrs.style !== undefined && !/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)+$/.test(t.attrs.style)) {
+    if (t.name === 'input' && (t.attrs.type ?? '').toLowerCase() === 'image') {
+      fail(`${page} holds an image button, whose pixels no check reads`);
+    }
+    const used = t.attrs.href ?? t.attrs['xlink:href'] ?? '#';
+    if (t.name === 'use' && !used.startsWith('#')) {
+      fail(`${page} draws another file's SVG (<use href="${used}">), which no check reads`);
+    }
+    if (t.attrs.dir !== undefined && t.attrs.dir.trim().toLowerCase() !== 'ltr') {
+      fail(
+        `${page} sets a text direction (<${t.name} dir="${t.attrs.dir}">), which can draw digits in another order`,
+      );
+    }
+    if (t.attrs.style !== undefined && !/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)*$/.test(t.attrs.style)) {
       fail(`${page} sets an inline style other than a custom property (style="${t.attrs.style}")`);
     }
-    const source = t.attrs.src ?? t.attrs.href ?? t.attrs['xlink:href'] ?? '';
-    if ((t.name === 'img' || t.name === 'image') && /^\s*data:/i.test(source)) {
-      fail(`${page} draws an image from a data: URL, whose text no check reads`);
+    for (const [name, value] of Object.entries(t.attrs)) {
+      if (name.startsWith('on')) {
+        fail(`${page} runs a handler (<${t.name} ${name}>), whose code no check reads`);
+      }
+      if (!URL_ATTRS.has(name)) continue;
+      // A srcset lists several; the browser skips the spaces and control characters before each.
+      for (const url of value.split(',').map((u) => u.replace(/[\s\p{Cc}]/gu, '').toLowerCase())) {
+        if (url.startsWith('javascript:'))
+          fail(`${page} runs code from a link (<${t.name} ${name}>)`);
+        if (url.startsWith('data:')) {
+          fail(`${page} loads a data: URL (<${t.name} ${name}>), whose content no check reads`);
+        }
+      }
     }
-    if (t.name === 'script' && /json/i.test(t.attrs.type ?? '')) {
+    if (t.name !== 'script') continue;
+    const type = (t.attrs.type ?? '').trim().toLowerCase();
+    if (/json/.test(type)) {
       fail(`${page} carries structured data, whose figures no check reads`);
+      continue;
+    }
+    if (t.foreign) {
+      fail(`${page} runs a script inside SVG, which these checks do not parse`);
+      continue;
+    }
+    if (type !== '' && type !== 'text/javascript') {
+      fail(`${page} runs a script of type "${type}", which can load code no check reads`);
+    }
+    const src = t.attrs.src;
+    let code;
+    if (src !== undefined) {
+      if (!/^[\w.-]+(?:\/[\w.-]+)*$/.test(src) || src.split('/').includes('..')) {
+        fail(`${page} loads a script from outside the tree (${src}), which no check reads`);
+        continue;
+      }
+      code = fs.readFileSync(path.join(ROOT, SITE_DIR, src), 'utf8');
+    } else {
+      const raw = after(t);
+      code = raw?.type === 'raw' ? L.raw.slice(raw.start, raw.end) : '';
+      if (code.includes('<!--')) {
+        fail(
+          `${page} writes <!-- inside a script, where the browser and these checks would end the script apart`,
+        );
+      }
+    }
+    const hash = crypto.createHash('sha256').update(code).digest('hex');
+    if (!PINNED_SCRIPTS.has(hash)) {
+      fail(
+        `${page} runs a script no one has pinned (${src ?? 'inline'}, sha256 ${hash}): a script can put text on ` +
+          'the page by routes no check reads, so read it, then pin its hash in PINNED_SCRIPTS',
+      );
     }
   }
-  // A script may set classes and state; one that writes text puts words on the page that no check reads.
-  const WRITES_TEXT =
-    /\.(?:textContent|innerText|outerText|innerHTML|outerHTML|nodeValue)\s*\+?=(?!=)|\.(?:append|prepend|before|after|replaceWith|replaceChildren|setHTML|insertAdjacent(?:HTML|Text|Element))\s*\(|\b(?:createTextNode|document\.write(?:ln)?)\s*\(/;
-  for (const m of L.raw.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
-    const src = attrsOf(`<script${m[1]}>`).src;
-    const code = src ? fs.readFileSync(path.join(ROOT, SITE_DIR, src), 'utf8') : m[2];
+
+  // A string the sheet inserts for one rule may not be moved onto the homepage's figures by wearing that rule's
+  // classes: the page may not carry the class a written insertion is scoped to.
+  for (const i of INSERTED) {
+    const scope = /\.([\w-]+)/.exec(i.selector)?.[1];
+    const wearing = toks.find(
+      (t) => t.type === 'start' && (t.attrs.class ?? '').split(/\s+/).includes(scope),
+    );
+    if (wearing) {
+      fail(
+        `${page} carries the class ${scope}, whose rule in the sheet inserts "${i.text.trim()}"`,
+      );
+    }
+  }
+
+  // A reference this does not decode could be a figure (`&frac12;`, or `&sup2` without its `;`) no check reads.
+  for (const [k, t] of toks.entries()) {
+    const title = t.type === 'raw' && t.name === 'title' && !toks[k - 1].foreign;
+    if (t.type !== 'text' && t.type !== 'start' && t.type !== 'end' && !title) continue;
+    for (const m of L.raw.slice(t.start, t.end).matchAll(/&([a-z][a-z0-9]*)/gi)) {
+      if (!(m[1].toLowerCase() in NAMED)) {
+        fail(`${page} writes &${m[1]}, a reference this check does not read`);
+      }
+    }
+  }
+
+  // What a reader is shown, in the characters it is written in: the text, the title and the prose attributes.
+  const shownText = [
+    proseText(rendered(L.raw)),
+    ...titles.map((t) => {
+      const raw = after(t);
+      return raw?.type === 'raw' ? decode(L.raw.slice(raw.start, raw.end)) : '';
+    }),
+    ...toks.filter((t) => t.type === 'start').flatMap(proseOf),
+  ].join(' ');
+  for (const c of new Set(shownText)) {
+    if (!SHOWN_OK.test(c)) {
+      const hex = c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+      const why =
+        /[\p{Bidi_Control}\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u.test(
+          c,
+        )
+          ? 'can draw the digits beside it in another order'
+          : /\p{L}|\p{N}/u.test(c)
+            ? 'can pass for a Latin letter or a digit'
+            : 'these checks were not written to read';
+      fail(`${page} shows U+${hex}, a character that ${why}`);
+    }
+  }
+
+  // The sheet may insert nothing but the strings above, and may not number, quote, mark, turn or draw.
+  const sheet = fs.readFileSync(path.join(ROOT, SITE_DIR, 'cloudbitmaps.css'), 'utf8');
+  const where = `${SITE_DIR}/cloudbitmaps.css`;
+  const CONTENT_WORDS = /^(?:none|normal|open-quote|close-quote|no-open-quote|no-close-quote|"")$/i;
+  // A url() is a url token wherever it stands, even in a selector, and a comment does not open inside one; the reader
+  // above does not follow that, so the sheet may name none, however it is escaped.
+  if (/\burl\s*\(/i.test(sheet) || /\burl\s*\(/i.test(cssUnescape(sheet))) {
+    fail(
+      `${where} names url(, which loads what no check reads and which these checks do not parse as the browser does`,
+    );
+  }
+  const once = new Set();
+  const failOnce = (message) => {
+    if (!once.has(message)) fail(message);
+    once.add(message);
+  };
+  for (const d of cssDeclarations(sheet)) {
+    if (/::?first-(?:letter|line)\b/i.test(d.selector)) {
+      failOnce(`${where} styles a first letter or line apart from its text (${d.selector})`);
+    }
+    if (d.name === '@') {
+      // A condition site-text-floor does not probe shows some readers a page no pass has seen. It loads a width on each
+      // side of every width the sheet names (`widthsToProbe`), both colour schemes, less motion, more contrast, a
+      // touch screen and print, in Chrome.
+      const media = /^@media\b(.*)$/i.exec(d.value);
+      if (media) {
+        // Each query of a list stands alone. Width and motion are probed in every combination the passes make; the
+        // theme is the page's `data-theme` stamp, not a media query; print is probed on its own.
+        for (const query of media[1].split(',')) {
+          const rest = query
+            .replace(WIDTH_FEATURE, '')
+            .replace(/\(prefers-reduced-motion(?:\s*:\s*(?:reduce|no-preference))?\)/gi, '')
+            .replace(/\b(?:and|not|only|screen|all)\b/gi, '')
+            .trim();
+          if (rest !== '' && !/^print$/i.test(query.replace(/\b(?:only|all)\b/gi, '').trim())) {
+            fail(`${where} shows some readers a rule no pass probes (${d.value})`);
+            break;
+          }
+        }
+      }
+      if (/^@container\b/i.test(d.value)) {
+        fail(`${where} sizes a rule to a container, at widths no pass loads (${d.value})`);
+      }
+      if (/^@supports\b/i.test(d.value)) {
+        fail(`${where} shows other browsers a page the Chrome pass does not see (${d.value})`);
+      }
+      if (/^@(?:import|counter-style|font-face)\b/i.test(d.value)) {
+        fail(
+          `${where} pulls in a sheet, a counter style or a font, which no check reads (${d.value})`,
+        );
+      }
+      continue;
+    }
+    const { strings, rest } = cssStrings(d.value.replace(/\s*!important\s*$/i, ''));
+    const says = `${where} ${d.name}: ${d.value}`;
+    // The pass loads one height, and a width only at the widths it lists: a size may follow the width, but only as
+    // it grows or shrinks, never through arithmetic that could make it vanish between two of them.
+    if (/\d(?:[sld]?vh|[sld]?vb|vmin|vmax|cq[whib]|cqmin|cqmax)\b/i.test(rest)) {
+      fail(`${says} follows the viewport's height or a container, which no pass varies`);
+    }
     if (
-      WRITES_TEXT.test(code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1'))
+      /\d[sld]?v[wi]\b/i.test(rest) &&
+      (/\b(?:calc|mod|rem|abs|sign|round|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp)\(/i.test(
+        rest,
+      ) ||
+        /\s[-+]\s|[*/]/.test(rest))
     ) {
-      fail(`${page} runs a script that writes text (${src ?? 'inline'}), which no check reads`);
+      fail(
+        `${says} does arithmetic on the viewport's width, which can make a size vanish between two widths`,
+      );
+    }
+    if (/(?:url|image-set|image|element|paint|cross-fade|-webkit-canvas)\(/i.test(rest)) {
+      fail(`${says} draws an image, whose pixels no check reads`);
+    }
+    if (/(?:linear|radial|conic)-gradient\(/i.test(rest)) {
+      fail(`${says} paints a gradient, which the browser pass cannot read as a ground`);
+    }
+    if (/^(?:animation|animation-iteration-count)$/.test(d.name) && /\binfinite\b/i.test(rest)) {
+      fail(`${says} runs an animation that never ends, at a moment no pass looks`);
+    }
+    if (
+      /^(?:transform|-webkit-transform)$/.test(d.name) &&
+      /\b(?:rotate|rotate[XYZ]|skew[XY]?|perspective|matrix3d|translate3d|translateZ|scale3d|scaleZ|rotate3d)\(|\bscale[XY]?\(\s*-/i.test(
+        rest,
+      )
+    ) {
+      fail(`${says} turns, mirrors or tilts text in a way the browser pass does not measure`);
+    }
+    // A reader state no pass becomes: hovering, focusing, following a link to a part of the page, checking a box.
+    // There a rule may change a colour, a ground, a border, a decoration or an outline, and show the skip link.
+    if (/:(?:hover|focus|focus-visible|focus-within|active|target|checked)\b/i.test(d.selector)) {
+      const allowed =
+        /^(?:color|background|background-color|border-color|text-decoration|outline|outline-offset)$/.test(
+          d.name,
+        ) ||
+        (d.name === 'left' && /^\.skip:focus$/.test(d.selector));
+      if (!allowed || /\btransparent\b|\/\s*0(?:\.0+)?%?\s*\)|,\s*0(?:\.0+)?\s*\)/i.test(rest)) {
+        fail(
+          `${says} changes, for a reader hovering, focusing or following a link, what no pass sees`,
+        );
+      }
+    }
+    switch (d.name) {
+      case 'content': {
+        const words = rest.split(/[\s/]+/).filter((w) => w !== '');
+        const inserted = strings.join('');
+        const allowed =
+          MARKS_ONLY.test(inserted) ||
+          INSERTED.some((i) => i.selector === d.selector && i.text === inserted);
+        if (!words.every((w) => CONTENT_WORDS.test(w)) || !allowed) {
+          fail(`${says} inserts text no check reads`);
+        }
+        break;
+      }
+      case 'quotes':
+        if (!/^(?:none|auto)$/i.test(rest))
+          fail(`${says} puts text in quotation marks no check reads`);
+        break;
+      case 'list-style':
+        if (!/\bnone\b/i.test(rest) || strings.length > 0) {
+          fail(`${says} draws list markers no check reads`);
+        }
+        break;
+      case 'list-style-type':
+      case 'list-style-image':
+        if (!/^none$/i.test(rest)) fail(`${says} draws list markers no check reads`);
+        break;
+      case 'display':
+        if (/\blist-item\b|(?:var|attr|env)\(/i.test(rest)) {
+          fail(`${says} draws list markers no check reads`);
+        }
+        break;
+      case 'counter-reset':
+      case 'counter-increment':
+      case 'counter-set':
+        fail(`${says} counts, for markers no check reads`);
+        break;
+      case 'direction':
+      case 'unicode-bidi':
+      case 'writing-mode':
+        fail(`${says} sets a text direction, which can draw digits in another order`);
+        break;
+      case 'animation-timeline':
+      case 'scroll-timeline':
+      case 'scroll-timeline-name':
+      case 'view-timeline':
+      case 'view-timeline-name':
+      case 'timeline-scope':
+        fail(`${says} ties an animation to scrolling, which a pass reads at one position`);
+        break;
+      case 'text-emphasis':
+      case 'text-emphasis-style':
+        if (!/^none$/i.test(rest)) fail(`${says} draws marks over its text`);
+        break;
+      case 'box-shadow':
+      case '-webkit-text-stroke':
+      case '-webkit-text-stroke-width':
+      case '-webkit-text-stroke-color':
+      case '-webkit-box-reflect':
+      case 'font-size-adjust':
+      case 'hyphenate-character':
+      case 'scale':
+      case 'rotate':
+      case 'translate':
+      case 'perspective':
+      case 'contain':
+      case 'content-visibility':
+      case 'backdrop-filter':
+      case 'mix-blend-mode':
+        if (!/^(?:none|normal|visible|auto)$/i.test(rest)) {
+          fail(`${says} paints, moves or hides text in a way the browser pass does not measure`);
+        }
+        break;
+      case 'outline':
+      case 'outline-width':
+      case 'outline-offset':
+        if (
+          [...rest.matchAll(/([\d.]+)(px|em|rem)?/g)].some(
+            (m) => Number(m[1]) * (m[2] === 'px' || !m[2] ? 1 : 16) > 4,
+          )
+        ) {
+          fail(`${says} draws an outline wide enough to cover text`);
+        }
+        break;
+      case 'text-decoration':
+        if (
+          !/^(?:none|underline|overline|line-through)(?:\s+(?:solid|dotted|dashed))?$/i.test(rest)
+        ) {
+          fail(`${says} draws a decoration wide or coloured enough to cover text`);
+        }
+        break;
+      case 'text-decoration-thickness':
+      case 'text-underline-offset':
+        fail(`${says} draws a decoration wide enough to cover text`);
+        break;
+      case 'line-height':
+        if (/^[\d.]+$/.test(rest) && Number(rest) < 0.9)
+          fail(`${says} lays its lines over each other`);
+        break;
+      case 'paint-order':
+        // A stroke painted first is a halo under the letters; one painted last covers them.
+        if (!/^(?:normal|stroke(?:\s+fill)?(?:\s+markers)?)$/i.test(rest)) {
+          fail(`${says} paints a stroke over its text`);
+        }
+        break;
+      case 'pointer-events':
+        if (/!important/i.test(d.value)) {
+          fail(
+            `${says} would out-rank the browser pass, which makes every box take pointer events while it looks`,
+          );
+        }
+        break;
+      case 'font-family':
+        if (!/^(?:var\(--cb-(?:sans|mono)\)|inherit)$/i.test(rest)) {
+          fail(`${says} sets a font the sheet does not name, whose glyphs no check reads`);
+        }
+        break;
+      case 'font':
+        if (!/^inherit$/i.test(rest))
+          fail(`${says} sets a font the sheet does not name, whose glyphs no check reads`);
+        break;
+      case '--cb-sans':
+      case '--cb-mono':
+        if (
+          d.value.split(',').some(
+            (f) =>
+              !FONTS.has(
+                f
+                  .trim()
+                  .replace(/^['"]|['"]$/g, '')
+                  .toLowerCase(),
+              ),
+          )
+        ) {
+          fail(`${says} names a font the sheet does not, whose glyphs no check reads`);
+        }
+        break;
+      case '-webkit-text-security':
+        if (!/^none$/i.test(rest)) fail(`${says} draws its text as discs`);
+        break;
+      default:
     }
   }
-  // The sheet may insert nothing but a digit-free string: not a number, and not an attribute, a counter or a
-  // variable, whose text no check reads. Nor may it number a list or put words in quotes or markers, or pull in
-  // another sheet. Read as the browser reads it, escapes decoded, so `c\6f ntent` is `content`.
-  const css = fs
-    .readFileSync(path.join(ROOT, SITE_DIR, 'cloudbitmaps.css'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/\\(.)/g, '$1');
-  const STRINGS = `(?:(?:"[^"\\d]*"|'[^'\\d]*')\\s*)+`;
-  const CONTENT_OK = new RegExp(`^(?:none|normal|${STRINGS}(?:/\\s*${STRINGS})?)$`, 'i');
-  const sheetRules = [
-    ['content', (v) => CONTENT_OK.test(v), 'inserts text no check reads'],
-    ['quotes', (v) => /^(?:none|auto)$/i.test(v), 'puts text in quotation marks no check reads'],
-    [
-      'list-style',
-      (v) => /\bnone\b/i.test(v) && !/["']/.test(v),
-      'draws list markers no check reads',
-    ],
-    ['list-style-type', (v) => /^none$/i.test(v), 'draws list markers no check reads'],
-    ['display', (v) => !/\blist-item\b/i.test(v), 'draws list markers no check reads'],
-    ['counter-reset', () => false, 'counts, for markers no check reads'],
-    ['counter-increment', () => false, 'counts, for markers no check reads'],
-    ['counter-set', () => false, 'counts, for markers no check reads'],
-  ];
-  for (const m of css.matchAll(/(?:^|[{;])\s*([a-z-]+)\s*:\s*([^;}]*)/gi)) {
-    const rule = sheetRules.find(([name]) => name === m[1].toLowerCase());
-    const value = m[2].trim().replace(/\s*!important$/i, '');
-    if (rule && !rule[1](value)) fail(`${SITE_DIR}/cloudbitmaps.css ${rule[2]}: ${m[1]}: ${value}`);
-  }
-  if (/@(?:import|counter-style)\b/i.test(css)) {
-    fail(`${SITE_DIR}/cloudbitmaps.css pulls in a sheet or a counter style no check reads`);
-  }
-  // A named reference this does not decode could be a figure (`&frac12;`) that no check reads.
-  for (const m of L.raw.matchAll(/&([a-z][a-z0-9]*);/gi)) {
-    if (!(m[1].toLowerCase() in NAMED))
-      fail(`${page} writes &${m[1]}; , a reference this check does not read`);
-  }
+}
+
+/**
+ * Checks the display-tier homepage against its sources and records what it verified in `L`, the page's ledger.
+ * `finish()` is called once every other check in site-figures has marked what it verified too.
+ */
+function checkHome(ctx) {
+  const { L, page, fail, record, results, scale, sb, sbFigure, MEASURED_1M, WRITE_1M } = ctx;
+  const { baselineTopology, baselineInstance, atRestShown, costSrc, ROOT, SITE_DIR } = ctx;
+  const html = L.html;
+  const n = (x) => x.toLocaleString('en-US');
+
+  /** One element, found once, whose text must be `want`. Marks the group it read. */
+  const exact = (what, re, want, group = 1) => {
+    const all = matches(html, re);
+    if (all.length !== 1) {
+      fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
+      return null;
+    }
+    const m = all[0];
+    // Read from the page itself at the same place: the rendered view blanks a comment to spaces, where a reader
+    // sees nothing at all, so `cloud<!-- -->-native` is one word.
+    const got = textOf(L.raw.slice(...m.indices[group]));
+    if (got !== want) {
+      fail(`${page}'s ${what} reads "${got}", but its sources give "${want}"`);
+      return null;
+    }
+    L.mark(...m.indices[group]);
+    record(what, want);
+    return m;
+  };
+  /** One meta tag, found once by its name, whose content must be `want`. Marks the tag. */
+  const metaExact = (what, key, want) => {
+    // Read from the page's own tags: the rendered view blanks every attribute a check does not match on.
+    const all = tagsOf(L.raw).filter((t) => t.name === 'meta' && metaKeys(t).includes(key));
+    if (all.length !== 1) {
+      fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
+      return;
+    }
+    const got = (all[0].attrs.content ?? '').replace(/\s+/g, ' ').trim();
+    if (got !== want) {
+      fail(`${page}'s ${what} reads "${got}", but its sources give "${want}"`);
+      return;
+    }
+    L.mark(all[0].start, all[0].end);
+    record(what, want);
+  };
+
+  // ── the page may not carry text a reader cannot see, or text no check reads ─────────────────────────────
+  // A check that verifies hidden text while the visible text is false is worse than none, and so is text that
+  // renders where no check looks.
+  refuse({ L, page, fail, ROOT, SITE_DIR });
 
   // ── the generated regions, held byte for byte elsewhere ─────────────────────────────────────────────────
   for (const name of ['HOMESTRIP', 'HOMEGRID', 'HOMECHART', 'HOMEMEMORY']) {
@@ -605,10 +1502,14 @@ function checkHome(ctx) {
       ],
     ],
   ];
+  // The cost band's two, not the memory band's, which is generated and held whole.
+  const generated = matches(html, /<!-- BENCH:([A-Z]+):START -->[\s\S]*?<!-- BENCH:\1:END -->/).map(
+    (m) => [m.index, m.index + m[0].length],
+  );
   const tables = matches(
     html,
-    /<table class="cb-ftable" aria-label="(?:What goes in|What comes out)[^"]*">([\s\S]*?)<\/table>/,
-  );
+    /<table class="cb-ftable" aria-label="[^"]*">([\s\S]*?)<\/table>/,
+  ).filter((m) => !generated.some(([a, b]) => a <= m.index && m.index < b));
   if (tables.length !== TABLES.length)
     fail(`${page}'s cost band holds ${tables.length} tables; this check knows ${TABLES.length}`);
   TABLES.forEach(([name, heads, rows], t) => {
@@ -796,11 +1697,10 @@ function checkHome(ctx) {
       fail(`${page} states the licence ${m[1]}, but package.json says ${licence}`);
     else L.mark(...m.indices[1]);
   }
-  const stage = matches(html, /(Pre-1\.0)\b/i);
-  for (const m of stage) {
-    if (!version.version.startsWith('0.'))
-      fail(`${page} says ${m[1]}, but the packages are at ${version.version}`);
-    else L.mark(...m.indices[1]);
+  // The footer's "Pre-1.0" is held with the claim below, and is true only while the packages are at 0.x; said anywhere
+  // else, it is a figure no check holds, since the words around it could turn it.
+  if (!version.version.startsWith('0.')) {
+    fail(`${page}'s footer says Pre-1.0, but the packages are at ${version.version}`);
   }
   exact(
     'footer',
@@ -822,33 +1722,38 @@ const CLAIM = 'every figure on this page is gated in CI';
  * some check verified. Called once every check in site-figures has marked its spans.
  */
 function finish({ L, page, fail }) {
-  const rest = L.rest()
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ');
-  const proseOf = (t) => [
-    ...PROSE_ATTRS.filter((a) => t.attrs[a] !== undefined).map((a) => t.attrs[a]),
-    ...(isProseMeta(t) ? [t.attrs.content ?? ''] : []),
-  ];
-  const prose = tagsOf(rest).flatMap(proseOf);
-  // Inside a span a check read, the check compared the text, not the attributes: a number in one is unread.
-  for (const [a, b] of L.marks) {
-    const span = L.html.slice(a, b);
-    if (span.startsWith('<!-- BENCH:')) continue;
-    for (const t of tagsOf(span)) {
-      if (t.name === 'meta') continue;
-      for (const v of proseOf(t)) {
-        if ((v.match(NUMBER) ?? []).length > 0) {
-          fail(
-            `${page} states "${v}" in an attribute of an element a check read for its text alone`,
-          );
-        }
+  for (const [a, b] of L.strays) {
+    fail(
+      `${page}: a check read "${L.raw.slice(a, b).slice(0, 60)}" inside an attribute, which no reader sees as text`,
+    );
+  }
+  const rest = L.rest();
+  const regions = L.marks.filter(([a]) => L.html.startsWith('<!-- BENCH:', a));
+  const within = (t, spans) => spans.some(([a, b]) => a <= t.start && t.end <= b);
+  // A tag's prose is read where no check read the element; inside a span a check read, the check compared the text,
+  // not the attributes, so a number there is unread. The generated regions are held whole elsewhere.
+  const prose = [];
+  for (const t of tagsOf(L.raw)) {
+    if (within(t, regions)) continue;
+    if (!within(t, L.marks)) {
+      prose.push(...proseOf(t));
+      continue;
+    }
+    if (t.name === 'meta') continue;
+    for (const v of proseOf(t)) {
+      if ((v.match(NUMBER) ?? []).length > 0) {
+        fail(`${page} states "${v}" in an attribute of an element a check read for its text alone`);
       }
     }
   }
-  const text = [...prose, decode(rest.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' '))].join(
-    ' \n ',
-  );
-  const left = [...text.matchAll(NUMBER)].map((m) => {
+  // The title is shown in the tab, and the rendered view blanks it with the other raw text.
+  const toks = tokens(L.raw);
+  const title = toks
+    .filter((t) => t.type === 'raw' && t.name === 'title')
+    .map((t) => decode(L.raw.slice(t.start, t.end)));
+  const text = [...prose, ...title, proseText(rest)].join(' \n ');
+  const glued = [...text.matchAll(GLUED)].filter((m) => !NAMES_WITH_DIGITS.has(m[0].toLowerCase()));
+  const left = [...text.matchAll(NUMBER), ...glued].map((m) => {
     const around = text
       .slice(Math.max(0, m.index - 40), m.index + m[0].length + 30)
       .replace(/\s+/g, ' ')
@@ -871,18 +1776,39 @@ const plain = (text) =>
     .replace(/\s+/g, ' ')
     .toLowerCase();
 /** Whether a page's text makes the claim, however its case or spacing is written. */
-const claims = (html) => plain(textOf(rendered(html))).includes(plain(CLAIM));
+const claims = (html) => plain(textOf(html)).includes(plain(CLAIM));
+
+/**
+ * Whether a homepage is the display tier's: it makes the claim, or it is built from the display tier's `cb-` classes,
+ * however its hero is named. Neither a reworded hero nor a claim split by a comment turns the ledger off.
+ */
+const isDisplayTier = (html) =>
+  claims(html) ||
+  tagsOf(html).some((t) => (t.attrs.class ?? '').split(/\s+/).some((c) => c.startsWith('cb-')));
 
 module.exports = {
   checkHome,
   finish,
   ledger,
   textOf,
+  proseText,
+  rendered,
   decode,
   tagsOf,
-  metaKey,
+  withoutComments,
+  withoutCode,
+  scanText,
   isProseMeta,
   claims,
+  isDisplayTier,
+  readerFigures,
+  widthsToProbe,
+  PROSE_ATTRS,
+  NON_PROSE_METAS,
+  NUMBER,
+  GLUED,
+  NAMES_WITH_DIGITS,
+  cssUnescape,
   plain,
   CLAIM,
 };

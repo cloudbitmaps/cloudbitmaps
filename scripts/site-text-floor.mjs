@@ -13,7 +13,12 @@
  * tab stop of its own or something enabled and visible inside it, across or down. Chrome makes a scroller focusable
  * by itself; Safari does not. Nor may a box cut off text that runs past it, which the page does not scroll to. And
  * on the page that says every figure on it is gated in CI, every run of text outside its generated regions must be
- * one a reader can see: not hidden, faded to nothing, painted clear, or moved off the page.
+ * one a reader can see: not hidden, faded to nothing, painted clear, moved off the page, or laid under another box,
+ * found where Chrome draws it once every band has played in each colour scheme, and again at rest with less motion
+ * in each, printed, and with scripts off; at the seven widths and at one inside every band the sheet's media queries
+ * mark out; each generated region must show every run it renders; no list item may draw a marker;
+ * and the figures Chrome built into the page, text, attributes and generated content, must be the ones the figures
+ * gate read, so a construct the two parse apart fails wherever it stands.
  * A region is also announced by name, and its names drifted twice as well, a run of panels sharing one and a panel
  * taking a file name from the one above it: each region needs a name of its own on the page, and one inside a panel
  * is named for that panel's head.
@@ -21,11 +26,11 @@
  * It drives Chrome over the DevTools Protocol with Node's global `WebSocket`, as `site-screenshots.mjs` does, so it
  * adds no dependency. CI runs it on `site-next/`.
  *
- * Usage:  node scripts/site-text-floor.mjs [site|site-next]
+ * Usage:  node scripts/site-text-floor.mjs [site|site-next]    (TEXT_FLOOR_PORT=9445 for a second run at once)
  */
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,11 +43,13 @@ if (!['site', 'site-next'].includes(TREE)) {
 }
 const FLOOR = 9.5;
 /** What the display-tier homepage's footer says; a page that says it is also held to showing what it states. */
-const { CLAIM, plain } = createRequire(import.meta.url)('./lib/home-figures.cjs');
+const homeFigures = createRequire(import.meta.url)('./lib/home-figures.cjs');
+const { CLAIM, plain } = homeFigures;
 /** The pages the visibility probe ran on, which the report names so a run that probed none says so. */
 const probed = new Set();
 const WIDTHS = [320, 390, 768, 1024, 1280, 1440, 1920];
-const PORT = 9444;
+/** Chrome's debugging port; two runs at once need two, so a second run is given its own. */
+const PORT = Number(process.env.TEXT_FLOOR_PORT ?? 9444);
 const SITE = join(ROOT, TREE);
 const PAGES = readdirSync(SITE, { withFileTypes: true, recursive: true })
   .filter((e) => e.isFile() && e.name.endsWith('.html'))
@@ -165,51 +172,130 @@ const MEASURE = `(() => {
 })()`;
 
 /**
- * Runs in a page that says every figure on it is gated: each run of text outside the generated regions must be
- * one a reader can see, since a check that verified text a sheet then hides, moves off the page or paints clear
- * proves nothing. The generated regions are held byte for byte elsewhere, and a drawing swapped for the one that
- * fits, or a caption between two frames of an animation, is hidden there on purpose.
+ * Runs in a page that says every figure on it is gated: each run of text must be one a reader can see, since a check
+ * that verified text a sheet then hides, moves off the page or paints clear proves nothing. Colours are read as the
+ * pixel they paint, so any colour a sheet can write is measured. A generated region swaps one drawing for another by
+ * width, and may hold one on a first frame before it plays; once everything has played, every run it renders is held
+ * to the same test, and it must show something.
+ *
+ * With `hit`, each run is also found where it is drawn: every frame it sits in, and then the page, is scrolled to it,
+ * and its first letters must be in view, inside every frame that scrolls or cuts off, with the element there its own,
+ * so a run laid under another box, drawn below its section's ground, fixed out of view or out of any scroll's reach is
+ * not seen. Every element takes pointer events while it looks (the sheet may not out-rank that), so a box that lets
+ * clicks through still counts as covering. And no list item may draw a marker, a number the page's checks do not read.
  */
-const UNSEEN = `(() => {
-  const out = [];
+const unseen = ({ hit }) => `(() => {
+  const out = { unseen: [], blank: [], markers: [] };
   const W = document.documentElement.scrollWidth;
   const H = document.documentElement.scrollHeight;
-  const alpha = (c) => {
-    if (!c || c === 'none' || c === 'transparent') return 0;
-    const m = /rgba?\\(([^)]*)\\)/.exec(c);
-    if (!m) return 1;
-    const parts = m[1].split(/[\\s,/]+/).filter(Boolean);
-    return parts.length > 3 ? parseFloat(parts[3]) : 1;
+  // Any colour a sheet can write, oklch(), color-mix() and system colours included, read as the pixel it paints.
+  const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const rgba = (c) => {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx.fillStyle = c || 'rgba(0, 0, 0, 0)';
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    return [d[0], d[1], d[2], d[3] / 255];
   };
-  let region = 0;
+  const lum = ([r, g, b]) => {
+    const [R, G, B] = [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+  };
+  const probe = document.createElement('style');
+  probe.textContent = '*, *::before, *::after { pointer-events: auto !important; }';
+  if (${hit}) document.head.append(probe);
+  const first = (range) => [...range.getClientRects()].find((q) => q.width > 0 && q.height > 0);
+  /** Every ancestor that scrolls or cuts off what runs past it: a run is seen only inside all of them. */
+  const frames = (el) => {
+    const out = [];
+    for (let f = el.parentElement; f && f !== document.documentElement; f = f.parentElement) {
+      const s = getComputedStyle(f);
+      if (/(auto|scroll|hidden|clip)/.test(s.overflowX + s.overflowY)) out.push(f);
+    }
+    return out;
+  };
+  const point = (range) => {
+    const q = first(range);
+    return q ? [q.left + Math.min(q.width / 2, 8), q.top + q.height / 2] : null;
+  };
+  /**
+   * The run brought to where a reader would read it: each frame it sits in scrolled to it, innermost first, and the
+   * page scrolled to its middle, so scroll-driven styles are read there too. What no scroll reaches stays out of view.
+   */
+  const bring = (range, el) => {
+    for (const f of frames(el)) {
+      const p = point(range);
+      if (!p) return;
+      const r = f.getBoundingClientRect();
+      if (p[0] < r.left || p[0] > r.right) f.scrollLeft += p[0] - (r.left + r.width / 2);
+      if (p[1] < r.top || p[1] > r.bottom) f.scrollTop += p[1] - (r.top + r.height / 2);
+    }
+    const p = point(range);
+    if (p && (p[1] < 150 || p[1] > innerHeight - 150)) {
+      window.scrollTo({ top: p[1] + scrollY - innerHeight / 2, behavior: 'instant' });
+    }
+  };
+  /** Whether the run's first letters are in view, inside every frame they sit in, and the element there is its own. */
+  const found = (range, el) => {
+    const p = point(range);
+    if (!p) return false;
+    const [x, y] = p;
+    if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+    for (const f of frames(el)) {
+      const r = f.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
+    }
+    // A box faded out entirely paints nothing there, so it covers nothing; the first box that paints must be the run's.
+    const faded = (e) => {
+      let o = 1;
+      for (let a = e; a; a = a.parentElement) o *= parseFloat(getComputedStyle(a).opacity);
+      return o < 0.05;
+    };
+    return document.elementsFromPoint(x, y).find((e) => !faded(e)) === el;
+  };
+  const regions = [];
+  const shows = new Map();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if (n.nodeType === Node.COMMENT_NODE) {
-      if (/^ BENCH:[A-Z]+:START $/.test(n.data)) region++;
-      else if (/^ BENCH:[A-Z]+:END $/.test(n.data)) region--;
+      const m = /^ BENCH:([A-Z]+):(START|END) $/.exec(n.data);
+      if (m && m[2] === 'START') {
+        regions.push(m[1]);
+        if (!shows.has(m[1])) shows.set(m[1], false);
+      } else if (m) regions.pop();
       continue;
     }
     const text = n.data.trim();
     const el = n.parentElement;
-    if (!text || region > 0 || !el || el.closest('script, style')) continue;
+    if (!text || !el || el.closest('script, style')) continue;
     // A skip link is off the page until it has focus, which is what a skip link is.
     if (el.closest('a.skip[href^="#"]') && !/\\d/.test(text)) continue;
+    // A generated region swaps one drawing for another by width, so a run it does not render is not unseen; before
+    // anything has played it may hold its drawing on a first frame, so it is read only once everything has.
+    const region = regions.at(-1);
+    if (region !== undefined && (!${hit} || !el.checkVisibility())) continue;
+    // The one run a generated region rests unseen by design: the chunk grid's first-phase caption, which its
+    // animation shows and its final frame fades out. The regions' markup is held byte for byte, so nothing else can
+    // wear the class.
+    if (region !== undefined && el.closest('.k-ph1')) continue;
     const range = document.createRange();
     range.selectNodeContents(n);
+    if (${hit}) bring(range, el);
     const box = range.getBoundingClientRect();
     const cs = getComputedStyle(el);
-    const paint = el instanceof SVGElement ? cs.fill : cs.webkitTextFillColor || cs.color;
-    // Text further along a frame that scrolls is reachable; text past the page's own edge is not.
-    let frame = el.parentElement;
-    while (frame && !/(auto|scroll)/.test(getComputedStyle(frame).overflowX + getComputedStyle(frame).overflowY)) {
-      frame = frame.parentElement;
-    }
+    const svg = el instanceof SVGElement;
+    const paint = rgba(svg ? cs.fill : cs.webkitTextFillColor || cs.color);
     const onPage =
-      frame !== null ||
+      frames(el).some((f) => /(auto|scroll)/.test(getComputedStyle(f).overflowX + getComputedStyle(f).overflowY)) ||
       (box.right + scrollX > 0 && box.bottom + scrollY > 0 && box.left + scrollX < W && box.top + scrollY < H);
-    // Faded, filtered, clipped, masked or blended by anything above it is not seen whole, and the homepage has none.
+    // Faded, filtered, clipped, masked or blended by anything above it is not seen whole, and the homepage has none;
+    // nor is SVG text whose stroke is painted over its letters, or whose fill is faded.
     let opacity = 1;
-    let veiled = false;
+    let veiled =
+      svg &&
+      ((cs.stroke !== 'none' && parseFloat(cs.strokeWidth) > 0.5 && !/^stroke/.test(cs.paintOrder) && rgba(cs.stroke)[3] > 0) ||
+        parseFloat(cs.fillOpacity) < 0.9);
     let ground = null;
     for (let a = el; a; a = a.parentElement) {
       const as = getComputedStyle(a);
@@ -217,27 +303,89 @@ const UNSEEN = `(() => {
       if (as.filter !== 'none' || as.clipPath !== 'none' || as.maskImage !== 'none' || as.mixBlendMode !== 'normal') {
         veiled = true;
       }
-      if (ground === null && alpha(as.backgroundColor) >= 0.9) ground = as.backgroundColor;
+      if (ground === null && rgba(as.backgroundColor)[3] >= 0.9) ground = rgba(as.backgroundColor);
     }
-    ground = ground ?? getComputedStyle(document.documentElement).backgroundColor;
-    const rgb = (c) => (/rgba?\\(([^)]*)\\)/.exec(c)?.[1] ?? '0 0 0').split(/[\\s,/]+/).filter(Boolean).slice(0, 3).map(Number);
-    const lum = (c) => {
-      const [r, g, b] = rgb(c).map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const [hi, lo] = [lum(paint), lum(ground)].sort((a, b) => b - a);
+    ground = ground ?? rgba(getComputedStyle(document.documentElement).backgroundColor);
+    // The letters as painted: their colour laid over the ground at its own alpha.
+    const drawn = paint.slice(0, 3).map((v, k) => v * paint[3] + ground[k] * (1 - paint[3]));
+    const [hi, lo] = [lum(drawn), lum(ground)].sort((a, b) => b - a);
     const contrast = (hi + 0.05) / (lo + 0.05);
     const seen =
       el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
       box.width > 0 && box.height > 0 && onPage &&
-      opacity >= 0.9 && !veiled && cs.webkitTextSecurity !== 'disc' && cs.webkitTextSecurity !== 'circle' &&
-      cs.webkitTextSecurity !== 'square' &&
-      alpha(paint) >= 0.9 && alpha(cs.color) >= 0.9 && contrast >= 3;
-    if (!seen) out.push(text.slice(0, 60));
-    continue;
-    if (!seen) out.push(text.slice(0, 60));
+      opacity >= 0.9 && !veiled && !/^(disc|circle|square)$/.test(cs.webkitTextSecurity) &&
+      paint[3] >= 0.9 && rgba(cs.color)[3] >= 0.9 && contrast >= 3 &&
+      (!${hit} || found(range, el));
+    if (region !== undefined && seen) shows.set(region, true);
+    if (!seen) out.unseen.push((region ? 'BENCH:' + region + ': ' : '') + text.slice(0, 60));
+  }
+  probe.remove();
+  for (const [name, any] of shows) if (!any) out.blank.push(name);
+  for (const el of document.body.querySelectorAll('*')) {
+    const cs = getComputedStyle(el);
+    if (/list-item/.test(cs.display) && (cs.listStyleType !== 'none' || cs.listStyleImage !== 'none')) {
+      out.markers.push(el.tagName.toLowerCase() + ' (' + cs.listStyleType + ')');
+    }
   }
   return out;
+})()`;
+
+/**
+ * Runs in the page, awaited: with `scroll`, scrolls it top to bottom, so every band that plays on sight plays; then
+ * waits until every animation that ends has ended.
+ */
+const settle = ({ scroll }) => `(async () => {
+  if (${scroll}) {
+    for (let y = 0; y <= document.documentElement.scrollHeight; y += innerHeight / 2) {
+      window.scrollTo({ top: y, behavior: 'instant' });
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    }
+  }
+  const deadline = performance.now() + 15000;
+  const moving = () =>
+    document.getAnimations().filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity);
+  while (moving().length > 0) {
+    if (performance.now() > deadline) return moving().length + ' animation(s) still running after 15s';
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  return '';
+})()`;
+
+/**
+ * Runs in the page: how many times each figure stands in what Chrome built, read as the figures gate reads the page
+ * (`readerFigures`): every text node but a script's or a sheet's, the prose attributes and descriptions, and what the
+ * sheet puts before and after each element. Where the two counts disagree, the gate and the browser read the page
+ * apart, and a figure the gate held may not be the figure a reader got.
+ */
+const FIGURES = `(() => {
+  const NUMBER = new RegExp(${JSON.stringify(homeFigures.NUMBER.source)}, 'gu');
+  const GLUED = new RegExp(${JSON.stringify(homeFigures.GLUED.source)}, 'gu');
+  const NAMES = new Set(${JSON.stringify([...homeFigures.NAMES_WITH_DIGITS])});
+  const PROSE = ${JSON.stringify(homeFigures.PROSE_ATTRS)};
+  const NON_PROSE = new Set(${JSON.stringify([...homeFigures.NON_PROSE_METAS])});
+  const counts = {};
+  const add = (text) => {
+    const glued = [...text.matchAll(GLUED)].map((m) => m[0]).filter((w) => !NAMES.has(w.toLowerCase()));
+    for (const f of [...[...text.matchAll(NUMBER)].map((m) => m[0]), ...glued]) counts[f] = (counts[f] ?? 0) + 1;
+  };
+  const walker = document.createTreeWalker(document, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (/^(script|style)$/i.test(n.parentNode?.localName ?? '')) continue;
+    add(n.data);
+  }
+  for (const el of document.querySelectorAll('*')) {
+    for (const a of PROSE) if (el.hasAttribute(a)) add(el.getAttribute(a));
+    if (el.localName === 'meta' && el.hasAttribute('content')) {
+      const keys = ['name', 'property', 'itemprop'].filter((k) => el.hasAttribute(k)).map((k) => el.getAttribute(k).toLowerCase());
+      if (keys.some((k) => !NON_PROSE.has(k))) add(el.getAttribute('content'));
+    }
+    for (const pseudo of ['::before', '::after', '::marker']) {
+      const content = getComputedStyle(el, pseudo).content;
+      for (const m of (content ?? '').matchAll(/"((?:[^"\\\\]|\\\\.)*)"/g)) add(m[1]);
+    }
+  }
+  return counts;
 })()`;
 
 /** Runs in the page once: each landmark region without a name, sharing one, or named for another panel. */
@@ -306,6 +454,8 @@ const proc = spawn(
 
 const problems = [];
 let measured = 0;
+/** The loads at widths between the sheet's breakpoints, on the page that says its figures are gated. */
+let between = 0;
 try {
   const deadline = Date.now() + 15_000;
   for (;;) {
@@ -317,102 +467,164 @@ try {
     if (Date.now() > deadline) throw new Error('Chrome DevTools endpoint never came up');
     await sleep(150);
   }
+  const sheet = existsSync(join(SITE, 'cloudbitmaps.css'))
+    ? readFileSync(join(SITE, 'cloudbitmaps.css'), 'utf8')
+    : '';
   for (const page of PAGES) {
-    for (const width of WIDTHS) {
-      const target = await (
-        await fetch(`http://127.0.0.1:${PORT}/json/new`, { method: 'PUT' })
-      ).json();
-      const cdp = connect(target.webSocketDebuggerUrl);
-      await cdp.ready;
-      await cdp.send('Page.enable');
-      await cdp.send('Emulation.setDeviceMetricsOverride', {
-        width,
-        height: 900,
-        deviceScaleFactor: 1,
-        mobile: false,
-      });
-      const loaded = cdp.once('Page.loadEventFired');
-      await cdp.send('Page.navigate', { url: `file://${join(SITE, page)}` });
-      await loaded;
-      await sleep(150);
-      const { result } = await cdp.send('Runtime.evaluate', {
-        expression: MEASURE,
-        returnByValue: true,
-      });
-      measured++;
-      for (const s of result.value) {
-        problems.push(
-          `${TREE}/${page} at ${width}px: "${s.text}" (${s.cls}) is drawn at ${s.px}px`,
-        );
-      }
-      const layout = (
-        await cdp.send('Runtime.evaluate', { expression: LAYOUT, returnByValue: true })
-      ).result.value;
-      if (layout.sideways > 0) {
-        problems.push(
-          `${TREE}/${page} at ${width}px: the page scrolls sideways by ${layout.sideways}px`,
-        );
-      }
-      for (const el of layout.unreachable) {
-        problems.push(
-          `${TREE}/${page} at ${width}px: ${el} scrolls, and nothing in it can be reached by keyboard`,
-        );
-      }
-      for (const el of layout.clipped) {
-        problems.push(`${TREE}/${page} at ${width}px: ${el} cuts off text that runs past it`);
-      }
-      const claims = (
-        await cdp.send('Runtime.evaluate', {
-          expression:
-            "document.body.innerText.normalize('NFKC').replace(/[\\p{Cf}\\u00ad]/gu, '').replace(/\\s+/g, ' ')" +
-            `.toLowerCase().includes(${JSON.stringify(plain(CLAIM))}) || ` +
-            "document.querySelector('section.cb-stack.is-hero') !== null",
+    // On the page that says its figures are gated, a width inside every band the sheet's media queries mark out too.
+    const bands =
+      page === 'index.html' && homeFigures.isDisplayTier(readFileSync(join(SITE, page), 'utf8'))
+        ? homeFigures.widthsToProbe(sheet, WIDTHS)
+        : [];
+    between += bands.length;
+    for (const width of [...WIDTHS, ...bands]) {
+      // A page the probe cannot finish is a problem with that page, reported beside the others.
+      try {
+        const target = await (
+          await fetch(`http://127.0.0.1:${PORT}/json/new`, { method: 'PUT' })
+        ).json();
+        const cdp = connect(target.webSocketDebuggerUrl);
+        await cdp.ready;
+        await cdp.send('Page.enable');
+        await cdp.send('Emulation.setDeviceMetricsOverride', {
+          width,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        // The first load is in the light scheme wherever this runs, so a local run and CI look at the same page.
+        await cdp.send('Emulation.setEmulatedMedia', {
+          features: [{ name: 'prefers-color-scheme', value: 'light' }],
+        });
+        const loaded = cdp.once('Page.loadEventFired');
+        await cdp.send('Page.navigate', { url: `file://${join(SITE, page)}` });
+        await loaded;
+        await sleep(150);
+        const { result } = await cdp.send('Runtime.evaluate', {
+          expression: MEASURE,
           returnByValue: true,
-        })
-      ).result.value;
-      if (claims) {
-        probed.add(page);
-        const unseen = (
-          await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
-        ).result.value;
-        for (const t of unseen) {
+        });
+        measured++;
+        for (const s of result.value) {
           problems.push(
-            `${TREE}/${page} at ${width}px: "${t}" is on the page, and no reader can see it`,
+            `${TREE}/${page} at ${width}px: "${s.text}" (${s.cls}) is drawn at ${s.px}px`,
           );
         }
-        // And as a reader who asked for less motion gets it, every animation on its final frame, in each colour
-        // scheme: a class that holds text on a first frame while motion is allowed can leave it faded out at
-        // rest, and a rule can hide text in one theme only.
-        for (const scheme of ['light', 'dark']) {
-          await cdp.send('Emulation.setEmulatedMedia', {
-            features: [
-              { name: 'prefers-reduced-motion', value: 'reduce' },
-              { name: 'prefers-color-scheme', value: scheme },
-            ],
-          });
-          const reloaded = cdp.once('Page.loadEventFired');
-          await cdp.send('Page.reload', { ignoreCache: true });
-          await reloaded;
-          await sleep(150);
-          const atRest = (
-            await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
-          ).result.value;
-          for (const t of atRest) {
-            problems.push(
-              `${TREE}/${page} at ${width}px, ${scheme}, with less motion: "${t}" is on the page, and no reader ` +
-                'can see it',
-            );
-          }
-        }
-      }
-      if (width === WIDTHS[0]) {
-        const names = (
-          await cdp.send('Runtime.evaluate', { expression: NAMES, returnByValue: true })
+        const layout = (
+          await cdp.send('Runtime.evaluate', { expression: LAYOUT, returnByValue: true })
         ).result.value;
-        for (const n of names) problems.push(`${TREE}/${page}: ${n}`);
+        if (layout.sideways > 0) {
+          problems.push(
+            `${TREE}/${page} at ${width}px: the page scrolls sideways by ${layout.sideways}px`,
+          );
+        }
+        for (const el of layout.unreachable) {
+          problems.push(
+            `${TREE}/${page} at ${width}px: ${el} scrolls, and nothing in it can be reached by keyboard`,
+          );
+        }
+        for (const el of layout.clipped) {
+          problems.push(`${TREE}/${page} at ${width}px: ${el} cuts off text that runs past it`);
+        }
+        const claims = (
+          await cdp.send('Runtime.evaluate', {
+            expression:
+              "document.body.innerText.normalize('NFKC').replace(/[\\p{Cf}\\u00ad]/gu, '').replace(/\\s+/g, ' ')" +
+              `.toLowerCase().includes(${JSON.stringify(plain(CLAIM))}) || ` +
+              // On the homepage, the display tier's own classes, as the figures gate knows it (`isDisplayTier`).
+              `(${JSON.stringify(page)} === 'index.html' && document.querySelector('[class^="cb-"], [class*=" cb-"]') !== null)`,
+            returnByValue: true,
+          })
+        ).result.value;
+        if (claims) {
+          probed.add(page);
+          const evaluate = async (expression, awaitPromise = false) =>
+            (
+              await cdp.send(
+                'Runtime.evaluate',
+                { expression, returnByValue: true, awaitPromise },
+                60_000,
+              )
+            ).result.value;
+          const report = (when, r, { regions = true } = {}) => {
+            const at = `${TREE}/${page} at ${width}px${when}`;
+            for (const t of r.unseen)
+              problems.push(`${at}: "${t}" is on the page, and no reader can see it`);
+            if (regions) {
+              for (const name of r.blank) {
+                problems.push(
+                  `${at}: the generated region BENCH:${name} shows nothing a reader can see`,
+                );
+              }
+            }
+            for (const m of r.markers)
+              problems.push(`${at}: a list item draws a marker, ${m}, which no check reads`);
+          };
+          const wait = async (when, scroll) => {
+            const stuck = await evaluate(settle({ scroll }), true);
+            if (stuck) problems.push(`${TREE}/${page} at ${width}px${when}: ${stuck}`);
+          };
+          // Once per page: the figures Chrome built against the figures the gate read.
+          if (width === WIDTHS[0]) {
+            const want = homeFigures.readerFigures(readFileSync(join(SITE, page), 'utf8'));
+            const got = await evaluate(FIGURES);
+            for (const f of new Set([...want.keys(), ...Object.keys(got)])) {
+              if ((want.get(f) ?? 0) !== (got[f] ?? 0)) {
+                problems.push(
+                  `${TREE}/${page}: Chrome shows ${f} ${got[f] ?? 0} time(s) and the figures gate read it ` +
+                    `${want.get(f) ?? 0}, so the two read the page apart`,
+                );
+              }
+            }
+          }
+          // As it loads, before anything has played: a band may hold its drawing on a first frame, and the rest shows.
+          report('', await evaluate(unseen({ hit: false })), { regions: false });
+          // Then reloaded as each reader who gets a different page: with motion, played at twenty times the speed, in
+          // each scheme; with less motion, every animation on its final frame, in each scheme; printed; and with scripts
+          // off. In each, once everything has come to rest, every run is found where it is drawn: a fade that starts
+          // late, a rule for one theme, for paper or for a reader without scripts, or text laid under another box.
+          const passes = [
+            { when: ', once played, light', scheme: 'light', motion: true },
+            { when: ', once played, dark', scheme: 'dark', motion: true },
+            { when: ', light, with less motion', scheme: 'light' },
+            { when: ', dark, with less motion', scheme: 'dark' },
+            { when: ', printed', scheme: 'light', media: 'print' },
+            { when: ', with scripts off', scheme: 'light', scriptsOff: true },
+          ];
+          await cdp.send('Animation.enable');
+          for (const pass of passes) {
+            await cdp.send('Emulation.setScriptExecutionDisabled', {
+              value: pass.scriptsOff === true,
+            });
+            await cdp.send('Emulation.setEmulatedMedia', {
+              media: pass.media ?? '',
+              features: [
+                { name: 'prefers-reduced-motion', value: pass.motion ? 'no-preference' : 'reduce' },
+                { name: 'prefers-color-scheme', value: pass.scheme },
+              ],
+            });
+            const reloaded = cdp.once('Page.loadEventFired');
+            await cdp.send('Page.reload', { ignoreCache: true });
+            await reloaded;
+            await sleep(150);
+            await cdp.send('Animation.setPlaybackRate', { playbackRate: pass.motion ? 20 : 1 });
+            await wait(pass.when, pass.motion === true);
+            report(pass.when, await evaluate(unseen({ hit: true })));
+          }
+          await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
+          await cdp.send('Emulation.setScriptExecutionDisabled', { value: false });
+        }
+        if (width === WIDTHS[0]) {
+          const names = (
+            await cdp.send('Runtime.evaluate', { expression: NAMES, returnByValue: true })
+          ).result.value;
+          for (const n of names) problems.push(`${TREE}/${page}: ${n}`);
+        }
+        cdp.close();
+        await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
+      } catch (err) {
+        problems.push(`${TREE}/${page} at ${width}px: the probe could not finish (${err.message})`);
       }
-      cdp.close();
-      await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
     }
   }
 } finally {
@@ -460,7 +672,10 @@ if (problems.length > 0) {
   process.exit(1);
 }
 console.log(
-  `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths), nothing under ${FLOOR}px, ` +
-    'no page scrolling sideways or cutting off text, every region that scrolls reachable by keyboard and named for ' +
-    `itself, and every word in view on ${probed.size ? [...probed].join(', ') : 'no page (none says its figures are gated)'}.`,
+  `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths, and ${between} between ` +
+    `the sheet's breakpoints), nothing under ${FLOOR}px, no page scrolling sideways or cutting off text, every region ` +
+    'that scrolls reachable by keyboard and named for itself, and every word in view, found where it is drawn, once ' +
+    'played and at rest in each colour scheme, printed and with scripts off, every generated region showing, no list ' +
+    'marker, and Chrome reading the same figures as the figures gate, on ' +
+    `${probed.size ? [...probed].join(', ') : 'no page (none says its figures are gated)'}.`,
 );
