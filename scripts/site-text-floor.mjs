@@ -8,6 +8,10 @@
  * which is what the viewBox does to it. A diagram that cannot shrink without breaking the floor keeps a minimum
  * width and scrolls in its own frame instead, and this is what proves the minimum is enough.
  *
+ * The same loads hold the two things that frame depends on, each of which also drifted twice where nothing measured
+ * it: the page itself never scrolls sideways, and a region that does scroll can be reached by keyboard, through a
+ * tab stop of its own or something focusable inside it. Chrome makes a scroller focusable by itself; Safari does not.
+ *
  * It drives Chrome over the DevTools Protocol with Node's global `WebSocket`, as `site-screenshots.mjs` does, so it
  * adds no dependency. CI runs it on `site-next/`.
  *
@@ -139,6 +143,20 @@ const MEASURE = `(() => {
   return small;
 })()`;
 
+/** Runs in the page: how far it scrolls sideways, and each region that scrolls with no way in by keyboard. */
+const LAYOUT = `(() => {
+  const root = document.documentElement;
+  const unreachable = [];
+  for (const el of document.body.querySelectorAll('*')) {
+    const ox = getComputedStyle(el).overflowX;
+    if ((ox !== 'auto' && ox !== 'scroll') || el.scrollWidth <= el.clientWidth + 1) continue;
+    const stop = el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
+    const inside = el.querySelector('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!stop && !inside) unreachable.push((el.tagName.toLowerCase() + '.' + (el.getAttribute('class') || '').trim().split(/\\s+/).join('.')).replace(/\\.$/, ''));
+  }
+  return { sideways: root.scrollWidth - root.clientWidth, unreachable };
+})()`;
+
 const profile = mkdtempSync(join(tmpdir(), 'cb-text-floor-'));
 const proc = spawn(
   chrome,
@@ -196,6 +214,19 @@ try {
           `${TREE}/${page} at ${width}px: "${s.text}" (${s.cls}) is drawn at ${s.px}px`,
         );
       }
+      const layout = (
+        await cdp.send('Runtime.evaluate', { expression: LAYOUT, returnByValue: true })
+      ).result.value;
+      if (layout.sideways > 0) {
+        problems.push(
+          `${TREE}/${page} at ${width}px: the page scrolls sideways by ${layout.sideways}px`,
+        );
+      }
+      for (const el of layout.unreachable) {
+        problems.push(
+          `${TREE}/${page} at ${width}px: ${el} scrolls, and nothing in it can be reached by keyboard`,
+        );
+      }
       cdp.close();
       await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`);
     }
@@ -234,15 +265,17 @@ try {
 }
 
 if (problems.length > 0) {
-  console.error(`site-text-floor: ${problems.length} text run(s) below ${FLOOR}px:`);
+  console.error(`site-text-floor: ${problems.length} problem(s) with what renders:`);
   for (const p of problems.slice(0, 60)) console.error(`  - ${p}`);
   if (problems.length > 60) console.error(`  … and ${problems.length - 60} more`);
   console.error(
     '\n  A diagram that cannot shrink without dropping a label below the floor keeps a minimum width and scrolls\n' +
-      '  in its own frame (`.cb-scroll`): viewBox width × 9.5 ÷ its smallest label size.',
+      '  in its own frame (`.cb-scroll`): viewBox width × 9.5 ÷ its smallest label size. A frame that scrolls\n' +
+      '  takes `tabindex="0"`, and a page must fit its width without scrolling sideways.',
   );
   process.exit(1);
 }
 console.log(
-  `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths), nothing under ${FLOOR}px.`,
+  `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths), nothing under ${FLOOR}px, ` +
+    'no page scrolling sideways, and every region that scrolls reachable by keyboard.',
 );

@@ -261,7 +261,8 @@ SAFE_SCHEME = re.compile(r'^\s*(?:data:|about:|blob:|#)', re.I)
 # An XML namespace names a vocabulary, and nothing fetches it: `createElementNS` takes one.
 NAMESPACES = {'http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml', 'http://www.w3.org/1999/xlink'}
 SVG_HREF = {'image', 'use', 'feimage'}
-CSS_URL = re.compile(r"""(?:https?|wss?):|url\(\s*['"]?\s*//|@import\s+['"]\s*//""", re.I)
+# A scheme starts a token: `rows:` in `grid-template-rows:` ends in `ws:` and names no socket.
+CSS_URL = re.compile(r"""(?<![\w-])(?:https?|wss?):|url\(\s*['"]?\s*//|@import\s+['"]\s*//""", re.I)
 JS_URL = re.compile(r'^(?:(?:https?|wss?):|//[a-z0-9])', re.I)
 
 

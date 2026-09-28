@@ -22,7 +22,7 @@
     <title>CloudBitmaps — a measured intersection, replayed</title>
     <meta
       name="description"
-      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes are read in 24.6 ms — replayed from a recorded benchmark run, not simulated."
+      content="Step through a real intersection of two 2,000,000-id segments. 100 of 2,000 chunk keys align, 3,800 chunk reads never happen, and 3,000 bytes of chunks are fetched in 24.6 ms — replayed from a recorded benchmark run, not simulated."
     />
     <link rel="stylesheet" href="cloudbitmaps.css" />
     <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
@@ -96,9 +96,9 @@
         <p class="replay-badge">Replay of a measured run</p>
         <h1>100 of 2,000 keys. The rest are never read.</h1>
         <p class="hero-lede">
-          Two segments of <strong>2,000,000 ids</strong> each. Intersecting them reads
-          <strong>3,000 bytes</strong> and returns <strong>100,000 ids</strong> in
-          <strong>24.6 ms</strong> — because keys are compared before any bytes move, and
+          Two segments of <strong>2,000,000 ids</strong> each. Intersecting them fetches
+          <strong>3,000 bytes</strong> of chunks and returns <strong>100,000 ids</strong> in
+          <strong>24.6 ms</strong> — because keys are compared before any chunk is requested, and
           <strong>3,800</strong> chunk reads simply never happen.
         </p>
         <p class="note">
@@ -337,13 +337,13 @@
             <article class="beat" data-beat="1">
               <p class="beat-head"><span class="beat-n">02</span> 100 of 2,000 keys align</p>
               <p>
-                Keys are compared before any bytes move. One hundred appear in both segments; 1,900 in each
+                Keys are compared before any chunk is requested. One hundred appear in both segments; 1,900 in each
                 segment appear in only one, and a key that exists in one segment alone cannot contribute to
                 an intersection. <strong>Bytes read at this point: still zero.</strong>
               </p>
             </article>
             <article class="beat" data-beat="2">
-              <p class="beat-head"><span class="beat-n">03</span> 3,000 bytes, 100 chunks</p>
+              <p class="beat-head"><span class="beat-n">03</span> 3,000 chunk bytes, 100 keys</p>
               <p>
                 Only the hundred aligned <em>keys</em> are fetched — 30 bytes per key, 3,000 bytes in all.
                 A key is read from each operand, so two segments make that ~200 GETs of about 15 bytes, not
@@ -393,7 +393,7 @@
                 <tr><th scope="row">Ids per segment<span class="cb-note">benchmark parameter</span></th><td>2,000,000</td></tr>
                 <tr><th scope="row">Chunks fetched<span class="cb-note">metrics sink</span></th><td>100</td></tr>
                 <tr><th scope="row">Chunk reads skipped<span class="cb-note">metrics sink</span></th><td>3,800</td></tr>
-                <tr><th scope="row">Storage bytes read<span class="cb-note">metrics sink</span></th><td>3,000</td></tr>
+                <tr><th scope="row">Chunk bytes read<span class="cb-note">metrics sink, chunk reads only; the index&rsquo;s tail read is not counted</span></th><td>3,000</td></tr>
                 <tr><th scope="row">Wall time<span class="cb-note">timer around the drained stream</span></th><td>24.6 ms</td></tr>
                 <tr><th scope="row">Ids returned<span class="cb-note">counted while draining</span></th><td>100,000</td></tr>
               </tbody>
@@ -490,14 +490,14 @@
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+            <pre tabindex="0"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
 <span class="c"># the memory and local drivers need nothing else</span>
 <span class="c"># for a real backend, add its package:</span>
 <span class="c"># @cloudbitmaps/s3 · @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span></code></pre>
             <div class="install-alt">
               <p class="label">Or reproduce the run above</p>
-              <pre><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
+              <pre tabindex="0"><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
 pnpm install
 pnpm bench:scale  <span class="c"># writes scale-results.json</span></code></pre>
             </div>

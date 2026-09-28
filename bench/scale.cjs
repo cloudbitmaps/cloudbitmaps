@@ -243,7 +243,9 @@ async function measureIntersect() {
     resultCount,
     fetchedChunks: snap.intersect.fetchedChunks,
     skippedChunks: snap.intersect.skippedChunks,
-    storageBytesRead: snap.storage.bytes,
+    // The chunk reads' bytes: the metrics sink counts a storage read only when a chunk is fetched. The tail read
+    // that brings each operand's index, and on a segment this small the whole object with it, is not counted.
+    chunkBytesRead: snap.storage.bytes,
   };
 }
 
@@ -302,6 +304,8 @@ async function parent() {
     write('bench/scale-results.json', JSON.stringify(results, null, 2) + '\n');
     inject('docs/benchmarks.md', mdTable);
     for (const [page, markup] of SITE_PAGES) inject(page, htmlTable(markup));
+    for (const [name, body] of Object.entries(homeRegions(results)))
+      injectNamed(HOME_PAGE, name, body);
   } else {
     console.log(
       '  (dry run — set SCALE_INJECT=1 to persist bench/scale-results.json + inject the docs)',
@@ -407,9 +411,170 @@ function render(r) {
   return { mdTable, htmlTable, summary };
 }
 
+// ── the display-tier homepage's drawings of the run, for site-next/ ─────────────────────────────────────
+// The hero's chunk strip, the chunk band's grid and the memory panel draw this file's figures, so they are rendered
+// from it, as the at-scale table is, and held byte for byte by `pnpm bench:scale:check`. A drawing written by hand
+// can render something other than what its markup appears to say (a pattern transform, a clipped viewBox, a hidden
+// group); one rendered here cannot. The lit cells are the first ones because the intersect run shares a prefix of
+// chunk keys (measureIntersect above), so the drawing's claim that keys 0 to k-1 are fetched is the run's.
+const HOME_PAGE = 'site-next/index.html';
+function homeRegions(r) {
+  const {
+    chunksPerSegment,
+    fetchedChunks,
+    skippedChunks,
+    sharedChunks,
+    chunkBytesRead,
+    intersectMs,
+  } = r.intersect;
+  if (fetchedChunks !== sharedChunks) {
+    throw new Error(
+      `the run fetched ${fetchedChunks} chunks but shares ${sharedChunks}: the drawings assume they agree`,
+    );
+  }
+  const n = (x) => x.toLocaleString('en-US');
+  const perOperand = skippedChunks / 2;
+  const unit = (per, what) => {
+    if (chunksPerSegment % per !== 0 || fetchedChunks % per !== 0) {
+      throw new Error(
+        `${what}: ${per} chunks a cell does not divide ${chunksPerSegment} and ${fetchedChunks}`,
+      );
+    }
+    return [chunksPerSegment / per, fetchedChunks / per];
+  };
+  const PITCH = 29; // each cell 24 wide, 5 apart
+
+  const SQUARE = 50;
+  const [squares, litSquares] = unit(SQUARE, 'the chunk strip');
+  const stripW = squares * PITCH - 5;
+  const strip = [
+    `<div class="cb-strip">`,
+    `  <div class="cb-strip-head">`,
+    `    <p class="label is-hot">${n(fetchedChunks)} chunks fetched</p>`,
+    `    <p class="label">${n(perOperand)} never requested, per operand · one square is ${SQUARE} chunks</p>`,
+    `  </div>`,
+    `  <svg class="cb-svg" viewBox="0 0 ${stripW} 24" role="img" aria-label="The key space of one operand, one square per ${SQUARE} chunks: ${squares} squares, of which the first ${litSquares}, the ${n(fetchedChunks)} chunks whose keys both operands share, are fetched.">`,
+    `    <defs><pattern id="sq" width="${PITCH}" height="24" patternUnits="userSpaceOnUse"><rect class="idle" width="24" height="24" rx="3" /></pattern></defs>`,
+    `    <rect x="0" y="0" width="${stripW}" height="24" fill="url(#sq)" />`,
+    ...Array.from(
+      { length: litSquares },
+      (_, i) => `    <rect class="hot" x="${i * PITCH}" y="0" width="24" height="24" rx="3" />`,
+    ),
+    `  </svg>`,
+    `  <p class="label">Keys compared before any chunk is requested · ${n(chunkBytesRead)} chunk bytes read · ${intersectMs} <span class="u">ms</span> on the memory driver · one recorded run</p>`,
+    `</div>`,
+  ];
+
+  const CELL = 10;
+  const COLS = 40;
+  const [cells, litCells] = unit(CELL, 'the chunk grid');
+  if (cells % COLS !== 0 || litCells > COLS) {
+    throw new Error(
+      `the chunk grid: ${cells} cells do not fill ${COLS} columns, or ${litCells} lit cells pass one row`,
+    );
+  }
+  const gridW = COLS * PITCH - 5;
+  const gridH = (cells / COLS) * 21 - 5;
+  const litW = litCells * PITCH - 5;
+  const grid = [
+    `<div class="cb-grid-head">`,
+    `  <p class="label">Chunk-key space · ${n(chunksPerSegment)} keys · one cell per ${CELL} chunks</p>`,
+    `  <div class="cb-phase" aria-hidden="true">`,
+    `    <p class="label k-ph1">01 Comparing keys · no chunk requested</p>`,
+    `    <p class="label k-ph2">02 Fetched ${n(fetchedChunks)} · ${n(perOperand)} never requested</p>`,
+    `  </div>`,
+    `</div>`,
+    `<div class="cb-grid-body">`,
+    `  <div class="cb-grid-key" style="--lit: ${litW}; --all: ${gridW}" aria-hidden="true">`,
+    `    <p class="label is-hot">${n(fetchedChunks)} fetched · keys 0–${sharedChunks - 1}</p>`,
+    `    <p class="label">${n(perOperand)} never requested, never billed</p>`,
+    `  </div>`,
+    `  <svg class="cb-svg" viewBox="0 -4 ${gridW} ${gridH + 8}" role="img" aria-label="The key space of one operand, one cell per ${CELL} chunks: ${cells} cells, of which the first ${litCells}, the ${n(fetchedChunks)} chunks whose keys both operands share, are fetched. The other ${n(perOperand)} chunks are never requested.">`,
+    `    <defs><pattern id="ci" width="${PITCH}" height="21" patternUnits="userSpaceOnUse"><rect class="idle" width="24" height="16" rx="2" /></pattern></defs>`,
+    `    <rect x="0" y="0" width="${gridW}" height="${gridH}" fill="url(#ci)" />`,
+    `    <g class="k-hot">`,
+    ...Array.from(
+      { length: litCells },
+      (_, i) =>
+        `      <rect class="hot" x="${i * PITCH}" y="0" width="24" height="16" rx="2" style="--i: ${i}" />`,
+    ),
+    `    </g>`,
+    `    <rect class="k-scan scanbar" x="0" y="-4" width="3" height="${gridH + 8}" style="--sweep: ${gridW - 3}px" />`,
+    `  </svg>`,
+    `</div>`,
+  ];
+
+  const HEAP_AXIS = 10;
+  const TRACK = 140;
+  const scan = (ms) => (ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toPrecision(3)} s`);
+  const bars = r.fleets.map((f) => {
+    if (f.heapRetainedMiB > HEAP_AXIS) {
+      throw new Error(
+        `the ${f.n}-segment fleet's heap, ${f.heapRetainedMiB} MiB, is past the ${HEAP_AXIS} MiB axis`,
+      );
+    }
+    const h = Math.max(1, Math.round((f.heapRetainedMiB / HEAP_AXIS) * TRACK));
+    return [
+      `      <div class="cb-hbar">`,
+      `        <p class="cb-figure-m">${f.heapRetainedMiB.toFixed(1)} MiB</p>`,
+      `        <svg class="cb-vbar" viewBox="0 0 96 ${TRACK}" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="96" height="${TRACK}" /><rect class="heap" y="${TRACK - h}" width="96" height="${h}" /></svg>`,
+      `        <p class="label">${n(f.n)} segments</p>`,
+      `      </div>`,
+    ].join('\n');
+  });
+  const memory = [
+    `<div class="cb-seam cb-cols-2 cb-memory">`,
+    `  <div>`,
+    `    <p class="label">Retained heap · measured · 0–${HEAP_AXIS} <span class="u">MiB</span> axis</p>`,
+    `    <div class="cb-hbars">`,
+    ...bars,
+    `    </div>`,
+    `  </div>`,
+    `  <div>`,
+    `    <p class="label">The two that do grow</p>`,
+    `    <table class="cb-ftable" aria-label="Discovery scan and peak RSS, per fleet">`,
+    `      <thead>`,
+    `        <tr><th scope="col">Fleet</th><th scope="col">Discovery scan</th><th scope="col">Peak RSS, <span class="u">MiB</span></th></tr>`,
+    `      </thead>`,
+    `      <tbody>`,
+    ...r.fleets.map(
+      (f) =>
+        `        <tr><th scope="row">${n(f.n)} segments</th><td>${scan(f.discoveryMs)}</td><td>${f.rssPeakMiB.toFixed(1)}</td></tr>`,
+    ),
+    `      </tbody>`,
+    `    </table>`,
+    `  </div>`,
+    `</div>`,
+  ];
+  return { HOMESTRIP: strip.join('\n'), HOMEGRID: grid.join('\n'), HOMEMEMORY: memory.join('\n') };
+}
+
 // ── write / inject (same markers convention as bench/run.cjs) ─────────────────────────────────────────
 const SCALE_START = '<!-- BENCH:SCALE:START -->';
 const SCALE_END = '<!-- BENCH:SCALE:END -->';
+
+/** A page's text, split around one named BENCH region: what comes before, the region itself, and what follows. */
+function namedRegion(rel, name) {
+  const s = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const start = `<!-- BENCH:${name}:START -->`;
+  const end = `<!-- BENCH:${name}:END -->`;
+  const i = s.indexOf(start);
+  const j = s.indexOf(end);
+  if (i === -1 || j === -1 || j < i) throw new Error(`missing BENCH:${name} markers in ${rel}`);
+  if (s.indexOf(start, i + 1) !== -1 || s.indexOf(end, j + 1) !== -1) {
+    throw new Error(`more than one BENCH:${name} region in ${rel}`);
+  }
+  return {
+    before: s.slice(0, i + start.length),
+    region: s.slice(i + start.length, j),
+    after: s.slice(j),
+  };
+}
+function injectNamed(rel, name, body) {
+  const { before, after } = namedRegion(rel, name);
+  fs.writeFileSync(path.join(ROOT, rel), before + '\n' + body + '\n' + after);
+  log(`${rel} (${name})`);
+}
 
 /** A page's text, split around its at-scale region: what comes before, the region itself, and what follows. */
 function scaleRegion(rel) {
@@ -460,6 +625,8 @@ function doInject() {
   console.log('\n' + summary + '\n');
   inject('docs/benchmarks.md', mdTable);
   for (const [page, markup] of SITE_PAGES) inject(page, htmlTable(markup));
+  for (const [name, body] of Object.entries(homeRegions(results)))
+    injectNamed(HOME_PAGE, name, body);
 }
 
 // ── check-only: the published table is exactly what the committed results render ─────────────────────
@@ -474,6 +641,16 @@ function doCheck() {
     ['docs/benchmarks.md', mdTable],
     ...SITE_PAGES.map(([page, markup]) => [page, htmlTable(markup)]),
   ].filter(([rel, body]) => scaleRegion(rel).region !== '\n' + body + '\n');
+  const staleHome = Object.entries(homeRegions(results)).filter(
+    ([name, body]) => namedRegion(HOME_PAGE, name).region !== '\n' + body + '\n',
+  );
+  if (staleHome.length > 0) {
+    console.error(
+      `bench:scale:check: ${staleHome.map(([name]) => name).join(', ')} in ${HOME_PAGE} ` +
+        'is not what bench/scale-results.json renders. Run `pnpm bench:scale:render` rather than editing it by hand.',
+    );
+    process.exit(1);
+  }
   if (stale.length > 0) {
     console.error(
       `bench:scale:check: the at-scale table in ${stale.map(([rel]) => rel).join(' and ')} is not what ` +
@@ -481,7 +658,9 @@ function doCheck() {
     );
     process.exit(1);
   }
-  console.log('bench:scale:check: every at-scale table is what bench/scale-results.json renders.');
+  console.log(
+    "bench:scale:check: every at-scale table, and the homepage's drawings of the run, are what bench/scale-results.json renders.",
+  );
 }
 
 // ── entry ────────────────────────────────────────────────────────────────────────────────────────────

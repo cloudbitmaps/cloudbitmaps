@@ -109,7 +109,7 @@
 
           <aside class="install">
             <div class="install-head label"><span>Install &amp; verify</span><span>OIDC + SLSA</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+            <pre tabindex="0"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
 <span class="c"># the tarball came from the commit it claims</span>
 npm audit signatures</code></pre>
@@ -140,7 +140,7 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">quickstart.ts</span><span class="label">No setup</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
+            <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { CloudRoaring, MemoryStorage }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> store = <span class="k">new</span> CloudRoaring({ storage: <span class="k">new</span> MemoryStorage() });
@@ -156,7 +156,7 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">production.ts</span><span class="label">Only the drivers</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
+            <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { CloudRoaring } <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 <span class="k">import</span> { S3Storage } <span class="k">from</span> <span class="s">'@cloudbitmaps/s3'</span>;
 
 <span class="c">// one bucket holds both the data and the pointer, stated once</span>
@@ -319,7 +319,7 @@ npm audit signatures</code></pre>
             <div class="tpanel-head">
               <span class="label">load.ts</span><span class="label">Per object, not per id</span>
             </div>
-            <pre class="code-plain"><code><span class="c">// `store` from above — the backend is already wired.</span>
+            <pre tabindex="0" class="code-plain"><code><span class="c">// `store` from above — the backend is already wired.</span>
 
 <span class="k">const</span> ref = { namespace: <span class="s">'audience'</span>, segment: <span class="s">'high-value'</span> };
 
@@ -334,7 +334,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
             <div class="tpanel-head">
               <span class="label">audience.ts</span><span class="label">The bytes never come to you</span>
             </div>
-            <pre class="code-plain"><code><span class="k">const</span> seg = (name) =&gt;
+            <pre tabindex="0" class="code-plain"><code><span class="k">const</span> seg = (name) =&gt;
   store.segment(name, { namespace: <span class="s">'audience'</span> });
 
 <span class="k">const</span> vips = seg(<span class="s">'high-value'</span>);
@@ -373,7 +373,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
             <div class="tpanel-head">
               <span class="label">dedup.ts</span><span class="label">No per-user timers</span>
             </div>
-            <pre class="code-plain"><code><span class="c">// The bucket IS the re-eligibility rule.</span>
+            <pre tabindex="0" class="code-plain"><code><span class="c">// The bucket IS the re-eligibility rule.</span>
 <span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: localDay };
 <span class="k">const</span> sent = store.segment(localDay, { namespace: <span class="s">'sent-daily'</span> });
 
@@ -388,7 +388,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
             <div class="tpanel-head">
               <span class="label">retire.ts</span><span class="label">One call, ordered correctly</span>
             </div>
-            <pre class="code-plain"><code><span class="c">// The namespace is part of the identity — omit it</span>
+            <pre tabindex="0" class="code-plain"><code><span class="c">// The namespace is part of the identity — omit it</span>
 <span class="c">// and you silently address a different segment.</span>
 <span class="k">const</span> ref = { namespace: <span class="s">'sent-daily'</span>, segment: oldDay };
 
@@ -533,7 +533,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
             <div class="tpanel-head">
               <span class="label">estimate.ts</span><span class="label">Pure — touches nothing</span>
             </div>
-            <pre class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
+            <pre tabindex="0" class="code-plain"><code><span class="k">import</span> { estimateCost, AWS_US_EAST_1_ONDEMAND }
   <span class="k">from</span> <span class="s">'@cloudbitmaps/roaring'</span>;
 
 <span class="k">const</span> bill = estimateCost({
@@ -549,9 +549,9 @@ bill.redisCrossover.readsPerSec;</code></pre>
               <span class="rl-what">Schedule the retention sweep</span>
               <span class="rl-fig">retireExpired()</span>
               <span class="rl-note">
-                The only scheduled work there is — no daemon, no compaction pass, no lifecycle worker. An
-                EventBridge rule, a Kubernetes <span class="m">CronJob</span> or a queue job all do; nothing
-                here starts a timer.
+                Housekeeping you schedule if you want it, with <span class="m">gcOrphanGenerations</span> for the
+                generations a combine keeps; there is no daemon to run. An EventBridge rule, a Kubernetes
+                <span class="m">CronJob</span> or a queue job all do; nothing here starts a timer.
               </span>
             </li>
             <li>
@@ -654,7 +654,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
           </div>
           <div class="install">
             <div class="install-head label"><span>Install</span><span>A codec and a storage</span></div>
-            <pre><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+            <pre tabindex="0"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
 
 <span class="c"># the codec you want, and the storage you have.</span>
 <span class="c"># also: @cloudbitmaps/gcs, @cloudbitmaps/azure-blob</span></code></pre>

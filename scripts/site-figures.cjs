@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gates the published figures on the site's pages — the `PAGES` list below: six site pages, `llms.txt`, the two
+ * Gates the published figures on the site's pages — the `PAGES` list below: seven site pages, `llms.txt`, the two
  * READMEs, the roadmap and `docs/benchmarks.md`, which quote the same figures — against their sources.
  *
  * WHY THIS SCRIPT EXISTS
@@ -198,6 +198,7 @@ if (calRows.some((r) => /Dynamo/i.test(r.term))) {
 // the run's committed evidence by the module that also holds the run's report to it, so the site and the report
 // take a run's numbers from one place, and a figure cannot be retyped here without the evidence to back it.
 const calibration = require('../bench/lib/calibration-figures.cjs');
+const homeFigures = require('./lib/home-figures.cjs');
 const calibrationRuns = calibration.evidenceFiles(ROOT);
 let singleBucket = null;
 if (calibrationRuns.length === 0) {
@@ -445,6 +446,30 @@ if (!STATES_THE_JULY_RUN) {
 const speaksFor = (scope, rel) =>
   (scope?.onlyOn === undefined || scope.onlyOn.includes(rel)) &&
   !(scope?.offTree && rel.startsWith(`${SITE_DIR}/`));
+// Off this tree's pages means off every file in it, not only the ones `PAGES` scans: a July figure on /demo, on a
+// nested page or in llms.txt describes that older release just the same, and a run id or a date is not money, so
+// the inverse scan below would never see one.
+if (!STATES_THE_JULY_RUN) {
+  const offTree = anchors.filter(([, v, scope]) => v && scope?.offTree);
+  const filesUnder = (dir) =>
+    fs
+      .readdirSync(dir, { withFileTypes: true })
+      .flatMap((e) =>
+        e.isDirectory() ? filesUnder(path.join(dir, e.name)) : [path.join(dir, e.name)],
+      );
+  for (const file of filesUnder(path.join(ROOT, SITE_DIR))) {
+    if (!/\.(html|txt|xml|js|css|md)$/.test(file)) continue;
+    const rel = path.relative(ROOT, file);
+    const text = homeFigures.decode(fs.readFileSync(file, 'utf8'));
+    for (const [name, v] of offTree) {
+      if (text.includes(v))
+        fail(
+          `${rel} states ${name} (${v}), from a run of a design that no longer ships; ` +
+            `${SITE_DIR}/ describes the current release only`,
+        );
+    }
+  }
+}
 
 // ── the inverse check now covers HOME as well as /benchmarks ───────────────────────────────────────────────
 // The rebuilt home page states, in its own words, that "every money figure and rate on this site is checked in
@@ -482,6 +507,7 @@ const PAGES = [
   { rel: `${SITE_DIR}/usage.html`, requireAll: false },
   { rel: `${SITE_DIR}/flavors.html`, requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: `${SITE_DIR}/flavors/roaring.html`, requireAll: false },
+  { rel: `${SITE_DIR}/demo.html`, requireAll: false },
   {
     rel: `${SITE_DIR}/llms.txt`,
     requireAll: false,
@@ -987,6 +1013,11 @@ const specAnchors = [];
   }
 
   const homeHtml = fs.readFileSync(path.join(SITE, 'index.html'), 'utf8');
+  // Which trees carry the display-tier homepage is a per-tree fact, stated here, so that moving site-next/ to site/
+  // flips an entry rather than silently dropping a check. On that homepage every check marks the span it verified in
+  // the page's ledger, and scripts/lib/home-figures.cjs then fails on any figure no check marked.
+  const HOME_IS_DISPLAY_TIER = { site: false, 'site-next': true }[SITE_DIR];
+  const homeLedger = HOME_IS_DISPLAY_TIER ? homeFigures.ledger(homeHtml) : null;
 
   // ── no warm-scan ceiling to publish, and the site must not claim one ───────────────────────────────────
   // This block used to derive `DEFAULT_MAX_WARM_SCAN_BYTES` and gate the MiB figure /architecture and /usage
@@ -1117,441 +1148,25 @@ const specAnchors = [];
   }
 
   // ── the display-tier homepage: every figure it states, held to the file it comes from ─────────────────
-  // site-next/'s homepage quotes its figures in cells and table rows, where a figure stands without the sentence that
-  // would let the inverse check above judge it, and any figure some source accounts for passes that check anywhere.
-  // So each one is held to its own source by where it stands. Which trees carry which homepage is a per-tree fact,
-  // stated here, so that moving site-next/ to site/ flips an entry rather than silently dropping a check.
-  const HOME_IS_DISPLAY_TIER = { site: false, 'site-next': true }[SITE_DIR];
-  const scale = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8'));
-  const textOf = (html) =>
-    html
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;|&#160;/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  const expect = (what, got, want) => {
-    if (got !== want) {
-      fail(
-        `${SITE_DIR}/index.html's ${what} shows ${got ?? '(none)'}, but its source gives ${want}`,
-      );
-    } else {
-      specAnchors.push([`Home · ${what}`, want]);
-    }
-  };
   if (HOME_IS_DISPLAY_TIER) {
-    const atRestMo = `$${atRestShown}/mo`;
-    const redisMo = `$${results.redisBaselineUSD}/mo`;
-    const pct = `${results.atRest.pctOfRedis}%`;
-    const rate = `${results.readCrossoverPerSec}/s`;
-    const intersectRate = singleBucket
-      ? `${singleBucket.parity.intersectsPerSec.toFixed(1)}/s`
-      : null;
-
-    // A chunk drawing, counted from the drawing: the idle pattern's pitch and cell size give how many cells the key
-    // space draws, and the lit cells are drawn one by one, each in its place: the first ones, because the run's
-    // operands share the first `sharedChunks` chunk keys (bench/scale.cjs builds them so). One cell stands for the
-    // chunks its data attribute says, and its own label must say the same: a reader is told the unit the counts are
-    // multiplied by, and the check multiplies by that one.
-    const { chunksPerSegment, fetchedChunks, skippedChunks, sharedChunks } = scale.intersect;
-    const perOperand = (skippedChunks / 2).toLocaleString('en-US');
-    const total = chunksPerSegment.toLocaleString('en-US');
-    const chunkDrawing = (what, block, id, unitAttr, unitWords) => {
-      const per = Number(new RegExp(`${unitAttr}="(\\d+)"`).exec(block)?.[1] ?? NaN);
-      const pattern = new RegExp(
-        `<pattern id="${id}" width="(\\d+)" height="(\\d+)"[^>]*>\\s*<rect class="idle" width="(\\d+)" height="(\\d+)"`,
-      ).exec(block);
-      const [pitchX, pitchY, cellW, cellH] = (pattern ?? []).slice(1).map(Number);
-      const grid = new RegExp(
-        `<rect x="0" y="0" width="(\\d+)" height="(\\d+)" fill="url\\(#${id}\\)"`,
-      ).exec(block);
-      const drawn = grid
-        ? ((Number(grid[1]) + pitchX - cellW) / pitchX) *
-          ((Number(grid[2]) + pitchY - cellH) / pitchY)
-        : NaN;
-      const hot = [
-        ...block.matchAll(/<rect class="hot" x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)"/g),
-      ];
-      const misplaced = hot.findIndex(
-        ([, x, y, w, h], i) =>
-          Number(x) !== i * pitchX || Number(y) !== 0 || Number(w) !== cellW || Number(h) !== cellH,
-      );
-      expect(`${what}'s stated unit`, unitWords.exec(textOf(block))?.[1] ?? null, String(per));
-      expect(`${what}, chunks drawn`, String(drawn * per), String(chunksPerSegment));
-      expect(`${what}, chunks lit`, String(hot.length * per), String(fetchedChunks));
-      if (misplaced !== -1) {
-        fail(
-          `${SITE_DIR}/index.html's ${what} draws lit cell ${misplaced + 1} out of place: the lit cells are the ` +
-            'first ones in the first row, one cell each, because the operands share the first chunk keys',
-        );
-      }
-      return per;
-    };
-
-    // The field. First its chunk strip: the drawing, the two labels over it, and the run it is from.
-    const strip = /<div class="cb-strip">([\s\S]*?)<\/svg>([\s\S]*?)<\/div>/.exec(homeHtml);
-    const perSquare = chunkDrawing(
-      'chunk strip',
-      strip?.[1] ?? '',
-      'sq',
-      'data-chunks-per-square',
-      /one square is (\d+) chunks/,
-    );
-    const stripHead = [
-      ...(strip?.[1] ?? '').matchAll(/<p class="label[^"]*">([\s\S]*?)<\/p>/g),
-    ].map((m) => textOf(m[1]));
-    expect("chunk strip's fetched label", stripHead[0] ?? null, `${fetchedChunks} chunks fetched`);
-    expect(
-      "chunk strip's other label",
-      stripHead[1] ?? null,
-      `${perOperand} never requested, per operand · one square is ${perSquare} chunks`,
-    );
-    const stripFoot = textOf(/<p class="label">([\s\S]*?)<\/p>/.exec(strip?.[2] ?? '')?.[1] ?? '');
-    for (const [what, want] of [
-      [
-        'bytes read',
-        `${scale.intersect.storageBytesRead.toLocaleString('en-US')} storage bytes read`,
-      ],
-      ['time', `${scale.intersect.intersectMs} ms on the memory driver`],
-    ]) {
-      expect(`chunk strip's ${what}`, stripFoot.includes(want) ? want : stripFoot, want);
-    }
-
-    // Then its four figures. They carry no label, so each is known by its caption, which says what it is: a figure
-    // moved to another caption's cell fails here, as a retyped one does.
-    const heroRow =
-      /<div class="cb-seam cb-cols-4">([\s\S]*?)<\/div>\s*<div class="cb-seam cb-cols-2">/.exec(
-        homeHtml,
-      );
-    const heroCells = [
-      ...(heroRow?.[1] ?? '').matchAll(
-        /<p class="cb-figure-xl">([\s\S]*?)<\/p>\s*<p class="cb-note">([\s\S]*?)<\/p>/g,
-      ),
-    ].map((m) => [textOf(m[2]), textOf(m[1])]);
-    for (const [what, caption, want] of [
-      ['at rest', /^1\.2 GiB at rest, no traffic$/, atRestMo],
-      ['the cluster', /^a Redis-HA cluster, standing\b/, redisMo],
-      ['the share', /^what we cost against that line\b/, pct],
-      ['where we lose', /\babove which the flat cluster is cheaper\b/, rate],
-    ]) {
-      const cells = heroCells.filter(([c]) => caption.test(c));
-      if (cells.length !== 1) {
-        fail(
-          `${SITE_DIR}/index.html's hero has ${cells.length} figures captioned as ${what}; it should have one`,
-        );
-        continue;
-      }
-      expect(`hero figure, ${what}`, cells[0][1], want);
-    }
-    if (heroCells.length !== 4) {
-      fail(`${SITE_DIR}/index.html's hero figure row has ${heroCells.length} cells, not 4`);
-    }
-
-    // The cost band's two tables: what goes in, each input marked measured, quoted or chosen, and what comes out,
-    // each figure beside its arithmetic. The heads pick the source, the value is held to it, and every derived row's
-    // formula is rebuilt here from the same inputs and recomputed, so the sum a reader can redo is the true one.
-    const costSrc = fs.readFileSync(COST, 'utf8');
-    const prices =
-      /AWS_US_EAST_1_ONDEMAND[^=]*=\s*deepFreeze\(\{[\s\S]*?storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\}/.exec(
-        costSrc,
-      );
-    const hours = Number(/const HOURS_PER_MONTH = (\d+);/.exec(costSrc)?.[1] ?? NaN);
-    if (!prices || !Number.isFinite(hours)) {
-      fail(
-        'core/cost.ts no longer states the us-east-1 prices or HOURS_PER_MONTH in the form this check reads',
-      );
-    }
-    if (results.pricing !== 'aws-us-east-1-ondemand') {
-      fail(
-        `bench/results.json is priced at ${results.pricing}, but the cost band says AWS us-east-1 list prices`,
-      );
-    }
-    const [getM, putM, storeGiB] = (prices ?? []).slice(1).map(Number);
-    const seconds = hours * 3600;
-    const usd2 = (n) => `$${n.toFixed(2)}`;
-    const { sizeGiB, monthlyUSD: atRestUSD } = results.atRest;
-    const REDIS_USD = results.redisBaselineUSD;
-    const gets = Number(singleBucket?.measuredGets ?? NaN);
-    const puts = Number(singleBucket?.putsPerSingle ?? NaN);
-    const writeGets = Number(singleBucket?.getsPerLoad ?? NaN);
-    const nodes = (baselineTopology ?? '').match(/\d+/g)?.reduce((n, d) => n + Number(d), 0) ?? NaN;
-    const near = (x, y) => Math.abs(x - y) < 1e-9;
-    // Each derived figure, recomputed from its inputs: a formula shown on the page must also be true.
-    for (const [what, got, want] of [
-      ['at rest', sizeGiB * storeGiB, atRestUSD],
-      [
-        'a cold intersect per million',
-        gets * getM,
-        Number(singleBucketFigure(MEASURED_1M)?.slice(1)),
-      ],
-      [
-        'a write and publish per million',
-        puts * putM + writeGets * getM,
-        Number(singleBucketFigure(WRITE_1M)?.slice(1)),
-      ],
-    ]) {
-      if (!near(Number(got.toFixed(4)), Number(want.toFixed(4)))) {
-        fail(`the cost band's arithmetic for ${what} gives ${got}, but its source says ${want}`);
-      }
-    }
-    if (
-      ((atRestUSD / REDIS_USD) * 100).toFixed(3) !== String(results.atRest.pctOfRedis.toFixed(3))
-    ) {
-      fail(
-        `$${atRestUSD} ÷ $${REDIS_USD} is not the published share, ${results.atRest.pctOfRedis}%`,
-      );
-    }
-    if (
-      (REDIS_USD / ((getM / 1e6) * seconds)).toFixed(2) !== results.readCrossoverPerSec.toFixed(2)
-    ) {
-      fail(`$${REDIS_USD} ÷ ($${getM} per million × ${seconds} s) is not the published crossover`);
-    }
-    if (
-      singleBucket &&
-      (REDIS_USD / (gets * getM * 1e-6 * seconds)).toFixed(1) !==
-        singleBucket.parity.intersectsPerSec.toFixed(1)
-    ) {
-      fail(
-        "the cold intersect's rate against the cluster does not follow from its GETs and the GET price",
-      );
-    }
-    const costBand = /<section id="crossover"[^>]*>([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '';
-    const tables = [...costBand.matchAll(/<table class="cb-ftable">([\s\S]*?)<\/table>/g)].map(
-      (t) =>
-        [
-          ...t[1].matchAll(
-            /<tr>\s*<th scope="row">([\s\S]*?)<\/th>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/g,
-          ),
-        ].map((m) => ({
-          head: textOf(m[1].replace(/<span class="cb-note">[\s\S]*?<\/span>/, '')),
-          note: textOf(/<span class="cb-note">([\s\S]*?)<\/span>/.exec(m[1])?.[1] ?? ''),
-          value: textOf(m[2]),
-        })),
-    );
-    const shared = singleBucket?.chunksPerOperand;
-    const S = seconds.toLocaleString('en-US');
-    const TABLES = [
-      [
-        'what goes in',
-        [
-          ['The reference set', `${sizeGiB} GiB`, 'chosen · at rest, no traffic'],
-          [
-            `GETs per cold A ∩ B, ${shared} chunks shared`,
-            String(gets),
-            `measured · the median of ${singleBucket?.intersects} cold intersects on S3, ${singleBucket?.region}`,
-          ],
-          [
-            'Requests per write and publish',
-            singleBucketFigure('a single-part write and publish'),
-            'measured · on S3, pointer included',
-          ],
-          [
-            'S3 GET · PUT, per million',
-            `${usd2(getM)} · ${usd2(putM)}`,
-            'quoted · AWS us-east-1 list price',
-          ],
-          ['S3 storage, per GiB-month', `$${storeGiB}`, 'quoted · AWS us-east-1 list price'],
-          [
-            'Redis-HA cluster',
-            redisMo,
-            `quoted · ${nodes} × ${baselineInstance}, ${hours} hours a month`,
-          ],
-        ],
-      ],
-      [
-        'what comes out',
-        [
-          ['At rest', atRestMo, `${sizeGiB} GiB × $${storeGiB}`],
-          [
-            'Cold A ∩ B, per million',
-            singleBucketFigure(MEASURED_1M),
-            `${gets} GETs × ${usd2(getM)}`,
-          ],
-          [
-            'Write and publish, per million',
-            singleBucketFigure(WRITE_1M),
-            `${puts} × ${usd2(putM)} + ${writeGets} × ${usd2(getM)}`,
-          ],
-          ['Against that line', pct, `$${atRestUSD} ÷ $${REDIS_USD}`],
-          [
-            'Crossover, in GETs',
-            rate,
-            `$${REDIS_USD} ÷ (${usd2(getM)} per million × ${S} s a month)`,
-          ],
-          [
-            '…as cold A ∩ B',
-            intersectRate,
-            `$${REDIS_USD} ÷ (${singleBucketFigure(MEASURED_1M)} per million × ${S} s a month)`,
-          ],
-        ],
-      ],
-    ];
-    TABLES.forEach(([name, want], i) => {
-      const rows = tables[i] ?? [];
-      for (const [head, value, note] of want) {
-        const row = rows.find((r) => r.head === head);
-        expect(`${name}, "${head}"`, row?.value ?? null, value);
-        expect(`${name}, "${head}", its note`, row?.note ?? null, note);
-      }
-      if (rows.length !== want.length) {
-        fail(
-          `${SITE_DIR}/index.html's table of ${name} has ${rows.length} rows; this check knows ${want.length}`,
-        );
-      }
+    homeFigures.checkHome({
+      L: homeLedger,
+      page: `${SITE_DIR}/index.html`,
+      fail,
+      record: (what, value) => specAnchors.push([`Home · ${what}`, value]),
+      results,
+      scale: JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'scale-results.json'), 'utf8')),
+      sb: singleBucket,
+      sbFigure: singleBucketFigure,
+      MEASURED_1M,
+      WRITE_1M,
+      baselineTopology,
+      baselineInstance,
+      atRestShown,
+      costSrc: fs.readFileSync(COST, 'utf8'),
+      ROOT,
+      SITE_DIR,
     });
-
-    // Chunk-skipping: the band's figures and headline, and the grid it draws.
-    const band =
-      /<section id="demo" class="cb-stack">([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '';
-    const bandFigures = new Map(
-      [
-        ...band.matchAll(/<p class="label">([^<]+)<\/p>\s*<p class="cb-figure-l">([\s\S]*?)<\/p>/g),
-      ].map((m) => [m[1].trim(), textOf(m[2])]),
-    );
-    expect('chunk band "Fetched"', bandFigures.get('Fetched'), String(fetchedChunks));
-    expect('chunk band "Never requested"', bandFigures.get('Never requested'), perOperand);
-    expect(
-      'chunk band headline',
-      textOf(/<h2>([\s\S]*?)<\/h2>/.exec(band)?.[1] ?? ''),
-      `${fetchedChunks} of ${total} chunks. The other ${perOperand} are never requested.`,
-    );
-    chunkDrawing('chunk grid', band, 'ci', 'data-chunks-per-cell', /one cell per (\d+) chunks/);
-    // The bracket over the grid names what each span is.
-    const bracket = [
-      ...(/<div class="cb-grid-key"[^>]*>([\s\S]*?)<\/div>/.exec(band)?.[1] ?? '').matchAll(
-        /<p class="label[^"]*">([\s\S]*?)<\/p>/g,
-      ),
-    ].map((m) => textOf(m[1]));
-    expect(
-      "chunk grid's fetched span",
-      bracket[0] ?? null,
-      `${fetchedChunks} fetched · keys 0–${sharedChunks - 1}`,
-    );
-    expect(
-      "chunk grid's other span",
-      bracket[1] ?? null,
-      `${perOperand} never requested, never billed`,
-    );
-    for (const m of textOf(homeHtml.replace(/<!--[\s\S]*?-->/g, '')).matchAll(
-      /\b\d[\d,]* of \d[\d,]*\b/g,
-    )) {
-      expect(`"${m[0]}"`, m[0], `${fetchedChunks} of ${total}`);
-    }
-
-    // The memory band, one panel: per fleet the retained heap as a bar on one axis, and a table of the two that grow,
-    // the discovery scan and peak RSS. Checked in both directions: every fleet the file has is in both parts, and
-    // every bar and row the page has is a fleet the file has; each one's own label is read, not only its attribute.
-    const memory =
-      /<div class="cb-seam cb-cols-2 cb-memory">([\s\S]*?)<\/table>/.exec(homeHtml)?.[1] ?? '';
-    const scanShown = (ms) =>
-      ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toPrecision(3)} s`;
-    const HEAP_AXIS = 10;
-    const TRACK = 140;
-    expect(
-      "memory band's heap axis",
-      /Retained heap · measured · 0–(\d+) MiB axis/.exec(textOf(memory))?.[1] ?? null,
-      String(HEAP_AXIS),
-    );
-    const heapBars = [
-      ...memory.matchAll(
-        /<div class="cb-hbar" data-segments="(\d+)">\s*<p class="cb-figure-m">([\s\S]*?)<\/p>\s*<svg class="cb-vbar" viewBox="0 0 96 (\d+)"[^>]*><rect class="idle" width="96" height="(\d+)" \/><rect class="heap" y="(\d+)" width="96" height="(\d+)" \/><\/svg>\s*<p class="label">([^<]+)<\/p>/g,
-      ),
-    ];
-    const growRows = [
-      ...memory.matchAll(
-        /<tr><th scope="row">([^<]+)<\/th><td>([^<]+)<\/td><td>([^<]+)<\/td><\/tr>/g,
-      ),
-    ];
-    for (const fleet of scale.fleets) {
-      if (fleet.heapRetainedMiB > HEAP_AXIS) {
-        fail(
-          `the ${fleet.n}-segment fleet's heap, ${fleet.heapRetainedMiB} MiB, is past the memory band's ` +
-            `0–${HEAP_AXIS} MiB axis: widen the axis and its label`,
-        );
-      }
-      const name = `${fleet.n.toLocaleString('en-US')} segments`;
-      if (!heapBars.some((m) => Number(m[1]) === fleet.n)) {
-        fail(
-          `${SITE_DIR}/index.html's memory band has no heap bar for the ${fleet.n}-segment fleet`,
-        );
-      }
-      if (!growRows.some((m) => m[1].trim() === name)) {
-        fail(`${SITE_DIR}/index.html's memory band has no row of the two that grow for ${name}`);
-      }
-    }
-    for (const [, n, figure, viewH, trackH, y, h, label] of heapBars) {
-      const fleet = scale.fleets.find((f) => f.n === Number(n));
-      if (!fleet) {
-        fail(
-          `${SITE_DIR}/index.html's memory band draws a ${n}-segment fleet bench/scale-results.json does not have`,
-        );
-        continue;
-      }
-      const want = Math.max(1, Math.round((fleet.heapRetainedMiB / HEAP_AXIS) * TRACK));
-      expect(
-        `${n}-segment heap bar's label`,
-        label.trim(),
-        `${fleet.n.toLocaleString('en-US')} segments`,
-      );
-      expect(
-        `${n}-segment retained heap`,
-        textOf(figure),
-        `${fleet.heapRetainedMiB.toFixed(1)} MiB`,
-      );
-      expect(`${n}-segment heap bar's track`, `${viewH} / ${trackH}`, `${TRACK} / ${TRACK}`);
-      expect(`${n}-segment heap bar`, `${h} at ${y}`, `${want} at ${TRACK - want}`);
-    }
-    for (const [, name, scanText, rssText] of growRows) {
-      const fleet = scale.fleets.find(
-        (f) => `${f.n.toLocaleString('en-US')} segments` === name.trim(),
-      );
-      if (!fleet) {
-        fail(
-          `${SITE_DIR}/index.html's memory table shows "${name}", a fleet bench/scale-results.json does not have`,
-        );
-        continue;
-      }
-      expect(`${name} discovery scan`, scanText.trim(), scanShown(fleet.discoveryMs));
-      expect(`${name} peak RSS`, rssText.trim(), `${fleet.rssPeakMiB.toFixed(1)} MiB`);
-    }
-    if (heapBars.length !== scale.fleets.length || growRows.length !== scale.fleets.length) {
-      fail(
-        `${SITE_DIR}/index.html's memory band shows ${heapBars.length} heap bars and ${growRows.length} rows; ` +
-          `bench/scale-results.json has ${scale.fleets.length} fleets`,
-      );
-    }
-    // The conditions: each card's figure beside the fact that bounds it, held to the file it comes from. Page-wide
-    // rules already hold each rate to one of the two published crossovers; these hold each to the right one.
-    const conditions = textOf(
-      /<section id="conditions"[^>]*>([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '',
-    );
-    const ref = results.referenceRedis;
-    const largest = scale.fleets.reduce((a, f) => (f.n > a.n ? f : a));
-    for (const [what, want] of [
-      [
-        'the crossover card',
-        `Above ${results.readCrossoverPerSec} GETs a second, every one a cache miss`,
-      ],
-      ['the cluster card', `$${REDIS_USD} is one cluster, not your bill`],
-      ['the cluster card', `It is ${nodes} × ${baselineInstance}, whatever the data size`],
-      [
-        'the cluster card',
-        `this ${sizeGiB} GiB set is $${ref.monthlyUSD.toFixed(2)} a month, ${ref.cluster}, and against it the line ` +
-          `crosses at ${ref.readCrossoverPerSec.toFixed(2)} GETs a second`,
-      ],
-      [
-        'the listing card',
-        `flat to ${largest.n.toLocaleString('en-US')} segments, but finding them is an O(total) scan: ` +
-          `${scanShown(largest.discoveryMs)} over that fleet`,
-      ],
-      [
-        'the latency card',
-        `${scale.intersect.intersectMs} ms is the recorded run on the memory driver`,
-      ],
-    ]) {
-      expect(`${what}`, conditions.includes(want) ? want : null, want);
-    }
-    const cap = `capped at ${scale.cap.toLocaleString('en-US')} segments`;
-    expect("memory band's cap", textOf(homeHtml).includes(cap) ? cap : null, cap);
   }
 
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
@@ -1576,13 +1191,13 @@ const specAnchors = [];
           'check is no longer measuring anything',
       );
     }
-    const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/.exec(homeHtml);
+    const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/d.exec(homeHtml);
     if (!foot) {
       fail(
         `${SITE_DIR}/index.html no longer carries the .ba-foot line that states the invariant count`,
       );
     } else {
-      const stated = /<strong>(\d+)\s+hard correctness invariants<\/strong>/.exec(foot[1]);
+      const stated = /<strong>(\d+)\s+hard correctness invariants<\/strong>/d.exec(foot[1]);
       if (!stated) {
         fail("Home's correctness panel no longer states an invariant count");
       } else if (Number(stated[1]) !== invariantCount) {
@@ -1591,6 +1206,10 @@ const specAnchors = [];
         );
       } else {
         specAnchors.push(['Home · hard invariants', String(invariantCount)]);
+        homeLedger?.mark(
+          foot.indices[1][0] + stated.indices[1][0],
+          foot.indices[1][0] + stated.indices[1][1],
+        );
       }
     }
   }
@@ -1639,14 +1258,14 @@ const specAnchors = [];
   // Two statements of a figure is fine where they serve different readers, and these do: at-a-glance in the
   // hero, in context beside the tiering further down. What is not fine is one of them being ungated, which is
   // two chances to drift and one place that notices. Both are covered now.
-  const heroMeta = /<p class="meta">([\s\S]*?)<\/p>/.exec(homeHtml);
+  const heroMeta = /<p class="meta">([\s\S]*?)<\/p>/d.exec(homeHtml);
   if (!heroMeta) {
     fail(`${SITE_DIR}/index.html no longer carries the hero's meta line`);
   } else {
     for (const [label, want, detail] of [
       ['storage drivers', backends.size, () => [...backends].sort().join(', ')],
     ]) {
-      const m = new RegExp(`(\\d+)\\s+${label}`).exec(heroMeta[1]);
+      const m = new RegExp(`(\\d+)\\s+${label}`, 'd').exec(heroMeta[1]);
       if (!m) {
         fail(`Home's hero meta line no longer states a count for "${label}"`);
       } else if (Number(m[1]) !== want) {
@@ -1656,6 +1275,10 @@ const specAnchors = [];
         );
       } else {
         specAnchors.push([`Home hero · ${label}`, String(want)]);
+        homeLedger?.mark(
+          heroMeta.indices[1][0] + m.indices[1][0],
+          heroMeta.indices[1][0] + m.indices[1][1],
+        );
       }
     }
   }
@@ -1726,40 +1349,9 @@ const specAnchors = [];
   }
   specAnchors.push(['Site-wide · driver-count statements', String(alsoChecked)]);
 
-  // ── every number on the display-tier homepage is one a check held ─────────────────────────────────
-  if (HOME_IS_DISPLAY_TIER) {
-    // Every number the homepage shows is one a check in this file held, which is what lets its footer say every
-    // figure here is gated in CI. Checked last, once every check has recorded what it held, over the page's visible
-    // text, SVG labels included, with each tag a break so adjacent cells do not run together. The structural
-    // numbers are named rather than exempted by shape: the bands' and the chunk band's phases' own numbering, the
-    // licence, the release stage, the id width. A new figure no check knows fails here until one does.
-    const STRUCTURAL = /\b0[1-9](?= · | [A-Z])|Apache-2\.0|Pre-1\.0|32-bit/g;
-    const NUMBER = /(?<![\w.])\d[\d,]*(?:\.\d+)?/g;
-    const shownText = textOf(
-      homeHtml
-        .slice(homeHtml.indexOf('<body'))
-        .replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/<script[\s\S]*?<\/script>/g, '')
-        .replace(/<[^>]+>/g, ' '),
-    ).replace(STRUCTURAL, ' ');
-    const heldHere = new Set(
-      specAnchors
-        .filter(([name]) => name.startsWith('Home'))
-        .flatMap(([, value]) => String(value).match(NUMBER) ?? []),
-    );
-    const unheld = [...new Set(shownText.match(NUMBER) ?? [])].filter((n) => !heldHere.has(n));
-    if (unheld.length > 0) {
-      fail(
-        `${SITE_DIR}/index.html shows ${unheld.join(', ')}, which no check on this page holds; its footer says ` +
-          'every figure here is gated in CI',
-      );
-    }
-    if (!/every figure here is gated in CI/.test(textOf(homeHtml))) {
-      fail(
-        `${SITE_DIR}/index.html's footer no longer says every figure here is gated in CI, which this check holds`,
-      );
-    }
-  }
+  // ── every figure on the display-tier homepage lies in a span some check verified ─────────────────────
+  if (HOME_IS_DISPLAY_TIER)
+    homeFigures.finish({ L: homeLedger, page: `${SITE_DIR}/index.html`, fail });
 }
 
 if (problems.length) {
@@ -1771,6 +1363,11 @@ if (problems.length) {
   process.exit(1);
 }
 
-const verified = [...anchors.filter(([, v]) => v), ...specAnchors];
+const verified = [...anchors.filter(([, v, scope]) => v && !scope?.offTree), ...specAnchors];
+const keptOff = anchors.filter(([, v, scope]) => v && scope?.offTree);
 console.log(`site-figures: ${verified.length} anchors verified against their sources.`);
 for (const [name, v] of verified) console.log(`  ${name.padEnd(24)} ${v}`);
+if (keptOff.length > 0)
+  console.log(
+    `  and ${keptOff.length} kept off every file in ${SITE_DIR}/: ${keptOff.map(([name]) => name).join(', ')}`,
+  );

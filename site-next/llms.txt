@@ -36,8 +36,7 @@ is what `storage` normally takes; a hand-written `{ storage, registry }` object 
 accepts a bare driver, or an already-built StorageChunkSource for advanced reader wiring — both without a
 registry, so the store is read-only and cleartext. To supply a half
 of your own — an instrumented driver, a registry elsewhere — use `createBackend({ storage, registry })`. Nothing mutates a stored bitmap, so a crash before the publish leaves the previous generation
-authoritative, a rerun is idempotent, and there is no partially-visible write. There is no add, addMany,
-remove or claimMany, and no store.compact. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
+authoritative, a rerun is idempotent, and there is no partially-visible write. There is no per-id add or remove. `intersectInto`/`unionInto`/`andNotInto` use the same protocol,
 publishing their result as a new generation of the destination segment — and check the result is plausible
 the same way `load` does: an empty or implausible combine over a non-empty destination is refused
 (`published: false` + `reason`) rather than wiping it, with `allowEmpty`/`guard` to override. Unlike `load`
@@ -96,8 +95,9 @@ compression saves.
 There is no daemon, no compaction pass and no lifecycle worker. A segment exists once a generation has been
 loaded into it -- there is no create verb, segment(name) is just a validated address that does no I/O, and
 exists(ref) / segments({namespace}) ask the registry what is there rather than you keeping your own list of
-names beside the store. The only scheduled work is the retention sweep above (plus gcOrphanGenerations, which never
-touches the current generation, if you want superseded ones collected sooner). Compliance is built in:
+names beside the store. The work you schedule is the retention sweep above,
+and gcOrphanGenerations, which never touches the current generation, for the superseded generations a combine
+keeps; a load collects its own. Compliance is built in:
 subjectReport (Art. 15), eraseSubject (Art. 17 -- a generation rewrite that deletes the generation holding the
 bit, so it is physically gone from the bucket when the call returns), destroySegment/eraseNamespace
 (crypto-shred), dropSegment, checkConsistency, and exportSegments -- eject every segment to portable roaring or

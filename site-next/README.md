@@ -23,7 +23,7 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
 
 | page | what it is |
 |---|---|
-| `index.html` | The display-tier homepage: the category in the h1, what you do not run in the standfirst, the four figures with the point where we lose among them, then what you operate, the write model, chunk-skipping, the crossover, memory at fleet scale and fit, and a quiet install band. |
+| `index.html` | The display-tier homepage: the category in the h1, what you do not run in the standfirst, a strip of the key space over the four figures with the point where we lose among them, then what you operate, the write model, chunk-skipping, the crossover and what goes into it, memory at fleet scale, the conditions the figures do not prove, fit, and a quiet install band. |
 | `demo.html` | The step-through replay of a **measured** intersection of two 2,000,000-id segments. |
 | `demo.js` | The replay's stepper, unchanged from `site/`. |
 | `flavors.html` | The hub for codec flavors. |
@@ -60,8 +60,10 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
   fetched cells, both on the homepage, each played once when its band comes into view and resting on its final
   frame without a script or with less motion asked for. The inner pages' figures rest on their informative frame.
   `/demo`'s stepper moves only when a reader drives it.
-- **The charts are generated.** The homepage's crossover and the benchmarks chart are `bench/run.cjs`'s, drawn from
-  the estimator, so their geometry cannot drift from the published rate.
+- **The drawings are generated.** The homepage's crossover, drawn once wide and once for a phone, and the benchmarks
+  chart are `bench/run.cjs`'s, drawn from the estimator, so their geometry cannot drift from the published rate. The
+  homepage's key-space strip, chunk grid and memory panel are `bench/scale.cjs`'s, drawn from the recorded runs in
+  `bench/scale-results.json`.
 
 ## How it stays true
 
@@ -69,12 +71,15 @@ The gates `site/` has, on this tree too:
 
 - `site-classes.py` and `site-links.py` take `SITE_DIR`; `pnpm site:check` and CI run each on both trees.
 - `site-figures.cjs` takes `SITE_DIR`, and `pnpm site:figures` runs it on both. On this tree it also holds the
-  homepage to its sources cell by cell: the hero's four figures, each row of the figure table, the chunk-skipping
-  band and the grid it draws, and the memory band's heap, RSS and scan per fleet, with their bars and axes.
-- `site-replay.cjs` checks both trees' `demo.html`; `pnpm bench:check` and `pnpm bench:scale:check` hold both
-  benchmarks pages' generated regions and the homepage's chart.
+  homepage to its sources figure by figure, through `scripts/lib/home-figures.cjs`: each check marks what it read,
+  and a number on the page that none of them read fails, since the footer says every figure here is gated in CI.
+  And it refuses the July run's figures, run id and date in every file here.
+- `site-replay.cjs` checks both trees' `demo.html`. `pnpm bench:check` holds both benchmarks pages' generated
+  regions and the homepage's crossover, both drawings of it; `pnpm bench:scale:check` holds both at-scale tables
+  and the homepage's strip, grid and memory panel.
 - `site-text-floor.mjs` loads every page here at six widths and fails on any text drawn below 9.5px, SVG labels
-  included (`pnpm site:text-floor`, in CI).
+  included, on a page that scrolls sideways, and on a region that scrolls with no way in by keyboard
+  (`pnpm site:text-floor`, in CI).
 - The docs tests that read `site/` read this tree as well.
 
 ## Comparing the two
@@ -94,6 +99,8 @@ they work locally.
 
 - in `scripts/site-figures.cjs`, give `site` what `site-next` has now in each per-tree map (`HOME_IS_DISPLAY_TIER`,
   `HOME_HAS_SPEC_STRIP`, `DRIVER_STATEMENT_FLOOR`, `STATES_THE_JULY_RUN`), then drop the `site-next` entries;
+- point the homepage's generated regions at `site/index.html`, in `bench/run.cjs` and in `bench/scale.cjs`'s
+  `HOME_PAGE`;
 - drop `site-next` from the site gates (`site-classes.py`, `site-links.py`, `site-figures.cjs`, `site-replay.cjs`),
   from `bench/run.cjs` and `bench/scale.cjs`, from the tests under `tests/docs/` and `tests/bench/` that read both
   trees, and from `.prettierignore`, `eslint.config.js`, `package.json`, CI and the READMEs that name it;
