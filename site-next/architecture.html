@@ -124,8 +124,8 @@
       </section>
 
       <!-- ── WHICH CHUNKS ───────────────────────────────────────────────────
-           The one figure this page needs. A cursor walks both key lists once and only keys present in BOTH
-           ignite — the skip is the default, not an optimisation applied afterwards. -->
+           The one figure this page needs. The smallest operand's keys are checked against the others', and only
+           keys present in BOTH ignite — the skip is the default, not an optimisation applied afterwards. -->
       <section>
         <h2>Which chunks, decided before any is requested</h2>
         <p class="lede">
@@ -184,8 +184,7 @@
               Each segment's current generation is read from its registry row <em>before</em> any fan-out, and
               every chunk fetched is a whole, checksum-verified object of one generation, never a merge of two, so
               it cannot be torn. A call that runs past <span class="m">cache.genTtlMs</span> after a publish, or
-              meets an eviction, a sweep or an invalidation, goes on at the generation then current;
-              <span class="m">seg.pin()</span> holds one.
+              meets an eviction, a sweep or an invalidation, goes on at the generation then current.
             </span>
           </li>
           <li>
@@ -350,8 +349,9 @@
               verifies the result and publishes it only while the pointer still names the generation it read
               &mdash; then collects every generation below it. There is no tombstone to honour on the read path,
               and nothing to compact later: when the call returns, the bit is <b>physically gone</b> from the
-              bucket for every segment its ledger does not report as an error. Noncurrent object versions,
-              replicas and backups keep it until their own lifecycle removes it.
+              bucket for every segment its ledger marks <span class="m">erased</span>; an entry that does not
+              is re-run. Noncurrent object versions, replicas and backups keep it until their own lifecycle
+              removes it.
             </p>
           </figure>
 
@@ -475,7 +475,7 @@
                   <td class="from">
                     The backend was briefly unavailable — throttled, a dropped connection, a 5xx.
                   </td>
-                  <td><span class="status">Automatic on reads</span></td>
+                  <td><span class="status">Automatic on unpinned reads</span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="m">WriteConflictError</span></th>

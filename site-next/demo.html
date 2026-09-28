@@ -207,7 +207,7 @@
         <h2>Step through it</h2>
         <p class="lede">
           The whole argument is in beat two: the keys are compared first, and at that moment
-          <strong>no chunk has been requested</strong>, only each segment's pointer and its index, in one tail
+          <strong>no chunk has been requested</strong>, only each segment's pointer, and its index in one tail
           read. Everything after it is the consequence.
         </p>
 
@@ -500,6 +500,7 @@
             <div class="install-alt">
               <p class="label">Or reproduce the run above</p>
               <pre tabindex="0"><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
+cd cloudbitmaps
 pnpm install
 pnpm bench:scale  <span class="c"># a dry run; SCALE_INJECT=1 writes scale-results.json</span></code></pre>
             </div>

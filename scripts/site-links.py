@@ -263,10 +263,38 @@ NAMESPACES = {'http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml', 'htt
 SVG_HREF = {'image', 'use', 'feimage'}
 # What a sheet loads is what a `url()`, an `image-set()` or an `@import` names, so those are what is read: a
 # scheme elsewhere names nothing, like the `ws:` that ends `grid-template-rows:` or a `.ws:hover` selector.
-CSS_URL = re.compile(
-    r"""(?:url|image-set)\(\s*['"]?\s*(?!data:)(?:[a-z][a-z0-9+.-]*:|//)|@import\s+['"]\s*(?:[a-z][a-z0-9+.-]*:|//)""",
+_CSS_URL = re.compile(
+    r"""url\(\s*['"]?\s*(?!data:)(?:[a-z][a-z0-9+.-]*:|//)|@import\s+['"]\s*(?:[a-z][a-z0-9+.-]*:|//)""",
     re.I,
 )
+# Every candidate of an `image-set()` is a load the browser may choose, not only its first.
+_SET_CANDIDATE = re.compile(r"""['"]\s*(?!data:)(?:[a-z][a-z0-9+.-]*:|//)""", re.I)
+
+
+def _image_sets(css):
+    """The argument of each `image-set()`, to its matching parenthesis."""
+    for m in re.finditer(r"image-set\(", css, re.I):
+        depth, i = 1, m.end()
+        while i < len(css) and depth:
+            depth += {"(": 1, ")": -1}.get(css[i], 0)
+            i += 1
+        yield css[m.end() : i - 1]
+
+
+class _CssUrl:
+    """What a sheet loads from another origin: a `url()`, an `@import`, or any `image-set()` candidate."""
+
+    def finditer(self, css):
+        yield from _CSS_URL.finditer(css)
+        for arg in _image_sets(css):
+            yield from _SET_CANDIDATE.finditer(arg)
+            yield from _CSS_URL.finditer(arg)
+
+    def search(self, css):
+        return next(iter(self.finditer(css)), None)
+
+
+CSS_URL = _CssUrl()
 JS_URL = re.compile(r'^(?:(?:https?|wss?):|//[a-z0-9])', re.I)
 
 

@@ -377,7 +377,7 @@ function homeChartNarrow() {
   // 262 wide so that at its smallest label, 10 units, it keeps 9.5px on a 320px phone: 262 × 9.5 ÷ 10 is 249px, and
   // the frame there is 254px. The axis title takes a row of its own and the legend starts at the left edge.
   const W = 262;
-  const H = 294;
+  const H = 314;
   const plotL = 40;
   const plotR = 252;
   const plotT = 26;
@@ -407,10 +407,10 @@ function homeChartNarrow() {
     `<text class="tf" x="${plotL}" y="${plotB + 16}" text-anchor="middle">0</text>`,
     `<text class="tf" x="${f(crX)}" y="${plotB + 16}" text-anchor="middle">${rate}</text>`,
     `<text class="tl" x="${plotR}" y="${plotB + 34}" text-anchor="end">GETS/S, EVERY READ A MISS</text>`,
-    `<text class="tl" x="${plotL}" y="${plotB + 54}">METERED COSTS LESS</text>`,
-    `<text class="tl" x="${plotR}" y="${plotB + 54}" text-anchor="end">USE REDIS</text>`,
-    `<path class="line-node" d="M0 ${plotB + 72} H18"/><text class="tf" x="26" y="${plotB + 76}">$${REDIS}/mo · a Redis-HA cluster, flat</text>`,
-    `<path class="line-ours" d="M0 ${plotB + 92} H18"/><text class="tf" x="26" y="${plotB + 96}">$${getPrice} per million GETs · CloudBitmaps</text>`,
+    `<text class="tl" x="${plotL}" y="${plotB + 54}">← METERED COSTS LESS</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 72}" text-anchor="end">USE REDIS →</text>`,
+    `<path class="line-node" d="M0 ${plotB + 92} H18"/><text class="tf" x="26" y="${plotB + 96}">$${REDIS}/mo · a Redis-HA cluster, flat</text>`,
+    `<path class="line-ours" d="M0 ${plotB + 112} H18"/><text class="tf" x="26" y="${plotB + 116}">$${getPrice} per million GETs · CloudBitmaps</text>`,
     `</svg>`,
   ].join('\n');
 }

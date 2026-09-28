@@ -264,8 +264,8 @@ npm audit signatures</code></pre>
                   <td class="from">
                     Rewrites every segment holding the id without it and deletes every generation that held the
                     bit, so on return it is <strong>physically gone from the bucket</strong> for each segment its
-                    ledger does not report as an error; noncurrent object versions, replicas and backups keep it
-                    until their own lifecycle removes it. A compliance operation, not a hot-path verb — there is
+                    ledger marks <span class="m">erased</span>, and an entry that does not is re-run; noncurrent
+                    object versions, replicas and backups keep it until their own lifecycle removes it. A compliance operation, not a hot-path verb — there is
                     no per-id write.
                   </td>
                   <td class="num">storage + registry</td>
@@ -369,7 +369,7 @@ r.cardinality;  <span class="c">// distinct ids now published</span></code></pre
           Put the date in the name and the window becomes set algebra. A user is re-eligible the moment the wave
           moves to tomorrow&rsquo;s bucket, because tomorrow&rsquo;s bucket is a different, empty set. The old bucket
           retires when the sweep you schedule runs past the date you record — see
-          <span class="m">setRetention</span> and <span class="m">retireExpired</span> below.
+          <span class="m">setRetention</span> above and <span class="m">retireExpired</span> below.
         </p>
         <div class="prov">
           <div class="tpanel">

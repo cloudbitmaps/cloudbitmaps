@@ -45,8 +45,7 @@ they collect nothing, so a rollback target survives a materialisation.
 The reads: has (cache, else one ranged GET once the segment's pointer and index are read), count (exact,
 summed from the .crbm index with zero payload reads), iterate, and intersect/union/andNot — the chunk-skipping
 composites, with `exclude` suppression folded into the same pass. Every chunk a read fetches is a whole,
-checksum-verified object of one generation; a long call can move on to a newer generation mid-call, and
-seg.pin() holds one.
+checksum-verified object of one generation; a long call can go on at whichever generation is then current.
 
 ## Measured, not modelled
 
@@ -100,8 +99,9 @@ names beside the store. The work you schedule is the retention sweep above,
 and gcOrphanGenerations, which never touches the current generation, for the superseded generations a combine
 keeps; a load collects its own. Compliance is built in:
 subjectReport (Art. 15), eraseSubject (Art. 17 -- a generation rewrite that deletes every generation holding
-the bit, so on return it is physically gone from the bucket for each segment its ledger does not report as an
-error; backups, replicas and noncurrent object versions keep it until their own lifecycle removes it),
+the bit, so on return it is physically gone from the bucket for each segment its ledger marks erased, and an
+entry that does not is re-run; backups, replicas and noncurrent object versions keep it until their own
+lifecycle removes it),
 destroySegment/eraseNamespace
 (crypto-shred), dropSegment, checkConsistency, and exportSegments -- eject every segment to portable roaring or
 ndjson, which is the exit path.

@@ -649,11 +649,7 @@ for (const page of PAGES) {
   // three of them.
   const metas = homeFigures
     .tagsOf(html)
-    .filter(
-      (t) =>
-        t.name === 'meta' &&
-        ['description', 'og:description', 'twitter:description'].includes(homeFigures.metaKey(t)),
-    )
+    .filter(homeFigures.isProseMeta)
     .map((t) => t.attrs.content ?? '')
     .join(' ');
 
@@ -1025,13 +1021,11 @@ const specAnchors = [];
   // claim word for word, so a page that drops the claim but keeps the hero fails rather than going unread. No other
   // page may make the claim, since nothing holds another page that way.
   const HOME_IS_DISPLAY_TIER =
-    homeFigures.textOf(homeHtml).includes(homeFigures.CLAIM) ||
-    /<section class="cb-stack is-hero">/.test(homeHtml);
+    homeFigures.claims(homeHtml) || /<section class="cb-stack is-hero">/.test(homeHtml);
   const homeLedger = HOME_IS_DISPLAY_TIER ? homeFigures.ledger(homeHtml) : null;
   for (const rel of fs.readdirSync(SITE, { recursive: true })) {
     if (!String(rel).endsWith('.html') || String(rel) === 'index.html') continue;
-    const text = homeFigures.textOf(fs.readFileSync(path.join(SITE, String(rel)), 'utf8'));
-    if (text.includes(homeFigures.CLAIM)) {
+    if (homeFigures.claims(fs.readFileSync(path.join(SITE, String(rel)), 'utf8'))) {
       fail(
         `${SITE_DIR}/${rel} says ${homeFigures.CLAIM}, but only the homepage is held figure by figure`,
       );
@@ -1196,8 +1190,12 @@ const specAnchors = [];
   // held to its label, in order.
   {
     const rel = `${SITE_DIR}/benchmarks.html`;
-    const page = fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+    const page = homeFigures.ledger(fs.readFileSync(path.join(ROOT, rel), 'utf8')).html;
+    const panels = page.match(/<aside class="panel">/g) ?? [];
+    if (panels.length !== 1)
+      fail(`${rel} holds ${panels.length} comparison panels; this check reads one`);
     const panel = /<aside class="panel">([\s\S]*?)<\/aside>/.exec(page);
+    const everyRow = panel ? (panel[1].match(/class="[^"]*\bpanel-row\b/g) ?? []) : [];
     const rows = panel
       ? [
           ...panel[1].matchAll(
@@ -1218,8 +1216,13 @@ const specAnchors = [];
         `${sb?.parity.intersectsPerSec.toFixed(1)} /s`,
       ],
     ];
-    if (rows.length !== want.length) {
-      fail(`${rel}'s comparison panel holds ${rows.length} rows; this check knows ${want.length}`);
+    // Every row the panel draws, not only those shaped like a pair: one without the pair's class is a row too.
+    const pairs = panel ? (panel[1].match(/class="panel-row is-pair"/g) ?? []).length : 0;
+    if (rows.length !== want.length || pairs !== want.length || everyRow.length !== want.length) {
+      fail(
+        `${rel}'s comparison panel holds ${everyRow.length} rows, ${rows.length} of them readable; ` +
+          `this check knows ${want.length}`,
+      );
     }
     want.forEach(([label, value], i) => {
       const [gotLabel, gotValue] = rows[i] ?? ['(missing)', ''];

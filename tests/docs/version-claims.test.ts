@@ -330,6 +330,17 @@ const MARKDOWN_DOCS = [
   ...markdownUnder(join(ROOT, 'docs'), 'docs'),
 ];
 
+// site-next/ describes the current release only, so none of our own releases is exempt anywhere in it: the
+// previous release's number is exactly what a release bump leaves behind. Third-party versions stay exempt.
+const OUR_RELEASES = new Set(
+  [...readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map(
+    (m) => m[1] as string,
+  ),
+);
+const THIRD_PARTY = new Map([...FOREIGN_VERSIONS].filter(([v]) => !OUR_RELEASES.has(v)));
+const foreignFor = (file: string): ReadonlyMap<string, string> =>
+  file.startsWith('site-next/') ? THIRD_PARTY : FOREIGN_VERSIONS;
+
 describe('site version badges', () => {
   it('finds the pages at all, so a rename cannot turn this suite into a no-op', () => {
     // Without this, moving or renaming site/ leaves zero pages, every it.each below generates zero cases,
@@ -350,7 +361,7 @@ describe('site version badges', () => {
 
   it.each(VERSIONED_TEXT_FILES)('%s advertises the current version', (file) => {
     // Same line-scoped forward-reference rule as the HTML pages: see NEXT_MINOR.
-    const found = badgeVersions(readFileSync(join(ROOT, file), 'utf8'));
+    const found = badgeVersions(readFileSync(join(ROOT, file), 'utf8'), foreignFor(file));
     expect(
       found.length,
       `${file} names no version at all — did its wording change?`,
@@ -361,7 +372,7 @@ describe('site version badges', () => {
   });
 
   it.each(OTHER_SERVED_FILES)('%s names no version but ours', (file) => {
-    for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'))) {
+    for (const v of badgeVersions(readFileSync(join(ROOT, file), 'utf8'), foreignFor(file))) {
       expect(
         v,
         `${file} names ${v}, but the packages are at ${version}. It is served from the same origin as the ` +
@@ -370,16 +381,8 @@ describe('site version badges', () => {
     }
   });
 
-  // site-next/ describes the current release only, so none of our own releases is exempt there: the previous
-  // release's number is exactly what a release bump leaves behind. Third-party versions stay exempt everywhere.
-  const OUR_RELEASES = new Set(
-    [...readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8').matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map(
-      (m) => m[1] as string,
-    ),
-  );
-  const THIRD_PARTY = new Map([...FOREIGN_VERSIONS].filter(([v]) => !OUR_RELEASES.has(v)));
   it.each(pages)('%s advertises the current version everywhere it names one', (page) => {
-    const foreign = page.startsWith('site-next/') ? THIRD_PARTY : FOREIGN_VERSIONS;
+    const foreign = foreignFor(page);
     const found = badgeVersions(readFileSync(join(ROOT, page), 'utf8'), foreign);
     for (const v of found) {
       expect(

@@ -328,6 +328,153 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     expect(r.out).toContain('inserts text no check reads');
   });
 
+  it.each([
+    ['template', '<template><p>x</p></template>', 'holds a template'],
+    ['noscript', '<noscript><p>x</p></noscript>', 'holds a noscript element'],
+    ['details', '<details><summary>x</summary>y</details>', 'holds a details element'],
+    ['dialog', '<dialog>x</dialog>', 'holds a dialog'],
+    ['iframe', '<iframe src="demo.html"></iframe>', 'holds an embedded document'],
+    ['object', '<object data="x.svg"></object>', 'holds an embedded object'],
+    ['embed', '<embed src="x.svg" />', 'holds an embedded object'],
+    ['ol', '<ol><li>x</li></ol>', 'holds a numbered list'],
+    ['popover', '<div popover>x</div>', 'holds a popover'],
+    [
+      'data: image',
+      '<img src="data:image/png;base64,AAAA" alt="" />',
+      'draws an image from a data: URL',
+    ],
+    ['base URL', '<base href="https://example.invalid/" />', 'sets a base URL'],
+    [
+      'refresh',
+      '<meta http-equiv="refresh" content="0; url=demo.html" />',
+      'sends its readers to another page',
+    ],
+    [
+      'second stylesheet',
+      '<link rel="stylesheet" href="assets/extra.css" />',
+      'loads a stylesheet other than',
+    ],
+    ['unread entity', '<p>At &frac12; the cost.</p>', 'a reference this check does not read'],
+  ])('refuses %s on the homepage', (_name, planted, says) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    ['title', `<span title="9 drivers">·</span>`],
+    ['placeholder', `<input placeholder="9 drivers" />`],
+    ['aria-description', `<span aria-description="9 drivers">·</span>`],
+    ['aria-valuetext', `<span aria-valuetext="9 drivers">·</span>`],
+    ['label', `<option label="9 drivers"></option>`],
+    ['an unquoted value', `<span aria-label=9-drivers>·</span>`],
+    ['a meta the page does not name', `<meta property="og:image:alt" content="$1 a month" />`],
+    ['a meta by itemprop', `<meta itemprop="description" content="9 drivers" />`],
+    ['a reference without its semicolon', `<p>It costs &#x39&#x39 cents.</p>`],
+  ])('reads a figure in %s', (_name, planted) => {
+    const r = withPage(HEAD, `${HEAD}${planted}`);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('figure(s) no check holds');
+  });
+
+  it.each(['ISC', 'BSD-3-Clause', 'MPL-2.0', 'GPL-3.0-only', 'LGPL-2.1', 'AGPL-3.0', 'BUSL-1.1'])(
+    'refuses the licence %s beside ours',
+    (licence) => {
+      const r = withPage(HEAD, `${HEAD}<p>Licensed ${licence}.</p>`);
+      expect(r.code, r.out).toBe(1);
+      expect(r.out).toContain(`states the licence ${licence}`);
+    },
+  );
+
+  it.each([
+    ['quotation marks', '.cb-body q { quotes: "$1 " ""; }', 'puts text in quotation marks'],
+    ['a list marker string', ".cb-op-rows li { list-style: '9 ' inside; }", 'draws list markers'],
+    ['a numbered list style', '.cb-op-rows { list-style-type: decimal; }', 'draws list markers'],
+    ['a list item', '.cb-op-rows li { display: list-item; }', 'draws list markers'],
+    ['a counter', '.cb-op-rows { counter-reset: list-item 11; }', 'counts, for markers'],
+    ['an import', "@import url('assets/extra.css');", 'pulls in a sheet'],
+    [
+      'an escaped property name',
+      ".cb-caveats::after { c\\6f ntent: '9x'; }",
+      'inserts text no check reads',
+    ],
+  ])('fails a stylesheet that adds text through %s', (_name, rule, says) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
+  it.each([
+    ['a class named content in a selector', '.cb-body .content:hover { color: inherit; }'],
+    ['an escaped arrow', ".cb-caveats::after { content: '\\2192'; }"],
+    ['alternative text for generated content', ".cb-caveats::after { content: '→' / ''; }"],
+  ])('passes a stylesheet with %s', (_name, rule) => {
+    const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
+    expect(r.code, r.out).toBe(0);
+  });
+
+  it('refuses the claim on a page the ledger does not hold', () => {
+    const file = 'site-next/demo.html';
+    const text = readFileSync(join(ROOT, file), 'utf8');
+    const r = siteFigures('site-next', {
+      [file]: text.replace(
+        '</main>',
+        () => '<p>Every figure on this page is gated in C&shy;I.</p></main>',
+      ),
+    });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(`${file} says every figure on this page is gated in CI`);
+  });
+
+  it('runs the ledger on the homepage that makes the claim, whatever its hero is called', () => {
+    const r = withPage('<section class="cb-stack is-hero">', '<section class="cb-stack is-top">');
+    const planted = siteFigures('site-next', {
+      [PAGE]: html
+        .replace('<section class="cb-stack is-hero">', () => '<section class="cb-stack is-top">')
+        .replace(HEAD, () => `${HEAD}<p>It saves 90%.</p>`),
+    });
+    expect(r.code, r.out).toBe(0);
+    expect(planted.code, planted.out).toBe(1);
+    expect(planted.out).toContain('figure(s) no check holds');
+  });
+
+  it('refuses a second generated region of the same name', () => {
+    const r = withPage(
+      '<!-- BENCH:HOMEMEMORY:END -->',
+      '<!-- BENCH:HOMEMEMORY:END --><!-- BENCH:HOMEMEMORY:START --><!-- BENCH:HOMEMEMORY:END -->',
+    );
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain('BENCH:HOMEMEMORY regions; it needs exactly one');
+  });
+
+  it.each([
+    [
+      'a row without the pair class',
+      '<p class="panel-row is-pair"><span>Reserved RAM, standing</span>',
+      '<p class="panel-row"><span>1.2 GiB at rest, no traffic</span><span>$346 /mo</span></p><p class="panel-row is-pair"><span>Reserved RAM, standing</span>',
+      'comparison panel holds 8 rows',
+    ],
+    [
+      'a second panel',
+      '<aside class="panel">',
+      '<aside class="panel"><p class="panel-row is-pair"><span>x</span><span>$346 /mo</span></p></aside><aside class="panel">',
+      'holds 2 comparison panels',
+    ],
+    [
+      'two rows trading values',
+      '<span>Reserved RAM, standing</span><span>$346 /mo</span>',
+      '<span>Reserved RAM, standing</span><span>$0.03 /mo</span>',
+      'comparison panel, row 1, reads',
+    ],
+  ])('holds the benchmarks comparison panel against %s', (_name, right, wrong, says) => {
+    const file = 'site-next/benchmarks.html';
+    const text = readFileSync(join(ROOT, file), 'utf8');
+    expect(text).toContain(right);
+    const r = siteFigures('site-next', { [file]: text.replace(right, () => wrong) });
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toContain(says);
+  });
+
   it('keeps the whole ledger when the footer drops its claim', () => {
     const r = withPage('every figure on this page is gated in CI', 'the figures are ours');
     expect(r.code, r.out).toBe(1);

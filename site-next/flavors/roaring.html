@@ -401,14 +401,15 @@
           <p class="tpanel-foot">
             <span class="label">What that costs</span> Requests, and storage. A
             <strong>read</strong> that misses the cache is one ranged GET, once the segment's
-            pointer and index are read, and a segment being read re-reads its pointer at most once
-            per <span class="m">cache.genTtlMs</span>; a <strong>publish</strong> is one object PUT
-            plus the pointer's own PUT and reads, and a load's collection lists what it deletes.
-            Storage is the segment sitting there, which is the cheap part. Nothing bills per id, and
-            nothing bills while the segment is idle &mdash; which is the whole difference from a
-            node you keep standing. Rates are region-specific and the vendor's to change; every
-            figure we publish uses the default <span class="m">aws-us-east-1-ondemand</span> rates,
-            and <span class="call">estimateCost</span> accepts your own.
+            pointer and index are read, and a segment being read re-reads its pointer once per
+            <span class="m">cache.genTtlMs</span>, and again after an eviction, a swept generation
+            or an invalidation; a <strong>publish</strong> is one object PUT plus the pointer's own
+            PUT and reads, and a load's collection lists what it deletes. Storage is the segment
+            sitting there, which is the cheap part. Nothing bills per id, and nothing bills while
+            the segment is idle &mdash; which is the whole difference from a node you keep standing.
+            Rates are region-specific and the vendor's to change; every figure we publish uses the
+            default <span class="m">aws-us-east-1-ondemand</span> rates, and
+            <span class="call">estimateCost</span> accepts your own.
           </p>
           <p class="tpanel-foot">
             <span class="label">One way in, and nothing to run</span> A segment exists once you have
@@ -586,8 +587,8 @@
               This flavor wraps CRoaring through <span class="m">roaring-node</span>, so it brings a
               platform matrix and something to compile. That is the honest cost of choosing this
               row: the prebuilts checked here are for x64 Linux with glibc, Apple silicon macOS and
-              x64 Windows, and anything else &mdash; Graviton, an Intel Mac, an unusual libc, a
-              locked-down build that forbids compilation &mdash; compiles from source or does not
+              x64 Windows, and where there is no prebuilt &mdash; Graviton, an unusual libc, a
+              locked-down build that forbids compilation &mdash; it compiles from source or does not
               install. Native addons <em>do</em> load on Deno, Bun and Lambda; what they cannot
               enter is an isolate runtime such as Cloudflare Workers. Note that today the engine
               itself does not run there either, for reasons that have nothing to do with the codec.

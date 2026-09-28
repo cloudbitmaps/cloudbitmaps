@@ -1,5 +1,5 @@
 /**
- * Nothing on the site is drawn below 9.5px: every visible run of text, SVG labels included, at six widths.
+ * Nothing on the site is drawn below 9.5px: every visible run of text, SVG labels included, at seven widths.
  *
  * The floor is a design rule the stylesheet can only state, and it drifted twice where nothing measured it: labels in
  * a diagram's `viewBox` shrink with the diagram, so a label authored at 10 units is 10px only at the width the diagram
@@ -38,8 +38,10 @@ if (!['site', 'site-next'].includes(TREE)) {
 }
 const FLOOR = 9.5;
 /** What the display-tier homepage's footer says; a page that says it is also held to showing what it states. */
-const { CLAIM } = createRequire(import.meta.url)('./lib/home-figures.cjs');
-const WIDTHS = [320, 390, 768, 1024, 1280, 1440];
+const { CLAIM, plain } = createRequire(import.meta.url)('./lib/home-figures.cjs');
+/** The pages the visibility probe ran on, which the report names so a run that probed none says so. */
+const probed = new Set();
+const WIDTHS = [320, 390, 768, 1024, 1280, 1440, 1920];
 const PORT = 9444;
 const SITE = join(ROOT, TREE);
 const PAGES = readdirSync(SITE, { withFileTypes: true, recursive: true })
@@ -144,10 +146,16 @@ const MEASURE = `(() => {
       const m = el.getScreenCTM();
       if (!m) continue;
       px *= Math.hypot(m.a, m.b);
-    } else if (el.offsetWidth > 0 && box.width / el.offsetWidth < 0.98) {
-      // A transform or zoom on the element or above it draws its text at the size its box is drawn at. The width
-      // it is laid out at is a whole number, so a ratio within that rounding is no scale at all.
-      px *= box.width / el.offsetWidth;
+    } else {
+      // A transform on the element or above it draws its text at its scale, on the axis it shrinks most, and a
+      // turn is no scale at all; a zoom scales it too.
+      for (let a = el; a; a = a.parentElement) {
+        const t = getComputedStyle(a).transform;
+        if (!t || t === 'none') continue;
+        const m = new DOMMatrixReadOnly(t);
+        px *= Math.min(Math.hypot(m.a, m.b), Math.hypot(m.c, m.d));
+      }
+      px *= el.currentCSSZoom ?? 1;
     }
     if (px < ${FLOOR} - 0.005) {
       small.push({ px: Math.round(px * 100) / 100, text: text.slice(0, 48), cls: el.getAttribute('class') || el.tagName.toLowerCase() });
@@ -156,7 +164,6 @@ const MEASURE = `(() => {
   return small;
 })()`;
 
-/** Runs in the page: how far it scrolls sideways, and each region that scrolls with no way in by keyboard. */
 /**
  * Runs in a page that says every figure on it is gated: each run of text outside the generated regions must be
  * one a reader can see, since a check that verified text a sheet then hides, moves off the page or paints clear
@@ -184,7 +191,7 @@ const UNSEEN = `(() => {
     }
     const text = n.data.trim();
     const el = n.parentElement;
-    if (!text || region > 0 || !el || el.closest('script, style, [aria-hidden="true"]')) continue;
+    if (!text || region > 0 || !el || el.closest('script, style')) continue;
     // A skip link is off the page until it has focus, which is what a skip link is.
     if (el.closest('a.skip[href^="#"]') && !/\\d/.test(text)) continue;
     const range = document.createRange();
@@ -200,10 +207,34 @@ const UNSEEN = `(() => {
     const onPage =
       frame !== null ||
       (box.right + scrollX > 0 && box.bottom + scrollY > 0 && box.left + scrollX < W && box.top + scrollY < H);
+    // Faded, filtered, clipped, masked or blended by anything above it is not seen whole, and the homepage has none.
+    let opacity = 1;
+    let veiled = false;
+    let ground = null;
+    for (let a = el; a; a = a.parentElement) {
+      const as = getComputedStyle(a);
+      opacity *= parseFloat(as.opacity);
+      if (as.filter !== 'none' || as.clipPath !== 'none' || as.maskImage !== 'none' || as.mixBlendMode !== 'normal') {
+        veiled = true;
+      }
+      if (ground === null && alpha(as.backgroundColor) >= 0.9) ground = as.backgroundColor;
+    }
+    ground = ground ?? getComputedStyle(document.documentElement).backgroundColor;
+    const rgb = (c) => (/rgba?\\(([^)]*)\\)/.exec(c)?.[1] ?? '0 0 0').split(/[\\s,/]+/).filter(Boolean).slice(0, 3).map(Number);
+    const lum = (c) => {
+      const [r, g, b] = rgb(c).map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const [hi, lo] = [lum(paint), lum(ground)].sort((a, b) => b - a);
+    const contrast = (hi + 0.05) / (lo + 0.05);
     const seen =
       el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
       box.width > 0 && box.height > 0 && onPage &&
-      alpha(paint) > 0 && alpha(cs.color) > 0;
+      opacity >= 0.9 && !veiled && cs.webkitTextSecurity !== 'disc' && cs.webkitTextSecurity !== 'circle' &&
+      cs.webkitTextSecurity !== 'square' &&
+      alpha(paint) >= 0.9 && alpha(cs.color) >= 0.9 && contrast >= 3;
+    if (!seen) out.push(text.slice(0, 60));
+    continue;
     if (!seen) out.push(text.slice(0, 60));
   }
   return out;
@@ -226,6 +257,7 @@ const NAMES = `(() => {
   return out;
 })()`;
 
+/** Runs in the page: how far it scrolls sideways, and each region that scrolls with no way in by keyboard. */
 const LAYOUT = `(() => {
   const root = document.documentElement;
   const unreachable = [];
@@ -249,7 +281,9 @@ const LAYOUT = `(() => {
     }
     // Text that runs past a box which cuts it off is text no reader gets: a clip is for a drawing, not for words.
     const cuts = (/^(hidden|clip)$/.test(cs.overflowX) && wide) || (/^(hidden|clip)$/.test(cs.overflowY) && tall);
-    if (cuts && el.innerText.trim() !== '') clipped.push(nameOf(el));
+    // A visually-hidden box of a pixel is the idiom for words meant only for a screen reader, not a cut.
+    const rect = el.getBoundingClientRect();
+    if (cuts && el.innerText.trim() !== '' && rect.width > 1 && rect.height > 1) clipped.push(nameOf(el));
   }
   return { sideways: root.scrollWidth - root.clientWidth, unreachable, clipped };
 })()`;
@@ -329,11 +363,15 @@ try {
       }
       const claims = (
         await cdp.send('Runtime.evaluate', {
-          expression: `document.body.innerText.includes(${JSON.stringify(CLAIM)})`,
+          expression:
+            "document.body.innerText.normalize('NFKC').replace(/[\\p{Cf}\\u00ad]/gu, '').replace(/\\s+/g, ' ')" +
+            `.toLowerCase().includes(${JSON.stringify(plain(CLAIM))}) || ` +
+            "document.querySelector('section.cb-stack.is-hero') !== null",
           returnByValue: true,
         })
       ).result.value;
       if (claims) {
+        probed.add(page);
         const unseen = (
           await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
         ).result.value;
@@ -342,22 +380,29 @@ try {
             `${TREE}/${page} at ${width}px: "${t}" is on the page, and no reader can see it`,
           );
         }
-        // And as a reader who asked for less motion gets it, every animation on its final frame: a class that
-        // holds text on a first frame while motion is allowed can leave it faded out at rest.
-        await cdp.send('Emulation.setEmulatedMedia', {
-          features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
-        });
-        const reloaded = cdp.once('Page.loadEventFired');
-        await cdp.send('Page.reload', { ignoreCache: true });
-        await reloaded;
-        await sleep(150);
-        const atRest = (
-          await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
-        ).result.value;
-        for (const t of atRest) {
-          problems.push(
-            `${TREE}/${page} at ${width}px, with less motion: "${t}" is on the page, and no reader can see it`,
-          );
+        // And as a reader who asked for less motion gets it, every animation on its final frame, in each colour
+        // scheme: a class that holds text on a first frame while motion is allowed can leave it faded out at
+        // rest, and a rule can hide text in one theme only.
+        for (const scheme of ['light', 'dark']) {
+          await cdp.send('Emulation.setEmulatedMedia', {
+            features: [
+              { name: 'prefers-reduced-motion', value: 'reduce' },
+              { name: 'prefers-color-scheme', value: scheme },
+            ],
+          });
+          const reloaded = cdp.once('Page.loadEventFired');
+          await cdp.send('Page.reload', { ignoreCache: true });
+          await reloaded;
+          await sleep(150);
+          const atRest = (
+            await cdp.send('Runtime.evaluate', { expression: UNSEEN, returnByValue: true })
+          ).result.value;
+          for (const t of atRest) {
+            problems.push(
+              `${TREE}/${page} at ${width}px, ${scheme}, with less motion: "${t}" is on the page, and no reader ` +
+                'can see it',
+            );
+          }
         }
       }
       if (width === WIDTHS[0]) {
@@ -417,5 +462,5 @@ if (problems.length > 0) {
 console.log(
   `site-text-floor: ${measured} page loads (${PAGES.length} pages × ${WIDTHS.length} widths), nothing under ${FLOOR}px, ` +
     'no page scrolling sideways or cutting off text, every region that scrolls reachable by keyboard and named for ' +
-    'itself, and every word on the page that claims its figures gated in view.',
+    `itself, and every word in view on ${probed.size ? [...probed].join(', ') : 'no page (none says its figures are gated)'}.`,
 );

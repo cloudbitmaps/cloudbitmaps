@@ -20,10 +20,19 @@
  * Figures are numerals, in any script's digits, fractions included: a number written as a word ("three nodes") is
  * prose, and is not read.
  *
- * The page may not carry what would put text before a reader that no check reads: a `<style>` element, a sheet rule
- * that inserts anything but a digit-free string, an element that hides or embeds content (`hidden`, `<template>`,
- * `<details>`, `<dialog>`, `popover`, `<iframe>`, `<object>`, `<embed>`, a `data:` image), a list that numbers its
- * own items, structured data, an inline style other than a custom property, or a script that writes text.
+ * The page may not carry what would put text before a reader that no check reads: a `<style>` element or a second
+ * sheet, a sheet rule that inserts anything but a digit-free string or draws quotation marks, list markers or
+ * counters, an element that hides or embeds content (`hidden`, `<template>`, `<details>`, `<dialog>`, `popover`,
+ * `<iframe>`, `<object>`, `<embed>`, a `data:` image), a list that numbers its own items, structured data, a base URL
+ * or a refresh, a character reference this does not decode, an inline style other than a custom property, or a
+ * script that writes text. Every meta's content is read but for a short list whose content is not prose.
+ *
+ * What it holds, and what it does not: it holds the page against the edits a maintainer makes, a figure changed,
+ * added, left stale, reworded around, moved into a comment or out of view, or copied into an attribute. It is not a
+ * sandbox against a page built to deceive a static reader: markup the browser parses differently from these patterns
+ * (`<!-->`), a bidirectional override that draws `329.15` backwards, a script that writes text by a route not listed
+ * here. Those are review's to catch; site-text-floor's Chrome pass narrows them by checking that every word on the
+ * page is one a reader can see.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -54,6 +63,13 @@ const NAMED = {
   thinsp: ' ',
   ensp: ' ',
   emsp: ' ',
+  // Invisible, so that a claim or a figure written with one between its letters still reads as a reader sees it.
+  shy: '\u00ad',
+  zwsp: '\u200b',
+  zwj: '\u200d',
+  zwnj: '\u200c',
+  lrm: '\u200e',
+  rlm: '\u200f',
 };
 
 /** Every character reference decoded, so `&#57;` is read as the 9 it renders, with or without its `;`, as a browser reads it. */
@@ -118,9 +134,30 @@ const PROSE_ATTRS = [
   'value',
   'label',
 ];
-const PROSE_METAS =
-  /^(?:description|og:description|twitter:description|og:title|twitter:title|twitter:label\d|twitter:data\d)$/;
-const metaKey = (t) => (t.attrs.name ?? t.attrs.property ?? '').toLowerCase();
+/** The meta keys whose content is not prose: what the page is, where it lives and how it is laid out. Every other
+ * meta's content is read, since a search result or a link preview may show it. */
+const NON_PROSE_METAS = new Set([
+  'viewport',
+  'og:type',
+  'og:url',
+  'og:image',
+  'twitter:card',
+  'twitter:image',
+  'google-site-verification',
+  'theme-color',
+  'color-scheme',
+  'robots',
+  'referrer',
+]);
+/** Every key a meta tag is found by: its name, property and itemprop, as a browser or an unfurler reads them. */
+const metaKeys = (t) =>
+  ['name', 'property', 'itemprop']
+    .map((a) => t.attrs[a])
+    .filter((v) => v !== undefined)
+    .map((v) => v.toLowerCase());
+const metaKey = (t) => metaKeys(t)[0] ?? '';
+const isProseMeta = (t) =>
+  t.name === 'meta' && 'content' in t.attrs && metaKeys(t).some((k) => !NON_PROSE_METAS.has(k));
 
 /** The spans of a page that checks have verified, over the page as it renders. */
 function ledger(page) {
@@ -182,7 +219,7 @@ function checkHome(ctx) {
   };
   /** One meta tag, found once by its name, whose content must be `want`. Marks the tag. */
   const metaExact = (what, key, want) => {
-    const all = tagsOf(html).filter((t) => t.name === 'meta' && metaKey(t) === key);
+    const all = tagsOf(html).filter((t) => t.name === 'meta' && metaKeys(t).includes(key));
     if (all.length !== 1) {
       fail(`${page}'s ${what} is found ${all.length} times; this check reads it where it is once`);
       return;
@@ -219,6 +256,19 @@ function checkHome(ctx) {
       );
     }
     if ('popover' in t.attrs) fail(`${page} holds a popover, shown only when it is opened`);
+    if (t.name === 'base') fail(`${page} sets a base URL, which moves every link and load on it`);
+    if (t.name === 'meta' && (t.attrs['http-equiv'] ?? '').toLowerCase() === 'refresh') {
+      fail(`${page} sends its readers to another page with a refresh`);
+    }
+    if (
+      t.name === 'link' &&
+      /\bstylesheet\b/i.test(t.attrs.rel ?? '') &&
+      t.attrs.href !== 'cloudbitmaps.css'
+    ) {
+      fail(
+        `${page} loads a stylesheet other than cloudbitmaps.css (${t.attrs.href}), which no check reads`,
+      );
+    }
     if (t.attrs.style !== undefined && !/^\s*(--[\w-]+\s*:\s*[^;]+;?\s*)+$/.test(t.attrs.style)) {
       fail(`${page} sets an inline style other than a custom property (style="${t.attrs.style}")`);
     }
@@ -243,15 +293,41 @@ function checkHome(ctx) {
     }
   }
   // The sheet may insert nothing but a digit-free string: not a number, and not an attribute, a counter or a
-  // variable, whose text no check reads.
+  // variable, whose text no check reads. Nor may it number a list or put words in quotes or markers, or pull in
+  // another sheet. Read as the browser reads it, escapes decoded, so `c\6f ntent` is `content`.
   const css = fs
     .readFileSync(path.join(ROOT, SITE_DIR, 'cloudbitmaps.css'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const m of css.matchAll(/(?<![\w-])content\s*:\s*([^;}]*)/gi)) {
-    const value = m[1].trim().replace(/\s*!important$/i, '');
-    if (!/^(?:none|normal)$/i.test(value) && !/^(?:(?:"[^"\d\\]*"|'[^'\d\\]*')\s*)+$/.test(value)) {
-      fail(`${SITE_DIR}/cloudbitmaps.css inserts text no check reads: content: ${value}`);
-    }
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/\\(.)/g, '$1');
+  const STRINGS = `(?:(?:"[^"\\d]*"|'[^'\\d]*')\\s*)+`;
+  const CONTENT_OK = new RegExp(`^(?:none|normal|${STRINGS}(?:/\\s*${STRINGS})?)$`, 'i');
+  const sheetRules = [
+    ['content', (v) => CONTENT_OK.test(v), 'inserts text no check reads'],
+    ['quotes', (v) => /^(?:none|auto)$/i.test(v), 'puts text in quotation marks no check reads'],
+    [
+      'list-style',
+      (v) => /\bnone\b/i.test(v) && !/["']/.test(v),
+      'draws list markers no check reads',
+    ],
+    ['list-style-type', (v) => /^none$/i.test(v), 'draws list markers no check reads'],
+    ['display', (v) => !/\blist-item\b/i.test(v), 'draws list markers no check reads'],
+    ['counter-reset', () => false, 'counts, for markers no check reads'],
+    ['counter-increment', () => false, 'counts, for markers no check reads'],
+    ['counter-set', () => false, 'counts, for markers no check reads'],
+  ];
+  for (const m of css.matchAll(/(?:^|[{;])\s*([a-z-]+)\s*:\s*([^;}]*)/gi)) {
+    const rule = sheetRules.find(([name]) => name === m[1].toLowerCase());
+    const value = m[2].trim().replace(/\s*!important$/i, '');
+    if (rule && !rule[1](value)) fail(`${SITE_DIR}/cloudbitmaps.css ${rule[2]}: ${m[1]}: ${value}`);
+  }
+  if (/@(?:import|counter-style)\b/i.test(css)) {
+    fail(`${SITE_DIR}/cloudbitmaps.css pulls in a sheet or a counter style no check reads`);
+  }
+  // A named reference this does not decode could be a figure (`&frac12;`) that no check reads.
+  for (const m of L.raw.matchAll(/&([a-z][a-z0-9]*);/gi)) {
+    if (!(m[1].toLowerCase() in NAMED))
+      fail(`${page} writes &${m[1]}; , a reference this check does not read`);
   }
 
   // ── the generated regions, held byte for byte elsewhere ─────────────────────────────────────────────────
@@ -751,7 +827,7 @@ function finish({ L, page, fail }) {
     .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ');
   const proseOf = (t) => [
     ...PROSE_ATTRS.filter((a) => t.attrs[a] !== undefined).map((a) => t.attrs[a]),
-    ...(t.name === 'meta' && PROSE_METAS.test(metaKey(t)) ? [t.attrs.content ?? ''] : []),
+    ...(isProseMeta(t) ? [t.attrs.content ?? ''] : []),
   ];
   const prose = tagsOf(rest).flatMap(proseOf);
   // Inside a span a check read, the check compared the text, not the attributes: a number in one is unread.
@@ -787,4 +863,26 @@ function finish({ L, page, fail }) {
   }
 }
 
-module.exports = { checkHome, finish, ledger, textOf, decode, tagsOf, metaKey, CLAIM };
+/** The claim as a reader gets it: invisible characters and soft hyphens out, spaces folded, case folded. */
+const plain = (text) =>
+  text
+    .normalize('NFKC')
+    .replace(/[\p{Cf}\u00ad]/gu, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+/** Whether a page's text makes the claim, however its case or spacing is written. */
+const claims = (html) => plain(textOf(rendered(html))).includes(plain(CLAIM));
+
+module.exports = {
+  checkHome,
+  finish,
+  ledger,
+  textOf,
+  decode,
+  tagsOf,
+  metaKey,
+  isProseMeta,
+  claims,
+  plain,
+  CLAIM,
+};

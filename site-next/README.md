@@ -79,7 +79,7 @@ The gates `site/` has, on this tree too:
 - `site-replay.cjs` checks both trees' `demo.html`. `pnpm bench:check` holds both benchmarks pages' generated
   regions and the homepage's crossover, both drawings of it; `pnpm bench:scale:check` holds both at-scale tables
   and the homepage's strip, grid and memory panel.
-- `site-text-floor.mjs` loads every page here at six widths and fails on any text drawn below 9.5px, SVG labels
+- `site-text-floor.mjs` loads every page here at seven widths and fails on any text drawn below 9.5px, SVG labels
   included, on a page that scrolls sideways or a box that cuts off text, on a region that scrolls with no way in by
   keyboard, on a region whose name is missing, shared, or not its panel's, and, on the homepage, on any text outside
   its generated regions that no reader can see (`pnpm site:text-floor`, in CI).

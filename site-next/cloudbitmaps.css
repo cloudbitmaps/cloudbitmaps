@@ -354,9 +354,11 @@ h3 {
 }
 
 /* A unit or an identifier inside caps keeps its own case: "24.6 ms", "0–10 MiB", "v0.10.0", "us-east-1",
-   "quickstart.ts". The case is declared on the span itself, so it holds under any caps style around it. */
+   "quickstart.ts". The case is declared on the span itself, so it holds under any caps style around it, and the
+   token is not broken at a hyphen. */
 .u {
   text-transform: none;
+  white-space: nowrap;
 }
 
 /* Mono caps labels, held to AA: the faint tone carries real information. Never below 9.5px. */
@@ -1915,10 +1917,10 @@ svg .crossing {
   background: var(--cb-chunk);
 }
 
-/* Which keys are shared is only known once they are compared, so until the stepper reaches that beat they look
-   like every other key. */
+/* Which keys are shared is only known once they are compared, so until the stepper reaches that beat they take
+   the colour the axis gives a key in both before the comparison, not the fetched chunk's. */
 .replay.is-interactive:not(.is-compared) .icell.is-shared {
-  background: var(--cb-idle);
+  background: var(--cb-faint);
 }
 
 .icell.is-a {
@@ -2258,6 +2260,11 @@ svg .crossing {
   font-size: 13px;
   line-height: 1.55;
   color: var(--cb-muted);
+}
+
+/* A panel that is only its foot has the panel's own edge above it, not a second rule. */
+.tpanel > .tpanel-foot:first-child {
+  border-top: 0;
 }
 
 .tpanel-foot strong {
@@ -3185,10 +3192,11 @@ svg .crossing {
 
 /* The homepage's crossover is drawn twice, full width and for a phone, and the sheet shows the one that fits: the
    full-width one needs 860px for its drawing and 114px of frame and gutters, so below 1,000px it is the phone's,
-   held to a size where its labels read at about the page's. */
+   held to a size where its labels read at about the page's, and centred in its frame. */
 .cb-svg.is-chart-narrow {
   display: none;
   max-width: 420px;
+  margin-inline: auto;
 }
 
 .cb-svg.is-chart-narrow .tf {
