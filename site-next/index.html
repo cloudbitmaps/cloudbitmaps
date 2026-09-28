@@ -144,47 +144,67 @@
           </div>
         </div>
 
-        <!-- The four figures, the loss a peer: same bezel, same size, same weight, no alert colour. A revamp that
-             makes the wins bigger is the change most likely to demote the losses quietly. -->
-        <div>
-          <div class="cb-seam cb-cols-4">
-            <div class="cb-fig">
-              <p class="label">At rest</p>
-              <p class="cb-figure-xl">$0.03<span class="cb-unit">/mo</span></p>
-              <p class="cb-note">1.2 GiB at rest, no traffic.</p>
+        <!-- The field. First the key space of one operand, one square per 50 chunks: the first two lit, the hundred
+             whose keys both operands share, which are the first hundred keys of the recorded run. It does not move:
+             the page's two animations are further down. Then the four figures, the loss a peer: same bezel, same
+             size, same weight, no alert colour. A revamp that makes the wins bigger is the change most likely to
+             demote the losses quietly. -->
+        <div class="cb-field">
+          <div class="cb-strip">
+            <div class="cb-strip-head">
+              <p class="label is-hot">100 chunks fetched</p>
+              <p class="label">1,900 never requested, per operand · one square is 50 chunks</p>
             </div>
-            <div class="cb-fig">
-              <p class="label">Against</p>
-              <p class="cb-figure-xl">$346<span class="cb-unit">/mo</span></p>
-              <p class="cb-note">A Redis-HA cluster, standing, whether you read it or not.</p>
-            </div>
-            <div class="cb-fig">
-              <p class="label">Ratio</p>
-              <p class="cb-figure-xl">0.008<span class="cb-unit">%</span></p>
-              <p class="cb-note">What we cost against that line, idle.</p>
-            </div>
-            <div class="cb-fig">
-              <p class="label">Where we lose</p>
-              <p class="cb-figure-xl">329.15<span class="cb-unit">/s</span></p>
-              <p class="cb-note">
-                Cache-miss GETs a second, above which the flat cluster is cheaper; 1.6 a second for cold
-                <span class="m">A&nbsp;∩&nbsp;B</span>. <strong>Use Redis&nbsp;instead.</strong>
-              </p>
-            </div>
+            <svg class="cb-svg" viewBox="0 0 1155 24" data-chunks-per-square="50" role="img" aria-label="The key space of one operand, one square per 50 chunks: 40 squares, of which the first 2, the 100 chunks whose keys both operands share, are fetched.">
+              <defs>
+                <pattern id="sq" width="29" height="24" patternUnits="userSpaceOnUse">
+                  <rect class="idle" width="24" height="24" rx="3" />
+                </pattern>
+              </defs>
+              <rect x="0" y="0" width="1155" height="24" fill="url(#sq)" />
+              <rect class="hot" x="0" y="0" width="24" height="24" rx="3" />
+              <rect class="hot" x="29" y="0" width="24" height="24" rx="3" />
+            </svg>
+            <p class="label">
+              Keys compared before any chunk is requested · 3,000 storage bytes read · 24.6 ms on the memory driver ·
+              one recorded run
+            </p>
           </div>
-          <div class="cb-seam cb-cols-2">
-            <div class="cb-cell">
-              <p class="label">Install</p>
-              <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
-              <p class="cb-note">A codec and a storage · memory drivers need no setup</p>
+          <div>
+            <div class="cb-seam cb-cols-4">
+              <div class="cb-fig">
+                <p class="cb-figure-xl">$0.03<span class="cb-unit">/mo</span></p>
+                <p class="cb-note">1.2 GiB at rest, no traffic</p>
+              </div>
+              <div class="cb-fig">
+                <p class="cb-figure-xl">$346<span class="cb-unit">/mo</span></p>
+                <p class="cb-note">a Redis-HA cluster, standing, whether you read it or not</p>
+              </div>
+              <div class="cb-fig">
+                <p class="cb-figure-xl">0.008%</p>
+                <p class="cb-note">what we cost against that line, idle</p>
+              </div>
+              <div class="cb-fig">
+                <p class="cb-figure-xl">329.15<span class="cb-unit">/s</span></p>
+                <p class="cb-note">
+                  cache-miss GETs a second, above which the flat cluster is cheaper; 1.6 a second as cold
+                  <span class="m">A&nbsp;∩&nbsp;B</span>
+                </p>
+              </div>
             </div>
-            <div class="cb-cell">
-              <p class="label">Counter-case</p>
-              <p class="cb-counter">
-                Reaching for <code>SETBIT</code> on a big key? This is a durable home for set-shaped work computed
-                in batches upstream — not a drop-in replacement.
-              </p>
-              <a class="cb-link" href="flavors/roaring.html#coming-from-redis-bitmaps">What carries over, and what doesn't →</a>
+            <div class="cb-seam cb-cols-2">
+              <div class="cb-cell">
+                <p class="label">Not a drop-in replacement</p>
+                <p class="cb-counter">
+                  Reaching for <code>SETBIT</code> on a big key? This is a durable home for set-shaped work computed
+                  in batches upstream.
+                </p>
+                <a class="cb-link" href="flavors/roaring.html#coming-from-redis-bitmaps">What carries over, and what doesn't →</a>
+              </div>
+              <div class="cb-cell is-sunk">
+                <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
+                <p class="label">A codec and a storage · memory drivers need no setup</p>
+              </div>
             </div>
           </div>
         </div>
@@ -688,7 +708,7 @@
           function (entries) {
             entries.forEach(function (entry) {
               if (!entry.isIntersecting) return;
-              entry.target.classList.add('is-live');
+              entry.target.classList.add('is-seen');
               seen.unobserve(entry.target);
             });
           },

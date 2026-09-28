@@ -362,10 +362,6 @@ h3 {
   color: var(--cb-faint);
 }
 
-.label.is-live {
-  color: var(--cb-cyan);
-}
-
 .cb-figure-xl,
 .cb-figure-l,
 .cb-figure-m {
@@ -377,9 +373,20 @@ h3 {
 }
 
 .cb-figure-xl {
-  font-size: clamp(44px, 4.445vw, 64px);
+  font-size: clamp(28px, 3.2vw, 44px);
   line-height: 1;
-  letter-spacing: -0.04em;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* Its unit sits a space off in faint caps, as a label would: "$346 /MO". */
+.cb-figure-xl .cb-unit {
+  margin-left: 0.5em;
+  font-size: 0.42em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cb-faint);
 }
 
 .cb-figure-l {
@@ -805,9 +812,65 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 .cb-counter {
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--cb-ink);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--cb-muted);
+}
+
+.cb-counter code {
+  font-size: 13px;
+}
+
+/* ── the field: the chunk strip over the four figures ─────────────────── */
+.cb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.cb-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  background: var(--cb-cell);
+  border: 1px solid var(--cb-rule);
+}
+
+.cb-strip-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+/* The field's heads are set bold; the run line under the strip stays at the label's own weight. */
+.cb-strip-head .label,
+.cb-field .cb-cell .label {
+  font-weight: 700;
+}
+
+.cb-field .cb-fig {
+  padding: 24px;
+  gap: 12px;
+}
+
+.cb-field .cb-fig .cb-note {
+  font-size: 13px;
+}
+
+.cb-field .cb-cell {
+  padding: 24px;
+}
+
+.cb-field .cb-cell code {
+  font-size: 14px;
+}
+
+/* The install cell is sunk, so the command reads as something to copy rather than another statement. */
+.cb-cell.is-sunk {
+  justify-content: center;
+  background: var(--cb-surface-2);
 }
 
 .cb-span8 {
@@ -899,8 +962,11 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   border-top: 2px solid var(--cb-idle);
 }
 
-.cb-grid-key > .is-hot {
+.label.is-hot {
   color: var(--cb-cyan);
+}
+
+.cb-grid-key > .is-hot {
   border-top-color: var(--cb-cyan);
 }
 
@@ -1137,9 +1203,9 @@ svg .crossing {
 
 /* ── the two animations ────────────────────────────────────────────────────
    Each plays once, when its band comes into view, and holds: the page's head script sets `cb-motion` where a
-   script will start them and motion is allowed, and the script at its foot adds `is-live` to a `[data-motion]`
+   script will start them and motion is allowed, and the script at its foot adds `is-seen` to a `[data-motion]`
    band as it reaches the screen. Without `cb-motion` nothing is applied and each rests on its final frame, every
-   label present; with it, each is held on its first frame until `is-live`. Only opacity and transform move.
+   label present; with it, each is held on its first frame until `is-seen`. Only opacity and transform move.
 
    The crossover: a cover slides off the plot, so the lines draw left to right, then the crossing's square appears.
    Chunk-skipping: a sweep crosses the key space with no chunk read (01), then the fetched cells resolve one after
@@ -1228,12 +1294,12 @@ svg .crossing {
   animation: cb-appear 0.3s linear 2s both paused;
 }
 
-.cb-motion .is-live .x-cover,
-.cb-motion .is-live .x-dot,
-.cb-motion .is-live .k-scan,
-.cb-motion .is-live .k-hot .hot,
-.cb-motion .is-live .k-ph1,
-.cb-motion .is-live .k-ph2 {
+.cb-motion .is-seen .x-cover,
+.cb-motion .is-seen .x-dot,
+.cb-motion .is-seen .k-scan,
+.cb-motion .is-seen .k-hot .hot,
+.cb-motion .is-seen .k-ph1,
+.cb-motion .is-seen .k-ph2 {
   animation-play-state: running;
 }
 

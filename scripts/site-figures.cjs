@@ -1135,28 +1135,103 @@ const specAnchors = [];
       ? `${singleBucket.parity.intersectsPerSec.toFixed(1)}/s`
       : null;
 
-    // The hero's four figures, by their labels.
+    // A chunk drawing, counted from the drawing: the idle pattern's pitch and cell size give how many cells the key
+    // space draws, and the lit cells are drawn one by one, each in its place: the first ones, because the run's
+    // operands share the first `sharedChunks` chunk keys (bench/scale.cjs builds them so). One cell stands for the
+    // chunks its data attribute says, and its own label must say the same: a reader is told the unit the counts are
+    // multiplied by, and the check multiplies by that one.
+    const { chunksPerSegment, fetchedChunks, skippedChunks, sharedChunks } = scale.intersect;
+    const perOperand = (skippedChunks / 2).toLocaleString('en-US');
+    const total = chunksPerSegment.toLocaleString('en-US');
+    const chunkDrawing = (what, block, id, unitAttr, unitWords) => {
+      const per = Number(new RegExp(`${unitAttr}="(\\d+)"`).exec(block)?.[1] ?? NaN);
+      const pattern = new RegExp(
+        `<pattern id="${id}" width="(\\d+)" height="(\\d+)"[^>]*>\\s*<rect class="idle" width="(\\d+)" height="(\\d+)"`,
+      ).exec(block);
+      const [pitchX, pitchY, cellW, cellH] = (pattern ?? []).slice(1).map(Number);
+      const grid = new RegExp(
+        `<rect x="0" y="0" width="(\\d+)" height="(\\d+)" fill="url\\(#${id}\\)"`,
+      ).exec(block);
+      const drawn = grid
+        ? ((Number(grid[1]) + pitchX - cellW) / pitchX) *
+          ((Number(grid[2]) + pitchY - cellH) / pitchY)
+        : NaN;
+      const hot = [
+        ...block.matchAll(/<rect class="hot" x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)"/g),
+      ];
+      const misplaced = hot.findIndex(
+        ([, x, y, w, h], i) =>
+          Number(x) !== i * pitchX || Number(y) !== 0 || Number(w) !== cellW || Number(h) !== cellH,
+      );
+      expect(`${what}'s stated unit`, unitWords.exec(textOf(block))?.[1] ?? null, String(per));
+      expect(`${what}, chunks drawn`, String(drawn * per), String(chunksPerSegment));
+      expect(`${what}, chunks lit`, String(hot.length * per), String(fetchedChunks));
+      if (misplaced !== -1) {
+        fail(
+          `${SITE_DIR}/index.html's ${what} draws lit cell ${misplaced + 1} out of place: the lit cells are the ` +
+            'first ones in the first row, one cell each, because the operands share the first chunk keys',
+        );
+      }
+      return per;
+    };
+
+    // The field. First its chunk strip: the drawing, the two labels over it, and the run it is from.
+    const strip = /<div class="cb-strip">([\s\S]*?)<\/svg>([\s\S]*?)<\/div>/.exec(homeHtml);
+    const perSquare = chunkDrawing(
+      'chunk strip',
+      strip?.[1] ?? '',
+      'sq',
+      'data-chunks-per-square',
+      /one square is (\d+) chunks/,
+    );
+    const stripHead = [
+      ...(strip?.[1] ?? '').matchAll(/<p class="label[^"]*">([\s\S]*?)<\/p>/g),
+    ].map((m) => textOf(m[1]));
+    expect("chunk strip's fetched label", stripHead[0] ?? null, `${fetchedChunks} chunks fetched`);
+    expect(
+      "chunk strip's other label",
+      stripHead[1] ?? null,
+      `${perOperand} never requested, per operand · one square is ${perSquare} chunks`,
+    );
+    const stripFoot = textOf(/<p class="label">([\s\S]*?)<\/p>/.exec(strip?.[2] ?? '')?.[1] ?? '');
+    for (const [what, want] of [
+      [
+        'bytes read',
+        `${scale.intersect.storageBytesRead.toLocaleString('en-US')} storage bytes read`,
+      ],
+      ['time', `${scale.intersect.intersectMs} ms on the memory driver`],
+    ]) {
+      expect(`chunk strip's ${what}`, stripFoot.includes(want) ? want : stripFoot, want);
+    }
+
+    // Then its four figures. They carry no label, so each is known by its caption, which says what it is: a figure
+    // moved to another caption's cell fails here, as a retyped one does.
     const heroRow =
       /<div class="cb-seam cb-cols-4">([\s\S]*?)<\/div>\s*<div class="cb-seam cb-cols-2">/.exec(
         homeHtml,
       );
-    const heroCells = new Map(
-      [
-        ...(heroRow?.[1] ?? '').matchAll(
-          /<p class="label">([^<]+)<\/p>\s*<p class="cb-figure-xl">([\s\S]*?)<\/p>/g,
-        ),
-      ].map((m) => [m[1].trim(), textOf(m[2])]),
-    );
-    for (const [label, want] of [
-      ['At rest', atRestMo],
-      ['Against', redisMo],
-      ['Ratio', pct],
-      ['Where we lose', rate],
+    const heroCells = [
+      ...(heroRow?.[1] ?? '').matchAll(
+        /<p class="cb-figure-xl">([\s\S]*?)<\/p>\s*<p class="cb-note">([\s\S]*?)<\/p>/g,
+      ),
+    ].map((m) => [textOf(m[2]), textOf(m[1])]);
+    for (const [what, caption, want] of [
+      ['at rest', /^1\.2 GiB at rest, no traffic$/, atRestMo],
+      ['the cluster', /^a Redis-HA cluster, standing\b/, redisMo],
+      ['the share', /^what we cost against that line\b/, pct],
+      ['where we lose', /\babove which the flat cluster is cheaper\b/, rate],
     ]) {
-      expect(`hero figure "${label}"`, heroCells.get(label), want);
+      const cells = heroCells.filter(([c]) => caption.test(c));
+      if (cells.length !== 1) {
+        fail(
+          `${SITE_DIR}/index.html's hero has ${cells.length} figures captioned as ${what}; it should have one`,
+        );
+        continue;
+      }
+      expect(`hero figure, ${what}`, cells[0][1], want);
     }
-    if (heroCells.size !== 4) {
-      fail(`${SITE_DIR}/index.html's hero figure row has ${heroCells.size} cells, not 4`);
+    if (heroCells.length !== 4) {
+      fail(`${SITE_DIR}/index.html's hero figure row has ${heroCells.length} cells, not 4`);
     }
 
     // The figure table, row by row: the row's head says what the figure is, so the head picks its source.
@@ -1193,10 +1268,7 @@ const specAnchors = [];
       `${median} each`,
     );
 
-    // Chunk-skipping: the band's figures and headline, and the grid it draws, counted from the drawing.
-    const { chunksPerSegment, fetchedChunks, skippedChunks } = scale.intersect;
-    const perOperand = (skippedChunks / 2).toLocaleString('en-US');
-    const total = chunksPerSegment.toLocaleString('en-US');
+    // Chunk-skipping: the band's figures and headline, and the grid it draws.
     const band =
       /<section id="demo" class="cb-stack">([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '';
     const bandFigures = new Map(
@@ -1211,45 +1283,7 @@ const specAnchors = [];
       textOf(/<h2>([\s\S]*?)<\/h2>/.exec(band)?.[1] ?? ''),
       `${fetchedChunks} of ${total} chunks. The other ${perOperand} are never requested.`,
     );
-    // The grid, counted from the drawing. The idle pattern's pitch and cell size give how many cells the key space
-    // draws, and the lit cells are drawn one by one, each in its place: the first cells, because the run's operands
-    // share the first `sharedChunks` chunk keys (bench/scale.cjs builds them so). One cell stands for
-    // `data-chunks-per-cell` chunks, and the band's own label must say so: a reader is told the unit the counts are
-    // multiplied by, and the check multiplies by the same one.
-    const { sharedChunks } = scale.intersect;
-    const perCell = Number(/data-chunks-per-cell="(\d+)"/.exec(band)?.[1] ?? NaN);
-    const pattern =
-      /<pattern id="ci" width="(\d+)" height="(\d+)"[^>]*>\s*<rect class="idle" width="(\d+)" height="(\d+)"/.exec(
-        band,
-      );
-    const [pitchX, pitchY, cellW, cellH] = (pattern ?? []).slice(1).map(Number);
-    const grid = /<rect x="0" y="0" width="(\d+)" height="(\d+)" fill="url\(#ci\)"/.exec(band);
-    const drawn = grid
-      ? ((Number(grid[1]) + pitchX - cellW) / pitchX) *
-        ((Number(grid[2]) + pitchY - cellH) / pitchY)
-      : NaN;
-    const hot = [
-      ...(/<g class="k-hot">([\s\S]*?)<\/g>/.exec(band)?.[1] ?? '').matchAll(
-        /<rect class="hot" x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)"/g,
-      ),
-    ];
-    const misplaced = hot.findIndex(
-      ([, x, y, w, h], i) =>
-        Number(x) !== i * pitchX || Number(y) !== 0 || Number(w) !== cellW || Number(h) !== cellH,
-    );
-    expect(
-      "chunk grid's stated unit",
-      /one cell per (\d+) chunks/.exec(textOf(band))?.[1] ?? null,
-      String(perCell),
-    );
-    expect('chunk grid, chunks drawn', String(drawn * perCell), String(chunksPerSegment));
-    expect('chunk grid, chunks lit', String(hot.length * perCell), String(fetchedChunks));
-    if (misplaced !== -1) {
-      fail(
-        `${SITE_DIR}/index.html's chunk grid draws lit cell ${misplaced + 1} out of place: the lit cells are the ` +
-          'first ones in the first row, one cell each, because the operands share the first chunk keys',
-      );
-    }
+    chunkDrawing('chunk grid', band, 'ci', 'data-chunks-per-cell', /one cell per (\d+) chunks/);
     // The bracket over the grid names what each span is.
     const bracket = [
       ...(/<div class="cb-grid-key"[^>]*>([\s\S]*?)<\/div>/.exec(band)?.[1] ?? '').matchAll(

@@ -113,11 +113,11 @@
 
           <aside class="panel">
             <div class="panel-head label">One measured intersection</div>
-            <p class="panel-row is-pair"><span>Chunks fetched</span><span class="is-live">100 / 2,000</span></p>
+            <p class="panel-row is-pair"><span>Chunks fetched</span><span>100 / 2,000</span></p>
             <p class="panel-row is-pair"><span>Reads skipped</span><span>3,800</span></p>
             <p class="panel-row is-pair"><span>Storage bytes read</span><span>3,000</span></p>
             <p class="panel-row is-pair"><span>Ids returned</span><span>100,000</span></p>
-            <p class="panel-row is-pair"><span>Elapsed</span><span class="is-live">24.6 ms</span></p>
+            <p class="panel-row is-pair"><span>Elapsed</span><span>24.6 ms</span></p>
             <p class="link-row"><a href="demo.html">Where these came from →</a></p>
           </aside>
         </div>
@@ -189,7 +189,7 @@
           <li>
             <span class="rl-mark">02</span>
             <span class="rl-what"><span class="m">keys(A) ∩ keys(B)</span></span>
-            <span class="rl-fig is-live">100 / 2,000</span>
+            <span class="rl-fig">100 / 2,000</span>
             <span class="rl-note">
               Metadata only. Cardinality per chunk is stored beside the key, so this phase never opens a
               payload.
@@ -409,7 +409,7 @@
           <li>
             <span class="rl-mark is-held">&#10003;</span>
             <span class="rl-what">The object ceiling is reachable</span>
-            <span class="rl-fig is-live">78 GiB</span>
+            <span class="rl-fig">78 GiB</span>
             <span class="rl-note">
               S3 allows 10,000 multipart parts, and at an 8 MiB part that is the real ceiling. Exceeding it
               raises a typed <span class="m">ValidationError</span> — never a raw S3 400, and never silent
@@ -611,7 +611,7 @@
           <li>
             <span class="rl-mark">02</span>
             <span class="rl-what">Sustained high read rates lose to a flat node</span>
-            <span class="rl-fig is-live">329.15 reads/s</span>
+            <span class="rl-fig">329.15 reads/s</span>
             <span class="rl-note">
               Past that rate, with a cold cache, the metered bill overtakes $346/mo for a three-node Redis-HA cluster. Cache
               hits move it in your favour; we publish the crossover at a 0% hit rate rather than waiting to be

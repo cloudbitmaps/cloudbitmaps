@@ -6,7 +6,7 @@
 > removed in the same change: [Converging](#converging) lists them.
 
 The display tier generalises `/demo`'s treatment into the shared sheet: a display type tier (a 96px h1, 52px band
-heads, 64px and 40px mono figures), a band rhythm that alternates the ground, a figure table, and diagrams in the same
+heads, 44px and 40px mono figures), a band rhythm that alternates the ground, a figure table, and diagrams in the same
 register. Everything else of Instrument holds: radius 0, 1px shared rules, light designed rather than inverted, nothing
 below 9.5px, no external anything, and the point where we lose shown as a peer of the points where we win.
 
@@ -50,7 +50,8 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
   not the July figures, which left the pointer out; the crossover is a rate of GETs with every read a cache miss,
   beside the cold intersect's; the middle column of "what you operate" is what 0.9.0 ran; the memory band shows peak
   RSS beside the retained heap; what a comparison of keys never reads is chunk bytes; and the chunk grid draws one
-  cell per ten chunks, so the proportion reads at a glance.
+  cell per ten chunks, so the proportion reads at a glance. The hero's figures sit under a chunk strip, one square
+  per 50 chunks, and beside the counter-case and the install line, as the 3B design lays them out.
 - **The inner pages keep their content** and take the language: the h1 at the display tier beside a figure table,
   each section a band on the alternating ground, card grids as seams, long prose in sans.
 - **Two animations, and nothing else moves**: the crossover drawing itself and chunk-skipping resolving its

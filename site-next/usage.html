@@ -547,7 +547,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             <li>
               <span class="rl-mark">01</span>
               <span class="rl-what">Schedule the retention sweep</span>
-              <span class="rl-fig is-live">retireExpired()</span>
+              <span class="rl-fig">retireExpired()</span>
               <span class="rl-note">
                 The only scheduled work there is — no daemon, no compaction pass, no lifecycle worker. An
                 EventBridge rule, a Kubernetes <span class="m">CronJob</span> or a queue job all do; nothing
@@ -557,7 +557,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
             <li>
               <span class="rl-mark">02</span>
               <span class="rl-what">Bound the cache to what your runtime can hold</span>
-              <span class="rl-fig is-live">cache.maxChunks</span>
+              <span class="rl-fig">cache.maxChunks</span>
               <span class="rl-note">
                 An LRU with a hard ceiling — 1,024 decoded chunks by default — and the ceiling is yours to
                 choose. Correctness does not depend on it either way.
@@ -621,7 +621,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
           <li>
             <span class="rl-mark is-held">&#10003;</span>
             <span class="rl-what">One command writes everything out</span>
-            <span class="rl-fig is-live">exportSegments()</span>
+            <span class="rl-fig">exportSegments()</span>
             <span class="rl-note">
               Cross-language <span class="m">roaring</span> or newline-delimited
               <span class="m">ndjson</span>, via public read APIs only, with an
