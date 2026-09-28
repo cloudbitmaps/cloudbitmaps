@@ -295,8 +295,7 @@
             <p>
               Cardinality per chunk is stored beside the chunk key, so <span class="m">count()</span> sums
               metadata and never opens a payload. It is <strong>exact, not estimated</strong> — no
-              HyperLogLog, no error bars. <strong>$0.14 per million</strong> counts in the July run, without the
-              pointer read that the single-bucket store now adds.
+              HyperLogLog, no error bars.
             </p>
           </div>
         </div>

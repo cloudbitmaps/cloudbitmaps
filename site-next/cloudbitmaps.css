@@ -867,6 +867,33 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   font-size: 14px;
 }
 
+/* A cell's head row: its label, and what it holds, at opposite edges. */
+.cb-cell-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+/* The install block: the command, then what to swap in, the comments in the faint tone. */
+.cb-pre {
+  margin: 0;
+  font-family: var(--cb-mono);
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--cb-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cb-pre code {
+  font-size: inherit;
+}
+
+.cb-pre .c {
+  color: var(--cb-faint);
+}
+
 /* The install cell is sunk, so the command reads as something to copy rather than another statement. */
 .cb-cell.is-sunk {
   justify-content: center;
@@ -971,52 +998,69 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
 }
 
 /* ── 04 · the crossover ────────────────────────────────────────────────── */
-.cb-cross {
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-}
-
-/* The chart sits in the middle of its cell when the table beside it is the taller of the two. */
+/* The chart at full width, then what goes in beside what comes out, each table on its own cell of the seam. */
 .cb-cross-chart {
-  grid-column: span 7;
-  padding: 24px 20px 16px;
-  display: flex;
-  align-items: center;
+  padding: 24px 24px 16px;
 }
 
-.cb-cross-table {
-  grid-column: span 5;
+.cb-derive > * {
   display: flex;
   flex-direction: column;
   overflow-x: auto;
 }
 
+/* The homepage's chart is drawn 1,176 wide, so its text is drawn at 13 units and more: no run is smaller. */
+.cb-svg.is-chart .tl,
+.cb-svg.is-chart .tf {
+  font-size: 13px;
+}
+
+.cb-svg.is-chart .crossing {
+  font-size: 22px;
+}
+
+svg .t.is-fig {
+  font-size: 20px;
+  font-weight: 700;
+}
+
 /* ── 05 · memory ───────────────────────────────────────────────────────── */
-.cb-mem {
+/* One panel: the retained heap as bars on one axis, beside the two that grow. */
+.cb-memory > * {
   padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 20px;
+  overflow-x: auto;
 }
 
-.cb-mem-part {
+.cb-hbars {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  align-items: end;
+}
+
+.cb-hbar {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.cb-mem-part + .cb-mem-part {
-  border-top: 1px solid var(--cb-rule);
-  padding-top: 14px;
-}
-
-.cb-mem-part .cb-figure-m {
+.cb-hbar .cb-figure-m {
   text-align: left;
 }
 
-.cb-bar {
+/* Each bar's track is the whole axis, so three bars of one height read as flat. */
+.cb-vbar {
   display: block;
   width: 100%;
-  height: 8px;
+  max-width: 96px;
+  height: 140px;
+}
+
+.cb-memory .cb-ftable thead th:not(:first-child) {
+  text-align: right;
 }
 
 /* The invariant count. scripts/site-figures.cjs reads it from this class, so the name stays. */
@@ -1027,7 +1071,23 @@ main:has(> section:last-of-type:nth-of-type(odd)) + .foot {
   max-width: 96ch;
 }
 
-/* ── 06 · fit ──────────────────────────────────────────────────────────── */
+/* ── 06 · the conditions ───────────────────────────────────────────────── */
+.cb-caveat h3 {
+  font-weight: 700;
+}
+
+.cb-caveat p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--cb-muted);
+}
+
+.cb-caveat code {
+  font-size: 13px;
+  color: var(--cb-ink);
+}
+
+/* ── 07 · fit ──────────────────────────────────────────────────────────── */
 .cb-fit {
   padding: 28px 32px 32px;
   display: flex;
@@ -1191,11 +1251,6 @@ svg .scanbar {
   fill: var(--cb-ink);
 }
 
-/* Process RSS, the one of the three that grows: muted, so the bounded heap beside it leads. */
-svg .rssbar {
-  fill: var(--cb-muted);
-}
-
 svg .crossing {
   font-weight: 700;
   font-size: 15px;
@@ -1210,13 +1265,14 @@ svg .crossing {
    The crossover: a cover slides off the plot, so the lines draw left to right, then the crossing's square appears.
    Chunk-skipping: a sweep crosses the key space with no chunk read (01), then the fetched cells resolve one after
    another (02), and the grid holds. */
+/* The cover slides its own width, so the chart's size lives in the chart alone. */
 @keyframes cb-reveal {
   from {
     transform: translateX(0);
     opacity: 1;
   }
   to {
-    transform: translateX(612px);
+    transform: translateX(100%);
     opacity: 1;
   }
 }
@@ -1268,6 +1324,10 @@ svg .crossing {
 .k-scan,
 .k-ph1 {
   opacity: 0;
+}
+
+.x-cover {
+  transform-box: fill-box;
 }
 
 .cb-motion .x-cover {
@@ -2746,12 +2806,6 @@ svg .crossing {
 
    The left figure illustrates a whole-generation rewrite: one marked id, and a later
    row where it is absent.
-
-   Both are built here rather than ported, because the old site's versions were
-   never styled: `site/architecture.html` references .merge, .bits, .add, .gen,
-   .gen-bar, .gen-obj, .delta and .g7, and `site/cloudbitmaps.css` declares none of
-   them. 29 undefined class references on that page, which is how a diagram ships as
-   bare markup and nobody notices.
    ══════════════════════════════════════════════════════════════════════════════ */
 .dgm {
   margin: 0;
@@ -2987,25 +3041,19 @@ svg .crossing {
   overflow-x: auto;
 }
 
-/* Each diagram's narrowest width that keeps its smallest label, 10 units, at 9.5px: viewBox width x 9.5 / 10. */
+/* Each diagram's narrowest width that keeps its smallest label at 9.5px: viewBox width × 9.5 ÷ that label's size,
+   10 units for most, 13 for the homepage's chart. */
 .cb-scroll > .cb-svg.is-wide,
 .chart > .cb-scroll > .cb-svg {
   min-width: 1118px;
 }
 
 .cb-scroll > .cb-svg.is-chart {
-  min-width: 666px;
+  min-width: 860px;
 }
 
 .cb-scroll > .cb-svg.is-op {
   min-width: 380px;
-}
-
-@media (max-width: 1280px) {
-  .cb-cross-chart,
-  .cb-cross-table {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 1240px) {
@@ -3094,6 +3142,14 @@ svg .crossing {
   .cb-grid-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+  /* The table of the two that grow fits a phone: the figure size a row list uses, and tighter cells. */
+  .cb-memory .cb-ftable td {
+    font-size: 16px;
+  }
+  .cb-memory .cb-ftable th,
+  .cb-memory .cb-ftable td {
+    padding-inline: 8px;
   }
   .cb-phase {
     text-align: left;

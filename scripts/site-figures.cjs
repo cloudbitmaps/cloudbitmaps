@@ -430,6 +430,22 @@ const anchors = [
   ['single-bucket · the whole run', singleBucketFigure('the run')],
 ];
 
+// Per tree: site/'s benchmarks page still carries the July run, a run of a design that no longer ships, with its
+// receipt. site-next/ describes the current release only, so on its pages the July run's figures are neither
+// required nor allowed: one that came back would be a page describing an older release. The repository's docs are
+// not a tree's pages and keep them until they are swept. Convergence flips the entry.
+const STATES_THE_JULY_RUN = { site: true, 'site-next': false }[SITE_DIR];
+if (!STATES_THE_JULY_RUN) {
+  for (const anchor of anchors) {
+    if (/^(July · |calibration )/.test(anchor[0]))
+      anchor[2] = { ...(anchor[2] ?? {}), offTree: true };
+  }
+}
+/** Whether an anchor speaks for a page: inside its `onlyOn` list if it has one, and not off this tree's pages. */
+const speaksFor = (scope, rel) =>
+  (scope?.onlyOn === undefined || scope.onlyOn.includes(rel)) &&
+  !(scope?.offTree && rel.startsWith(`${SITE_DIR}/`));
+
 // ── the inverse check now covers HOME as well as /benchmarks ───────────────────────────────────────────────
 // The rebuilt home page states, in its own words, that "every money figure and rate on this site is checked in
 // CI against the sources that produced it — in both directions". That was FALSE the moment it was written: this
@@ -724,19 +740,15 @@ for (const page of PAGES) {
     }
   }
   if (page.requireAll) {
-    for (const [name, want] of anchors) {
-      if (want === null) continue;
+    for (const [name, want, scope] of anchors) {
+      if (want === null || (scope?.offTree && page.rel.startsWith(`${SITE_DIR}/`))) continue;
       if (!visible.includes(want)) fail(`${page.rel} never states ${name} (${want})`);
     }
   }
 
   // 2 · and nothing else that looks like money may appear
   const allowed = new Set(
-    anchors
-      .filter(
-        ([, v, scope]) => v && (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
-      )
-      .map(([, v]) => v),
+    anchors.filter(([, v, scope]) => v && speaksFor(scope, page.rel)).map(([, v]) => v),
   );
   // The page legitimately restates figures owned by other gates; each is listed so that adding one is a
   // deliberate act rather than a silent widening.
@@ -746,6 +758,9 @@ for (const page of PAGES) {
     // There is no source that could "account for" zero, and demanding one would be the check misfiring on the
     // one figure that needs no evidence.
     ...(page.rel === `${SITE_DIR}/index.html` ? ['$0'] : []),
+    // Home only: the at-rest figure unrounded, where the cost band shows the arithmetic the share comes from. The
+    // share's check above recomputes it from the same bench/results.json value.
+    ...(page.rel === `${SITE_DIR}/index.html` ? [`$${atRestExact}`] : []),
   ]);
   // A figure the latest calibration run accounts for passes at the precision it is written, by the same matcher
   // that holds the run's report to its evidence — `$82` for $82.40 as readily as the full figure. Its latency
@@ -773,10 +788,7 @@ for (const page of PAGES) {
     // page here, because a plain value passes whatever words stand beside it.
     const otherSources = anchors
       .filter(
-        ([name, v, scope]) =>
-          v &&
-          !name.startsWith('single-bucket') &&
-          (scope?.onlyOn === undefined || scope.onlyOn.includes(page.rel)),
+        ([name, v, scope]) => v && !name.startsWith('single-bucket') && speaksFor(scope, page.rel),
       )
       .map(([, v]) => v);
     const values = calibration.mergeValues(
@@ -1234,39 +1246,158 @@ const specAnchors = [];
       fail(`${SITE_DIR}/index.html's hero figure row has ${heroCells.length} cells, not 4`);
     }
 
-    // The figure table, row by row: the row's head says what the figure is, so the head picks its source.
-    const table = /<table class="cb-ftable">([\s\S]*?)<\/table>/.exec(homeHtml)?.[1] ?? '';
-    const rows = [
-      ...table.matchAll(/<tr>\s*<th scope="row">([\s\S]*?)<\/th>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/g),
-    ].map((m) => [
-      textOf(m[1].replace(/<span class="cb-note">[\s\S]*?<\/span>/, '')),
-      textOf(m[2]),
-      textOf(m[1]),
-    ]);
-    const TABLE = [
-      ['At rest', atRestMo],
-      ['Cold A ∩ B, 100 chunks shared', singleBucketFigure(MEASURED_1M)],
-      ['Write and publish', singleBucketFigure(WRITE_1M)],
-      ['Redis-HA cluster', redisMo],
-      ['Against that line', pct],
-      ['Crossover, in GETs', rate],
-      ['…as cold A ∩ B', intersectRate],
-    ];
-    for (const [head, want] of TABLE) {
-      expect(`figure table row "${head}"`, rows.find(([h]) => h === head)?.[1], want);
-    }
-    if (rows.length !== TABLE.length) {
+    // The cost band's two tables: what goes in, each input marked measured, quoted or chosen, and what comes out,
+    // each figure beside its arithmetic. The heads pick the source, the value is held to it, and every derived row's
+    // formula is rebuilt here from the same inputs and recomputed, so the sum a reader can redo is the true one.
+    const costSrc = fs.readFileSync(COST, 'utf8');
+    const prices =
+      /AWS_US_EAST_1_ONDEMAND[^=]*=\s*deepFreeze\(\{[\s\S]*?storage:\s*\{\s*getPerMillion:\s*([\d.]+),\s*putPerMillion:\s*([\d.]+),\s*storagePerGiBMonth:\s*([\d.]+)\s*\}/.exec(
+        costSrc,
+      );
+    const hours = Number(/const HOURS_PER_MONTH = (\d+);/.exec(costSrc)?.[1] ?? NaN);
+    if (!prices || !Number.isFinite(hours)) {
       fail(
-        `${SITE_DIR}/index.html's figure table has ${rows.length} rows; this check knows ${TABLE.length}`,
+        'core/cost.ts no longer states the us-east-1 prices or HOURS_PER_MONTH in the form this check reads',
       );
     }
-    const median = singleBucketFigure('GETs the median cold intersect made');
-    const asCold = rows.find(([h]) => h === '…as cold A ∩ B')?.[2] ?? null;
-    expect(
-      "figure table's cold A ∩ B request count",
-      asCold?.includes(`${median} each`) ? `${median} each` : asCold,
-      `${median} each`,
+    if (results.pricing !== 'aws-us-east-1-ondemand') {
+      fail(
+        `bench/results.json is priced at ${results.pricing}, but the cost band says AWS us-east-1 list prices`,
+      );
+    }
+    const [getM, putM, storeGiB] = (prices ?? []).slice(1).map(Number);
+    const seconds = hours * 3600;
+    const usd2 = (n) => `$${n.toFixed(2)}`;
+    const { sizeGiB, monthlyUSD: atRestUSD } = results.atRest;
+    const REDIS_USD = results.redisBaselineUSD;
+    const gets = Number(singleBucket?.measuredGets ?? NaN);
+    const puts = Number(singleBucket?.putsPerSingle ?? NaN);
+    const writeGets = Number(singleBucket?.getsPerLoad ?? NaN);
+    const nodes = (baselineTopology ?? '').match(/\d+/g)?.reduce((n, d) => n + Number(d), 0) ?? NaN;
+    const near = (x, y) => Math.abs(x - y) < 1e-9;
+    // Each derived figure, recomputed from its inputs: a formula shown on the page must also be true.
+    for (const [what, got, want] of [
+      ['at rest', sizeGiB * storeGiB, atRestUSD],
+      [
+        'a cold intersect per million',
+        gets * getM,
+        Number(singleBucketFigure(MEASURED_1M)?.slice(1)),
+      ],
+      [
+        'a write and publish per million',
+        puts * putM + writeGets * getM,
+        Number(singleBucketFigure(WRITE_1M)?.slice(1)),
+      ],
+    ]) {
+      if (!near(Number(got.toFixed(4)), Number(want.toFixed(4)))) {
+        fail(`the cost band's arithmetic for ${what} gives ${got}, but its source says ${want}`);
+      }
+    }
+    if (
+      ((atRestUSD / REDIS_USD) * 100).toFixed(3) !== String(results.atRest.pctOfRedis.toFixed(3))
+    ) {
+      fail(
+        `$${atRestUSD} ÷ $${REDIS_USD} is not the published share, ${results.atRest.pctOfRedis}%`,
+      );
+    }
+    if (
+      (REDIS_USD / ((getM / 1e6) * seconds)).toFixed(2) !== results.readCrossoverPerSec.toFixed(2)
+    ) {
+      fail(`$${REDIS_USD} ÷ ($${getM} per million × ${seconds} s) is not the published crossover`);
+    }
+    if (
+      singleBucket &&
+      (REDIS_USD / (gets * getM * 1e-6 * seconds)).toFixed(1) !==
+        singleBucket.parity.intersectsPerSec.toFixed(1)
+    ) {
+      fail(
+        "the cold intersect's rate against the cluster does not follow from its GETs and the GET price",
+      );
+    }
+    const costBand = /<section id="crossover"[^>]*>([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '';
+    const tables = [...costBand.matchAll(/<table class="cb-ftable">([\s\S]*?)<\/table>/g)].map(
+      (t) =>
+        [
+          ...t[1].matchAll(
+            /<tr>\s*<th scope="row">([\s\S]*?)<\/th>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/g,
+          ),
+        ].map((m) => ({
+          head: textOf(m[1].replace(/<span class="cb-note">[\s\S]*?<\/span>/, '')),
+          note: textOf(/<span class="cb-note">([\s\S]*?)<\/span>/.exec(m[1])?.[1] ?? ''),
+          value: textOf(m[2]),
+        })),
     );
+    const shared = singleBucket?.chunksPerOperand;
+    const S = seconds.toLocaleString('en-US');
+    const TABLES = [
+      [
+        'what goes in',
+        [
+          ['The reference set', `${sizeGiB} GiB`, 'chosen · at rest, no traffic'],
+          [
+            `GETs per cold A ∩ B, ${shared} chunks shared`,
+            String(gets),
+            `measured · the median of ${singleBucket?.intersects} cold intersects on S3, ${singleBucket?.region}`,
+          ],
+          [
+            'Requests per write and publish',
+            singleBucketFigure('a single-part write and publish'),
+            'measured · on S3, pointer included',
+          ],
+          [
+            'S3 GET · PUT, per million',
+            `${usd2(getM)} · ${usd2(putM)}`,
+            'quoted · AWS us-east-1 list price',
+          ],
+          ['S3 storage, per GiB-month', `$${storeGiB}`, 'quoted · AWS us-east-1 list price'],
+          [
+            'Redis-HA cluster',
+            redisMo,
+            `quoted · ${nodes} × ${baselineInstance}, ${hours} hours a month`,
+          ],
+        ],
+      ],
+      [
+        'what comes out',
+        [
+          ['At rest', atRestMo, `${sizeGiB} GiB × $${storeGiB}`],
+          [
+            'Cold A ∩ B, per million',
+            singleBucketFigure(MEASURED_1M),
+            `${gets} GETs × ${usd2(getM)}`,
+          ],
+          [
+            'Write and publish, per million',
+            singleBucketFigure(WRITE_1M),
+            `${puts} × ${usd2(putM)} + ${writeGets} × ${usd2(getM)}`,
+          ],
+          ['Against that line', pct, `$${atRestUSD} ÷ $${REDIS_USD}`],
+          [
+            'Crossover, in GETs',
+            rate,
+            `$${REDIS_USD} ÷ (${usd2(getM)} per million × ${S} s a month)`,
+          ],
+          [
+            '…as cold A ∩ B',
+            intersectRate,
+            `$${REDIS_USD} ÷ (${singleBucketFigure(MEASURED_1M)} per million × ${S} s a month)`,
+          ],
+        ],
+      ],
+    ];
+    TABLES.forEach(([name, want], i) => {
+      const rows = tables[i] ?? [];
+      for (const [head, value, note] of want) {
+        const row = rows.find((r) => r.head === head);
+        expect(`${name}, "${head}"`, row?.value ?? null, value);
+        expect(`${name}, "${head}", its note`, row?.note ?? null, note);
+      }
+      if (rows.length !== want.length) {
+        fail(
+          `${SITE_DIR}/index.html's table of ${name} has ${rows.length} rows; this check knows ${want.length}`,
+        );
+      }
+    });
 
     // Chunk-skipping: the band's figures and headline, and the grid it draws.
     const band =
@@ -1306,92 +1437,121 @@ const specAnchors = [];
       expect(`"${m[0]}"`, m[0], `${fetchedChunks} of ${total}`);
     }
 
-    // The memory band: per fleet the retained heap, peak RSS and discovery scan, each with a bar, and the axes the
-    // bars are drawn on. Checked in both directions: every fleet the file has is on the page, and every cell the
-    // page has is a fleet the file has; a cell's own label is read, not only its data attribute.
-    const memCells = [
-      ...homeHtml.matchAll(
-        /<div class="cb-mem" data-segments="(\d+)">([\s\S]*?)(?=<div class="cb-mem"|<\/div>\s*<\/div>\s*<div class="cb-head">)/g,
-      ),
-    ];
+    // The memory band, one panel: per fleet the retained heap as a bar on one axis, and a table of the two that grow,
+    // the discovery scan and peak RSS. Checked in both directions: every fleet the file has is in both parts, and
+    // every bar and row the page has is a fleet the file has; each one's own label is read, not only its attribute.
+    const memory =
+      /<div class="cb-seam cb-cols-2 cb-memory">([\s\S]*?)<\/table>/.exec(homeHtml)?.[1] ?? '';
     const scanShown = (ms) =>
       ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toPrecision(3)} s`;
     const HEAP_AXIS = 10;
-    const maxScan = Math.max(...scale.fleets.map((f) => f.discoveryMs));
-    const maxRss = Math.max(...scale.fleets.map((f) => f.rssPeakMiB));
-    const bar = (value, axis) => Math.max(1, Math.round((value / axis) * 360));
-    const shown = new Set(memCells.map((m) => Number(m[1])));
+    const TRACK = 140;
+    expect(
+      "memory band's heap axis",
+      /Retained heap · measured · 0–(\d+) MiB axis/.exec(textOf(memory))?.[1] ?? null,
+      String(HEAP_AXIS),
+    );
+    const heapBars = [
+      ...memory.matchAll(
+        /<div class="cb-hbar" data-segments="(\d+)">\s*<p class="cb-figure-m">([\s\S]*?)<\/p>\s*<svg class="cb-vbar" viewBox="0 0 96 (\d+)"[^>]*><rect class="idle" width="96" height="(\d+)" \/><rect class="heap" y="(\d+)" width="96" height="(\d+)" \/><\/svg>\s*<p class="label">([^<]+)<\/p>/g,
+      ),
+    ];
+    const growRows = [
+      ...memory.matchAll(
+        /<tr><th scope="row">([^<]+)<\/th><td>([^<]+)<\/td><td>([^<]+)<\/td><\/tr>/g,
+      ),
+    ];
     for (const fleet of scale.fleets) {
-      if (!shown.has(fleet.n)) {
-        fail(`${SITE_DIR}/index.html's memory band has no cell for the ${fleet.n}-segment fleet`);
-      }
       if (fleet.heapRetainedMiB > HEAP_AXIS) {
         fail(
           `the ${fleet.n}-segment fleet's heap, ${fleet.heapRetainedMiB} MiB, is past the memory band's ` +
-            `0–${HEAP_AXIS} MiB axis: widen the axis and its caption`,
+            `0–${HEAP_AXIS} MiB axis: widen the axis and its label`,
         );
       }
+      const name = `${fleet.n.toLocaleString('en-US')} segments`;
+      if (!heapBars.some((m) => Number(m[1]) === fleet.n)) {
+        fail(
+          `${SITE_DIR}/index.html's memory band has no heap bar for the ${fleet.n}-segment fleet`,
+        );
+      }
+      if (!growRows.some((m) => m[1].trim() === name)) {
+        fail(`${SITE_DIR}/index.html's memory band has no row of the two that grow for ${name}`);
+      }
     }
-    if (memCells.length === 0) {
-      fail(`${SITE_DIR}/index.html no longer carries its memory band (.cb-mem cells)`);
-    }
-    for (const [, n, body] of memCells) {
+    for (const [, n, figure, viewH, trackH, y, h, label] of heapBars) {
       const fleet = scale.fleets.find((f) => f.n === Number(n));
       if (!fleet) {
         fail(
-          `${SITE_DIR}/index.html's memory band shows a ${n}-segment fleet bench/scale-results.json does not have`,
+          `${SITE_DIR}/index.html's memory band draws a ${n}-segment fleet bench/scale-results.json does not have`,
         );
         continue;
       }
+      const want = Math.max(1, Math.round((fleet.heapRetainedMiB / HEAP_AXIS) * TRACK));
       expect(
-        `${n}-segment cell's label`,
-        textOf(/^\s*<p class="label">([^<]+)<\/p>/.exec(body)?.[1] ?? ''),
+        `${n}-segment heap bar's label`,
+        label.trim(),
         `${fleet.n.toLocaleString('en-US')} segments`,
       );
-      for (const [label, cls, figure, value, axis] of [
-        [
-          'Retained heap',
-          'heap',
-          `${fleet.heapRetainedMiB.toFixed(1)}MiB`,
-          fleet.heapRetainedMiB,
-          HEAP_AXIS,
-        ],
-        ['Peak RSS', 'rssbar', `${fleet.rssPeakMiB.toFixed(1)} MiB`, fleet.rssPeakMiB, maxRss],
-        ['Discovery scan', 'scanbar', scanShown(fleet.discoveryMs), fleet.discoveryMs, maxScan],
-      ]) {
-        const m = new RegExp(
-          `<p class="label">${label}</p>\\s*<p class="(?:cb-figure-l|cb-figure-m)">([\\s\\S]*?)</p>\\s*` +
-            `<svg class="cb-bar" viewBox="([^"]+)"[^>]*><rect class="idle" width="(\\d+)"[^>]*/><rect class="(\\w+)" width="(\\d+)"`,
-        ).exec(body);
-        expect(`${n}-segment ${label}`, m ? textOf(m[1]) : null, figure);
-        expect(
-          `${n}-segment ${label} bar track`,
-          m ? `${m[2]} / ${m[3]}` : null,
-          '0 0 360 8 / 360',
-        );
-        expect(
-          `${n}-segment ${label} bar`,
-          m && m[4] === cls ? m[5] : null,
-          String(bar(value, axis)),
-        );
-      }
+      expect(
+        `${n}-segment retained heap`,
+        textOf(figure),
+        `${fleet.heapRetainedMiB.toFixed(1)} MiB`,
+      );
+      expect(`${n}-segment heap bar's track`, `${viewH} / ${trackH}`, `${TRACK} / ${TRACK}`);
+      expect(`${n}-segment heap bar`, `${h} at ${y}`, `${want} at ${TRACK - want}`);
     }
-    const caption = textOf(
-      /<p class="cb-note is-caption">([\s\S]*?)<\/p>/.exec(homeHtml)?.[1] ?? '',
-    );
-    for (const axis of [
-      `0–${HEAP_AXIS} MiB axis`,
-      `0–${maxRss.toFixed(1)} MiB one`,
-      `0–${scanShown(maxScan)} one`,
-    ]) {
-      if (!caption.includes(axis)) {
-        fail(`${SITE_DIR}/index.html's memory caption does not name the axis "${axis}"`);
+    for (const [, name, scanText, rssText] of growRows) {
+      const fleet = scale.fleets.find(
+        (f) => `${f.n.toLocaleString('en-US')} segments` === name.trim(),
+      );
+      if (!fleet) {
+        fail(
+          `${SITE_DIR}/index.html's memory table shows "${name}", a fleet bench/scale-results.json does not have`,
+        );
+        continue;
       }
+      expect(`${name} discovery scan`, scanText.trim(), scanShown(fleet.discoveryMs));
+      expect(`${name} peak RSS`, rssText.trim(), `${fleet.rssPeakMiB.toFixed(1)} MiB`);
+    }
+    if (heapBars.length !== scale.fleets.length || growRows.length !== scale.fleets.length) {
+      fail(
+        `${SITE_DIR}/index.html's memory band shows ${heapBars.length} heap bars and ${growRows.length} rows; ` +
+          `bench/scale-results.json has ${scale.fleets.length} fleets`,
+      );
+    }
+    // The conditions: each card's figure beside the fact that bounds it, held to the file it comes from. Page-wide
+    // rules already hold each rate to one of the two published crossovers; these hold each to the right one.
+    const conditions = textOf(
+      /<section id="conditions"[^>]*>([\s\S]*?)<\/section>/.exec(homeHtml)?.[1] ?? '',
+    );
+    const ref = results.referenceRedis;
+    const largest = scale.fleets.reduce((a, f) => (f.n > a.n ? f : a));
+    for (const [what, want] of [
+      [
+        'the crossover card',
+        `Above ${results.readCrossoverPerSec} GETs a second, every one a cache miss`,
+      ],
+      ['the cluster card', `$${REDIS_USD} is one cluster, not your bill`],
+      ['the cluster card', `It is ${nodes} × ${baselineInstance}, whatever the data size`],
+      [
+        'the cluster card',
+        `this ${sizeGiB} GiB set is $${ref.monthlyUSD.toFixed(2)} a month, ${ref.cluster}, and against it the line ` +
+          `crosses at ${ref.readCrossoverPerSec.toFixed(2)} GETs a second`,
+      ],
+      [
+        'the listing card',
+        `flat to ${largest.n.toLocaleString('en-US')} segments, but finding them is an O(total) scan: ` +
+          `${scanShown(largest.discoveryMs)} over that fleet`,
+      ],
+      [
+        'the latency card',
+        `${scale.intersect.intersectMs} ms is the recorded run on the memory driver`,
+      ],
+    ]) {
+      expect(`${what}`, conditions.includes(want) ? want : null, want);
     }
     const cap = `capped at ${scale.cap.toLocaleString('en-US')} segments`;
-    if (!textOf(homeHtml).includes(cap)) {
-      fail(`${SITE_DIR}/index.html's memory band does not state the cap, "${cap}"`);
-    }
+    expect("memory band's cap", textOf(homeHtml).includes(cap) ? cap : null, cap);
   }
 
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
@@ -1565,6 +1725,41 @@ const specAnchors = [];
     );
   }
   specAnchors.push(['Site-wide · driver-count statements', String(alsoChecked)]);
+
+  // ── every number on the display-tier homepage is one a check held ─────────────────────────────────
+  if (HOME_IS_DISPLAY_TIER) {
+    // Every number the homepage shows is one a check in this file held, which is what lets its footer say every
+    // figure here is gated in CI. Checked last, once every check has recorded what it held, over the page's visible
+    // text, SVG labels included, with each tag a break so adjacent cells do not run together. The structural
+    // numbers are named rather than exempted by shape: the bands' and the chunk band's phases' own numbering, the
+    // licence, the release stage, the id width. A new figure no check knows fails here until one does.
+    const STRUCTURAL = /\b0[1-9](?= · | [A-Z])|Apache-2\.0|Pre-1\.0|32-bit/g;
+    const NUMBER = /(?<![\w.])\d[\d,]*(?:\.\d+)?/g;
+    const shownText = textOf(
+      homeHtml
+        .slice(homeHtml.indexOf('<body'))
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<script[\s\S]*?<\/script>/g, '')
+        .replace(/<[^>]+>/g, ' '),
+    ).replace(STRUCTURAL, ' ');
+    const heldHere = new Set(
+      specAnchors
+        .filter(([name]) => name.startsWith('Home'))
+        .flatMap(([, value]) => String(value).match(NUMBER) ?? []),
+    );
+    const unheld = [...new Set(shownText.match(NUMBER) ?? [])].filter((n) => !heldHere.has(n));
+    if (unheld.length > 0) {
+      fail(
+        `${SITE_DIR}/index.html shows ${unheld.join(', ')}, which no check on this page holds; its footer says ` +
+          'every figure here is gated in CI',
+      );
+    }
+    if (!/every figure here is gated in CI/.test(textOf(homeHtml))) {
+      fail(
+        `${SITE_DIR}/index.html's footer no longer says every figure here is gated in CI, which this check holds`,
+      );
+    }
+  }
 }
 
 if (problems.length) {

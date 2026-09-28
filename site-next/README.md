@@ -45,13 +45,15 @@ below 9.5px, no external anything, and the point where we lose shown as a peer o
 
 ## What differs from site/
 
-- **The homepage is the design's**, with its inline styles made classes. Where its copy or figures had gone stale it
-  says what is true now: the figure table carries the S3 run's cost of a cold intersect and of a write and publish,
-  not the July figures, which left the pointer out; the crossover is a rate of GETs with every read a cache miss,
-  beside the cold intersect's; the middle column of "what you operate" is what 0.9.0 ran; the memory band shows peak
-  RSS beside the retained heap; what a comparison of keys never reads is chunk bytes; and the chunk grid draws one
-  cell per ten chunks, so the proportion reads at a glance. The hero's figures sit under a chunk strip, one square
-  per 50 chunks, and beside the counter-case and the install line, as the 3B design lays them out.
+- **The homepage is the display-tier design's, with what the 3B design added**, its inline styles made classes, and
+  it says what is true of the current release only. The hero's figures sit under a chunk strip, one square per 50
+  chunks. What you operate sets our bucket beside the alternatives a reader would weigh, a Redis cluster and a
+  tiered database, each box tagged with what keeping it costs. The cost band shows what goes in, each input marked
+  measured, quoted or chosen, beside what comes out with its arithmetic. The chunk grid draws one cell per ten
+  chunks; the memory band sets the flat heap beside the two that grow; and a band of conditions says what the
+  figures do not prove.
+- **Nothing describes an older release**: no figure from a run of a design that no longer ships, and no "used to".
+  Where a comparison is needed, it is against an alternative, not against our own history.
 - **The inner pages keep their content** and take the language: the h1 at the display tier beside a figure table,
   each section a band on the alternating ground, card grids as seams, long prose in sans.
 - **Two animations, and nothing else moves**: the crossover drawing itself and chunk-skipping resolving its
@@ -91,7 +93,7 @@ they work locally.
 `git mv site-next site`, in its own pull request, and in the same change:
 
 - in `scripts/site-figures.cjs`, give `site` what `site-next` has now in each per-tree map (`HOME_IS_DISPLAY_TIER`,
-  `HOME_HAS_SPEC_STRIP`, `DRIVER_STATEMENT_FLOOR`), then drop the `site-next` entries;
+  `HOME_HAS_SPEC_STRIP`, `DRIVER_STATEMENT_FLOOR`, `STATES_THE_JULY_RUN`), then drop the `site-next` entries;
 - drop `site-next` from the site gates (`site-classes.py`, `site-links.py`, `site-figures.cjs`, `site-replay.cjs`),
   from `bench/run.cjs` and `bench/scale.cjs`, from the tests under `tests/docs/` and `tests/bench/` that read both
   trees, and from `.prettierignore`, `eslint.config.js`, `package.json`, CI and the READMEs that name it;

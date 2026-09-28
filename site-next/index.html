@@ -211,16 +211,17 @@
       </section>
 
       <!-- ── 01 · WHAT YOU OPERATE · data band ──────────────────────────────
-           The middle column is what 0.9.0 ran, box for box: a warm NoSQL store taking per-id writes, the compaction
-           leases kept in the registry row, a DynamoDB pointer store, and the compaction folding the warm store into
-           the bucket. Saying so is stronger than implying it was never true. -->
+           What a reader would weigh, box by box, each alternative's boxes tagged with what keeping them costs: a Redis
+           cluster, and a tiered database keeping its own services in front of object storage. Ours is the bucket.
+           The one thing that can need scheduling is retiring segments that expire, and the foot says so. -->
       <section id="how" class="cb-stack">
         <div class="cb-head">
           <p class="label">01 · What you operate</p>
           <h2>Three ways to keep a big set. One has nothing to run.</h2>
           <p class="cb-lede">
-            The pointer that says which generation is current used to need its own database, and a compaction daemon
-            held leases beside it. Both are gone. The bucket holds the pointer now.
+            The two columns on the left are what the alternatives ask you to keep running: a cache tier you size and
+            fail over, or a tiered database that keeps a query layer, metadata and compaction jobs in front of the
+            bucket. On the right is all of ours: one bucket, with nothing deployed beside it.
           </p>
         </div>
         <div class="cb-seam cb-cols-3 cb-op-set">
@@ -230,55 +231,52 @@
               <h3>A node that must stay up</h3>
             </div>
             <div class="cb-scroll" tabindex="0" role="region" aria-label="Diagram, scrollable">
-            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="A primary and a replica node, a failover monitor watching both, and capacity planning as ongoing work">
-              <rect class="sp" x="110" y="12" width="180" height="48" />
-              <text class="t" x="200" y="41" text-anchor="middle">failover monitor</text>
-              <path class="s sd" d="M160 60 L100 112 M240 60 L300 112" />
-              <rect class="sp" x="20" y="112" width="160" height="72" />
-              <text class="t" x="36" y="141">primary</text>
-              <text class="tf" x="36" y="163">RAM, standing</text>
-              <rect class="sp" x="220" y="112" width="160" height="72" />
-              <text class="t" x="236" y="141">replica</text>
-              <text class="tf" x="236" y="163">RAM, standing</text>
-              <path class="s" d="M180 148 H212" />
-              <path class="ff" d="M212 143 L220 148 L212 153 Z" />
-              <rect class="sp sd" x="20" y="216" width="360" height="64" />
-              <text class="t" x="36" y="244">capacity planning</text>
-              <text class="tf" x="36" y="265">sized before the set outgrows RAM</text>
+            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="A primary node, a replica and a failover monitor, each always on, and capacity planning, which is yours for as long as you run it">
+              <rect class="sp" x="20" y="12" width="360" height="56" />
+              <text class="t" x="36" y="45">primary node</text>
+              <text class="tl" x="364" y="44" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp" x="20" y="82" width="360" height="56" />
+              <text class="t" x="36" y="115">replica</text>
+              <text class="tl" x="364" y="114" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp" x="20" y="152" width="360" height="56" />
+              <text class="t" x="36" y="185">failover monitor</text>
+              <text class="tl" x="364" y="184" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp sd" x="20" y="222" width="360" height="56" />
+              <text class="t" x="36" y="255">capacity planning</text>
+              <text class="tl" x="364" y="254" text-anchor="end">YOURS, FOREVER</text>
             </svg>
             </div>
-            <p class="cb-op-foot cb-note">Standing whether you read it or not — <code>$346/mo</code>.</p>
+            <p class="cb-op-foot cb-note">Four things standing, whether anything reads or not — <code>$346/mo</code>.</p>
           </div>
           <div class="cb-op">
             <div class="cb-op-head">
-              <p class="label">A tiered store</p>
+              <p class="label">A tiered database on object storage</p>
               <h3>Services in front of the bucket</h3>
             </div>
             <div class="cb-scroll" tabindex="0" role="region" aria-label="Diagram, scrollable">
-            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="A warm store taking per-id writes, over compaction leases and a pointer store, compaction jobs, then object storage">
+            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="A query layer, a metadata store and a pointer store, each always on, and compaction jobs on a schedule, all in front of object storage">
               <rect class="sp" x="20" y="12" width="360" height="48" />
-              <text class="t" x="36" y="41">warm store · per-id writes</text>
-              <text class="tl" x="364" y="40" text-anchor="end">RUNS</text>
-              <path class="s" d="M105 60 V84 M295 60 V84" />
-              <rect class="sp" x="20" y="84" width="170" height="48" />
-              <text class="t" x="36" y="113">compaction leases</text>
-              <rect class="sp" x="210" y="84" width="170" height="48" />
-              <text class="t" x="226" y="113">pointer store</text>
-              <path class="s" d="M105 132 V156 M295 132 V156" />
-              <rect class="sp" x="20" y="156" width="360" height="48" />
-              <text class="t" x="36" y="185">compaction jobs</text>
-              <text class="tl" x="364" y="184" text-anchor="end">SCHEDULED</text>
-              <path class="s" d="M200 204 V228" />
-              <rect class="sp" x="20" y="228" width="360" height="52" />
-              <text class="t" x="36" y="259">object storage</text>
-              <rect class="s" x="262" y="246" width="16" height="16" rx="2" />
-              <rect class="s" x="284" y="246" width="16" height="16" rx="2" />
-              <rect class="s" x="306" y="246" width="16" height="16" rx="2" />
-              <rect class="s" x="328" y="246" width="16" height="16" rx="2" />
-              <rect class="s" x="350" y="246" width="16" height="16" rx="2" />
+              <text class="t" x="36" y="41">query layer</text>
+              <text class="tl" x="364" y="40" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp" x="20" y="70" width="360" height="48" />
+              <text class="t" x="36" y="99">metadata store</text>
+              <text class="tl" x="364" y="98" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp" x="20" y="128" width="360" height="48" />
+              <text class="t" x="36" y="157">compaction jobs</text>
+              <text class="tl" x="364" y="156" text-anchor="end">SCHEDULED</text>
+              <rect class="sp" x="20" y="186" width="360" height="48" />
+              <text class="t" x="36" y="215">pointer store</text>
+              <text class="tl" x="364" y="214" text-anchor="end">ALWAYS ON</text>
+              <rect class="sp" x="20" y="244" width="360" height="48" />
+              <text class="t" x="36" y="273">object storage</text>
+              <rect class="s" x="262" y="260" width="16" height="16" rx="2" />
+              <rect class="s" x="284" y="260" width="16" height="16" rx="2" />
+              <rect class="s" x="306" y="260" width="16" height="16" rx="2" />
+              <rect class="s" x="328" y="260" width="16" height="16" rx="2" />
+              <rect class="s" x="350" y="260" width="16" height="16" rx="2" />
             </svg>
             </div>
-            <p class="cb-op-foot cb-note"><strong>Every box in this column was true of us</strong> before v0.10.0.</p>
+            <p class="cb-op-foot cb-note">Three services to keep up and a job to schedule, all in front of the data.</p>
           </div>
           <div class="cb-op">
             <div class="cb-op-head">
@@ -286,21 +284,22 @@
               <h3>Your bucket</h3>
             </div>
             <div class="cb-scroll" tabindex="0" role="region" aria-label="Diagram, scrollable">
-            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="One box: your bucket, holding the segments' chunks and the current-generation pointer">
+            <svg class="cb-svg is-op" viewBox="0 0 400 300" role="img" aria-label="One box: your bucket, holding a write-once object per generation of each segment and the pointer to the current one">
               <defs>
-                <pattern id="bk" width="32" height="32" patternUnits="userSpaceOnUse" x="36" y="84">
+                <pattern id="bk" width="32" height="32" patternUnits="userSpaceOnUse" x="36" y="104">
                   <rect class="idle" width="22" height="22" rx="3" />
                 </pattern>
               </defs>
               <rect class="sp is-heavy" x="20" y="12" width="360" height="268" />
-              <text class="t" x="36" y="41">your bucket</text>
-              <text class="tf" x="36" y="62">segments · generations · the pointer</text>
-              <rect x="36" y="84" width="320" height="182" fill="url(#bk)" />
-              <rect class="hot" x="324" y="244" width="22" height="22" rx="3" />
+              <text class="t is-bold" x="36" y="41">your bucket</text>
+              <text class="tf" x="36" y="64">a write-once .crbm object per generation</text>
+              <text class="tf" x="36" y="84">and the pointer to the current one</text>
+              <rect x="36" y="104" width="320" height="150" fill="url(#bk)" />
+              <rect class="hot" x="324" y="232" width="22" height="22" rx="3" />
             </svg>
             </div>
             <p class="cb-op-foot cb-note has-key">
-              <i class="cb-key" aria-hidden="true"></i><span>The current-generation pointer. It used to need a second service.
+              <i class="cb-key" aria-hidden="true"></i><span>The current-generation pointer, in the same bucket.
               <strong>Nothing to deploy, and nothing to schedule unless segments expire.</strong></span>
             </p>
           </div>
@@ -309,7 +308,9 @@
 
       <!-- ── 02 · THE WRITE MODEL · lead band ──────────────────────────────
            Stated rather than apologised for: a reader who needs per-id writes can rule us out here, in five
-           seconds, and on this project that is a feature of the front door. -->
+           seconds, and on this project that is a feature of the front door. Each row says what follows from it; ours
+           is invariant 1, that a crash before the publish leaves the previous generation authoritative. The pointer
+           moves by compare-and-swap; a publish never moves it back, though a rollback does, on purpose. -->
       <section class="cb-stack">
         <div class="cb-grid12">
           <div class="cb-head cb-span8">
@@ -323,7 +324,7 @@
         </div>
         <div class="cb-seam cb-cols-1">
           <div class="cb-plate cb-scroll" tabindex="0" role="region" aria-label="The write model, scrollable">
-            <svg class="cb-svg is-wide" viewBox="0 0 1176 250" role="img" aria-label="Redis: SETBIT per id, per call, forever. CloudBitmaps: compute upstream, write one immutable generation, publish.">
+            <svg class="cb-svg is-wide" viewBox="0 0 1176 290" role="img" aria-label="Redis: SETBIT per id, per call, forever; every write lands on a resident set, kept resident by something paying for it. CloudBitmaps: compute upstream, write one immutable generation, publish it by compare-and-swap; no add and no remove, and a crash before the publish leaves the previous set live.">
               <defs>
                 <pattern id="gen" width="20" height="20" patternUnits="userSpaceOnUse" x="352" y="186">
                   <rect class="idle" width="14" height="14" rx="2" />
@@ -343,6 +344,7 @@
               <rect class="sp" x="740" y="30" width="118" height="44" /><text class="t" x="799" y="57" text-anchor="middle">SETBIT</text>
               <path class="s sd" d="M858 52 H900" />
               <text class="t" x="1176" y="57" text-anchor="end">per id · per call · forever</text>
+              <text class="tl" x="0" y="100">EVERY WRITE LANDS ON A RESIDENT SET, AND THE SET IS RESIDENT BECAUSE SOMETHING IS PAYING FOR IT</text>
               <path class="s rule" d="M0 118 H1176" />
               <text class="tl" x="0" y="158">CLOUDBITMAPS</text>
               <rect class="sp sd" x="0" y="176" width="300" height="64" />
@@ -354,8 +356,10 @@
               <rect x="352" y="186" width="396" height="54" fill="url(#gen)" />
               <path class="s" d="M754 208 H780" /><path class="ff" d="M780 203 L788 208 L780 213 Z" />
               <rect class="sp" x="788" y="176" width="150" height="64" />
-              <text class="t" x="804" y="213">publish</text>
+              <text class="t" x="804" y="203">publish</text>
+              <text class="tf" x="804" y="224">compare-and-swap</text>
               <text class="t" x="1176" y="213" text-anchor="end">per batch · then immutable</text>
+              <text class="tl" x="0" y="282">NO add · NO remove · A CRASH BEFORE THE PUBLISH LEAVES THE PREVIOUS SET LIVE</text>
             </svg>
           </div>
         </div>
@@ -453,64 +457,100 @@
             wins is what makes the other half checkable.
           </p>
         </div>
-        <div class="cb-seam cb-cross">
+        <div class="cb-seam cb-cols-1">
           <div class="cb-cross-chart cb-scroll" data-motion tabindex="0" role="region" aria-label="The crossover chart, scrollable">
             <!-- BENCH:HOMECHART:START -->
-<svg class="cb-svg is-chart" viewBox="0 0 700 440" role="img" aria-label="Cost per month against read rate. CloudBitmaps rises from nothing; the Redis cluster is flat at $346; they cross at 329.15 GETs a second, above which the cluster is cheaper.">
-<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="71" y="28" width="612" height="351"/></clipPath></defs>
-<rect x="375.5" y="30" width="304.5" height="350" fill="url(#hx)"/>
-<path class="s sd guide" d="M375.5 30 V380"/>
-<path class="line-node" d="M71 207.0 H680"/>
-<path class="line-ours" d="M71 380.0 L680 34.0"/>
-<g clip-path="url(#plot)"><rect class="cover x-cover" x="71" y="28" width="612" height="351"/></g>
-<path class="s" d="M70 30 V380 H680"/>
-<text class="tl" x="86" y="56">CLOUDBITMAPS COSTS LESS</text>
-<text class="tl on-hatch" x="391.5" y="56">A FLAT CLUSTER COSTS LESS</text>
-<text class="t" x="86" y="196.0">Redis-HA cluster · flat</text>
-<text class="t is-ours" x="214" y="323.8">CloudBitmaps · metered</text>
-<g class="x-dot"><rect class="hot" x="369.5" y="201.0" width="12" height="12" rx="2"/><text class="t crossing" x="391.5" y="240.0">329.15 GETs/s</text></g>
-<text class="tf" x="60" y="211.0" text-anchor="end">$346</text>
-<text class="tf" x="60" y="384" text-anchor="end">$0</text>
-<text class="tf" x="70" y="18">$ / MONTH</text>
-<text class="tf" x="70" y="400" text-anchor="middle">0</text>
-<text class="tf" x="375.5" y="400" text-anchor="middle">329.15</text>
-<text class="tf" x="680" y="428" text-anchor="end">GETS/S, EVERY READ A CACHE MISS →</text>
+<svg class="cb-svg is-chart" viewBox="0 0 1176 414" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $0.40 per million GETs; the Redis cluster is flat at $346; they cross at 329.15 GETs a second, above which the cluster is cheaper.">
+<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="93" y="54" width="1070" height="295"/></clipPath></defs>
+<rect x="626.0" y="56" width="534.0" height="294" fill="url(#hx)"/>
+<path class="s sd guide" d="M626.0 56 V350"/>
+<path class="line-node" d="M92 209.0 H1160"/>
+<path class="line-ours" d="M92 350.0 L1160 68.0"/>
+<g clip-path="url(#plot)"><rect class="cover x-cover" x="93" y="54" width="1070" height="295"/></g>
+<path class="s" d="M91 56 V350 H1160"/>
+<text class="tl" x="92" y="24">$ / MONTH</text>
+<text class="tl" x="1160" y="24" text-anchor="end">GETS / SECOND, EVERY READ A CACHE MISS</text>
+<text class="t is-fig" x="108" y="179.0">$346/mo</text>
+<text class="t" x="108" y="199.0">a Redis-HA cluster, flat, whether read or not</text>
+<text class="t is-fig is-ours" x="350" y="303.9">$0.40 per million GETs</text>
+<text class="t" x="350" y="323.9">CloudBitmaps, metered</text>
+<g class="x-dot"><rect class="hot" x="620.0" y="203.0" width="12" height="12" rx="2"/><text class="tl on-hatch" x="644.0" y="239.0">THE CROSSOVER</text><text class="t crossing on-hatch" x="644.0" y="267.0">329.15 GETs/s</text></g>
+<text class="tf" x="80" y="214.0" text-anchor="end">$346</text>
+<text class="tf" x="80" y="355" text-anchor="end">$0</text>
+<text class="tf" x="92" y="374" text-anchor="middle">0</text>
+<text class="tf" x="626.0" y="374" text-anchor="middle">329.15</text>
+<text class="tl" x="92" y="406">LEFT OF THE CROSSOVER, METERED READS COST LESS</text>
+<text class="tl" x="1160" y="406" text-anchor="end">RIGHT OF IT, THE STANDING CLUSTER DOES · USE REDIS</text>
 </svg>
 <!-- BENCH:HOMECHART:END -->
           </div>
-          <div class="cb-cross-table">
+        </div>
+        <!-- What goes in, and what comes out of it. Each input is marked measured, quoted or chosen, and each derived
+             figure shows its arithmetic, so a reader can redo the sum; site-figures recomputes every one from the
+             file it comes from. -->
+        <div class="cb-seam cb-cols-2 cb-derive">
+          <div>
             <table class="cb-ftable">
               <thead>
-                <tr><th scope="col">What each costs</th><th scope="col">Gated in CI</th></tr>
+                <tr><th scope="col">What goes in</th><th scope="col">Where it comes from</th></tr>
               </thead>
               <tbody>
-                <tr><th scope="row">At rest<span class="cb-note">1.2 GiB, no traffic</span></th><td>$0.03/mo</td></tr>
+                <tr><th scope="row">The reference set<span class="cb-note">chosen · at rest, no traffic</span></th><td>1.2 GiB</td></tr>
                 <tr>
-                  <th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">per million, from requests measured on S3</span></th>
-                  <td>$82.40</td>
+                  <th scope="row">GETs per cold <span class="m">A&nbsp;∩&nbsp;B</span>, 100 chunks shared<span class="cb-note">measured · the median of 40 cold intersects on S3, us-east-1</span></th>
+                  <td>206</td>
                 </tr>
                 <tr>
-                  <th scope="row">Write and publish<span class="cb-note">per million, pointer included, from requests measured on S3</span></th>
-                  <td>$11.20</td>
+                  <th scope="row">Requests per write and publish<span class="cb-note">measured · on S3, pointer included</span></th>
+                  <td>2 PUT + 3 GET</td>
                 </tr>
-                <tr><th scope="row">Redis-HA cluster<span class="cb-note">flat, whether read or not</span></th><td>$346/mo</td></tr>
-                <tr><th scope="row">Against that line<span class="cb-note">at rest, no traffic</span></th><td>0.008%</td></tr>
                 <tr>
-                  <th scope="row">Crossover, in GETs<span class="cb-note">above this, a flat cluster is cheaper</span></th>
-                  <td>329.15/s</td>
+                  <th scope="row">S3 GET · PUT, per million<span class="cb-note">quoted · AWS us-east-1 list price</span></th>
+                  <td>$0.40 · $5.00</td>
                 </tr>
-                <tr><th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">206 GETs each</span></th><td>1.6/s</td></tr>
+                <tr><th scope="row">S3 storage, per GiB-month<span class="cb-note">quoted · AWS us-east-1 list price</span></th><td>$0.023</td></tr>
+                <tr>
+                  <th scope="row">Redis-HA cluster<span class="cb-note">quoted · 3 × cache.m7g.large, 730 hours a month</span></th>
+                  <td>$346/mo</td>
+                </tr>
               </tbody>
             </table>
-            <p class="cb-ftable-foot"><a class="cb-link" href="benchmarks.html#crossover">Method, the crossover and caveats →</a></p>
+          </div>
+          <div>
+            <table class="cb-ftable">
+              <thead>
+                <tr><th scope="col">What comes out</th><th scope="col">Derived · arithmetic</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">At rest<span class="cb-note">1.2 GiB × $0.023</span></th><td>$0.03/mo</td></tr>
+                <tr><th scope="row">Cold <span class="m">A&nbsp;∩&nbsp;B</span>, per million<span class="cb-note">206 GETs × $0.40</span></th><td>$82.40</td></tr>
+                <tr>
+                  <th scope="row">Write and publish, per million<span class="cb-note">2 × $5.00 + 3 × $0.40</span></th>
+                  <td>$11.20</td>
+                </tr>
+                <tr><th scope="row">Against that line<span class="cb-note">$0.0276 ÷ $346</span></th><td>0.008%</td></tr>
+                <tr>
+                  <th scope="row">Crossover, in GETs<span class="cb-note">$346 ÷ ($0.40 per million × 2,628,000 s a month)</span></th>
+                  <td>329.15/s</td>
+                </tr>
+                <tr>
+                  <th scope="row">…as cold <span class="m">A&nbsp;∩&nbsp;B</span><span class="cb-note">$346 ÷ ($82.40 per million × 2,628,000 s a month)</span></th>
+                  <td>1.6/s</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="cb-ftable-foot">
+              <a class="cb-link" href="benchmarks.html#crossover">Method, the crossover and caveats →</a>
+            </p>
           </div>
         </div>
       </section>
 
       <!-- ── 05 · MEMORY · data band ──────────────────────────────────────
-           Three numbers answering "does this fall over", from bench/scale-results.json and held to it by
-           scripts/site-figures.cjs, bars included: heap on a 0–10 MiB axis, the scan on a 0–11.6 s one, 360 units
-           wide. The invariant count under it is AGENTS.md's, and the gate reads it from `.ba-foot`. -->
+           Does this fall over, in one panel: the retained heap per fleet as bars on one 0–10 MiB axis, which reads as
+           flat at a glance, beside the two that do grow, the discovery scan and peak RSS, at the same size. All from
+           bench/scale-results.json and held to it by scripts/site-figures.cjs, bars included. The invariant count
+           under it is AGENTS.md's, and the gate reads it from `.ba-foot`. -->
       <section id="memory" class="cb-stack">
         <div class="cb-head">
           <p class="label">05 · Does this fall over</p>
@@ -518,68 +558,46 @@
           <p class="cb-lede">
             With the reader cache capped at 1,024 segments, retained heap stays flat from a thousand segments
             to a hundred thousand. Process RSS does grow — the benchmark seeds every segment in the one process — and
-            so does discovery, an honest O(total) scan. All three sit on the same row.
+            so does discovery, an honest O(total) scan. They sit side by side.
           </p>
         </div>
-        <div class="cb-seam cb-cols-3">
-          <div class="cb-mem" data-segments="1000">
-            <p class="label">1,000 segments</p>
-            <div class="cb-mem-part">
-              <p class="label">Retained heap</p>
-              <p class="cb-figure-l">8.2<span class="cb-unit">MiB</span></p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="heap" width="295" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Peak RSS</p>
-              <p class="cb-figure-m">68.1 MiB</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="rssbar" width="151" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Discovery scan</p>
-              <p class="cb-figure-m">87.6 ms</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="scanbar" width="3" height="8" /></svg>
-            </div>
-          </div>
-          <div class="cb-mem" data-segments="10000">
-            <p class="label">10,000 segments</p>
-            <div class="cb-mem-part">
-              <p class="label">Retained heap</p>
-              <p class="cb-figure-l">8.3<span class="cb-unit">MiB</span></p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="heap" width="299" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Peak RSS</p>
-              <p class="cb-figure-m">86.8 MiB</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="rssbar" width="193" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Discovery scan</p>
-              <p class="cb-figure-m">1.07 s</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="scanbar" width="33" height="8" /></svg>
+        <div class="cb-seam cb-cols-2 cb-memory">
+          <div>
+            <p class="label">Retained heap · measured · 0–10 MiB axis</p>
+            <div class="cb-hbars">
+              <div class="cb-hbar" data-segments="1000">
+                <p class="cb-figure-m">8.2 MiB</p>
+                <svg class="cb-vbar" viewBox="0 0 96 140" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="96" height="140" /><rect class="heap" y="25" width="96" height="115" /></svg>
+                <p class="label">1,000 segments</p>
+              </div>
+              <div class="cb-hbar" data-segments="10000">
+                <p class="cb-figure-m">8.3 MiB</p>
+                <svg class="cb-vbar" viewBox="0 0 96 140" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="96" height="140" /><rect class="heap" y="24" width="96" height="116" /></svg>
+                <p class="label">10,000 segments</p>
+              </div>
+              <div class="cb-hbar" data-segments="100000">
+                <p class="cb-figure-m">7.4 MiB</p>
+                <svg class="cb-vbar" viewBox="0 0 96 140" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="96" height="140" /><rect class="heap" y="36" width="96" height="104" /></svg>
+                <p class="label">100,000 segments</p>
+              </div>
             </div>
           </div>
-          <div class="cb-mem" data-segments="100000">
-            <p class="label">100,000 segments</p>
-            <div class="cb-mem-part">
-              <p class="label">Retained heap</p>
-              <p class="cb-figure-l">7.4<span class="cb-unit">MiB</span></p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="heap" width="266" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Peak RSS</p>
-              <p class="cb-figure-m">162.2 MiB</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="rssbar" width="360" height="8" /></svg>
-            </div>
-            <div class="cb-mem-part">
-              <p class="label">Discovery scan</p>
-              <p class="cb-figure-m">11.6 s</p>
-              <svg class="cb-bar" viewBox="0 0 360 8" preserveAspectRatio="none" aria-hidden="true"><rect class="idle" width="360" height="8" /><rect class="scanbar" width="360" height="8" /></svg>
-            </div>
+          <div>
+            <p class="label">The two that do grow</p>
+            <table class="cb-ftable">
+              <thead>
+                <tr><th scope="col">Fleet</th><th scope="col">Discovery scan</th><th scope="col">Peak RSS</th></tr>
+              </thead>
+              <tbody>
+                  <tr><th scope="row">1,000 segments</th><td>87.6 ms</td><td>68.1 MiB</td></tr>
+                  <tr><th scope="row">10,000 segments</th><td>1.07 s</td><td>86.8 MiB</td></tr>
+                  <tr><th scope="row">100,000 segments</th><td>11.6 s</td><td>162.2 MiB</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
         <div class="cb-head">
           <p class="cb-note is-caption">
-            Heap bars share a 0–10 MiB axis, RSS bars a 0–162.2 MiB one and scan bars a 0–11.6 s one.
             Measured on one Apple M3 Pro, where discovery is filesystem-bound, so the shape is the claim and not the
             milliseconds.
             <a href="benchmarks.html#memory">The run →</a>
@@ -592,10 +610,47 @@
         </div>
       </section>
 
-      <!-- ── 06 · FIT · lead band, two peers ──────────────────────────────── -->
+      <!-- ── 06 · THE CONDITIONS · quiet band ─────────────────────────────
+           What the figures above do not prove, each beside the fact that bounds it, all from the files they come
+           from: the crossover is a rate; the cluster is one choice and the estimator's own is cheaper; the skip rate
+           is one overlap; listing grows with the fleet; latency is still owed; the prices are one provider's list. -->
+      <section id="conditions" class="cb-stack">
+        <div class="cb-head">
+          <p class="label">06 · The conditions</p>
+          <h2>What this does not prove.</h2>
+        </div>
+        <div class="cb-seam cb-cols-3">
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">The crossover is a rate, not a verdict</h3>
+            <p>Above 329.15 GETs a second, every one a cache miss, the flat cluster costs less, and the chart says so. A warm cache moves the line out by the reciprocal of its miss rate.</p>
+          </div>
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">$346 is one cluster, not your bill</h3>
+            <p>It is 3 × cache.m7g.large, whatever the data size. The cheapest cluster that holds this 1.2 GiB set is $142.35 a month, 3 × cache.t4g.medium, and against it the line crosses at 135.42 GETs a second. Price yours with <code>estimateCost()</code>.</p>
+          </div>
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">100 of 2,000 is one overlap</h3>
+            <p>The skip rate is a property of your key overlap, not a promise. Two segments that share most of their chunk keys fetch most of their chunks, and the saving shrinks with it.</p>
+          </div>
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">A flat heap does not make listing free</h3>
+            <p>Retained heap stays flat to 100,000 segments, but finding them is an O(total) scan: 11.6 s over that fleet, on one machine.</p>
+          </div>
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">No in-region latency figure yet</h3>
+            <p>24.6 ms is the recorded run on the memory driver, not a round trip to a bucket. In-region latency is still owed, and no latency is published here that was not measured.</p>
+          </div>
+          <div class="cb-cell cb-caveat">
+            <h3 class="label">The prices are S3's, in us-east-1</h3>
+            <p>Every dollar here is an AWS us-east-1 list price, and another region or a discount moves it. On GCS or Azure Blob a pointer read and an index read are two requests each; a chunk read is one everywhere.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 07 · FIT · lead band, two peers ──────────────────────────────── -->
       <section id="fit" class="cb-stack">
         <div class="cb-head">
-          <p class="label">06 · Fit</p>
+          <p class="label">07 · Fit</p>
           <h2>Where it fits, and where Redis is better.</h2>
         </div>
         <div class="cb-seam cb-cols-2">
@@ -651,7 +706,8 @@
       </section>
 
       <!-- ── THE INSTALL · quiet, after the argument ─────────────────────────
-           Its last line is the page's first `.meta`, which scripts/site-figures.cjs reads for the driver count. -->
+           The command, and what to swap in on another storage service. The line under the buttons is the page's
+           first `.meta`, which scripts/site-figures.cjs reads for the driver count. -->
       <section id="install">
         <div class="cb-grid12">
           <div class="cb-close-copy">
@@ -666,14 +722,23 @@
             </p>
             <p class="actions">
               <a class="btn btn-primary" href="usage.html">Read the quickstart →</a>
-              <a class="btn" href="usage.html#api">Browse the API</a>
+              <a class="btn" href="usage.html#api">Browse the six calls</a>
+              <a class="btn" href="benchmarks.html">See the benchmarks</a>
             </p>
+            <p class="meta">Apache-2.0 · zero-dependency core · 4 storage drivers · published tokenlessly via OIDC</p>
           </div>
           <div class="cb-close-panel">
             <div class="cb-seam cb-cols-1">
-              <div class="cb-cell">
-                <p class="label">Install</p>
-                <code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3</code>
+              <div class="cb-cell is-sunk">
+                <div class="cb-cell-head">
+                  <p class="label">Install</p>
+                  <p class="label">A codec and a storage</p>
+                </div>
+                <pre class="cb-pre"><code>npm i @cloudbitmaps/roaring @cloudbitmaps/s3
+
+<span class="c"># the memory and local-filesystem drivers ship in core</span>
+<span class="c"># on GCS or Azure Blob, swap @cloudbitmaps/s3 for</span>
+<span class="c"># @cloudbitmaps/gcs · @cloudbitmaps/azure-blob</span></code></pre>
               </div>
               <div class="cb-cell">
                 <p class="label">Six read calls</p>
@@ -682,7 +747,6 @@
                   ><span class="cb-chip">intersect</span><span class="cb-chip">union</span><span class="cb-chip">andNot</span>
                 </p>
               </div>
-              <p class="meta">Apache-2.0 · zero-dependency core · 4 storage drivers · published tokenlessly via OIDC</p>
             </div>
           </div>
         </div>
@@ -696,7 +760,7 @@
         <a href="architecture.html">Architecture</a>
         <a href="usage.html">Usage</a>
         <a href="benchmarks.html">Benchmarks</a>
-        <span class="right">Pre-1.0 · single maintainer · <a href="benchmarks.html">read the caveats</a></span>
+        <span class="right">Pre-1.0 · single maintainer · every figure here is gated in CI · <a href="benchmarks.html">read the caveats</a></span>
       </div>
     </footer>
     <script src="theme.js"></script>

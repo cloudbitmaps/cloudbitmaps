@@ -317,46 +317,55 @@ function instrumentChart() {
 }
 
 // ── The homepage's crossover, for site-next/ ─────────────────────────────────────────────────────
-// The display-tier homepage's chart, drawn as its design draws it: a 700-unit plot whose x axis runs to twice the
-// crossover, so the lines meet mid-plot, and whose y axis holds our line from nothing to where it ends. Generated
-// rather than hand-drawn so its geometry is the estimator's: the flat line sits at the baseline, the rising one is
-// the same curve as the chart above, and they cross at the published rate. Its reveal (`x-cover`, `x-dot`) is the
-// homepage's one drawn animation; the cover slides the plot's 612 units, which the sheet's keyframe names.
+// The display-tier homepage's chart, full width as the 3B design draws it: 1,176 units, each line labelled with what
+// it costs where it runs, and what each side of the crossover means written under the axis. The x axis runs to twice
+// the crossover, so the lines meet mid-plot, and the y axis holds our line from nothing to where it ends: the line is
+// GETs alone, with every read a cache miss, which is why it starts at $0 rather than at the storage cost. Every text
+// run is 13 units or more, so the chart keeps the 9.5px floor down to 860px of screen and scrolls in its frame below
+// that. Generated rather than hand-drawn so its geometry is the estimator's. Its reveal (`x-cover`, `x-dot`) is one
+// of the homepage's two animations; the cover slides its own width, so the plot's size is not written in the sheet.
 function homeChart() {
-  const plotL = 71;
-  const plotR = 680;
-  const plotT = 30;
-  const plotB = 380;
+  const W = 1176;
+  const H = 414;
+  const plotL = 92;
+  const plotR = 1160;
+  const plotT = 56;
+  const plotB = 350;
   const xMax = 2 * readCross;
   const px = (x) => plotL + (x / xMax) * (plotR - plotL);
-  const yScale = (plotB - 34) / costReads(xMax);
+  const yScale = (plotB - plotT - 12) / costReads(xMax);
   const py = (v) => plotB - v * yScale;
   const f = (n) => n.toFixed(1);
   const crX = px(readCross);
   const redisY = py(REDIS);
   const rate = readCross.toFixed(2);
-  const labelX = 214;
-  const labelY = py(costReads(((labelX - plotL) / (plotR - plotL)) * xMax)) + 25;
+  const getPrice = P.storage.getPerMillion.toFixed(2);
+  // Our label sits wholly under our line and left of the crossover guide: its top clears the line where the line is
+  // lowest over it, its left edge, and its longest run, 22 characters at 20 units, ends before the guide.
+  const oursX = 350;
+  const oursY = py(costReads(((oursX - plotL) / (plotR - plotL)) * xMax)) + 22;
   return [
-    `<svg class="cb-svg is-chart" viewBox="0 0 700 440" role="img" aria-label="Cost per month against read rate. CloudBitmaps rises from nothing; the Redis cluster is flat at $${REDIS}; they cross at ${rate} GETs a second, above which the cluster is cheaper.">`,
-    `<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="71" y="28" width="612" height="351"/></clipPath></defs>`,
+    `<svg class="cb-svg is-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cost per month against GETs a second, every read a cache miss. CloudBitmaps rises from nothing at $${getPrice} per million GETs; the Redis cluster is flat at $${REDIS}; they cross at ${rate} GETs a second, above which the cluster is cheaper.">`,
+    `<defs><pattern id="hx" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern><clipPath id="plot"><rect x="${plotL + 1}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></clipPath></defs>`,
     `<rect x="${f(crX)}" y="${plotT}" width="${f(plotR - crX)}" height="${plotB - plotT}" fill="url(#hx)"/>`,
     `<path class="s sd guide" d="M${f(crX)} ${plotT} V${plotB}"/>`,
     `<path class="line-node" d="M${plotL} ${f(redisY)} H${plotR}"/>`,
     `<path class="line-ours" d="M${plotL} ${f(py(costReads(0)))} L${plotR} ${f(py(costReads(xMax)))}"/>`,
-    `<g clip-path="url(#plot)"><rect class="cover x-cover" x="71" y="28" width="612" height="351"/></g>`,
-    `<path class="s" d="M70 ${plotT} V${plotB} H${plotR}"/>`,
-    `<text class="tl" x="86" y="56">CLOUDBITMAPS COSTS LESS</text>`,
-    `<text class="tl on-hatch" x="${f(crX + 16)}" y="56">A FLAT CLUSTER COSTS LESS</text>`,
-    `<text class="t" x="86" y="${f(redisY - 11)}">Redis-HA cluster · flat</text>`,
-    `<text class="t is-ours" x="${labelX}" y="${f(labelY)}">CloudBitmaps · metered</text>`,
-    `<g class="x-dot"><rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/><text class="t crossing" x="${f(crX + 16)}" y="${f(redisY + 33)}">${rate} GETs/s</text></g>`,
-    `<text class="tf" x="60" y="${f(redisY + 4)}" text-anchor="end">$${REDIS}</text>`,
-    `<text class="tf" x="60" y="${plotB + 4}" text-anchor="end">$0</text>`,
-    `<text class="tf" x="70" y="18">$ / MONTH</text>`,
-    `<text class="tf" x="70" y="${plotB + 20}" text-anchor="middle">0</text>`,
-    `<text class="tf" x="${f(crX)}" y="${plotB + 20}" text-anchor="middle">${rate}</text>`,
-    `<text class="tf" x="${plotR}" y="428" text-anchor="end">GETS/S, EVERY READ A CACHE MISS →</text>`,
+    `<g clip-path="url(#plot)"><rect class="cover x-cover" x="${plotL + 1}" y="${plotT - 2}" width="${plotR - plotL + 2}" height="${plotB - plotT + 1}"/></g>`,
+    `<path class="s" d="M${plotL - 1} ${plotT} V${plotB} H${plotR}"/>`,
+    `<text class="tl" x="${plotL}" y="24">$ / MONTH</text>`,
+    `<text class="tl" x="${plotR}" y="24" text-anchor="end">GETS / SECOND, EVERY READ A CACHE MISS</text>`,
+    `<text class="t is-fig" x="${plotL + 16}" y="${f(redisY - 30)}">$${REDIS}/mo</text>`,
+    `<text class="t" x="${plotL + 16}" y="${f(redisY - 10)}">a Redis-HA cluster, flat, whether read or not</text>`,
+    `<text class="t is-fig is-ours" x="${oursX}" y="${f(oursY)}">$${getPrice} per million GETs</text>`,
+    `<text class="t" x="${oursX}" y="${f(oursY + 20)}">CloudBitmaps, metered</text>`,
+    `<g class="x-dot"><rect class="hot" x="${f(crX - 6)}" y="${f(redisY - 6)}" width="12" height="12" rx="2"/><text class="tl on-hatch" x="${f(crX + 18)}" y="${f(redisY + 30)}">THE CROSSOVER</text><text class="t crossing on-hatch" x="${f(crX + 18)}" y="${f(redisY + 58)}">${rate} GETs/s</text></g>`,
+    `<text class="tf" x="${plotL - 12}" y="${f(redisY + 5)}" text-anchor="end">$${REDIS}</text>`,
+    `<text class="tf" x="${plotL - 12}" y="${plotB + 5}" text-anchor="end">$0</text>`,
+    `<text class="tf" x="${plotL}" y="${plotB + 24}" text-anchor="middle">0</text>`,
+    `<text class="tf" x="${f(crX)}" y="${plotB + 24}" text-anchor="middle">${rate}</text>`,
+    `<text class="tl" x="${plotL}" y="${plotB + 56}">LEFT OF THE CROSSOVER, METERED READS COST LESS</text>`,
+    `<text class="tl" x="${plotR}" y="${plotB + 56}" text-anchor="end">RIGHT OF IT, THE STANDING CLUSTER DOES · USE REDIS</text>`,
     `</svg>`,
   ].join('\n');
 }
