@@ -182,7 +182,9 @@ const MEASURE = `(() => {
  * and its first letters must be in view, inside every frame that scrolls or cuts off, with the element there its own,
  * so a run laid under another box, drawn below its section's ground, fixed out of view or out of any scroll's reach is
  * not seen. Every element takes pointer events while it looks (the sheet may not out-rank that), so a box that lets
- * clicks through still counts as covering. And no list item may draw a marker, a number the page's checks do not read.
+ * clicks through still counts as covering; a positioned pseudo-element, which hit-tests as its element, covers the
+ * run if it is its own element's and lies over its letters, and is a ground the run must stand out from if it lies
+ * under them. A \`display: contents\` element is read through the box its parent draws. And no list item may draw a marker, a number the page's checks do not read.
  */
 const unseen = ({ hit }) => `(() => {
   const out = { unseen: [], blank: [], markers: [] };
@@ -252,8 +254,38 @@ const unseen = ({ hit }) => `(() => {
       for (let a = e; a; a = a.parentElement) o *= parseFloat(getComputedStyle(a).opacity);
       return o < 0.05;
     };
-    return document.elementsFromPoint(x, y).find((e) => !faded(e)) === el;
+    if (document.elementsFromPoint(x, y).find((e) => !faded(e)) !== boxed(el)) return false;
+    // The run's own element's pseudo-elements hit-test as the element: one laid over its letters covers them.
+    return !pseudoBoxes(el).some((b) => !b.under && covers(b, p));
   };
+  /** The element whose box draws a run: a \`display: contents\` element has none, and its parent's box draws its text. */
+  const boxed = (e) => {
+    let a = e;
+    while (a && getComputedStyle(a).display === 'contents') a = a.parentElement;
+    return a ?? e;
+  };
+  /**
+   * The boxes an element's ::before and ::after paint when positioned: a pseudo-element hit-tests as its element,
+   * so one laid over the element's own text, or under it in the text's colour, is found here or nowhere.
+   */
+  const pseudoBoxes = (e) =>
+    ['::before', '::after'].flatMap((p) => {
+      const ps = getComputedStyle(e, p);
+      if (ps.content === 'none' || ps.content === 'normal' || !/^(absolute|fixed)$/.test(ps.position)) return [];
+      const bg = rgba(ps.backgroundColor);
+      const painted = bg[3] > 0.05 || ps.backgroundImage !== 'none' || ps.boxShadow !== 'none';
+      const w = parseFloat(ps.width);
+      const h = parseFloat(ps.height);
+      if (!painted || !(w > 2 && h > 2)) return [];
+      let cb = ps.position === 'fixed' ? null : e;
+      while (cb && getComputedStyle(cb).position === 'static') cb = cb.parentElement;
+      const base = cb ? cb.getBoundingClientRect() : { left: 0, top: 0 };
+      const cbs = cb ? getComputedStyle(cb) : null;
+      const left = base.left + (cbs ? parseFloat(cbs.borderLeftWidth) || 0 : 0) + (parseFloat(ps.left) || 0);
+      const top = base.top + (cbs ? parseFloat(cbs.borderTopWidth) || 0 : 0) + (parseFloat(ps.top) || 0);
+      return [{ left, top, right: left + w, bottom: top + h, bg, under: parseInt(ps.zIndex, 10) < 0 }];
+    });
+  const covers = (b, [x, y]) => x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
   const regions = [];
   const shows = new Map();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
@@ -274,7 +306,7 @@ const unseen = ({ hit }) => `(() => {
     // A generated region swaps one drawing for another by width, so a run it does not render is not unseen; before
     // anything has played it may hold its drawing on a first frame, so it is read only once everything has.
     const region = regions.at(-1);
-    if (region !== undefined && (!${hit} || !el.checkVisibility())) continue;
+    if (region !== undefined && (!${hit} || !boxed(el).checkVisibility())) continue;
     // The one run a generated region rests unseen by design: the chunk grid's first-phase caption, which its
     // animation shows and its final frame fades out. The regions' markup is held byte for byte, so nothing else can
     // wear the class.
@@ -308,10 +340,22 @@ const unseen = ({ hit }) => `(() => {
     ground = ground ?? rgba(getComputedStyle(document.documentElement).backgroundColor);
     // The letters as painted: their colour laid over the ground at its own alpha.
     const drawn = paint.slice(0, 3).map((v, k) => v * paint[3] + ground[k] * (1 - paint[3]));
-    const [hi, lo] = [lum(drawn), lum(ground)].sort((a, b) => b - a);
-    const contrast = (hi + 0.05) / (lo + 0.05);
+    const against = (g) => {
+      const [hi, lo] = [lum(drawn), lum(g)].sort((a, b) => b - a);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    // Against the ground, and against any box a pseudo-element here or above paints across the run's first letters.
+    const at = ${hit} ? point(range) : null;
+    const grounds = [ground];
+    if (at) {
+      for (let a = el; a; a = a.parentElement) {
+        for (const b of pseudoBoxes(a)) if (b.bg[3] >= 0.9 && covers(b, at)) grounds.push(b.bg);
+      }
+    }
+    const contrast = Math.min(...grounds.map(against));
     const seen =
-      el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+      boxed(el).checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+      cs.visibility === 'visible' &&
       box.width > 0 && box.height > 0 && onPage &&
       opacity >= 0.9 && !veiled && !/^(disc|circle|square)$/.test(cs.webkitTextSecurity) &&
       paint[3] >= 0.9 && rgba(cs.color)[3] >= 0.9 && contrast >= 3 &&

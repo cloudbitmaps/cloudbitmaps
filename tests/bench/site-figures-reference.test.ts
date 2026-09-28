@@ -967,6 +967,16 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     ['an animation that never ends', '.cb-caveat p { animation: x 120s infinite; }', 'never ends'],
     [
+      'forced colours turned off',
+      '.cb-caveat p { forced-color-adjust: none; }',
+      "the system's colours",
+    ],
+    [
+      'a system colour',
+      "[data-theme='dark'] .cb-caveat p { -webkit-text-fill-color: Canvas; }",
+      "the system's colours",
+    ],
+    [
       'a hover rule that hides',
       'html:hover .cb-caveat p { opacity: 0; }',
       'hovering, focusing or following a link',
@@ -1026,6 +1036,7 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     ],
     ['a halo painted under the letters', 'svg .t { paint-order: stroke; }'],
     ['a hover colour', '.cb-caveats a:hover { color: var(--cb-ink); }'],
+    ['a custom property named like a system colour', '.cb-caveats { --cb-mark: 1px; }'],
     ['print', '@media print { .cb-caveats { gap: 2px; } }'],
   ])('passes a stylesheet with %s', (_name, rule) => {
     const r = siteFigures('site-next', { [CSS]: `${css}\n${rule}\n` });
@@ -1213,6 +1224,12 @@ describe('home-figures, piece by piece', () => {
       '<title>v 9</title><p title="8 x">7 and USD6 in @x/s3</p><script>5</script><svg><text><![CDATA[4]]></text></svg>',
     );
     expect(Object.fromEntries(counts)).toEqual({ '9': 1, '8': 1, '7': 1, USD6: 1, '4': 1 });
+  });
+
+  it('loads the narrowest band at its widest, so a rule below 320px is seen', () => {
+    expect(
+      home.widthsToProbe('@media (max-width: 319px) {}', [320, 390, 768, 1024, 1280, 1440, 1920]),
+    ).toEqual([319]);
   });
 
   it('loads a width inside every band a media query marks out that no standard width falls in', () => {

@@ -45,7 +45,8 @@
  *   ends, or `pointer-events` with `!important`, which would out-rank the pass;
  * - a sheet rule for a reader site-text-floor does not become: `@supports`, `@container`, a media feature other than
  *   width and motion (the theme is the page's `data-theme` stamp, and print stands alone), a size that follows the
- *   viewport's height or does arithmetic on its width, an animation tied to scrolling, or, for a reader hovering,
+ *   viewport's height or does arithmetic on its width, an animation tied to scrolling, the system's colours or an
+ *   opt-out of forced colours, or, for a reader hovering,
  *   focusing or following a link, anything but a colour, a ground, a border colour, a decoration or an outline;
  * - a base URL or a refresh, structured data, an inline style other than a custom property, or a character reference
  *   this does not decode, in the text, an attribute or the title. Every meta's content is read but for a short list
@@ -624,10 +625,17 @@ function widthsToProbe(source, standard) {
   const bands = sorted
     .map((f, k) => [k === 0 ? 0 : sorted[k - 1], f])
     .concat([[sorted.at(-1) ?? 0, Infinity]]);
+  // The narrowest band is loaded at its widest width, so a rule for folded phones below 320px is seen at 319.
   return bands
     .filter(([a, b]) => !standard.some((w) => w > a && w < b))
-    .map(([a, b]) => (b === Infinity ? Math.ceil(a) : Math.max(1, Math.round((a + b) / 2))))
-    .filter((w) => w >= 320 && w <= 3840);
+    .map(([a, b]) =>
+      b === Infinity
+        ? Math.ceil(a)
+        : a === 0
+          ? Math.floor(b)
+          : Math.max(1, Math.round((a + b) / 2)),
+    )
+    .filter((w) => w >= 240 && w <= 3840);
 }
 
 /**
@@ -725,6 +733,10 @@ const FONTS = new Set(
     'monospace',
   ].map((f) => f.toLowerCase()),
 );
+
+/** The CSS system colours: what forced colours paint with, and what a sheet could use to paint text away there. */
+const SYSTEM_COLOURS =
+  'AccentColor|AccentColorText|ActiveText|ButtonBorder|ButtonFace|ButtonText|Canvas|CanvasText|Field|FieldText|GrayText|Highlight|HighlightText|LinkText|Mark|MarkText|SelectedItem|SelectedItemText|VisitedText';
 
 /** The attributes that hold a URL the browser loads or follows. */
 const URL_ATTRS = new Set([
@@ -1004,6 +1016,13 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
     }
     if (/(?:url|image-set|image|element|paint|cross-fade|-webkit-canvas)\(/i.test(rest)) {
       fail(`${says} draws an image, whose pixels no check reads`);
+    }
+    // Forced colours replace the sheet's colours with the system's, a reader state no pass becomes.
+    if (
+      d.name === 'forced-color-adjust' ||
+      new RegExp(`(?<![\\w-])(?:${SYSTEM_COLOURS})(?![\\w-])`, 'i').test(rest)
+    ) {
+      fail(`${says} paints with the system's colours, which no pass sees`);
     }
     if (/(?:linear|radial|conic)-gradient\(/i.test(rest)) {
       fail(`${says} paints a gradient, which the browser pass cannot read as a ground`);
