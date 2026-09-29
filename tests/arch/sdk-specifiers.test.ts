@@ -55,6 +55,7 @@ describe('the SDK-free gate detects a specifier', () => {
     ['a driver package deep path', 'require("@cloudbitmaps/gcs/whatever")'],
     // A driver name as a subpath of the flavor is matched too: it would reach an SDK the same way.
     ['a driver name as a subpath of the flavor', 'require("@cloudbitmaps/roaring/azure")'],
+    ['a driver package name as a subpath of core', 'require("@cloudbitmaps/core/azure-blob")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source).length).toBeGreaterThan(0);
   });
@@ -76,6 +77,8 @@ describe('the SDK-free gate does NOT fire on', () => {
     ['a package we do not guard', 'require("@smithy/node-http-handler")'],
     ['an unrelated scoped package', 'require("@cloudbitmaps/core")'],
     ['the flavor main entry, which is not a driver', 'require("@cloudbitmaps/roaring")'],
+    ['the driver contract, which carries no SDK', 'import("@cloudbitmaps/core/driver-kit")'],
+    ['a subpath that only starts with a driver name', 'require("@cloudbitmaps/core/azure-blobs")'],
   ])('%s', (_label, source) => {
     expect(findSdkSpecifiers(source)).toEqual([]);
   });

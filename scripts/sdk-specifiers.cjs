@@ -22,11 +22,12 @@ const SDK_ROOTS = ['@aws-sdk/', '@google-cloud/', '@azure/', 'aws-sdk'];
  * consumer's bundler follows that specifier into the driver entry and hits `@aws-sdk/client-s3` there, which
  * is exactly the failure this gate exists to prevent. Naming a driver IS reaching an SDK.
  *
- * Two spellings are matched: a driver package (`@cloudbitmaps/s3`), and a driver name as a subpath of one of
- * our packages (`@cloudbitmaps/core/s3`). The second costs nothing, and such an import would reach an SDK the
- * same way, so it is caught rather than left to pass as an unknown specifier.
+ * Two spellings are matched: a driver package (`@cloudbitmaps/s3`), and a driver's name as a subpath of one of
+ * our packages (`@cloudbitmaps/core/s3`, `…/azure-blob`, or `…/azure`). The second costs nothing, and such an
+ * import would reach an SDK the same way, so it is caught rather than left to pass as an unknown specifier.
  */
-const DRIVER_SUBPATH = /^@cloudbitmaps\/(?:(s3|gcs|azure-blob)(\/|$)|[^/]+\/(s3|gcs|azure)(\/|$))/;
+const DRIVER_SUBPATH =
+  /^@cloudbitmaps\/(?:(s3|gcs|azure-blob)(\/|$)|[^/]+\/(s3|gcs|azure(?:-blob)?)(\/|$))/;
 
 /**
  * Blank out comments while KEEPING string and template literals.

@@ -185,9 +185,8 @@ so the hardening below is part of first-publishing one, not an afterthought:
 ## Bootstrapping a name
 
 **Every package name has to be created by hand once, because a Trusted Publisher cannot be bound to a package
-that does not exist yet.** This ran at launch for `@cloudbitmaps/core` and `@cloudbitmaps/roaring`, and it
-runs again **every time a package is added to the family** — the storage split added `@cloudbitmaps/s3`,
-`/gcs` and `/azure-blob` to a workspace whose other two packages were already on npm.
+that does not exist yet.** It runs once for each new package name, **including when one is added to a family
+whose other packages are already on npm**.
 
 > [!WARNING]
 > **Do this before tagging, not after.** The release pipeline is tokenless: it authenticates by OIDC against

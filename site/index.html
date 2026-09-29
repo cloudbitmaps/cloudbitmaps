@@ -393,13 +393,11 @@
                  full-length arguments against ourselves out-weighed the seven bullets opposite. Both
                  items keep their point and lose their elaboration.
 
-                 The p99 item also used to overstate itself: it said "on a working set that fits a bounded
-                 cache", but our cache tier IS in-process RAM, so on a hit there is nothing between us.
-                 The limit is the tail. Its old "10–20× faster" is gone — never a sourced figure — and so
-                 are the p50/p99 milliseconds that replaced it: they were metered on a tier the library no
-                 longer has, and no in-region latency figure is published until an in-region run measures
-                 one. The second item is now the WRITE MODEL rather than a write rate, because a write
-                 rate is not the trade any more: there is no per-id write to run at a rate. -->
+                 The p99 item says the limit is the tail, not the working set: our cache IS in-process
+                 RAM, so on a hit there is nothing between us. It carries no speed-up factor and no
+                 p50/p99 milliseconds, because no in-region latency figure is published until an
+                 in-region run measures one. The second item is the WRITE MODEL rather than a write rate,
+                 because there is no per-id write to run at a rate. -->
             <div class="label is-peer">Use something else when</div>
             <p class="trade-title">You need a sub-millisecond p99.</p>
             <p class="trade-body">

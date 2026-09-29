@@ -94,10 +94,10 @@ const OFFENDERS: readonly RegExp[] = [
   /(?:from|require\s*\()[^'"\n]{0,80}['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,
   // A bare quoted specifier, e.g. inside a highlighted <span class="s">'cloud-roaring/x'</span>.
   //
-  // The SUBPATH is required, and stays required. Dropping it to catch a bare `'cloud-roaring'` immediately
-  // flagged `otel.getMeter('cloud-roaring')` in two guides — an OpenTelemetry meter name, which is a label a
-  // user chooses and not a module specifier at all. A quoted string is only evidence of an import when it
-  // names a subpath; otherwise the `from` / `require(` / `import(` forms below are what identify one.
+  // The SUBPATH is required, and stays required. Dropping it to catch a bare `'cloud-roaring'` would flag a
+  // string such as an OpenTelemetry meter name, which is a label a user chooses and not a module specifier at
+  // all. A quoted string is only evidence of an import when it names a subpath; otherwise the `from` /
+  // `require(` / `import(` forms below are what identify one.
   /['"]cloud-roaring\/[a-z0-9]+['"]/,
   // `await import('cloud-roaring')` — a real import, and neither `from` nor `require`.
   /\bimport\s*\(\s*['"]cloud-roaring(?:\/[a-z0-9]+)?['"]/,

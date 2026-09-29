@@ -5,25 +5,24 @@ import { join } from 'node:path';
 import { MOVED_OPTIONS } from '@/moved-options';
 
 /**
- * The TypeScript samples in the docs must not repeat the mistakes that have shipped in them: a name declared twice,
- * a removed or moved option key, and the old and new wiring mixed in one sample. Nothing here parses a sample.
+ * The TypeScript samples in the docs must not make the mistakes that stop a copied sample running: a name declared
+ * twice, an option key the store refuses or takes only one level down, and a sample that declares one half of its
+ * wiring and uses a name it never declared. Nothing here parses a sample.
  *
  * WHY THIS EXISTS. Doc samples are copy-pasted; a sample that cannot run is worse than no sample, because the
- * reader assumes their own environment is at fault. Two of them shipped broken in one release, and neither
- * was visible to any existing gate:
+ * reader assumes their own environment is at fault. Two are easy to write:
  *
- *   - The GCS wiring sample declared `const storage` twice — `Identifier 'storage' has already been declared`.
- *     The `cold` → `storage` rename walked straight into the name `@google-cloud/storage` already uses for
- *     its own client class, which the sample declares one line above.
- *   - A `CHANGELOG.md` entry in the *pending* release wired `cold:`, the very key that release removes.
+ *   - A GCS sample that names its backend `storage`, below the `storage` it made for the client
+ *     `@google-cloud/storage` exports: `Identifier 'storage' has already been declared`.
+ *   - A sample that wires an option key the store refuses.
  *
  * Both render fine, lint fine, and are invisible to the link and export-sync checks, which look at prose and
  * symbol names rather than at whether the code would run.
  *
  * WHAT IT CHECKS, and why only things like these. A full typecheck of every fence would need each sample to be
  * self-contained, which they deliberately are not (they elide imports and setup to stay readable). None of these
- * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a removed or moved
- * option key, or two wirings in one sample, is wrong no matter what surrounds it.
+ * checks needs that assumption: a duplicate binding is a `SyntaxError` in any context, and a refused option key,
+ * or a sample that uses a name it declared the other half of, is wrong no matter what surrounds it.
  */
 
 const ROOT = join(__dirname, '..', '..');
@@ -125,16 +124,14 @@ describe('documentation code samples', () => {
     expect(offenders).toEqual([]);
   });
 
-  // A sample whose wiring vocabulary contradicts ITSELF is a half-applied rename. The rename from a
-  // `storage` + `registry` pair to a single `backend` was applied fence by fence, and three fences ended up
-  // holding both halves of it: declaring `const storage = …` / `const registry = …` and then passing
-  // `storage: backend`, or declaring `const backend = …` and then passing `{ registry }`. Each throws
+  // A sample whose wiring contradicts ITSELF: declaring `const storage = …` / `const registry = …` and then
+  // passing `storage: backend`, or declaring `const backend = …` and then passing `{ registry }`. Each throws
   // `ReferenceError` on the first line a reader runs.
   //
   // What this deliberately does NOT flag is a fence that only *references* `backend` — samples on a page
   // routinely elide the construction shown in an earlier fence, which is why a plain free-identifier check
   // reported eight passages, every one of them correct. The defect is the contradiction, not the elision.
-  it('does not mix the old `storage`/`registry` wiring with the new `backend` wiring in one sample', () => {
+  it('does not declare `storage` or `registry` and then use an undeclared `backend`, or the reverse', () => {
     // Comments, strings and template literals are stripped before anything is matched: half these names appear
     // in prose ("the wrapped DEKs live in the backend's registry") and in paths ("pointers under ./x/registry"),
     // and matching those reported ten correct samples. What is left is code.
@@ -155,17 +152,17 @@ describe('documentation code samples', () => {
       const referencesBare = (name: string): boolean =>
         new RegExp(`(?<![.\\w])${name}\\b(?!\\s*:)`).test(code);
 
-      // Declaring either old-style half and then reaching for `backend` — the rename stopped halfway.
+      // Declaring `storage` or `registry` and then reaching for a `backend` the sample never declares.
       if (
         referencesBare('backend') &&
         !declares('backend') &&
         (declares('storage') || declares('registry'))
       ) {
         offenders.push(
-          `${fence.file}:${fence.line} — sample declares the old \`storage\`/\`registry\` wiring but uses \`backend\``,
+          `${fence.file}:${fence.line} — sample declares \`storage\` or \`registry\` but uses an undeclared \`backend\``,
         );
       }
-      // Declaring `backend` and then passing a bare `registry` that the rename should have absorbed into it.
+      // Declaring `backend` and then passing a bare `registry` the sample never declares, which the backend carries.
       if (declares('backend') && referencesBare('registry') && !declares('registry')) {
         offenders.push(
           `${fence.file}:${fence.line} — sample builds a \`backend\` but still references an undeclared \`registry\``,
@@ -175,46 +172,39 @@ describe('documentation code samples', () => {
     expect(offenders).toEqual([]);
   });
 
-  // Option keys this release removed. A sample naming one throws at runtime rather than misbehaving, so the
+  // Option keys the store refuses. A sample naming one throws at runtime rather than misbehaving, so the
   // reader's first experience of the library would be an error in code we gave them.
   //
-  // DERIVED from the store's own `MOVED_OPTIONS`, minus the four spellings below that survive one level down.
-  // The hand-typed list this replaced had drifted: it named three `storage*` keys no release ever shipped,
-  // and omitted the five options that went away with the live tier, so a sample wiring `warm:` was unwatched.
+  // DERIVED from the store's own `MOVED_OPTIONS`, minus the spellings below that are correct one level down.
   //
-  // `onRetry`, `keystore`, `clock`, `rng` and `registry` are deliberately excluded: each still exists as a
-  // key, just one level down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several
-  // are also valid on the free-function deps objects. Listing them made this gate fire on the correct new
-  // spelling. Only spellings that vanished outright belong here; the survivors are caught positionally by
-  // ILLEGAL_AT_TOP_LEVEL below.
+  // `onRetry`, `keystore`, `clock`, `rng` and `registry` are deliberately excluded: each is a key one level
+  // down (`retry.onRetry`, `encryption.keystore`, `seams.clock`/`seams.rng`), and several are also valid on
+  // the free-function deps objects. Listing them would fire on the correct spelling. Only keys the store takes
+  // nowhere belong here; the others are caught by position, by ILLEGAL_AT_TOP_LEVEL below.
   const STILL_VALID_ONE_LEVEL_DOWN = new Set(['registry', 'keystore', 'onRetry', 'clock', 'rng']);
-  const REMOVED_KEYS = MOVED_OPTIONS.map(([from]) => from).filter(
+  const REFUSED_KEYS = MOVED_OPTIONS.map(([from]) => from).filter(
     (from) => !STILL_VALID_ONE_LEVEL_DOWN.has(from),
   );
 
-  // `registry` is a special case: it is gone from `CloudRoaringOptions`, but it is still a perfectly good
-  // option on `bulkLoadCrbmGeneration` and the lifecycle free functions. Listing it above would flag every
-  // correct load example, so the check is scoped to the one literal it was removed from — which means
-  // brace-matching, because `new CloudRoaring({ … })` spans lines and nests.
+  // `registry` is a special case: it is not a `CloudRoaringOptions` key, but it is a good option on
+  // `loadSegment` and the lifecycle free functions. Listing it above would flag every correct example of
+  // those, so the check is scoped to the one literal that refuses it — which means brace-matching, because
+  // `new CloudRoaring({ … })` spans lines and nests.
   /**
-   * Keys that are illegal at the TOP LEVEL of a `new CloudRoaring({…})` literal, and where each one went.
+   * Keys that are refused at the TOP LEVEL of a `new CloudRoaring({…})` literal, and where each one goes.
    *
-   * These cannot go in `REMOVED_KEYS`, which matches a key anywhere in a fence: `keystore`, `clock` and
-   * `registry` are all still correct on the free-function deps objects (`bulkLoadCrbmGeneration`,
-   * `loadSegment`, `eraseIdFromSegment`) and on `CrbmStorageChunkSourceOptions`, and `onRetry` is still
-   * correct one level down inside `retry`. Listing them there made this suite fire on the correct new
-   * spelling. But at the top level of the store's own options every one of them now THROWS — so the
-   * position is what decides, which is exactly what the top-level scan below can see and a flat match cannot.
-   *
-   * Two samples shipped in this state — the repo's front-door README options summary and the only worked
-   * encryption example in the guide — with all eleven doc gates green, because the machinery existed and was
-   * pointed at one key instead of five.
+   * These cannot go in `REFUSED_KEYS`, which matches a key anywhere in a fence: `keystore`, `clock` and
+   * `registry` are all correct on the free-function deps objects (`loadSegment`, `eraseIdFromSegment`) and on
+   * `CrbmStorageChunkSourceOptions`, and `onRetry` is correct one level down inside `retry`. Listing them there
+   * would fire on the correct spelling. But at the top level of the store's own options every one of them
+   * THROWS — so the position is what decides, which is exactly what the top-level scan below can see and a flat
+   * match cannot.
    */
   const ILLEGAL_AT_TOP_LEVEL: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.filter(
     ([from]) => STILL_VALID_ONE_LEVEL_DOWN.has(from),
-  ).map(([from, to]) => [from, /^[\w.]+$/.test(to) ? `it moved to \`${to}\`` : to]);
+  ).map(([from, to]) => [from, /^[\w.]+$/.test(to) ? `it goes in \`${to}\`` : to]);
 
-  it('no sample passes a moved key at the top level of CloudRoaring options', () => {
+  it('no sample passes a key at the top level of CloudRoaring options that goes one level down', () => {
     const offenders: string[] = [];
     for (const fence of allFences) {
       const code = fence.code;
@@ -251,9 +241,9 @@ describe('documentation code samples', () => {
         // `key:` (a value), `key,` and `key }` (shorthand) — the shorthand form is how these were usually
         // written, and an earlier pattern that required a trailing `:` missed all of it.
         const scannable = topLevelOnly.replace(/\/\/.*$/gm, '');
-        for (const [key, moved] of ILLEGAL_AT_TOP_LEVEL) {
+        for (const [key, where] of ILLEGAL_AT_TOP_LEVEL) {
           if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(scannable)) {
-            offenders.push(`${fence.file}:${line} — passes \`${key}\` to CloudRoaring; ${moved}`);
+            offenders.push(`${fence.file}:${line} — passes \`${key}\` to CloudRoaring; ${where}`);
           }
         }
       }
@@ -266,7 +256,7 @@ describe('documentation code samples', () => {
     for (const fence of allFences) {
       const lines = fence.code.split('\n');
       lines.forEach((raw, i) => {
-        for (const key of REMOVED_KEYS) {
+        for (const key of REFUSED_KEYS) {
           // `key:` as an object property — not `key.foo`, not a string, not a word in a comment.
           if (new RegExp(`(^|[{,(\\s])${key}\\s*:`).test(raw.replace(/\/\/.*$/, ''))) {
             offenders.push(

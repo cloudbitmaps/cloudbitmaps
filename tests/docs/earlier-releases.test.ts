@@ -12,25 +12,48 @@ import { describe, expect, it } from 'vitest';
  *
  * A version is a `0.N.P`, `0.N.x` or `0.N.*` with N from 1 to 9, in any case and with any suffix, or a `v0.N`.
  * A bare `0.N` is a number, as in `minRetained: 0.5`, unless the words around it make it a release: a noun after it
- * ("store", "line", "release"), or a preposition before it ("in", "since") and a stop after. `0.10.0` and later
- * pass. An npm spec such as `pkg@0.N.P` names another package's version and passes, but not one of ours, which is
- * refused. Every tracked file is read but the lockfiles, which carry nothing but other packages' versions, and
- * binary files.
+ * ("store", "line", "release"), a noun before it ("version", "CloudBitmaps"), a preposition before it ("in",
+ * "since") and a stop after, a range ("from 0.N on", "0.N to 0.1N"), or a changelog heading. `0.10.0` and later
+ * pass. An npm spec such as `pkg@0.N.P` names another package's version and passes, but not one of ours, in a spec
+ * or a manifest, which is refused. Matching runs across line breaks, so where a line wraps changes nothing. Every
+ * tracked file is read but the lockfiles, which carry nothing but other packages' versions, and binary files.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** A release before `0.10.0`, written as a version. A letter before it does not hide one; a digit or a dot does. */
-const EARLIER_RELEASE =
-  /(?<![\d.@])v?0\.[1-9]\.(?:\d+|x|\*)(?!\d|\.\d)|(?<![\w.@])v0\.[1-9](?![\d.]|\.\d)/gi;
+/** After a bare `0.N`: not another digit, and not the dot of a longer version. A full stop may follow. */
+const END = String.raw`(?!\d|\.[\dx*])`;
+/** Between two words: spaces, and a line break with the comment or quote marker that starts the next line. */
+const GAP = String.raw`(?:\s+(?:(?:\/\/+|\*|>)\s+)?)`;
 
-/** One of our packages at an earlier release, where the `@` would otherwise mark another package's version. */
-const OURS_AT_EARLIER =
-  /(?:@cloudbitmaps\/[\w.-]+|(?<![\w/@.-])(?:cloudbitmaps|cloud-roaring))@v?0\.[1-9](?:\.(?:\d+|x|\*))?(?!\d|\.\d)/gi;
+/**
+ * A release before `0.10.0`, written as a version. A word before a `0.N.P` does not hide it, but a digit, a dot,
+ * or a lone SVG path command (`l0.1.2` in path data) does.
+ */
+const EARLIER_RELEASE = new RegExp(
+  String.raw`(?<![\d.@])(?<!(?:^|[^A-Za-z])[MLHVCSQTAZ])v?0\.[1-9]\.(?:\d+|x|\*)(?!\d|\.\d)` +
+    String.raw`|(?<![\w.@])v0\.[1-9]${END}`,
+  'gi',
+);
 
-/** A bare `0.N` the words around it make a release: a noun after it, or a preposition before it and a stop after. */
+/** One of our packages at an earlier release, in an npm spec or a manifest's dependencies. */
+const OURS = String.raw`(?:@cloudbitmaps\/[\w.-]+|(?<![\w/@.-])(?:cloudbitmaps|cloud-roaring))`;
+const EARLIER = String.raw`[\^~=<>]*v?0\.[1-9](?:\.(?:\d+|x|\*))?(?!\d|\.\d)`;
+const OURS_AT_EARLIER = new RegExp(
+  String.raw`${OURS}@${EARLIER}|"${OURS}"\s*:\s*"${EARLIER}`,
+  'gi',
+);
+
+/** A bare `0.N` the words around it make a release. */
+const BARE = String.raw`(?<![\w.])v?0\.[1-9]${END}`;
 const BARE_RELEASE = new RegExp(
-  String.raw`(?<![\w.])v?0\.[1-9](?![\d.])\s+(?:stores?|lines?|releases?|series|era|builds?|packages?|APIs?|upgrades?|users?|clients?)\b` +
-    String.raw`|\b(?:in|from|since|until|before|after|on)\s+v?0\.[1-9](?![\d.%])(?=\s*(?:[,;:)]|$))`,
+  [
+    String.raw`${BARE}${GAP}(?:stores?|lines?|releases?|series|era|builds?|packages?|APIs?|upgrades?|users?|clients?)\b`,
+    String.raw`\b(?:version|release|cloudbitmaps|cloud-roaring)${GAP}${BARE}`,
+    String.raw`\b(?:in|since|until|before|after)${GAP}${BARE}(?=\s*(?:[,;:)]|\.(?!\d)|(?![\s\S])))`,
+    String.raw`\bfrom${GAP}${BARE}${GAP}(?:on|onwards?)\b`,
+    String.raw`${BARE}\s*(?:to|→|->)${GAP}v?0\.1\d(?![\d.])`,
+    String.raw`^#{1,6}\s*\[v?0\.[1-9](?:\.\d+)?\]`,
+  ].join('|'),
   'gim',
 );
 
@@ -46,14 +69,23 @@ function trackedFiles(): string[] {
     .sort();
 }
 
-/** Every earlier-release version in `text`, with its line. */
+/** Every earlier-release version in `text`, with the line it starts on; two patterns matching one version count once. */
 export function earlierReleases(text: string): Array<{ line: number; version: string }> {
-  const found: Array<{ line: number; version: string }> = [];
-  text.split('\n').forEach((line, i) => {
-    for (const re of [EARLIER_RELEASE, OURS_AT_EARLIER, BARE_RELEASE]) {
-      for (const m of line.matchAll(re)) found.push({ line: i + 1, version: m[0].trim() });
+  const spans: Array<{ start: number; end: number; version: string }> = [];
+  for (const re of [EARLIER_RELEASE, OURS_AT_EARLIER, BARE_RELEASE]) {
+    for (const m of text.matchAll(re)) {
+      const start = m.index ?? 0;
+      spans.push({ start, end: start + m[0].length, version: m[0].trim().replace(/\s+/g, ' ') });
     }
-  });
+  }
+  spans.sort((x, y) => x.start - y.start || y.end - x.end);
+  const found: Array<{ line: number; version: string }> = [];
+  let reach = -1;
+  for (const s of spans) {
+    if (s.start < reach) continue;
+    reach = s.end;
+    found.push({ line: text.slice(0, s.start).split('\n').length, version: s.version });
+  }
   return found;
 }
 
@@ -106,6 +138,23 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       `the ${v(9, '')} line`,
       `it changed in ${v(9, '')},`,
       `since ${v(4, '')})`,
+      `tagged v${v(9, '.')}`,
+      `shipped in v${v(9, '')}.`,
+      `it changed in ${v(9, '')}.`,
+      `it changed in ${v(9, '')}`,
+      `version ${v(9, '')}`,
+      `release ${v(9, '')} is`,
+      `CloudBitmaps ${v(9, '')} reads`,
+      `## [${v(9, '')}]`,
+      `## [${v(9, '.1')}] - 2026-01-01`,
+      `"@cloudbitmaps/roaring": "${v(9, '')}"`,
+      `"@cloudbitmaps/core": "^${v(9, '.0')}"`,
+      `@cloudbitmaps/roaring@^${v(9, '')}`,
+      `@cloudbitmaps/roaring@~${v(9, '')}`,
+      `from ${v(9, '')} to ${v(10, '')}`,
+      `from ${v(9, '')} onward`,
+      `the change landed in\n// ${v(9, '')}, and`,
+      `a ${v(9, '')}\n * store`,
     ]) {
       expect(earlierReleases(text), text).toHaveLength(1);
     }
@@ -125,6 +174,14 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       '0.10.x',
       '/sitemap/0.9',
       '<priority>0.9</priority>',
+      'falls from 0.9, the default, to 0.5',
+      '(maxShrink on 0.5)',
+      'a ratio from 0.5 to 0.95',
+      'it drops the share\n// from 0.9\n// to 0.5 of the segment',
+      'a delay in 0.5\nseconds',
+      `<path d="M0 0l${v(1, '.2')}h3"/>`,
+      `<path d="M${v(1, '.2')}"/>`,
+      'thresholds: [0.5]',
     ]) {
       expect(earlierReleases(text), text).toEqual([]);
     }

@@ -19,15 +19,15 @@
  * There are two alphabets, because the boundaries differ:
  *
  * - **Object keys** (S3, GCS, Azure Blob) take almost anything. They need `/` escaped so a name cannot
- *   invent hierarchy or break a key parser that splits on it, `#` and `|` (see below), and control characters
- *   because they are not legal in the XML an S3 LIST returns.
+ *   invent hierarchy or break a key parser that splits on it, and control characters because they are not
+ *   legal in the XML an S3 LIST returns. Every other character outside `[A-Za-z0-9._:-]` is escaped as well.
  * - **Filesystem paths** need all of that plus `:` (an NTFS alternate-data-stream separator, where a write can
  *   *succeed* while `readdir` never lists the result), plus three hazards that are about the component as a
  *   whole rather than its characters — see {@link encodeNameForPath}.
  *
- * **`#` and `|` are reserved**, and the reservation is permanent: un-reserving the two characters would change
- * what `encodeNameForKey` emits for a name containing either, silently moving those segments to a key nothing
- * looks up. A test pins it.
+ * **The key alphabet is fixed for good.** Adding a character to it would change what `encodeNameForKey` emits
+ * for every name containing that character, silently moving those segments to keys nothing looks up. Tests pin
+ * the escapes.
  *
  * **A plain name encodes to itself on the OBJECT-KEY alphabet** — one made only of `[A-Za-z0-9._:-]` that
  * starts with a letter or digit — so S3, GCS and Azure keys read as the names that made them. That is the
@@ -107,9 +107,9 @@ function decodePercent(encoded: string): string {
 /**
  * Encode a name for use inside an **object key** (S3, GCS, Azure Blob).
  *
- * Leaves `[A-Za-z0-9._:-]` literal, so a plain name reads as itself, and escapes everything else — including
- * `/` (which would invent hierarchy and break a parser that splits on it), `#` and `|` (reserved; see the
- * module header), and control characters (not legal in S3's XML responses).
+ * Leaves `[A-Za-z0-9._:-]` literal, except a leading `_` and a name that is only `.` or `..`, so a plain name
+ * reads as itself, and escapes everything else — including `/` (which would invent hierarchy and break a parser
+ * that splits on it) and control characters (not legal in S3's XML responses).
  */
 export function encodeNameForKey(name: string): string {
   return defuseDotComponent(encodeWith(name, KEY_SAFE));
@@ -125,8 +125,8 @@ export function encodeNameForKey(name: string): string {
  * ADLS Gen2, where the namespace really is hierarchical, `prefix/../x` and `x` are the same object. Those are
  * the DR-restore and eject paths this library documents.
  *
- * Note the asymmetry it removes: `normalizeS3Prefix` already refuses `.`/`..` segments in a **prefix**, which
- * is trusted config, while the name — the attacker-influenced input — was left unguarded.
+ * `normalizeS3Prefix` refuses `.`/`..` segments in a **prefix**, which is trusted config; this gives the name, the
+ * input an attacker can influence, the same guard.
  *
  * Every dot is escaped rather than just the first, so the result cannot end in one either.
  */

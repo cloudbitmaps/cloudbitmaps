@@ -398,7 +398,8 @@ chunks it needs.
   one bucket and no second database.
 - **Loading, `store.load()`.** It takes the next generation number, writes one immutable object, refuses an empty
   result over a non-empty segment, publishes it, and collects the generations the publish superseded, keeping one
-  by default. The `*Into` verbs and a subject erasure write generations the same way.
+  by default. The `*Into` verbs write through the same path and the same empty-result guard, but collect nothing
+  unless given `keep`. A subject erasure publishes only over the generation it read, and collects with `keep: 0`.
 - **Reads.** `has`, `count` (summed from the index, with no payload reads), `iterate`, chunk-skipping `intersect`
   with `exclude`, `union` and `andNot`; and `intersectInto`, `unionInto` and `andNotInto`, which write their result
   as a new generation of a destination, under the same empty-result guard as a load.

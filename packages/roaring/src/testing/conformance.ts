@@ -50,10 +50,11 @@ const BAD_NAMES: readonly string[] = [
 ];
 
 /**
- * Names that need encoding and must work end to end.
+ * Names a conformant driver MUST accept: names that do not start with a letter or digit or hold a character
+ * outside `[A-Za-z0-9._:-]`, and two Windows hazards, a device name and a trailing dot.
  *
- * This is the more important list. Accepting them is not enough: none of them may reach a key or a path
- * literally, so a driver that merely stopped validating characters would pass the list above and fail here.
+ * This is the more important list. A driver that refused characters it could not store, rather than escaping
+ * them, would pass the list above and fail here.
  */
 const NASTY_NAMES: readonly string[] = [
   'a/b', // would invent hierarchy in an object key
@@ -66,7 +67,7 @@ const NASTY_NAMES: readonly string[] = [
   'a b',
   'a%3Ab', // a name that SPELLS an escape; `%` escaping itself is what keeps this unambiguous
   '100%',
-  'ns#1|seg#2', // the characters the key codec keeps reserved
+  'ns#1|seg#2', // outside the key alphabet, so escaped like any other such character
   'con', // a Windows device name — letters only, and it breaks on Windows unless escaped
   'a.', // Windows strips a trailing dot, so this must not collide with `a`
   'user@example.com',
@@ -123,7 +124,7 @@ export function storageChunkSourceConformance(
       }
     });
 
-    it('accepts every name that needs encoding, without letting one reach a key literally', async () => {
+    it('accepts every name outside the plain alphabet, and the Windows hazards', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of NASTY_NAMES) {
         // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.

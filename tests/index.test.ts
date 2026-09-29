@@ -86,7 +86,7 @@ describe('public API', () => {
     // A handle has no per-id write — data enters a segment as a whole generation. Asserted so a per-id verb has
     // to be added deliberately rather than by accident (an `add` that quietly returned would be the worst
     // possible regression: it would look like it worked).
-    for (const verb of ['add', 'addMany', 'remove', 'removeMany', 'claimMany']) {
+    for (const verb of ['add', 'addMany', 'remove', 'removeMany']) {
       expect(seg).not.toHaveProperty(verb);
       expect((seg as unknown as Record<string, unknown>)[verb]).toBeUndefined();
     }

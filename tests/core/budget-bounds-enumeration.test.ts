@@ -6,9 +6,9 @@ import { BudgetExceededError } from '@/core/errors';
 // The bug these tests pin: every caller used to drain an async iterable in full and only then call
 // `checkBudget(budget, items.length, op)`. That reads as correct — the fan-out really is refused — but it
 // refuses *after* the list has been materialised, so a tight budget provided no memory protection at all.
-// Measured before the fix: a `budget: { maxRequests: 2 }` store buffered 3,000 chunk rows (~12 MB) before
-// `count()` threw, and `subjectReport` buffered 20,000 registry records. That contradicts the bounded-memory
-// invariant, and the documented mitigation (`budget.maxRequests`) was the very thing that did not work.
+// Measured before the fix: under `budget: { maxRequests: 2 }`, `subjectReport` buffered 20,000 registry
+// records before it threw. That contradicts the bounded-memory invariant, and the documented mitigation
+// (`budget.maxRequests`) was the very thing that did not work.
 //
 // THE ASSERTION THAT MATTERS is not "it throws" — it threw before, too. It is **how far the source was
 // consumed**. A test that only checks for the error passes against the broken code. So each case below counts

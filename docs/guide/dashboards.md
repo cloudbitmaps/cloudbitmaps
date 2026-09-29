@@ -35,13 +35,13 @@ import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
 const meter = otel.getMeter('cloudbitmaps');
-const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
-const cacheHit = meter.createCounter('cloudroaring.cache.hits');
-const cacheMiss = meter.createCounter('cloudroaring.cache.misses');
-const retries = meter.createCounter('cloudroaring.retries');
-const skippedChunks = meter.createCounter('cloudroaring.intersect.skipped_chunks');
-const fetchedChunks = meter.createCounter('cloudroaring.intersect.fetched_chunks');
-const opLatency = meter.createHistogram('cloudroaring.op.ms');
+const storageBytes = meter.createCounter('cloudbitmaps.storage.bytes');
+const cacheHit = meter.createCounter('cloudbitmaps.cache.hits');
+const cacheMiss = meter.createCounter('cloudbitmaps.cache.misses');
+const retries = meter.createCounter('cloudbitmaps.retries');
+const skippedChunks = meter.createCounter('cloudbitmaps.intersect.skipped_chunks');
+const fetchedChunks = meter.createCounter('cloudbitmaps.intersect.fetched_chunks');
+const opLatency = meter.createHistogram('cloudbitmaps.op.ms');
 
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
@@ -98,8 +98,8 @@ gauge. Because the library owns the objects, the grounded report uses each segme
 import { metrics as otel } from '@opentelemetry/api';
 
 const meter = otel.getMeter('cloudbitmaps');
-const monthlyUsd = meter.createObservableGauge('cloudroaring.cost.monthly_usd');
-const shareOfRedis = meter.createObservableGauge('cloudroaring.cost.share_of_redis');
+const monthlyUsd = meter.createObservableGauge('cloudbitmaps.cost.monthly_usd');
+const shareOfRedis = meter.createObservableGauge('cloudbitmaps.cost.share_of_redis');
 // What the Redis you would otherwise run for this store costs a month: your figure, not the library's.
 const STORE_REDIS_USD = 900;
 const SEGMENTS = ['active-us', 'active-eu'];

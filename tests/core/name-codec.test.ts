@@ -10,8 +10,9 @@ import {
 //
 //   1. ROUND-TRIP — decode(encode(n)) === n, so a name read back off storage is the name that went in.
 //   2. INJECTIVITY — a !== b implies encode(a) !== encode(b), so two segments can never claim one key.
-//   3. PLAIN NAMES STAY LITERAL — a name made only of `[A-Za-z0-9._:-]` encodes to ITSELF as an object key,
-//      so a bucket reads as the names that made it. This is the property most easily broken by a later edit.
+//   3. PLAIN NAMES STAY LITERAL — a name made only of `[A-Za-z0-9._:-]` that starts with a letter or digit
+//      encodes to ITSELF as an object key, so a bucket reads as the names that made it. This is the property
+//      most easily broken by a later edit.
 
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 

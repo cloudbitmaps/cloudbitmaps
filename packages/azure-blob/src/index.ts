@@ -2,7 +2,7 @@
  * `@cloudbitmaps/azure-blob` — Azure Blob Storage.
  *
  * One package per storage SERVICE, with `@azure/storage-blob` as a real dependency. Install it alongside a
- * flavor package and wire the backend in one line:
+ * flavor package and wire the backend:
  *
  * ```ts
  * import { CloudRoaring } from '@cloudbitmaps/roaring';

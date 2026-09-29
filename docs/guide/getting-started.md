@@ -499,7 +499,7 @@ Tune it, or turn it off, per store:
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
   // Tune the policy — it is a PARTIAL, so name only what you are changing. Everything else keeps its
-  // default, and `onRetry` now lives in the same group rather than as a sibling key.
+  // default, and `onRetry` goes in the same group.
   // …or `retry: false` to disable our wrappers entirely (e.g. your client already retries).
   retry: {
     maxAttempts: 6,
@@ -874,8 +874,8 @@ dependency of its own:
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 const meter = otel.getMeter('cloudbitmaps');
-const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
-const cacheHits = meter.createCounter('cloudroaring.cache.hits');
+const storageBytes = meter.createCounter('cloudbitmaps.storage.bytes');
+const cacheHits = meter.createCounter('cloudbitmaps.cache.hits');
 
 const store = new CloudRoaring({
   storage, // a backend — S3Storage, GcsStorage, …
