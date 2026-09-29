@@ -1,7 +1,7 @@
 /**
- * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is the driver
- * decorators' job, not the engine's: a driver classifies its backend's failures into this vocabulary, and
- * `withRetry` decides what is transient.
+ * Typed errors — callers learn *why* something failed, never by parsing strings. Retry is not the engine's job: a
+ * driver classifies its backend's failures into this vocabulary, and the store's read wrapper retries the
+ * transient ones through `withRetry`.
  */
 
 /**

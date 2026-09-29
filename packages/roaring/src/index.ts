@@ -1181,9 +1181,8 @@ export class CloudRoaring {
    * Scoping to a namespace narrows the LIST prefix, so it really is the difference between reading one tenant
    * and reading all of them.
    *
-   * It streams, and stopping the iteration stops the scan — except behind a driver that buffers its
-   * enumeration to retry it as a unit, which `RetryingRegistryDriver` does: wrapped in that, the whole scan is
-   * paid for and resident before the first row arrives.
+   * It streams, and stopping the iteration stops the scan. Like the store's other admin calls it is not retried: a
+   * transient fault part-way through ends the loop with that error, and a new loop scans from the start.
    *
    * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
    * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask

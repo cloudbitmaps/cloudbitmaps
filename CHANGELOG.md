@@ -13,12 +13,22 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-The first removes an export. The next six make a call throw where it used to return: four of them fix a wrong
+The first two remove exports. The next six make a call throw where it used to return: four of them fix a wrong
 answer, and the entries under **Fixed** say what the call returned before; two hold a call to a rule the rest of
 the library already kept. The five after them hold the store, the backends and the registry to what the library
 itself takes and writes, stop checking for a local store's older directory layout, and give its errors the
 library's own brand. The last two change what `estimateCost()` compares with and what a `CostReport` carries.
 
+- **`RetryingStorageDriver` and `RetryingRegistryDriver` are no longer exported**, from `@cloudbitmaps/core` or
+  `@cloudbitmaps/roaring`. Nothing in the library used them. The store's read retry is unchanged: it wraps every
+  source it reads through in `RetryingStorageChunkSource`, which stays exported with `RetryingOptions`, `withRetry`,
+  `DEFAULT_RETRY_POLICY` and the `retry` option. The two removed wrappers retried every call of the driver they
+  wrapped, writes included, and a retried conditional write can report a write that landed as a conflict: when a
+  write-once put or a compare-and-swap lands and its response is lost, the replay finds that write already there,
+  so the put throws `WriteConflictError` and a load reports `superseded`, for the caller's own write. Each also
+  collected a whole `list` before yielding any of it. To retry a write, re-run the call: a re-run `load` takes a
+  fresh generation number and re-reads the row, so it is safe whether or not the first attempt landed. To learn
+  whether that attempt landed, check `store.generations(ref)` rather than replaying the request.
 - **`bulkLoadCrbmGeneration` and `BulkLoadResult` are no longer exported**, from `@cloudbitmaps/core` or
   `@cloudbitmaps/roaring`. Load with `store.load(ref, ids, options)`, or `loadSegment(ref, ids, deps, options)` where
   you wire the drivers yourself. Either takes the next generation number itself and publishes, and returns a

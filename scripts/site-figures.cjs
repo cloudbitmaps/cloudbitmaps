@@ -673,9 +673,8 @@ const specAnchors = [];
   // A backend counts once, whether it stores the chunks or the pointer — the same answer for all three clouds,
   // since each hosts both. The axis the page describes is which services the library can talk to, and that is
   // what the install line advertises.
-  // `Memory` is the in-process dev/test pair and `Retrying` is a decorator wrapping another driver — neither is
-  // a backend a reader could point at.
-  const NOT_A_BACKEND = new Set(['memory', 'retrying']);
+  // `Memory` is the in-process dev/test pair, not a backend a reader could point at.
+  const NOT_A_BACKEND = new Set(['memory']);
   const backends = new Set();
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

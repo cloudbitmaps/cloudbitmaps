@@ -25,6 +25,18 @@ const RETIRED: ReadonlyArray<{ name: string; instead: string }> = [
   },
   { name: 'BulkLoadResult', instead: '`LoadResult`' },
   { name: 'becameCurrent', instead: "`LoadResult`'s `published`" },
+  {
+    name: 'RetryingStorageDriver',
+    instead:
+      "the store's `retry` option, which retries every read; to retry a write, re-run the call, and check " +
+      '`store.generations(ref)` for whether a failed one landed rather than replaying it',
+  },
+  {
+    name: 'RetryingRegistryDriver',
+    instead:
+      "the store's `retry` option, which retries every read; to retry a write, re-run the call, and check " +
+      '`store.generations(ref)` for whether a failed one landed rather than replaying it',
+  },
 ];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.worktrees', '.changeset']);
@@ -66,6 +78,8 @@ describe('a removed export is named nowhere a reader looks', () => {
     // What replaces them is there, so the check above cannot pass on a barrel that failed to load.
     expect(typeof core.loadSegment).toBe('function');
     expect(typeof roaring.loadSegment).toBe('function');
+    expect(typeof core.RetryingStorageChunkSource).toBe('function');
+    expect(typeof roaring.RetryingStorageChunkSource).toBe('function');
   });
 
   it('reads the pages, so the check below cannot pass vacuously', () => {
@@ -97,5 +111,9 @@ describe('a removed export is named nowhere a reader looks', () => {
     expect(retiredNames('if (r.becameCurrent) publish();')).toHaveLength(1);
     expect(retiredNames('myBulkLoadResultShape and becameCurrentGen')).toEqual([]);
     expect(retiredNames('`store.load()` returns a `LoadResult`')).toEqual([]);
+    expect(retiredNames('new RetryingStorageDriver(inner, opts)')).toHaveLength(1);
+    expect(retiredNames('wrap it in `RetryingRegistryDriver`')).toHaveLength(1);
+    // The read wrapper the store builds shares their prefix and stays.
+    expect(retiredNames('new RetryingStorageChunkSource(source, opts)')).toEqual([]);
   });
 });

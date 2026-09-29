@@ -87,7 +87,7 @@ The rest of this guide walks each step in turn.
 | **S3-compatible** storage — AWS S3 / MinIO (`@cloudbitmaps/s3`), multipart for large generations | ✅ |
 | **GCS + Azure Blob** storage (`@cloudbitmaps/gcs`, `@cloudbitmaps/azure-blob`) — write-once immutable generations | ✅ |
 | `.crbm` archive read/write + a bounded cache | ✅ |
-| **Automatic retry + backoff** for transient faults (on by default) | ✅ |
+| **Automatic retry + backoff** for transient faults on every read (on by default) | ✅ |
 | **Segment registry** (memory / LocalFs / **S3** / **GCS** / **Azure Blob** — run on one bucket alone) — one strong read resolves the current generation, no per-read scan | ✅ |
 | **Generation bookkeeping** — `nextGeneration` for the number a writer takes next; `gcOrphanGenerations` to collect superseded objects | ✅ |
 | **Encryption-at-rest** (AES-256-GCM, BYOK keystore) **+ crypto-shred** (`destroySegment` / `eraseNamespace`) | ✅ |
@@ -290,10 +290,10 @@ call, not one for a request path.
 Scope it to a `namespace` whenever you can: that narrows the LIST prefix, and really is the difference between
 reading one tenant and reading all of them.
 
-It streams, so stopping the loop stops the scan — unless you have wrapped the registry in
-`RetryingRegistryDriver`, which buffers the enumeration in order to retry it as a unit, and then the whole scan
-is paid for before the first row reaches you. It yields `destroyed` tombstones and rows with no data as-is
-rather than quietly filtering them.
+It streams, so stopping the loop stops the scan. Like the store's other admin calls it is not retried
+([§6](#6-reliability-retries-backoff--timeouts)): a transient fault part-way through ends the loop with that error,
+and a new loop scans from the start. It yields `destroyed` tombstones and rows with no data as-is rather than
+quietly filtering them.
 
 Neither call is a lock: a segment can appear or vanish between the check and whatever you do next. When the
 answer has to *hold*, use the fence built for that — `load`'s `guard` (`minCardinality` / `minRetained`,
@@ -526,13 +526,21 @@ const client = new S3Client({
 **Your data is safe across a retry.** Generations are write-once (no half-written object a reader could pick
 up); the publish is a compare-and-swap that is idempotent and forward-only (a retried publish can never regress
 the pointer or double-apply); and all bytes are checksum-verified before use. So a transient outage costs you
-latency, not correctness. The lifecycle helpers (`eraseSubject`, `dropSegment`, `retireExpired`, …) run over the
-raw drivers **without** the retry wrapper on purpose — a one-shot admin operation surfaces a transient fault to
-its caller (as a ledger entry or a throw) rather than retrying under the hood.
+latency, not correctness.
 
-> Writing your own driver? Throw `TransientError` for your backend's retryable faults and the shared retry
-> layer handles the rest — or wrap any driver yourself with `RetryingStorageChunkSource` / `RetryingStorageDriver` /
-> `RetryingRegistryDriver`. The low-level `withRetry(op, policy, { clock, rng })` primitive is exported too.
+**Writes are yours to retry.** `load`, the `*Into` verbs and the lifecycle helpers (`eraseSubject`, `dropSegment`,
+`retireExpired`, …) run over the raw drivers **without** the retry wrapper, on purpose. A write that lands and then
+loses its response looks, from the error alone, like one that failed, and replaying its conditional put or
+compare-and-swap would find that write already there and report it as a conflict. So a transient fault on a write
+reaches its caller (as a ledger entry or a throw), and the retry is yours: re-run the call. A re-run `load` takes a
+fresh generation number and re-reads the row, so it is safe whether or not the first attempt landed
+([publish is forward-only](#3-loading-a-segment)). To learn whether that attempt landed, check rather than replay the
+request: `store.generations(ref)` lists what the bucket holds, with the current generation marked.
+
+> Writing your own driver? Throw `TransientError` for your backend's retryable faults: the store's read retry
+> rides them out, and a write's caller can tell them from a deterministic failure. To give a read source you build
+> yourself the same retries, wrap it in `RetryingStorageChunkSource`; the low-level
+> `withRetry(op, policy, { clock, rng })` primitive is exported too.
 
 ## 7. Materializing: the `*Into` verbs
 

@@ -469,7 +469,7 @@
                   <td class="from">
                     The backend was briefly unavailable — throttled, a dropped connection, a 5xx.
                   </td>
-                  <td><span class="status is-auto">Automatic</span></td>
+                  <td><span class="status is-auto">Automatic on reads</span></td>
                 </tr>
                 <tr>
                   <td><span class="m">WriteConflictError</span></td>
@@ -510,7 +510,10 @@
             two: the publish's compare-and-swap <em>re-reads the row and tries again</em>, because advancing a
             pointer forward is idempotent, while a write-once collision on the object is
             <em>never</em> replayed — the identical PUT would fail identically, and the fix is a fresh
-            generation number rather than another attempt at the same one.
+            generation number rather than another attempt at the same one. A transient fault on a
+            <em>write</em> is reported rather than retried, because a conditional write that lands and then loses
+            its response would, replayed, report its own write as a conflict: re-running the call is the retry,
+            and a re-run load takes a fresh generation number, so it is safe whether or not the first one landed.
           </p>
         </div>
       </section>

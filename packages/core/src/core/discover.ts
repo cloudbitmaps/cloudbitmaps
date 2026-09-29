@@ -66,11 +66,12 @@ export async function segmentExists(ref: SegmentRef, registry: IRegistryDriver):
  * **Scoping to a namespace narrows the LIST prefix**, so it really is the difference between reading one
  * tenant and reading all of them.
  *
- * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — **with one
- * exception that matters**: a driver that buffers its enumeration defeats both properties, and
- * `RetryingRegistryDriver` does exactly that (it must, to retry a `list` as a unit). Wrapped in it, the whole
- * scan is paid for and resident before the first row reaches you. On the four native drivers the guarantee
- * holds; on S3 the granularity is a page, so one LIST page and its in-flight row reads complete regardless.
+ * Streams, so a large fleet need not be held at once, and stopping the iteration stops the scan — as long as the
+ * registry driver's own `list` streams. One that collects its whole enumeration before yielding defeats both
+ * properties, since the scan is then paid for and resident before the first row reaches you, so a custom driver
+ * yields as it reads. On the four native drivers the guarantee holds; on S3 the granularity is a page, so one
+ * LIST page and its in-flight row reads complete regardless. Nothing here retries the scan: a transient fault
+ * part-way through ends the iteration with that error, and a new iteration scans from the start.
  *
  * Yields `destroyed` tombstones, and rows whose `currentGen` is `null`, because hiding either would make this
  * disagree with the registry it reports on — a filtered enumeration that looks complete is how a retention
