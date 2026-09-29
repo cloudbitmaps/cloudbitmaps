@@ -20,7 +20,7 @@ const STATUSES: readonly string[] = ['active', 'destroyed'];
  * The fields a stored record may carry: {@link RegistryRecord}'s, and nothing else. A field no reader resolves
  * through is refused on read-back like any other corruption (invariant 5), rather than ignored.
  */
-export const RECORD_FIELDS: readonly string[] = [
+export const RECORD_FIELDS = [
   'namespace',
   'segment',
   'currentGen',
@@ -32,7 +32,7 @@ export const RECORD_FIELDS: readonly string[] = [
   'createdAt',
   'updatedAt',
   'token',
-];
+] as const;
 /** The fields of the persisted envelope around a record. */
 const ENVELOPE_FIELDS: readonly string[] = ['schemaVersion', 'deleted', 'record'];
 /** Cap on a serialized governance blob (retention/residency) — bounds row size so a row can't be bricked. */
@@ -305,7 +305,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
   if (!STATUSES.includes(r.status)) {
     throw new IntegrityError(`registry record has an unknown status (${r.status}): ${ctx}`);
   }
-  const extra = Object.keys(r).filter((k) => !RECORD_FIELDS.includes(k));
+  const extra = Object.keys(r).filter((k) => !(RECORD_FIELDS as readonly string[]).includes(k));
   if (extra.length > 0) {
     throw new IntegrityError(
       `registry record has fields it does not declare (${extra.join(', ')}): ${ctx}`,

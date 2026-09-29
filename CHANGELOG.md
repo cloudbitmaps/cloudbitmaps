@@ -46,14 +46,18 @@ These make the library refuse what it used to ignore or accept, so that a wrong 
   `encryption`, `retry`, `budget` and `seams`, with a `ValidationError` naming each one and the keys the store or
   the group takes. It refused a fixed list of spellings before, and ignored any other key.
 - **`new GcsStorage(options)` refuses every key it does not take** the same way, where it refused only `storage`.
-- **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field
-  `RegistryRecord` does not declare, or no `schemaVersion` is refused on read with `IntegrityError`. Every row this
-  library's writers produce passes; one written by hand, or by a caller that set a third status, does not.
-- **`LocalFsStorage` does not look for a `cold/` directory.** A root holding `cold/` and no `storage/` opens as an
-  empty store rather than being refused.
-- **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.** The
-  error predicates recognise an error from another copy of core only when that copy carries the same brand, so two
-  copies in one process must both be at this release or later for each to recognise the other's errors.
+- **`RegistryStatus` is `'active' | 'destroyed'`.** A stored registry row with another status, a field its record
+  or its envelope does not declare, or no `schemaVersion` is refused on read with `IntegrityError`, and so is every
+  `list()` of a registry that holds one, which the retention sweep, `checkConsistency` and subject erasure run. Every
+  row a store created at `0.10.0` or later writes passes. A registry with rows from before `0.10.0` does not, a
+  tombstone `0.10.0` wrote over one of them included, since the tombstone keeps the row's fields: load such a
+  store's segments into a new one from their source.
+- **`LocalFsStorage` does not look for a `cold/` directory.** A root keeps its generations in `storage/`, and one
+  that holds them anywhere else opens like any other with its generations missing: a read throws `NotFoundError`,
+  and `checkConsistency` reports `missing-storage-generation`.
+- **The error brands are `Symbol.for('cloudbitmaps.error')` and `Symbol.for('cloudbitmaps.error.transient')`.**
+  Upgrade every `@cloudbitmaps` package together: a package from an earlier release brings its own copy of core,
+  and neither your error predicates nor the store's own error handling recognise that copy's errors.
 
 ### Added
 

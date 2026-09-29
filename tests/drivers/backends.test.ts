@@ -7,13 +7,16 @@ import {
 } from '@/index';
 import { S3Storage } from '@cloudbitmaps/s3';
 import { GcsStorage } from '@cloudbitmaps/gcs';
-import { GCS_STORAGE_OPTION_KEYS } from '@/gcs/backend';
+import { GCS_STORAGE_OPTION_KEYS, type GcsStorageOptions } from '@/gcs/backend';
+import { S3_STORAGE_OPTION_KEYS, type S3StorageOptions } from '@/s3/backend';
+import { AZURE_BLOB_STORAGE_OPTION_KEYS, type AzureBlobStorageOptions } from '@/azure-blob/backend';
+
 import { AzureBlobStorage } from '@cloudbitmaps/azure-blob';
 import { ValidationError } from '@/core/errors';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SameKeys } from '../helpers/types';
 
 // Azurite's fixed, publicly-documented dev account + key (not a secret — the same value ships in every SDK).
 // Constructing a client parses this string but talks to nothing, which is all these wiring tests need.
@@ -104,15 +107,36 @@ describe('a backend configures both halves from one place', () => {
     expect(build({ bucket: 'b', client, prefix: 'p', projectId: 'x', now: () => 0 })).not.toThrow();
   });
 
-  it('GcsStorage takes exactly the keys GcsStorageOptions declares', () => {
-    const src = readFileSync(join(__dirname, '../../packages/gcs/src/backend.ts'), 'utf8').replace(
-      /\/\*[\s\S]*?\*\//g,
-      '',
+  it('S3Storage and AzureBlobStorage refuse a key they do not take, and every backend a bag that is not an object', () => {
+    const s3 = (options: object) => () => new S3Storage(options as { bucket: string });
+    expect(s3({ bucket: 'b', s3Client: {} })).toThrow(
+      /S3Storage does not take `s3Client`.*goes in `client`/,
     );
-    const body = /export interface GcsStorageOptions \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? '';
-    const declared = [...body.matchAll(/readonly\s+(\w+)\??:/g)].map((m) => m[1]).sort();
-    expect(declared.length).toBeGreaterThan(0);
-    expect([...GCS_STORAGE_OPTION_KEYS].sort()).toEqual(declared);
+    expect(s3({ bucket: 'b', forcePathStyle: true })).toThrow(/`forcePathStyle`/);
+    expect(
+      s3({ bucket: 'b', region: 'us-east-1', pathStyle: true, prefix: 'p', now: () => 0 }),
+    ).not.toThrow();
+    const azure = (options: object) => () => new AzureBlobStorage(options);
+    expect(azure({ connectionString: 'x', container: 'c', client: {} })).toThrow(
+      /AzureBlobStorage does not take `client`.*goes in `containerClient`/,
+    );
+    for (const bad of [undefined, null, 'b']) {
+      expect(() => new S3Storage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new GcsStorage(bad as unknown as { bucket: string })).toThrow(ValidationError);
+      expect(() => new AzureBlobStorage(bad as unknown as object)).toThrow(ValidationError);
+    }
+  });
+
+  it('each cloud backend takes exactly the keys its options interface declares (checked by the compiler)', () => {
+    const agree: {
+      readonly s3: SameKeys<(typeof S3_STORAGE_OPTION_KEYS)[number], keyof S3StorageOptions>;
+      readonly gcs: SameKeys<(typeof GCS_STORAGE_OPTION_KEYS)[number], keyof GcsStorageOptions>;
+      readonly azure: SameKeys<
+        (typeof AZURE_BLOB_STORAGE_OPTION_KEYS)[number],
+        keyof AzureBlobStorageOptions
+      >;
+    } = { s3: true, gcs: true, azure: true };
+    expect(Object.values(agree).every(Boolean)).toBe(true);
   });
 
   it('AzureBlobStorage refuses a half-specified container rather than failing at the first read', () => {

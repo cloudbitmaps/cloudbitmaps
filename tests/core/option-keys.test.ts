@@ -1,43 +1,48 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import type { Budget } from '@/core/budget';
 import { CloudRoaring, MemoryStorage, ValidationError } from '@/index';
+import type {
+  CacheOptions,
+  CloudRoaringOptions,
+  EncryptionOptions,
+  RetryOptions,
+  SeamOptions,
+} from '@/index';
 import { OPTION_KEYS } from '@/option-keys';
+import type { SameKeys } from '../helpers/types';
 
 /**
  * `new CloudRoaring(options)` refuses every key it does not take, at the top level and inside each group, by name:
- * a key it ignored would do nothing and look as if it had. The table it checks against is held here to the option
- * interfaces in both directions, so a new option cannot be refused, and a removed one cannot be let through.
+ * a key it ignored would do nothing and look as if it had. The compiler holds the table it checks against to the
+ * option interfaces in both directions, so a new option cannot be refused, and a removed one cannot be let through.
  */
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+type Listed<G extends keyof typeof OPTION_KEYS> = (typeof OPTION_KEYS)[G][number];
 
-/** The keys an interface declares, read from its source with comments stripped; `extends Partial<X>` adds X's. */
-function declared(file: string, name: string): Set<string> {
-  const code = readFileSync(join(ROOT, file), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '');
-  const m = new RegExp(`export interface ${name}\\b([^{]*)\\{([\\s\\S]*?)\\n\\}`).exec(code);
-  if (!m) throw new Error(`${file} declares no interface ${name}`);
-  const keys = new Set(
-    [...(m[2] ?? '').matchAll(/readonly\s+([A-Za-z0-9_]+)\??:/g)].map((k) => k[1] as string),
-  );
-  const base = /extends Partial<(\w+)>/.exec(m[1] ?? '')?.[1];
-  if (base === 'RetryPolicy')
-    for (const k of declared('packages/core/src/core/retry.ts', base)) keys.add(k);
-  return keys;
-}
+/**
+ * Checked by the compiler: `pnpm typecheck` fails when the table and an interface part, a key declared and not
+ * listed, or listed and no longer declared. Each group is paired with the interface its option is typed with.
+ */
+const AGREE: {
+  readonly top: SameKeys<Listed<'top'>, keyof CloudRoaringOptions>;
+  readonly cache: SameKeys<Listed<'cache'>, keyof CacheOptions>;
+  readonly encryption: SameKeys<Listed<'encryption'>, keyof EncryptionOptions>;
+  readonly retry: SameKeys<Listed<'retry'>, keyof RetryOptions>;
+  readonly budget: SameKeys<Listed<'budget'>, keyof Budget>;
+  readonly seams: SameKeys<Listed<'seams'>, keyof SeamOptions>;
+} = { top: true, cache: true, encryption: true, retry: true, budget: true, seams: true };
 
-const ROARING = 'packages/roaring/src/index.ts';
-const INTERFACES = {
-  top: declared(ROARING, 'CloudRoaringOptions'),
-  cache: declared(ROARING, 'CacheOptions'),
-  encryption: declared(ROARING, 'EncryptionOptions'),
-  retry: declared(ROARING, 'RetryOptions'),
-  budget: declared('packages/core/src/core/budget.ts', 'Budget'),
-  seams: declared(ROARING, 'SeamOptions'),
-};
+/** Each group's option is typed with the interface `AGREE` pairs it with, or that interface or `false`. */
+const TYPED: {
+  readonly cache: SameKeys<NonNullable<CloudRoaringOptions['cache']>, CacheOptions>;
+  readonly encryption: SameKeys<NonNullable<CloudRoaringOptions['encryption']>, EncryptionOptions>;
+  readonly retry: SameKeys<Exclude<NonNullable<CloudRoaringOptions['retry']>, false>, RetryOptions>;
+  readonly budget: SameKeys<
+    Exclude<NonNullable<CloudRoaringOptions['budget']>, false>,
+    Partial<Budget>
+  >;
+  readonly seams: SameKeys<NonNullable<CloudRoaringOptions['seams']>, SeamOptions>;
+} = { cache: true, encryption: true, retry: true, budget: true, seams: true };
 
 function refusal(options: unknown): Error | undefined {
   try {
@@ -49,15 +54,17 @@ function refusal(options: unknown): Error | undefined {
 }
 
 describe('the option keys the store takes', () => {
-  it('are exactly the keys its option interfaces declare, group by group', () => {
-    expect(Object.keys(OPTION_KEYS).sort()).toEqual(Object.keys(INTERFACES).sort());
-    for (const [group, keys] of Object.entries(INTERFACES)) {
-      expect(keys.size, group).toBeGreaterThan(0);
-      expect(
-        [...(OPTION_KEYS[group as keyof typeof OPTION_KEYS] as readonly string[])].sort(),
-        group,
-      ).toEqual([...keys].sort());
-    }
+  it('are exactly the keys its option interfaces declare, group by group (checked by the compiler)', () => {
+    expect(Object.keys(OPTION_KEYS).sort()).toEqual([
+      'budget',
+      'cache',
+      'encryption',
+      'retry',
+      'seams',
+      'top',
+    ]);
+    expect(Object.values(AGREE).every(Boolean)).toBe(true);
+    expect(Object.values(TYPED).every(Boolean)).toBe(true);
   });
 
   it('pass: every group filled in, and `retry: false` and `budget: false`', () => {
@@ -101,6 +108,33 @@ describe('the option keys the store takes', () => {
     expect(err?.message).toContain('`cache` takes `maxChunks`, `ttlMs`');
     expect(err?.message).toContain('`seams` takes `clock`, `rng`');
     expect(err?.message).not.toContain('The store takes');
+  });
+
+  it('refuse a top-level key with a dot in it as a top-level key, typed', () => {
+    for (const key of ['aws.region', 'constructor.x', 'cache.maxChunks']) {
+      const err = refusal({ storage: new MemoryStorage(), [key]: 1 });
+      expect(err, key).toBeInstanceOf(ValidationError);
+      expect(err?.message, key).toContain(`\`${key}\``);
+      expect(err?.message, key).toContain('The store takes');
+    }
+  });
+
+  it('refuse a group that is not an object, `encryption: true` among them', () => {
+    const storage = new MemoryStorage();
+    for (const [group, value, got] of [
+      ['encryption', true, 'boolean'],
+      ['encryption', 'required', 'string'],
+      ['cache', 5, 'number'],
+      ['cache', [1], 'an array'],
+      ['cache', new Map([['maxChunks', 1]]), 'a Map'],
+      ['seams', null, 'null'],
+      ['retry', true, 'boolean'],
+    ] as const) {
+      const err = refusal({ storage, [group]: value });
+      expect(err, `${group}: ${String(value)}`).toBeInstanceOf(ValidationError);
+      expect(err?.message).toContain(`\`${group}\` must be an object`);
+      expect(err?.message).toContain(got);
+    }
   });
 
   it('refuse a bag that is not an object, typed', () => {

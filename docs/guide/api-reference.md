@@ -560,12 +560,15 @@ however you normally would.
 Reach for the predicates where that stops being true, which is not something the library can control:
 
 - a bundler that inlines `@cloudbitmaps/core` into two separate outputs;
-- two major versions of core resolved side by side in one tree, which npm and pnpm will both do;
-- an error crossing a `worker_threads` worker, a `vm` realm, or an iframe.
+- two copies of core resolved side by side in one tree, which npm and pnpm will both do;
+- an error crossing a `vm` realm or an iframe.
 
 Each predicate matches a `Symbol.for` brand plus the runtime `name`, and a `Symbol.for` key is the same
-symbol in every copy and every realm, where a class object is not. So the predicates hold in all three cases
-and `instanceof` does not. The failure is silent — a `catch` that stops matching just falls through — which
+symbol in every copy and every realm, where a class object is not. So the predicates hold in all three cases,
+for copies of core that carry the same brand, as every package of one release does, and `instanceof` does not.
+An error posted from a `worker_threads` worker is cloned into a plain `Error` that keeps its message but neither
+its class nor its brand, so neither holds there: send the error's `name` with it if the receiver must tell errors
+apart. The failure is silent — a `catch` that stops matching just falls through — which
 is why library code that cannot see how it will be bundled should prefer them by default. `pnpm smoke`
 asserts both halves on every build: that the shared copy really is shared, and that the predicates classify
 an error thrown by one package and caught in another.

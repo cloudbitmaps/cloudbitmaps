@@ -30,6 +30,39 @@ export interface AzureBlobStorageOptions {
   readonly now?: () => number;
 }
 
+/**
+ * The keys `new AzureBlobStorage(options)` takes. Any other is refused by name rather than ignored: an ignored
+ * client key leaves the backend without the container the caller meant.
+ */
+export const AZURE_BLOB_STORAGE_OPTION_KEYS = [
+  'containerClient',
+  'connectionString',
+  'container',
+  'prefix',
+  'now',
+] as const;
+
+/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
+function refuseUnknown(
+  name: string,
+  options: unknown,
+  keys: readonly string[],
+  hint: string,
+): void {
+  if (options === null || typeof options !== 'object') {
+    throw new ValidationError(
+      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
+    );
+  }
+  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
+  if (unknown.length > 0) {
+    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
+    throw new ValidationError(
+      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
+    );
+  }
+}
+
 export class AzureBlobStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -39,6 +72,12 @@ export class AzureBlobStorage implements StorageBackend {
   readonly containerClient: ContainerClient;
 
   constructor(options: AzureBlobStorageOptions) {
+    refuseUnknown(
+      'AzureBlobStorage',
+      options,
+      AZURE_BLOB_STORAGE_OPTION_KEYS,
+      'a container client goes in `containerClient`',
+    );
     if (options.containerClient !== undefined) {
       // `containerClient` already names the account AND the container, so anything that also names them is
       // either redundant or a contradiction — and the contradiction loses silently, leaving a store pointed

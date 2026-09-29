@@ -601,26 +601,6 @@ interface LifecycleDeps {
   readonly requireEncryption?: boolean;
 }
 
-/**
- * Option spellings the store does not take, and a caller may still pass: each is refused with what to write instead.
- *
- * TypeScript rejects these at the call site, which covers most callers. It does not cover a plain-JS caller, a
- * config object that arrived as JSON, or anything that reached the constructor through an `as` cast — and for
- * this particular set, being ignored is worse than being rejected, because **every one of them is a knob whose
- * absence is silent and wrong**: a dropped `requireEncryption` reads cleartext when the caller demanded
- * encryption, a dropped `clock` makes a "deterministic" job non-deterministic, and a dropped
- * `coldReaderCacheMaxBytes` restores a 64 MiB ceiling someone had deliberately lowered for a small heap.
- * None of those announces itself; each looks like the store simply working.
- */
-/**
- * How such an option is answered: it is set in a group, it is spelled differently, or the store has no such
- * option.
- *
- * The category is DATA, not inferred from how the guidance happens to be punctuated: guessing it from whether the
- * replacement text looks like an identifier announces `registry`, which has a counterpart, as having none, and
- * sends `cold` to a group when `storage` is the one required flat option. A reader told to look in a group that
- * does not exist is the failure this whole guard is about.
- */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
   private readonly cache: BoundedLru<string, CodecBitmap>;
@@ -655,28 +635,51 @@ export class CloudRoaring {
       );
     }
     const bag = options as unknown as Record<string, unknown>;
-    const unknown: string[] = Object.keys(bag).filter(
-      (k) => !(OPTION_KEYS.top as readonly string[]).includes(k),
-    );
+    const unknown: Array<{ group: OptionGroup | null; key: string }> = [];
+    for (const key of Object.keys(bag)) {
+      if (!(OPTION_KEYS.top as readonly string[]).includes(key)) unknown.push({ group: null, key });
+    }
     const groups = Object.keys(OPTION_KEYS).filter((g): g is OptionGroup => g !== 'top');
     for (const group of groups) {
       const value = bag[group];
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+      if (value === undefined) continue;
+      const offOk = group === 'retry' || group === 'budget';
+      if (value === false && offOk) continue;
+      // A group that is not an object configures nothing: `encryption: true` would build a cleartext store.
+      if (
+        value === null ||
+        typeof value !== 'object' ||
+        Array.isArray(value) ||
+        value instanceof Map ||
+        value instanceof Set
+      ) {
+        const got =
+          value === null
+            ? 'null'
+            : Array.isArray(value)
+              ? 'an array'
+              : value instanceof Map
+                ? 'a Map'
+                : value instanceof Set
+                  ? 'a Set'
+                  : typeof value;
+        throw new ValidationError(
+          `CloudRoaring's \`${group}\` must be an object${offOk ? ' or `false`' : ''} — got ${got}`,
+        );
+      }
       const known = OPTION_KEYS[group] as readonly string[];
-      for (const k of Object.keys(value)) if (!known.includes(k)) unknown.push(`${group}.${k}`);
+      for (const key of Object.keys(value)) if (!known.includes(key)) unknown.push({ group, key });
     }
     if (unknown.length === 0) return;
     const takes = (keys: readonly string[]): string => keys.map((k) => `\`${k}\``).join(', ');
-    const named = [
-      ...new Set(unknown.map((k) => (k.includes('.') ? k.slice(0, k.indexOf('.')) : 'top'))),
-    ];
+    const named = [...new Set(unknown.map((u) => u.group))];
     throw new ValidationError(
-      `CloudRoaring does not take ${takes(unknown)}. ` +
+      `CloudRoaring does not take ${takes(unknown.map((u) => (u.group === null ? u.key : `${u.group}.${u.key}`)))}. ` +
         named
           .map((g) =>
-            g === 'top'
+            g === null
               ? `The store takes ${takes(OPTION_KEYS.top)}.`
-              : `\`${g}\` takes ${takes(OPTION_KEYS[g as OptionGroup])}.`,
+              : `\`${g}\` takes ${takes(OPTION_KEYS[g])}.`,
           )
           .join(' ') +
         ' https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-a-store--new-cloudroaringoptions',

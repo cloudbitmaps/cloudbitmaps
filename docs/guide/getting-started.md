@@ -1401,8 +1401,8 @@ await store.getRetention(ref); // → { expiresAt } | null | 'invalid'
 await store.clearRetention(ref); // → true if a policy was actually removed
 ```
 
-`getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable — a
-hand-edited row, or one restored from a different schema. That is deliberately not folded into `null`: a
+`getRetention` returns the string `'invalid'` for a row whose `expiresAt` is present but unusable, such as a
+hand-edited one. That is deliberately not folded into `null`: a
 malformed policy reading as "never expires" on a segment someone believes is expiring is exactly the kind of
 silence that costs a compliance commitment. And cancelling is its **own verb**, because "never expire" passed
 into the setter as a magic value is how a typo becomes a deletion.

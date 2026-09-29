@@ -174,7 +174,7 @@ describe('documentation code samples', () => {
     for (const fence of allFences) {
       for (const { line, key } of unknownStoreKeys(fence.code)) {
         offenders.push(
-          `${fence.file}:${fence.line + line - 1} — passes \`${key}\` to CloudRoaring, which does not take it`,
+          `${fence.file}:${fence.line + line} — passes \`${key}\` to CloudRoaring, which does not take it`,
         );
       }
     }

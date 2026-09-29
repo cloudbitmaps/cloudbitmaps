@@ -1,16 +1,18 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
+  applyRegistryPatch,
   assertRegistrySchemaVersion,
   assertStoredRecordShape,
   parseRegistryEnvelope,
   RECORD_FIELDS,
+  recordFromNew,
   REGISTRY_SCHEMA_VERSION,
   serializeRegistryEnvelope,
   type RegistryEnvelope,
 } from '@/drivers/_shared/registry';
 import type { RegistryRecord } from '@/core/ports';
+
 import { IntegrityError, UnsupportedError } from '@/core/errors';
+import type { SameKeys } from '../../helpers/types';
 
 /**
  * **A stored record carries its declared fields and nothing else.** A field no reader resolves through is refused
@@ -58,17 +60,25 @@ describe('assertStoredRecordShape — a stored record carries exactly its declar
     expect(() => assertStoredRecordShape({ ...base, retention: null }, 'bad')).toThrow();
   });
 
-  it('lists exactly the fields RegistryRecord declares', () => {
-    const src = readFileSync(
-      join(__dirname, '../../../packages/core/src/core/ports.ts'),
-      'utf8',
-    ).replace(/\/\*[\s\S]*?\*\//g, '');
-    const own =
-      /export interface RegistryRecord extends SegmentRef \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? '';
-    const ref = /export interface SegmentRef \{([\s\S]*?)\n\}/.exec(src)?.[1] ?? '';
-    const fields = [...`${ref}\n${own}`.matchAll(/readonly\s+(\w+)\??:/g)].map((m) => m[1]).sort();
-    expect(fields.length).toBeGreaterThan(5);
-    expect([...RECORD_FIELDS].sort()).toEqual(fields);
+  it('lists exactly the fields RegistryRecord declares (checked by the compiler), and the writers write those', () => {
+    const agree: SameKeys<(typeof RECORD_FIELDS)[number], keyof RegistryRecord> = true;
+    expect(agree).toBe(true);
+    const everyField = recordFromNew(
+      { namespace: 'n', segment: 's' },
+      {
+        currentGen: 0,
+        wrappedDeks: [],
+        keyId: 'k',
+        status: 'active',
+        retention: {},
+        residency: {},
+      },
+      1,
+      '0',
+    );
+    expect(Object.keys(everyField).sort()).toEqual([...RECORD_FIELDS].sort());
+    const patched = applyRegistryPatch(everyField, { currentGen: 1 }, 2, '1');
+    expect(Object.keys(patched).sort()).toEqual([...RECORD_FIELDS].sort());
   });
 });
 
@@ -109,6 +119,7 @@ describe('registry envelope schema version (format freeze)', () => {
       record,
       note: 1,
     });
+    expect(() => parseRegistryEnvelope(extra, 'extra')).toThrow(IntegrityError);
     expect(() => parseRegistryEnvelope(extra, 'extra')).toThrow(/note/);
   });
 

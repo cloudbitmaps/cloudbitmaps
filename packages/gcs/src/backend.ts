@@ -47,6 +47,27 @@ export const GCS_STORAGE_OPTION_KEYS = [
   'now',
 ] as const;
 
+/** Refuse an options bag that is not an object, or that holds a key not in `keys`, naming each such key. */
+function refuseUnknown(
+  name: string,
+  options: unknown,
+  keys: readonly string[],
+  hint: string,
+): void {
+  if (options === null || typeof options !== 'object') {
+    throw new ValidationError(
+      `${name} needs an options object — got ${options === null ? 'null' : typeof options}`,
+    );
+  }
+  const unknown = Object.keys(options).filter((k) => !keys.includes(k));
+  if (unknown.length > 0) {
+    const list = (ks: readonly string[]): string => ks.map((k) => `\`${k}\``).join(', ');
+    throw new ValidationError(
+      `${name} does not take ${list(unknown)}. It takes ${list(keys)}; ${hint}.`,
+    );
+  }
+}
+
 export class GcsStorage implements StorageBackend {
   /** Cross-bundle brand, stamped non-enumerably in the constructor so a spread cannot carry it. */
   declare readonly [STORAGE_BACKEND]: true;
@@ -56,16 +77,12 @@ export class GcsStorage implements StorageBackend {
   readonly client: GcsClient;
 
   constructor(options: GcsStorageOptions) {
-    const unknown = Object.keys(options).filter(
-      (k) => !(GCS_STORAGE_OPTION_KEYS as readonly string[]).includes(k),
+    refuseUnknown(
+      'GcsStorage',
+      options,
+      GCS_STORAGE_OPTION_KEYS,
+      'a @google-cloud/storage client goes in `client`',
     );
-    if (unknown.length > 0) {
-      const list = (keys: readonly string[]): string => keys.map((k) => `\`${k}\``).join(', ');
-      throw new ValidationError(
-        `GcsStorage does not take ${list(unknown)}. It takes ${list(GCS_STORAGE_OPTION_KEYS)}; a ` +
-          '@google-cloud/storage client goes in `client`.',
-      );
-    }
     this.client =
       options.client ??
       new GcsClient({

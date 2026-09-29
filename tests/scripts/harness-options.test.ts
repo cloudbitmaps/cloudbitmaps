@@ -13,9 +13,9 @@ import { unknownStoreKeys } from '../helpers/option-literals';
  * key the store refuses fails only when it runs: for `scripts/lambda-smoke.mjs` that is a container build in CI, and
  * for `bench/scale.cjs` it is the command `docs/benchmarks.md` tells a reader to run to check the at-scale table.
  *
- * WHY IT MATCHES `new <anything>.CloudRoaring`. The harnesses write `new m.CloudRoaring({…})` against a namespace
- * import, and a pattern anchored on `new CloudRoaring(`, the one the doc-fence gate uses because samples always
- * destructure, matches none of them.
+ * WHY IT MATCHES `new <anything>.CloudRoaring`. `scripts/smoke.cjs` and `scripts/lambda-smoke.mjs` write
+ * `new m.CloudRoaring({…})` against a namespace import, which a pattern anchored on `new CloudRoaring(` misses, so
+ * this gate reads both forms.
  */
 
 const ROOT = join(__dirname, '..', '..');
