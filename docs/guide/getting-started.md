@@ -705,6 +705,37 @@ only the timed re-check, so it is no way to get one instant. That is what a snap
 `seg.pin()` holds a segment at the generation current when you call it, for the life of the handle it returns
 ([API reference](api-reference.md#the-segment-verbs-the-90-of-daily-use)), so a long export or reconciliation describes one instant.
 
+### Page through a segment
+
+`iterate` and every combine take a range: `after` and `through` yield only the ids in `(after, through]`, and fetch
+only the chunks the range overlaps. That is keyset paging. Each page asks for the ids after the last one it has, so
+it costs the one or two chunks it spans, not a walk from the first id, and the per-op budget charges it for those
+chunks alone.
+
+```ts
+const audience = await store.segment('active-30d').pin(); // one instant for the whole send
+const zone = store.segment('zone-eu');
+const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
+
+let after: number | undefined; // the last id of the page before; undefined for the first
+for (;;) {
+  const page: number[] = [];
+  for await (const id of audience.intersect([zone], { after, exclude: [optOut] })) {
+    page.push(id);
+    if (page.length === 1_000) break;
+  }
+  if (page.length === 0) break;
+  await send(page);
+  after = page[page.length - 1];
+}
+```
+
+Workers that page in parallel can split the id space first, then each read its own `(after, through]`. The range
+applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an integer in
+`0..4294967295`, or the stream throws `ValidationError` when first read, and `after >= through` reads nothing, so a
+cursor that reaches the end of its window needs no special case. A pinned read whose generation has since been
+collected throws `NotFoundError` rather than moving on: size `keep` so the pinned generation outlives the job (below).
+
 ### Sizing `keep`
 
 `keep` is a **grace window**: a read fetches from the generation its snapshot names, and `keep` decides how

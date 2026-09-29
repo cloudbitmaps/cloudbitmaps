@@ -93,6 +93,7 @@ import type {
   Rng,
   SetRetentionResult,
   PinnedAt,
+  RangeOptions,
   SegmentRef,
   Workload,
 } from '@cloudbitmaps/core';
@@ -1667,8 +1668,13 @@ export class CloudRoaring {
   }
 }
 
-/** Options common to every chunk-aligned combine (`intersect` / `union` / `andNot`). */
-export interface BaseCombineOptions {
+/**
+ * Options common to every chunk-aligned combine (`intersect` / `union` / `andNot`), and the `*Into` verbs.
+ *
+ * The range, `after` and `through`, applies to every operand and every `exclude`: the combine yields only the ids
+ * in `(after, through]` and fetches only the chunks the range spans, as {@link Segment.iterate} does.
+ */
+export interface BaseCombineOptions extends RangeOptions {
   /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
   readonly concurrency?: number;
   /** Override the store's per-op denial-of-wallet budget for this call (`false` lifts it). */
@@ -1998,10 +2004,22 @@ export class Segment {
     if (this.expired()) return Promise.resolve(0);
     return this.timed('count', () => this.engine.count(this.ref));
   }
-  /** Every id, ascending, streamed one chunk at a time. */
-  iterate(): AsyncIterable<number> {
+  /**
+   * Every id, ascending, streamed one chunk at a time. Pass a range to read part of the segment: the ids in
+   * `(after, through]`, fetching only the chunks the range spans and charged to the per-op budget for those alone.
+   * On a pinned handle it reads the pinned generation, as a full read does.
+   *
+   * ```ts
+   * // Keyset paging: each page resumes after the last id of the one before, and stops at its window's end.
+   * for await (const id of seg.iterate({ after: cursor, through: windowEnd })) send(id);
+   * ```
+   *
+   * Each bound is optional and an integer in `0..4294967295`; a bad one throws {@link ValidationError} when the
+   * stream is first read. `after >= through` is an empty range, which reads nothing.
+   */
+  iterate(options?: RangeOptions): AsyncIterable<number> {
     if (this.expired()) return EMPTY_IDS;
-    return this.engine.iterate(this.ref);
+    return this.engine.iterate(this.ref, options);
   }
 
   /**
@@ -2095,7 +2113,7 @@ export class Segment {
       // headline is composable suppression, and reachable from nothing more exotic than a segment handle aging
       // out. `andNot` reads each exclude only where it overlaps, so this is also the cheap spelling.
       const exclude = options?.exclude ?? [];
-      return exclude.length > 0 ? this.andNot([...exclude], options) : this.iterate();
+      return exclude.length > 0 ? this.andNot([...exclude], options) : this.iterate(options);
     }
     if (live.length !== others.length) return this.union(live, options);
     let engine: SegmentEngine;
@@ -2137,7 +2155,7 @@ export class Segment {
     const liveExcludes = excludes.filter((e) => !e.expired());
     // Every exclusion expired ⇒ nothing to subtract. Recursing with an empty list would throw, since `andNot`
     // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
-    if (liveExcludes.length === 0 && excludes.length > 0) return this.iterate();
+    if (liveExcludes.length === 0 && excludes.length > 0) return this.iterate(options);
     if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
     let engine: SegmentEngine;
     try {

@@ -81,6 +81,8 @@ is a dependency of both and is never installed directly. The storage drivers are
   listed under [Planned](#planned--exploring).
 - **Chunk-skipping intersection** — `intersect` aligns on chunk keys and fetches only the chunks present in
   *every* operand, with bounded read concurrency and a bounded streaming window.
+- **Range reads for keyset paging** — `iterate`, and every combine, take `after` / `through` and yield only the ids
+  in `(after, through]`, fetching only the chunks the range overlaps, on a live or a pinned handle.
 - **Composable set reads** — `union`, `andNot`, and an `exclude` option on `intersect` that folds suppression
   into the same chunk-aligned pass, so `(a ∩ b) \ suppression` needs no intermediate segment. Each operation is
   honest about what it can skip: `intersect` prunes any key missing from an operand, `andNot` reads the

@@ -324,6 +324,10 @@ await seg.count(); // → 4     (summed from the object's index — no payload r
 for await (const id of seg.iterate()) {
   /* ascending IDs */
 }
+// A range, (after, through]: only the chunks it overlaps are read, so keyset paging costs each page its chunks.
+for await (const id of seg.iterate({ after: 99_999, through: 2_000_000_000 })) {
+  /* 1_234_567_890, then 2_000_000_000 */
+}
 
 // Chunk-skipping intersection: only the chunks present in both are ever fetched.
 const optedOut = store.segment('opted-out');
