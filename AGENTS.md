@@ -75,9 +75,9 @@ The essentials, in order:
    quality · testing quality · docs fidelity), against the whole component **end to end**, not just the diff.
    Self-review does not satisfy this and neither does your own mutation testing: both target the code you
    were already reasoning about, which is precisely the blind spot. Fix the real findings in the same change,
-   or record each with a severity and a deferral; after substantive fixes, re-review. *Skipping this once let
-   a change through the full green gate and 13 CI jobs with five blockers in it, two of them breaking
-   compliance guarantees this repo makes in writing.*
+   or record each with a severity and a deferral; after substantive fixes, re-review. *A change can pass the
+   full green gate and every CI job with blockers in it, including ones that break compliance guarantees this
+   repo makes in writing; this review is what finds them.*
 5. **Keep docs current in the same change** — the [guide](docs/guide/getting-started.md),
    [API reference](docs/guide/api-reference.md), [README](README.md), `CHANGELOG.md` (`[Unreleased]`,
    newest-first), and [`docs/ROADMAP.md`](docs/ROADMAP.md). Docs must never lag reality.
@@ -99,7 +99,7 @@ Releases are automated, tokenless and human-gated — see [`RELEASING.md`](RELEA
 
 ## Hard correctness invariants
 
-These are the protocol rules the design *must* honor — each one shapes the data model, and each came out of an adversarial review rather than from a bug:
+These are the protocol rules the design *must* honor — each one shapes the data model, and each is the kind of rule an adversarial review finds before a bug does:
 
 1. **Write-once generations; the pointer only moves forward — within one incarnation of a row.** A write never touches a stored object: it writes a *new* generation and then advances the segment's registry pointer, which only ever moves forward (an out-of-order or duplicate publish is refused, never a regression). **That monotonicity ends at the row.** `nextGeneration` returns `max(currentGen, highest object) + 1`, so it restarts at `0` once a row is purged and the bucket emptied: a retired-and-re-created name is a *different segment* wearing a *lower* pointer. **And an operator can move it down on purpose**: `rollbackSegment` is the one call that does, which is why generation collection re-proves the row before *every* delete rather than trusting a pointer it read a moment ago. Segment identity is therefore the row's OCC **token**, never the generation number — which is why anything comparing two observations of a segment (a cached reader, a fenced publish, a GC pass that listed before it acted) compares tokens, and why `g < currentGen` is only a safe collection bound against a pointer re-read from the same incarnation. A crash before the publish leaves the previous generation authoritative, so a rerun is idempotent. **A writer that DERIVED its content from a particular generation publishes with `expectFrom` instead** — the compare-and-swap then lands only while the pointer is still exactly there, and reports `superseded` otherwise. Forward-only is right for a load, whose ids come from upstream and so lose nothing by winning a race; it is wrong for the erasure rewrite, whose object *is* one generation minus a bit, and which would otherwise out-rank a concurrent publish and delete it (`nextGeneration` deliberately numbers above everything in the bucket, so forward-only alone refuses nothing here).
 2. **Storage objects are immutable and generation-keyed** (`segment.<gen>.crbm`), and the pointer is moved by compare-and-swap. Never overwrite in place; never reuse a generation number (a colliding put fails write-once).
