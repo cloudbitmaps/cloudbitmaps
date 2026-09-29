@@ -111,8 +111,6 @@ describe('runtime version policy is consistent across every declaration', () => 
       'CONTRIBUTING.md',
       'SECURITY.md',
       'docs/guide/getting-started.md',
-      // States the floor three times and is the first page an upgrading user reads.
-      'MIGRATING.md',
       // Every package README, derived: these are npm landing pages, and the three newest are exactly when
       // a wrong floor is cheapest to write and least likely to be noticed.
       ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })

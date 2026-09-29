@@ -28,7 +28,7 @@ const EXTS = ['.md', '.html', '.txt'];
 
 /** This file names the caveat in order to define it; CHANGELOG entries are history. */
 const DEFINES_THE_RULE = new Set([join('tests', 'docs', 'unreleased-install-caveat.test.ts')]);
-const HISTORY = new Set(['CHANGELOG.md', 'MIGRATING.md']);
+const HISTORY = new Set(['CHANGELOG.md']);
 
 /**
  * The canonical wording — the WHOLE claim, not a fragment.

@@ -35,10 +35,6 @@ function docFiles(): string[] {
   return out;
 }
 
-// `CHANGELOG.md` is a historical record: an entry describing what the grammar was in 0.4.0 is correct
-// precisely because it does NOT track the current one.
-const HISTORICAL = new Set(['CHANGELOG.md']);
-
 describe('documented name rules match the code', () => {
   // There is no name grammar any more — a name is any non-empty string, and each storage layer escapes what it
   // cannot take. So the first half of this gate inverts: rather than checking that a published regex matches
@@ -49,7 +45,6 @@ describe('documented name rules match the code', () => {
   it('no doc or site page still publishes a name grammar', () => {
     const stale: string[] = [];
     for (const file of docFiles()) {
-      if (HISTORICAL.has(file)) continue;
       const text = readFileSync(join(ROOT, file), 'utf8');
       for (const [found] of text.matchAll(GRAMMAR_SHAPED)) stale.push(`${file}: ${found}`);
     }
@@ -67,7 +62,6 @@ describe('documented name rules match the code', () => {
     const NS = /\bnamespace:\s*'([^']+)'/g;
     const bad: string[] = [];
     for (const file of docFiles()) {
-      if (HISTORICAL.has(file)) continue;
       const text = readFileSync(join(ROOT, file), 'utf8');
       for (const [, name] of text.matchAll(CALL)) {
         if (name === undefined) continue;

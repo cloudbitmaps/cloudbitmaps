@@ -44,7 +44,6 @@ function publicFacingFiles(): string[] {
     'AGENTS.md',
     'SECURITY.md',
     'PRIVACY.md',
-    'MIGRATING.md',
     ...packageReadmes(),
     'packages/roaring/PRIVACY.md',
   ];

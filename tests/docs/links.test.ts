@@ -39,7 +39,6 @@ const NAMED_FILES = [
   'CODE_OF_CONDUCT.md',
   'CHANGELOG.md',
   'RELEASING.md',
-  'MIGRATING.md',
   'packages/roaring/PRIVACY.md',
   'fuzz/README.md',
 ] as const;

@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 // bare citation either. An id like `Phase 4e`, `gap #1`, `finding S2` or `test-strategy T3` refers to a
 // private tracker. It is worse than saying less, because it implies checkable evidence and then withholds it.
 //
-// This exists because the surface drifted TWICE. A `0.9.x` release removed internal-doc citations from
-// shipped code comments; a year later a sweep found 271 more across the tree, 71 of them in
+// This exists because the surface drifted TWICE. One sweep removed internal-doc citations from shipped code
+// comments; a later one found 271 more across the tree, 71 of them in
 // `packages/*/src` — which reach users on hover in an editor and inside the published `.d.ts` and
 // sourcemaps. Nothing compared prose to the rule in between: `leak-scan` checks configured needles
 // (employer names and the like), the docs gates check that symbols and links resolve, and neither can see a
