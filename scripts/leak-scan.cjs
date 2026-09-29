@@ -101,8 +101,8 @@ const MAX_BLOB_BYTES = 2 * 1024 * 1024;
 // --- patterns -------------------------------------------------------------------------------------------
 
 // Hosts where inline credentials are throwaway container credentials, not a leak — our own integration lane
-// hands these to docker-compose. Defined ONCE and shared by the URL rule and the email allowlist: they used to
-// disagree, so `mysql://root:pw@host.docker.internal` was exempted by the URL rule and then flagged by the email
+// hands these to docker-compose. Defined ONCE and shared by the URL rule and the email allowlist: two copies can
+// disagree, and then `mysql://root:pw@host.docker.internal` is exempted by the URL rule and flagged by the email
 // rule as `pw@host.docker.internal`.
 const LOCAL_HOSTS = String.raw`localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal`;
 
@@ -126,9 +126,9 @@ const HARD = [
   { name: 'SendGrid key', re: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/ },
   // A URL carrying inline credentials — but not against a loopback or docker-compose host, where they are
   // the throwaway ones our own integration lane hands to a container. Shared with `EMAIL_OK` below, because
-  // keeping two copies is what caused the bug: this rule correctly exempted
-  // `mysql://root:pw@host.docker.internal`, and then the *email* rule flagged `pw@host.docker.internal` anyway,
-  // so the exemption was defeated by a different rule and a compose DSN still failed the gate.
+  // with two copies this rule exempts `mysql://root:pw@host.docker.internal` and the *email* rule flags
+  // `pw@host.docker.internal` anyway: the exemption is defeated by a different rule, and a compose DSN still
+  // fails the gate.
   {
     name: 'credentials in a URL',
     re: new RegExp(String.raw`\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@(?!${LOCAL_HOSTS})`, 'i'),
@@ -138,46 +138,45 @@ const HARD = [
   // shape, but secrets leak in `.env` / YAML / shell / CI-variable shapes, which are unquoted. Placeholder and
   // env-indirection values are excluded so a config template doesn't trip it.
   //
-  // Three refinements, each from a defect this pattern actually had (see tests/scripts/leak-scan.test.ts):
+  // Four refinements, each against a miss or a false positive tests/scripts/leak-scan.test.ts plants:
   //
-  //   1. `[A-Za-z0-9_]*` after the keyword. The keyword used to have to sit *immediately* before the `=`/`:`, so
-  //      any env-var name with a SUFFIX slipped through: `DJANGO_SECRET_KEY=…` (the `SECRET_KEY` convention is
-  //      near-universal — Django, Flask, Rails) and `MY_API_TOKEN_VALUE=…` were both unflagged. Verified against
-  //      the pre-fix script, not assumed. (The AWS secret-key env var was never in this gap — it has its own
-  //      dedicated rule above. Worth stating, because it is the example one reaches for first and it is wrong.)
-  //   2. `(?![A-Za-z_$][\w$.]*\s*\()` — reject a value that is a CALL EXPRESSION. `const token =
-  //      crypto.randomUUID();` was reported as a hardcoded secret (the callee is 17 chars of otherwise-legal
-  //      literal characters), which fired on five shipped driver files and would have failed the `--snapshot`
-  //      gate outright. A scanner that cries wolf gets bypassed, so a false positive here is not cosmetic.
-  //   3. `(?!\d+\b)` — reject an all-numeric value, so widening (1) can't newly trip on `tokenExpiryNanos =
-  //      1730000000000000000`. A real secret is essentially never pure digits.
+  //   1. `[A-Za-z0-9_]*` after the keyword. With the keyword required to sit *immediately* before the `=`/`:`,
+  //      any env-var name with a SUFFIX slips through: `DJANGO_SECRET_KEY=…` (the `SECRET_KEY` convention is
+  //      near-universal — Django, Flask, Rails) and `MY_API_TOKEN_VALUE=…` both go unflagged. (The AWS
+  //      secret-key env var is not an instance of this — it has its own dedicated rule above. Worth stating,
+  //      because it is the example one reaches for first and it is wrong.)
+  //   2. `(?![A-Za-z_$][\w$.]*\s*\()` — reject a value that is a CALL EXPRESSION. Without it, `const token =
+  //      crypto.randomUUID();` reads as a hardcoded secret (the callee is 17 chars of otherwise-legal literal
+  //      characters) and fails the `--snapshot` gate outright. A scanner that cries wolf gets bypassed, so a
+  //      false positive here is not cosmetic.
+  //   3. `(?!\d+\b)` — reject an all-numeric value, so the wider name match of (1) cannot trip on
+  //      `tokenExpiryNanos = 1730000000000000000`. A real secret is essentially never pure digits.
   //   4. `(?![A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*[),;}\]])`, IN JS/TS FILES ONLY — reject a value
   //      that reads a property instead of stating a literal. Sibling of (2): that one catches
   //      `crypto.randomUUID()`, this one catches the same thing without the call, which is what
   //      `...(options.credentials === undefined ? {} : { credentials: options.credentials })` in the S3
   //      backend is. `credentials` is the AWS SDK's own option name, so the collision cannot be renamed away
-  //      and the rule has to learn the difference. It failed the RELEASE workflow's tarball scan — a step no
-  //      other job runs, so nothing else noticed.
+  //      and the rule has to learn the difference. Without it, the S3 backend fails the scan.
   //
-  //      THE SCOPING IS THE WHOLE FIX, and the first attempt at this shipped without it. The exemption's
-  //      premise is "a bare `ident.ident` value is a reference, not a literal" — which is only true in a
-  //      language where that is an expression. Applied everywhere, the closer set `[),;}\]]` reads `,` and
-  //      `;` as expression terminators when in shell, Makefiles, Dockerfiles, `.env`, `.ini`, `.toml`, SQL,
-  //      CSV, YAML flow and ADO.NET connection strings they are VALUE SEPARATORS — and `)`/`}` appear in
-  //      ordinary prose. An adversarial review found 24 real secret shapes that this scanner caught before
-  //      and missed after, among them `Password=Hunter2.Winter.Season2024;` (the canonical way an ADO.NET
-  //      secret is written), `export DB_PASSWORD=a.b.c9;` in a deploy script, and a JWT pasted inside a
-  //      markdown link — the single most likely route by which a real credential reaches a public README.
+  //      THE SCOPING IS THE WHOLE POINT. The exemption's premise is "a bare `ident.ident` value is a
+  //      reference, not a literal" — which is only true in a language where that is an expression. Applied
+  //      everywhere, the closer set `[),;}\]]` reads `,` and `;` as expression terminators when in shell,
+  //      Makefiles, Dockerfiles, `.env`, `.ini`, `.toml`, SQL, CSV, YAML flow and ADO.NET connection strings
+  //      they are VALUE SEPARATORS — and `)`/`}` appear in ordinary prose. Unscoped, the exemption would
+  //      excuse real secret shapes the rule otherwise catches, among them `Password=Hunter2.Winter.Season2024;`
+  //      (the canonical way an ADO.NET secret is written), `export DB_PASSWORD=a.b.c9;` in a deploy script,
+  //      and a JWT pasted inside a markdown link — the single most likely route by which a real credential
+  //      reaches a public README.
   //
   //      Scoping it to JS/TS costs nothing, because there an unquoted `ident.ident` value cannot be a secret
-  //      at all: it is either a reference or a syntax error. Everywhere else the rule stays exactly as it
-  //      was. One `,` is not worth a class of missed credentials.
+  //      at all: it is either a reference or a syntax error. Everywhere else the rule has no such exemption
+  //      (the second entry below). One `,` is not worth a class of missed credentials.
   //
   //      The exemption also applies ONLY TO AN UNQUOTED VALUE, which is why the JS/TS pattern spells the
   //      quoted and unquoted cases out separately instead of sharing a `['"]?`. With the quote optional, the
-  //      lookahead was evaluated from the first character INSIDE the string, so a quoted literal whose
-  //      closing token happened to sit inside the quotes — `const t = "aaaaaaaa.bbbbbbbb};"` — was excused,
-  //      and backtracking could not rescue it. A quoted value is a literal by definition; only an unquoted
+  //      lookahead is evaluated from the first character INSIDE the string, so a quoted literal whose
+  //      closing token happens to sit inside the quotes — `const t = "aaaaaaaa.bbbbbbbb};"` — is excused,
+  //      and backtracking cannot rescue it. A quoted value is a literal by definition; only an unquoted
   //      one can be a reference. (An unquoted secret in a COMMENT, `// API_KEY=<16 bare chars>`, is a real
   //      leak shape and stays caught — which is also why requiring a quote outright would be wrong.)
   //
@@ -236,12 +235,10 @@ const MIGRATION = [
   // Bare doc-names: the internal docs are numbered `NN-NAME.md`, so a citation that dropped the directory
   // still dangles. Matches the `NN-SCREAMING-CASE` shape every internal design doc uses.
   //
-  // `.md` is OPTIONAL, and that is the whole point of this rule's second revision. The first version required
-  // the extension, so a citation written `NN-SOME-DOC.md` was caught while the bare `NN-SOME-DOC` sailed past
-  // — which is how people actually cite these docs in prose. Seven such citations sat in public files (four of
-  // them in CHANGELOG.md, the most-read file in the repo) while the gate reported clean. Verified against the whole
-  // tree when it was widened: every single match was a real internal doc name, zero false positives, because
-  // `NN-` followed by a SCREAMING-KEBAB run of 3+ characters is not a shape ordinary prose produces.
+  // `.md` is OPTIONAL, and that is the point: a rule that requires the extension catches `NN-SOME-DOC.md`
+  // while the bare `NN-SOME-DOC` sails past — which is how people actually cite these docs in prose. Dropping
+  // the extension costs no false positives, because `NN-` followed by a SCREAMING-KEBAB run of 3+ characters
+  // is not a shape ordinary prose produces.
   { name: 'bare private-doc name', re: /\b\d{2}-[A-Z][A-Z0-9-]{2,}(?:\.md)?\b/ },
   // The private docs also live in numbered `phases/NN` directories, cited the same dangling way.
   { name: 'private phase-doc reference', re: /\bphases\/\d/ },

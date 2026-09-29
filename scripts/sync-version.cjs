@@ -32,8 +32,7 @@ const MIN_PACKAGES = 5;
  *
  * Throws rather than picking, in both failure cases. The family ships in lockstep, so disagreeing manifests
  * mean something went wrong before this ran, and writing a guess into the public surface would bury it. An
- * empty or short list is the other half: a comparison over nothing passes, which is the vacuous-green shape
- * this repo keeps being bitten by.
+ * empty or short list is the other half: a comparison over nothing passes, which is a vacuous green.
  */
 function resolveVersion(manifests) {
   if (manifests.length < MIN_PACKAGES) {

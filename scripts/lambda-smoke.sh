@@ -10,7 +10,7 @@
 #
 # Usage: `pnpm lambda-smoke` (or `bash scripts/lambda-smoke.sh`). Needs Docker. Override the base image with
 # LAMBDA_SMOKE_IMAGE (e.g. `public.ecr.aws/lambda/nodejs:20`). On an arm64 host this tests Graviton natively;
-# a full x64 + multi-OS matrix is deferred to the public-launch GitHub-hosted runners.
+# CI runs it on x64, and the cross-OS addon build is the `native-os-matrix` job's to cover.
 
 set -euo pipefail
 
@@ -78,10 +78,10 @@ docker run --rm --entrypoint bash -e ROARING_VER="$ROARING_VER" -v "$CORE_TGZ:/w
   cd "$(mktemp -d)"
   npm init -y >/dev/null 2>&1
   # npm has its own retry; this raises it from the default of 2. It covers the REGISTRY legs of the install
-# (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
-# its headers separately and retries those on its own schedule, which this setting does not reach. Each
-  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface that made the image
-  # pull above grow docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
+  # (a 5xx or a throttle is retried; a bad version still fails on the first attempt). node-gyp downloads
+  # its headers separately and retries those on its own schedule, which this setting does not reach. Each
+  # registry leg comes from the shared GitHub-runner IP pool - the same throttling surface the image pull
+  # above meets with docker_pull_with_backoff. Two attempts with a 10s floor is thin for that; five costs
   # nothing on the happy path and absorbs a blip that would otherwise red a gate having tested nothing.
   export npm_config_fetch_retries=5
   npm_config_build_from_source=true npm install "roaring@${ROARING_VER}" --no-audit --no-fund >/dev/null 2>&1 || {

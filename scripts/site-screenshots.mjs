@@ -1,16 +1,15 @@
 /**
  * Capture full-page screenshots of `site/` — the attachments for the design brief.
  *
- * These existed before as four PNGs someone took by hand, and they drifted: by the time anyone looked again
- * they showed an older version badge and a page that had since gained two table rows. A brief is only as good
- * as the artefacts attached to it, so this makes them reproducible — `pnpm site:screenshots` and they are
- * current by construction.
+ * Screenshots taken by hand drift: they go on showing an older version badge, or a page before it gained rows.
+ * A brief is only as good as the artefacts attached to it, so this makes them reproducible —
+ * `pnpm site:screenshots` and they are current by construction.
  *
  * **No new dependencies.** It drives Chrome over the DevTools Protocol using the `WebSocket` that is global in
  * modern Node, rather than pulling in Playwright or Puppeteer (~300 MB of browser download) for a set of PNGs
- * regenerated a couple of times a year. Chrome's `--screenshot` CLI flag would have been simpler still, but it captures the
- * viewport only; a design brief needs the whole page, which needs `Page.getLayoutMetrics` and
- * `captureBeyondViewport`.
+ * regenerated a couple of times a year. Chrome's `--screenshot` CLI flag would be simpler still, but it captures
+ * the viewport only; a design brief needs the whole page, which this gets by sizing the viewport to the document
+ * over the protocol.
  *
  * Usage:  node scripts/site-screenshots.mjs [outDir]
  */
@@ -25,10 +24,10 @@ const SITE = `${ROOT}/site`;
 /**
  * Every page under `site/`, derived from the directory — never a hand-kept list.
  *
- * It *was* a literal array, and it drifted the moment `demo.html` was added: the one page carrying the
- * product's only animation became the one page no brief ever showed. A list beside the thing it lists goes
- * stale silently, which is the whole failure this script was written to stop, so it walks the directory the
- * way `site-figures.cjs` does rather than naming the files.
+ * A literal array drifts the moment a page is added: a page it does not name — say `demo.html`, the one carrying
+ * the product's only animation — becomes the one page no brief shows. A list beside the thing it lists goes
+ * stale silently, which is the whole failure this script exists to stop, so it walks the directory the way
+ * `site-figures.cjs` does rather than naming the files.
  */
 const PAGES = readdirSync(SITE, { withFileTypes: true, recursive: true })
   .filter((e) => e.isFile() && e.name.endsWith('.html'))
@@ -126,8 +125,8 @@ function connect(wsUrl) {
     send(method, params = {}, timeoutMs = 20_000) {
       const id = nextId++;
       return new Promise((resolve, reject) => {
-        // A CDP call that never replies must fail loudly. `Page.getLayoutMetrics` did exactly that on
-        // Chrome 150 — no reply, no error — and without a deadline the whole script simply wedged.
+        // A CDP call that never replies must fail loudly. `Page.getLayoutMetrics` does exactly that on
+        // Chrome 150 — no reply, no error — and without a deadline the whole script simply wedges.
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new Error(`CDP timeout: ${method}`));
@@ -205,12 +204,11 @@ try {
     await sleep(250);
 
     // The viewport override above already spans the whole document, so `captureBeyondViewport` has nothing to
-    // add — and asking for both made `Page.captureScreenshot` hang on a tall page. Generous deadline because a
+    // add — and asking for both makes `Page.captureScreenshot` hang on a tall page. Generous deadline because a
     // ~5,000px surface genuinely takes a few seconds to encode.
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, 60_000);
-    // A nested page (`flavors/roaring`) flattens into the filename. Writing it as a path instead threw
-    // ENOENT on a directory nobody created, killing the run two captures from the end — which is why the
-    // `flavors-roaring-*.png` in the brief's attachment set predate the page being nested at all.
+    // A nested page (`flavors/roaring`) flattens into the filename: written as a path, it would throw ENOENT on
+    // a directory nobody created and kill the run.
     const label = `${page.replace(/\//g, '-')}-${theme}`;
     const file = `${OUT}/${label}.png`;
     writeFileSync(file, Buffer.from(data, 'base64'));

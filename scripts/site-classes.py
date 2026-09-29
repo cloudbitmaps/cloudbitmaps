@@ -1,20 +1,17 @@
 """Every class used in markup must be defined in the stylesheet.
 
-Scoped to `site/`, which is now the only site directory — `site-old/` (the superseded site) and `site2/` (the
-design delivery, imported verbatim to diff against) are both deleted, along with their entries in
-.prettierignore and eslint.config.js.
+Scoped to `site/`, the only site directory.
 
-This is the `.table` bug generalised: markup referencing a class the sheet never
-declares renders as bare HTML and nothing complains. Both instances of it on
-/demo were found by eye, in a screenshot, after shipping.
+Markup referencing a class the sheet never declares renders as bare HTML and nothing complains: by eye, it
+shows only in a screenshot, after shipping.
 
-The site's scripts are read too. A class a script adds at runtime is the same bug with no markup to find it in:
-/demo's stepper set `is-fetched` and `is-done` on its stage for as long as the page existed, and no rule in
-the sheet ever styled either, so the fetch and result beats never looked any different — and this check, which
-read only the markup, could not see it. A script's classes are every string argument of a `classList` call, the
-value it gives `className` or `setAttribute('class', …)`, and any string literal made only of `is-…` state
-classes, the site's naming convention for them — in the `.js` files and in each page's inline scripts. Markup is
-read through `site_markup.py`, so a class attribute in single quotes, or none, is read like any other.
+The site's scripts are read too. A class a script adds at runtime is the same failure with no markup to find it
+in: when a stepper sets `is-fetched` and `is-done` on its stage and no rule in the sheet styles either, its fetch
+and result beats look no different from the rest, and a check that reads only the markup cannot see it. A
+script's classes are every string argument of a `classList` call, the value it gives `className` or
+`setAttribute('class', …)`, and any string literal made only of `is-…` state classes, the site's naming
+convention for them — in the `.js` files and in each page's inline scripts. Markup is read through
+`site_markup.py`, so a class attribute in single quotes, or none, is read like any other.
 """
 import re, sys, glob, os
 
@@ -33,8 +30,8 @@ defined = set(re.findall(r'\.([A-Za-z][\w-]*)', css_no_comments))
 # needs that kind of reason.
 INTENTIONAL = {'rc1'}
 
-# Recursive, as site-links.py is. A depth-one glob skipped `flavors/roaring.html` — the one nested page — so its
-# classes were never checked, and a page this gate could not see passed it.
+# Recursive, as site-links.py is: a depth-one glob skips `flavors/roaring.html`, the one nested page, and a page
+# this gate cannot see passes it.
 pages = sorted(glob.glob(f'{ROOT}/**/*.html', recursive=True))
 if not pages:
     print(f'site-classes: no pages found under {ROOT}/ — refusing to report success over nothing')

@@ -5,25 +5,22 @@
  *
  * WHY THIS SCRIPT EXISTS
  *
- * The designed benchmarks page carried the line "Every anchor on this page is asserted in CI, so a regression
- * or an overclaim breaks the build." That was not true — nothing asserted them. It is the worst available kind
- * of overclaim, because it is a claim about our own rigour printed on the one page whose entire purpose is
- * that we do not make claims like that.
- *
- * The options were to delete the sentence or to make it true. This makes it true.
+ * The benchmarks page says every money figure and rate on it is gated against its source. With nothing asserting
+ * them, that would be the worst available kind of overclaim, because it is a claim about our own rigour printed
+ * on the one page whose entire purpose is that we do not make claims like that. This makes it true.
  *
  * WHAT IS CHECKED
  *
  *   1. Every anchor value appears on the page, in the rendered form a reader sees.
- *   2. No unaccounted DOLLAR figure appears anywhere in the page's visible text — the inverse direction,
- *      without which a check can only catch a MISSING number and never a WRONG one added beside the right ones.
- *      Across a whole page only `$` amounts are matched: a crossover rate is required on the page that owns it
- *      (1), but a wrong rate stated on another page is not caught here. (That hole was real: an earlier version
- *      of the /demo gate passed while the page said 41,208 instead of 100,000, because 100,000 still appeared
+ *   2. No unaccounted DOLLAR figure appears anywhere in the page's visible text — the inverse direction, without
+ *      which a check can only catch a MISSING number and never a WRONG one added beside the right ones. Across a
+ *      whole page only `$` amounts are matched: a crossover rate is required on the page that owns it (1), but a
+ *      wrong rate stated on another page is not caught here. (Presence alone cannot see a wrong figure added beside
+ *      a right one: a page that says 41,208 where it means 100,000 passes it, as long as 100,000 still appears
  *      elsewhere.) Wherever a page quotes the latest calibration run — a paragraph, list item or table row that
- *      names the run or states one of its headline figures — every unit is matched there, rates and counts
- *      included, through the matcher the run's report is held to, and so are the rows of the benchmarks page's
- *      panel on the run, one by one.
+ *      names the run or states one of its headline figures — every unit is matched there, rates and counts included,
+ *      through the matcher the run's report is held to, and so are the rows of the benchmarks page's panel on the
+ *      run, one by one.
  *   3. The counts in Home's spec strip, derived from the source tree — checked in three directions: the page
  *      drifting from the source, the source drifting from the page, and the entry being deleted outright.
  *
@@ -77,16 +74,15 @@ if (strayLatency) {
 }
 
 // ── the estimator's own accuracy ───────────────────────────────────────────────────────────────────────────
-// The claim the MODELLED figures on the page rest on, since they come out of estimateCost(). It used to be a
-// tolerance ("within ±N%") and is now a DIRECTION: priced against the chunk GETs a metrics sink actually observed,
-// the prediction must land on or above the measured cost. The direction is the stronger claim — a tolerance
-// permits an under-quote of N%, and an estimator that under-quotes your bill is the one failure mode that matters.
+// The claim the MODELLED figures on the page rest on, since they come out of estimateCost(). It is a DIRECTION,
+// not a tolerance ("within ±N%"): priced against the chunk GETs a metrics sink actually observed, the prediction
+// must land on or above the measured cost. The direction is the stronger claim — a tolerance permits an
+// under-quote of N%, and an estimator that under-quotes your bill is the one failure mode that matters.
 //
-// It is also a NARROW claim, and the page has to say so. It used to read "never quotes a cheaper bill than the
-// engine incurs", which the single-bucket calibration run showed to be false as a claim about a bill: the
-// estimator then had no term for the pointer's requests or an intersect's tail reads. It counts those now, held to
-// the engine's request counts by tests/core/cost.test.ts, but "a cheaper bill" is still false: an intersect that
-// outlives the pointer TTL re-reads its pointers, which that run did from outside the region, and a load that
+// It is also a NARROW claim, and the page has to say so. "Never quotes a cheaper bill than the engine incurs" is
+// false as a claim about a bill. The estimator counts the pointer's requests and an intersect's tail reads, held
+// to the engine's request counts by tests/core/cost.test.ts, but an intersect that outlives the pointer TTL
+// re-reads its pointers, which the single-bucket calibration run did from outside the region, and a load that
 // loses a publish race reads the pointer again. What the anchor test proves is chunk reads on an in-memory store,
 // so what is gated is that the page states it as a floor, and scopes it to chunk reads.
 if (!/never quotes fewer chunk reads than the engine makes/.test(doc)) {
@@ -142,9 +138,9 @@ const singleBucketFigure = (name) => {
 // ── every OTHER statement of the driver count, on every page ──────────────────────────────────────────────
 // Home's spec strip is anchored above. This catches the same number wherever else it is written: the
 // `<p class="meta">` footer that repeats across most pages, and the spelled-out form in prose, headings, nav
-// buttons and `<meta>` description tags — which is where it actually went stale, and which a digit-only check
-// cannot see. Spelled-out numbers are checked one past the true count in both directions, so this keeps working
-// when a driver is added or removed rather than pinning today's answer.
+// buttons and `<meta>` description tags, which a digit-only check cannot see. Spelled-out numbers are checked one
+// past the true count in both directions, so this keeps working when a driver is added or removed rather than
+// pinning today's answer.
 const NUMBER_WORDS = [
   'zero',
   'one',
@@ -162,11 +158,11 @@ const NUMBER_WORDS = [
  * Reader-visible text: tags become a space, entities are decoded, whitespace collapses.
  *
  * Every prose rule below runs on THIS, never on raw markup. Matching a prose pattern against serialised HTML
- * looked equivalent and was not: `<strong>9</strong> storage drivers` reads as a count to a human and matched
- * nothing, because the regex wanted literal whitespace between the number and the noun — and wrapping a figure
- * in `<strong>` is this site's own house style, so the markup the pages already use was the bypass. An
- * adversarial review put a wrong driver count and a wrong dependency count on the page that way, and the only
- * trace was a statement tally quietly dropping by one.
+ * looks equivalent and is not: `<strong>9</strong> storage drivers` reads as a count to a human and matches
+ * nothing, because the regex wants literal whitespace between the number and the noun — and wrapping a figure
+ * in `<strong>` is this site's own house style, so the markup the pages already use would be the bypass. A
+ * wrong driver count or a wrong dependency count put on a page that way would leave no trace but a statement
+ * tally quietly dropping by one.
  *
  * Comments are KEPT deliberately. `view-source` is public, and a stale claim in a comment is exactly the kind
  * that nothing re-reads.
@@ -174,8 +170,8 @@ const NUMBER_WORDS = [
 function visibleText(html) {
   // `<meta name="description">` and `og:description` FIRST. Their text is reader-facing — it is what a search
   // result and a shared link show — but it lives in an attribute, so stripping tags deletes it. Hoisting it
-  // into the body keeps it in scope; dropping it silently cost three of the thirteen driver-count statements
-  // the moment this function was introduced, which is the kind of coverage loss a passing gate hides.
+  // into the body keeps it in scope; dropping it would silently lose every driver-count statement in those tags,
+  // which is the kind of coverage loss a passing gate hides.
   const described = [...html.matchAll(/<meta\b[^>]*content="([^"]*)"[^>]*>/gi)]
     .filter((m) => /name="(description|og:description)"|property="og:description"/i.test(m[0]))
     .map((m) => m[1])
@@ -205,7 +201,7 @@ function checkDriverCountEverywhere(want) {
   // number there is one that gets repeated as fact somewhere we will never see.
   for (const [rel, text] of sitePages()) {
     // A count and the noun, with room for an adjective between them — "nine production storage drivers" is
-    // the same claim and used to walk straight past a pattern that demanded they be adjacent.
+    // the same claim, and walks straight past a pattern that demands they be adjacent.
     //
     // The slot takes ADJECTIVES only. Function words are excluded because they change the sentence from a
     // count of what ships into a reference to some of it — "one of our drivers" counts nothing — and
@@ -215,8 +211,8 @@ function checkDriverCountEverywhere(want) {
     const COUNT = `(\\d+|${NUMBER_WORDS.join('|')})`;
     const ADJECTIVES = '(?:(?!of\\b|in\\b|for\\b|to\\b|storage\\b)[a-z-]+\\s+){0,2}';
     for (const m of text.matchAll(
-      // "storage backends" as well as "drivers": llms.txt said "Five storage backends", counting the in-memory
-      // pair the rest of the site leaves out, and the noun alone kept it out of this check. Only with "storage":
+      // "storage backends" as well as "drivers": "Five storage backends", counting the in-memory pair the rest
+      // of the site leaves out, would stay out of this check on its noun alone. Only with "storage":
       // "three cloud backends" is a true count of part of what ships, and a gate that flagged it would be routed
       // around.
       new RegExp(
@@ -227,7 +223,7 @@ function checkDriverCountEverywhere(want) {
       // "the" excludes the phrase ONLY where the noun is bare. `the two drivers` is anaphoric — it names one
       // backend's storage and registry halves, which `S3Storage` configures together. `the four storage
       // drivers` is a count of what ships, and saying "storage" is what distinguishes them. An unconditional
-      // `the` exclusion dropped that one silently, which the floor below is what caught.
+      // `the` exclusion would drop that one silently, and the floor below is what catches such a drop.
       if (m[1] && !m[3] && !m[4]) continue;
       checked++;
       const token = (m[2] ?? '').toLowerCase();
@@ -244,9 +240,9 @@ function checkDriverCountEverywhere(want) {
 }
 
 // ── the reserved-RAM baseline's SPEC ──────────────────────────────────────────────────────────────────────
-// $346 appeared eight times across the site without ever saying what it buys, which made the single most
-// load-bearing comparison on the page unauditable: a reader could not tell whether the node was sized for this
-// dataset or several times larger than it. The spec is now published, so it gets gated like every other claim.
+// $346 is the single most load-bearing comparison on the page, and without the spec of what it buys it is
+// unauditable: a reader cannot tell whether the node is sized for this dataset or several times larger than it.
+// So the spec is published, and gated like every other claim.
 //
 // Source is the one-cluster anchor's own trailing comment in core/cost.ts — the same literal the $346 comes from,
 // so the prose cannot drift from the number it describes. Parsed, not transcribed. The site's $346 is that one
@@ -280,7 +276,7 @@ const anchors = [
   ['at rest, % of Redis', `${results.atRest.pctOfRedis}%`],
   ['Redis-HA baseline', `$${results.redisBaselineUSD}`],
   // One crossover, because there is one metered axis: reads against a standing node. The write side is not a
-  // rate any more — a publish is per-object, so `estimateCost` takes `loadsPerMonth` of them and a
+  // rate — a publish is per-object, so `estimateCost` takes `loadsPerMonth` of them and a
   // "writes per second" figure would describe an operation nobody performs.
   ['read crossover', `${results.readCrossoverPerSec}`],
   // The Redis the estimator's default prices for the reference set, which is smaller than the one cluster the line is
@@ -323,14 +319,10 @@ const anchors = [
   ['single-bucket · the whole run', singleBucketFigure('the run')],
 ];
 
-// ── the inverse check now covers HOME as well as /benchmarks ───────────────────────────────────────────────
-// The rebuilt home page states, in its own words, that "every money figure and rate on this site is checked in
-// CI against the sources that produced it — in both directions". That was FALSE the moment it was written: this
-// script only ever read benchmarks.html, and Home quotes eight money figures of its own.
-//
-// A page claiming our rigour while nothing enforces it is the specific failure this script was created to fix
-// (the designed benchmarks page said its anchors were CI-asserted when nothing asserted them). Shipping the same
-// error again, on the home page, would be worse than the first time. So the claim is made true instead.
+// ── the inverse check covers HOME as well as /benchmarks ───────────────────────────────────────────────────
+// Home quotes money figures of its own, on a site that says its figures are gated. Figures nothing checks,
+// beside a claim that they are checked, are the specific failure this script exists to prevent (see the
+// header), so Home is read too.
 //
 // Home is checked for the INVERSE direction only. It is a summary: it is expected to quote a subset, and
 // requiring every anchor to appear on it would force the estimator's p50, the calibration run id and the
@@ -338,21 +330,21 @@ const anchors = [
 // figure no source accounts for.
 //
 // The inverse check covers every page that states money, not just those two. /architecture, /usage and /flavors
-// each quote the unit economics and the $346 baseline in their own prose, and none of them was gated — the same
+// each quote the unit economics and the $346 baseline in their own prose, and ungated they would be the same
 // hole this file exists to close, one directory over. They are `requireAll: false` for the same reason Home is:
 // each quotes a deliberate subset, and requiring the full anchor set would force the calibration run id and the
 // baseline instance class onto pages whose job is not to carry them.
 //
 // `llms.txt`, the two READMEs and the roadmap are here for the same reason. `llms.txt` is the copy written to be
 // quoted verbatim by an assistant, the root and npm READMEs are the most-read pages the project has, and the roadmap
-// quotes the calibration's figures where it says what is measured; each quoted the published cost figures with
-// nothing checking them.
+// quotes the calibration's figures where it says what is measured; each quotes the published cost figures, and
+// nothing else checks them.
 const MEASURED_1M = 'per million cold intersects, measured';
 const EXPECTED_1M = 'per million cold intersects with each pointer read once';
 const WRITE_1M = 'per million single-part write-and-publishes';
 const PAGES = [
   // `mustState` names the latest run's figures a page quotes, so that replacing one — a load row that turns into
-  // the per-PUT $5 the estimator once quoted — fails even where the replacement is a value some source accounts for.
+  // a per-PUT $5, say — fails even where the replacement is a value some source accounts for.
   { rel: 'site/benchmarks.html', requireAll: true },
   { rel: 'site/index.html', requireAll: false, mustState: [MEASURED_1M, WRITE_1M] },
   { rel: 'site/architecture.html', requireAll: false, mustState: [WRITE_1M] },
@@ -439,7 +431,7 @@ const RUN_TRIGGERS = [
   'loads the Redis line buys a month',
 ];
 // A request shape, "4 PUT-class + 7 GET", is the run's to state: a block that states one is about it, and the shape
-// must then be one the run has. The usage page's `store.load()` row carried a shape and none of the run's figures.
+// must then be one the run has. A `store.load()` row, say, can carry a shape and none of the run's figures.
 const REQUEST_SHAPE = /\d+\s?PUTs?(?:-class)?(?:\s+requests?)?,?\s*(?:\+|and|plus)\s*\d+\s?GETs?/;
 function quotesTheRun(block) {
   if (singleBucket === null) return false;
@@ -470,8 +462,8 @@ for (const page of PAGES) {
   if (!html) continue;
   // The inlined crossover chart is stripped out before the prose scan, and then checked separately below.
   //
-  // Why: its y-axis ticks are $0/$200/$400/$600 and its curve labels restate the crossovers, so leaving it in
-  // made the inverse check fire on four axis labels. Whitelisting those four strings would have been the wrong
+  // Why: its y-axis ticks are $0/$200/$400/$600 and its curve labels restate the crossovers, so left in, it
+  // would make the inverse check fire on four axis labels. Whitelisting those four strings would be the wrong
   // fix — it widens the allow-list permanently to silence a specific run, and a later Y_MAX change would then
   // introduce new unaccounted figures OR silently pass. The chart is not prose: bench/run.cjs generates it from
   // the same bench/results.json this script reads, so it cannot drift from the anchors independently. What it
@@ -479,7 +471,7 @@ for (const page of PAGES) {
   const svgs = html.match(/<svg[\s\S]*?<\/svg>/g) || [];
 
   // Meta descriptions are pulled into the scan explicitly. Stripping tags removes attribute VALUES, so
-  // every money figure inside <meta name="description" content="..."> was invisible to the check below —
+  // every money figure inside <meta name="description" content="..."> would be invisible to the check below —
   // and those strings are the copy a search result and a shared link actually show, which makes them the
   // highest-leverage sentences on the site rather than the lowest. Home currently quotes $0.03 and $346 in
   // three of them.
@@ -579,7 +571,7 @@ for (const page of PAGES) {
   // with the words that say which claim each makes (see calibration-figures.cjs).
   if (singleBucket !== null) {
     // The run's own figures come from its values, bindings and all. Only the page's other sources join them, as plain
-    // values: the run's anchors, merged in plainly, once let "store.load() costs $11.20 per million" pass on every
+    // values: the run's anchors, merged in plainly, would let "store.load() costs $11.20 per million" pass on every
     // page here, because a plain value passes whatever words stand beside it.
     const otherSources = anchors
       .filter(([name, v]) => v && !name.startsWith('single-bucket'))
@@ -668,10 +660,9 @@ if (singleBucket !== null) {
 // `2 tiers · 4 drivers · 1 third-party dependency` sits under the keys figure on Home. This block anchors that
 // strip; `checkDriverCountEverywhere` below anchors every OTHER statement of the same number, on every page.
 //
-// Both exist because a comment here once claimed Home was the only page stating the count. It was not — five
-// pages carried it in a `<p class="meta">` footer and two more spelled it as a word — so removing a driver left
-// six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
-// looking. A number is only anchored where the gate actually reads it.
+// Both exist because Home is not the only page stating the count: most pages repeat it in a `<p class="meta">`
+// footer, and prose spells it as a word. With Home alone anchored, removing a driver would leave every other
+// statement stale while this gate stayed green. A number is only anchored where the gate actually reads it.
 //
 // The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot drift
 // without a rewrite that touches every page and every doc, so a check for it is one that CANNOT FAIL, the same
@@ -700,8 +691,8 @@ const specAnchors = [];
       }
     }
   };
-  // EVERY package, not just core. The cloud drivers are their own packages now, so walking only core
-  // counted 1 backend where the site claims 4 — the gate caught the move, which is what it is for.
+  // EVERY package, not just core: the cloud drivers are their own packages, so walking only core would count
+  // 1 backend where the site claims 4.
   for (const e of fs.readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })) {
     if (e.isDirectory()) walk(path.join(ROOT, 'packages', e.name, 'src'));
   }
@@ -712,7 +703,7 @@ const specAnchors = [];
   if (backends.size === 0) {
     fail(
       'the driver-count derivation matched no `export class …StorageDriver/…RegistryDriver` under packages/*/src — ' +
-        'the classes moved or were renamed, so this check is no longer measuring anything',
+        'the classes moved or their names changed, so this check is not measuring anything',
     );
   }
 
@@ -724,10 +715,10 @@ const specAnchors = [];
   // the project, sitting directly under an install line for TWO packages. Each storage package carries a real
   // cloud SDK, so a reader following that line gets two third-party deps, not one. A derivation narrower than
   // the claim it checks cannot fail when the claim goes wrong.
-  // EVERY dependency field, not just `dependencies`. An adversarial review moved an AWS SDK into core's
-  // `optionalDependencies` and this gate still certified "zero-dependency core" — and the repo has a
-  // deliberate rule that nothing is an optional peer, which makes that the most plausible accidental
-  // regression of the set.
+  // EVERY dependency field, not just `dependencies`: a gate that reads only that one certifies
+  // "zero-dependency core" with an AWS SDK in core's `optionalDependencies` — and the repo has a deliberate
+  // rule that nothing is an optional peer, which makes that the most plausible accidental regression of the
+  // set.
   const DEP_FIELDS = [
     'dependencies',
     'optionalDependencies',
@@ -796,10 +787,10 @@ const specAnchors = [];
     const want = shape.roaringSmaller
       ? `${show(shape.vsBestFixed)}\u00d7 smaller`
       : `${show(1 / shape.vsBestFixed)}\u00d7 larger`;
-    // Match the WHOLE claim, direction included. An earlier version stripped "smaller"/"larger" and compared
-    // only the digits — so the page could have said a shape roaring LOSES was "1.02x smaller" and this would
-    // have passed. The direction is the claim; a gate that checks the number but not which way it points is
-    // exactly the kind of check that reports coverage it does not have.
+    // Match the WHOLE claim, direction included. A check that strips "smaller"/"larger" and compares only the
+    // digits passes a page saying a shape roaring LOSES is "1.02x smaller". The direction is the claim; a gate
+    // that checks the number but not which way it points is exactly the kind of check that reports coverage it
+    // does not have.
     if (!roaringPage.includes(want)) {
       fail(
         `site/flavors/roaring.html does not state the measured factor for the "${shape.shape}" shape ` +
@@ -811,13 +802,13 @@ const specAnchors = [];
   }
 
   // ── the soak's combine evidence, where /benchmarks cites it ────────────────────────────────────────────
-  // Limitation 04 on that page used to read "the intersection window is not soak-tested", which was true. It now
-  // cites two measured figures instead, so they get a source like every other number on the site — the whole
-  // point of this file is that no figure is published on the strength of someone having once seen it.
+  // Limitation 04 on that page cites two measured figures, so they get a source like every other number on the
+  // site — the whole point of this file is that no figure is published on the strength of someone having once
+  // seen it.
   //
   // The native-creep figure is the load-bearing one. It is the off-heap byte count the roaring addon actually
   // holds, which is where a combine leak WOULD show up and where a JS-heap sample would miss it, so it is quoted
-  // to 2dp rather than as "flat" — a reader can tell 0.00 from 0.05, and "flat" hides which one it was.
+  // to 2dp rather than as "flat" — a reader can tell 0.00 from 0.05, and "flat" hides which one it is.
   // The RSS envelope is a CEILING claim, not a measurement, and it is gated as one.
   //
   // `rss-gate-results.json` records the hard cgroup limit the workload ran under and whether it survived. The
@@ -826,9 +817,9 @@ const specAnchors = [];
   // start skipping. What the page must state is the claim — the ceiling, the workload that ran inside it, and
   // that nothing was OOM-killed.
   //
-  // This exists because the gate that produces these numbers ran green on every PR for months while the figure
-  // was listed as OWED: the soak ran without SOAK_INJECT, so its verdict lived only in container stdout, and
-  // the stage directory is deleted on exit. A measurement nothing records is a measurement nobody has.
+  // Without SOAK_INJECT the soak's verdict lives only in container stdout, and the stage directory is deleted
+  // on exit, so the gate that produces these numbers can run green on every PR and record none of them. A
+  // measurement nothing records is a measurement nobody has.
   const benchPageForRss = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
   const rss = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'bench', 'rss-gate-results.json'), 'utf8'),
@@ -864,8 +855,8 @@ const specAnchors = [];
   const benchPage = fs.readFileSync(path.join(ROOT, 'site', 'benchmarks.html'), 'utf8');
   if (soak.combines === undefined) {
     fail(
-      'bench/soak-results.json has no `combines` field — it predates the combine phase. Re-run `pnpm soak` ' +
-        'with SOAK_INJECT=1; a results file from before that phase existed cannot evidence limitation 04.',
+      'bench/soak-results.json has no `combines` field — no combine phase wrote it. Re-run `pnpm soak` ' +
+        'with SOAK_INJECT=1; a results file without that phase cannot evidence limitation 04.',
     );
   } else if (soak.combines === 0) {
     // The soak itself refuses to report PASS on zero combines, but the *site* must not be able to cite a
@@ -890,9 +881,9 @@ const specAnchors = [];
   }
 
   // ── the invariant count ────────────────────────────────────────────────────────────────────────────────
-  // Home's correctness panel used to close on "1,156 of them run on every commit". That was ungated AND already
-  // wrong — the suite was at 1,161. An exact test total is the worst figure to publish: it moves on nearly every
-  // commit, so gating it breaks CI for anyone who adds a test, and not gating it leaves it stale within a day.
+  // Home's correctness panel states no test total. An exact test total is the worst figure to publish: it moves
+  // on nearly every commit, so gating it breaks CI for anyone who adds a test, and not gating it leaves it stale
+  // within a day.
   //
   // The invariant count is the stable number and the one the claim actually rests on, so the page states that
   // instead. AGENTS.md's "Hard correctness invariants" section is the only enumeration of them in the repo,
@@ -936,10 +927,10 @@ const specAnchors = [];
     for (const m of strip[1].matchAll(/<strong>([\d,]+)<\/strong>\s*([^<]+?)\s*<\/span>/g)) {
       stated.set(m[2].trim(), Number(m[1].replace(/,/g, '')));
     }
-    // Checked in BOTH directions, which is the flaw every earlier gate on this site shipped with. Comparing a
-    // derived count against a stated one fails when a driver is added and the page is not updated, AND when the
-    // page's number is edited away from the truth. `stated.has` covers the third case — the entry being deleted
-    // outright, which an equality check alone would never see because there would be nothing to compare.
+    // Checked in BOTH directions. Comparing a derived count against a stated one fails when a driver is added and
+    // the page is not updated, AND when the page's number is edited away from the truth. `stated.has` covers the
+    // third case — the entry being deleted outright, which an equality check alone would never see because there
+    // would be nothing to compare.
     for (const [label, want, detail] of [
       ['drivers', backends.size, () => [...backends].sort().join(', ')],
       ['dependencies in @cloudbitmaps/core', coreDeps.length, () => coreDeps.join(', ') || 'none'],
@@ -954,14 +945,12 @@ const specAnchors = [];
     }
   }
 
-  // ── the SAME two counts in the hero's meta line ────────────────────────────────────────────────────────
-  // Consolidating these into the spec strip came with the claim that each was then "stated once". That was
-  // wrong: only the final section's meta line was checked, and the HERO carries them too — in prime position,
-  // and in the loose wording ("1 runtime dependency") that the strip had already been corrected away from.
+  // ── the SAME driver count in the hero's meta line ──────────────────────────────────────────────────────
+  // The HERO states the driver count too, in prime position, as well as the spec strip.
   //
   // Two statements of a figure is fine where they serve different readers, and these do: at-a-glance in the
   // hero, in context beside the tiering further down. What is not fine is one of them being ungated, which is
-  // two chances to drift and one place that notices. Both are covered now.
+  // two chances to drift and one place that notices. So both are checked.
   const heroMeta = /<p class="meta">([\s\S]*?)<\/p>/.exec(homeHtml);
   if (!heroMeta) {
     fail("site/index.html no longer carries the hero's meta line");
@@ -988,18 +977,17 @@ const specAnchors = [];
   // package it counts, so deleting the claim is as loud as contradicting it. Its premise — core really has
   // no third-party dependencies — is proved once, above.
   //
-  // Whether a NUMBERED count names its package is deliberately NOT checked here any more. That rule belongs
-  // to every surface, not to `site/`: the two worst instances of the defect were in `README.md` and
-  // `SECURITY.md`, which this script does not read. It lives in `tests/docs/dependency-claims.test.ts`,
-  // over the whole `git ls-files` corpus, so there is one rule with one home rather than a site-shaped copy.
+  // Whether a NUMBERED count names its package is deliberately NOT checked here. That rule belongs to every
+  // surface, not to `site/`: `README.md` and `SECURITY.md` state counts too, and this script does not read
+  // them. It lives in `tests/docs/dependency-claims.test.ts`, over the whole `git ls-files` corpus, so there is
+  // one rule with one home rather than a site-shaped copy.
   // Presence of the badge, on a PINNED list of pages.
   //
-  // The previous shape inferred the requirement from the line's own words — a fact line was only required to
-  // carry the badge if it still mentioned dependencies, an SDK or a driver count. An adversarial review
-  // deleted the badge AND its trigger words from five of the six pages in one edit and the gate stayed
-  // green: the condition and the thing it guarded were removed together. A requirement a single edit can
-  // switch off is not a requirement, so the list is pinned instead. Adding a page means adding it here,
-  // which is a deliberate line in a diff someone reads.
+  // A requirement inferred from the line's own words — carry the badge if the line mentions dependencies, an
+  // SDK or a driver count — is switched off by one edit that deletes the badge AND its trigger words together,
+  // and the gate stays green: the condition and the thing it guards go at once. A requirement a single edit can
+  // switch off is not a requirement, so the list is pinned instead. Adding a page means adding it here, which
+  // is a deliberate line in a diff someone reads.
   //
   // /benchmarks is deliberately absent: its meta line gives the licence, the version, pre-1.0 and a single
   // maintainer, and makes no supply-chain claim.
@@ -1032,17 +1020,16 @@ const specAnchors = [];
 
   // …and the same number wherever else any page states it, in digits or in words.
   //
-  // The FLOOR is the point. Every hole an adversarial review found in this check announced itself the same
-  // way: the tally quietly fell by one while the run stayed green, because a statement that stops matching
-  // looks identical to a statement that was deleted. A count that can only go up without a deliberate edit
-  // turns both into failures.
+  // The FLOOR is the point. A hole in this check announces itself one way: the tally quietly falls by one
+  // while the run stays green, because a statement that stops matching looks identical to a statement that
+  // was deleted. A count that can only go up without a deliberate edit turns both into failures.
   const DRIVER_STATEMENT_FLOOR = 15;
   const alsoChecked = checkDriverCountEverywhere(backends.size);
   if (alsoChecked < DRIVER_STATEMENT_FLOOR) {
     fail(
       `only ${alsoChecked} driver-count statements were found across site/, down from ` +
         `${DRIVER_STATEMENT_FLOOR}. Either a page stopped stating the count, or a phrasing stopped ` +
-        'matching — both are how this check has gone quiet before. Lower the floor deliberately if a page ' +
+        'matching — either one leaves this check quiet. Lower the floor deliberately if a page ' +
         'really was removed.',
     );
   }
