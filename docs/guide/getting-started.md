@@ -711,9 +711,10 @@ only the timed re-check, so it is no way to get one instant. That is what a snap
 only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
 before it ended on, so no page walks from the first id. Give each page both bounds. The per-op budget is charged once,
 before the first fetch, for every chunk in the range, so a page with `after` alone is charged to the end of the
-segment however early it stops. A combine also keeps up to `concurrency` chunk keys in flight (8 by default) on every
-segment it reads, so a page that stops early has already fetched that far ahead; those chunks land in the chunk cache,
-where the next page usually finds them. `iterate` fetches one chunk at a time and nothing ahead.
+segment however early it stops. A combine also fetches ahead: it starts `concurrency` chunk keys at once (8 by
+default) and one more each time it yields a key's ids, on every segment it reads, so a page that stops early has
+already fetched up to `concurrency + 1` keys past its last id; those chunks land in the chunk cache, where the next
+page usually finds them. `iterate` fetches one chunk at a time and nothing ahead.
 
 ```ts
 // The audience is held at one generation for the whole send; the zone and the opt-out list are read live, page by

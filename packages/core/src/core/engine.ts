@@ -133,9 +133,20 @@ function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
   };
 }
 
-/** Whether `chunkKey` is one of the window's two edge chunks, the only ones a range cuts inside. */
+/** The window a range with neither bound set describes: every id. */
+const WHOLE_ID_SPACE: IdWindow = {
+  loKey: 0,
+  loRem: 0,
+  hiKey: CHUNK_COUNT - 1,
+  hiRem: MAX_REMAINDER,
+};
+
+/**
+ * Whether the range cuts inside `chunkKey`: one of its two edge chunks, and only where the bound falls inside the
+ * chunk rather than on its boundary. A chunk the range covers whole is yielded by the plain loop.
+ */
 const isEdge = (chunkKey: number, w: IdWindow): boolean =>
-  chunkKey === w.loKey || chunkKey === w.hiKey;
+  (chunkKey === w.loKey && w.loRem > 0) || (chunkKey === w.hiKey && w.hiRem < MAX_REMAINDER);
 
 /** The ids of an edge chunk that lie inside the window. The chunk iterates ascending, so it stops at the top. */
 function* edgeIds(chunk: CodecBitmap, chunkKey: number, w: IdWindow): Generator<number> {
@@ -237,19 +248,37 @@ export class SegmentEngine {
   /**
    * Every id, ascending, one chunk at a time; with `range`, only the ids in `(after, through]`, fetching only the
    * chunks the range overlaps (see {@link IdRange}).
+   *
+   * Two generators, not one with a branch: a second `yield` site in the full read's generator grows its frame, and
+   * every id of a read that asked for no range paid for it (measured at about 5% per id). The full read keeps the
+   * loop it always had.
    */
-  async *iterate(seg: SegmentRef, range?: IdRange): AsyncGenerator<number> {
-    const w = windowOf(range);
-    if (w === 'empty') return;
-    const all = await this.chunkKeys(seg);
-    const chunkKeys = w === null ? all : keysWithin(all, w);
+  iterate(seg: SegmentRef, range?: IdRange): AsyncGenerator<number> {
+    return range === undefined ? this.iterateAll(seg) : this.iterateRange(seg, range);
+  }
+
+  private async *iterateAll(seg: SegmentRef): AsyncGenerator<number> {
+    const chunkKeys = await this.chunkKeys(seg);
     checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
     const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
     for (const chunkKey of chunkKeys) {
       const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
       if (chunk === null) continue;
       // Read straight off the (possibly cached) instance: iteration does not mutate it.
-      if (w !== null && isEdge(chunkKey, w)) {
+      for (const remainder of chunk) yield joinId(chunkKey, remainder);
+    }
+  }
+
+  private async *iterateRange(seg: SegmentRef, range: IdRange): AsyncGenerator<number> {
+    const w = windowOf(range) ?? WHOLE_ID_SPACE;
+    if (w === 'empty') return;
+    const chunkKeys = keysWithin(await this.chunkKeys(seg), w);
+    checkBudget(this.budget, chunkKeys.length, 'iterate'); // one storage fetch per chunk (before fan-out)
+    const gen = await this.cacheVersion(seg); // after the shape read — see `combine`
+    for (const chunkKey of chunkKeys) {
+      const chunk = await this.storageChunk({ ...seg, chunkKey }, gen);
+      if (chunk === null) continue;
+      if (isEdge(chunkKey, w)) {
         for (const id of edgeIds(chunk, chunkKey, w)) yield id;
       } else {
         for (const remainder of chunk) yield joinId(chunkKey, remainder);
@@ -525,7 +554,14 @@ export class SegmentEngine {
   private async chunkKeys(seg: SegmentRef): Promise<number[]> {
     const keys = [...(await this.storage.listChunkKeys(seg))];
     for (const k of keys) this.assertChunkKeyInRange(k);
-    return keys.sort((a, b) => a - b);
+    keys.sort((a, b) => a - b);
+    // A key listed twice would be read and yielded twice; the `.crbm` reader refuses one, a custom source may not.
+    for (let i = 1; i < keys.length; i++) {
+      if (keys[i] === keys[i - 1]) {
+        throw new IntegrityError(`chunk key from a tier is listed twice: ${keys[i]}`);
+      }
+    }
+    return keys;
   }
 
   /**

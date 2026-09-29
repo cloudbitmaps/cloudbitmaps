@@ -2042,7 +2042,10 @@ export class Segment {
    */
   iterate(options?: IdRange): AsyncIterable<number> {
     if (this.expired()) return EMPTY_IDS;
-    return this.engine.iterate(this.ref, options == null ? undefined : rangeOf(options));
+    // Neither bound set is no range at all, which the engine reads on its full-read path.
+    const range = options == null ? undefined : rangeOf(options);
+    const none = range === undefined || (range.after === undefined && range.through === undefined);
+    return this.engine.iterate(this.ref, none ? undefined : range);
   }
 
   /**

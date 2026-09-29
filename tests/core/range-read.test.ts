@@ -11,8 +11,10 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
-import { BudgetExceededError, NotFoundError, ValidationError } from '@/core/errors';
+import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
+import { MemoryStorageChunkSource } from '@/index';
 import { collect } from '../helpers/loaded';
+import { SafeBitmap } from '@/roaring-codec';
 
 const K = 65_536;
 const U32_MAX = 0xffff_ffff;
@@ -756,5 +758,21 @@ describe('property: a range read is the full read filtered to the range', () => 
       ),
       { numRuns: 60 },
     );
+  });
+});
+
+describe('an index is untrusted', () => {
+  it('a chunk key listed twice is refused, rather than read and yielded twice', async () => {
+    const storage = new MemoryStorageChunkSource();
+    storage.seed({ segment: 'a', chunkKey: 1 }, SafeBitmap.fromValues([5]).serialize());
+    const twice: typeof storage.listChunkKeys = async (ref) => [
+      ...(await storage.listChunkKeys(ref)),
+      1,
+    ];
+    const store = new CloudRoaring({
+      storage: Object.assign(Object.create(storage), { listChunkKeys: twice }),
+    });
+    await expect(collect(store.segment('a').iterate())).rejects.toThrow(IntegrityError);
+    await expect(collect(store.segment('a').iterate({ after: 0 }))).rejects.toThrow(IntegrityError);
   });
 });
