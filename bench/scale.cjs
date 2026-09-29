@@ -367,7 +367,7 @@ function render(r) {
   const htmlTable =
     `<div class="tpanel">` +
     // The cap is already in the heap column's own header, where it qualifies the column it applies to —
-    // repeating it here said "1024" twice on one panel. The head carries the axis instead.
+    // repeating it here would say "1024" twice on one panel. The head carries the axis instead.
     `<div class="tpanel-head"><span class="label">Memory at fleet scale</span>` +
     `<span class="label">Measured &middot; ${fleetLo.toLocaleString('en-US')} &rarr; ` +
     `${fleetHi.toLocaleString('en-US')} segments</span></div>` +

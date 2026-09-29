@@ -67,9 +67,9 @@ function htmlSamplesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8
 /**
  * Fenced ```ts / ```js blocks, each with the line its code starts on.
  *
- * Leading indentation is matched and then stripped, because a fence nested inside a list item — which is how
- * every `CHANGELOG.md` sample is written — is indented. A pattern anchored at column 0 silently scans none
- * of them, which is the failure mode a gate must not have.
+ * Leading indentation is matched and then stripped, because a fence nested inside a list item, as in
+ * `docs/guide/getting-started.md`, is indented. A pattern anchored at column 0 silently skips it, which is the
+ * failure mode a gate must not have.
  */
 function fencesOf(file: string, text = readFileSync(join(ROOT, file), 'utf8')): Fence[] {
   const out: Fence[] = [];

@@ -321,7 +321,7 @@ const FIXED = String.raw`(?:(?:never|does not|doesn't|will not|won't) (?:changes
 const STAYS = String.raw`\b(?:(?:stays?|remains?|stuck|sticks?|freezes?|frozen|locks?|locked)(?<!\b(?:not|never|no) \w+)|(?<!\b(?:not|never|no)|n't) keeps? (?:serving|using|reading)) (?:(?:on|at|to|with|in) )?(?:(?:each|every|its|their|the|one|a) )?(?:(?!(?:newest|latest) )[\w'-]+ )?(?:segments?|generations?|snapshots?|pointers?)\b(?!${UNTIL_MOVED})`;
 
 /** Phrases that describe the library's behaviour falsely, each with what to say instead. */
-const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
+const REFUSED_CLAIMS: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> = [
   {
     claim: new RegExp(g(String.raw`publish(?:es|ing)? an empty generation over \`?dest`), 'i'),
     why: 'the *Into verbs refuse an empty result over a non-empty destination — say that instead',
@@ -338,8 +338,8 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
     claim: new RegExp(g('does not yet cover these verbs'), 'i'), // read in plain text, its bold gone
     why: 'the load guard covers the *Into verbs',
   },
-  // A store with no timed refresh is not a pin — "pin forever", "pins the generation for its lifetime" — in the
-  // guide, the privacy notes, shipped doc-comments or the tests, because such a store still moves on: its reader
+  // No page (the guide, the privacy notes, a shipped doc-comment, a test) may call a store with no timed refresh a
+  // pin ("pin forever", "pins the generation for its lifetime"), because such a store still moves on: its reader
   // cache evicting the segment, a read finding the generation it holds swept, and an invalidation (its own `load`,
   // `rollback`, `eraseSubject` and `*Into` writes, or `invalidate()`) each re-resolve it. `seg.pin()` is the one thing
   // that holds a generation, and a sentence calling the store a pin teaches readers to reach for `cache.genTtlMs: 0`
@@ -347,7 +347,7 @@ const RETIRED: ReadonlyArray<{ readonly claim: RegExp; readonly why: string }> =
   // pattern that reads the raw text). When a true sentence trips one, reword the sentence: of a real pin, say "a
   // pinned handle holds its generation for the life of the handle". A paraphrase can always escape a list of
   // patterns, which is why each hit says what to write instead. The forms are the ones the claim is written in and
-  // the ones written to get past them. What no pattern here reads is left to review: a claim whose subject
+  // the paraphrases written to get past them. What no pattern here reads is left to review: a claim whose subject
   // is in another sentence ("It pins…") or in the heading above it, subject and claim further apart than the 60 or 80
   // characters each pattern allows, a table whose header, not its cell, says "Pinned" or names the setting, and a
   // sentence a program builds other than from string literals joined by `+`, as prettier wraps them.
@@ -1345,7 +1345,7 @@ function hitsIn(rel: string, text: string): string[] {
     if (lineCount(reading) !== ends)
       throw new Error(`${rel}: plain() read ${ends} line ends as ${lineCount(reading)}`);
     const earlier = [...hits]; // what the readings before this one found, each to be found once more at most
-    for (const { claim, why } of RETIRED) {
+    for (const { claim, why } of REFUSED_CLAIMS) {
       let line = 1;
       let at = 0;
       for (const m of reading.matchAll(new RegExp(claim.source, `${claim.flags}g`))) {

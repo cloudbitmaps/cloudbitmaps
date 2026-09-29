@@ -164,7 +164,7 @@ const HARD = [
   //      Makefiles, Dockerfiles, `.env`, `.ini`, `.toml`, SQL, CSV, YAML flow and ADO.NET connection strings
   //      they are VALUE SEPARATORS — and `)`/`}` appear in ordinary prose. Unscoped, the exemption would
   //      excuse real secret shapes the rule otherwise catches, among them `Password=Hunter2.Winter.Season2024;`
-  //      (the canonical way an ADO.NET secret is written), `export DB_PASSWORD=a.b.c9;` in a deploy script,
+  //      (the canonical way an ADO.NET secret is written), `export DB_PASSWORD=_secret_part.another_part.third_part9;` in a deploy script,
   //      and a JWT pasted inside a markdown link — the single most likely route by which a real credential
   //      reaches a public README.
   //

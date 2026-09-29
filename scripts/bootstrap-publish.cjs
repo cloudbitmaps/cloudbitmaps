@@ -314,8 +314,8 @@ function restoreManifests() {
 //      that it cannot be undone, that turns "stop now" into "ignored" — an operator who realises mid-run
 //      that they are publishing the wrong thing could not stop it. Measured: exit 143 without the handlers,
 //      0 with them.
-//   3. Were one ever to fire, `process.kill(process.pid, sig)` re-enters the still-registered listener and
-//      spins at 100% CPU.
+//   3. A handler that restores the manifests and then re-raises with `process.kill(process.pid, sig)` would,
+//      were it ever to fire, re-enter itself, since it is still registered, and spin at 100% CPU.
 //
 // What actually restores the manifests is the `catch`/`finally` below, and it covers the case that matters:
 // a real terminal Ctrl-C is SIGINT to the whole process GROUP, so `pnpm` dies, `execFileSync` throws, and

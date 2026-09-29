@@ -17,8 +17,8 @@
  * The convention of extracting a detector is this repo's own: as `tests/arch/import-boundaries.test.ts` puts
  * it, a rule written wrong is a silent gap, and `pnpm lint` passing proves nothing about a rule that never
  * matched; `scripts/sdk-specifiers.cjs` / `no-circular.test.ts` are extracted for the same reason. A bare
- * regex inlined in both files flags a specifier inside a comment and misses forms `SPECIFIER` covers, and no
- * suite would notice, because the gate is green either way.
+ * regex inlined in both files reads specifiers inside comments, so the build silently edits documentation, and
+ * misses forms `SPECIFIER` covers; no suite notices a miss, because the gate stays green.
  */
 
 /**

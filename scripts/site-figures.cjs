@@ -899,7 +899,7 @@ const specAnchors = [];
     if (invariantCount === 0) {
       fail(
         "AGENTS.md's invariants section parsed to 0 numbered items — its list formatting changed, so this " +
-          'check is no longer measuring anything',
+          'check would measure nothing',
       );
     }
     const foot = /<p class="ba-foot">([\s\S]*?)<\/p>/.exec(homeHtml);
@@ -978,8 +978,8 @@ const specAnchors = [];
   // no third-party dependencies — is proved once, above.
   //
   // Whether a NUMBERED count names its package is deliberately NOT checked here. That rule belongs to every
-  // surface, not to `site/`: `README.md` and `SECURITY.md` state counts too, and this script does not read
-  // them. It lives in `tests/docs/dependency-claims.test.ts`, over the whole `git ls-files` corpus, so there is
+  // surface, not to `site/`: `README.md` and `SECURITY.md` state counts too, and this script reads neither for a
+  // count: SECURITY.md not at all, README.md only for its money figures. It lives in `tests/docs/dependency-claims.test.ts`, over the whole `git ls-files` corpus, so there is
   // one rule with one home rather than a site-shaped copy.
   // Presence of the badge, on a PINNED list of pages.
   //
@@ -1020,9 +1020,8 @@ const specAnchors = [];
 
   // …and the same number wherever else any page states it, in digits or in words.
   //
-  // The FLOOR is the point. A hole in this check announces itself one way: the tally quietly falls by one
-  // while the run stays green, because a statement that stops matching looks identical to a statement that
-  // was deleted. A count that can only go up without a deliberate edit turns both into failures.
+  // The FLOOR is the point. A statement that stops matching shows only as the tally quietly falling by one while
+  // the run stays green, because it looks identical to a statement that was deleted. A count that can only go up without a deliberate edit turns both into failures.
   const DRIVER_STATEMENT_FLOOR = 15;
   const alsoChecked = checkDriverCountEverywhere(backends.size);
   if (alsoChecked < DRIVER_STATEMENT_FLOOR) {

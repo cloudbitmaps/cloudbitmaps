@@ -23,9 +23,9 @@ import { fileURLToPath } from 'node:url';
  *
  * A SCAN THAT READS LINE BY LINE MISSES THE CLAIM THIS FILE EXISTS FOR. In the sentence
  * "…as it ran, and fresh loaded-store benchmarks." there is no done-word at all; the word that makes it a
- * claim ("Shipped on the loaded store:") is four wrapped lines earlier. A mutation test that adds `shipped`
+ * claim ("Shipped on the loaded store:") is three wrapped lines earlier. A mutation test that adds `shipped`
  * to the end of that sentence verifies a defect a line scan can already see, not the one prose produces.
- * Hence {@link HISTORICAL_DEFECT} below: the whole wrapped sentence is pinned as a fixture, so this file
+ * Hence {@link WRAPPED_CLAIM} below: the whole wrapped sentence is pinned as a fixture, so this file
  * cannot pass while blind to the thing it exists for.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -48,11 +48,11 @@ const NAMES_THE_WORK =
   /loaded[- ]store(?:'s own)? benchmarks|benchmarks (?:of|for) the loaded store|loaded store's own benchmarks/i;
 
 /**
- * A README-shaped sentence that claims the owed work as shipped, its done-word four wrapped lines before the
+ * A README-shaped sentence that claims the owed work as shipped, its done-word three wrapped lines before the
  * work it names. Pinned so the guard is tested against a claim wrapped the way prose wraps, not a tidier one —
  * see the docstring above.
  */
-const HISTORICAL_DEFECT = `Shipped on the loaded store: a single-call \`load()\` with a guard against an upstream query that returned too
+const WRAPPED_CLAIM = `Shipped on the loaded store: a single-call \`load()\` with a guard against an upstream query that returned too
 little, a \`rollback()\`, \`exists()\` and \`segments()\` so the registry answers "what do I have?" instead of you
 keeping a list beside it, a **snapshot handle** so a long export or reconciliation reads one instant rather
 than whichever generations were current as it ran, and fresh loaded-store benchmarks. The public roadmap tracks it:`;
@@ -130,7 +130,7 @@ describe('nothing claims work the roadmap still lists as owed', () => {
   }
 
   it('catches the claim when its done-word is lines before the work it names', () => {
-    expect(offendingSentences(HISTORICAL_DEFECT)).not.toEqual([]);
+    expect(offendingSentences(WRAPPED_CLAIM)).not.toEqual([]);
   });
 
   it('leaves the honest phrasings legal', () => {

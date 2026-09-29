@@ -67,8 +67,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# How many manifests `packages/*/package.json` must match. A glob that comes back short means a package was
-# renamed, moved or lost — and the family releases in lockstep, so a short glob is a PARTIAL publish waiting to
+# How many manifests `packages/*/package.json` must match. A glob that comes back short means a package is
+# renamed, moved or missing — and the family releases in lockstep, so a short glob is a PARTIAL publish waiting to
 # happen, not a smaller release. Stated once here; `tests/ci/release-workflow.test.ts` asserts it still equals
 # the number of packages in the workspace, so adding one fails the gate instead of silently under-releasing.
 env:

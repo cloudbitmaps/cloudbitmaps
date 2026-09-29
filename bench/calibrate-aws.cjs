@@ -8,8 +8,8 @@
  * publishes what a run measured and lists what is still owed. This is the tool that measures it.
  *
  * IT SPENDS REAL MONEY, so it is built to be hard to run by accident and impossible to run blind. The guards live
- * in `bench/lib/calibrate-guards.cjs` as pure functions, each with a regression test that plants the defect it
- * exists for. Read that file before changing anything here.
+ * in `bench/lib/calibrate-guards.cjs` as pure functions, and `tests/bench/calibrate-guards.test.ts` holds each one
+ * to the defect it exists for. Read that file before changing anything here.
  *
  *   node bench/calibrate-aws.cjs                             projection only; touches nothing
  *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
@@ -92,9 +92,8 @@ const argv = process.argv.slice(2);
  * the one you iterate on, and so the one most likely to leave a half-made bucket — with no way to clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
-// Let through, a rehearsal with `--run` would run the real identity check — an STS call on whatever credentials are
-// in the environment — before doing its work against MinIO. A rehearsal touches no cloud account, so the pair is
-// refused.
+// A rehearsal touches no cloud account and `--run` is the one mode that spends money, so the pair asks for two
+// targets at once and is refused before anything else is read.
 if (REHEARSE && argv.includes('--run')) {
   console.error(
     'calibrate: --rehearse and --run are exclusive — a rehearsal touches no cloud account',
@@ -607,7 +606,7 @@ async function main() {
   /**
    * The bill and the projection check, then the results — run AFTER teardown, so its requests are in the bill
    * too. Nothing extra ran for the bill: in this topology the pointer reads and conditional PUTs ARE object-store
-   * requests, which the old run could not see. Both exits call this, the `finally` and an interrupt: an interrupt
+   * requests, so the meter already counts them. Both exits call this, the `finally` and an interrupt: an interrupt
    * path that wrote its results without it would lose the one figure the run had already paid for.
    */
   // Once only: both exits can reach it, the signal handler's and main's own, and the results are the same either way.

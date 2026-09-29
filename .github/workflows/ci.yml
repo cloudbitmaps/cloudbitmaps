@@ -87,7 +87,8 @@ jobs:
       # while every check on this page stayed green, and nobody would find out until release day. Running them on
       # each PR turns that into a red check next to the commit that causes it. Together they take about a second,
       # and `pnpm build` has already run, so the tarball scan is nearly free — and the tracked-tree scan cannot
-      # stand in for it, because a finding in built output is not in any tracked file.
+      # stand in for it: it does not read what only the build writes, and outside `--snapshot` it reports the
+      # migration class without failing, which the tarball scan fails on whenever the needles are set.
       #
       # BOTH get the needles. Without `LEAK_SCAN_EXTRA`, the tracked-tree scan runs with its most important
       # class — employer names and other project-specific strings — switched OFF, printing "not being checked"
@@ -125,8 +126,8 @@ jobs:
 
   runtime-floor:
     name: the declared runtime floor (node 22.12)
-    # `engines` promises `>=22.12`, and nothing else in CI runs it: every other job says `node-version: 22`,
-    # which resolves to the latest 22.x — currently 22.23, eleven minors above the floor. Without this job the
+    # `engines` promises `>=22.12`, and nothing else in CI runs it: every other job pins `22` or a `[22, 24]`
+    # matrix, and `22` resolves to the latest 22.x, well above the floor. Without this job the
     # floor is a number in a manifest that no job executes, and code depending on anything added after 22.12
     # ships green.
     #
@@ -159,7 +160,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The backends' images are kept in the Actions cache, so a registry that refuses or throttles a pull, as quay.io
-      # began refusing MinIO in September 2026 and as Docker Hub throttles the runners' shared IPs, fails a run only
+      # refuses anonymous pulls of MinIO and Docker Hub throttles the runners' shared IPs, fails a run only
       # when the cache holds no copy (scripts/lib/docker-pull.sh says when a copy is used).
       - uses: ./.github/actions/docker-images-restore
         with:

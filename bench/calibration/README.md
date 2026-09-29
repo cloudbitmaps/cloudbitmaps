@@ -14,7 +14,7 @@ by its run id:
   expected, with what it means and what the run does not establish.
 
 `2026-09-23-94416.json` is committed exactly as the harness at commit `e42c27f` wrote it, under another path, so its
-`note` describes regenerating it, which no evidence file here ever is.
+`note` says to regenerate it; no evidence file here is ever regenerated.
 
 [`tests/docs/calibration-reports.test.ts`](../../tests/docs/calibration-reports.test.ts) holds each report to its
 evidence in both directions: every headline figure must appear, and no dollar amount, percentage, duration, byte

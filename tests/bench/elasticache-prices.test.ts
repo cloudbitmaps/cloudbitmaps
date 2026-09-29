@@ -5,8 +5,8 @@ import { ELASTICACHE_REDIS_US_EAST_1_ONDEMAND } from '@cloudbitmaps/core';
 
 /**
  * A join on the instance type and the engine looks unique and is not. A node type has several products, and the
- * fixture below holds the ones that share its type — an extended-support surcharge, a sync-durability rate, a
- * Memcached twin, a Valkey node — around the one real node. The reader must find that one, and refuse a list where
+ * fixture below holds, around each engine's one real node, the products that share its type: an extended-support
+ * surcharge, a sync-durability rate and a Memcached twin. The reader must find that one, and refuse a list where
  * the full key matches none or more than one.
  */
 const ROOT = resolve(fileURLToPath(import.meta.url), '../../..');

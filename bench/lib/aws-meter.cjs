@@ -4,8 +4,8 @@
  *
  * WHY THIS SITS AT THE SDK LAYER, not at the library's metrics sink. The sink emits no `storage.put` event —
  * a known observability gap — and a PUT bills at 12.5x a GET, so an ingest-heavy workload priced from the sink
- * alone is materially understated. The previous calibration run learned this the expensive way; the meter is
- * the fix, and it counts what actually went over the wire regardless of what the library chose to report.
+ * alone is materially understated. The meter counts what actually went over the wire, regardless of what the
+ * library chose to report.
  *
  * It is a middleware, not a wrapper around individual calls: anything the SDK sends is counted, including
  * requests the driver makes that the caller never asked for (a multipart upload's per-part PUTs, a retry, a

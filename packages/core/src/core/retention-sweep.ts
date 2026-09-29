@@ -188,7 +188,7 @@ export interface RetireExpiredResult {
   readonly eligible: number;
   /**
    * Segments **actually retired**. Zero under `dryRun` — see `wouldRetire`. Kept honest because this is the field
-   * most likely to end up on a dashboard, and the CLI emits it: a counter that means "deleted" in one mode and
+   * most likely to end up on a dashboard: a counter that means "deleted" in one mode and
    * "would delete" in another produces phantom deletions on any graph that does not also join on `dryRun`.
    */
   readonly retired: number;
@@ -408,10 +408,10 @@ export async function retireExpired(
     if (policy.expiresAt > now) continue; // not yet
     eligible += 1;
     if (attempted >= limit) {
-      // Stop SCANNING, not just stop acting. Pushing a `limit` entry per deferred row made the ledger scale with
-      // the fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller
-      // did not ask for, and the CLI then serialised all of them into one stdout line. They are not information:
-      // the next run picks them up, which is what `limited` says.
+      // Stop SCANNING, not just stop acting. A `limit` entry per deferred row would make the ledger scale with the
+      // fleet rather than with the batch — 250,000 rows behind a bad backfill is ~15 MB of entries the caller did
+      // not ask for, all in one result object. They are not information: the next run picks them up, which is
+      // what `limited` says.
       limited = true;
       break;
     }

@@ -213,8 +213,8 @@ const pages = htmlPagesUnder(SITE);
  *
  * `llms.txt` is the machine-readable summary served to crawlers and assistants. A suite that reads only
  * `*.html` leaves it naming whatever version it was written with, release after release: a version gate that
- * covers some of the files carrying a version is a gate with a hole in it. Every other file served from
- * `site/` is read below, derived rather than listed.
+ * covers some of the files carrying a version is a gate with a hole in it. Every other `.txt`, `.xml`, `.js` and
+ * `.json` file served from `site/` is read below, derived rather than listed.
  */
 const VERSIONED_TEXT_FILES = ['llms.txt'];
 

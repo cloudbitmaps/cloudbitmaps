@@ -2,8 +2,8 @@
 
 Scoped to `site/`, the only site directory.
 
-Markup referencing a class the sheet never declares renders as bare HTML and nothing complains: by eye, it
-shows only in a screenshot, after shipping.
+Markup referencing a class the sheet never declares renders as bare HTML and nothing complains: without this
+check it is found only by eye, in a screenshot, after shipping.
 
 The site's scripts are read too. A class a script adds at runtime is the same failure with no markup to find it
 in: when a stepper sets `is-fetched` and `is-done` on its stage and no rule in the sheet styles either, its fetch

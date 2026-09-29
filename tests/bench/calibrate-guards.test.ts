@@ -269,8 +269,8 @@ describe('calibrate guards', () => {
       }
     });
 
-    // The trigger that inverts the ratio under a smaller read multiplier: concurrency above segment count, which
-    // is what you set to make a run cheaper.
+    // The trigger that inverts the ratio under a smaller read multiplier: far more reads than loads, which is what a
+    // run shrunk to a few segments has.
     it('holds when there are far more reads than loads, and vice versa', () => {
       const readHeavy = guards.projectOps({
         loads: 1,
@@ -661,8 +661,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // `--cleanup` writes no file, so it takes any id that names a legal bucket: a bucket left behind under a name
-  // without the date prefix must still be removable, and the date rule would strand it.
+  // `--cleanup` writes no file, so it takes any id that names a legal bucket. A harness checked out at another
+  // commit may name its bucket by other rules, and the date rule would strand that bucket.
   it('lets --cleanup remove a bucket under any legal name', () => {
     for (const ok of ['v0.10.0-inregion', '-x', '2026-09-22-bfee0', 'inregion-1', 'a']) {
       expect(guards.checkCleanupId(ok)).toBe(ok);
@@ -683,7 +683,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // A name ending in one of these may not be a bucket at all, but S3's name for someone else's — and `--cleanup`
-  // deletes every version of every key it finds. The run ids' list holds every one, `--table-s3` included.
+  // deletes every version of every key it finds. Both kinds of id are held to the one list, so a run id refuses every
+  // suffix a cleanup does.
   it('refuses any id ending in a suffix S3 reserves, for a run and for a cleanup', () => {
     for (const suffix of ['-s3alias', '--ol-s3', '.mrap', '--x-s3', '--table-s3']) {
       expect(() => guards.checkCleanupId(`x${suffix}`), suffix).toThrow(/bucket/);
@@ -701,7 +702,7 @@ describe('a rehearsal cannot be committed as the evidence', () => {
   });
 
   // Teardown lists 1,000 object versions a pass, and each segment leaves two: its generation and its pointer. A
-  // workload of 1,510 segments leaves 20 versions behind after three passes. The bound keeps the whole bucket inside
+  // workload of 1,510 segments would leave 20 versions behind after three passes. The bound keeps the whole bucket inside
   // the first listing, so the other passes are spare.
   it('refuses a workload with more segments than one teardown listing reaches', () => {
     expect(guards.MAX_SEGMENTS).toBe(500);
@@ -1185,9 +1186,8 @@ describe('a rehearsal cannot be committed as the evidence', () => {
     }
   });
 
-  // A rehearsal with --run would run the real identity check against whatever credentials the environment holds.
-  // The pair is refused before the harness imports anything — run with no credentials and no confirmation, so even
-  // a broken refusal cannot get past the next check.
+  // `--rehearse` and `--run` ask for two different targets, so the pair is refused before any other check. It runs
+  // with no credentials and no confirmation, so even a broken refusal stops at the next check.
   it('refuses --rehearse with --run before doing anything', () => {
     const out = runHarness(['--rehearse', '--run']);
     expect(out.status).toBe(2);
@@ -1804,7 +1804,8 @@ describe('a signal stops the workload before teardown starts', () => {
 });
 
 // Teardown is the one path whose failure leaves money on the table, so what counts as "done" is spelled out here.
-// Each rule below stops a failure that loses money: an abort whose answer is lost, and whose retry gets 404
+// The rules below stop teardown from leaving a billing bucket behind, or from emptying one the harness did not
+// make: an abort whose answer is lost, and whose retry gets 404
 // NoSuchUpload, would make teardown skip the deletes and report nothing; and a key that can never be deleted would
 // make the listing loop bill forever.
 describe('teardown — what counts as done', () => {

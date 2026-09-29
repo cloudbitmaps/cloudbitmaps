@@ -57,15 +57,15 @@ run's file, so under an evidence name it would be one `git add` from being commi
 
 ## Real-cloud calibration
 
-`calibrate-aws.cjs` measures three things the benchmarks page lists as owed, all of which need a real object store
-rather than local disk. One of them is paid:
+`calibrate-aws.cjs` measures three things that need a real object store rather than local disk. The benchmarks page
+publishes one of them and lists the other two as owed:
 
 1. **Load throughput** — ids/s and bytes/s into a bucket, for objects that fit one PUT and objects large enough
    to upload multipart. Still owed: it needs a run from inside the region.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
    Still owed, for the same reason.
 3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
-   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first publishable
+   generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its one published
    run, [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop. A request count, and so the bill for
    requests, does not depend on where the client is, with one exception, which that run measured: an intersect
    slower than the pointer refresh reads each pointer again. The harness's timed store turns the pointer refresh
@@ -96,7 +96,8 @@ waits ten seconds so you can Ctrl-C before anything is created. The default work
 ### The guards
 
 Most live in [`lib/calibrate-guards.cjs`](lib/calibrate-guards.cjs) as pure functions, each with a test that
-plants the bug it exists for and expects the guard to refuse it:
+plants the bug it exists for and fails unless the guard stops it; teardown's pass and page bounds are held by their
+constants and the source text:
 
 - **The spend ceiling is validated before it is compared.** `Number('abc')` is `NaN`, and every comparison
   against `NaN` is false — so a malformed ceiling, compared as it comes, silently *removes* the bound.
@@ -120,7 +121,7 @@ plants the bug it exists for and expects the guard to refuse it:
   S3 keeps for its own kinds of bucket. Nothing is replaced at the end either: a run whose file appeared while it
   ran, or a retry whose partial name is taken, writes `<runId>.<start>.partial.json` beside it and says so.
 - **The workload fits one teardown listing.** Teardown lists 1,000 object versions a pass and each segment leaves
-  two, so a run loads at most 500 segments. One of 1,510 would leave 20 versions behind after three passes.
+  two, so a run loads at most 500 segments. A run of 1,510 segments would leave 20 versions behind after three passes.
 - **Teardown empties only a bucket the harness made.** It aborts every upload and deletes every version of every key
   it lists, and `--cleanup` points it at a bucket by name. So before it touches anything it lists every upload and
   every page of versions, up to ten pages, and refuses and reports a bucket holding any key outside `calib/`, the

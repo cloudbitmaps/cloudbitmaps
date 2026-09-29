@@ -17,8 +17,8 @@
 # not, it returns non-zero, unless CI's cache (below) holds a copy of the image: then the copy stands in, and the run
 # is warned.
 #
-# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io began refusing anonymous
-# pulls of MinIO in September 2026, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
+# THE CACHE. Backoff absorbs a rate, not a refusal, and registries refuse too: quay.io refuses anonymous
+# pulls of MinIO, public.ecr.aws answers `Data limit exceeded` once the runners' shared IPs pass
 # its anonymous quota of 500 GB a month, and Chainguard's free tier publishes only `latest` and `latest-dev`: it
 # lets anyone pull by digest, but does not say for how long, so a digest pinned today could stop resolving.
 # With DOCKER_IMAGE_CACHE set to a directory, which CI keeps in the Actions cache, each image pulled is also saved

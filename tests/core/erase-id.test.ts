@@ -413,7 +413,7 @@ describe('eraseIdFromSegment — the receipt check asserts the outcome, not who 
 });
 
 describe('eraseIdFromSegment — what a re-run after a failed collect actually reports', () => {
-  // This matrix is documented in four places an operator is pointed at: this module's `collected` doc, the
+  // This matrix is documented in five places an operator is pointed at: this module's `collected` doc, the
   // ledger entry note, the API reference and both privacy documents. It is easy to write down wrongly — by leaving
   // out the re-run's search of the superseded generations, or by generalising the Storage-`delete`-fault outcome
   // to a cause that does not share it. Prose cannot be trusted here, so the matrix is asserted: if one of these

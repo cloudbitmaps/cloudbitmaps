@@ -32,14 +32,15 @@ const CHUNKS = 40_000;
 const ids = Array.from({ length: CHUNKS }, (_, i) => joinId(i % 61_035, i % 65_536));
 
 /**
- * A clock that records **where** each yield came from, so a test can require the specific loop it names.
+ * A clock that counts every yield, so a test can require at least the yields the loop it names must add.
  *
  * Counting loop turns against a loose bound is not enough. A load has several independent yield sites — the id
  * ingest, the per-chunk flush, the cardinality tally, and the serialize/CRC writer — and against a bound such as
  * `> 20`, **any one surviving site would satisfy a turn-count test.** Disabling the yields in the per-chunk
  * insert loop would leave it green, and the case titled "yields on an async source too" would pass with the
- * async ingest path's yields removed, because its turns come from the writer. Per-site counting is what makes
- * each assertion about the loop it claims to be about.
+ * async ingest path's yields removed, because its turns come from the writer. A lower bound built from what each
+ * site must contribute (`CHUNKS / YIELD_EVERY` for each chunk loop, `ids.length / YIELD_EVERY_IDS` for ingest) is
+ * what makes each assertion about the loop it claims to be about.
  */
 class SpyClock extends SystemClock {
   yields = 0;

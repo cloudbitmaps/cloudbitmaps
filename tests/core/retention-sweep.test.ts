@@ -187,8 +187,8 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
 
     const res = await retireExpired(w.dropDeps, { now: T0, dryRun: true });
     // `retired` counts DELETIONS, so it is 0 here; `wouldRetire` is the preview count. A single counter meaning
-    // "deleted" in one mode and "would delete" in another puts phantom deletions on any dashboard that sums it —
-    // and the CLI emits exactly this, in the mode the docs tell you to start with.
+    // "deleted" in one mode and "would delete" in another puts phantom deletions on any dashboard that sums it,
+    // and a dry run is the mode the docs tell you to start with.
     expect(res).toMatchObject({ eligible: 1, retired: 0, wouldRetire: 1, dryRun: true });
     const entry = res.entries[0]!;
     expect(entry.action).toBe('would-retire');
@@ -202,7 +202,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     expect(await w.store().segment('d').count()).toBe(2);
   });
 
-  it('caps a cycle at `limit`, says so, and names the deferred segments', async () => {
+  it('caps a cycle at `limit` and says so with `limited`, recording no entry per deferred segment', async () => {
     // The guard against a bad backfill or clock skew retiring the whole fleet in one pass.
     const w = world();
     for (const day of ['d1', 'd2', 'd3']) {
@@ -213,7 +213,7 @@ describe('retireExpired — the guards that make it safe to point at a fleet', (
     expect(res).toMatchObject({ retired: 2, limited: true });
     // The sweep stops SCANNING at the cap rather than recording a deferral per remaining row: on a fleet behind a
     // bad backfill those entries would scale with the fleet instead of the batch (250k rows ≈ 15 MB of ledger the
-    // caller never asked for, which the CLI would serialise into one log line). `limited` carries the signal.
+    // caller never asked for, all of it in one result object). `limited` carries the signal.
     expect(res.entries.filter((e) => e.action === 'skipped')).toEqual([]);
     expect(res.entries).toHaveLength(2);
     // The ledger arithmetic an operator's re-run loop depends on for termination.
@@ -399,7 +399,7 @@ describe('retireExpired — faults, races and malformed input', () => {
     // be retired.
     const w = world();
     await w.registry.create({ segment: 'bad' }, { currentGen: null });
-    // Bypass the (strict) write boundary the way a hand-edit or an older writer would.
+    // Bypass the (strict) write boundary the way a hand-edit or a foreign writer would.
     const rec = (await w.registry.get({ segment: 'bad' }))!;
     (rec as { retention?: unknown }).retention = null;
     await w.load('good', [1]);

@@ -6,9 +6,9 @@ import { CloudRoaring, MemoryStorageChunkSource } from '@/index';
  * The **published** README of the flavor package must not lag the API it ships.
  *
  * WHY THIS EXISTS. `packages/roaring/README.md` is a separate file from the repo-root `README.md`, and it is the
- * one npm renders — so it is simultaneously the most-read surface and the easiest to forget. A release's new
- * section can land in the root README and not here, and its headline features can be missing from the npm page
- * while that page goes on claiming operations "carry over one-for-one" from Redis with no boundary: the most-read
+ * one npm renders — so it is simultaneously the most-read surface and the easiest to forget. A method the guide
+ * gives as the answer to a Redis command can be missing from the npm page, and that page can claim operations
+ * "carry over one-for-one" from Redis with no boundary, or leave out the per-id write warning: the most-read
  * surface is then the least honest one in the project.
  *
  * Gates that read the root README, the guide and the api-reference see none of that. This one reads the file that

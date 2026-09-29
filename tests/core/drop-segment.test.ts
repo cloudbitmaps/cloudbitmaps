@@ -565,7 +565,7 @@ describe('dropSegment result fields', () => {
   });
 
   it('dryRun distinguishes absent from already, and previews the irreversible half', async () => {
-    // `reason` on a dry run, both branches. A retention sweep dry-running yesterday's already-collected bucket
+    // This pins `reason` on a dry run, on both branches. A retention sweep dry-running yesterday's already-collected bucket
     // is the primary use case, and `reason` is how it tells "will delete" from "gone".
     const keystore = new InProcessKeystore({
       keys: { k1: randomBytes(32) },

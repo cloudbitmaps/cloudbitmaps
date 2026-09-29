@@ -51,7 +51,7 @@ function parseCeiling(raw) {
 /**
  * Resolve a workload size from the environment.
  *
- * THE BUG THIS EXISTS FOR: a helper that maps a falsy value to the default hands `CR_CALIBRATE_WRITES=0` — what
+ * THE BUG THIS EXISTS FOR: a helper that maps a falsy value to the default hands `CR_CALIBRATE_READS=0` — what
  * someone shrinking a run to almost nothing would set — the FULL default instead of zero. Explicit zero must mean
  * zero.
  */
@@ -87,10 +87,10 @@ function probeMeansAbsent(err) {
 /**
  * Project the worst-case op count for a run, as a real upper bound.
  *
- * THE BUG THIS EXISTS FOR: a projection that is not a bound. One that multiplies writes by 2 leaves the measured
- * count within a single request of the projection; one that gives READS a smaller multiplier than writes has the
- * read slot breach first — and setting concurrency above the segment count, which is exactly what someone does to
- * make a run *cheaper*, triggers it.
+ * THE BUG THIS EXISTS FOR: a projection that is not a bound. One that doubles the loads counts only the two PUTs an
+ * unraced load makes, with no room for a lost race or for the run's own bucket and teardown requests; one that gives
+ * READS a smaller multiplier than writes has the read slot breach first — and a run with far more reads than loads,
+ * such as one shrunk to a few segments to make it *cheaper*, triggers it.
  *
  * AND ONE MORE: a projection that counts a single operand per read. An intersect has two, and each resolves its own
  * pointer, reads its own index and fetches its own chunks — so a one-operand read term is half of what the workload
@@ -416,9 +416,9 @@ function checkRunId(runId) {
 /**
  * The id `--cleanup` accepts: anything that makes a legal bucket name, because it writes no file.
  *
- * Narrower rules would strand buckets. A bucket left behind under any legal name must be removable, and S3 allows
- * dots and a hyphen straight after the prefix: `v0.10.0-inregion` is a legal bucket name, and `checkRunId` refuses
- * it.
+ * Narrower rules would strand buckets. A harness checked out at another commit may name its bucket by other rules,
+ * and `--cleanup` must still remove it: S3 allows dots and a hyphen straight after the prefix, so `v0.10.0-inregion`
+ * is a legal bucket name that `checkRunId` refuses.
  */
 const CLEANUP_ID = /^[a-z0-9.-]{0,43}[a-z0-9]$/;
 
@@ -492,9 +492,9 @@ const MAX_SEGMENTS = 1000 / 2;
  * Refuse a workload that cannot measure what it claims to, or that teardown could not remove.
  *
  * Every intersect pairs segment i with segment i + 1, wrapping round. With one segment that is a segment with
- * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — fetches
- * all 1,999 chunks an intersect, fails its exactness check and overspends its projection before the ceiling check
- * can see it.
+ * itself: every chunk is shared, so a run shrunk to one segment — what someone does to make it cheaper — would fetch
+ * all 1,999 chunks an intersect, fail its exactness check and overspend its projection before the ceiling check
+ * could see it.
  */
 function checkWorkload({ segments, largeSegments = 0, reads }) {
   if (reads > 0 && segments < 2) {

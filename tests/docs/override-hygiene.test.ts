@@ -12,7 +12,8 @@ import { join } from 'node:path';
  *
  * A security document that attributes dead pins to live toolchains is worse than one that omits them: it
  * reads as a maintained inventory. So the check runs in both directions — no override without a package, and
- * no table row without an override.
+ * no table row without an override. It binds an override to a package by name, not by major, so a pin on a
+ * major the tree does not hold passes while any version of the package resolves.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. It does not judge whether a *version range* is still the right one; only
  * a human reading an advisory can. It answers the cheaper question: is this entry protecting anything at

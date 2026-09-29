@@ -199,8 +199,8 @@ main [id] {
 }
 
 /* Inline, so `currentColor` and the tier tokens resolve against THIS document. Through an `<img>` the SVG is
-   an isolated document and `currentColor` falls back to black — which is how the mark shipped with no
-   letterform on the graphite ground. */
+   an isolated document and `currentColor` falls back to black, which leaves the mark with no letterform on the
+   graphite ground. */
 .mark {
   display: block;
   width: 24px;

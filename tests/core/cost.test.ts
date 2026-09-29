@@ -30,7 +30,7 @@ const GIB = 1024 ** 3;
 const P = AWS_US_EAST_1_ONDEMAND;
 /** The default rates against one Redis-HA cluster, whatever the data size: the arithmetic of the verdict, alone. */
 const FLAT: PricingProfile = { ...P, redis: ONE_REDIS_HA_CLUSTER };
-const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000 — the research's convention
+const SECONDS_PER_MONTH = 730 * 3600; // 2,628,000: a 730-hour month, as the cloud price lists bill
 
 describe('DEFAULT_PRICING', () => {
   // It is exported so a caller can clone and tweak it for their own region.

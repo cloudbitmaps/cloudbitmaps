@@ -311,7 +311,9 @@ describe('loadSegment — the guard is fenced on the row it judged', () => {
     // The guard reads the "before" cardinality, then writes, then publishes. Anything that lands in between
     // voids the premise the guard judged on — and an unfenced forward-only publish would report success anyway.
     // Without the fence, two loaders on a fresh segment can land an EMPTY generation over a thousand ids, under
-    // DEFAULT options, because `before` reads as "no row yet".
+    // DEFAULT options, because `before` reads as "no row yet". This case does not reach the fence: its racer fires
+    // from the object PUT, after `nextGeneration` has chosen, so both loaders take the same number and the
+    // write-once collision stops the loser first. The fence itself is pinned in `publish-absence-fence.test.ts`.
     const w = world();
     let raced = false;
     const racing = new Proxy(w.storage, {

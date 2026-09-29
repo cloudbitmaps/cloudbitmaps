@@ -20,10 +20,11 @@ on:
   # …and a 60s smoke run when THIS FILE changes, which is the only case the paragraph above leaves uncovered.
   #
   # Without it, no check on a pull request runs a single line of this workflow: it has no other PR trigger, and
-  # the only other consumer of upload-artifact is a job gated on `workflow_dispatch`. A Dependabot bump of the
-  # actions pinned here (actions/cache, actions/upload-artifact) would go green on every other check, which
-  # means "the rest of CI still works", not "this change is fine", and a broken bump would sit here until a
-  # nightly failed, or worse, until one silently stopped fuzzing.
+  # the only other consumer of upload-artifact is a job gated on `workflow_dispatch`. A Dependabot bump of
+  # upload-artifact would go green on every other check, which means "the rest of CI still works", not "this
+  # change is fine", and a broken bump would sit here until a nightly failed, or worse, until one silently stopped
+  # fuzzing. actions/cache/restore and /save do run on every PR, through the docker-images actions, but not with
+  # this workflow's keys or its `if: always()` save.
   #
   # Scoped to this path alone: the point is to cover edits to the workflow, not to make fuzzing a per-PR gate.
   # The reasoning above holds: fuzzing is a time-budgeted campaign, not a pass/fail gate.

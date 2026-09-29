@@ -192,8 +192,8 @@ describe('crafted (hostile) index — reader-side guards', () => {
   });
 
   // The next three exist because an "is in a registry" check can be "equals one constant" with extra steps.
-  // Each one would also pass against a reader that compares with a single constant EXCEPT where noted, so read
-  // them together rather than individually.
+  // Each one would also pass against a reader that compares with a single constant, so read them together rather
+  // than individually.
 
   it.each([...KNOWN_PAYLOAD_CODEC_IDS])('accepts registered payload_codec_id %i', async (id) => {
     // Written as a loop over the registry rather than against the literal `1`, so that registering a second

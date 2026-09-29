@@ -272,8 +272,8 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       }
     });
 
-    // A reading that passes a link's target wherever `](` begins one passes each of these, and each shows its
-    // digits: a target is passed only when the list names it, whole.
+    // A reading that exempts a link's target wherever `](` begins one lets each of these through, and each shows
+    // its digits: a target is exempt only when the list names it, whole.
     it.each([
       ['a code span holding a link', ' It costs `[x](85,509)` a month.'],
       ['escaped brackets', ' It costs \\[x\\](85,509) a month.'],
@@ -632,7 +632,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
       ['ninety per  cent less'],
       ['ninety per\u00A0\u00A0cent less'],
       ['ninety per- cent less'],
-      // Compound numbers, folds, fractions and shares, in words.
+      // Multiples, folds, fractions and shares, in words, compound numbers among them.
       ['a ten-fold saving'],
       ['sixty times as much'],
       ['sixty-five times as much'],
