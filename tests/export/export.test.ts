@@ -323,11 +323,11 @@ describe('store.exportSegments', () => {
   });
 
   it('enumerates the registry, so a segment loaded without one is absent rather than half-exported', async () => {
-    // What replaced the `candidates` option. Every load that is given a registry publishes a row, so the
-    // registry is a complete index of the loaded segments and enumeration cannot miss one. A load with NO
-    // registry writes an object nothing points at: still readable by any roaring library (the format's own
-    // promise), but not part of this store's set, so it is omitted — and omitted *cleanly*, not recorded as a
-    // failure, because it was never enumerated in the first place.
+    // Every load that is given a registry publishes a row, so the registry is a complete index of the loaded
+    // segments and enumeration cannot miss one. A load with NO registry writes an object nothing points at:
+    // still readable by any roaring library (the format's own promise), but not part of this store's set, so it
+    // is omitted — and omitted *cleanly*, not recorded as a failure, because it was never enumerated in the first
+    // place.
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
     await bulkLoadCrbmGeneration(storage, { segment: 'registered', generation: 0 }, [1, 2], {

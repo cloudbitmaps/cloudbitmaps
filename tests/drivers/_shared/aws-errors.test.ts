@@ -42,7 +42,7 @@ describe('shared AWS error helpers', () => {
     expect(isNetworkOrTimeout({ name: 'ValidationException' })).toBe(false);
   });
 
-  it('does NOT over-match deterministic messages that merely contain "time out" (regression)', () => {
+  it('does NOT over-match deterministic messages that merely contain "time out"', () => {
     // The classifier must not retry a deterministic ValidationException just because its message says
     // "timed out of range" — only timeout phrases anchored to a transport word count.
     expect(isNetworkOrTimeout(new Error('value timed out of range'))).toBe(false);

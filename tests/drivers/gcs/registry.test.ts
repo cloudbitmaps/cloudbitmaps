@@ -152,8 +152,8 @@ describe('GcsRegistryDriver — construction + GCS specifics', () => {
     });
   });
 
-  // The regression test for the blocker: without `resumable: false` the fake (like the emulator) ignores
-  // `ifGenerationMatch` entirely, so both writers "win" and one silently overwrites the other.
+  // Without `resumable: false` the fake (like the emulator) ignores `ifGenerationMatch` entirely, so both
+  // writers "win" and one silently overwrites the other.
   it('writes on the simple upload path, so the precondition actually fences', async () => {
     const storage = new FakeGcs();
     const [a, b] = [driverOver(storage), driverOver(storage)];

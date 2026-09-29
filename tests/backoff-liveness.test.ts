@@ -3,17 +3,17 @@ import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { seedSegment } from './helpers/loaded';
 
 /**
- * Regression for the backoff *premature-exit* bug, found by a stress test that drove many writers at one
- * contended registry row.
+ * Pins that a pending backoff keeps the process alive — the *premature-exit* failure. Many writers contending
+ * for one registry row are what make the backoff path run long enough to be the last handle standing.
  *
- * The default clock's `sleep` used to `unref()` its backoff timer. Because that `sleep` only ever backs a
- * caller-awaited, bounded retry, an unref'd timer let a short-lived process — CLI, Lambda, a bare script —
- * whose only remaining handle was that backoff timer exit 0 *mid-retry*, silently dropping the awaited
- * operation (neither a result nor a thrown error).
+ * The default clock's `sleep` only ever backs a caller-awaited, bounded retry, so its timer must stay ref'd. An
+ * `unref()`'d backoff timer lets a short-lived process — CLI, Lambda, a bare script — whose only remaining handle
+ * is that timer exit 0 *mid-retry*, silently dropping the awaited operation (neither a result nor a thrown
+ * error).
  *
  * The failure is a property of process lifetime, so it cannot be observed from inside the test runner (Vitest's
  * own event loop keeps the process alive, so even an unref'd timer still fires). We therefore assert the
- * *mechanism* the fix guarantees — the default clock's backoff timer stays ref'd — by watching whether `unref`
+ * *mechanism* that prevents it — the default clock's backoff timer stays ref'd — by watching whether `unref`
  * is called on the timer the real backoff creates.
  *
  * WHAT DRIVES THE BACKOFF. The user of `Clock.sleep` is the driver transient-retry loop (`withRetry`, wrapped

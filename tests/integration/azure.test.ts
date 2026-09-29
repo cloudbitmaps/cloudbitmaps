@@ -23,10 +23,11 @@ import type { GenKey } from '@/core/ports';
 /**
  * A keyspace unique to THIS run.
  *
- * Every prefix below is numbered from a counter that restarts at 0, so a second run against the same LIVE
- * container replays the same write-once keys and fails with `WriteConflictError: generation already exists`
- * — 78 failures that read exactly like a real write-once regression rather than like a dirty container. CI
- * never saw it because each job gets fresh containers; every local re-run did.
+ * Every prefix below is numbered from a counter that restarts at 0. Under a fixed root, a second run against
+ * the same LIVE container would replay the same write-once keys and fail with
+ * `WriteConflictError: generation already exists` — failures that read exactly like a real write-once
+ * regression rather than like a dirty container. CI would never see them, because each job gets fresh
+ * containers; every local re-run would.
  *
  * `GITHUB_RUN_ID` plus `GITHUB_RUN_ATTEMPT` in CI, a random token locally. The attempt matters: re-running
  * a failed job keeps the same run id, so the id alone would replay the very keys that just failed.
@@ -64,8 +65,8 @@ beforeAll(async () => {
 
 // The Azure registry must pass the SAME registry contract as memory / LocalFs / S3 — against real blob
 // conditions (`ifNoneMatch: '*'` for create-only, `ifMatch: <etag>` for CAS) via Azurite. This is what makes
-// an Azure-only topology viable: before it, an Azure user had to point the registry at a separate AWS-hosted
-// table and hold an AWS account purely to store which generation is current.
+// an Azure-only topology viable: the pointer to the current generation lives in the same container as the
+// objects, so an Azure user needs no second service, and no second cloud account, to store it.
 let rn = 0;
 const ticking = (): (() => number) => {
   let t = 1_000;
@@ -140,10 +141,10 @@ describe('AzureBlobStorageDriver specifics (Azurite)', () => {
   });
 
   it('two CONCURRENT staged writers to one key: exactly one wins, its bytes commit intact (block-id isolation)', async () => {
-    // Regression for the block-id collision: block ids must be unique per writer, else two racing staged
-    // uploads to the same blob name overwrite each other's pooled uncommitted blocks and the winning commit
-    // could reference an INTERLEAVED mix of both payloads (corrupt blob, wrong-vs-returned-hash). With the
-    // per-sink nonce, each writer stages a disjoint id space → the winner commits only its own blocks.
+    // The block-id collision: block ids must be unique per writer, else two racing staged uploads to the
+    // same blob name overwrite each other's pooled uncommitted blocks and the winning commit can reference an
+    // INTERLEAVED mix of both payloads (corrupt blob, wrong-vs-returned-hash). With the per-sink nonce, each
+    // writer stages a disjoint id space → the winner commits only its own blocks.
     const staged = (): AzureBlobStorageDriver =>
       new AzureBlobStorageDriver({
         containerClient: container,

@@ -20,13 +20,13 @@ import { IntegrityError, TransientError, WriteConflictError } from '@/core/error
  * This fake implements the store port with the one property that matters: conditional writes that actually
  * fence. It is deliberately strict — a write whose precondition does not match the current version throws,
  * exactly as S3's 412, GCS's failed `ifGenerationMatch` and Azure's 409/412 do. A fake that accepted the
- * write would make the suite green while testing nothing, which is the failure mode this repo has hit before.
+ * write would make the suite green while testing nothing.
  *
- * **Strictness alone does not prove the fence, though, and that distinction cost us a blocker.** Every
- * sequential case is answered by the in-memory token check in `compareAndSwap` long before the store is
- * asked to fence anything, so this whole file once passed against a deliberately weakened fake that ignored
- * its `expect` argument entirely. `registryConcurrency` below is what closes that: it drives two registries
- * over one store at the same time, where the precondition is the only thing that can decide the winner.
+ * **Strictness alone does not prove the fence, though.** Every sequential case is answered by the in-memory
+ * token check in `compareAndSwap` long before the store is asked to fence anything, so the sequential cases
+ * pass even against a deliberately weakened fake that ignores its `expect` argument entirely.
+ * `registryConcurrency` below is what closes that: it drives two registries over one store at the same time,
+ * where the precondition is the only thing that can decide the winner.
  */
 class FakeObjectStore implements ObjectRegistryStore {
   readonly label = 'fake';
