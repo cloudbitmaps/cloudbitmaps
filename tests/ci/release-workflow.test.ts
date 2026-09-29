@@ -6,8 +6,8 @@ import { parse } from 'yaml';
 // Guards the SHAPE of the release workflow, which is a safety property and not a style preference.
 //
 // The shape can break with every other check green. `NPM_CONFIG_PROVENANCE: true` appears TWICE in the file,
-// once under the dry-run step and once under the real one, so an edit anchored on it can land a new job
-// BETWEEN the two publish steps, and YAML then re-parents `Publish (real)` into that job.
+// once under the dry-run step and once under the real one, so an edit anchored on it can land a job
+// (`github-release`, say) BETWEEN the two publish steps, and YAML then re-parents `Publish (real)` into it.
 //
 // Nothing else catches it. The file still parses, the job names are still right, and a shallow check that
 // lists job names and permissions passes. The failure appears only on a real tag: `github-release` has no

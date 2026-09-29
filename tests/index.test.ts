@@ -18,7 +18,7 @@ describe('public API', () => {
   // EVERY package is asserted, derived from the workspace rather than listed here.
   //
   // A hand-kept list drifts into a subset: a package it leaves out can sit at any version while the whole suite
-  // stays green, because no other test looks at it. The release workflow's tag check would catch it only at
+  // stays green, because no other test reads its version. The release workflow's tag check would catch it only at
   // tag-push time, after the approval, which is precisely the lateness this test exists to remove.
   //
   // The list is read off the filesystem so a sixth package is covered on the day it is created, rather than

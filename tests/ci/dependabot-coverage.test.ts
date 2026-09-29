@@ -9,9 +9,9 @@ import { ROOT, compositeActionFiles } from '../helpers/workflows';
  *
  * WHY THIS EXISTS. `pnpm-workspace.yaml` lists `packages/*`, so `fuzz/` — which installs with
  * `--ignore-workspace` and carries its own `pnpm-lock.yaml` — is outside the root dependency graph entirely.
- * An npm entry for `directory: /` does not reach it, and without one for `/fuzz`, `@jazzer.js/core` is bumped
- * by nothing: the one corner of the repo whose job is finding memory-safety bugs runs the oldest
- * dependencies, and nothing says so.
+ * An npm entry for `directory: /` does not reach it, and without one for `/fuzz`, `@jazzer.js/core` would be
+ * bumped by nothing: the one corner of the repo whose job is finding memory-safety bugs would run the oldest
+ * dependencies, and nothing would say so.
  *
  * The rule is derived from what is on disk rather than from a list someone maintains: find the lockfiles, and
  * require a Dependabot directory for each. A future `bench/` or `examples/` with its own install is covered

@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
  *
  * This repo's rule, from `import-boundaries.test.ts`: a rule that never matched would be a silent gap, and
  * `pnpm lint` passing proves nothing about it. The detector behind the SDK-free gate earns the same
- * treatment: a false positive or a false negative in it leaves the gate green either way, so each form it
+ * treatment: a green gate does not show whether it misses a specifier or would match a comment, so each form it
  * must and must not match is planted here.
  *
  * The false positive is the one worth naming: esbuild preserves JSDoc on class members, and this repo

@@ -13,9 +13,10 @@ import { ROOT, compositeActionFiles, jobs, readYaml, type Job } from '../helpers
 
 // Every place that runs a container must absorb a registry throttle, and each does it through one shared helper.
 //
-// Registries throttle: nine simultaneous pulls from a shared GitHub-runner IP provoke Docker Hub's quota, and
-// AWS's mirror answers with a per-second rate limit. The helper pulls with backoff; a script that `docker run`s an
-// ECR image without it can die on `toomanyrequests: Rate exceeded` seconds in, having tested nothing.
+// Registries throttle, in two shapes. Docker Hub's anonymous quota, which the shared GitHub-runner IPs sit over,
+// lasts hours, so the images come from other registries instead. AWS's mirror answers a burst with a per-second
+// rate limit, which backoff absorbs: the helper pulls with backoff, and a script that `docker run`s an ECR image
+// without it can die on `toomanyrequests: Rate exceeded` seconds in, having tested nothing.
 //
 // The trap is that `docker run` pulls IMPLICITLY on a cache miss. There is no pull step to notice missing, so
 // "we don't pull here" is never true — the pull happens either way, and only an explicit one can be retried.

@@ -2,8 +2,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  // Build output now lives per-package (`packages/*/dist`) after the workspace split, plus the
-  // git-ignored fuzz bundle — none of it is source, so keep the linter off it.
+  // Build output lives per-package (`packages/*/dist`), plus the git-ignored fuzz bundle — none of it is
+  // source, so keep the linter off it.
   {
     ignores: [
       'dist',
@@ -69,7 +69,7 @@ export default tseslint.config(
           message: 'core/ must take time via an injected Clock.',
         },
       ],
-      // The import-boundary rules (they used to live in dependency-cruiser). ESLint REPLACES a rule's options
+      // The import-boundary rules. ESLint REPLACES a rule's options
       // when a later block sets the same rule for the same file — it does not merge them — so each block below
       // owns a DISJOINT set of files and carries the complete list that applies there.
       // `tests/arch/import-boundaries.test.ts` proves each rule fires (a check that cannot fail is not a check).

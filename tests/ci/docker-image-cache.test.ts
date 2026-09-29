@@ -17,9 +17,10 @@ import { ROOT, jobs, packageScripts, readYaml, type Job, type Step } from '../he
 
 /**
  * The images CI runs are kept in the Actions cache, so that a registry which refuses or throttles a pull fails a run
- * only when no copy is kept. Registries do both: quay.io refuses anonymous pulls of MinIO outright, and
- * public.ecr.aws can answer `Data limit exceeded` to the RSS gate's pull of `node:22`. With no copy kept, either
- * fails every run that needs the image, on `main` and on every PR alike.
+ * only when no copy is kept. Registries do both: quay.io refuses anonymous pulls of MinIO outright, which is why
+ * MinIO comes from Chainguard, and public.ecr.aws can answer `Data limit exceeded` to the RSS gate's pull of
+ * `node:22`. A refusal like either, with no copy kept, fails every run that needs the image, on `main` and on every
+ * PR alike.
  *
  * These drive scripts/lib/docker-pull.sh, scripts/ci-backend-images.sh and the two composite actions' own shell
  * against a stand-in `docker` that records what it was asked, keeps its "images" as files, and refuses the argument
@@ -243,7 +244,7 @@ describe('an image CI runs is kept in the Actions cache, and a registry is asked
   const THIS_MONTH = () => ({ DOCKER_IMAGE_CACHE: w.cache, DOCKER_IMAGE_CACHE_HIT: 'true' });
   const OLDER = () => ({ DOCKER_IMAGE_CACHE: w.cache, DOCKER_IMAGE_CACHE_HIT: 'false' });
 
-  it('pulls as before, and keeps nothing, with no cache set', () => {
+  it('pulls from the registry, and keeps nothing, with no cache set', () => {
     expect(w.run(pull(TAG)).code).toBe(0);
     expect(w.calls()).toEqual([`pull -q ${TAG}`]);
     expect(existsSync(w.cache)).toBe(false);

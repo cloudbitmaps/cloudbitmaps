@@ -3,8 +3,9 @@ import type { ChunkRef, StorageChunkSource, SegmentRef } from '@/core/ports';
 import { seedSegment } from './helpers/loaded';
 
 /**
- * Pins that a pending backoff keeps the process alive — the *premature-exit* failure. Many writers contending
- * for one registry row are what make the backoff path run long enough to be the last handle standing.
+ * Pins the mechanism that keeps a process alive through a pending backoff, against the *premature-exit* failure.
+ * Every transient retry leaves a backoff timer pending, and when the fault repeats (a backend throttling a hot
+ * key, say) that timer can be the last handle the process holds.
  *
  * The default clock's `sleep` only ever backs a caller-awaited, bounded retry, so its timer must stay ref'd. An
  * `unref()`'d backoff timer lets a short-lived process — CLI, Lambda, a bare script — whose only remaining handle

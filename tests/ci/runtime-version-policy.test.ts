@@ -26,8 +26,7 @@ const { findNodeFloorClaims, findPinnedNodeVersions, satisfiesFloor, compareVers
 /**
  * Minimum supported Node, as `engines` declares it.
  *
- * `22` because Node 20 reached EOL on 2026-04-30 and shipping an EOL runtime is a security liability as well
- * as a tooling one (dependency-cruiser 18 already declares `^22 || ^24`).
+ * `22` because Node 20 reached EOL on 2026-04-30, and shipping an EOL runtime is a security liability.
  *
  * `.12` because the packages are ESM-only and a CommonJS consumer therefore reaches them through Node's
  * `require(esm)`, which landed in 22.12. Measured, not assumed: 22.11.0 throws `ERR_REQUIRE_ESM`, 22.12.0

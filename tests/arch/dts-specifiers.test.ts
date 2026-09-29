@@ -9,9 +9,9 @@ import { createRequire } from 'node:module';
  * so a form the scanner misses is a form the build does not fix AND the gate does not flag: the silent-`any`
  * failure ships with everything green.
  *
- * A bare regex inlined separately in both files can drift apart, miss a form or read a comment as code, and
- * the gate is green either way, so every form the scanner must and must not match is planted here. The false
- * positive is the one worth naming, because the SDK gate guards the identical class: tsc preserves JSDoc into
+ * A bare regex inlined separately in both files can drift apart, miss a form or read a comment as code, and a
+ * green gate does not show it, so every form the scanner must and must not match is planted here. The false
+ * positive is the one worth naming, as it is for the SDK-free gate's detector: tsc preserves JSDoc into
  * the `.d.ts`, so a scanner that reads comments fails the gate on a doc-comment showing a relative import,
  * with an error asserting something false, and the build silently rewrites that comment, editing published
  * documentation. The remedy a contributor reaches for is to water the comment down, which is the erosion

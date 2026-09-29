@@ -5,7 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guards `scripts/leak-scan.cjs` — the script that decides whether a tree is safe to make public. Nothing else
-// in the gate protects it, so each defect it can have is planted here, in both directions:
+// in the gate protects it, so the false positives and false negatives it must avoid are planted here, in both
+// directions:
 //
 //   1. FALSE POSITIVE — `const token = crypto.randomUUID();` is a call, not a "hardcoded secret literal",
 //      although the callee is 17 characters of otherwise-legal literal characters. Code that assigns a
@@ -183,8 +184,8 @@ describe('leak-scan', () => {
   // THE EXEMPTION IS SCOPED TO JS/TS, and this block is why. Applied everywhere, the property-read exemption
   // stops catching real secret shapes: outside a JS-like language the closer set `[),;}\]]` is wrong, because
   // `,` and `;` SEPARATE VALUES in shell, Makefiles, Dockerfiles, .env, .ini, .toml, SQL, CSV and connection
-  // strings, while `)` and `}` turn up in ordinary prose. The rule without the exemption catches each line
-  // below, and the rule with it misses each one, so each fails if the scoping goes.
+  // strings, while `)` and `}` turn up in ordinary prose. The rule for other file types, which has no exemption,
+  // catches each line below, and the JS/TS rule, which has it, misses each one, so each fails if the scoping goes.
   describe('still flags an unquoted dotted secret outside JS/TS (the scoping of the exemption)', () => {
     it.each([
       // `Password=…;` is the canonical spelling of an ADO.NET connection-string secret; `;` is mandatory.
