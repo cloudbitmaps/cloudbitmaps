@@ -40,7 +40,7 @@ describe('yieldEvery', () => {
 
   it('prefers yieldNow, and falls back to sleep(1) — never sleep(0) — on a clock without it', async () => {
     const calls: string[] = [];
-    const modern = yieldEvery(
+    const withYield = yieldEvery(
       clockWith({
         yieldNow: () => {
           calls.push('yieldNow');
@@ -53,14 +53,14 @@ describe('yieldEvery', () => {
       }),
       1,
     );
-    await modern();
+    await withYield();
     expect(calls).toEqual(['yieldNow']);
 
-    // A Clock written before `yieldNow` existed still satisfies the interface — the member is optional. It must
+    // A Clock without `yieldNow` still satisfies the interface — the member is optional. It must
     // degrade to something that genuinely yields. `sleep(1)` is a real timer; `sleep(0)` is contractually a
     // microtask and would silently reinstate the bug.
     calls.length = 0;
-    const legacy = yieldEvery(
+    const withoutYield = yieldEvery(
       clockWith({
         sleep: (ms) => {
           calls.push(`sleep(${ms})`);
@@ -69,7 +69,7 @@ describe('yieldEvery', () => {
       }),
       1,
     );
-    await legacy();
+    await withoutYield();
     expect(calls).toEqual(['sleep(1)']);
   });
 

@@ -17,7 +17,7 @@ const CORE = path.join(ROOT, 'packages', 'core', 'src');
 /**
  * Every package's `src`, derived — the gate named two while the workspace had five, so 18 files in the
  * driver packages were unchecked and its own `describe` ("no circular imports under packages/*\/src") was
- * describing more than it did. Deriving is also how the split stopped costing edits elsewhere.
+ * describing more than it did. Deriving is also how adding a package costs no edit here.
  */
 const PACKAGE_SRCS = readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
   .filter((e) => e.isDirectory())

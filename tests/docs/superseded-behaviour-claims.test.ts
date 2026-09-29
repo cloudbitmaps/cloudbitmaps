@@ -50,7 +50,7 @@ const EXTS = [
  * line cannot see any of it: whether a retired claim is caught then depends on how long the preceding words
  * happen to be, which is not a property anyone controls.
  *
- * `vocabulary-damage.test.ts` learned this first. Carried here, and to `unreleased-install-caveat`. Here it crosses
+ * `vocabulary-damage.test.ts` learned this first, and it is carried here. Here it crosses
  * one line end at most: a sentence does not run on past a blank line, and a gap that did would join two copies of
  * a claim in two paragraphs into one hit.
  */

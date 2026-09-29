@@ -34,7 +34,7 @@ Map the handful you chart to counters/histograms:
 import { metrics as otel } from '@opentelemetry/api';
 import { CloudRoaring } from '@cloudbitmaps/roaring';
 
-const meter = otel.getMeter('cloud-roaring');
+const meter = otel.getMeter('cloudbitmaps');
 const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
 const cacheHit = meter.createCounter('cloudroaring.cache.hits');
 const cacheMiss = meter.createCounter('cloudroaring.cache.misses');
@@ -97,7 +97,7 @@ gauge. Because the library owns the objects, the grounded report uses each segme
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
 
-const meter = otel.getMeter('cloud-roaring');
+const meter = otel.getMeter('cloudbitmaps');
 const monthlyUsd = meter.createObservableGauge('cloudroaring.cost.monthly_usd');
 const shareOfRedis = meter.createObservableGauge('cloudroaring.cost.share_of_redis');
 // What the Redis you would otherwise run for this store costs a month: your figure, not the library's.

@@ -83,12 +83,12 @@ describe('public API', () => {
     ] as const) {
       expect(typeof seg[method]).toBe('function');
     }
-    // The write verbs are gone with the warm tier — data enters a segment as a whole generation. Asserted so a
-    // re-introduction has to be deliberate rather than accidental (an `add` that quietly returned would be the
-    // worst possible regression: it would look like it worked).
-    for (const gone of ['add', 'addMany', 'remove', 'removeMany', 'claimMany']) {
-      expect(seg).not.toHaveProperty(gone);
-      expect((seg as unknown as Record<string, unknown>)[gone]).toBeUndefined();
+    // A handle has no per-id write — data enters a segment as a whole generation. Asserted so a per-id verb has
+    // to be added deliberately rather than by accident (an `add` that quietly returned would be the worst
+    // possible regression: it would look like it worked).
+    for (const verb of ['add', 'addMany', 'remove', 'removeMany', 'claimMany']) {
+      expect(seg).not.toHaveProperty(verb);
+      expect((seg as unknown as Record<string, unknown>)[verb]).toBeUndefined();
     }
     expect(store()).not.toHaveProperty('compact');
   });
@@ -99,7 +99,7 @@ describe('public API', () => {
       expect(() => cr.segment(bad)).toThrow(ValidationError);
     }
     expect(() => cr.segment('ok', { namespace: '' })).toThrow(ValidationError);
-    // Everything that used to be refused is now an ordinary name, escaped at the boundary.
+    // Everything else is an ordinary name, escaped at the boundary.
     for (const ok of ['a/b', '../etc', 'a b', 'a#b', '.hidden', 'con', '100%', 'user@example.com'])
       expect(() => cr.segment(ok)).not.toThrow();
   });

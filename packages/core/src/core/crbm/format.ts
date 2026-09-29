@@ -26,7 +26,7 @@ export const FOOTER = {
   indexLength: 8, // u64
   indexCrc32c: 16, // u32
   flags: 20, // u32
-  payloadCodecId: 24, // u16 — was `roaringSerializationId`; same offset, same width, wider meaning
+  payloadCodecId: 24, // u16 — which codec wrote the chunk payloads
   elementWidth: 26, // u8
   containerCodec: 27, // u8
   versionMajor: 28, // u8
@@ -70,12 +70,10 @@ export const ELEMENT_WIDTH_32 = 32;
  * see the `.crbm` format section of the API reference). This field is what lets one container hold either, the same way ZIP tags each member
  * with a compression method.
  *
- * **Why this is not named `roaringSerializationId` any more.** It was, and the name was a trap waiting for the
- * `1.0` format freeze. A second codec is genuinely expected — `soaring` is a planned Roaring *variant*, so its
- * serialized bytes are unlikely to be roaring-portable, and it lands *after* `1.0`. A field frozen under a
- * codec-specific name cannot be reinterpreted later without a major format version, so generalizing it is a
- * one-line change now and an expensive one after the freeze. The byte layout is untouched: same offset (24),
- * same width (u16), same golden corpus.
+ * **A codec id, not a roaring-specific one.** A second codec is genuinely expected — `soaring` is a planned
+ * Roaring *variant*, so its serialized bytes are unlikely to be roaring-portable, and it lands *after* the `1.0`
+ * format freeze. A field frozen under a codec-specific meaning could not be reinterpreted later without a major
+ * format version.
  *
  * **Ids are permanent once published.** Add to {@link KNOWN_PAYLOAD_CODEC_IDS} when a codec ships; never
  * reuse or renumber. Ids are deliberately *not* pre-allocated for codecs that do not exist — a reserved number
@@ -86,8 +84,8 @@ export const PAYLOAD_CODEC_ROARING_PORTABLE = 1;
 /**
  * Every payload codec id this reader can decode.
  *
- * The reader validates membership rather than equality with a single constant. That is the whole point of the
- * generalization: an unknown id is rejected with a typed error naming it, so an old reader meeting a
+ * The reader validates membership rather than equality with a single constant. That is the whole point of an
+ * id registry: an unknown id is rejected with a typed error naming it, so an old reader meeting a
  * future-codec generation **fails closed** — the correct direction, and the reason a store built on one codec
  * can never silently misread another's bytes as its own. (The homogeneity contract means one store is one
  * codec, so meeting a foreign generation implies misconfiguration, and a loud rejection is exactly what you
@@ -128,7 +126,7 @@ export const MAX_CHUNK_CARDINALITY = 0x1_0000;
 export const CRC32C_BYTES = 4;
 
 /**
- * v1 AEAD framing sizes (AES-256-GCM), fixed by the format exactly like the roaring serialization id — a
+ * v1 AEAD framing sizes (AES-256-GCM), fixed by the format exactly like the payload codec id — a
  * different cipher is a new format version. An encrypted chunk payload is stored as `nonce ‖ ciphertext ‖ tag`;
  * the encrypted **index**'s nonce/tag live in the footer's reserved `indexNonce`/`indexTag` slots. Matches
  * {@link FOOTER.indexNonce} (12 B) and {@link FOOTER.indexTag} (16 B).

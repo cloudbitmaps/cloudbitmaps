@@ -873,7 +873,7 @@ dependency of its own:
 
 ```ts
 import { metrics as otel } from '@opentelemetry/api';
-const meter = otel.getMeter('cloud-roaring');
+const meter = otel.getMeter('cloudbitmaps');
 const storageBytes = meter.createCounter('cloudroaring.storage.bytes');
 const cacheHits = meter.createCounter('cloudroaring.cache.hits');
 
@@ -1442,7 +1442,7 @@ re-scans the same registry 24 times. Match the cadence to the granularity of you
 want the deletion to feel. A fleet scan is a billed `LIST` over the registry prefix — the
 default `'fleet'` scan costs what the fleet *holds*; `scan: 'index'` reads only the due buckets of the **due
 index** and costs what is *expiring*. The index is a fast path, not the source of truth: each candidate's live
-row is re-read before anything is decided, and a policy written before the index existed has no pointer, so run
+row is re-read before anything is decided, and a policy whose pointer write failed has no pointer, so run
 the `'fleet'` scan periodically as the repair pass (`lookbackBuckets`, default 7, is how many past days a fast
 scan also reads so a sweep that did not run leaves nothing stranded).
 

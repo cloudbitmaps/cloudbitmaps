@@ -3,17 +3,13 @@ import { ValidationError } from '@/core/errors';
 import { validateSegmentRef } from '@/core/validate';
 import { encodeNameForKey, encodeNameForPath } from '@/core/name-codec';
 
-// The validation contract, after the character allowlist was removed.
-//
-// This file replaces `name-grammar-colons.test.ts`, which pinned a grammar that no longer exists. That file
-// asserted things like "still refuses a leading colon" and "%, /, \\ and .. stay out" — every one of which is
-// now wrong on purpose. The encoding is what makes them safe (`core/name-codec.ts`); validation's remaining
-// job is size.
+// The validation contract. There is no character allowlist: `:leading`, `100%`, `a/b` and `..` are all
+// ordinary names, and the encoding is what makes them safe (`core/name-codec.ts`). Validation's job is size.
 
 const ok = (segment: string): void => validateSegmentRef({ segment });
 
 describe('a name is any non-empty string', () => {
-  it('accepts everything the old grammar refused', () => {
+  it('accepts names an allowlist would refuse', () => {
     for (const name of [
       'dedup:2026-08-01',
       ':leading',
@@ -58,8 +54,7 @@ describe('the two refusals no encoding can fix', () => {
   });
 
   it('measures length on the ENCODED form, because that is what a key has to hold', () => {
-    // 256 plain characters fit; 257 do not — unchanged from the old grammar, so nothing that was legal
-    // becomes illegal.
+    // 256 plain characters fit; 257 do not.
     expect(() => ok('a'.repeat(256))).not.toThrow();
     expect(() => ok('a'.repeat(257))).toThrow(ValidationError);
 

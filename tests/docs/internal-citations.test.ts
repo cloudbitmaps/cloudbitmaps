@@ -235,8 +235,8 @@ describe('no pointer the public cannot reach', () => {
     expect(files).toContain('CHANGELOG.md');
     expect(files.some((f) => f.startsWith(join('packages', 'core', 'src')))).toBe(true);
     expect(files.some((f) => f.startsWith(join('packages', 'roaring', 'src')))).toBe(true);
-    // The three driver packages publish `.d.ts` exactly like the two above, and the split created them with
-    // a citation already in one — so they are named here rather than left to the walk. A guard that reaches
+    // The three driver packages publish `.d.ts` exactly like the two above, and one carried a citation from
+    // its first commit — so they are named here rather than left to the walk. A guard that reaches
     // a tree only by accident stops reaching it the day the walk changes.
     for (const pkg of ['s3', 'gcs', 'azure-blob']) {
       expect(

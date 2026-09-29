@@ -396,8 +396,9 @@ chunks it needs.
 - **One backend per service, carrying both halves.** `MemoryStorage`, `LocalFsStorage`, `S3Storage`, `GcsStorage`
   and `AzureBlobStorage` each keep the generations and the registry pointer in the same store, so a deployment needs
   one bucket and no second database.
-- **One write path, `store.load()`.** It takes the next generation number, writes one immutable object, refuses an
-  empty result over a non-empty segment, publishes forward-only, and collects what the publish superseded.
+- **Loading, `store.load()`.** It takes the next generation number, writes one immutable object, refuses an empty
+  result over a non-empty segment, publishes it, and collects the generations the publish superseded, keeping one
+  by default. The `*Into` verbs and a subject erasure write generations the same way.
 - **Reads.** `has`, `count` (summed from the index, with no payload reads), `iterate`, chunk-skipping `intersect`
   with `exclude`, `union` and `andNot`; and `intersectInto`, `unionInto` and `andNotInto`, which write their result
   as a new generation of a destination, under the same empty-result guard as a load.

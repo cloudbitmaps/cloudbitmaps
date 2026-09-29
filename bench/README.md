@@ -64,7 +64,7 @@ rather than local disk. It has paid one of them:
    to upload multipart. Still owed: it needs a run from inside the region.
 2. **Cold intersect latency** — wall-clock for a chunk-skipping `A ∩ B` that has to fetch from the object store.
    Still owed, for the same reason.
-3. **The single-bucket bill** — the registry pointer now lives in the same bucket as the data, so resolving a
+3. **The single-bucket bill** — the registry pointer lives in the same bucket as the data, so resolving a
    generation costs an object GET and advancing one costs a conditional PUT. **Paid** by its first publishable
    run, [`2026-09-23-94416`](calibration/2026-09-23-94416.md), from a laptop. A request count, and so the bill for
    requests, does not depend on where the client is, with one exception that run found: an intersect slower than

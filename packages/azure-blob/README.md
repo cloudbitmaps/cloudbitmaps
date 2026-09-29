@@ -53,8 +53,8 @@ of values. Need them apart? This package also exports the two drivers and their 
 ## What this package is
 
 These drivers move opaque payload bytes, so they are codec-agnostic: the same package serves every codec
-flavor. That is why storage is a package rather than a subpath of one — as a subpath, each flavor needed a
-re-export barrel per service, and the count multiplied with every codec added.
+flavor. That is why storage is a package rather than a subpath of one — as a subpath, each flavor would need a
+re-export barrel per service, and the count would multiply with every codec added.
 
 Built against `@cloudbitmaps/core/driver-kit`, the declared contract for a driver — the same surface a
 third-party driver would use.

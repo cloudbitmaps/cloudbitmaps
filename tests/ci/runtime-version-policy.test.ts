@@ -53,9 +53,9 @@ const EXPECTED_MATRIX = [22, 24];
 /**
  * The root manifest plus EVERY package manifest, derived rather than listed.
  *
- * This was a hardcoded three — root, core, roaring — and stayed three through the split to five packages.
- * A driver package could therefore advertise `engines.node: ">=20"`: an EOL major, and one below 22.12
- * where a CommonJS consumer cannot `require()` these ESM packages at all, with the whole suite green.
+ * Derived, because a hardcoded list goes stale the day a package is added: a new driver package could then
+ * advertise `engines.node: ">=20"` — an EOL major, and one below 22.12 where a CommonJS consumer cannot
+ * `require()` these ESM packages at all — with the whole suite green.
  */
 const MANIFESTS = [
   'package.json',

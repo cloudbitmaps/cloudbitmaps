@@ -5,7 +5,7 @@
  * object store, behind one registry pointer per segment. You wire storage **once**, as a single config object:
  * pass a **backend** as `storage` — `S3Storage`, `GcsStorage`, `AzureBlobStorage`, `LocalFsStorage` or
  * `MemoryStorage` — and it carries both halves, the generations and the pointer, from one bucket and one
- * prefix. Add a `keystore` for encryption-at-rest / crypto-shred.
+ * prefix. Add `encryption: { keystore }` for encryption-at-rest / crypto-shred.
  *
  * Two narrower shapes are also accepted for `storage`: a bare {@link IStorageDriver}, which has no pointer and
  * so resolves generations by list-scanning storage (**cleartext and read-only**), and an already-built
@@ -281,8 +281,8 @@ export interface EncryptionOptions {
 /**
  * {@link CloudRoaringOptions.retry} — a partial {@link RetryPolicy} plus the retry callback.
  *
- * Partial on purpose: the flat form this replaces took a **whole** `RetryPolicy`, so tuning one field meant
- * restating all five. Anything omitted here keeps its {@link DEFAULT_RETRY_POLICY} value.
+ * Partial on purpose, so tuning one field does not mean restating all five. Anything omitted here keeps its
+ * {@link DEFAULT_RETRY_POLICY} value.
  */
 export interface RetryOptions extends Partial<RetryPolicy> {
   /** Observability: called before each transient-retry backoff wait. */
@@ -702,8 +702,8 @@ export class CloudRoaring {
     // Resilience on by default: wrap the source so transient faults retry with jittered backoff. `false` opts
     // out (e.g. the injected client already retries); a RetryPolicy tunes it.
     if (options.retry !== false) {
-      // The flat form took a WHOLE RetryPolicy, so tuning one field meant restating all five. The grouped form
-      // takes a partial and fills the rest from the default — `{ onRetry }` alone is now a legal, useful value.
+      // The policy is a partial, and the rest is filled from the default — so tuning one field does not mean
+      // restating all five, and `{ onRetry }` alone is a legal, useful value.
       //
       // Field by field with `??`, NOT `{ ...DEFAULT, ...overrides }`. A spread lets a key that is *present with
       // value `undefined`* overwrite the default instead of falling back to it, and `exactOptionalPropertyTypes`
@@ -712,7 +712,8 @@ export class CloudRoaring {
       // takes the `setTimeout(resolve, NaN)` path, which Node coerces to 1 ms, so bounded jittered backoff
       // silently became a ~1 ms hot retry loop with the read still succeeding and the retry metric still
       // emitting. That is the thundering-herd and denial-of-wallet protection gone with nothing to see.
-      // Making the policy a `Partial` is what put this in reach: every one of these was a compile error before.
+      // A `Partial` policy is what puts this in reach: were a whole `RetryPolicy` required, each would be a compile
+      // error.
       const { onRetry: userOnRetry, ...ov } = options.retry ?? {};
       const policy: RetryPolicy = {
         maxAttempts: ov.maxAttempts ?? DEFAULT_RETRY_POLICY.maxAttempts,
@@ -786,7 +787,7 @@ export class CloudRoaring {
       throw new UnsupportedError(
         `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
           `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
-          `no longer a separate \`registry\` option to add.`,
+          `no separate \`registry\` option: a backend carries it.`,
       );
     }
     return {
@@ -943,10 +944,10 @@ export class CloudRoaring {
    * **Subject access (GDPR Art. 15 / CCPA right-to-know): which segments is this id a member of?**
    *
    * Enumerates the **registered** segments (via the store's own `registry`) and does a `has(id)` on each — no
-   * drivers to re-pass. Complete only over registered segments (every loaded segment has a row, so register the
-   * registry the loads used). There is deliberately **no `id → segments` reverse index** — that would tax every
-   * load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Requires a
-   * `registry` in the store config (throws {@link UnsupportedError} otherwise).
+   * drivers to re-pass. Complete only over registered segments (every loaded segment has a row, so build the
+   * store on the backend the loads used). There is deliberately **no `id → segments` reverse index** — that would
+   * tax every load for a rare request; this admin scan is `O(registered segments)` and touches no hot path. Needs
+   * a storage backend (throws {@link UnsupportedError} otherwise).
    */
   async subjectReport(
     id: number,
@@ -967,7 +968,7 @@ export class CloudRoaring {
     // GDPR Art. 15 entry point plausibly wired to end-user traffic, so resident memory must be O(budget), not
     // O(fleet size).
     const recs = await collectWithinBudget(
-      // A subject cannot be in a coordination row, and charging this request's budget for them would refuse a
+      // A subject cannot be in a due-index row, and charging this request's budget for them would refuse a
       // GDPR Art. 15 report for a reason unrelated to the subject.
       excludingReservedRows(registry.list(options.namespace)),
       budget,
@@ -1147,7 +1148,7 @@ export class CloudRoaring {
    * a handle carrying an expired `expiresAt` reads empty by a rule that lives on the handle, not the row.
    *
    * Not a lock: the answer can change the moment it returns. If it has to hold, use the fence built for that —
-   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a `registry`.
+   * `load`'s `guard`, or `expectFrom`/`expectToken` on a publish. Needs a storage backend.
    *
    * ```ts
    * if (!(await store.exists({ segment: 'users' }))) {
@@ -1179,7 +1180,7 @@ export class CloudRoaring {
    *
    * Yields `destroyed` tombstones and rows with `currentGen: null`, because a filtered enumeration that looks
    * complete is worse than an honest one — filter on `status`/`currentGen` yourself, or ask
-   * {@link CloudRoaring.exists} the narrower question. Needs a `registry`.
+   * {@link CloudRoaring.exists} the narrower question. Needs a storage backend.
    *
    * ```ts
    * for await (const s of store.segments({ namespace: 'active-daily' })) {
@@ -1367,8 +1368,8 @@ export class CloudRoaring {
    *
    * A value in the past is legal and means "eligible on the next sweep" — backfilling a policy onto existing
    * buckets is normal. A value below `MIN_EXPIRES_AT_MS` (2001-09-09) is rejected: it is almost certainly epoch
-   * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a `registry`
-   * in the store config (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
+   * **seconds**, which would read as long-expired and retire the segment on the next pass. Needs a storage
+   * backend (throws {@link UnsupportedError} otherwise), and refuses a crypto-shredded segment.
    */
   async setRetention(ref: SegmentRef, policy: RetentionPolicy): Promise<SetRetentionResult> {
     validateSegmentRef(ref);
@@ -1614,7 +1615,7 @@ export class CloudRoaring {
       throw new UnsupportedError(
         `${op} needs a storage backend — S3Storage, GcsStorage, AzureBlobStorage, LocalFsStorage or ` +
           `MemoryStorage. A bare IStorageDriver has no generation pointer to publish through, and there is ` +
-          `no longer a separate \`registry\` option to add.`,
+          `no separate \`registry\` option: a backend carries it.`,
       );
     }
     return this.registry;
@@ -1847,8 +1848,8 @@ type Materialize = (
  * **IDs must be integers in `[0, 2^32)`** (dense 32-bit). A non-integer / negative / out-of-range id
  * throws {@link ValidationError}.
  *
- * There is no `add`/`remove` on a handle: data enters a segment as a whole generation (`bulkLoadCrbmGeneration`,
- * or one of the `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
+ * A handle has no per-id write: data enters a segment as a whole generation (`bulkLoadCrbmGeneration`, or one
+ * of the `*Into` verbs), and leaves it the same way (`eraseSubject`, `dropSegment`).
  */
 export class Segment {
   private readonly metricsOn: boolean;
@@ -2252,15 +2253,15 @@ export class Segment {
 
 // ---------------------------------------------------------------------------------------------------
 // Re-export the whole codec-agnostic core so `@cloudbitmaps/roaring` stays the one name to know: every driver,
-// error, port, and helper an application needs is reachable from here exactly as it was before the family
-// split. (`@cloudbitmaps/core` arrives transitively — users never install it directly.)
+// error, port, and helper an application needs is reachable from here. (`@cloudbitmaps/core` arrives
+// transitively — users never install it directly.)
 // ---------------------------------------------------------------------------------------------------
 export * from '@cloudbitmaps/core';
 
 // ...with the codec-bound overrides layered on top. These three core entry points need a bitmap codec, which
 // core cannot default (it is codec-agnostic). Re-exporting them EXPLICITLY here shadows the same names from the
-// `export *` above, so every signature stays exactly as it was before the family split — e.g.
-// `bulkLoadCrbmGeneration(driver, key, ids)` still works with no options at all.
+// `export *` above, so an application never passes a codec — e.g. `bulkLoadCrbmGeneration(driver, key, ids)`
+// works with no options at all.
 export { bulkLoadCrbmGeneration, eraseIdFromSegment, loadSegment, runExport } from './codec-bound';
 
 // The roaring codec itself. `SafeBitmap` is public surface (`writeCrbmGeneration` takes them — the seed /

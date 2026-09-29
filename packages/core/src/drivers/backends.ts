@@ -50,8 +50,8 @@ export interface LocalFsStorageOptions {
  * A local-filesystem backend rooted at one directory: generations under `<root>/storage`, pointers under
  * `<root>/registry`.
  *
- * The layout is stated here rather than by the caller, which is the point — the two halves used to be two
- * paths a caller wrote out separately, and nothing stopped them naming different roots. It is also the layout
+ * The layout is stated here rather than by the caller, which is the point — two paths a caller wrote out
+ * separately could name different roots, and nothing would stop them. It is also the layout
  * the `export-segments` CLI expects, so a store built this way can be ejected without being told where to look.
  *
  * **It refuses a store written before the tier was renamed**, because the alternative is much worse than an

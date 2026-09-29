@@ -49,8 +49,7 @@ export type MetricEvent =
   | {
       readonly kind: 'intersect';
       /**
-       * Which chunk-aligned combine this was. **Optional for backward compatibility** — absent means
-       * `'intersect'`, which is all this event reported before `union`/`andNot` existed.
+       * Which chunk-aligned combine this was. **Optional** — absent means `'intersect'`.
        *
        * For `'union'` over its *include* operands alone, `skippedChunks` is 0 by construction — union reads
        * every chunk of every operand, so there is nothing to prune. It can still be non-zero when a union

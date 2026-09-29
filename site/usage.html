@@ -548,7 +548,7 @@ bill.redisCrossover.readsPerSec;</code></pre>
               <span class="rl-what">Schedule the retention sweep</span>
               <span class="rl-fig is-live">retireExpired()</span>
               <span class="rl-note">
-                The only scheduled work there is — no daemon, no compaction pass, no lifecycle worker. An
+                The only scheduled work there is — no daemon, no lifecycle worker. An
                 EventBridge rule, a Kubernetes <span class="m">CronJob</span> or a queue job all do; nothing
                 here starts a timer.
               </span>

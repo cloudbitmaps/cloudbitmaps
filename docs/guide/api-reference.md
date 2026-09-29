@@ -74,8 +74,8 @@ pointer — configured from one bucket and one prefix, which is what makes them 
 | `AzureBlobStorage` | `@cloudbitmaps/azure-blob` | `new AzureBlobStorage({ containerClient })` or `({ connectionString, container })` |
 
 **A backend comes from one of these five classes, or from `createBackend`.** A plain `{ storage, registry }` object is
-refused — it is also the shape of the free functions' deps, so before this it was possible to build a store
-from halves belonging to two *unrelated* stores, which constructed happily and then read as **empty** because
+refused — it is also the shape of the free functions' deps, so accepting it would let a store be built from
+halves belonging to two *unrelated* stores, which would construct happily and then read as **empty** because
 the pointer it consulted lived where nothing had been written.
 
 | function | what it is for |

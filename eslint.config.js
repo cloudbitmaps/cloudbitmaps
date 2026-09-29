@@ -117,9 +117,8 @@ export default tseslint.config(
     // The rest of @cloudbitmaps/core outside core/: the main entry, the driver-kit subpath, the local and
     // memory drivers, export, testing. core-never-imports-a-flavor + no cloud SDK anywhere.
     //
-    // There is no longer an exception for cloud subpaths, because core has none: the cloud drivers are their
-    // own packages. That makes this the stronger statement — core contains no cloud SDK reference at all,
-    // rather than none outside three directories — and it is why core has no optional peer dependencies left.
+    // There is no exception for cloud drivers, because core has none: they are their own packages. So core
+    // contains no cloud SDK reference at all, and has no optional peer dependencies.
     files: ['packages/core/src/**/*.ts'],
     ignores: ['packages/core/src/core/**'],
     rules: {
@@ -148,8 +147,8 @@ export default tseslint.config(
     // codec-agnostic claim false and force every flavor to carry every driver's dependencies.
     // EVERY package that is not core or a flavor, so a fourth service package is guarded the day it is
     // added rather than the day someone notices. Naming the three meant `packages/r2/src/**` matched no
-    // block at all and silently had no boundary rules — and the split's whole point is that adding a
-    // service package is cheap.
+    // block at all and silently had no boundary rules — and separate service packages exist so that adding
+    // one is cheap.
     files: ['packages/*/src/**/*.ts'],
     ignores: ['packages/core/src/**', 'packages/roaring/src/**'],
     rules: {
@@ -187,9 +186,8 @@ export default tseslint.config(
   {
     // @cloudbitmaps/roaring: SDK-free, and it does not name a driver package either.
     //
-    // The `ignores` for its cloud barrels is gone with the barrels themselves. A user installs the driver
-    // package they want alongside the flavor, so the flavor re-exporting one would put that SDK back into
-    // every install — which is the whole thing the split removes.
+    // A user installs the driver package they want alongside the flavor, so the flavor re-exporting one would
+    // put that SDK into every install — which is what separate driver packages exist to prevent.
     files: ['packages/roaring/src/**/*.ts'],
     rules: {
       'no-restricted-imports': [

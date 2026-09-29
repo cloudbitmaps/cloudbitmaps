@@ -36,7 +36,7 @@ Every command runs from the **repo root** — it is a pnpm workspace, and the ro
 
 ## Repo layout (a pnpm workspace of five packages)
 
-The `@cloudbitmaps` family split makes this repo a workspace
+The `@cloudbitmaps` family is five packages, so this repo is a workspace
 (`pnpm-workspace.yaml` → `packages/*`). Where code lives:
 
 | Path | Package | Holds |
@@ -247,7 +247,7 @@ text file. Ids a reader *can* resolve are fine and stay: the seven hard invarian
 - Tests live at the **repo root under `tests/`, mirroring the package source trees** (e.g.
   `packages/core/src/core/lru.ts` → `tests/core/lru.test.ts`), not co-located with source and not split per
   package — the `@/…` alias remap (see [Repo layout](#repo-layout-a-pnpm-workspace-of-five-packages)) keeps that
-  mirror intact across the split. Integration tests under `tests/integration/`. Property tests over loaded
+  mirror intact across the packages. Integration tests under `tests/integration/`. Property tests over loaded
   generations, and race tests for the write-then-publish path.
 - Pluggable drivers behind explicit interfaces; a driver **conformance suite**
   ([`packages/roaring/src/testing/conformance.ts`](packages/roaring/src/testing/conformance.ts)) every driver

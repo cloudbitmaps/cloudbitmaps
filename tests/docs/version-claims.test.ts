@@ -120,20 +120,19 @@ const FOREIGN_VERSIONS = new Map<string, string>([
 /**
  * The next minor, which pages may legitimately name as a FORWARD reference.
  *
- * While the storage packages are unpublished, every install block says so and names the release that fixes it
- * (see `unreleased-install-caveat.test.ts`). That is a true statement about a version that is not current, and
- * it is the one kind of non-current version this file must not treat as a stale badge.
+ * A page may say what lands in the next release and that it is not out yet. That is a true statement about a
+ * version that is not current, and it is the one kind of non-current version this file must not treat as a stale
+ * badge.
  *
  * It is computed, not allowlisted, which is what keeps it safe: `FOREIGN_VERSIONS` would exempt the string
- * `0.10.0` permanently, so a badge left reading `0.10.0` after `0.11.0` shipped would sail through — the exact
+ * `0.11.0` permanently, so a badge left reading `0.11.0` after `0.12.0` shipped would sail through — the exact
  * drift this file exists to catch. As a computed next-minor the exemption moves with the version and can only
  * ever excuse a reference to the release that has not happened yet. Once it ships it becomes `version` itself
- * and is checked normally, and the caveat naming it is force-removed by the other guard.
+ * and is checked normally.
  *
- * It is also scoped to the LINE carrying that caveat, not the page. Page-wide, a hero eyebrow reading
- * "roaring shipped · v0.10.0" — a release that is not on npm — passed while the footer badges still named the
- * release before, which is precisely the stale badge this file exists to catch. Every legitimate mention of the next
- * minor sits on a caveat line, so the narrow scope costs nothing.
+ * It is also scoped to the words beside the version, not the page: a hero eyebrow reading "roaring shipped ·
+ * v0.11.0", a release that is not out, must not pass because an unrelated "unreleased" sits somewhere else on the
+ * page. Every legitimate mention of the next minor says, beside it, that it is not out.
  */
 const NEXT_MINOR = ((): string => {
   const [major = 0, minor = 0] = version.split('.').map((n) => Number.parseInt(n, 10));
@@ -143,9 +142,9 @@ const NEXT_MINOR = ((): string => {
 /**
  * A line may name the next minor only if it says, on that same line, that the version is not out.
  *
- * Keyed on the CLAIM rather than on one exact sentence: the install caveat is not the only place that
- * legitimately names an unreleased version — a status line saying which release is published has to as well —
- * and an exemption tied to a single string would force honest prose to quote it verbatim. What it must never
+ * Keyed on the CLAIM rather than on one exact sentence: a note on what the next release carries and a status line
+ * saying which release is published both legitimately name an unreleased version, and an exemption tied to a single
+ * string would force honest prose to quote it verbatim. What it must never
  * excuse is a bare badge, which is the whole point of this file.
  */
 const MARKS_UNRELEASED = /\b(not on npm yet|unreleased|not yet released|is not published)\b/i;

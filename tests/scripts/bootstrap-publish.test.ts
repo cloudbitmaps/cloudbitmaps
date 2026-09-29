@@ -255,8 +255,8 @@ describe('bootstrap-publish', () => {
   });
 
   it('publishes ONLY the names the registry lacks, and skips the ones it has', () => {
-    // The case the earlier version of this script could not express, and the reason it was rewritten: the
-    // storage split added three packages to a family whose other two were already on npm. Refusing outright
+    // The case the earlier version of this script could not express, and the reason it was rewritten: a
+    // family where some packages are already on npm and the rest are new. Refusing outright
     // (the old behaviour) left no guarded way to create them, and tagging without creating them first would
     // have published core and then failed on the first name with no Trusted Publisher — an immutable,
     // partial release of a family that ships in lockstep.

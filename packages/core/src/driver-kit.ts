@@ -3,8 +3,8 @@
  *
  * `@cloudbitmaps/s3`, `@cloudbitmaps/gcs` and `@cloudbitmaps/azure-blob` live outside this package but are
  * built from its internals: the driver ports they implement, the typed errors they must throw, and the
- * object-store registry that gives an S3-shaped service compare-and-swap semantics. Before the split those
- * were relative imports inside one package; a subpath is what replaces reaching across a package boundary.
+ * object-store registry that gives an S3-shaped service compare-and-swap semantics. A subpath is how a
+ * separate package reaches them without reaching into core's source.
  *
  * WHY A SUBPATH AND NOT THE MAIN ENTRY. Two reasons pull the same way. The main entry is what every
  * application imports, and none of them needs `ObjectStoreRegistry` or the SDK-retry classifiers — shrinking

@@ -13,7 +13,7 @@ resolves.
 
 | command | runs |
 |---|---|
-| `pnpm test` | everything below **except** `integration/` — no containers, no network. It does need the git history: two tests read the previous release's tag, so a shallow clone fails them |
+| `pnpm test` | everything below **except** `integration/` — no containers, no network. It does need the git history: `docs/calibration-reports.test.ts` checks that each calibration evidence file was committed once and never edited, so a shallow clone fails it |
 | `pnpm lint:arch` | `arch/` only |
 | `pnpm test:integration` | `integration/` only, against real backends — start them first with `docker compose up -d` |
 | `pnpm vitest run tests/docs` | one directory, while working on it |
@@ -35,7 +35,7 @@ resolves.
 | `helpers/` | Shared helpers: building loaded stores in tests, counting the requests the engine makes, which the cost model and the calibration harness are held to, and reading the repo's workflows, composite actions and `package.json` scripts for the CI tests. |
 | `integration/` | The S3, GCS and Azure Blob drivers against MinIO, fake-gcs-server and Azurite from `docker-compose.yml`. Excluded from `pnpm test`, and run in CI on every pull request. |
 | `roaring/` | The pure-JavaScript reader for the portable roaring format, judged against the native library as the oracle: on a dozen hand-picked boundary shapes, on 200 random bitmaps nobody picked, and on hostile bytes it must refuse. A second decoder is only worth having if it agrees with the first on inputs nobody chose. |
-| `scripts/` | The scripts in `scripts/`, tested like code — the leak scan against planted secrets, the changelog extractor, the bootstrap publish, the version sync — and two sweeps: no harness in `scripts/` or `bench/` builds a store with an option that has moved, and every name `scripts/`, `bench/` and `fuzz/` import from a workspace package is actually exported by it. |
+| `scripts/` | The scripts in `scripts/`, tested like code — the leak scan against planted secrets, the changelog extractor, the bootstrap publish, the version sync — and two sweeps: no harness in `scripts/` or `bench/` builds a store with an option key the store refuses, and every name `scripts/`, `bench/` and `fuzz/` import from a workspace package is actually exported by it. |
 
 ## The files at the top level
 
@@ -43,7 +43,7 @@ resolves.
 |---|---|
 | `engine.property.test.ts` | Property tests against a plain `Set` as the oracle, over generations written through the real load path, so the properties hold over the shape production stores. |
 | `engine.localfs.test.ts` | The engine reading a real on-disk `.crbm` generation, with the registry pointer on disk too — the whole persistent stack, end to end. |
-| `flows.test.ts` | The documented user journey walked end to end on a real filesystem, twice: once with ordinary segment names and once with names that only became legal when the name grammar was removed. |
+| `flows.test.ts` | The documented user journey walked end to end on a real filesystem, twice: once with ordinary segment names and once with names that need encoding. |
 | `dr-drill.test.ts` | The disaster-recovery runbook as an executable drill: back up, corrupt real on-disk objects, restore, verify. |
 | `key-rotation.test.ts` | Key-encryption-key rotation through the whole stack: old segments stay readable under the old key, new ones adopt the new one. |
 | `crypto-vectors.test.ts` | Known-answer tests for the AES-256-GCM encryption, against externally published vectors — so a bug that is merely self-consistent cannot pass. |
@@ -63,7 +63,7 @@ reader.
 | `api-reference-sync.test.ts` | `docs/guide/api-reference.md` and the exported surface disagree — in **either** direction. |
 | `audit-kinds-enumerated.test.ts` | `docs/guide/dashboards.md` or `site/architecture.html`, the two pages that list the audit event kinds, lists fewer than all of them. |
 | `calibration-reports.test.ts` | A real-cloud calibration run's report, or the benchmarks page's section on the latest run, leaves out a headline figure its evidence supports, or states a dollar amount, percentage, duration, byte size, bit rate or ratio, or a number written before the request, chunk, id, load or intersect it counts, that the evidence cannot account for at the precision it is written, or beside the words for another claim. Also when the evidence is not a complete, self-consistent real run, or more than one commit has touched it; when a bill's rows disagree with the run's derivation on cost or label; when a report's request ledger disagrees with the evidence on any request or its billing class; and when its table of cost by overlap does not follow from the request shape the run measured. |
-| `code-fence-sanity.test.ts` | A TypeScript sample in the docs repeats a mistake that has shipped in one: declares a name twice at the top level, mixes the old `storage`/`registry` wiring with the new `backend` in one sample, passes a moved key at the top level of the store's options, or names a removed option key without marking the sample `// before`. |
+| `code-fence-sanity.test.ts` | A TypeScript sample in the docs repeats a mistake that has shipped in one: declares a name twice at the top level, passes `storage` and `registry` side by side where a backend carries both, passes a grouped key at the top level of the store's options, or names an option key the store refuses. |
 | `dependency-claims.test.ts` | A count of third-party dependencies does not say whose it is — "zero third-party dependencies" is true of core and false of the family. |
 | `directory-readmes.test.ts` | Something has no row in its README — a file in `bench/`, `bench/calibration/` or `scripts/`; a directory, top-level file or gate here; a page, top-level file or `assets/` in `site/` — or a row names a path that does not exist, or one it cannot read. Only a row counts, not a mention, and tables in code blocks or comments are not rows. A subdirectory with a README of its own gets one row in its parent's. |
 | `earlier-releases.test.ts` | A file anywhere in the repository, code and comments included, names a CloudBitmaps release before `0.10.0`, where the public history starts. |
@@ -71,17 +71,16 @@ reader.
 | `internal-citations.test.ts` | A file cites an internal id nobody outside can resolve — a phase number, a numbered gap or finding from a review, a decision-log number, an internal document's number. Code comments count: they ship in the `.d.ts`. (A relative link into private documents is `links.test.ts`'s to catch.) |
 | `issue-template-sync.test.ts` | The bug-report form's list of storage drivers differs from the drivers that ship. |
 | `links.test.ts` | A relative link in any tracked markdown file or on the site does not resolve — the file, and for a markdown target its heading anchor too (the site's own page anchors are `site-links.py`'s); an absolute link back into this repository is checked the same way; and nothing links into a private documents directory. |
-| `name-rules-sync.test.ts` | A doc publishes a name-grammar regex — there is no grammar any more; a name is any non-empty string — or shows an example segment name that the code would refuse. |
+| `name-rules-sync.test.ts` | A doc publishes a name-grammar regex — a name is any non-empty string — or shows an example segment name that the code would refuse. |
 | `override-hygiene.test.ts` | A `pnpm.overrides` entry binds to nothing, or `SECURITY.md` describes a different set of overrides from the ones that exist. |
 | `owed-work-claims.test.ts` | The loaded-store benchmarks, which the roadmap still lists as **owed**, are described anywhere else as done. It keys on that one roadmap entry: once the entry stops saying owed, the per-file checks stand down and this gate fails until it is deleted or re-anchored, so it cannot linger as a guard that checks nothing. |
 | `privacy-note-sync.test.ts` | The **published** privacy note, `packages/roaring/PRIVACY.md`, says something the repository's `PRIVACY.md` no longer says, or leaves out something it does. The two differ only in the published copy's header and its absolute links. |
 | `public-jsdoc.test.ts` | A public method on the facade has no JSDoc of its own. |
 | `sdk-floor-claims.test.ts` | A driver package's cloud-SDK range differs between its manifest, its README and `site/usage.html` — or the S3 range admits a version below the one its correctness depends on. |
-| `specifiers.test.ts` | A user-facing file still tells a reader to install or import the retired unscoped package name. |
+| `specifiers.test.ts` | A user-facing file tells a reader to install or import `cloud-roaring`, an unscoped name that is only an empty placeholder on npm. |
 | `superseded-behaviour-claims.test.ts` | A page repeats one of the listed phrases that were true once and describe behaviour this library no longer has. |
-| `unreleased-install-caveat.test.ts` | Before the driver packages were published, a page that told a reader to install them without saying so; now that they are, a page that still says they are not. |
 | `version-claims.test.ts` | A version stated on the site, in the READMEs or in the docs — the badge included — differs from the packages'. |
-| `vocabulary-damage.test.ts` | Wording only a mechanical rename produces reappears. The tier renames — `cold` to `storage`, `hot` to `cache` — left phrasing no one would write; this lists each damaged shape, with what it should have said — the GCP permission `storage.objects.*` came out with its first word doubled, for one. |
+| `vocabulary-damage.test.ts` | Wording only a mechanical find-and-replace produces appears — phrasing no one would write, such as the GCP permission `storage.objects.*` with its first word doubled. The gate lists each damaged shape, with what it should have said. |
 
 ## Conventions
 

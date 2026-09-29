@@ -5,17 +5,17 @@ import { join } from 'node:path';
 /**
  * Phrases that only a careless find-and-replace produces.
  *
- * WHY THIS EXISTS. The tier was renamed twice in this release — `cold` → `storage`, then `HOT` → `cache` —
- * and both passes were mechanical over ~160 files. A substitution has no idea that `cold storage` is a phrase,
- * that `storage.objects.get` is a **GCP permission name**, or that "plain objects" is about JavaScript rather
- * than about our tier. It produced, and shipped:
+ * WHY THIS EXISTS. The tier is called Storage and its in-process layer the cache — two words that are also
+ * ordinary English and ordinary API names. A mechanical substitution over many files has no idea that
+ * `storage.objects.get` is a **GCP permission name**, or that "plain objects" is about JavaScript rather than
+ * about our tier. It produces:
  *
  *   - `storage.storage.get` in the GCS registry's deployment requirements — an IAM permission that does not
  *     exist, in an instruction a reader copies into a policy.
- *   - "storage storage", "plain storage", "immutable storage", "Storage storage".
+ *   - "storage storage", "plain storage", "immutable storage", "Storage storage", "CACHE-cache".
  *
- * They pass every gate: they compile, they lint, they render, and they are in prose nothing re-reads. This is
- * the second drift on this surface, which is what earns a check rather than another careful sweep.
+ * They pass every gate: they compile, they lint, they render, and they are in prose nothing re-reads. That is
+ * what earns a check rather than another careful sweep.
  *
  * WHY A PHRASE LIST RATHER THAN A RULE. There is no rule — these are not wrong words, they are right words in
  * an impossible order. The list is the inventory, and it is cheap to extend the next time a rename lands.
@@ -71,6 +71,7 @@ const DAMAGE: ReadonlyArray<readonly [RegExp, string]> = [
   ],
   [new RegExp(String.raw`\bstorage${GAP}storage\b`, 'gi'), '"storage" once'],
   [new RegExp(String.raw`\bcache${GAP}cache\b`, 'gi'), '"cache" once'],
+  [/\bcache-cache\b/gi, '"cache" once'],
   [new RegExp(String.raw`\bstorage${GAP}exist\b`, 'gi'), '"objects exist"'],
   [new RegExp(String.raw`\bimmutable${GAP}storage\s*(?=[.,;:)]|$)`, 'gim'), '"immutable objects"'],
   [
@@ -79,7 +80,7 @@ const DAMAGE: ReadonlyArray<readonly [RegExp, string]> = [
   ],
 ];
 
-describe('the tier renames left no impossible phrasing', () => {
+describe('no file carries a phrase only a mechanical rename produces', () => {
   it.each(files)('%s', (file) => {
     const text = readFileSync(join(ROOT, file), 'utf8');
     const hits: string[] = [];

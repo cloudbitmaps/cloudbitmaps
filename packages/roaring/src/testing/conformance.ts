@@ -50,11 +50,10 @@ const BAD_NAMES: readonly string[] = [
 ];
 
 /**
- * Names that were ILLEGAL under the old grammar and must now work end to end.
+ * Names that need encoding and must work end to end.
  *
- * This is the more important list. Rejecting these was the bug; accepting them without letting any of them
- * reach a key or a path literally is the fix, so a driver that merely stopped validating would pass the list
- * above and fail here.
+ * This is the more important list. Accepting them is not enough: none of them may reach a key or a path
+ * literally, so a driver that merely stopped validating characters would pass the list above and fail here.
  */
 const NASTY_NAMES: readonly string[] = [
   'a/b', // would invent hierarchy in an object key
@@ -68,7 +67,7 @@ const NASTY_NAMES: readonly string[] = [
   'a%3Ab', // a name that SPELLS an escape; `%` escaping itself is what keeps this unambiguous
   '100%',
   'ns#1|seg#2', // the characters the key codec keeps reserved
-  'con', // a Windows device name — the OLD grammar accepted this one and it broke on Windows
+  'con', // a Windows device name — letters only, and it breaks on Windows unless escaped
   'a.', // Windows strips a trailing dot, so this must not collide with `a`
   'user@example.com',
   '\u65e5\u672c\u8a9e',
@@ -124,7 +123,7 @@ export function storageChunkSourceConformance(
       }
     });
 
-    it('accepts every name the old grammar refused, without letting one reach a key literally', async () => {
+    it('accepts every name that needs encoding, without letting one reach a key literally', async () => {
       const source = await makeSource([{ chunkKey: 0, bitmap: SafeBitmap.fromValues([1]) }]);
       for (const name of NASTY_NAMES) {
         // A miss is fine — the point is that it VALIDATES and resolves rather than throwing ValidationError.

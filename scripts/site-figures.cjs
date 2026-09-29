@@ -807,16 +807,15 @@ if (singleBucket !== null) {
 // six stale statements while this gate stayed green, and the claim of exclusivity is what stopped anyone
 // looking. A number is only anchored where the gate actually reads it.
 //
-// The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot
-// drift without a rewrite that touches every page and every doc (which is exactly what removing the middle tier
-// took), so a check for it is one that CANNOT FAIL, the same reason the bare "22"/"23" calibration quantities
-// above are left out. The two figures that CAN drift silently while CI stays green are derived below.
+// The tier count is deliberately NOT anchored. Cache RAM over object storage is the architecture — it cannot drift
+// without a rewrite that touches every page and every doc, so a check for it is one that CANNOT FAIL, the same
+// reason the bare "22"/"23" calibration quantities above are left out. The two figures that CAN drift silently
+// while CI stays green are derived below.
 const specAnchors = [];
 {
-  // A backend counts once, whether it stores the chunks or the pointer — which is now the same answer for all
-  // three clouds, since each hosts both. Registry drivers used to be excluded as "a separate axis from the
-  // tiering the page is describing", but with one storage tier left the axis the page describes IS this one:
-  // which services the library can talk to, and that is what the install line advertises.
+  // A backend counts once, whether it stores the chunks or the pointer — the same answer for all three clouds,
+  // since each hosts both. The axis the page describes is which services the library can talk to, and that is
+  // what the install line advertises.
   // `Memory` is the in-process dev/test pair and `Retrying` is a decorator wrapping another driver — neither is
   // a backend a reader could point at.
   const NOT_A_BACKEND = new Set(['memory', 'retrying']);
@@ -854,12 +853,11 @@ const specAnchors = [];
   // Third-party (non-workspace) runtime dependencies, PER PACKAGE. `@cloudbitmaps/*` is ours and is declared
   // `workspace:^`, which is what makes the wording "third-party" true where a bare "runtime dependency" is not.
   //
-  // This used to read `packages/roaring/package.json` alone and compare it against a site-wide badge saying
-  // "1 third-party dependency". That was green and wrong: it answered "how many does the codec have?" while
-  // the badge made a claim about the project, sitting directly under an install line for TWO packages. The
-  // split gave three storage packages a real cloud SDK each, so a reader following that line gets two
-  // third-party deps, not one — and one page stated the badge and "each with its own SDK" in a single
-  // sentence. A derivation narrower than the claim it checks cannot fail when the claim goes wrong.
+  // Reading `packages/roaring/package.json` alone against a site-wide badge saying "1 third-party dependency"
+  // would be green and wrong: it answers "how many does the codec have?" while the badge makes a claim about
+  // the project, sitting directly under an install line for TWO packages. Each storage package carries a real
+  // cloud SDK, so a reader following that line gets two third-party deps, not one. A derivation narrower than
+  // the claim it checks cannot fail when the claim goes wrong.
   // EVERY dependency field, not just `dependencies`. An adversarial review moved an AWS SDK into core's
   // `optionalDependencies` and this gate still certified "zero-dependency core" — and the repo has a
   // deliberate rule that nothing is an optional peer, which makes that the most plausible accidental
@@ -899,11 +897,9 @@ const specAnchors = [];
 
   const homeHtml = fs.readFileSync(path.join(ROOT, 'site', 'index.html'), 'utf8');
 
-  // ── no warm-scan ceiling to publish, and the site must not claim one ───────────────────────────────────
-  // This block used to derive `DEFAULT_MAX_WARM_SCAN_BYTES` and gate the MiB figure /architecture and /usage
-  // quoted for it. Both the constant and the tier it bounded are gone: an intersection's memory is now one
-  // term, the chunk-aligned window, with no per-operand delta snapshot outside it. The check is inverted
-  // rather than deleted — a page that still quotes a warm ceiling is quoting a bound nothing enforces.
+  // ── no scan ceiling on an intersection to publish, and the site must not claim one ─────────────────────
+  // An intersection's memory is one term, the chunk-aligned window, with no per-operand snapshot outside it.
+  // The store has no `maxWarmScanBytes` option, so a page naming one quotes a bound nothing enforces.
   for (const rel of [
     'site/architecture.html',
     'site/usage.html',
@@ -912,7 +908,7 @@ const specAnchors = [];
   ]) {
     const html = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     if (/maxWarmScanBytes/.test(html)) {
-      fail(`${rel} names \`maxWarmScanBytes\` — that option no longer exists`);
+      fail(`${rel} names \`maxWarmScanBytes\` — the store has no such option`);
     }
   }
 
@@ -1162,7 +1158,7 @@ const specAnchors = [];
     if (!/zero-dependency core/i.test(fs.readFileSync(file, 'utf8'))) {
       fail(
         `site/${rel} no longer states \`zero-dependency core\`. Every page carrying the fact strip scopes ` +
-          'its dependency claim: since the split the codec adds `roaring` and each storage package its own ' +
+          'its dependency claim: the codec adds `roaring` and each storage package its own ' +
           'SDK, so an unscoped or absent count is not a smaller claim, it is a wrong one.',
       );
     }

@@ -7,11 +7,9 @@
  * goes through the tokenless, provenance-signed pipeline in .github/workflows/release.yml — this script is a
  * bootstrap, not a release tool, and it publishes ONLY the names the registry does not already have.
  *
- * It ran once for the whole family at launch, and it runs again whenever a package is ADDED to the family:
- * the storage split introduced @cloudbitmaps/s3, /gcs and /azure-blob into a workspace whose other two
- * packages were already published, and tagging that release without bootstrapping them first would have
- * published core, then failed on the first name with no Trusted Publisher — leaving the registry holding one
- * package of a five-package lockstep release, immutable. The earlier version of this script modelled only
+ * It runs whenever a package is ADDED to the family: tagging a release that carries a new name without
+ * bootstrapping it first would publish core, then fail on the first name with no Trusted Publisher — leaving
+ * the registry holding part of a lockstep release, immutable. The earlier version of this script modelled only
  * "first publish of everything" and refused outright once ANY name existed, which made it useless for
  * exactly the case that needs it most.
  *

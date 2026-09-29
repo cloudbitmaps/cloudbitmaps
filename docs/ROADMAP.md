@@ -249,13 +249,12 @@ between here and there:
    `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
    reference guard runs in both directions.
 6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
-   the API reference, the migration guide and the site now lead with what this is: one bucket, immutable
+   the API reference and the site lead with what this is: one bucket, immutable
    generations, cheap chunk-skipping reads from anywhere. The framing turned out to be in better shape than
    this item assumed — "two tiers" and the driver count were already correct and derived from the code. What
    was actually wrong was a supply-chain badge that counted the whole project's third-party dependencies as one,
    in eight places, while the gate watching it derived that number from `@cloudbitmaps/roaring`'s manifest
-   alone. The last
-   residue of the removed tier — nine removal-narrating comments in the public page source — went with it.
+   alone.
 7. **`.crbm` format freeze** — the format already reserves space for 64-bit IDs and stamps a schema version on
    the registry row; freezing it is what makes cross-language ports and long-lived data safe.
 8. **Adoption feedback** — real deployments finding the sharp edges that our own tests don't.

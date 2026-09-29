@@ -97,12 +97,9 @@ describe('API reference (docs/guide/api-reference.md) is in sync with the export
     it(`documents every export from ${label}`, () => {
       const src = read(barrel);
       // `export *` would let names slip past this guard, so it is only allowed when it re-exports a barrel that
-      // this test ALSO parses. The roaring facade legitimately does `export * from '@cloudbitmaps/core'` (the
-      // family split makes the flavor package the one name to know), and core's own barrel is in BARRELS above —
-      // so every name is still checked. Any OTHER star-export is rejected.
-      // One allowed star form: the flavor re-exporting core's main barrel, which this test also parses, so
-      // no name escapes. The subpath variant this pattern used to permit described the per-driver barrels,
-      // which were deleted when the drivers became their own packages — a form that can no longer occur.
+      // this test ALSO parses. The roaring facade legitimately does `export * from '@cloudbitmaps/core'` (so
+      // the flavor package is the one name to know), and core's own barrel is in BARRELS above — so every name
+      // is still checked. Any OTHER star-export is rejected.
       const ALLOWED_STAR = /^export \* from '@cloudbitmaps\/core';$/;
       // Scan COMMENT-STRIPPED source (as `exportedNames` does) so prose mentioning `export *` isn't a hit.
       const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');

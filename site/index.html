@@ -586,9 +586,7 @@
             </figure>
             <!-- Absorbed from the design's own version of this section. It reads as a spec strip, but it is
                  also load-bearing for the composition: the merged code panel is 17 lines where the old one
-                 was 10, and without this the left column ended 157px short of it. (It was 15 lines until the
-                 load call replaced `addMany`: writing a generation and publishing it is two lines longer than
-                 mutating a segment, and that IS the change.) The dependency count is
+                 was 10, and without this the left column ended 157px short of it. The dependency count is
                  `@cloudbitmaps/core`'s, deliberately: it is the one package every install pulls in, and the
                  only one with nothing behind it. The codec and each storage package add one dependency each,
                  so a project-wide number would be false however it was totalled. The package is NAMED here

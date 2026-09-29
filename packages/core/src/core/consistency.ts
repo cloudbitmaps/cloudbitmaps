@@ -2,15 +2,15 @@
  * Fail-safe cross-store disaster-recovery check. The registry (`currentGen`) and the immutable `.crbm`
  * generations can be restored **independently**, so a failover can recover the registry *ahead of* the storage
  * objects — leaving `currentGen` pointing at a generation whose `.crbm` isn't present yet. That is likelier
- * than it sounds even now that both usually live in one bucket: a restore scoped to a prefix, or replayed
+ * than it sounds even with both in one bucket: a restore scoped to a prefix, or replayed
  * per-object from a version history, recovers the two prefixes at different points. That's a torn restore: reads of the affected segment then throw. This scan
  * detects it up front (run it at startup after a restore) instead of discovering it on the first read.
  *
  * Read-only; bounded fan-out. `destroyed` (crypto-shredded) segments are skipped — their Storage is intentionally
  * gone/unreadable, not a torn restore. A segment whose Storage/registry can't be read this pass is recorded in
  * `errored` (never aborts the scan). Each segment is checked against its **authoritative live pointer** — one
- * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which can be
- * eventually-consistent (an unindexed Scan) and lag a recent in-place pointer advance: trusting it would both
+ * strong `registry.get` per segment — never the enumeration snapshot from `registry.list`, which a driver may
+ * serve eventually-consistently and so lag a recent in-place pointer advance: trusting it would both
  * miss a torn *live* generation and cry torn on a generation the pointer has already advanced past (GC'd during
  * the scan). Residual: a load's publish plus a GC landing in the tiny per-segment get→list gap can still yield a
  * transient false positive — run the scan against a quiesced fleet (the documented restore procedure), or re-run

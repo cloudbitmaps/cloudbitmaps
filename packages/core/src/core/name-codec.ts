@@ -5,15 +5,12 @@
  * `node:` builtin — and because `validate.ts` needs it to measure a name against the key budget. Core may
  * not import a driver (invariant 7), and a driver may import core, so this is the only layer both can see.
  *
- * The old grammar was an allowlist — `[A-Za-z0-9._:-]`. Widening it one character at a time is what exposed the
- * real problem: the colon had been missing from it by accident rather than by decision, and nothing in the
- * process would have caught the next omission either. An allowlist rejects names for the storage layer's
- * convenience, and the storage layer's convenience is the library's job, not the caller's. So a name is **any
- * non-empty string**, and each physical boundary escapes what *it* cannot take literally.
- *
- * It also fixes a hazard the allowlist *permitted*: `con`, `nul` and `com1` are Windows device names that
- * validated cleanly and failed only on a user's machine. A grammar can be both too narrow and too permissive
- * at once, which is the argument against having one.
+ * A name is **any non-empty string**, and each physical boundary escapes what *it* cannot take literally. An
+ * allowlist of characters would reject names for the storage layer's convenience, and the storage layer's
+ * convenience is the library's job, not the caller's. It would also let through the names that are actually
+ * dangerous: `con`, `nul` and `com1` are Windows device names made only of letters and digits, which pass any
+ * allowlist and fail only on a user's machine. A grammar can be both too narrow and too permissive at once,
+ * which is the argument against having one.
  *
  * Percent-encoding, because it is the one escape everybody already reads. `%` escapes itself as `%25` and is
  * encoded **first**, which is what makes the transform injective: every `%` in an encoded string starts an
@@ -28,25 +25,20 @@
  *   *succeed* while `readdir` never lists the result), plus three hazards that are about the component as a
  *   whole rather than its characters — see {@link encodeNameForPath}.
  *
- * **`#` and `|` are escaped for compatibility, not for any backend still here.** They were reserved because
- * the DynamoDB registry composed its partition key from `<namespace>#<segment>|…`, and that driver is gone.
- * The escaping stays anyway: it is baked into every key already written, and un-reserving the two characters
- * would change what `encodeNameForKey` emits for a name containing either — silently moving those segments
- * to a key nothing looks up. A cheap two-character reservation is the right price for not migrating a
- * bucket; the property test below pins it.
+ * **`#` and `|` are reserved**, and the reservation is permanent: un-reserving the two characters would change
+ * what `encodeNameForKey` emits for a name containing either, silently moving those segments to a key nothing
+ * looks up. A test pins it.
  *
- * **Every name that was legal before encodes to itself on the OBJECT-KEY alphabet** — so S3, GCS and Azure
- * keys are byte-identical and there is nothing to migrate there. That is the property to preserve if this
- * file is ever edited, and a property test asserts it over the whole old grammar.
+ * **A plain name encodes to itself on the OBJECT-KEY alphabet** — one made only of `[A-Za-z0-9._:-]` that
+ * starts with a letter or digit — so S3, GCS and Azure keys read as the names that made them. That is the
+ * property to preserve if this file is ever edited, and a property test asserts it over every plain name.
  *
- * The **path** alphabet is not identical, and the difference is a breaking change for an existing LocalFs
- * store. Two classes move: a Windows device-name stem (`con`, `nul`, `com1`, `con.backup`) and a trailing dot
- * (`a.`). Both were legal before and are escaped now — deliberately, since both silently alias or fail on
- * Windows — but a 0.9 store holding one will not find it after the upgrade, because the readers' round-trip
- * guard skips a spelling the driver would never have written. See the upgrade note in `CHANGELOG.md`.
+ * The **path** alphabet escapes more. Besides `:`, two classes of plain name are escaped on a path: a Windows
+ * device-name stem (`con`, `nul`, `com1`, `con.backup`) and a trailing dot (`a.`), since both silently alias
+ * or fail on Windows.
  */
 
-/** Characters safe in an object key, left literal so existing keys are byte-identical. */
+/** Characters safe in an object key, left literal so a plain name reads as itself in the bucket. */
 const KEY_SAFE = /[A-Za-z0-9._:-]/;
 /** Characters safe in a path component. As {@link KEY_SAFE} minus `:`. */
 const PATH_SAFE = /[A-Za-z0-9._-]/;
@@ -77,12 +69,9 @@ function encodeWith(name: string, safe: RegExp): string {
   }
   // A LEADING underscore is escaped, which is what keeps the reserved namespaces reachable only by us.
   //
-  // `_default` is the physical stand-in for an absent namespace. Under the old grammar a name could not begin
-  // with `_`, so the sentinel was unreachable for free — and dropping the grammar would have handed any caller
-  // a way to name a namespace `_default` and have it resolve to everyone else's un-namespaced data. Escaping
-  // the first `_` restores that guarantee by construction rather than by a blocklist that has to be maintained.
-  //
-  // It costs nothing and migrates nothing: no previously legal name began with `_`, so no stored key moves.
+  // `_default` is the physical stand-in for an absent namespace. Unescaped, it would hand any caller a way to
+  // name a namespace `_default` and have it resolve to everyone else's un-namespaced data. Escaping the first
+  // `_` makes the sentinel unreachable by construction rather than by a blocklist that has to be maintained.
   return out.startsWith('_') ? `%5F${out.slice(1)}` : out;
 }
 
@@ -118,10 +107,9 @@ function decodePercent(encoded: string): string {
 /**
  * Encode a name for use inside an **object key** (S3, GCS, Azure Blob).
  *
- * Leaves the historically-legal alphabet literal so existing keys do not move, and escapes everything else —
- * including `/` (which would invent hierarchy and break a parser that splits on it), `#` and `|` (reserved by
- * the former DynamoDB registry and kept reserved so existing keys stay valid), and control characters (not
- * legal in S3's XML responses).
+ * Leaves `[A-Za-z0-9._:-]` literal, so a plain name reads as itself, and escapes everything else — including
+ * `/` (which would invent hierarchy and break a parser that splits on it), `#` and `|` (reserved; see the
+ * module header), and control characters (not legal in S3's XML responses).
  */
 export function encodeNameForKey(name: string): string {
   return defuseDotComponent(encodeWith(name, KEY_SAFE));
@@ -140,9 +128,7 @@ export function encodeNameForKey(name: string): string {
  * Note the asymmetry it removes: `normalizeS3Prefix` already refuses `.`/`..` segments in a **prefix**, which
  * is trusted config, while the name — the attacker-influenced input — was left unguarded.
  *
- * Every dot is escaped rather than just the first, so the result cannot end in one either. Zero migration: `.`
- * failed the old leading-alphanumeric rule and `..` was rejected outright, so no previously legal name is
- * touched.
+ * Every dot is escaped rather than just the first, so the result cannot end in one either.
  */
 function defuseDotComponent(encoded: string): string {
   return encoded === '.' || encoded === '..' ? encoded.replaceAll('.', '%2E') : encoded;
@@ -163,8 +149,7 @@ export function decodeNameFromKey(encoded: string): string {
  * 1. **`.` and `..`** are traversal. `join(root, '..')` leaves the storage root.
  * 2. **Windows reserved device names** — `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, case
  *    insensitive and *with or without an extension*, so `con.0.crbm` is reserved too. Opening one addresses a
- *    device rather than a file. Note the old grammar **permitted** these: `store.segment('con')` validated
- *    cleanly and broke only on a user's Windows box.
+ *    device rather than a file, so `store.segment('con')` would break only on a user's Windows box.
  * 3. **A trailing `.` or space**, which Windows silently strips — so `a.` and `a` would become the same
  *    directory, quietly merging two segments.
  *

@@ -5,12 +5,11 @@ import { join } from 'node:path';
 /**
  * A dependency count has to say WHOSE.
  *
- * WHY THIS EXISTS. Before the package split there was one third-party runtime dependency in the whole
- * project, so "1 third-party dependency" was a fair thing to print on a badge. The split gave
- * `@cloudbitmaps/s3`, `/gcs` and `/azure-blob` a real cloud SDK each, and the sentence stopped being true —
- * in eight places on the public site, in `README.md` six lines below its own table listing four separate
- * pulls, and in `SECURITY.md`, where a stale two-package enumeration was the stated reason for a conclusion
- * about what reaches consumers.
+ * WHY THIS EXISTS. "1 third-party dependency" is true of the codec package and false of the family:
+ * `@cloudbitmaps/s3`, `/gcs` and `/azure-blob` each depend on a real cloud SDK. Printed as a claim about the
+ * project, it was false in eight places on the public site, in `README.md` six lines below its own table
+ * listing four separate pulls, and in `SECURITY.md`, where it was the stated reason for a conclusion about
+ * what reaches consumers.
  *
  * Every one of those passed CI. The site's own figure gate even *checked* the number — against
  * `packages/roaring/package.json` alone, which answers "how many does the codec have?" while the badge made

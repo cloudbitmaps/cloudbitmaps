@@ -263,7 +263,7 @@ pnpm add @cloudbitmaps/s3        # the storage you actually have — or @cloudbi
 > which is why the floor is 22.12 and not 22 (22.11 throws `ERR_REQUIRE_ESM`). On 22.12 exactly you will also
 > see an `ExperimentalWarning` about loading ES modules from `require()`; it is gone by Node 24.
 >
-> Two things to know before you upgrade:
+> Two things to know if you load it from CommonJS:
 >
 > - **A loader that is not Node's own does not get `require(esm)`**, on any Node version. Two you are likely
 >   to meet:
@@ -294,8 +294,8 @@ no SDK for a service you do not use.
 | `@cloudbitmaps/azure-blob` | `AzureBlobStorage`, `AzureBlobStorageDriver`, `AzureBlobRegistryDriver` | `@azure/storage-blob`, core |
 | `export-segments` (CLI bin, in the flavor) | eject every segment to portable files (`roaring` \| `ndjson`) — your exit path | — |
 
-**Why by service rather than by cloud.** An `@cloudbitmaps/aws` would have to depend on both the S3 SDK and
-the DynamoDB SDK, and "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
+**Why by service rather than by cloud.** Each package speaks one storage service through one SDK, and a
+cloud's name does not say which: "azure" is ambiguous across Blob, Table, Files and Data Lake. `s3` rather than `aws-s3`
 because S3 is a protocol as much as a product — the same package serves R2 and MinIO.
 
 > **Alpine / musl:** `roaring` — `@cloudbitmaps/roaring`'s one third-party dep — ships prebuilt binaries for common **glibc**

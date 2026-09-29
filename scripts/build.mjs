@@ -7,8 +7,8 @@
  *     `exports` map declares — with sourcemaps, node platform, ES2022. ESM ONLY: the package is
  *     `"type": "module"` and the exports map offers a single `default` condition, so `require()` resolves to
  *     the same file and Node's `require(esm)` loads it (Node >=22.12, which `engines` pins). Shipping a
- *     second self-contained CJS bundle bought nothing: it duplicated every module, and it forced the types
- *     to describe an ESM file while the runtime served CJS;
+ *     second self-contained CJS bundle would buy nothing: it would duplicate every module, and force the
+ *     types to describe an ESM file while the runtime served CJS;
  *   - every bare import left EXTERNAL (`packages: 'external'` plus `@cloudbitmaps/*`): dependencies, the
  *     other workspace packages and node builtins all resolve at runtime from the consumer's node_modules.
  *     That is what keeps a cloud SDK out of a main entry, and what gives the whole install ONE copy of
@@ -39,11 +39,10 @@ await rm(dist, { recursive: true, force: true });
 
 // Entries come from the package's OWN `exports` map, so the two cannot disagree.
 //
-// This used to be a hardcoded `['s3', 'gcs', 'azure']`, which was the same list of driver subpaths written
-// down in three places — here, each manifest's `exports`, and `scripts/smoke.cjs`. Splitting the drivers into
-// their own packages would have meant editing all three; deriving it means editing none. A subpath that is
-// declared and not built now fails the build rather than 404-ing for a consumer, and `smoke.cjs` independently
-// loads every entry the map declares, so the map is checked from both directions.
+// A hardcoded list would be the same list written down in three places — here, each manifest's `exports`, and
+// `scripts/smoke.cjs` — so adding an entry would mean editing all three; deriving it means editing none. A
+// subpath that is declared and not built fails the build rather than 404-ing for a consumer, and `smoke.cjs`
+// independently loads every entry the map declares, so the map is checked from both directions.
 const entries = {};
 for (const key of Object.keys(pkg.exports ?? { '.': null })) {
   const name = key === '.' ? 'index' : key.replace(/^\.\//, '');

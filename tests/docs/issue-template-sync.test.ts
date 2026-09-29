@@ -6,29 +6,25 @@ import { join } from 'node:path';
  *
  * WHY THIS EXISTS. The dropdown is the first thing a reporter touches, and it is the only place in the repo
  * where the driver list is written as a set of human labels rather than as code — so nothing else that gates
- * driver claims can see it. It has drifted twice in two releases:
+ * driver claims can see it. It has drifted before: `GcsRegistryDriver` and `AzureBlobRegistryDriver` shipped
+ * while the dropdown still offered a registry on S3 and the local filesystem only, so a GCS user reporting a
+ * registry bug had nothing truthful to pick.
  *
- *   - `GcsRegistryDriver` and `AzureBlobRegistryDriver` shipped, and the dropdown still offered a registry on
- *     S3 and the local filesystem only. A GCS user reporting a registry bug had nothing truthful to pick.
- *   - The DynamoDB registry was removed and its option was deleted, which fixed the stale entry while leaving
- *     the two missing ones — so the same edit that swept the file left it wrong.
- *
- * Both slipped because a `.yml` issue template does not look like documentation. It is the documentation a
+ * It slipped because a `.yml` issue template does not look like documentation. It is the documentation a
  * reporter reads first.
  *
  * WHY IT IS DERIVED. A hand-maintained list of expected options is a check that cannot fire — you would have to
  * remember to update it in the same breath you forgot to update the template. The expectation comes from the
  * shipped drivers instead, which move on their own when a backend is added or removed.
  *
- * WHERE IT LOOKS, AND WHY THAT IS TWO PLACES. It used to scan `packages/core/src/drivers/*` alone. That was
- * the whole topology once; it is not any more, because the cloud drivers are their own packages. The scan
- * therefore covers core's SDK-free driver directories AND every driver package in the workspace.
+ * WHERE IT LOOKS, AND WHY THAT IS TWO PLACES. The in-process drivers live in `packages/core/src/drivers/*` and
+ * the cloud drivers are their own packages, so the scan covers core's SDK-free driver directories AND every
+ * driver package in the workspace.
  *
  * It also requires a directory to CONTAIN a `.ts` file before counting it. `git` cannot represent an empty
- * directory: when the cloud drivers moved out, `packages/core/src/drivers/{s3,gcs,azure}` stayed behind as
- * empty directories in every working tree that had them before the move, invisible to `git status`. This
- * test passed locally off those husks and failed on CI's clean checkout — the one place the tree was
- * actually right. A derivation that counts directory ENTRIES can be fooled by a leftover; one that counts
+ * directory, so a directory emptied by a move stays behind in every working tree that had it, invisible to `git
+ * status` — and a test counting it passes locally off the husk and fails on CI's clean checkout, the one place the
+ * tree is actually right. A derivation that counts directory ENTRIES can be fooled by a leftover; one that counts
  * source files cannot.
  */
 
@@ -77,13 +73,13 @@ describe('the bug report template lists the drivers that actually ship', () => {
 
   it.each(backends)('offers %s as both a storage and a registry option', (backend) => {
     const label = LABELS[backend] as string;
-    // Both roles, because every backend on disk now implements both seams — which is exactly the fact the
+    // Both roles, because every backend on disk implements both seams — which is exactly the fact the
     // template got wrong.
     expect(template, `no "Storage — ${label}" option`).toContain(`Storage — ${label}`);
     expect(template, `no "Registry — ${label}" option`).toContain(`Registry — ${label}`);
   });
 
-  it('names no backend that no longer ships', () => {
+  it('names no backend that does not ship', () => {
     const offered = [...template.matchAll(/^\s*-\s*(?:Storage|Registry) — (.+)$/gm)].map((m) =>
       (m[1] as string).trim(),
     );

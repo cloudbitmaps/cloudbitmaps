@@ -24,9 +24,7 @@ const S3 = '@cloudbitmaps/s3';
 /**
  * The packages whose whole job is to name a cloud SDK. Everything else must not.
  *
- * This used to be a list of DIRECTORIES inside one package (`dist/s3`, `dist/drivers/s3`), because the
- * drivers were subpaths of core. They are packages now, so the boundary moved from a path prefix to a
- * package name — and the SDK-free sweep skips these three rather than skipping three folders in each.
+ * The boundary is a package name, not a path prefix: the SDK-free sweep skips these packages whole.
  */
 /**
  * Which packages are storage-driver packages — DERIVED, like every other topology list in this repo.
@@ -212,10 +210,10 @@ async function exerciseCore(label, m) {
   ]) {
     if (m[name] == null) throw new Error(`${label}: missing export ${name}`);
   }
-  // A BACKEND, which is what the docs tell users to build. This previously wired a raw driver plus a
-  // `registry` option — and that option stopped existing when the backend class landed, so the pointer path
-  // it meant to exercise had been silently dead here ever since: a store with one generation list-scans to
-  // the same answer, so the round-trip kept passing. This file is plain CJS, so no compiler was going to say.
+  // A BACKEND, which is what the docs tell users to build, so the round-trip goes through the pointer. A raw
+  // driver with no registry would leave the pointer path silently dead: a store with one generation
+  // list-scans to the same answer, so the round-trip would keep passing. This file is plain CJS, so no
+  // compiler would say.
   const backend = new m.MemoryStorage({ now: () => 0 });
   await m.bulkLoadCrbmGeneration(
     backend.storage,
@@ -240,18 +238,13 @@ async function exerciseCore(label, m) {
  * cannot see it. Trigger: the S3 registry driver validates its `prefix` synchronously in the constructor and
  * throws a ValidationError from its own copy.
  *
- * WHICH BOUNDARY IS LOAD-BEARING changed when the packages went ESM-only, and the previous answer here is
- * why this comment is worth reading. It used to say the CJS leg was the only one that could fail, because
- * each CJS bundle carried its own class copy while the ESM subpaths shared a chunk. There is no CJS bundle
- * now: `require()` resolves to the same ESM files through `require(esm)`, so BOTH legs load one shared chunk
- * and neither can observe a mismatch. Run as-was, this check had become vacuous — replacing every
- * `Symbol.for(…)` with `Symbol(…)` in the built chunk left it green.
+ * WHICH BOUNDARY IS LOAD-BEARING. Not the module format: the packages are ESM-only, and `require()` resolves to
+ * the same ESM files through `require(esm)`, so BOTH legs load one shared chunk and neither can observe a
+ * mismatch — replacing every `Symbol.for(…)` with `Symbol(…)` in the built chunk leaves a format check green.
  *
- * Nor is the PACKAGE boundary load-bearing any more, and this comment previously claimed it was — it said
- * each package carried its own copy of the error classes, which stopped being true the moment the build
- * started marking `@cloudbitmaps/*` external. `assertPackagesShareOneCopy` now asserts the opposite: one
- * copy of core across all five packages, so `instanceof` holds and the identity the predicates defend is
- * the one a normal install already has.
+ * Nor the PACKAGE boundary: the build marks `@cloudbitmaps/*` external, and `assertPackagesShareOneCopy`
+ * asserts one copy of core across all five packages, so `instanceof` holds and the identity the predicates
+ * defend is the one a normal install already has.
  *
  * So what these checks pin is that the predicates are WIRED UP across a real package boundary — that the
  * built `@cloudbitmaps/s3` throws something the built `@cloudbitmaps/core` classifies. They do NOT pin the
@@ -305,14 +298,11 @@ function exerciseCrossBundleErrors(label, coreMod, driverMod, storeMod = coreMod
 /**
  * Prove our packages share ONE copy of core — the property that makes `instanceof` work across them.
  *
- * This assertion used to say the opposite, and was right to: every dependent bundled its own private copy of
- * core, because each tsconfig maps `@cloudbitmaps/core` through `paths` to core's source and esbuild applies
- * `paths` before deciding externals. `scripts/build.mjs` now marks `@cloudbitmaps/*` external, so there is
- * one copy, and the assertion inverts with it.
- *
- * It is worth keeping in the new direction because the old behaviour is one missing line away: drop that
- * `external` and every dependent silently re-inlines core, `instanceof` silently stops matching, and the
- * published `.d.ts` goes back to asserting an `extends` that is false at runtime. Nothing else notices —
+ * The one copy rests on a single line. Each tsconfig maps `@cloudbitmaps/core` through `paths` to core's
+ * source and esbuild applies `paths` before deciding externals, so it is `scripts/build.mjs` marking
+ * `@cloudbitmaps/*` external that keeps core out of every dependent's bundle. Drop that `external` and every
+ * dependent silently inlines core, `instanceof` silently stops matching, and the
+ * published `.d.ts` asserts an `extends` that is false at runtime. Nothing else notices —
  * lint, typecheck and the whole suite compile one source graph and cannot see it.
  *
  * The `Symbol.for` predicates stay the documented way to classify an error even so, because a consumer can
@@ -345,23 +335,22 @@ function assertPackagesShareOneCopy(coreMod, flavorMod, driverMod) {
  * Hard invariant 7, checked against the BUILT files — because that is the only place it is true or false.
  *
  * The eslint rule that enforces "the main entry stays SDK-free" reads STATIC imports. It cannot see
- * `await import('@cloudbitmaps/core/s3')` (proven: eslint exits 0 on exactly that), and nothing else in the
- * gate reads `dist/` at all. That gap is not hypothetical: a `connect(url)` feature that resolved a driver
- * from a runtime string put `require("@aws-sdk/client-s3")` into what was then the CJS entry every consumer
- * loaded — and shipped ~88 KB of driver code to people who never touch S3, while three documents went on
- * saying the entry was SDK-free. A full green local gate and 13 CI jobs passed over it. Measured against
- * esbuild and webpack, a consumer without the SDKs installed could no longer build at all, including one who
- * never called the feature: a bundler resolves specifiers before it tree-shakes.
+ * `await import('@cloudbitmaps/s3')` (proven: eslint exits 0 on exactly that), and nothing else in the gate
+ * reads `dist/` at all. That gap is not hypothetical: a feature that resolved a driver from a runtime string
+ * once put `require("@aws-sdk/client-s3")` into the entry every consumer loaded — and shipped ~88 KB of driver
+ * code to people who never touch S3, while three documents went on saying the entry was SDK-free. A full green
+ * local gate and 13 CI jobs passed over it. Measured against esbuild and webpack, a consumer without the SDKs
+ * installed could no longer build at all, including one who never called the feature: a bundler resolves
+ * specifiers before it tree-shakes.
  *
  * WHAT IS CHECKED. For `@cloudbitmaps/core` and `@cloudbitmaps/roaring`: the ESM entry, every module
  * reachable from it (transitively, lazy `import()` included), and the published `.d.ts` tree. A type-only
  * `import('@aws-sdk/client-s3')` in `index.d.ts` is invisible to eslint (it is a `TSImportType`) and is a
  * hard `Cannot find module` for any consumer building with `skipLibCheck: false`.
  *
- * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary
- * used to be a directory inside core and is now a package name, which is why this is a list of packages to
- * skip rather than a path prefix to avoid — and why core is now SDK-free unconditionally rather than
- * SDK-free outside three directories.
+ * WHAT IS NOT. The three driver packages, which name an SDK because that is what they are for. The boundary is
+ * a package name, so this is a list of packages to skip rather than a path prefix to avoid, and core is
+ * SDK-free unconditionally.
  */
 const { findSdkSpecifiers } = require('./sdk-specifiers.cjs');
 const { findSpecifiers, allSpecifiers, EXTENSIONED } = require('./dts-specifiers.cjs');
@@ -393,20 +382,12 @@ function assertEntrySdkFree(pkgDir) {
   // Everything the main entry can reach, followed TRANSITIVELY and through lazy `import()` as well as
   // static `from`.
   //
-  // This used to read `index.cjs` plus the chunks `index.js` imported statically — one level, static only —
-  // and the CJS bundle covered everything past that level, because with no code splitting it inlined the
-  // entry's whole transitive closure into one file. Dropping it removed that cover, so the walk has to
-  // reproduce the set directly.
+  // One level of static imports would miss a chunk imported by a chunk, or a lazy `import()`; this walk keeps
+  // holding if either ever appears. Neither does today: there is not one dynamic import in either package's
+  // source, which is why both entries report 2 reachable modules.
   //
-  // It reproduces it and does not exceed it: comparing the modules named in the sourcemaps, the old pair
-  // covered 48 source modules and this walk covers the same set. The point is not more coverage — it is the
-  // same coverage that no longer depends on a second bundle format existing, and that keeps holding if a
-  // lazy `import()` or a chunk-imported-by-chunk ever appears. Neither does today: there is not one dynamic
-  // import in either package's source, which is why both entries report 2 reachable modules.
-  //
-  // Scoping is now a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which
-  // this walk never enters, so there is no longer a driver-only chunk inside core or the flavor for it to
-  // have to avoid.
+  // Scoping is a package boundary rather than a chunk boundary: an SDK lives in a driver PACKAGE, which this
+  // walk never enters, so there is no driver-only chunk inside core or the flavor for it to have to avoid.
   const reachable = (entry) => {
     const seen = new Set();
     const queue = [entry];
@@ -434,9 +415,8 @@ function assertEntrySdkFree(pkgDir) {
   //
   // Only for a package with MORE THAN ONE entry, because only then is there anything to code-split. A
   // single-entry package legitimately emits no chunk — everything lands in `index.js`, so walking that one
-  // file already covers the whole reachable graph. Requiring a chunk unconditionally turned the package
-  // split into a false alarm: the flavor dropped from four entries to one and this fired saying the build
-  // had stopped splitting, which was true and fine.
+  // file already covers the whole reachable graph. Requiring a chunk unconditionally would turn every
+  // single-entry package — the flavor is one — into a false alarm saying the build had stopped splitting.
   const entryCount = entriesOf(pkgDir).length;
   if (entryCount > 1 && !entryGraph.some((f) => path.basename(f).startsWith('chunk-'))) {
     throw new Error(
@@ -452,7 +432,7 @@ function assertEntrySdkFree(pkgDir) {
       throw new Error(
         `@cloudbitmaps/${pkgDir}: dist/${file} names a cloud SDK (${hits.join(', ')}).\n` +
           `  The main entry must stay SDK-free so \`npm i\` pulls only the backends a consumer actually uses.\n` +
-          `  A driver is reached ONLY through its own subpath entry (@cloudbitmaps/${pkgDir}/<cloud>), and the\n` +
+          `  A driver is reached ONLY through its own package (@cloudbitmaps/s3, /gcs, /azure-blob), and the\n` +
           `  main entry must not name the SDK at all — not statically, not via \`import()\`, not in a type.\n` +
           `  If a main-entry module needs driver behaviour, put the behaviour behind a port in core/ports and\n` +
           `  let the caller inject a driver they imported themselves.`,

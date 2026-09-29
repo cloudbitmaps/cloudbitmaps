@@ -78,8 +78,8 @@ That single rule prevents the torn restore. It holds because storage generations
 every `currentGen` the registry named at time *T* referred to a `.crbm` that was already durable by *T* (the
 object is written and verified before the pointer moves), so a storage snapshot taken at *T* or later contains it.
 To make the rule achievable you need **object versioning covering the `registry/` prefix**, and a restore
-that is coordinated with storage — which is easier than it used to be, since both now live in the same bucket
-and share one version history:
+that is coordinated with storage — which one bucket makes easier, since both live in it and share one version
+history:
 
 - **Storage (the object store):** enable **versioning** (S3 versioning / bucket-level object versioning). Immutable
   generations mean you rarely need to roll storage back at all.

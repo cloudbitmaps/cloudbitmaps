@@ -49,7 +49,7 @@ describe('bulk-load across the flush boundary', () => {
 
   // NOT covered here, deliberately: reading the written object back through a storage source. Wiring one needs a
   // driver shape `MemoryStorageDriver` does not satisfy, and the payload round-trip is already exercised at
-  // smaller scale by the dr-drill, compaction and key-rotation suites — plus the `.crbm` format carries a
+  // smaller scale by the dr-drill and key-rotation suites — plus the `.crbm` format carries a
   // per-chunk CRC32C, so silent byte corruption fails closed on read regardless. The failure mode UNIQUE to
   // the flush is losing ids, and the cardinality assertion above is what catches that.
 });

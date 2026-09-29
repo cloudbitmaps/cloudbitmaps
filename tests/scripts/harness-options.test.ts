@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { MOVED_OPTIONS } from '@/moved-options';
 
 /**
- * The executable harnesses — `scripts/`, `bench/` — must not construct a store with an option that moved.
+ * The executable harnesses — `scripts/`, `bench/` — must not construct a store with an option key it refuses.
  *
  * WHY THIS EXISTS. Three of these shipped broken in a row, each found by something other than a gate:
  *
- *   - `scripts/smoke.cjs` passed `registry` after the backend class removed it. Found only when the new
+ *   - `scripts/smoke.cjs` passed a top-level `registry`, which the store does not take. Found only when the
  *     constructor guard turned a silent ignore into a throw.
  *   - `bench/soak.cjs` (x2) and `bench/scale.cjs`, same key. Found by an adversarial review, after the sweep
  *     that fixed `scripts/` stopped short of `bench/`. `docs/benchmarks.md` cites `pnpm bench:scale` as the
@@ -33,19 +33,15 @@ import { MOVED_OPTIONS } from '@/moved-options';
 const ROOT = join(__dirname, '..', '..');
 
 /**
- * Option keys that no longer exist at the top level of a store config, and where each one went.
+ * Option keys the store refuses at the top level of its config, and what to write instead.
  *
- * DERIVED, not retyped. The hand-maintained copy that used to sit here had drifted into a strictly worse
- * state than no list at all: it carried three names (`storageGenTtlMs`, `storageReaderCacheMax`,
- * `storageReaderCacheMaxBytes`) that no release ever shipped, so the gate spent its effort watching for
- * spellings nobody can have written, while the five options that actually vanished with the live tier —
- * `warm`, `warmReadConsistency`, `maxWarmScanBytes`, `writeConcurrency`, `occBackoff` — were not checked at
- * all. A harness passing one of those would have sailed through. The store's own `MOVED_OPTIONS` is the
- * thing that decides at runtime, so it is the thing to read.
+ * DERIVED, not retyped. The store's own `MOVED_OPTIONS` is the thing that decides at runtime, so it is the
+ * thing to read: a hand-maintained copy here would drift from it, and a harness passing a key the copy missed
+ * would sail through.
  */
-const MOVED: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.map(([from, to, kind]) => [
+const REFUSED: ReadonlyArray<readonly [string, string]> = MOVED_OPTIONS.map(([from, to, kind]) => [
   from,
-  kind === 'gone' ? `gone — ${to}` : `now ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
+  kind === 'gone' ? 'not an option' : `use ${/^[\w.]+$/.test(to) ? `\`${to}\`` : to}`,
 ]);
 
 const files = execFileSync('git', ['ls-files', 'scripts/*', 'bench/*'], {
@@ -70,8 +66,8 @@ function topLevelOptionBodies(src: string): { body: string; line: number }[] {
         if (depth === 0) break;
       }
     }
-    // Blank nested groups so a legitimate `storage: { storage, registry }` backend literal — which is how
-    // these harnesses now pass their two halves — is not read as a top-level `registry`.
+    // Blank nested groups so a legitimate nested object — a `cache: { … }` group, or a `{ storage, registry }`
+    // literal handed to `createBackend` — is not read as a top-level key.
     let flat = '';
     let d = 0;
     for (const ch of src.slice(open + 1, end)) {
@@ -95,9 +91,11 @@ describe('the executable harnesses build a store the way the docs say', () => {
     const src = readFileSync(join(ROOT, file), 'utf8');
     const offenders: string[] = [];
     for (const { body, line } of topLevelOptionBodies(src)) {
-      for (const [key, moved] of MOVED) {
+      for (const [key, hint] of REFUSED) {
         if (new RegExp(`(^|[{,\\s])${key}\\s*([:,}]|$)`, 'm').test(body)) {
-          offenders.push(`${file}:${line} — passes \`${key}\` to CloudRoaring; it is ${moved}`);
+          offenders.push(
+            `${file}:${line} — passes \`${key}\` to CloudRoaring, which refuses it: ${hint}`,
+          );
         }
       }
     }

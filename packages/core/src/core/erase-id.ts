@@ -441,9 +441,7 @@ export async function eraseIdFromSegment(
   // event while the second one's generation put the FIRST one's id back, deleting the generation that had
   // evidenced its removal. A false Art. 17 receipt is the worst output this module can produce.
   //
-  // `expectFrom` makes the publish land only while the pointer is still exactly `from`. The predecessor
-  // (the removed `compactSegment`) had the same fence as an explicit re-read; it was lost in the move to
-  // `nextGeneration`.
+  // `expectFrom` makes the publish land only while the pointer is still exactly `from`.
   //
   // Reported, not thrown — the caller re-runs against the new generation, which may or may not still hold the id.
   const published = await publishGeneration(deps.registry, key, {

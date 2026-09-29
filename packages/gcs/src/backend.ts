@@ -4,8 +4,8 @@
  * See {@link StorageBackend} for why the two halves are configured together rather than separately.
  *
  * **A note on the word.** `@google-cloud/storage` names its own client class `Storage`, so the driver option
- * that takes it is also called `storage` — which, since our durable tier is now called storage too, reads as
- * the same word meaning two things. That is why this class builds the client itself: `new GcsStorage({ bucket })`
+ * that takes it is also called `storage` — which, since this library calls its durable tier storage too, reads
+ * as the same word meaning two things. That is why this class builds the client itself: `new GcsStorage({ bucket })`
  * never makes you write `{ storage: storage }`. Supply `client` when you need your own.
  */
 import { STORAGE_BACKEND, ValidationError, brandAsBackend } from '@cloudbitmaps/core/driver-kit';

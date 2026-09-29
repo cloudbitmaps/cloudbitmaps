@@ -89,10 +89,10 @@ export interface RetireExpiredOptions {
    *   expiring**. Each candidate's live row is still re-read before anything is decided, so a stale pointer
    *   costs one read and retires nothing.
    *
-   * **`'index'` is not a drop-in replacement for `'fleet'`; it is the fast half of a pair.** A policy written
-   * before the index existed, or one whose pointer write failed (`indexed: false`), has no pointer — so a
+   * **`'index'` is not a drop-in replacement for `'fleet'`; it is the fast half of a pair.** A policy whose
+   * pointer write failed (`indexed: false`), or whose ref is too long to index, has no pointer — so a
    * deployment that *only* ever runs `'index'` will never retire those. Run `'fleet'` periodically as the
-   * repair pass. The default stays `'fleet'` so that upgrading changes nothing about what gets retired.
+   * repair pass. The default is `'fleet'` because it is complete by construction.
    */
   readonly scan?: 'fleet' | 'index';
   /**
@@ -317,9 +317,9 @@ export async function retireExpired(
   const dryRun = options.dryRun === true;
 
   // Drain the enumeration first, bounded. The sweep mutates rows as it goes (a tombstone CAS, a row delete), and
-  // iterating a live listing while doing so is driver-dependent — a Scan may or may not observe its own writes.
-  // Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on it,
-  // because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
+  // iterating a live listing while doing so is driver-dependent — a paged listing may or may not observe its own
+  // writes. Draining makes the candidate set a snapshot; the retire path then RE-READS each row before acting on
+  // it, because deciding an irreversible deletion from a minutes-old copy is not the same as enumerating from one.
   const scan = options.scan ?? 'fleet';
   const rows =
     scan === 'index'

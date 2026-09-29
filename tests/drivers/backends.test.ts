@@ -260,8 +260,8 @@ describe('a backend is all the wiring a store needs', () => {
     const readOnly = new CloudRoaring({ storage: backend.storage });
     expect(await readOnly.segment('s').count()).toBe(1);
     // …and the verbs that must publish through a pointer say so, rather than half-working.
-    // The message must name what to DO, not an option that no longer exists — an earlier version said
-    // "needs a `registry` in the store config", sending the reader to add a key TypeScript rejects.
+    // The message must name what to DO — build the store on a backend — rather than send the reader to add a
+    // `registry` key, which TypeScript rejects.
     await expect(readOnly.dropSegment({ segment: 's' }, { confirmSegment: 's' })).rejects.toThrow(
       /needs a storage backend/,
     );

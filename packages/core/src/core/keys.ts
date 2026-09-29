@@ -2,10 +2,9 @@
  * Canonical key encoding for a segment / chunk — one source of truth, used by both the storage
  * drivers and the cache (DRY). The encoding is collision-proof and injection-proof.
  *
- * **The name parts are encoded, and that is what makes the delimiters safe.** This module used to rest on the
- * name grammar instead: a space and `/` were characters a name could not contain, so neither could be injected
- * across a field. When the grammar was deleted — a name is any non-empty string now — that argument silently
- * became false, and two distinct segments could produce one key:
+ * **The name parts are encoded, and that is what makes the delimiters safe.** A name is any non-empty string,
+ * so it may contain a space or a `/`, and with the parts left literal two distinct segments could produce one
+ * key:
  *
  * ```
  * segmentKey({ segment: 's' })                     → "/ s"
@@ -18,12 +17,12 @@
  * another's data on the read path, on every backend — invariant 3, and a tenant-isolation break.
  *
  * `encodeNameForKey` escapes both delimiters (`/` → `%2F`, space → `%20`) along with control characters, so
- * the original argument holds again — but now as a property of the encoding rather than of a grammar that can
- * be relaxed out from under it. The absent-namespace sentinel keeps the same ours-vs-theirs asymmetry the
+ * neither can be injected across a field — a property of the encoding, not of what a caller chooses to name
+ * things. The absent-namespace sentinel keeps the same ours-vs-theirs asymmetry the
  * storage keys use: it is emitted literally while a caller's namespace is encoded, so a namespace actually
  * named `/` encodes to `%2F` and cannot impersonate it.
  *
- * These keys are in-memory and driver-internal, so encoding them moves nothing on disk.
+ * These keys are in-memory and driver-internal; nothing on disk is named by them.
  */
 import { encodeNameForKey } from './name-codec';
 import type { ChunkRef, SegmentRef } from './ports';
@@ -45,7 +44,7 @@ export function chunkRefKey(ref: ChunkRef): string {
 }
 
 /**
- * CACHE-cache key for a chunk scoped to a specific **version** of the segment — {@link chunkRefKey} plus that
+ * Cache key for a chunk scoped to a specific **version** of the segment — {@link chunkRefKey} plus that
  * version (space-delimited, injection-proof exactly as above — the name parts are already encoded). A publish bumps the version, so it naturally
  * misses the cache instead of serving a stale superseded chunk, and the superseded entries age out under the
  * LRU ceiling (no active purge needed).

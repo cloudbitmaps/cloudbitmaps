@@ -197,7 +197,7 @@ export { excludingReservedRows } from './core/registry-scan';
 
 // The due index — a time-bucketed set of the segments that carry an expiry, so a retention cycle costs what is
 // EXPIRING rather than what the fleet HOLDS. Built out of registry rows (no driver change); a fast path only,
-// with the full scan demoted to a periodic repair pass, so a stale or missing pointer can never lose data.
+// with the full scan as the periodic repair pass, so a stale or missing pointer can never lose data.
 // Nothing here is exported: a caller never builds a bucket name or a synthetic row, and `retireExpired`
 // consults it for them when asked for it (`retireExpired({ scan: 'index' })`; the default `'fleet'` scan
 // drains the registry instead). `excludingReservedRows` above is the one piece an outside caller needs.

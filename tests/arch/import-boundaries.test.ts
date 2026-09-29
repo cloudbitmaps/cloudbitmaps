@@ -97,14 +97,13 @@ describe('architecture: import boundaries (eslint no-restricted-imports)', () =>
   });
 
   it('neither published package names a cloud SDK or a driver package', async () => {
-    // Core is now SDK-free UNCONDITIONALLY, not merely outside three directories: the cloud drivers are
-    // their own packages, so there is nowhere in core an SDK is allowed. That is why core carries no
-    // optional peer dependencies any more.
+    // Core is SDK-free UNCONDITIONALLY, not merely outside some directories: the cloud drivers are their own
+    // packages, so there is nowhere in core an SDK is allowed, and core carries no optional peer dependencies.
     expect(
       await boundaryErrors(CORE_ROOT, "import { S3Client } from '@aws-sdk/client-s3';\nS3Client;"),
     ).toHaveLength(1);
-    // A flavor does not re-export a driver package. It used to, through one barrel per service; re-exporting
-    // one now would put that SDK back into every install, which is the thing the split removes.
+    // A flavor does not re-export a driver package: re-exporting one would put that SDK into every install,
+    // which is what separate driver packages exist to prevent.
     expect(
       await boundaryErrors(ROARING_ROOT, "export * from '@cloudbitmaps/azure-blob';"),
     ).toHaveLength(1);

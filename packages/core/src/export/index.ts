@@ -206,7 +206,7 @@ export async function runExport(
   };
 
   for await (const rec of registry.list(options.namespace)) {
-    // A coordination row is not a segment: an unscoped eject would otherwise write one empty file per partition
+    // A due-index pointer row is not a segment: an unscoped eject would otherwise write one empty file per pointer
     // into the portability dump — the artifact whose whole value is being a faithful copy of the user's data.
     if (options.namespace === undefined && isReservedRow(rec)) continue;
     if (rec.status === 'destroyed') continue; // crypto-shredded → bytes unrecoverable; nothing to export

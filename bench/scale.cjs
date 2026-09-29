@@ -68,10 +68,9 @@ function library() {
   return require('@cloudbitmaps/roaring');
 }
 
-// The library's own default scan ceiling. It used to arrive as `DEFAULT_MAX_SCAN_SEGMENTS`; curating core's
-// public surface made that constant internal, so the bench states the number it is measuring against rather
-// than reaching for a name it no longer has. If core's default moves, this is a deliberate bench parameter
-// and not a silent disagreement.
+// The library's own default scan ceiling. Core keeps that constant internal, so the bench states the number it
+// is measuring against rather than reaching for a name it does not export. If core's default moves, this is a
+// deliberate bench parameter and not a silent disagreement.
 const SCAN_CEILING = 250_000;
 
 const ROOT = path.resolve(__dirname, '..');

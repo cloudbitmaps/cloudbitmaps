@@ -135,7 +135,7 @@ describe('registry-aware CrbmStorageChunkSource', () => {
     const first = await source.getChunk({ segment: 's', chunkKey: 0 });
     expect(SafeBitmap.safeDeserialize(first!, 1 << 20).toArray()).toEqual([1, 2]);
 
-    // A compaction commits gen 1 and GC sweeps gen 0 — the exact object this source still points at.
+    // A load commits gen 1 and GC sweeps gen 0 — the exact object this source still points at.
     await bulkLoadCrbmGeneration(storage, { ...SEG, generation: 1 }, [1, 2, 3], { registry });
     await storage.delete({ ...SEG, generation: 0 });
 

@@ -192,23 +192,6 @@ describe('documentation code samples', () => {
     (from) => !STILL_VALID_ONE_LEVEL_DOWN.has(from),
   );
 
-  // A migration note has to show the old spelling — that is its whole job. So the rule is not "never write
-  // the removed key", it is "label it when you do": the line, or the one above it, must carry a `// before`
-  // marker. That is a tightening rather than an exemption, since an unlabelled before/after block is exactly
-  // as copy-pasteable, and exactly as broken, as an ordinary sample.
-  // A line is historical when the NEAREST preceding marker is `// before`. A before/after block writes the
-  // marker once at the top of each half, so scanning the whole prefix is too permissive — it would excuse the
-  // *after* half as well, which is the half that must be correct. Checking only the previous line is too
-  // strict, because the marker sits above the whole block. The nearest marker is the one that applies.
-  const isMarkedAsHistorical = (lines: string[], i: number): boolean => {
-    for (let k = i; k >= 0; k--) {
-      const line = lines[k] ?? '';
-      if (/\/\/\s*after\b/i.test(line)) return false;
-      if (/\/\/\s*before\b/i.test(line)) return true;
-    }
-    return false;
-  };
-
   // `registry` is a special case: it is gone from `CloudRoaringOptions`, but it is still a perfectly good
   // option on `bulkLoadCrbmGeneration` and the lifecycle free functions. Listing it above would flag every
   // correct load example, so the check is scoped to the one literal it was removed from — which means
@@ -249,8 +232,6 @@ describe('documentation code samples', () => {
         }
         const body = code.slice(open + 1, end);
         const line = fence.line + code.slice(0, open).split('\n').length - 1;
-        if (isMarkedAsHistorical(code.split('\n'), code.slice(0, open).split('\n').length - 1))
-          continue;
         // Top-level `registry` only. Everything nested is blanked out FIRST, because a legitimate backend
         // literal — `storage: createBackend({ storage: driver, registry: myRegistry })` — carries a perfectly correct
         // `registry` one level down, and on a single line a per-line depth counter still reads it as top
@@ -280,18 +261,16 @@ describe('documentation code samples', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('names no option key that was removed, unless the sample marks it `// before`', () => {
+  it('names no option key the store refuses', () => {
     const offenders: string[] = [];
     for (const fence of allFences) {
       const lines = fence.code.split('\n');
       lines.forEach((raw, i) => {
-        if (isMarkedAsHistorical(lines, i)) return;
         for (const key of REMOVED_KEYS) {
           // `key:` as an object property — not `key.foo`, not a string, not a word in a comment.
           if (new RegExp(`(^|[{,(\\s])${key}\\s*:`).test(raw.replace(/\/\/.*$/, ''))) {
             offenders.push(
-              `${fence.file}:${fence.line + i + 1} — sample uses the removed \`${key}:\` option ` +
-                '(mark it `// before` if it is deliberately showing the old API)',
+              `${fence.file}:${fence.line + i + 1} — sample uses the \`${key}:\` option, which the store refuses`,
             );
           }
         }
