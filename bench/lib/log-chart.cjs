@@ -2,9 +2,8 @@
  * A log–log chart as one self-contained SVG, in the style of the benchmarks page's crossover chart (bench/run.cjs),
  * drawn once for each theme. That chart is inlined into a site page, whose stylesheet themes it through
  * `var(--token)`; these are shown as images on GitHub, where no stylesheet reaches inside an SVG, so each theme's
- * palette is written into its own file and the page picks one with `<picture>` and `prefers-color-scheme`. Both
- * palettes were run through the dataviz palette validator on their own card: lightness, chroma, colour-vision
- * separation and contrast. Every shape carries an explicit fill, and nothing is encoded by colour alone: each line
+ * palette is written into its own file and the page picks one with `<picture>` and `prefers-color-scheme`. Each
+ * palette's colours are chosen against its own card for lightness, chroma, colour-vision separation and contrast. Every shape carries an explicit fill, and nothing is encoded by colour alone: each line
  * and each region is labelled in words beside it.
  *
  * Used by bench/sizing.cjs. It draws what it is given and refuses what it cannot draw honestly, rather than
