@@ -230,12 +230,10 @@
               </tbody>
             </table>
           </div>
-          <!-- This table argued adaptivity and, until 0.6.0, offered nothing to check it against. Worse, the
-               "and run" in the row above was not true of the shipped codec: roaring's run form is never
-               selected automatically, it takes an explicit pass, and the library was not making it — so storage
-               objects only ever held arrays and bitsets. `pnpm bench:encoding` was written to substantiate the
-               claim and instead found that, which is the better outcome. The figures below are that
-               benchmark's, gated against bench/encoding-results.json.
+          <!-- This table argues adaptivity, and each factor in it is checked against the encoding benchmark. The
+               "and run" in the row above holds because the codec makes roaring's run form, which is never
+               selected automatically and takes an explicit pass. The figures below are the benchmark's, from
+               `pnpm bench:encoding`, gated against bench/encoding-results.json.
 
                Sibling of the band below, deliberately OUTSIDE .tscroll: that div is `overflow-x: auto` around a
                `min-width: 420px` table, so prose placed inside it inherits the table's scroll width and has to

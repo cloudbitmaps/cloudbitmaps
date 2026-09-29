@@ -23,8 +23,8 @@
  * The trap that motivated the --tag handling: `npm publish` defaults --tag to `latest` unconditionally and is
  * NOT semver-aware (`npm config get tag` -> latest). "Prereleases aren't installed by default" is a property of
  * range resolution and only holds while `latest` points elsewhere. On a FIRST publish there is nothing else for
- * it to point at, so an untagged 0.1.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
- * dist-tag is therefore derived from the prerelease identifier (0.1.0-rc.0 -> `rc`) rather than left to default.
+ * it to point at, so an untagged 0.10.0-rc.0 becomes `latest` and plain `npm i` serves the throwaway. The
+ * dist-tag is therefore derived from the prerelease identifier (0.10.0-rc.0 -> `rc`) rather than left to default.
  *
  * That is necessary but NOT sufficient, which was established against a real registry rather than assumed: a
  * registry may point `latest` at a package's first version anyway, and `npm dist-tag rm … latest` is refused.
@@ -49,7 +49,7 @@ if (unknown.length > 0) {
   process.exit(2);
 }
 const CONFIRM = argv.includes('--confirm');
-// Escape hatch for the "publish the real 0.1.0 by hand" variant of the bootstrap, which RELEASING.md
+// Escape hatch for the "publish the real release by hand" variant of the bootstrap, which RELEASING.md
 // documents but does not recommend: it trades the provenance attestation on the launch artifact for one
 // fewer version on the registry.
 const ALLOW_RELEASE = argv.includes('--allow-release');

@@ -602,7 +602,7 @@ interface LifecycleDeps {
 }
 
 /**
- * Options that moved into a group, and where each one went.
+ * Option spellings the store does not take, and a caller may still pass: each is refused with what to write instead.
  *
  * TypeScript rejects these at the call site, which covers most callers. It does not cover a plain-JS caller, a
  * config object that arrived as JSON, or anything that reached the constructor through an `as` cast — and for
@@ -613,13 +613,13 @@ interface LifecycleDeps {
  * None of those announces itself; each looks like the store simply working.
  */
 /**
- * How a `0.9.x` option is answered: it moved into a group, it was renamed, or it is gone.
+ * How such an option is answered: it is set in a group, it is spelled differently, or the store has no such
+ * option.
  *
- * The category is DATA, not inferred from how the guidance happens to be punctuated. The first version
- * decided by testing whether the replacement text looked like an identifier, which got two entries wrong in
- * opposite directions: `registry` HAS a successor and was announced as "removed", and `cold` → `storage` was
- * announced as "moved into a group" when `storage` is the one required flat option, not a group. A reader
- * told to look in a group that does not exist is the failure this whole guard is about.
+ * The category is DATA, not inferred from how the guidance happens to be punctuated: guessing it from whether the
+ * replacement text looks like an identifier announces `registry`, which has a counterpart, as having none, and
+ * sends `cold` to a group when `storage` is the one required flat option. A reader told to look in a group that
+ * does not exist is the failure this whole guard is about.
  */
 export class CloudRoaring {
   private readonly engine: SegmentEngine;
@@ -640,10 +640,10 @@ export class CloudRoaring {
   private readonly budget: Budget | null;
 
   /**
-   * Refuse an option that moved into a group, naming where it went.
+   * Refuse an option spelling the store does not take, naming what to write instead.
    *
-   * Silently ignoring one would be the exact failure this release exists to remove — see {@link MOVED_OPTIONS}
-   * for why each of these is unsafe to drop rather than merely untidy.
+   * Silently ignoring one is the failure this guards against — see {@link MOVED_OPTIONS} for why each of these is
+   * unsafe to drop rather than merely untidy.
    */
   private static rejectMovedOptions(options: CloudRoaringOptions): void {
     // A nullish or non-object bag never reaches `resolveStorageSource` — the constructor reads
@@ -659,7 +659,7 @@ export class CloudRoaring {
     if (moved.length === 0) return;
     // One clause per kind, so a reader is never sent to a group that will not have their key. The intra-
     // clause separator is ` · ` rather than a comma: the guidance prose contains commas and semicolons of its
-    // own, and "…see MIGRATING.md change 1, `warmReadConsistency` → …" reads as one continued sentence.
+    // own, and a comma-joined list reads as one continued sentence.
     const clause = (kind: MovedOptionKind, one: string, many: string): string | null => {
       const hits = moved.filter(([, , k]) => k === kind);
       if (hits.length === 0) return null;
@@ -673,15 +673,14 @@ export class CloudRoaring {
       return `${hits.length > 1 ? many : one}: ${body}`;
     };
     const parts = [
-      clause('group', 'option moved into a group', 'options moved into groups'),
-      clause('renamed', 'option renamed', 'options renamed'),
-      clause('gone', 'option removed', 'options removed'),
+      clause('group', 'set in a group', 'set in groups'),
+      clause('renamed', 'spelled differently', 'spelled differently'),
+      clause('gone', 'not an option', 'not options'),
     ].filter((c): c is string => c !== null);
     throw new ValidationError(
-      `CloudRoaring ${parts.join('; ')}. ` +
-        'Options are now one required `storage` plus four optional groups — `cache`, `encryption`, ' +
-        '`retry` and `seams`. `metrics` and `budget` are unchanged flat options; leave them as they are. ' +
-        'Full guide: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/MIGRATING.md',
+      `CloudRoaring options ${parts.join('; ')}. ` +
+        'The store takes one required `storage` and four optional groups — `cache`, `encryption`, `retry` ' +
+        'and `seams` — beside the flat `metrics` and `budget`: https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/guide/api-reference.md#build-a-store--new-cloudroaringoptions',
     );
   }
 

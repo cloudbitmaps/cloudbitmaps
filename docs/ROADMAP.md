@@ -32,27 +32,21 @@ fuzzing of the untrusted-`.crbm` boundary, and mutation testing of the highest-r
 
 **Where it is headed (September 2026).** `1.0` centres on the **loaded store**: sets are computed upstream and
 loaded as immutable generations, then read and chunk-skipping-intersected from anywhere — one bucket, one
-registry row per segment, no background process. The **live tier** — per-call `add`/`remove` over a warm NoSQL
-store, the compaction that folded those deltas into storage, and the partition leases that scheduled it — has left
-this line in two steps. The first removed the lifecycle engine and the five non-AWS warm drivers; the second
-removed the warm tier as a whole: the DynamoDB warm driver, compaction, the write verbs, and the write side
-of the cost model. All of it is archived intact at the git tag `archive/live-warm-tier`, and `0.9.x` stays on
-npm as the last line with a warm tier. Every roaring-based engine that needs freshness micro-batches into
-immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds. A
-future live tier, if there is demand, would be immutable delta generations on the same bucket.
+registry row per segment, no background process. Every roaring-based engine that needs freshness micro-batches
+into immutable segments rather than mutating a stored bitmap per call; that is the shape this library builds.
+Per-call freshness, if there is demand, would be immutable delta generations on the same bucket.
 
 Where each piece sits today:
 
 | | Status |
 | --- | --- |
 | Loads, reads, chunk-skipping combines, `*Into` materialisation, subject erasure as a rewrite, crypto-shred, disposal, retention, the DR check, export | **shipped** — [below](#shipped-today) |
-| The live (warm) tier | **removed in two steps** ([above](#where-it-stands) — the lifecycle engine and non-AWS drivers, then the tier as a whole), archived at the git tag `archive/live-warm-tier` |
 | Loaded-store benchmarks — load throughput, intersect latency | **owed**. Their **bill** is measured: the September 2026 calibration run (`2026-09-23-94416`) put the single-bucket topology on real S3 — the median cold intersect of two 500,000-id segments sharing 100 of 1,999 chunks made 206 GETs as measured, $82.40 per million, and inside the region it is expected at 204 GETs, $81.60; writing and publishing a segment is $11.20 per million, pointer included, and `store.load()` is expected at about twice that — and the [benchmarks page](benchmarks.md#the-single-bucket-bill--run-2026-09-23-94416) publishes it. Their **latency and throughput** are not: that run was driven from a laptop outside the region, so its timings measured the connection. The **RSS ceiling** is measured and published — it needs no cloud account, because a cgroup limit is enforceable locally. The harness is built and has run twice against a real account, once publishably; its in-region run is still owed |
 | `load()` with the empty guard and `guard: { minCardinality, minRetained }` | **shipped** — `store.load(ref, ids)` is the write path in one call: next generation → write → guard → publish → collect. A refusal is reported (`published: false` + `reason`), not thrown, and the object it wrote is deleted again |
 | `generations()` + `rollback()` | **shipped** — see what a segment has been and put the pointer back, the one write that is not forward-only. Refuses a collected target, a crypto-shredded segment, and an above-pointer target without an explicit opt-in |
-| No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it. Fixes a hazard the old grammar *permitted* (Windows device names like `con`), closes a sentinel collision, and keeps every previously legal name byte-identical in an object-store key; on LocalFs two classes (Windows device names, trailing dots) are escaped and need a documented one-off migration. Size is the one remaining limit |
-| `exists()` + `segments()` | **shipped** — the registry always knew which segments existed; nothing exposed it, so the answer had to be inferred from `count()` (which cannot tell *never loaded* from *loaded and empty*) or a bucket listing, and the fallback was keeping a hand-maintained list of names beside the store. `exists()` is one point read; `segments()` streams the registry's own enumeration, namespace-scoped, admin-path |
-| Extending the load guard to the `*Into` verbs | **shipped** — a materialisation routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` restores the old behaviour where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
+| No restrictions on names | **shipped** — a name is any non-empty string; each storage layer escapes what it cannot take literally rather than the library rejecting it, Windows device names like `con` and names ending in a dot included on the local filesystem. Size is the one limit |
+| `exists()` + `segments()` | **shipped** — `exists()` is one point read of the registry, and `segments()` streams the registry's own enumeration, namespace-scoped, admin-path. Neither is inferred from `count()`, which cannot tell *never loaded* from *loaded and empty*, and neither needs a list of names kept beside the store |
+| Extending the load guard to the `*Into` verbs | **shipped** — a materialisation routes through the same guarded write path as `load()`, so an empty or implausible combine is refused (`published: false` + `reason`) instead of replacing `dest`. `allowEmpty: true` publishes an empty result where emptying the destination is the intent; `guard: { minCardinality, minRetained }` adds the plausibility bounds, judged against what `dest` held |
 | A snapshot handle, so a long job reads one instant | **shipped** — `segment.pin()` resolves the generation once and holds it, so an export or a reconciliation describes a single instant. Only that segment is pinned; an ordinary handle still re-resolves on `cache.genTtlMs` |
 | A public docs + site pass leading with the loaded store's strengths | **next** |
 | WASM CRoaring research | **after** the loaded store |
@@ -247,16 +241,13 @@ between here and there:
    erased generation whatever `keep` says; it leaves the TTL, evictions and invalidations.
    Size `keep` past your longest pinned job — a pinned read does not heal
    forward, it fails, which is the honest failure for a caller that asked for one instant.
-5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry went from **89 value exports
-   in `0.9.0` to 82**: the due-index scheduler, `.crbm` construction, object-key layout and a set of defaults already
-   stated in prose stopped being importable. They had accumulated
-   there because nothing forced the question, and a reader could not tell supported API from plumbing that
-   happened to be reachable. `1.0` freezes the format; a surface this size is the other half of that promise,
-   and a name is far cheaper to *add* later than to take away. Twelve of the removals were public in `0.9.x`
-   and are listed in [`MIGRATING.md`](../MIGRATING.md#7-core-exports-only-what-it-supports). Two further removals — `aadFor` and `checkBudget` — were
-   reverted after an adversarial review, which is what takes 80 to the 82 above; a third,
-   `readRetentionPolicy`, was pulled back before the change ever landed, so it never left the surface. Each was the same case: a public type or field that only the
-   symbol being cut could produce or consume, which is the test worth applying to any surface reduction. The API reference guard now runs in both directions.
+5. **A curated public surface — ✅ Shipped.** `@cloudbitmaps/core`'s main entry exports what the library
+   supports and not what it merely happens to reach: the due-index scheduler, `.crbm` construction internals,
+   object-key layout and defaults stated in prose are not importable. `1.0` freezes the format; a small surface is
+   the other half of that promise, and a name is far cheaper to *add* later than to take away. A symbol stays when
+   a public type or field needs it to be produced, parsed or consumed, which is why `aadFor`, `checkBudget` and
+   `readRetentionPolicy` are exported, and that is the test worth applying to any surface reduction. The API
+   reference guard runs in both directions.
 6. **A public docs + site pass leading with the loaded store's strengths — ✅ Shipped.** The README, the guide,
    the API reference, the migration guide and the site now lead with what this is: one bucket, immutable
    generations, cheap chunk-skipping reads from anywhere. The framing turned out to be in better shape than
@@ -298,12 +289,11 @@ move it up.
 - **The billions-of-IDs axis** — 64-bit IDs (space is already reserved in the format) plus an external-merge
   bulk load that never buffers the distinct set.
 - **Language ports** — Go, Python, Rust reading and writing the same `.crbm` objects. Strictly *after* the
-  format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet,
-  new in 0.6.0: storage generations now contain **run containers**, which they never did before. Runs are part of
-  the standard portable Roaring format, but a bitmap that has any announces itself with a different header
-  cookie (`SERIAL_COOKIE` rather than `SERIAL_COOKIE_NO_RUNCONTAINER`). Every maintained Roaring
-  implementation reads both; a hand-rolled or cut-down reader may only have been tested against the cookie our
-  objects used to carry, so "it parses our `.crbm` files" is now a claim to re-verify rather than inherit.
+  format freeze; a port before then would be a compatibility trap. One concrete requirement a port must meet:
+  storage generations contain **run containers**. Runs are part of the standard portable Roaring format, but a
+  bitmap that has any announces itself with a different header cookie (`SERIAL_COOKIE` rather than
+  `SERIAL_COOKIE_NO_RUNCONTAINER`). Every maintained Roaring implementation reads both; a hand-rolled or cut-down
+  reader has to be tested against both.
 - **The weaknesses, and a direction for each** — the [what it saves](guide/why-cloudbitmaps.md#what-is-planned-for-each-weakness)
   page has them side by side. None is built; each will be proposed in an issue on this repo before it is, and one that
   changes the public API agreed there first.

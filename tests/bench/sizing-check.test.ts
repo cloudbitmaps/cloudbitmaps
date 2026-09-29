@@ -735,7 +735,7 @@ describe('bench:sizing:check fails what it exists to catch', () => {
     // What it cannot read, it refuses, whether or not a reader would be shown a figure: a number, HTML, an entity, an
     // image, a fence.
     it.each([
-      ['a version', ' From 0.9.x on.', /holds a number, "0\.9\.x"/],
+      ['a version', ' From 2.3.x on.', /holds a number, "2\.3\.x"/],
       ['a year', ' Since December 2020, reads included.', /holds a number, "2020,"/],
       ['a protocol version', ' Over HTTP/2 requests.', /holds a number, "HTTP\/2"/],
       ['a bare address with a digit', ' See https://example.org/a/50 for more.', /holds a number/],

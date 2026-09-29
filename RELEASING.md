@@ -39,7 +39,7 @@ the right direction for it to fail in — but it is an edit, not nothing.
    moves all five `packages/*/package.json` together, then syncs the `VERSION` constant and refreshes the
    lockfile. They must all match the tag exactly; the workflow globs `packages/*/package.json` and refuses
    the release if any one disagrees, so a missed package costs a failed run rather than a partial publish.
-3. **Tag and push:** `git tag v0.1.0 && git push origin v0.1.0`.
+3. **Tag and push:** `git tag v<version> && git push origin v<version>`, the version the manifests carry.
 4. **Approve the deployment** — the run pauses on the `release` environment. Open the run → _Review
    deployments_ → approve `release`.
 5. It publishes all five packages, tokenlessly, with a signed provenance attestation. `pnpm -r publish`

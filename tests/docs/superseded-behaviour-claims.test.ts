@@ -1170,7 +1170,7 @@ describe('no document claims behaviour this library has retired', () => {
       '',
       '- the source **pins** it forever', // line 5: bold, and unreleased
       '',
-      '## [0.1.0]',
+      '## [0.10.0]',
       '',
       '- pins forever', // released: history
     ].join('\n');
@@ -1310,7 +1310,7 @@ describe('no document claims behaviour this library has retired', () => {
 
   it("reads a package's changelog as the root one: its released history is not scanned", () => {
     const changelog =
-      '# c\n\n## [Unreleased]\n\n- pins it forever\n\n## [0.1.0]\n\n- pins it forever';
+      '# c\n\n## [Unreleased]\n\n- pins it forever\n\n## [0.10.0]\n\n- pins it forever';
     expect(hitsIn(join('packages', 'core', 'CHANGELOG.md'), changelog)).toHaveLength(1);
   });
 

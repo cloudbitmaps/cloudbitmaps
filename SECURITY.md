@@ -110,7 +110,7 @@ produced the package they installed**. The controls:
   `id-token: write` and no other write scope). Verify an installed copy with **`npm audit signatures`**, or
   read the "Provenance" panel on the package's npm page. A tarball whose provenance doesn't trace to this repo's
   release workflow should be treated as untrusted. A *publicly-verifiable* attestation requires the source repository to
-  be public and the package published under a real version — both true from `0.1.0` onward, so every tarball
+  be public and the package published under a real version — both true of every release, so every tarball
   **published by the release workflow** carries an attestation you can check yourself.
   **One deliberate exception, and it is visible on the registry.** Creating a package name needs a first
   publish, and npm's Trusted Publisher cannot be bound to a name that does not yet exist — so a new name is

@@ -11,9 +11,6 @@ grown one capability per phase, so it never describes vapor: the planned work it
   sync by CI with each package's own `exports` map. It also documents
   [`@cloudbitmaps/core/driver-kit`](api-reference.md#cloudbitmapscoredriver-kit), the declared contract for
   writing a storage driver package.
-- [**Migrating from 0.9.x**](../../MIGRATING.md) — the cloud drivers became their own packages
-  (`@cloudbitmaps/s3` · `/gcs` · `/azure-blob`), the packages are ESM-only on Node ≥ 22.12, and two
-  constructors changed.
 - [**What it saves, and where it doesn't**](why-cloudbitmaps.md) — CloudBitmaps against an always-on Redis: where
   each bill's money goes, what each grows with, a chart of where each costs less, and what is planned for each
   weakness.

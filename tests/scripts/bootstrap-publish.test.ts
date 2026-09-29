@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 // publish script that is only ever tested up to the publish is untested where it matters most.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SCRIPT = join(ROOT, 'scripts', 'bootstrap-publish.cjs');
-const VERSION = '0.1.0-rc.0';
+const VERSION = '0.10.0-rc.0';
 
 interface Shims {
   /**
@@ -204,10 +204,10 @@ describe('bootstrap-publish', () => {
 
   it('publishes under the prerelease dist-tag', () => {
     const { out, calls } = runScript(['--confirm']);
-    // Derived from the version (0.1.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
+    // Derived from the version (0.10.0-rc.0 -> rc), because npm's default tag is `latest` unconditionally and
     // is not semver-aware.
     expect(out).toMatch(/dist-tag:\s+rc/);
-    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc=0\.10\.0-rc\.0/);
     // Assert the argv actually handed to pnpm, not just the plan the script printed — the printed line and
     // the executed command are two different things, and only one of them reaches the registry.
     expect(calls).toMatch(/^pnpm .*\bpublish\b.*--tag rc\b/m);
@@ -236,14 +236,14 @@ describe('bootstrap-publish', () => {
     // "not found after publish" is the worst wrong answer available directly after an irreversible step.
     const { status, out } = runScript(['--confirm'], { distTagsLagCalls: 1 });
     expect(out).toMatch(/not on the read path yet — waiting for propagation/);
-    expect(out).toMatch(/rc=0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc=0\.10\.0-rc\.0/);
     expect(out).not.toMatch(/not found after publish/);
     expect(status).toBe(0);
   });
 
   it('still fails when the requested dist-tag did not land', () => {
     const { status, out } = runScript(['--confirm'], { distTags: { latest: '9.9.9' } });
-    expect(out).toMatch(/rc is \(unset\), expected 0\.1\.0-rc\.0/);
+    expect(out).toMatch(/rc is \(unset\), expected 0\.10\.0-rc\.0/);
     expect(status).toBe(1);
   });
 

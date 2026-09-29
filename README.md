@@ -607,9 +607,7 @@ against an emulator, so they are **withdrawn rather than counted**, and the load
 owed list in [`docs/benchmarks.md`](docs/benchmarks.md). The production-readiness re-assessment
 lands at **ready within a validated envelope** (read-mostly / large-fleet / single-tenant / single-region; the
 scale/tenancy deferrals are tracked openly). **Additional storage drivers**: **GCS + Azure
-Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure); the live write tier that
-shipped alongside them in `0.9.x` was removed ahead of `1.0` as the library re-centres on write-once
-generations (see the `CHANGELOG`). Security and supply-chain hardening is in place: npm build
+Blob storage drivers shipped** (the object-store story is complete on AWS + GCP + Azure). Security and supply-chain hardening is in place: npm build
 provenance on every release, SHA-pinned Actions, a hard cgroup-RSS ceiling in CI, a native OS matrix, a
 prebuilt Lambda layer, and continuous coverage-guided fuzzing.
 
@@ -622,10 +620,9 @@ decided.
 That shape is a choice, not a remainder. Every roaring-based engine that needs freshness meets it by
 micro-batching into immutable segments, never by mutating a stored bitmap per call — so immutability is the
 design, and the write-once generation is what makes a read cheap enough to serve from a stateless function.
-Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that well. A per-call
-`add`/`remove` tier shipped in `0.9.x` and was retired ahead of `1.0` for exactly this reason; it is archived at
-the git tag `archive/live-warm-tier`, and `0.9.x` stays on npm for anyone still on it. If per-call freshness
-returns, it will arrive as immutable delta generations on the same bucket.
+Hot-path **reads** are ours; hot-path **writes** belong in RAM, and Redis does that well. That is why there is no
+per-call `add`/`remove`: if per-call freshness is added, it will arrive as immutable delta generations on the same
+bucket.
 
 Shipped on the loaded store: a single-call `load()` with a guard against an upstream query that returned too
 little, a `rollback()`, `exists()` and `segments()` so the registry answers "what do I have?" instead of you
@@ -656,10 +653,6 @@ one package per service. You install one of each axis; core arrives as their dep
   shape, kept in sync with the code by CI. Writing a storage driver? It documents
   [`@cloudbitmaps/core/driver-kit`](docs/guide/api-reference.md#cloudbitmapscoredriver-kit), the declared
   contract a driver package builds against.
-- **[Migrating from 0.9.x](MIGRATING.md)** — eight changes. The live tier's removal touches every `0.9.x`
-  deployment; a DynamoDB registry needs work **before** you upgrade; and two of the eight — the `*Into`
-  verbs now replacing rather than appending, and the renamed metric/result/path strings — change
-  behaviour without raising anything.
 - **[Benchmarks](docs/benchmarks.md)** — the CloudBitmaps-vs-flat-Redis crossover chart + the gated cost/perf anchors.
 - **[Privacy & shared responsibility](PRIVACY.md)** — the trust boundary (you are the controller; nothing is sent to us), the erasure/retention/residency contracts, and a DPIA + Art. 30 template.
 - **[Roadmap](docs/ROADMAP.md)** — what's shipped, the **validated envelope** (what's proven and what isn't), what stands between here and `1.0`, and what we've deliberately said no to.

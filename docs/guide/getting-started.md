@@ -114,53 +114,6 @@ The rest of this guide walks each step in turn.
 > (`eraseSubject`, `dropSegment`, `setRetention`, `retireExpired`, `checkConsistency`, `exportSegments`). Full
 > registry details are in [§5](#5-the-segment-registry-resolving-the-current-generation).
 
-## Upgrading from 0.9.x?
-
-**Eight things changed, and [`MIGRATING.md`](../../MIGRATING.md) walks all of them.** Read it rather than
-this summary if you are actually upgrading — two of the eight do not announce themselves.
-
-**Start there with change 1, the live (warm) tier**, which is gone. It affects every `0.9.x` deployment,
-because the option it removed was required, and it is the only one that can need a design decision rather
-than an edit. **And if your registry is DynamoDB, there is work to do on `0.9.x` before you upgrade at all**
-— `0.10.0` cannot read those rows.
-
-Two of the eight are packaging and are covered there in full — the cloud drivers became their own packages
-(`@cloudbitmaps/roaring/s3` → `@cloudbitmaps/s3`, and note Azure is **`@cloudbitmaps/azure-blob`**), and the
-packages are now ESM-only and need Node ≥ 22.12.
-
-Two more are the constructor changes below. Both **throw with a message naming the fix** rather than being
-ignored, so you will find them the first time you run, not the first time something reads wrong.
-
-The two that stay quiet are the ones to check by hand: the `*Into` verbs now **replace** their destination
-where they used to append to it, and the `cold` → `storage` rename reaches metric names, result fields and
-on-disk paths that nothing type-checks.
-
-1. **The three drivers became one backend.** `new CloudRoaring({ cold: coldDriver, warm: warmDriver, registry })`
-   — where `cold` and `warm` were both required — is now
-   `new CloudRoaring({ storage: new S3Storage({ bucket, prefix }) })`. One class states the location once, so
-   the mismatch that used to answer "empty" — generations at one prefix, the pointer at another — is no longer
-   expressible. Every driver is still exported; if you genuinely want the halves apart —
-   an instrumented driver, or a registry in a database you already run — say so with
-   `createBackend({ storage, registry })`. A plain object literal is refused. `createBackend` cannot verify
-   the two halves agree, so calling it is you taking that on — which is the difference between a decision and
-   the accident it replaces.
-2. **The flat tuning options became four groups** — `cache` · `encryption` · `retry` · `seams`. `metrics`
-   and `budget` are unchanged; both were already single flat options and still take the same value:
-
-   | before | after |
-   |---|---|
-   | `cacheMaxChunks` · `cacheTtlMs` · `coldGenTtlMs` · `coldReaderCacheMax` · `coldReaderCacheMaxBytes` | `cache.maxChunks` · `cache.ttlMs` · `cache.genTtlMs` · `cache.readerMax` · `cache.readerMaxBytes` |
-   | `keystore` · `requireEncryption` | `encryption.keystore` · `encryption.required` |
-   | `onRetry` | `retry.onRetry` |
-   | `clock` · `rng` | `seams.clock` · `seams.rng` |
-
-   `retry` also takes a **partial** policy now, so `retry: { maxAttempts: 6 }` keeps every other field's
-   default instead of requiring all five.
-
-The full upgrade, including the packaging half, is [`MIGRATING.md`](../../MIGRATING.md); the entries with
-their rationale are in
-[`CHANGELOG.md`](https://github.com/cloudbitmaps/cloudbitmaps/blob/main/CHANGELOG.md).
-
 ## 1. The simplest thing: in-memory
 
 A `CloudRoaring` store is wired to one **backend** — the object that knows where the `.crbm` generations go and

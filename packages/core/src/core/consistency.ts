@@ -36,8 +36,8 @@ import type { IStorageDriver, IRegistryDriver, SegmentRef } from './ports';
  */
 // Re-exported from its original home because this module is where the ceiling is documented; the value and the
 // loop that enforces it live in `registry-scan.ts`, shared with the retention sweep. This is an INTERNAL
-// re-export: the name left `@cloudbitmaps/core`'s main entry in 0.10.0 along with the other two defaults, and
-// `MIGRATING.md` tells callers to pass their own `maxScanSegments` rather than read ours.
+// re-export: it is not on `@cloudbitmaps/core`'s main entry, and a caller passes their own `maxScanSegments` rather
+// than read ours.
 export { DEFAULT_MAX_SCAN_SEGMENTS } from './registry-scan';
 const DEFAULT_CHECK_CONCURRENCY = 8;
 

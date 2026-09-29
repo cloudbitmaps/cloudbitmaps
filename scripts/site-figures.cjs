@@ -917,9 +917,9 @@ const specAnchors = [];
   }
 
   // ── the encoding benchmark's factors, wherever /flavors/roaring quotes them ─────────────────────────────
-  // That page's table argued adaptivity and offered nothing to check it against — and its "array, bitset and run"
-  // row was not even true of the shipped codec until 0.6.0, because roaring's run form takes an explicit pass
-  // nothing was making. The factors are published now, so they get a source like every other figure here.
+  // That page's table argues adaptivity, and its "array, bitset and run" row is true only because the codec makes
+  // roaring's run form, which takes an explicit pass. The factors are published, so they get a source like every
+  // other figure here.
   //
   // ONE rounding rule, computed here rather than transcribed: >=10x rounds to an integer, below that to 2dp.
   // An ad-hoc mix (543 truncated, 63 rounded up, 1.88 to 2dp) is how a gate ends up encoding a typo as a spec.
@@ -1139,8 +1139,8 @@ const specAnchors = [];
   // switch off is not a requirement, so the list is pinned instead. Adding a page means adding it here,
   // which is a deliberate line in a diff someone reads.
   //
-  // /benchmarks is deliberately absent: its meta line is `Apache-2.0 · v0.9.0 · pre-1.0 · single maintainer`
-  // and has never made a supply-chain claim.
+  // /benchmarks is deliberately absent: its meta line gives the licence, the version, pre-1.0 and a single
+  // maintainer, and makes no supply-chain claim.
   const MUST_CARRY_THE_BADGE = [
     'index.html',
     'architecture.html',
