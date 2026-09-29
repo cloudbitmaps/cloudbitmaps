@@ -75,6 +75,7 @@ function filesToCheck(): string[] {
   };
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
+  walk('site-next', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));
   out.push(
     ...execFileSync('git', ['ls-files', '*.md'], { cwd: ROOT, encoding: 'utf8' })

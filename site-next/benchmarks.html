@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('cb-theme');
+          var theme =
+            stored ||
+            (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <title>CloudBitmaps benchmarks — what it costs, and where it stops paying</title>
+    <meta
+      name="description"
+      content="Real S3: $82.40 per million cold intersects sharing 100 chunks, $11.20 per million writes and publishes. Past 329.15 GETs/s, 1.6 such intersects/s, Redis is cheaper."
+    />
+    <link rel="stylesheet" href="cloudbitmaps.css" />
+    <meta name="google-site-verification" content="UpdnyEE0wCiY5rHqUovfc-lRkEa9ZN9M-F67eTRNKhE" />
+    <link rel="canonical" href="https://cloudbitmaps.pages.dev/benchmarks" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CloudBitmaps" />
+    <meta property="og:title" content="CloudBitmaps benchmarks — what it costs, and where it stops paying" />
+    <meta
+      property="og:description"
+      content="Real S3, wire-metered. And the one crossover past which Redis is simply cheaper, published rather than buried."
+    />
+    <meta property="og:url" content="https://cloudbitmaps.pages.dev/benchmarks" />
+    <meta property="og:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CloudBitmaps benchmarks — what it costs, and where it stops paying" />
+    <meta
+      name="twitter:description"
+      content="Real S3, wire-metered — and the one crossover past which Redis is cheaper."
+    />
+    <meta name="twitter:image" content="https://cloudbitmaps.pages.dev/assets/logo-light.png" />
+    <link rel="icon" href="assets/favicon-16.svg" sizes="16x16" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon-32.svg" sizes="32x32" type="image/svg+xml" />
+    <link rel="icon" href="assets/favicon.svg" sizes="any" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-maskable-180.svg" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to the page</a>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html">
+          <svg class="mark" viewBox="253 210 798 798" width="24" height="24" role="img" aria-label="CloudBitmaps">
+            <path
+              fill="currentColor"
+              d="M484 230H819C914 238 975 304 981 394C986 472 946 529 885 571C946 603 987 650 1010 709C1031 789 1001 866 942 931C905 972 859 987 809 987H563V853H634V789H716V664H602V535H702V420H593V477H567V371H481L484 230Z"
+            />
+            <rect x="336" y="376" width="39" height="39" rx="5" fill="#18A8FF" />
+            <rect x="421" y="433" width="97" height="91" rx="7" fill="#19B7FF" />
+            <rect x="273" y="541" width="130" height="127" rx="7" fill="#178CFF" />
+            <rect x="425" y="562" width="78" height="78" rx="6" fill="#1676FF" />
+            <rect x="416" y="703" width="89" height="90" rx="6" fill="#176FFF" />
+            <rect x="538" y="732" width="55" height="56" rx="6" fill="#1BB8FF" />
+            <rect x="616" y="705" width="68" height="68" rx="6" fill="#19C5F4" />
+            <rect x="332" y="816" width="50" height="51" rx="6" fill="#176FFF" />
+            <rect x="414" y="900" width="72" height="74" rx="6" fill="#176FFF" />
+          </svg>
+          CloudBitmaps
+        </a>
+        <nav class="nav" aria-label="Pages">
+          <a href="index.html">Overview</a>
+          <a href="demo.html">Demo</a>
+          <a href="flavors.html">Flavors</a>
+          <a href="architecture.html">Architecture</a>
+          <a href="usage.html">Usage</a>
+          <a class="active" href="benchmarks.html" aria-current="page">Benchmarks</a>
+          <a href="https://github.com/cloudbitmaps/cloudbitmaps" target="_blank" rel="noopener" aria-label="GitHub (opens in a new tab)">GitHub</a>
+        </nav>
+        <div class="theme-toggle" role="group" aria-label="Colour theme">
+          <input type="radio" name="cb-theme" id="cb-theme-dark" value="dark" />
+          <label for="cb-theme-dark">Dark</label>
+          <input type="radio" name="cb-theme" id="cb-theme-light" value="light" />
+          <label for="cb-theme-light">Light</label>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ── HERO ───────────────────────────────────────────────────────────
+           The headline names both halves. A benchmarks page that only says what a thing costs is an ad; the
+           second clause is what makes the first one worth believing. -->
+      <section>
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Benchmarks · aws <span class="u">us-east-1</span> on-demand · gated</p>
+            <h1>What it costs, and where it stops paying.</h1>
+            <p class="hero-lede">
+              Measured against real S3 — no emulator — with the request counts read off the AWS SDK rather than
+              off our own arithmetic. Every money figure and rate below is checked against its source by a build gate, so a
+              regression <em>or an overclaim</em> fails the build.
+            </p>
+            <p class="actions">
+              <a class="btn btn-primary" href="#anchors">The cost anchors →</a>
+              <a class="btn" href="#limits">What they do not establish</a>
+            </p>
+            <p class="cb-note">
+              Modelled figures come from the shipped <span class="m">estimateCost()</span>, measured ones from
+              each run's committed record — neither can drift ahead of its source.
+            </p>
+          </div>
+
+          <aside class="panel">
+            <div class="panel-head label">The comparison</div>
+            <!-- "Reserved RAM", not "Redis": the axis is the billing shape and Redis is only the legible
+                 example of it. Any always-on node crosses any per-request meter somewhere. Naming the axis also
+                 stops this row reading as an opponent — the comparison is to a shape of bill, not to a rival
+                 product, and the library ships no Redis driver of its own to defend. -->
+            <p class="panel-row is-pair"><span>Reserved RAM, standing</span><span>$346 /mo</span></p>
+            <p class="panel-row is-pair">
+              <span>1.2 GiB at rest, no traffic</span><span>$0.03 /mo</span>
+            </p>
+            <p class="panel-row is-pair"><span>Share of the Redis cluster</span><span>0.008%</span></p>
+            <p class="panel-row is-pair"><span>1M cold A&nbsp;∩&nbsp;B, 100 chunks shared</span><span>$82.40</span></p>
+            <p class="panel-row is-pair">
+              <span>1M writes + publishes · <span class="m">store.load()</span> ≈ 2×</span><span>$11.20</span>
+            </p>
+            <p class="panel-row is-pair"><span>Crossover, in GETs</span><span>329.15 /s</span></p>
+            <p class="panel-row is-pair"><span>…as cold A&nbsp;∩&nbsp;B, 206 GETs each</span><span>1.6 /s</span></p>
+            <p class="link-row"><a href="usage.html#drivers">Estimate your own rates →</a></p>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── COST ANCHORS ───────────────────────────────────────────────────
+           The crossover row sits in this table at the same weight and in the same type as the wins. That is
+           the design decision the page turns on: moving it to a footnote, or styling it down, would be the
+           one thing this project cannot afford to do.
+
+           There is ONE crossover row here, not two, and the reason is structural rather than editorial: a
+           loaded store has no per-id write, so there is no write RATE to plot. Data enters as a whole
+           generation — one object PUT, a few when multipart, then the pointer — and that is the "1M loads" row
+           instead. Its figure is the single-bucket run's, not the estimator's: the run measured a write and publish,
+           and the estimator prices `store.load()`, which also lists the segment and reads the pointer more. The two
+           real-S3 rows quote the run as it measured it; what they would be inside the region, or through
+           `store.load()`, is in the run's own panel below, labelled expected. -->
+      <section id="anchors">
+        <h2>Cost anchors</h2>
+        <p class="lede">
+          Published rates applied to wire-metered operation counts. The last row is the crossover, in GETs and
+          in cold intersects — past it the cluster is simply cheaper.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">Cost anchors</span><span class="label"><span class="u">estimateCost()</span> + the AWS runs</span>
+          </div>
+          <div class="tscroll" tabindex="0" role="region" aria-label="Cost anchors">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scenario</th>
+                  <th class="num">Value</th>
+                  <th>Basis</th>
+                  <th>Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">1.2 GiB at rest, no traffic</th>
+                  <td class="num">$0.03 /mo</td>
+                  <td class="from">
+                    0.008% of the $346 cluster. Nothing is billed while nobody is asking.
+                  </td>
+                  <td><span class="status">Win big</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">A ∩ B over two 2M-id segments</th>
+                  <td class="num">100 / 2,000</td>
+                  <td class="from">
+                    Chunks fetched in 24.6 ms — 1,900 per segment never requested.
+                    <a href="demo.html">Step through it</a>.
+                  </td>
+                  <td><span class="status">Win big</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">1M cold A&nbsp;∩&nbsp;B on real S3</th>
+                  <td class="num">$82.40</td>
+                  <td class="from">
+                    Two 500,000-id segments sharing 100 of 1,999 chunks: 206 GETs at the median — a tail read
+                    per operand, the shared chunks, and each pointer read twice, because from a laptop an
+                    intersect outlasted the 2 s pointer refresh. Priced by the chunks the two share, not by their
+                    size, while each index fits the 256 KiB tail read. Every one cold, and every one exact. Its
+                    crossover is the last row. <a href="#single-bucket">The single-bucket run</a>.
+                  </td>
+                  <td><span class="status">Win</span></td>
+                </tr>
+                <tr>
+                  <th scope="row">1M loads, written and published</th>
+                  <td class="num">$11.20</td>
+                  <td class="from">
+                    A generation written once, then the pointer moved to it: 2 PUT + 3 GET, measured on real S3
+                    with the pointer in the same bucket. <span class="m">store.load()</span> also lists and
+                    collects, which about doubles it. The meter counts objects, not ids — so batch a refresh.
+                  </td>
+                  <td><span class="status">Batch it</span></td>
+                </tr>
+                <!-- This row names its AXIS — "read throughput" — because a reader scanning the verdict column
+                     will otherwise generalise a threshold on one axis into a verdict on the library. The chip is
+                     advice rather than a defeat for the same reason, and because what loses here is per-request
+                     billing, not this engine: a cache that actually hits moves the line out by the
+                     reciprocal of the miss rate. See #crossover directly below.
+
+                     The same chip as every other verdict on this table: the word says which way the row goes, and
+                     a row where a flat cluster is cheaper is a peer of a row where we win. -->
+                <tr>
+                  <th scope="row">Sustained read throughput above</th>
+                  <td class="num">329.15 /s<br />1.6 A&nbsp;∩&nbsp;B/s</td>
+                  <td class="from">
+                    Object GETs with the cache off — the pessimal posture, chosen deliberately — against a
+                    standing three-node Redis-HA cluster at $346 /mo. The same line, for cold intersects of the run's shape at
+                    206 GETs each, is 1.6 a second. <a href="#crossover">What moves this line</a>.
+                  </td>
+                  <td><span class="status">Use a flat tier</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- The baseline's SPEC belongs in the assumptions footnote, because that is what it is: an
+               assumption, and until now the least examinable one on the page. $346 appeared eight times across
+               the site without ever saying what it buys, which makes it unauditable — a reader cannot tell
+               whether the node is sized for this dataset or five times larger than it.
+
+               The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
+               core/cost.ts. Its MEMORY is deliberately not stated: that figure would be quoted from memory
+               rather than from a source, and naming the instance is what lets a reader look it up and check us. -->
+          <p class="tpanel-foot">
+            Assumptions: cache hit rate <strong>0</strong>, the stored-bytes term at
+            <strong>zero</strong>, <span class="m">us-east-1</span> on-demand request rates, and the
+            reserved-RAM baseline is an ElastiCache HA cluster — <strong>1 primary + 2 replicas</strong> on
+            <span class="m">cache.m7g.large</span>, about $115/mo single-node. And one crossover rather than
+            two: a segment changes only by publishing a whole new generation, so the write side is priced per
+            object PUT and a pointer — the loads row — and a writes-per-second threshold would put a rate on an
+            operation the library cannot perform. Change an
+            assumption and the read line moves; <a href="#crossover">five of them are how far</a>.
+          </p>
+        </div>
+      </section>
+
+      <!-- ── PAST THE CROSSOVER ──────────────────────────────────────────────
+           This section exists because the page was publishing a threshold and calling it a verdict.
+
+           Five inputs produce the 329.15 figure, and the table below says which way each one was set rather
+           than implying all five are pessimal. Two are (cache off; on-demand GET rates). Three are set in OUR
+           favour and are declared as such: the stored-bytes term is zero and so is the pointer refresh, which
+           together hand the whole baseline to the read axis as headroom, and the baseline is a three-node HA
+           cluster rather than a single node, and larger than the reference set needs: the estimator's own
+           default prices the Redis that holds that set lower, and the row says where the line would sit.
+
+           Two of the inputs can remove the crossover altogether, and this is the estimator's own arithmetic
+           (core/cost.ts): `readsCross` is `Infinity` unless `storageGetUSD > 0 && missFraction > 0`, so a 100%
+           cache-hit rate or a store with no per-request charge leaves no meter to cross.
+
+           Publishing the most pessimistic supported configuration is the right instinct. Publishing it without
+           saying it IS a configuration is what turned an honest disclosure into a dead end.
+
+           Every figure here is an already-gated anchor. Deliberately NO new money figure and no crossover
+           rate the sources do not give: the per-GET rate that scales this line is named as the profile field rather than
+           printed as dollars, because a rate quoted on this page and nowhere in a source is the one thing this
+           page must never carry. -->
+      <section id="crossover">
+        <h2>Past the crossover</h2>
+        <p class="lede">
+          That row is a threshold on <em>one axis</em> — sustained reads — and that axis is the only one where a
+          flat node competes, because the write side is not a rate at all. Two of the five inputs behind it are
+          set to their worst plausible value on purpose; the other three are set in our favour, and this table
+          says which is which. Two of them can remove the crossover entirely.
+        </p>
+        <div class="tpanel">
+          <div class="tpanel-head">
+            <span class="label">What moves this line</span>
+            <span class="label">All five are inputs, not constants</span>
+          </div>
+          <div class="tscroll" tabindex="0" role="region" aria-label="What moves this line">
+            <table>
+              <thead>
+                <tr>
+                  <th>Input</th>
+                  <th>Published as</th>
+                  <th>Change it and</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Cache hit rate</th>
+                  <td class="num">0</td>
+                  <td class="from">
+                    Every read billed — the pessimal value, chosen so the figure cannot flatter us. A cache that
+                    actually works moves the line out by the reciprocal of the miss rate, and at a 100% hit rate
+                    <strong>the crossover disappears</strong>: the estimator returns
+                    <span class="m">Infinity</span>, because nothing reaches the meter.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Per-GET request rate</th>
+                  <td class="num">on-demand</td>
+                  <td class="from">
+                    The profile's <span class="m">storage.getPerMillion</span>, at the published
+                    <span class="m">us-east-1</span> list rate, with no volume or committed discount applied.
+                    The line is inversely proportional to it, and a store with no per-request charge at all
+                    removes it outright:
+                    <strong>no meter, no crossing</strong>.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Stored bytes</th>
+                  <td class="num">zero</td>
+                  <td class="from">
+                    The first of the three set in <em>our</em> favour, so it is stated: storage is subtracted
+                    from the baseline before the division, and publishing it at zero hands the whole node price
+                    to the read axis as headroom. The reference corpus — <strong>$0.03 /mo</strong>, or
+                    <strong>0.008%</strong> of the cluster — is how much that flatters us.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Hot segments</th>
+                  <td class="num">none</td>
+                  <td class="from">
+                    The second set in our favour. A long-lived reader re-reads the pointer of each segment it
+                    keeps reading once every <span class="m">cache.genTtlMs</span>, and that is taken out of the
+                    baseline before the division, like storage; publishing none hands it to the read axis too.
+                    Pass <span class="m">hotSegments</span> and <span class="m">readerProcesses</span> to take it
+                    back.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">The baseline itself</th>
+                  <td class="num">$346 /mo</td>
+                  <td class="from">
+                    The third: three nodes rather than one, and more than the reference 1.2 GiB set needs. The
+                    line scales with whatever price you compare against — a single-node baseline at about
+                    $115/mo lowers it in the same ratio — and the estimator's own default compares with the
+                    cheapest cluster in its catalogue that holds the data, which for that set is
+                    <strong>$142.35 /mo</strong>, <span class="m">3 × cache.t4g.medium</span>: against it the line
+                    would sit at <strong>135.42</strong> reads a second. Feed
+                    <span class="m">estimateCost()</span> the Redis you would actually run.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            The estimator will also tell you this itself: every report carries back the cache posture and
+            pricing profile it used, and names the term that dominates the bill — <em>dominated by point reads
+            (object GETs)</em>. Leave <span class="m">loadsPerMonth</span> or
+            <span class="m">hotSegments</span> unset and it says so in its notes, rather than quietly reporting
+            a month with no write side or no pointer refresh at all.
+          </p>
+        </div>
+
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">What you give up going flat</span>
+            <span class="rl-fig">the idle price</span>
+            <span class="rl-note">
+              One property, and it is the headline one: paying nothing while nobody is asking.
+              <strong>$0.03 /mo</strong> for 1.2 GiB at rest is <strong>0.008%</strong> of the Redis cluster. A flat
+              tier bills you the same whether the traffic arrives or not.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">What no pricing choice can take away</span>
+            <span class="rl-fig">100 / 2,000</span>
+            <span class="rl-note">
+              Chunk-skipping happens <em>above</em> the driver and above the codec — it is key arithmetic, not a
+              storage feature. Crossing a throughput threshold does not affect it.
+              <a href="demo.html">Step through it</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">And a flat node still is not RAM for everything</span>
+            <span class="rl-fig">two tiers</span>
+            <span class="rl-note">
+              The corpus stays in object storage; only the working set ever occupies RAM, under a cap you set.
+              A node sized for your working set is a much smaller node than one sized for your whole history —
+              which is the comparison a single flat number hides.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">And the write side crosses nothing at all</span>
+            <span class="rl-fig">$11.20 / 1M loads</span>
+            <span class="rl-note">
+              There is no writes-per-second line here because there is no per-id write: a set changes by loading
+              a <em>whole new generation</em> and advancing the registry pointer, so ingest bills per object PUT
+              — one, or a handful when the object goes multipart — plus the pointer's own PUT and reads, however
+              many ids that generation carries. That figure is the write and the publish;
+              <span class="m">store.load()</span>'s listings and collection pass come on top.
+              Batching is the entire optimisation, and you make it at load time rather than at the meter.
+              <a href="usage.html">How a generation is loaded</a>.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── THE CROSSOVER, AS A SHAPE ───────────────────────────────────────
+           The table above gives the crossover rate as a number. It cannot show what the curve DOES on either
+           side of it — that pay-per-use starts near zero and rises, while a flat node costs the same at one
+           read per second as at four hundred. That shape is the argument, so it gets a figure.
+
+           One panel, because there is one metered axis: data enters as a generation (the object's PUT and the
+           pointer's, and five PUT-class requests when the object goes multipart), which the estimator prices per
+           load rather than as a rate.
+
+           The svg is INLINE, not an <img>, so its var(--cb-*) colours resolve against the page and it follows
+           the theme toggle. Generated by `pnpm bench` from the shipped estimateCost() — do not hand-edit
+           inside the markers, it will be overwritten on the next run. -->
+      <section>
+        <h2>The one crossover, as a shape</h2>
+        <!-- The display-tier chart labels its own lines, the baseline among them, and its axis says the posture
+             (object GETs, cache off). So this lede says how to read it rather than restating either. -->
+        <p class="lede">
+          The flat line does not move — that is what paying for a node instead of for usage looks like. The
+          rising line is what you pay for the same reads. Where they meet is the rate in the table above, and the
+          hatched half is where the cluster is cheaper.
+        </p>
+        <figure class="chart">
+          <div class="cb-scroll" tabindex="0" role="region" aria-label="The crossover chart, scrollable">
+          <!-- BENCH:CHART:START -->
+<svg class="cb-svg is-wide" viewBox="0 0 1176 440" role="img" aria-label="CloudBitmaps against one Redis-HA cluster: pay-per-use rises with sustained reads and crosses the flat $346 a month at 329 reads a second, past which the cluster is cheaper">
+<defs><pattern id="bench-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><path class="hatch" d="M0 0 V8"/></pattern></defs>
+<rect x="783.0" y="40" width="369.0" height="320" fill="url(#bench-hatch)"/>
+<path class="s sd guide" d="M783.0 40 V360"/>
+<path class="line-node" d="M72 175.5 H1152"/>
+<polyline class="line-ours" points="72.0,360.0 85.5,356.5 99.0,353.0 112.5,349.5 126.0,346.0 139.5,342.5 153.0,339.0 166.5,335.5 180.0,332.0 193.5,328.5 207.0,325.0 220.5,321.5 234.0,318.0 247.5,314.4 261.0,310.9 274.5,307.4 288.0,303.9 301.5,300.4 315.0,296.9 328.5,293.4 342.0,289.9 355.5,286.4 369.0,282.9 382.5,279.4 396.0,275.9 409.5,272.4 423.0,268.9 436.5,265.4 450.0,261.9 463.5,258.4 477.0,254.9 490.5,251.4 504.0,247.9 517.5,244.4 531.0,240.9 544.5,237.4 558.0,233.9 571.5,230.4 585.0,226.8 598.5,223.3 612.0,219.8 625.5,216.3 639.0,212.8 652.5,209.3 666.0,205.8 679.5,202.3 693.0,198.8 706.5,195.3 720.0,191.8 733.5,188.3 747.0,184.8 760.5,181.3 774.0,177.8 787.5,174.3 801.0,170.8 814.5,167.3 828.0,163.8 841.5,160.3 855.0,156.8 868.5,153.3 882.0,149.8 895.5,146.3 909.0,142.8 922.5,139.2 936.0,135.7 949.5,132.2 963.0,128.7 976.5,125.2 990.0,121.7 1003.5,118.2 1017.0,114.7 1030.5,111.2 1044.0,107.7 1057.5,104.2 1071.0,100.7 1084.5,97.2 1098.0,93.7 1111.5,90.2 1125.0,86.7 1138.5,83.2 1152.0,79.7"/>
+<path class="s" d="M72 40 V360 H1152"/>
+<text class="tl" x="88" y="64">CLOUDBITMAPS COSTS LESS</text>
+<text class="tl on-hatch" x="799.0" y="64">A FLAT CLUSTER COSTS LESS</text>
+<text class="t" x="88" y="163.5">Redis-HA cluster · flat · $346/mo</text>
+<text class="t is-ours" x="396.0" y="303.9">CloudBitmaps · pay-per-use</text>
+<rect class="hot" x="777.0" y="169.5" width="12" height="12" rx="2"/>
+<text class="t crossing" x="799.0" y="207.5">crossover ≈ 329 /s</text>
+<text class="tf" x="62" y="364.0" text-anchor="end">$0</text>
+<text class="tf" x="62" y="257.3" text-anchor="end">$200</text>
+<text class="tf" x="62" y="150.7" text-anchor="end">$400</text>
+<text class="tf" x="62" y="44.0" text-anchor="end">$600</text>
+<text class="tf" x="72.0" y="382" text-anchor="middle">0</text>
+<text class="tf" x="288.0" y="382" text-anchor="middle">100</text>
+<text class="tf" x="504.0" y="382" text-anchor="middle">200</text>
+<text class="tf" x="720.0" y="382" text-anchor="middle">300</text>
+<text class="tf" x="936.0" y="382" text-anchor="middle">400</text>
+<text class="tf" x="1152.0" y="382" text-anchor="middle">500</text>
+<text class="tf" x="72" y="24">$ / MONTH</text>
+<text class="tf" x="1152" y="412" text-anchor="end">SUSTAINED POINT READS · OBJECT GETS, CACHE OFF · AWS-US-EAST-1-ONDEMAND · READS/S →</text>
+</svg>
+<!-- BENCH:CHART:END -->
+          </div>
+          <figcaption>
+            Generated by <span class="m">pnpm bench</span> from
+            <span class="m">estimateCost()</span> — the same function the library ships, so the chart cannot
+            disagree with the estimator a caller gets.
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ── THE LATENCY CLAIM WE DO NOT MAKE ───────────────────────────────
+           No in-region run has measured one, and a latency figure taken from outside the region calibrates
+           cost rather than latency. Re-quoting a retired number would be a one-line docs edit, so the
+           benchmark record is gated against a p50/p95/p99 row reappearing at all until a run produces one.
+
+           What replaces it is the same list docs/benchmarks.md keeps under "What is still owed" — the honest
+           form of a measurement you have not made. That list is the source; this one follows it.
+
+           Rows 01-06 are debts, not results. Row 07 was one until the gate that measures it started RECORDING
+           what it measured; it is now a published ceiling, and it is marked differently so the two kinds are
+           not read as one. Do not re-generalise this comment to "every row is a debt" — that sentence was true
+           when it was written and stopped being true without anything noticing. -->
+      <section id="owed">
+        <h2>What is still owed</h2>
+        <p class="lede">
+          The loaded read path has never been timed inside a region, so no latency is published here as the
+          library's. The bill of a cold intersect and of a load is measured; their stopwatch is not, and neither
+          is everything a load or a read can cost. Wall-clock throughput on shared runners is too noisy to gate.
+          The first five rows below are what is still owed, latency and throughput first; the sixth is a
+          measured ceiling, marked as such.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">In-region read latency</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              The calibration run was driven from a laptop <em>outside</em> <span class="m">us-east-1</span>,
+              so its wall-clock was dominated by internet transit and it calibrated the <strong>cost</strong>
+              claim only. No percentile for <span class="m">has</span>, <span class="m">count</span> or
+              <span class="m">intersect</span> is published as the library's, and the figures gate fails the
+              build if such a row reappears in the benchmark record — so publishing one takes a run
+              <em>and</em> a deliberate change to the gate that forbids it.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Load throughput</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              Sustained <span class="m">bulkLoadCrbmGeneration</span> rate against a real object store, from inside
+              the region, at the segment sizes a real refresh produces. Its <em>cost</em> is measured — the
+              loads row above — but the September run timed whole loads from a laptop 83 ms from the region,
+              and the at-scale table's ~38&ndash;51 durable segments/s is local disk and fsync-bound. Neither is
+              that number.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Intersect latency</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              In-region wall-clock for a chunk-skipping <span class="m">A&nbsp;∩&nbsp;B</span>, and for
+              <span class="m">andNot</span> with a large <span class="m">exclude</span>, against a real object
+              store rather than local disk; then the <span class="m">*Into</span> verbs, and the sweep over
+              operand count and chunk overlap. The request count and the bill of an
+              <span class="m">A&nbsp;∩&nbsp;B</span> are measured on real S3, and an <span class="m">andNot</span>'s
+              are not; neither's wall-clock is. The 24.6 ms below is one operation against the in-memory drivers.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what"><span class="m">store.load()</span> on S3</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              The September run measured a load's write and publish. <span class="m">store.load()</span> also
+              lists the segment to choose a generation number and runs a collection pass after the publish. A
+              test counts what that adds, about twice the bill; it has not been measured on S3.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">05</span>
+            <span class="rl-what">A Lambda figure</span>
+            <span class="rl-fig">owed</span>
+            <span class="rl-note">
+              A function's cold start and initialisation against a real store, measured from inside one.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">06</span>
+            <span class="rl-what">RSS ceiling</span>
+            <span class="rl-fig">384m</span>
+            <span class="rl-note">
+              <!-- This row said "owed" while the job that measures it ran green on every PR: the soak inside the
+                   container ran without SOAK_INJECT, so its verdict reached container stdout and nothing else,
+                   and the stage directory is deleted on exit. A measurement nothing records is a measurement
+                   nobody has. `pnpm rss-gate` now writes bench/rss-gate-results.json, which site-figures.cjs
+                   gates this row against.
+                   What is published is the CEILING the workload survives, not a reader-RSS number. The ceiling
+                   is a property of the workload; an RSS reading is a property of the machine, and publishing
+                   one as a headline invites it to be read as a spec. -->
+              A sustained read + combine + re-load workload over <b>400</b> segments completes inside a hard
+              <span class="m">384m</span> cgroup ceiling with swap disabled — so the limit is a true RSS bound
+              and covers the addon's off-heap memory. No OOM-kill, and both creep verdicts inside their bands.
+              Two very different machines agree: a Linux CI runner and an Apple M3 Pro under Docker landed
+              <b>0.4 MiB</b> apart on reader RSS while throughput differed <b>3.7&times;</b> — which is why the
+              ceiling is published here and the latency in <b>01</b> still is not.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── MEMORY AT FLEET SCALE ───────────────────────────────────────────
+           Invariant 6 is "bounded memory & cost, always", and until this section existed the site asserted it
+           without ever printing a memory number. This is the measurement that makes it a claim rather than a
+           promise: the fleet grows a HUNDREDFOLD and the retained heap does not move.
+
+           Read the two memory columns together or not at all. Retained heap is the bound — it is a function of
+           the reader-cache cap, not of the fleet. Process RSS is NOT the bound and grows, because the harness
+           seeds all those segments in-process; reporting only the flattering column would be the exact kind of
+           selective quotation this page exists to avoid, so both are here and the difference is explained.
+
+           Injected by `pnpm bench:scale` (publish mode) — or re-rendered from the committed measurements
+           without re-measuring via `pnpm bench:scale:render`, because the 100K run takes tens of minutes and
+           its wall-clock numbers are machine-dependent. Do not hand-edit inside the markers:
+           `pnpm bench:scale:check` fails if this copy is not what the committed results file renders. -->
+      <section id="memory">
+        <h2>A hundredfold more segments, the same memory</h2>
+        <p class="lede">
+          The fear with a library that holds bitmaps is that a long-running server accumulates them until it
+          dies. So the fleet was grown from a thousand segments to a hundred thousand, reading
+          <em>every</em> one, under a fixed reader-cache cap. Retained heap is flat. That flatness is the
+          claim — memory is a function of the cap you set, not of how much data you own.
+        </p>
+        <!-- BENCH:SCALE:START -->
+<div class="tpanel"><div class="tpanel-head"><span class="label">Memory at fleet scale</span><span class="label">Measured &middot; 1,000 &rarr; 100,000 segments</span></div><div class="tscroll" tabindex="0" role="region" aria-label="Memory at fleet scale"><table><thead><tr><th>Fleet</th><th class="num">Retained heap (cap 1024)</th><th class="num">Peak RSS</th><th class="num">Discovery scan</th></tr></thead><tbody><tr><th scope="row">1,000 segments</th><td class="num">8.2 MiB</td><td class="num">68.1 MiB</td><td class="num">87.6 ms</td></tr><tr><th scope="row">10,000 segments</th><td class="num">8.3 MiB</td><td class="num">86.8 MiB</td><td class="num">1,067.9 ms</td></tr><tr><th scope="row">100,000 segments</th><td class="num">7.4 MiB</td><td class="num">162.2 MiB</td><td class="num">11,606.4 ms</td></tr></tbody></table></div><p class="tpanel-foot">A <strong>100&times;</strong> larger fleet moved retained heap by <strong>0.9 MiB</strong>. Intersection of two 2,000,000-id segments (2,000 chunks each, 100 shared) <strong>fetched only 100 of the 2,000 chunks per segment</strong>, in 24.6 ms. Fleet seeded at ~38&ndash;51 durable segments/s (fsync-bound). Measured on Apple M3 Pro (arm64, node v24.18.1) &mdash; discovery is filesystem-bound here, so the <strong>shape</strong> is the claim, not the absolute milliseconds.</p></div>
+<!-- BENCH:SCALE:END -->
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">What is bounded</span>
+            <span class="rl-fig">retained heap</span>
+            <span class="rl-note">
+              Sampled after a forced GC, so it is live data rather than garbage awaiting collection. This is the
+              column the invariant is about.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">What is not</span>
+            <span class="rl-fig">process RSS</span>
+            <span class="rl-note">
+              RSS grows, and we are not going to pretend otherwise. The harness seeds a hundred thousand
+              segments inside the same process, and RSS is monotonic — it never returns pages. It is measuring
+              the benchmark, not the bound.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">What gets worse</span>
+            <span class="rl-fig">discovery time</span>
+            <!-- The first draft of this row said only "a cursor would bound it, and has not been built", which
+                 understated what is shipped: the retirement sweep has BOTH a shard filter and an indexed scan
+                 mode, and a reader was left to conclude nothing had been done. But it is worth being exact
+                 about what each one bounds — the shard filter runs after the registry enumeration, so every
+                 worker still reads every row and only the per-segment work is divided. The enumeration is the
+                 part still unbounded in the general case, and it is the part the measured 11.6 s is mostly
+                 made of. -->
+            <span class="rl-note">
+              Only the admin passes pay this — <span class="m">checkConsistency</span>,
+              <span class="m">retireExpired</span>, <span class="m">eraseSubject</span> and
+              <span class="m">subjectReport</span> enumerate the registry before they do any work. <strong>No read verb enumerates</strong>:
+              <span class="m">has</span>, <span class="m">count</span>, <span class="m">iterate</span> and
+              <span class="m">intersect</span> each address one segment. The retirement sweep can already skip
+              the walk entirely (<span class="m">scan: 'index'</span> reads only the buckets that are due) or be
+              sharded across workers — but a shard filter is applied <em>after</em> the enumeration, so each
+              worker still walks every row and that walk stays O(total). An indexed cursor for the general case
+              would bound it, and has not been built.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── METHOD ─────────────────────────────────────────────────────── -->
+      <section>
+        <h2>Method</h2>
+        <div class="matters">
+          <div class="limit">
+            <p class="label">Real services</p>
+            <p>
+              Real S3 in <span class="m">us-east-1</span> at on-demand rates. No emulator and no simulated
+              latency. The harness rehearses its workload against MinIO for free, and a rehearsal's results file
+              is kept out of git, so what gets published is a real-account run or nothing.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Metered at the wire</p>
+            <p>
+              Request counts come from the AWS SDK layer, not from the library's metrics sink — which cannot see
+              a PUT at all (it emits no <span class="m">storage.put</span> event, a known observability gap). A PUT
+              bills at 12.5× a GET, so an ingest-heavy workload priced without them is understated.
+            </p>
+          </div>
+          <div class="limit">
+            <p class="label">Gated, both directions</p>
+            <p>
+              Every money figure on this page, the crossover rate and the calibration run's figures are checked
+              by a build gate against the source that produced them — <span class="m">bench/results.json</span>,
+              <span class="m">docs/benchmarks.md</span>, a calibration run's own results file, the soak's own
+              results, the pricing profile itself —
+              and the check also fails on a figure those sources <strong>cannot account for</strong>, so a
+              number cannot improve without evidence either. The at-scale table is held to the benchmark's own
+              results file too.
+            </p>
+          </div>
+          <!-- The fourth card, which is also what makes the grid 2×2 rather than leaving a half-row. The
+               MODELLED numbers on the page come out of estimateCost(), so its accuracy is the claim they rest
+               on — and the card says exactly how far that accuracy is proven, because the single-bucket run
+               found where it stopped, and the fix is held to the engine's own request counts. The measured
+               numbers come from runs, not from the estimator. -->
+          <div class="limit">
+            <p class="label">And the estimator itself</p>
+            <p>
+              The modelled figures here come from <span class="m">estimateCost()</span>, so its accuracy is the
+              claim they rest on. For point reads, priced against the chunk GETs a metrics sink observed, its
+              prediction must land on or above what the engine incurred: it
+              <strong>never quotes fewer chunk reads</strong> than the engine makes. For the rest it counts what
+              the engine is tested to send: each operand's pointer and index before an intersect's chunks, what
+              <span class="m">store.load()</span> adds to a load, and the pointer refresh for the segments you keep
+              reading, on S3's request shape, in as many reader processes as you pass it. And it still quotes low
+              where it cannot see: more hot segments than a reader
+              keeps open, the index every reader opens again after each load, an intersect that outlives the
+              pointer TTL, an index larger than the tail read, a load that loses a publish race.
+            </p>
+          </div>
+        </div>
+
+        <!-- ── THE SINGLE-BUCKET BILL ───────────────────────────────────────
+             The bill for the topology that ships: the pointer in the same bucket as the data, so every pointer
+             read and write is an S3 request on it. Every figure comes out of the run's committed results file
+             through bench/lib/calibration-figures.cjs, which scripts/site-figures.cjs and the run's report
+             share. The run's latency and upload rates are deliberately absent: the client was a laptop outside
+             the region, and those numbers measured its connection. -->
+        <div class="tpanel" id="single-bucket">
+          <div class="tpanel-head">
+            <span class="label" id="single-bucket-title">The single-bucket bill · measured, and expected where marked</span>
+            <span class="label">2026-09-23 · <span class="u">us-east-1</span> · run 2026-09-23-94416</span>
+          </div>
+          <div class="tscroll" tabindex="0" role="region" aria-labelledby="single-bucket-title">
+            <table aria-labelledby="single-bucket-title">
+              <thead>
+                <tr>
+                  <th>Operation</th>
+                  <th class="num">Per million</th>
+                  <th class="num">Requests</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Cold A&nbsp;∩&nbsp;B, 100 of 1,999 chunks shared, the median</th>
+                  <td class="num">$82.40</td>
+                  <td class="num">206 GETs</td>
+                </tr>
+                <tr>
+                  <th scope="row">The same, each pointer read once — expected</th>
+                  <td class="num">$81.60</td>
+                  <td class="num">204 GETs</td>
+                </tr>
+                <tr>
+                  <th scope="row">Write and publish a segment</th>
+                  <td class="num">$11.20</td>
+                  <td class="num">2 PUT + 3 GET</td>
+                </tr>
+                <tr>
+                  <th scope="row">Write and publish, multipart</th>
+                  <td class="num">$26.20</td>
+                  <td class="num">5 PUT-class + 3 GET</td>
+                </tr>
+                <tr>
+                  <th scope="row">A segment's first <span class="m">store.load()</span> — expected</th>
+                  <td class="num">$22.80</td>
+                  <td class="num">4 PUT-class + 7 GET</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tpanel-foot">
+            <strong>Measured request counts at list prices</strong>, and <strong>expected</strong> where the run
+            did not measure: the same intersect with each pointer read once, as it would be inside the region,
+            and <span class="m">store.load()</span>'s listings and collection pass, which a test counts. All 40
+            cold intersects — each on a fresh store, with nothing cached — returned the planned ids, checked by
+            count and by sum, and each requested 100 of 1,999 chunks per segment, the chunks the two share, and
+            no other. Each also made one tail read per segment: its last 256 KiB, which holds the footer and the
+            index. PUT-class requests are the ones S3 bills at the PUT rate, listings included. The run's requests, teardown
+            included, cost <strong>$0.0034816</strong>; data transfer is not in that. The client was a laptop
+            outside the region, so no latency or upload rate from this run is published as the library's: those
+            numbers measured its connection.
+            <a href="https://github.com/cloudbitmaps/cloudbitmaps/blob/main/bench/calibration/2026-09-23-94416.md" target="_blank" rel="noopener" aria-label="The run's report (opens in a new tab)">The run's report</a>
+            explains every figure, in six sections, each with a diagram.
+          </p>
+        </div>
+
+      </section>
+
+      <!-- ── WHAT THESE DO NOT ESTABLISH ────────────────────────────────────
+           Stated in the same type as the wins, on the same page, not linked from it. -->
+      <section id="limits">
+        <h2>What these numbers do not establish</h2>
+        <p class="lede">
+          Each of these is a real limit on what you should conclude.
+        </p>
+        <ul class="rowlist">
+          <li>
+            <span class="rl-mark">01</span>
+            <span class="rl-what">Published rates × wire-metered ops — not a cloud bill</span>
+            <span class="rl-fig">not the invoice</span>
+            <span class="rl-note">
+              Request tiers and storage-class transitions are unmeasured, and AWS billing lags hours with no
+              per-run granularity, so the figure quoted is the requests counted at list prices, not the invoice. This is arithmetic over real counts, which is
+              stronger than a model and weaker than an invoice.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">02</span>
+            <span class="rl-what">Cost, not latency</span>
+            <span class="rl-fig">no run behind it</span>
+            <span class="rl-note">
+              No in-region latency for the loaded read path is on this page, because no in-region run has measured
+              one yet. Everything here is a bill, not a stopwatch — <a href="#owed">what that owes you</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">03</span>
+            <span class="rl-what">Your region and workload move the crossover</span>
+            <span class="rl-fig">estimateCost()</span>
+            <span class="rl-note">
+              These are <span class="m">us-east-1</span> on-demand rates with the cache off and the
+              stored-bytes term at zero. Feed your own pricing profile in and get your own crossover — the same
+              function generates this page. <a href="usage.html">How</a>.
+            </span>
+          </li>
+          <li>
+            <span class="rl-mark">04</span>
+            <span class="rl-what">The intersection window is bounded on local drivers, not on a cloud one</span>
+            <span class="rl-fig">2 &times; 8 payloads, any segment size</span>
+            <span class="rl-note">
+              The window is bounded two ways: a per-commit test counts the chunk payloads actually in flight and holds them at
+              <strong>concurrency &times; operands</strong> &mdash; <strong>8&times; the chunks gives the same
+              peak</strong>, which is the claim that matters, since it is residency not scaling with segment
+              size that makes a 2,000-chunk intersection fit in a small runtime. And the long-running soak
+              issues combines: <strong>7262</strong> of them over 90 s, alongside <strong>2908</strong>
+              re-loads — each re-load publishes a new generation, which is what makes the reader cache's
+              generation refresh and the cache's generation-keyed entries do real work instead of sitting
+              idle — after which the roaring engine's live off-heap bytes had moved by
+              <strong>0.00 MiB</strong> — where 0.28 MiB would have failed the run. What is still true is
+              the <em>driver</em>: both run against local storage, so this bounds our own bookkeeping and says
+              nothing about a real S3 round trip. The <a href="demo.html">measured run</a> remains a single
+              operation, not a duration.
+            </span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── THE CLOSE ──────────────────────────────────────────────────── -->
+      <section>
+        <div class="close-grid">
+          <div class="close-copy">
+            <h2>Run it against your own rates.</h2>
+            <p class="lede">
+              The cost model is a shipped, pure function. Ours is one pricing profile; yours will move every
+              number on this page, including which side of the crossover you are on.
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" href="usage.html">Estimate your bill →</a>
+              <a class="btn" href="demo.html">See the intersection</a>
+              <a class="btn" href="architecture.html">Why it is cheap</a>
+            </div>
+            <p class="meta">Apache-2.0 · v0.10.0 · pre-1.0 · single maintainer</p>
+          </div>
+          <div class="install">
+            <div class="install-head label"><span>Reproduce</span><span>No cloud account</span></div>
+            <pre tabindex="0"><code>git clone https://github.com/cloudbitmaps/cloudbitmaps
+pnpm install
+
+<span class="c"># regenerates bench/results.json</span>
+pnpm bench</code></pre>
+            <p class="link-row"><a href="usage.html">Or call estimateCost() directly →</a></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-inner">
+        <span>CloudBitmaps · v0.10.0 · Apache-2.0</span>
+        <a href="demo.html">Demo</a>
+        <a href="flavors.html">Flavors</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="usage.html">Usage</a>
+        <span class="right">Pre-1.0 · single maintainer · every money figure and rate here is gated against its source</span>
+      </div>
+    </footer>
+
+    <script src="theme.js"></script>
+  </body>
+</html>

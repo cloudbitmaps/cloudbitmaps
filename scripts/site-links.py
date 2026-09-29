@@ -25,7 +25,11 @@ import re, sys, glob, os
 sys.dont_write_bytecode = True
 import site_markup  # noqa: E402
 
-ROOT = 'site'
+# Which tree: `site/` is what Cloudflare Pages publishes, `site-next/` the display-tier rebuild beside it until it
+# replaces it. `SITE_DIR=site-next python3 scripts/site-links.py` checks the second.
+ROOT = os.environ.get('SITE_DIR', 'site')
+if ROOT not in ('site', 'site-next'):
+    sys.exit(f'SITE_DIR must be site or site-next, not {ROOT}')
 # Recursive: the site is no longer flat. `site/flavors/roaring.html` exists so that the `/flavors/roaring` URL
 # the page has always declared as its canonical actually resolves, and a depth-one glob would have quietly
 # excluded it from every check in this file.
@@ -257,7 +261,40 @@ SAFE_SCHEME = re.compile(r'^\s*(?:data:|about:|blob:|#)', re.I)
 # An XML namespace names a vocabulary, and nothing fetches it: `createElementNS` takes one.
 NAMESPACES = {'http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml', 'http://www.w3.org/1999/xlink'}
 SVG_HREF = {'image', 'use', 'feimage'}
-CSS_URL = re.compile(r"""(?:https?|wss?):|url\(\s*['"]?\s*//|@import\s+['"]\s*//""", re.I)
+# What a sheet loads is what a `url()`, an `image-set()` or an `@import` names, so those are what is read: a
+# scheme elsewhere names nothing, like the `ws:` that ends `grid-template-rows:` or a `.ws:hover` selector.
+_CSS_URL = re.compile(
+    r"""url\(\s*['"]?\s*(?!data:)(?:[a-z][a-z0-9+.-]*:|//)|@import\s+['"]\s*(?:[a-z][a-z0-9+.-]*:|//)""",
+    re.I,
+)
+# Every candidate of an `image-set()` is a load the browser may choose, not only its first.
+_SET_CANDIDATE = re.compile(r"""['"]\s*(?!data:)(?:[a-z][a-z0-9+.-]*:|//)""", re.I)
+
+
+def _image_sets(css):
+    """The argument of each `image-set()`, to its matching parenthesis."""
+    for m in re.finditer(r"image-set\(", css, re.I):
+        depth, i = 1, m.end()
+        while i < len(css) and depth:
+            depth += {"(": 1, ")": -1}.get(css[i], 0)
+            i += 1
+        yield css[m.end() : i - 1]
+
+
+class _CssUrl:
+    """What a sheet loads from another origin: a `url()`, an `@import`, or any `image-set()` candidate."""
+
+    def finditer(self, css):
+        yield from _CSS_URL.finditer(css)
+        for arg in _image_sets(css):
+            yield from _SET_CANDIDATE.finditer(arg)
+            yield from _CSS_URL.finditer(arg)
+
+    def search(self, css):
+        return next(iter(self.finditer(css)), None)
+
+
+CSS_URL = _CssUrl()
 JS_URL = re.compile(r'^(?:(?:https?|wss?):|//[a-z0-9])', re.I)
 
 

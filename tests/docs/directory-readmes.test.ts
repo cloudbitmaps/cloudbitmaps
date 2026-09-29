@@ -226,9 +226,10 @@ describe('code-directory READMEs describe their directories, in both directions'
     });
   });
 
-  describe('site/README.md', () => {
-    const readme = read('site/README.md');
-    const all = filesUnder('site');
+  // Both trees: `site/`, which Pages publishes, and `site-next/`, the display-tier rebuild beside it until it replaces it.
+  describe.each(['site', 'site-next'])('%s/README.md', (dir) => {
+    const readme = read(`${dir}/README.md`);
+    const all = filesUnder(dir);
     const { rows, refs, bad } = tableEntries(readme, new Set(all));
     // Pages are listed one by one. `assets/` is listed as a directory: a row per favicon would be noise, and
     // nothing in it is a page someone could fail to find.
@@ -242,14 +243,14 @@ describe('code-directory READMEs describe their directories, in both directions'
     it('gives every page, every top-level file, and the assets directory a row', () => {
       expect(
         [...pages, ...loose, 'assets/'].filter((f) => !rows.has(f)),
-        'add a row for each to site/README.md',
+        `add a row for each to ${dir}/README.md`,
       ).toEqual([]);
     });
 
     it('lists only files that exist, in a form it can read', () => {
-      expect(bad, 'site/README.md has paths this gate cannot read').toEqual([]);
-      const ghosts = refs.filter((p) => !exists(p, ['site']));
-      expect(ghosts, 'site/README.md lists files that do not exist').toEqual([]);
+      expect(bad, `${dir}/README.md has paths this gate cannot read`).toEqual([]);
+      const ghosts = refs.filter((p) => !exists(p, [dir]));
+      expect(ghosts, `${dir}/README.md lists files that do not exist`).toEqual([]);
     });
   });
 });
