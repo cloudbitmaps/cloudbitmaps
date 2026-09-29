@@ -73,8 +73,10 @@ export type MetricEvent =
        * **Distinct** chunk-keys pruned — never fetched (the chunk-skipping saving). Counts distinct keys,
        * not per-operand GETs, so it under-states the true GET saving when 3+ operands partially overlap.
        *
-       * On a range read (`after` / `through`), this and {@link fetchedChunks} count only the keys inside the
-       * range: the keys outside it are never considered, so they are not counted as pruned either.
+       * On a read bounded by `after` / `through`, this and `fetchedChunks` count only the keys inside the range:
+       * the keys outside it are never considered, so they are not counted as pruned either. Both count the keys the
+       * call would fetch if read to the end, so a page that stops early reports every key up to `through`, or to the
+       * end of the segment when `through` is left out.
        */
       readonly skippedChunks: number;
     }

@@ -10,7 +10,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
-import type { CloudRoaringOptions, RangeOptions, Segment } from '@/index';
+import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, NotFoundError, ValidationError } from '@/core/errors';
 import { collect } from '../helpers/loaded';
 
@@ -185,7 +185,7 @@ describe('a bad bound throws ValidationError when the stream is first read', () 
       const w = await world({ a: IDS, b: IDS });
       const a = w.store.segment('a');
       const b = w.store.segment('b');
-      const bad = range as RangeOptions;
+      const bad = range as IdRange;
       const reads = [
         () => a.iterate(bad),
         () => a.intersect([b], bad),
@@ -220,7 +220,7 @@ describe('every combine takes the range, on every operand and every exclude', ()
     const s = w.store.segment('s');
     for (const [after, through] of RANGES) {
       const range = { after, through };
-      const combos: Array<[string, (o: RangeOptions) => AsyncIterable<number>]> = [
+      const combos: Array<[string, (o: IdRange) => AsyncIterable<number>]> = [
         ['intersect', (o) => a.intersect([b], o)],
         ['intersect, exclude', (o) => a.intersect([b], { ...o, exclude: [s] })],
         ['union', (o) => a.union([b], o)],
@@ -368,6 +368,100 @@ describe('the shortcuts for expired operands keep the range', () => {
     expect(
       await collect(w.store.segment('a').andNot([gone], { after: K, through: 2 * K + 1 })),
     ).toEqual(within(IDS, K, 2 * K + 1));
+  });
+});
+
+describe('a range is read from any object that holds it, once, when the read is called', () => {
+  class Page {
+    get after(): number {
+      return K;
+    }
+    get through(): number {
+      return 2 * K + 1;
+    }
+  }
+  const inherited = (): IdRange => Object.create({ after: K, through: 2 * K + 1 }) as IdRange;
+
+  it('a getter or an inherited bound is honoured by every verb, the *Into verbs included', async () => {
+    const w = await world({ a: IDS, b: IDS, s: [K + 2] });
+    const a = w.store.segment('a');
+    const b = w.store.segment('b');
+    const s = w.store.segment('s');
+    const want = within(IDS, K, 2 * K + 1);
+    for (const range of [new Page(), inherited()]) {
+      expect(await collect(a.iterate(range))).toEqual(want);
+      expect(await collect(a.intersect([b], range))).toEqual(want);
+      expect(await collect(a.union([b], range))).toEqual(want);
+      expect(await collect(a.andNot([s], range))).toEqual(want.filter((id) => id !== K + 2));
+      const dest = w.store.segment('dest');
+      await a.intersectInto(dest, [b], range);
+      expect(await collect(dest.iterate())).toEqual(want);
+    }
+  });
+
+  it('every verb reads its range when it is called, not when the stream is first read', async () => {
+    const w = await world({ a: IDS, b: IDS });
+    const a = w.store.segment('a');
+    const b = w.store.segment('b');
+    const range = { after: K, through: 2 * K + 1 };
+    const streams = [
+      a.iterate(range),
+      a.intersect([b], range),
+      a.union([b], range),
+      a.andNot([b], range),
+    ];
+    range.after = 0;
+    range.through = 1;
+    const want = within(IDS, K, 2 * K + 1);
+    expect(await collect(streams[0]!)).toEqual(want);
+    expect(await collect(streams[1]!)).toEqual(want);
+    expect(await collect(streams[2]!)).toEqual(want);
+    expect(await collect(streams[3]!)).toEqual([]);
+  });
+
+  it('a Symbol bound is refused with ValidationError, not a TypeError from the message', async () => {
+    const w = await world();
+    await expect(
+      collect(w.store.segment('a').iterate({ after: Symbol('x') } as unknown as IdRange)),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it('null options read the whole segment on every verb', async () => {
+    const w = await world({ a: IDS, b: IDS });
+    const a = w.store.segment('a');
+    const b = w.store.segment('b');
+    const none = null as unknown as undefined;
+    expect(await collect(a.iterate(none))).toEqual(IDS);
+    expect(await collect(a.intersect([b], none))).toEqual(IDS);
+    expect(await collect(a.union([b], none))).toEqual(IDS);
+    expect(await collect(a.andNot([b], none))).toEqual([]);
+  });
+});
+
+describe("the expired-operand shortcuts keep the call's own budget", () => {
+  const DAY = 86_400_000;
+  const T0 = 1_754_000_000_000;
+
+  it('a per-op budget, tighter or lifted, applies to a union or an andNot whose other operands expired', async () => {
+    let t = T0;
+    const clock = { now: () => t, sleep: () => Promise.resolve() };
+    const store = new CloudRoaring({
+      storage: new MemoryStorage(),
+      cache: { genTtlMs: 0 },
+      seams: { clock },
+      budget: { maxRequests: 2 },
+    });
+    await store.load({ segment: 'a' }, IDS); // six chunks
+    await store.load({ segment: 'gone' }, [1]);
+    const a = store.segment('a');
+    const gone = store.segment('gone', { expiresAt: T0 + DAY });
+    t += 2 * DAY;
+    // The store's budget of 2 refuses a six-chunk read; `budget: false` on the call lifts it, as on any combine.
+    expect(await collect(a.union([gone], { budget: false }))).toEqual(IDS);
+    expect(await collect(a.andNot([gone], { budget: false }))).toEqual(IDS);
+    // …and a bad `concurrency` is refused there too.
+    await expect(collect(a.union([gone], { concurrency: 0 }))).rejects.toThrow(ValidationError);
+    await expect(collect(a.andNot([gone], { concurrency: 0 }))).rejects.toThrow(ValidationError);
   });
 });
 

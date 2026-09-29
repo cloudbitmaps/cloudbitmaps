@@ -54,22 +54,24 @@ export interface EngineDeps {
  * A range of ids for a read to yield: those greater than `after` and no greater than `through`, `(after, through]`.
  *
  * Built for keyset paging: `after` is the last id the caller already has, `through` the end of its window. Each is
- * optional: left out, the read starts at the first id or runs to the last. Each is an integer in `0..U32_MAX`, or
- * the read throws {@link ValidationError} when it is first iterated. `after >= through` is an empty range, not an
- * error, because a cursor that has reached the end of its window is normal; an empty range reads nothing.
+ * optional: left out, the read starts at the first id or runs to the last. Each is an integer in `0..4294967295`, or
+ * the read throws {@link ValidationError} when it is first read. `after >= through` is an empty range, not an error,
+ * because a cursor that has reached the end of its window is normal; an empty range reads nothing, not even whether
+ * a combine's operands exist.
  *
- * A range read fetches only the chunks the range spans, is charged by the per-op budget for those alone, and on a
- * combine applies to every operand and every `exclude`.
+ * A read with a range fetches only the chunks the range overlaps, on a combine for every operand and every
+ * `exclude`. The per-op budget is charged once, before the first fetch, for every chunk in the range, so with
+ * `after` alone it is charged to the end of the segment however early the caller stops; pass `through` to bound it.
  */
-export interface RangeOptions {
+export interface IdRange {
   /** Exclusive lower bound: the read yields only ids greater than this. */
-  readonly after?: number;
+  readonly after?: number | undefined;
   /** Inclusive upper bound: the read yields only ids up to and including this. */
-  readonly through?: number;
+  readonly through?: number | undefined;
 }
 
 /** Options common to the chunk-aligned combines. */
-export interface CombineOptions extends RangeOptions {
+export interface CombineOptions extends IdRange {
   /** Max chunk keys resolved concurrently — bounds the Storage footprint. A positive integer. */
   readonly concurrency?: number;
   /** Override the store's per-op budget for this call (`false` lifts it). */
@@ -95,7 +97,7 @@ interface Operand {
   readonly gen: string | number | null | undefined;
 }
 
-/** A validated {@link RangeOptions}: inclusive id bounds, and the chunk key and remainder at each end. */
+/** A validated {@link IdRange}: inclusive id bounds, and the chunk key and remainder at each end. */
 interface IdWindow {
   readonly loKey: number;
   readonly loRem: number;
@@ -107,7 +109,7 @@ interface IdWindow {
  * Validate a read's range. `null` when none was asked for, so the read does no extra work; `'empty'` when no id can
  * be in it.
  */
-function windowOf(range: RangeOptions | undefined): IdWindow | 'empty' | null {
+function windowOf(range: IdRange | undefined): IdWindow | 'empty' | null {
   const after = range?.after;
   const through = range?.through;
   if (after === undefined && through === undefined) return null;
@@ -116,7 +118,8 @@ function windowOf(range: RangeOptions | undefined): IdWindow | 'empty' | null {
     ['through', through],
   ] as const) {
     if (bound !== undefined && (!Number.isInteger(bound) || bound < 0 || bound > U32_MAX)) {
-      throw new ValidationError(`${name} must be an integer in 0..${U32_MAX}; got ${bound}`);
+      const got = typeof bound === 'number' ? String(bound) : `a ${typeof bound}`;
+      throw new ValidationError(`${name} must be an integer in 0..${U32_MAX}; got ${got}`);
     }
   }
   const lo = after === undefined ? 0 : after + 1;
@@ -233,9 +236,9 @@ export class SegmentEngine {
 
   /**
    * Every id, ascending, one chunk at a time; with `range`, only the ids in `(after, through]`, fetching only the
-   * chunks the range spans (see {@link RangeOptions}).
+   * chunks the range overlaps (see {@link IdRange}).
    */
-  async *iterate(seg: SegmentRef, range?: RangeOptions): AsyncGenerator<number> {
+  async *iterate(seg: SegmentRef, range?: IdRange): AsyncGenerator<number> {
     const w = windowOf(range);
     if (w === 'empty') return;
     const all = await this.chunkKeys(seg);

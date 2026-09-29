@@ -708,33 +708,44 @@ only the timed re-check, so it is no way to get one instant. That is what a snap
 ### Page through a segment
 
 `iterate` and every combine take a range: `after` and `through` yield only the ids in `(after, through]`, and fetch
-only the chunks the range overlaps. That is keyset paging. Each page asks for the ids after the last one it has, so
-it costs the one or two chunks it spans, not a walk from the first id, and the per-op budget charges it for those
-chunks alone.
+only the chunks the range overlaps. That is keyset paging: each page asks for the ids after the last one the page
+before it ended on, so no page walks from the first id. Give each page both bounds. The per-op budget is charged once,
+before the first fetch, for every chunk in the range, so a page with `after` alone is charged to the end of the
+segment however early it stops. A combine also keeps up to `concurrency` chunk keys in flight (8 by default) on every
+segment it reads, so a page that stops early has already fetched that far ahead; those chunks land in the chunk cache,
+where the next page usually finds them. `iterate` fetches one chunk at a time and nothing ahead.
 
 ```ts
-const audience = await store.segment('active-30d').pin(); // one instant for the whole send
+// The audience is held at one generation for the whole send; the zone and the opt-out list are read live, page by
+// page, so an opt-out that lands mid-send applies to the pages after it.
+const audience = await store.segment('active-30d').pin();
 const zone = store.segment('zone-eu');
 const optOut = store.segment('global-opt-out', { namespace: 'suppression' });
 
-let after: number | undefined; // the last id of the page before; undefined for the first
-for (;;) {
+// One streamed pass finds the window ends: every 1,000th id, then the end of the id space.
+const ends: number[] = [];
+let n = 0;
+for await (const id of audience.iterate()) if (++n % 1_000 === 0) ends.push(id);
+ends.push(4_294_967_295);
+
+// Each window is an independent page, so workers can take them in any order. The first leaves `after` out, which
+// is the only way to include id 0.
+let after: number | undefined;
+for (const through of ends) {
   const page: number[] = [];
-  for await (const id of audience.intersect([zone], { after, exclude: [optOut] })) {
-    page.push(id);
-    if (page.length === 1_000) break;
-  }
-  if (page.length === 0) break;
+  for await (const id of audience.intersect([zone], { after, through, exclude: [optOut] })) page.push(id);
   await send(page);
-  after = page[page.length - 1];
+  after = through;
 }
 ```
 
-Workers that page in parallel can split the id space first, then each read its own `(after, through]`. The range
-applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an integer in
-`0..4294967295`, or the stream throws `ValidationError` when first read, and `after >= through` reads nothing, so a
-cursor that reaches the end of its window needs no special case. A pinned read whose generation has since been
-collected throws `NotFoundError` rather than moving on: size `keep` so the pinned generation outlives the job (below).
+The range applies to every operand and every `exclude`, and a pinned operand is read at its pin. Each bound is an
+integer in `0..4294967295`, or the stream throws `ValidationError` when first read. `after >= through` reads nothing,
+so a cursor that reaches the end of its window needs no special case. A pinned read fails with `NotFoundError`, rather
+than reading a newer generation, for any chunk it must fetch from a generation that has since been collected; chunks it
+already cached still answer. A pin is never re-resolved, so the TTL rule below does not size `keep` for it: keep more
+generations than the loads that can land on the segment while the job runs (`store.load` keeps 1 by default). An
+erasure collects the generation it rewrote whatever `keep` says.
 
 ### Sizing `keep`
 
@@ -1703,10 +1714,10 @@ guidance, and why the registry must be point-in-time-recoverable alongside the o
 |---|---|---|
 | `has(id)` | `Promise<boolean>` | `ValidationError` if `id ∉ [0, 2³²)`. The cache, else **one** ranged GET of that id's chunk — never budgeted |
 | `count()` | `Promise<number>` | exact cardinality, summed from the `.crbm` index with **zero payload reads** on a loaded segment; `budget`-guarded on a source without an index ([§15](#15-cost-ceiling-the-per-op-fan-out-budget)) |
-| `iterate()` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded |
-| `intersect(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
-| `union(others, { exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
-| `andNot(excludes, { concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
+| `iterate({ after?, through? }?)` | `AsyncIterable<number>` | ascending, one chunk at a time; `budget`-guarded. With a range, only the ids in `(after, through]` and the chunks it overlaps ([Page through a segment](#page-through-a-segment)) |
+| `intersect(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending; chunk-skipping. `exclude` subtracts suppression segments **in the same pass** |
+| `union(others, { after?, through?, exclude?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. The one composite with **no** chunk-skipping — every chunk of every operand is read |
+| `andNot(excludes, { after?, through?, concurrency?, budget? })` | `AsyncIterable<number>` | ascending. Reads all of `this`; each suppression list **only where it overlaps** |
 | `intersectInto` / `unionInto` / `andNotInto` `(dest, …)` | `Promise<MaterializeResult>` | write the result as a **new generation of `dest`** (superseding it) — `{ generation, cardinality, chunkCount, size }`. Needs a backend |
 | `costReport({ workload?, pricing? })` | `Promise<CostReport>` | grounded $ report from this segment's real `.crbm` size ([§11](#11-cost-estimate-it-then-ground-it)) |
 

@@ -36,15 +36,16 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
 
 ### Added
 
-- **A range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and the
-  `*Into` verbs.** A read yields only the ids in `(after, through]`, ascending, and fetches only the chunks the range
-  overlaps, on every operand and every `exclude` of a combine, so keyset paging costs each page the chunks it spans
-  rather than a walk from the first id. The per-op budget charges a range read for those chunks alone. Each bound is
-  optional and an integer in `0..4294967295`, or the read throws `ValidationError` when first iterated;
-  `after >= through` is an empty read, which fetches nothing. A pinned handle reads its pinned generation, and one
-  since collected throws `NotFoundError`, as a full pinned read does. `RangeOptions` (`{ after?, through? }`) is
-  exported, and `BaseCombineOptions` extends it. An intersect's metrics event counts only the chunk keys inside the
-  range.
+- **An id-range read: `iterate({ after, through })`, and the same two options on `intersect`, `union`, `andNot` and
+  the `*Into` verbs.** A read yields only the ids in `(after, through]`, ascending, and fetches only the chunks the
+  range overlaps, on every operand and every `exclude` of a combine, so a keyset page bounded by `through` costs the
+  chunks of its window rather than a walk from the first id. The per-op budget is charged once, before the first
+  fetch, for every chunk in the range, so with `after` alone it is charged to the end of the segment. Each bound is
+  optional and an integer in `0..4294967295`, or the read throws `ValidationError` when first read; `after >= through`
+  is an empty read, which fetches nothing. A pinned read fails with `NotFoundError` for any chunk it must fetch from a
+  generation that has since been collected, as a full pinned read does. `IdRange` (`{ after?, through? }`) is
+  exported, and `BaseCombineOptions` extends it. The `intersect` metrics event, which every combine emits, counts in
+  `fetchedChunks` and `skippedChunks` only the chunk keys inside the range.
 
 - **`PinnedAt` names the object a pin holds.** It gains an optional `fingerprint`: the pinned object's size and
   footer checksum, which `seg.pin()` records. `PinnedObject` (`{ version, fingerprint? }`) is exported beside it.
