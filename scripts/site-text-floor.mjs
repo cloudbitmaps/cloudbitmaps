@@ -18,7 +18,10 @@
  * in each, printed, and with scripts off; at the seven widths and at one inside every band the sheet's media queries
  * mark out; each generated region must show every run it renders; no list item may draw a marker;
  * and the figures Chrome built into the page, text, attributes and generated content, must be the ones the figures
- * gate read, so a construct the two parse apart fails wherever it stands.
+ * gate read, so a construct the two parse apart fails wherever it stands. Those checks read styles, and a way to paint
+ * over text that none of them reads would get past them, so in each colour scheme, once everything has played, every
+ * run must also change the pixels where it is drawn when its letters alone are made clear: two screenshots of each
+ * view, read with Node's `zlib`, compared inside each run's box.
  * A region is also announced by name, and its names drifted twice as well, a run of panels sharing one and a panel
  * taking a file name from the one above it: each region needs a name of its own on the page, and one inside a panel
  * is named for that panel's head.
@@ -44,6 +47,8 @@ if (!['site', 'site-next'].includes(TREE)) {
 const FLOOR = 9.5;
 /** What the display-tier homepage's footer says; a page that says it is also held to showing what it states. */
 const homeFigures = createRequire(import.meta.url)('./lib/home-figures.cjs');
+/** Reads the screenshots the pixel comparison takes, with Node's `zlib`. */
+const { decodePng, changedPixels } = createRequire(import.meta.url)('./lib/png-pixels.cjs');
 const { CLAIM, plain } = homeFigures;
 /** The pages the visibility probe ran on, which the report names so a run that probed none says so. */
 const probed = new Set();
@@ -375,6 +380,158 @@ const unseen = ({ hit }) => `(() => {
 })()`;
 
 /**
+ * The pixel comparison, which does not trust the style checks above: every run of text they read must change the
+ * pixels where Chrome draws it when its letters, and only letters, are made clear. A box, a pseudo-element or any
+ * paint laid over a run leaves those pixels as they were, however the run's own styles read.
+ *
+ * Runs in the page once per state: finds the runs as `unseen` does and the frames that scroll them, and adds the sheet
+ * that makes letters clear, switched off. Its selectors out-rank any rule the page's sheet writes, and the figures
+ * gate refuses any `!important` there, the one way a rule could out-rank them.
+ */
+const PIXEL_RUNS = `(() => {
+  const scrolls = (f) => /(auto|scroll)/.test(getComputedStyle(f).overflowX + getComputedStyle(f).overflowY);
+  const frameOf = (el) => {
+    for (let f = el.parentElement; f && f !== document.documentElement; f = f.parentElement) if (scrolls(f)) return f;
+    return null;
+  };
+  const boxed = (e) => {
+    let a = e;
+    while (a && getComputedStyle(a).display === 'contents') a = a.parentElement;
+    return a ?? e;
+  };
+  const frames = [];
+  const runs = [];
+  const regions = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === Node.COMMENT_NODE) {
+      const m = /^ BENCH:([A-Z]+):(START|END) $/.exec(n.data);
+      if (m && m[2] === 'START') regions.push(m[1]);
+      else if (m) regions.pop();
+      continue;
+    }
+    const text = n.data.trim();
+    const el = n.parentElement;
+    if (!text || !el || el.closest('script, style')) continue;
+    if (el.closest('a.skip[href^="#"]') && !/\\d/.test(text)) continue;
+    if (regions.length > 0 && (!boxed(el).checkVisibility() || el.closest('.k-ph1'))) continue;
+    const range = document.createRange();
+    range.selectNodeContents(n);
+    // A run with no box is not drawn at all, which the style checks report; there are no pixels of it to compare.
+    if (![...range.getClientRects()].some((q) => q.width > 0 && q.height > 0)) continue;
+    const f = frameOf(el);
+    if (f && !frames.includes(f)) frames.push(f);
+    runs.push({ range, frame: f ? frames.indexOf(f) : -1, done: false });
+  }
+  const X = '*' + [0, 1, 2, 3, 4, 5, 6, 7].map((k) => ':not(#cb-px-' + k + ')').join('');
+  const T = ['text', 'tspan', 'textPath'].map((t) => 'svg ' + t + X.slice(1)).join(', ');
+  const style = document.createElement('style');
+  style.media = 'not all';
+  style.textContent =
+    [X, X + '::before', X + '::after', X + '::marker'].join(', ') +
+    ' { -webkit-text-fill-color: transparent !important; -webkit-text-stroke-color: transparent !important;' +
+    ' text-shadow: none !important; transition: none !important; }\\n' +
+    T + ' { fill: transparent !important; stroke: transparent !important; transition: none !important; }';
+  document.head.append(style);
+  window.__cbPixels = { runs, frames, style };
+  return runs.map((r) => r.range.toString().trim().slice(0, 60));
+})()`;
+
+/**
+ * Runs in the page once the viewport is tall: the views that bring every run into a band of it, clear of the sticky
+ * bar. The page is stepped through in overlapping bands, and each scrolling frame through its own width and height
+ * where it stands.
+ */
+const PIXEL_VIEWS = `(() => {
+  const { frames } = window.__cbPixels;
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  const last = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  const step = Math.max(1, innerHeight - 400);
+  const ys = (from, to) => {
+    const end = Math.min(last, Math.max(0, to));
+    const out = [];
+    for (let y = Math.max(0, Math.min(from, end)); ; y += step) {
+      out.push(Math.min(y, end));
+      if (y >= end) return out;
+    }
+  };
+  const offsets = (size, view) => {
+    const out = [];
+    for (let v = 0; ; v += Math.max(1, view - 100)) {
+      out.push(Math.min(v, Math.max(0, size - view)));
+      if (v >= size - view) return out;
+    }
+  };
+  const views = ys(0, last).map((y) => ({ y, frame: -1, left: 0, top: 0 }));
+  frames.forEach((f, frame) => {
+    const r = f.getBoundingClientRect();
+    for (const y of ys(r.top - 150, r.top + r.height - (innerHeight - 150))) {
+      for (const left of offsets(f.scrollWidth, f.clientWidth)) {
+        for (const top of offsets(f.scrollHeight, f.clientHeight)) views.push({ y, frame, left, top });
+      }
+    }
+  });
+  return views;
+})()`;
+
+/**
+ * Runs in the page: brings one view up, and says which runs it can judge and what to capture. A run is judged in the
+ * first view that holds its first letters whole inside the band and inside its frame; the boxes of every run in view
+ * come back too, so no run is credited with pixels another run changed. It does no waiting of its own, since a page
+ * with scripts off runs no timers.
+ */
+const pixelView = (view) => `((v) => {
+  const { runs, frames } = window.__cbPixels;
+  window.scrollTo({ top: v.y, behavior: 'instant' });
+  frames.forEach((f, i) => {
+    f.scrollLeft = i === v.frame ? v.left : 0;
+    f.scrollTop = i === v.frame ? v.top : 0;
+  });
+  // Anything still playing is read once it has ended, so nothing is judged until then.
+  const moving = document
+    .getAnimations()
+    .filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity).length;
+  let top = scrollY === 0 ? 0 : 150;
+  let bottom = scrollY >= document.documentElement.scrollHeight - innerHeight - 1 ? innerHeight : innerHeight - 150;
+  let left = 0;
+  let right = innerWidth;
+  if (v.frame >= 0) {
+    const f = frames[v.frame].getBoundingClientRect();
+    top = Math.max(top, f.top);
+    bottom = Math.min(bottom, f.bottom);
+    left = Math.max(left, f.left);
+    right = Math.min(right, f.right);
+  }
+  const judge = [];
+  const boxes = [];
+  if (moving > 0) return { judge, boxes, clip: { x: 0, y: 0, width: 1, height: 1 }, moving };
+  runs.forEach((r, i) => {
+    const q = [...r.range.getClientRects()].find((q) => q.width > 0 && q.height > 0);
+    if (!q) return;
+    if (q.right > left && q.bottom > top && q.left < right && q.top < bottom) {
+      boxes.push({ i, left: q.left, top: q.top, right: Math.min(q.right, right), bottom: q.bottom });
+    }
+    if (r.done || r.frame !== v.frame) return;
+    // The run's first letters, whole, inside the band and its frame: a run wider than its frame is judged where it
+    // starts, on the part of it in view.
+    if (q.top < top || q.bottom > bottom || q.left < left || q.left + Math.min(q.width, 24) > right) return;
+    r.done = true;
+    judge.push(i);
+  });
+  const x = Math.max(0, Math.floor(left));
+  const y = Math.max(0, Math.floor(top));
+  const clip = { x, y, width: Math.max(1, Math.ceil(right) - x), height: Math.max(1, Math.ceil(bottom) - y) };
+  // The capture is addressed in the page's coordinates, and the boxes in the viewport's.
+  return { judge, boxes, clip, page: { x: x + scrollX, y: y + scrollY }, moving };
+})(${JSON.stringify(view)})`;
+
+/** Runs in the page: turns the clear letters on or off. */
+const clearLetters = (on) => `window.__cbPixels.style.media = ${on ? "'all'" : "'not all'"};`;
+
+/** The tallest viewport the pixel comparison uses, so a page takes a few views rather than dozens. */
+const PIXEL_VIEWPORT = 4000;
+
+/**
  * Runs in the page, awaited: with `scroll`, scrolls it top to bottom, so every band that plays on sight plays; then
  * waits until every animation that ends has ended.
  */
@@ -498,6 +655,10 @@ const proc = spawn(
 
 const problems = [];
 let measured = 0;
+/** The views the pixel comparison captured, twice each. */
+let pixelViews = 0;
+/** The fewest pixels a run's letters must change: a covered run changes none, and a lone full stop only two. */
+const PIXELS_A_RUN = 1;
 /** The loads at widths between the sheet's breakpoints, on the page that says its figures are gated. */
 let between = 0;
 try {
@@ -604,6 +765,83 @@ try {
             for (const m of r.markers)
               problems.push(`${at}: a list item draws a marker, ${m}, which no check reads`);
           };
+          const shot = async (clip) =>
+            decodePng(
+              Buffer.from(
+                (
+                  await cdp.send(
+                    'Page.captureScreenshot',
+                    { format: 'png', optimizeForSpeed: true, clip: { ...clip, scale: 1 } },
+                    60_000,
+                  )
+                ).data,
+                'base64',
+              ),
+            );
+          const comparePixels = async (when) => {
+            const at = `${TREE}/${page} at ${width}px${when}`;
+            const texts = await evaluate(PIXEL_RUNS);
+            const tall = await evaluate('document.documentElement.scrollHeight');
+            await cdp.send('Emulation.setDeviceMetricsOverride', {
+              width,
+              height: Math.min(PIXEL_VIEWPORT, Math.max(900, tall)),
+              deviceScaleFactor: 1,
+              mobile: false,
+            });
+            const views = await evaluate(PIXEL_VIEWS);
+            for (const view of views) {
+              let v = await evaluate(pixelView(view));
+              for (let tries = 0; v.moving > 0 && tries < 100; tries++) {
+                await sleep(50);
+                v = await evaluate(pixelView(view));
+              }
+              const { judge, boxes, clip, page: origin } = v;
+              if (judge.length === 0) continue;
+              const capture = { ...clip, ...origin };
+              const drawn = await shot(capture);
+              await evaluate(clearLetters(true));
+              const clear = await shot(capture);
+              await evaluate(clearLetters(false));
+              pixelViews++;
+              const local = (b) => ({
+                i: b.i,
+                left: b.left - clip.x,
+                top: b.top - clip.y,
+                right: b.right - clip.x,
+                bottom: b.bottom - clip.y,
+              });
+              for (const i of judge) {
+                const box = local(boxes.find((b) => b.i === i));
+                const others = boxes.filter((b) => b.i !== i).map(local);
+                const { changed, compared } = changedPixels(drawn, clear, box, others);
+                const area = (box.right - box.left) * (box.bottom - box.top);
+                if (compared < 0.3 * area) {
+                  problems.push(`${at}: "${texts[i]}" is drawn over another run of text`);
+                } else if (changed < PIXELS_A_RUN) {
+                  problems.push(
+                    `${at}: "${texts[i]}" changes ${changed} pixel(s) when its letters are made clear, so ` +
+                      'something drawn over it hides it from a reader',
+                  );
+                }
+              }
+            }
+            const missed = await evaluate(
+              'window.__cbPixels.runs.flatMap((r, i) => (r.done ? [] : [i]))',
+            );
+            for (const i of missed) {
+              problems.push(`${at}: "${texts[i]}" was in no view the pixel comparison took`);
+            }
+            await evaluate(
+              'window.__cbPixels.style.remove(); window.__cbPixels.frames.forEach((f) => { f.scrollLeft = 0; ' +
+                "f.scrollTop = 0; }); window.scrollTo({ top: 0, behavior: 'instant' });",
+            );
+            await cdp.send('Emulation.setDeviceMetricsOverride', {
+              width,
+              height: 900,
+              deviceScaleFactor: 1,
+              mobile: false,
+            });
+          };
           const wait = async (when, scroll) => {
             const stuck = await evaluate(settle({ scroll }), true);
             if (stuck) problems.push(`${TREE}/${page} at ${width}px${when}: ${stuck}`);
@@ -628,8 +866,8 @@ try {
           // off. In each, once everything has come to rest, every run is found where it is drawn: a fade that starts
           // late, a rule for one theme, for paper or for a reader without scripts, or text laid under another box.
           const passes = [
-            { when: ', once played, light', scheme: 'light', motion: true },
-            { when: ', once played, dark', scheme: 'dark', motion: true },
+            { when: ', once played, light', scheme: 'light', motion: true, pixels: true },
+            { when: ', once played, dark', scheme: 'dark', motion: true, pixels: true },
             { when: ', light, with less motion', scheme: 'light' },
             { when: ', dark, with less motion', scheme: 'dark' },
             { when: ', printed', scheme: 'light', media: 'print' },
@@ -654,6 +892,7 @@ try {
             await cdp.send('Animation.setPlaybackRate', { playbackRate: pass.motion ? 20 : 1 });
             await wait(pass.when, pass.motion === true);
             report(pass.when, await evaluate(unseen({ hit: true })));
+            if (pass.pixels) await comparePixels(pass.when);
           }
           await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
           await cdp.send('Emulation.setScriptExecutionDisabled', { value: false });
@@ -720,6 +959,7 @@ console.log(
     `the sheet's breakpoints), nothing under ${FLOOR}px, no page scrolling sideways or cutting off text, every region ` +
     'that scrolls reachable by keyboard and named for itself, and every word in view, found where it is drawn, once ' +
     'played and at rest in each colour scheme, printed and with scripts off, every generated region showing, no list ' +
-    'marker, and Chrome reading the same figures as the figures gate, on ' +
+    `marker, every word changing the pixels where it is drawn in ${pixelViews} views compared, and Chrome reading ` +
+    'the same figures as the figures gate, on ' +
     `${probed.size ? [...probed].join(', ') : 'no page (none says its figures are gated)'}.`,
 );

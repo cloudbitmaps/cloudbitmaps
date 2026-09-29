@@ -948,7 +948,12 @@ describe("site:figures holds site-next/'s homepage to its sources", () => {
     [
       'pointer events that out-rank the pass',
       '.cb-caveat::after { pointer-events: none !important; }',
-      'out-rank the browser pass',
+      'out-rank the sheets the browser pass adds',
+    ],
+    [
+      'letters painted past the clear sheet the pixel comparison adds',
+      '#a#b#c#d#e#f#g#h#i p { -webkit-text-fill-color: currentcolor !important; }',
+      'out-rank the sheets the browser pass adds',
     ],
     [
       'a font the sheet does not name',

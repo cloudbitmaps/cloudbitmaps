@@ -42,7 +42,7 @@
  *   a stroke painted over the letters, a reflection, a font size adjustment, a hyphenation character, an individual
  *   scale, rotation or translation, a turned, mirrored or 3D transform, containment, skipped rendering, a blend, a
  *   thick decoration, lines laid over each other, a font outside the sheet's two stacks, an animation that never
- *   ends, or `pointer-events` with `!important`, which would out-rank the pass;
+ *   ends, or any `!important`, which could out-rank the sheets the browser pass adds while it looks;
  * - a sheet rule for a reader site-text-floor does not become: `@supports`, `@container`, a media feature other than
  *   width and motion (the theme is the page's `data-theme` stamp, and print stands alone), a size that follows the
  *   viewport's height or does arithmetic on its width, an animation tied to scrolling, the system's colours or an
@@ -56,7 +56,8 @@
  * added, left stale, reworded around, moved into a comment or out of view, or copied into an attribute, and against
  * the markup and sheet tricks listed above. It reads the page and the sheet, not the layout: a box laid over a
  * figure, or a rule that fades one out after load, is site-text-floor's to catch, which finds every word on the page
- * where Chrome draws it, and which counts the figures Chrome built into the page against the ones read here
+ * where Chrome draws it, checks that its letters change the pixels there, and counts the figures Chrome built into the
+ * page against the ones read here
  * (`readerFigures`), so a construct this reader and the browser parse apart fails there. What neither reads is where
  * the layout puts a word: a grid or an `order` that moves a held figure beside another's label. That is review's.
  */
@@ -998,6 +999,13 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
     }
     const { strings, rest } = cssStrings(d.value.replace(/\s*!important\s*$/i, ''));
     const says = `${where} ${d.name}: ${d.value}`;
+    // The browser pass adds sheets of its own while it looks: one makes every box take pointer events, one makes
+    // every letter clear. An important rule of the page's could out-rank either, so the sheet writes none.
+    if (/!important\s*$/i.test(d.value)) {
+      fail(
+        `${says} is important, which could out-rank the sheets the browser pass adds while it looks`,
+      );
+    }
     // The pass loads one height, and a width only at the widths it lists: a size may follow the width, but only as
     // it grows or shrinks, never through arithmetic that could make it vanish between two of them.
     if (/\d(?:[sld]?vh|[sld]?vb|vmin|vmax|cq[whib]|cqmin|cqmax)\b/i.test(rest)) {
@@ -1153,13 +1161,6 @@ function refuse({ L, page, fail, ROOT, SITE_DIR }) {
         // A stroke painted first is a halo under the letters; one painted last covers them.
         if (!/^(?:normal|stroke(?:\s+fill)?(?:\s+markers)?)$/i.test(rest)) {
           fail(`${says} paints a stroke over its text`);
-        }
-        break;
-      case 'pointer-events':
-        if (/!important/i.test(d.value)) {
-          fail(
-            `${says} would out-rank the browser pass, which makes every box take pointer events while it looks`,
-          );
         }
         break;
       case 'font-family':
