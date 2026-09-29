@@ -42,7 +42,7 @@ const FLOOR = '22.12';
  * what users actually get.
  */
 const FLOOR_MAJOR = Number(FLOOR.split('.')[0]);
-/** The CI matrix is the active LTS + the current release — not every major that still runs. */
+/** The CI matrix is the two LTS lines, 22 and 24 — not every major that still runs. */
 const EXPECTED_MATRIX = [22, 24];
 
 /**

@@ -16,6 +16,7 @@ import { InProcessKeystore } from '@/drivers/crypto';
 
 /**
  * The audit sink and every event the library emits: `segment.publish` (a load became current),
+ * `segment.rollback` (the pointer moved back), `segment.load-refused` (a load's guard refused it),
  * `segment.rewrite` (a subject erasure), `segment.erase` (a crypto-shred), `segment.dispose` (storage
  * reclaimed) and `namespace.erase`.
  *

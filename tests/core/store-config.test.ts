@@ -23,7 +23,7 @@ import { seededStore } from '../helpers/loaded';
 const SEG: SegmentRef = { segment: 's' };
 const k = (): Uint8Array => randomBytes(32);
 
-describe('CloudRoaring constructor — one config shape (storage: raw driver | source)', () => {
+describe('CloudRoaring constructor — one config shape (storage: a backend, a raw driver or a source)', () => {
   it("wraps a raw IStorageDriver and reads the registry's currentGen (not the max on disk)", async () => {
     const backend = new MemoryStorage();
     const { storage, registry } = backend;
