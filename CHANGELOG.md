@@ -13,9 +13,10 @@ so, and so do the module headers in the code.
 
 ### Breaking
 
-Each of these makes a call throw where it used to return. The first four each fix a wrong answer, and the entries
-under **Fixed** say what the call returned before. The last two hold a call to a rule the rest of the library
-already kept.
+The first six make a call throw where it used to return. The first four each fix a wrong answer, and the entries
+under **Fixed** say what the call returned before. The next two hold a call to a rule the rest of the library
+already kept. The last five hold the store, the backends and the registry to what the library itself takes and
+writes, and give its errors the library's own brand.
 
 - **A pinned read of a segment whose row is gone or destroyed throws `NotFoundError`**, where it read empty,
   part-way through a call included. Catch it where a pin can outlive its segment: across a `dropSegment`, a
