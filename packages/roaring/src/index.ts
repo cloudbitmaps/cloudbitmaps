@@ -2186,7 +2186,11 @@ export class Segment {
     // requires at least one operand — a caller whose suppression list happened to age out must not get an error.
     // It is read as a one-operand union rather than as `iterate()`, so the call's own `budget`, `concurrency` and range
     // still apply.
-    if (liveExcludes.length === 0 && excludes.length > 0) return this.union([], options);
+    // Only the call's own options go on, not an `exclude` a caller routed here with it: the excludes that expired are
+    // the ones this branch exists to drop, and an expired exclusion excludes nothing.
+    if (liveExcludes.length === 0 && excludes.length > 0) {
+      return this.union([], options == null ? undefined : readOptions(options));
+    }
     if (liveExcludes.length !== excludes.length) return this.andNot(liveExcludes, options);
     let engine: SegmentEngine;
     try {

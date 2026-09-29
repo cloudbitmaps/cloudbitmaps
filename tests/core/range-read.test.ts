@@ -363,6 +363,17 @@ describe('the shortcuts for expired operands keep the range', () => {
     ).toEqual(within(IDS, K, 2 * K + 1).filter((id) => id !== K + 2));
   });
 
+  it('a union routed through an andNot whose excludes all expired subtracts nothing, and keeps the range', async () => {
+    const w = await expiring();
+    const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
+    const staleOptOut = w.store.segment('s', { expiresAt: T0 + DAY });
+    w.expire();
+    const range = { after: K, through: 2 * K + 1 };
+    expect(
+      await collect(w.store.segment('a').union([gone], { ...range, exclude: [staleOptOut] })),
+    ).toEqual(within(IDS, K, 2 * K + 1));
+  });
+
   it('an andNot whose every exclude expired is a range read of this one', async () => {
     const w = await expiring();
     const gone = w.store.segment('gone', { expiresAt: T0 + DAY });
