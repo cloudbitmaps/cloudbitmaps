@@ -67,6 +67,7 @@ async function handles(store: CloudRoaring, name: string): Promise<Array<[string
 
 const CASES: Array<[string, number | undefined, number | undefined]> = [
   ['inside one chunk', K + 1, K + 100],
+  ['a single id', K - 1, K],
   ['across several chunks', 50, 3 * K + 5],
   ['through the last id of a chunk', 10, K - 1],
   ['through the first id of the next', 10, K],
@@ -200,11 +201,12 @@ describe('a bad bound throws ValidationError when the stream is first read', () 
   }
 });
 
-describe('every combine takes the range, on every operand and every exclude', () => {
-  const A = IDS;
-  const B = [...IDS.filter((_, i) => i % 2 === 0), 6 * K + 1];
-  const S = [1, K + 100, 3 * K - 2, 7 * K + 6];
+/** Fixtures for the combine checks: `b` holds half of `a` and one chunk of its own, `s` excludes a few ids. */
+const A = IDS;
+const B = [...IDS.filter((_, i) => i % 2 === 0), 6 * K + 1];
+const S = [1, K + 100, 3 * K - 2, 7 * K + 6];
 
+describe('every combine takes the range, on every operand and every exclude', () => {
   const RANGES: Array<[number | undefined, number | undefined]> = [
     [K + 1, 3 * K + 5],
     [undefined, 2 * K],
@@ -473,6 +475,234 @@ describe('a pin keeps its guarantees under a range', () => {
     await expect(collect(snap.iterate({ after: K, through: 2 * K }))).rejects.toThrow(
       NotFoundError,
     );
+  });
+
+  it('the last page of a keyset walk over a collected pin throws too, rather than reading as the end of the data', async () => {
+    const w = await world();
+    const snap = await w.store.segment('a').pin();
+    await w.store.load({ segment: 'a' }, [K + 3], { keep: 0 });
+    await expect(collect(snap.iterate({ after: 8 * K }))).rejects.toThrow(NotFoundError);
+  });
+
+  it('an empty range on a collected pin reads nothing, so it answers empty rather than failing', async () => {
+    const w = await world();
+    const snap = await w.store.segment('a').pin();
+    await w.store.load({ segment: 'a' }, [K + 3], { keep: 0 });
+    expect(await collect(snap.iterate({ after: 2 * K, through: 2 * K }))).toEqual([]);
+  });
+});
+
+describe('union, andNot and excludes fetch, and are charged, only in range — live and pinned', () => {
+  const range = { after: K + 1, through: 3 * K + 5 }; // keys 1..3
+  type Run = (h: (n: string) => Promise<Segment>, o: IdRange) => Promise<AsyncIterable<number>>;
+  const CASES: Array<[string, Run, number]> = [
+    ['union', async (h, o) => (await h('a')).union([await h('b')], o), 3 + 3],
+    [
+      'union, exclude',
+      async (h, o) => (await h('a')).union([await h('b')], { ...o, exclude: [await h('s')] }),
+      3 + 3 + 2,
+    ],
+    [
+      'intersect, exclude',
+      async (h, o) => (await h('a')).intersect([await h('b')], { ...o, exclude: [await h('s')] }),
+      3 + 3 + 2,
+    ],
+    ['andNot', async (h, o) => (await h('a')).andNot([await h('s')], o), 3 + 2],
+  ];
+  for (const [name, run, gets] of CASES) {
+    for (const kind of ['live', 'pinned'] as const) {
+      it(`${name}, ${kind}`, async () => {
+        const w = await world({ a: A, b: B, s: S });
+        const handle = (st: CloudRoaring) => (n: string) =>
+          kind === 'live' ? Promise.resolve(st.segment(n)) : st.segment(n).pin();
+        const { store, metrics } = w.fresh();
+        const stream = await run(handle(store), range);
+        metrics.reset();
+        await collect(stream);
+        expect(metrics.snapshot().storage.gets).toBe(gets);
+        const exact = w.fresh({ budget: { maxRequests: gets } }).store;
+        await expect(collect(await run(handle(exact), {}))).rejects.toThrow(BudgetExceededError);
+        await collect(await run(handle(exact), range)); // exactly the in-range reads fit
+        const short = w.fresh({ budget: { maxRequests: gets - 1 } }).store;
+        await expect(collect(await run(handle(short), range))).rejects.toThrow(BudgetExceededError);
+      });
+    }
+  }
+});
+
+describe('the intersect metric counts only keys inside the range', () => {
+  it('fetchedChunks and skippedChunks', async () => {
+    const w = await world({ a: A, b: B, s: S });
+    const { store, metrics } = w.fresh();
+    const range = { after: K + 1, through: 3 * K + 5 };
+    await collect(store.segment('a').intersect([store.segment('s')], range));
+    expect(metrics.snapshot().intersect).toMatchObject({ fetchedChunks: 2, skippedChunks: 1 });
+    metrics.reset();
+    await collect(
+      store
+        .segment('a')
+        .intersect([store.segment('b')], { ...range, exclude: [store.segment('s')] }),
+    );
+    expect(metrics.snapshot().intersect).toMatchObject({ fetchedChunks: 3, skippedChunks: 0 });
+  });
+});
+
+describe('one-id ranges, and union edges held only by a later include', () => {
+  it('a one-id range yields exactly that id, live and pinned', async () => {
+    const w = await world({ a: A });
+    for (const seg of [w.store.segment('a'), await w.store.segment('a').pin()]) {
+      expect(await collect(seg.iterate({ after: K - 2, through: K - 1 }))).toEqual([K - 1]);
+      expect(await collect(seg.iterate({ after: K - 1, through: K }))).toEqual([K]);
+      expect(await collect(seg.iterate({ after: K, through: K + 1 }))).toEqual([K + 1]);
+    }
+  });
+  it('union trims an edge chunk that the first include lacks', async () => {
+    const w = await world({ a: A, b: B, s: S });
+    const [a, b, s] = ['a', 'b', 's'].map((n) => w.store.segment(n)) as [Segment, Segment, Segment];
+    expect(await collect(a.union([b], { after: 6 * K + 1, through: 7 * K + 5 }))).toEqual([
+      7 * K + 5,
+    ]);
+    expect(await collect(a.union([b], { after: 6 * K, through: 6 * K + 1 }))).toEqual([6 * K + 1]);
+    expect(await collect(s.union([a], { after: 3 * K + 1, through: 4 * K + 5 }))).toEqual(
+      within(A, 3 * K + 1, 4 * K + 5),
+    );
+  });
+});
+
+describe('the remaining expired-operand shortcuts keep the range', () => {
+  const DAY = 86_400_000;
+  const T0 = 1_754_000_000_000;
+  it('this handle expired; some operands expired; some excludes expired', async () => {
+    let t = T0;
+    const clock = { now: () => t, sleep: () => Promise.resolve() };
+    const store = new CloudRoaring({
+      storage: new MemoryStorage(),
+      cache: { genTtlMs: 0 },
+      seams: { clock },
+    });
+    await store.load({ segment: 'a' }, IDS);
+    await store.load({ segment: 'gone' }, [K + 1]);
+    await store.load({ segment: 's' }, [K + 2]);
+    const expiredA = store.segment('a', { expiresAt: T0 + DAY });
+    const gone = store.segment('gone', { expiresAt: T0 + DAY });
+    t += 2 * DAY;
+    const a = store.segment('a');
+    const s = store.segment('s');
+    const range = { after: K, through: 2 * K + 1 };
+    const want = within(IDS, K, 2 * K + 1);
+    expect(await collect(expiredA.union([a], range))).toEqual(want);
+    expect(await collect(a.union([gone, s], range))).toEqual(want);
+    expect(await collect(a.andNot([gone, s], range))).toEqual(want.filter((id) => id !== K + 2));
+  });
+});
+
+describe('every combine reads each pinned operand and exclude at its pin, at the chunk edges', () => {
+  it('intersect, union and andNot, with pinned and mixed operands and pinned excludes', async () => {
+    const w = await world({ a: A, b: B, s: S });
+    const pa = await w.store.segment('a').pin();
+    const pb = await w.store.segment('b').pin();
+    const ps = await w.store.segment('s').pin();
+    const aNow = [K - 1, K, K + 1, 2 * K - 1, 2 * K, 2 * K + 1];
+    const bNow = [K, K + 2, 2 * K];
+    const sNow = [K, K + 2, 2 * K - 2];
+    await w.store.load({ segment: 'a' }, aNow); // the world moves on, inside every range below
+    await w.store.load({ segment: 'b' }, bNow);
+    await w.store.load({ segment: 's' }, sNow);
+    const lb = w.store.segment('b');
+    const AB = A.filter((id) => B.includes(id));
+    const AuB = [...new Set([...A, ...B])];
+    for (const [after, through] of [
+      [K - 1, 2 * K],
+      [K, 2 * K + 1],
+      [K + 1, 2 * K - 1],
+    ] as const) {
+      const r = { after, through };
+      const cases: Array<[string, AsyncIterable<number>, number[]]> = [
+        ['intersect', pa.intersect([pb], r), AB],
+        [
+          'intersect, pinned exclude',
+          pa.intersect([pb], { ...r, exclude: [ps] }),
+          AB.filter((id) => !S.includes(id)),
+        ],
+        [
+          'live ∩ pinned, pinned exclude',
+          lb.intersect([pa], { ...r, exclude: [ps] }),
+          bNow.filter((id) => A.includes(id) && !S.includes(id)),
+        ],
+        ['union', pa.union([pb], r), AuB],
+        [
+          'union, pinned exclude',
+          pa.union([pb], { ...r, exclude: [ps] }),
+          AuB.filter((id) => !S.includes(id)),
+        ],
+        [
+          'live ∪ pinned, pinned exclude',
+          lb.union([pa], { ...r, exclude: [ps] }),
+          [...new Set([...bNow, ...A])].filter((id) => !S.includes(id)),
+        ],
+        ['andNot', pa.andNot([ps], r), A.filter((id) => !S.includes(id))],
+        ['live andNot pinned', lb.andNot([ps], r), bNow.filter((id) => !S.includes(id))],
+      ];
+      for (const [name, stream, full] of cases) {
+        expect(await collect(stream), `${name} (${after}, ${through}]`).toEqual(
+          within(full, after, through),
+        );
+      }
+    }
+  });
+});
+
+describe('an empty range reads nothing, on every verb, live and pinned', () => {
+  it('no storage call and no registry call, with a positive control', async () => {
+    const w = await world({ a: IDS, b: IDS });
+    let calls = 0;
+    const counting = <T extends object>(target: T): T =>
+      new Proxy(target, {
+        get(t, prop, receiver) {
+          const value: unknown = Reflect.get(t, prop, receiver);
+          if (typeof value !== 'function' || prop === 'capabilities') return value;
+          return (...args: unknown[]) => {
+            calls += 1;
+            return (value as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        },
+      });
+    const store = new CloudRoaring({
+      storage: createBackend({
+        storage: counting(w.backend.storage),
+        registry: counting(w.backend.registry),
+      }),
+      cache: { genTtlMs: 0 },
+    });
+    const a = store.segment('a');
+    const b = store.segment('b');
+    const pa = await a.pin();
+    const empty = { after: 2 * K, through: 2 * K };
+    calls = 0;
+    for (const stream of [
+      a.iterate(empty),
+      pa.iterate(empty),
+      a.intersect([b], empty),
+      pa.intersect([b], { ...empty, exclude: [b] }),
+      a.union([b], { ...empty, exclude: [b] }),
+      a.andNot([b], empty),
+    ]) {
+      expect(await collect(stream)).toEqual([]);
+    }
+    expect(calls).toBe(0);
+    await collect(a.iterate({ after: 2 * K, through: 2 * K + 1 }));
+    expect(calls).toBeGreaterThan(0); // the same counters see a one-id read
+  });
+});
+
+describe('andNot reads its range when it is called', () => {
+  it('with an exclude that leaves ids in range', async () => {
+    const w = await world({ a: IDS, s: [K + 2] });
+    const range = { after: K, through: 2 * K + 1 };
+    const stream = w.store.segment('a').andNot([w.store.segment('s')], range);
+    range.after = 0;
+    range.through = 1;
+    expect(await collect(stream)).toEqual(within(IDS, K, 2 * K + 1).filter((id) => id !== K + 2));
   });
 });
 
