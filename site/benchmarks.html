@@ -235,8 +235,8 @@
             </table>
           </div>
           <!-- The baseline's SPEC belongs in the assumptions footnote, because that is what it is: an
-               assumption, and until now the least examinable one on the page. $346 appeared eight times across
-               the site without ever saying what it buys, which makes it unauditable — a reader cannot tell
+               assumption, and without its spec the least examinable one on the page. $346 appears eight times
+               across the site, and without saying what it buys it would be unauditable — a reader cannot tell
                whether the node is sized for this dataset or five times larger than it.
 
                The instance class and node count come from ONE_REDIS_HA_CLUSTER's own comment in
@@ -489,7 +489,7 @@
            What replaces it is the same list docs/benchmarks.md keeps under "What is still owed" — the honest
            form of a measurement you have not made. That list is the source; this one follows it.
 
-           Rows 01-06 are debts, not results. Row 07 is a published ceiling, because the gate that measures it
+           Rows 01-05 are debts, not results. Row 06 is a published ceiling, because the gate that measures it
            RECORDS what it measured, and it is marked differently so the two kinds are not read as one. Do not
            generalise this comment to "every row is a debt". -->
       <section id="owed">
@@ -563,10 +563,9 @@
             <span class="rl-what">RSS ceiling</span>
             <span class="rl-fig is-live">384m</span>
             <span class="rl-note">
-              <!-- This row said "owed" while the job that measures it ran green on every PR: the soak inside the
-                   container ran without SOAK_INJECT, so its verdict reached container stdout and nothing else,
-                   and the stage directory is deleted on exit. A measurement nothing records is a measurement
-                   nobody has. `pnpm rss-gate` writes bench/rss-gate-results.json, which site-figures.cjs
+              <!-- A measurement nothing records is a measurement nobody has: a soak run without SOAK_INJECT
+                   reaches container stdout and nothing else, and the stage directory is deleted on exit.
+                   `pnpm rss-gate` writes bench/rss-gate-results.json, which site-figures.cjs
                    gates this row against.
                    What is published is the CEILING the workload survives, not a reader-RSS number. The ceiling
                    is a property of the workload; an RSS reading is a property of the machine, and publishing
@@ -631,9 +630,9 @@
             <span class="rl-mark">03</span>
             <span class="rl-what">What gets worse</span>
             <span class="rl-fig">discovery time</span>
-            <!-- The first draft of this row said only "a cursor would bound it, and has not been built", which
-                 understated what is shipped: the retirement sweep has BOTH a shard filter and an indexed scan
-                 mode, and a reader was left to conclude nothing had been done. But it is worth being exact
+            <!-- "A cursor would bound it, and has not been built" alone would understate what is shipped: the
+                 retirement sweep has BOTH a shard filter and an indexed scan mode, and a reader would conclude
+                 nothing had been done. But it is worth being exact
                  about what each one bounds — the shard filter runs after the registry enumeration, so every
                  worker still reads every row and only the per-segment work is divided. The enumeration is the
                  part still unbounded in the general case, and it is the part the measured 11.6 s is mostly

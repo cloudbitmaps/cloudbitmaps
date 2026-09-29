@@ -850,7 +850,7 @@ export class CloudRoaring {
    * the same residual and says so. The failure it leaves is an orphan object, which costs storage until
    * something collects it — deliberately the cheaper side of the trade.
    *
-   * Without that, writing and publishing in one step, an empty combine — a typo'd operand, an `exclude` that
+   * Written and published in one step, with no guard, an empty combine — a typo'd operand, an `exclude` that
    * swallowed everything, an operand that had not loaded yet — would silently replace `dest` with an empty
    * generation: the same failure `load()`'s guard exists to prevent, on the same data, reachable without passing
    * any option at all.
@@ -867,7 +867,7 @@ export class CloudRoaring {
    * successful publish can raise the same error. So: treat it as "re-read the destination and decide",
    * never as "the write did not happen".
    *
-   * **And it still collects nothing**, unlike `load()`. See the `keep` default below.
+   * **And by default it collects nothing**, unlike `load()`. See the `keep` default below.
    */
   private async materialize(
     dest: SegmentRef,
@@ -882,8 +882,9 @@ export class CloudRoaring {
         ...(options?.allowEmpty === undefined ? {} : { allowEmpty: options.allowEmpty }),
         ...(options?.guard === undefined ? {} : { guard: options.guard }),
         // COLLECT NOTHING by default, which `loadSegment` does not — it keeps a grace window of 1 and deletes
-        // the rest. A materialisation collects nothing: the guide states "**It deletes nothing.** The
-        // destination's previous generation stays in the bucket until you collect it", and the ownership table
+        // the rest. By default a materialisation collects nothing: the guide states "**It deletes nothing**,
+        // unlike `load()`. The destination's previous generations stay in the bucket until you collect them", and
+        // the ownership table
         // puts that call on the operator. Inheriting `load()`'s collection would silently delete the
         // generations an operator's recovery story depends on — `rollbackSegment` refuses a collected target —
         // as a side effect of adding a guard whose entire purpose is preventing data loss. Opt in with `keep`.

@@ -1907,9 +1907,9 @@ on an M3 Pro:
 
 The **stall** column is the number that decides whether co-resident work survives, and it is not the same as
 cost. A load yields the event loop periodically, so its ~256 ms is spent in ~19 ms slices with the loop free
-in between — other requests interleave rather than queueing behind the whole load. Before that fix the two
-columns were the same number: a 1M-id load blocked the loop for **450 ms straight**, long enough for a health
-check to time out and the instance to be pulled from its load balancer.
+in between — other requests interleave rather than queueing behind the whole load. Without the yields the two
+columns would be the same number: a 1M-id load would hold the loop for **450 ms straight**, long enough for a
+health check to time out and the instance to be pulled from its load balancer.
 
 Yielding is on by default for `@cloudbitmaps/roaring` users; there is nothing to configure. It needs a `Clock`,
 which the flavor package pre-binds into `bulkLoadCrbmGeneration` and `eraseIdFromSegment`. If you call

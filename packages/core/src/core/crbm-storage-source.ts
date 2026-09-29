@@ -1312,8 +1312,8 @@ export async function bulkLoadCrbmGeneration(
   // function already does. Keeping the inserts synchronous and interrupting them periodically gets the
   // starvation fix without the cost — measured on the per-chunk insert microbenchmark: 88 ms wall against a
   // 92 ms unyielded baseline. The whole-load end-to-end figures are a DIFFERENT experiment and live in
-  // `cooperative.ts`; an earlier version of this comment spliced the two, pairing a 92 ms operation with
-  // 819 ms of starvation, which is impossible on its face.
+  // `cooperative.ts`. Splicing the two pairs a 92 ms operation with 819 ms of starvation, which is impossible
+  // on its face.
   //
   // The yield must be a REAL macrotask. `await Promise.resolve()` is a microtask and never lets I/O run, which
   // is the trap that makes naive "just await something" fixes measure as no change at all.

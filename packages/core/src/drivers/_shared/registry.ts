@@ -43,8 +43,8 @@ function validateGeneration(gen: number | null): void {
  */
 function validatePatchGeneration(patch: RegistryPatch): void {
   if (!('currentGen' in patch)) return;
-  // `validateGeneration(undefined)` already fails the integer test, since nothing coerces `undefined` to `null`;
-  // this branch exists to make the *message* say which value to pass instead, because the generic
+  // `validateGeneration(undefined)` fails the integer test on its own, because this check reads the raw patch
+  // before `applyRegistryPatch` turns an undefined `currentGen` into `null`; this branch exists to make the *message* say which value to pass instead, because the generic
   // "must be a non-negative integer or null" reads like a type error rather than the trap it is.
   if (patch.currentGen === undefined) {
     throw new ValidationError(
@@ -285,8 +285,7 @@ export function assertStoredRecordShape(r: Record<string, unknown>, ctx: string)
     throw new IntegrityError(`registry record has an invalid keyId: ${ctx}`);
   }
   validateWrappedDeks(r.wrappedDeks, true); // invariant 5: reject a corrupt wrapped-DEK list on read-back
-  // The governance blobs are the only fields whose SHAPE was never checked on read-back, and it matters now that
-  // one of them carries semantics: `retention.expiresAt` is read with an `in` test, which throws an untyped
+  // The governance blobs' SHAPE is checked on read-back too, because one of them carries semantics: `retention.expiresAt` is read with an `in` test, which throws an untyped
   // `TypeError` on a stored `null`/string/number. That is reachable — the write boundary only checks
   // JSON-serializability and size, so `"retention": null` round-trips through every driver from a hand-edit, an
   // older writer, or a restore — and it would abort a whole fleet retention sweep rather than becoming one

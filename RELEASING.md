@@ -126,7 +126,7 @@ not — an npm tarball is immutable outside a 72-hour unpublish window. So every
 runs before the one step that cannot be undone. (The inverse mistake has already been made here once: the
 GitHub Release object was briefly created before the publish it describes had succeeded, and a run produced a
 release for a version that never reached npm.
-[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) now asserts this ordering.)
+[`tests/ci/release-workflow.test.ts`](tests/ci/release-workflow.test.ts) asserts this ordering.)
 
 The workflow also declares `concurrency: cancel-in-progress: false` — the opposite of CI. Cancelling a build is
 free; cancelling a release part-way through leaves npm holding a half-published family — some of the five

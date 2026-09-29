@@ -159,8 +159,8 @@ export function decodeNameFromKey(encoded: string): string {
 export function encodeNameForPath(name: string): string {
   let encoded = encodeWith(name, PATH_SAFE);
 
-  // The fixes COMPOSE rather than short-circuit. An earlier draft returned straight out of the traversal case,
-  // and `..` became `%2E.` — which ends in a dot, i.e. hazard 3, reintroduced by the fix for hazard 1.
+  // The fixes COMPOSE rather than short-circuit. Returning straight out of the traversal case would turn `..`
+  // into `%2E.` — which ends in a dot, i.e. hazard 3, reintroduced by the fix for hazard 1.
   const dotted = defuseDotComponent(encoded);
   if (dotted !== encoded) return dotted;
 

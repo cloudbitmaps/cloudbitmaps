@@ -589,8 +589,7 @@ Built in phases, each shipped behind tests and an adversarial review:
 - **M2 — Topology-A (the showcase)** *(complete)*: the S3 storage driver, bulk load, and the chunk-skipping
   intersection engine — the first shippable, the centerpiece.
 - **M3 — durability & compliance** *(complete)*: the segment registry, forward-only publishing, and
-  **encryption-at-rest + crypto-shred**. (A live write tier shipped in this milestone too and has since been
-  removed — see *Where it is headed*.)
+  **encryption-at-rest + crypto-shred**.
 - **M4 — production-grade** *(complete)*: an observability metrics sink, an honest cost estimator, a
   **benchmark-as-test** harness that turns the cost/perf claims into build-breaking CI assertions, a
   **free `count()`** (0 payload reads on a published segment), an **audit sink** (`IAuditSink` — a truthful

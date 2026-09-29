@@ -415,7 +415,7 @@ export function registryConformance(label: string, makeDriver: () => IRegistryDr
 
     // Every registry fixture above is `s:v1`-shaped, and `:` happens to encode to itself — so a driver that
     // wrote segment names into its key VERBATIM passed this whole suite. `NASTY_NAMES` is the list that
-    // catches that, and until now only the storage-source suite used it. The failure it guards against is
+    // catches that, and this suite uses it as the storage-source suite does. The failure it guards against is
     // quiet: an unencoded `a/b` writes to a key whose parsed form no longer round-trips, so the segment
     // stays readable through `get` while vanishing from `list` — and from every sweep that drives off it.
     it('round-trips names that need encoding, through create, get AND list', async () => {

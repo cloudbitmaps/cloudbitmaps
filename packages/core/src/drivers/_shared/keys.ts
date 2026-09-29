@@ -9,8 +9,8 @@
 /**
  * The physical stand-in for an **absent** namespace. A caller MAY name a namespace `_default`; it simply does not collide, because
  * `namespaceKeyPart`/`namespacePathPart` encode the caller's namespace (to `%5Fdefault`) and emit this
- * sentinel literally. The separation is a property of the encoding, not of a grammar — an earlier version of
- * this comment claimed the latter, and that claim is exactly what made the collision easy to reintroduce.
+ * sentinel literally. The separation is a property of the encoding, not of a grammar; reading it as a grammar is
+ * exactly what would make the collision easy to reintroduce.
  */
 export const DEFAULT_NAMESPACE = '_default';
 

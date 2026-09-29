@@ -323,7 +323,7 @@ export async function dropSegment(
   // Only when Storage actually holds something, though. A drop against a *genuinely* nonexistent segment (the
   // typo the facade docs warn about) must not leave a `destroyed` row behind: that is registry litter, and worse,
   // it would refuse a later legitimate load of that name forever. No row and no objects ⇒ nothing existed ⇒ say
-  // `absent` and touch nothing, which is what that reason has always been documented to mean.
+  // `absent` and touch nothing, which is what that reason is documented to mean.
   if (shred.reason === 'absent') {
     const orphans = await listGenerations(deps.storage, ref);
     if (orphans.length === 0) {
@@ -355,7 +355,7 @@ export async function dropSegment(
   // `segment.erase` ONLY on a genuine crypto-shred — exactly the condition `destroySegment` uses, and
   // deliberately NOT `|| generationsDeleted.length > 0`.
   //
-  // It read that way in the first draft, and it was wrong in a way that matters. Four documents — including
+  // Adding that disjunct would be wrong in a way that matters. Four documents — including
   // `docs/guide/dashboards.md`, which calls this event the compliance *receipt* — define `segment.erase` as
   // proof of an irreversible crypto-shred: bytes unreadable everywhere, backups included. Deleting an object is
   // a weaker guarantee, because a noncurrent version, a cross-region replica or a PITR snapshot still holds the

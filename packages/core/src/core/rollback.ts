@@ -3,8 +3,8 @@
  *
  * Immutable generations mean the previous version of a segment is usually still sitting in the bucket: a load
  * that replaced it did not overwrite anything, it wrote a new object and moved a pointer. So recovering from a
- * bad load is, in principle, moving the pointer back — and until now there was no way to do it, because every
- * write path in the library is deliberately **forward-only** and refuses a regression.
+ * bad load is, in principle, moving the pointer back — which no write path can do, because every write path in
+ * the library is deliberately **forward-only** and refuses a regression.
  *
  * That refusal is right for a *writer*: a load whose ids came from upstream loses nothing by being out-raced, and
  * letting it regress the pointer would let a slow loader silently undo a fast one. It is wrong for an *operator*,

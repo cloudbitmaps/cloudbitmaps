@@ -32,9 +32,9 @@ export function validateMaxScanSegments(value: number, op: string): void {
 /**
  * Drain every registry record (optionally one namespace) into an array, refusing past `maxScanSegments`.
  *
- * The bound is checked **before** each push, so the array never exceeds the ceiling the caller agreed to — the
- * earlier form pushed first and then threw, which meant the very row that broke the budget was already resident,
- * and a caller sizing a container against `maxScanSegments` was off by one row at the worst possible moment.
+ * The bound is checked **before** each push, so the array never exceeds the ceiling the caller agreed to. Pushing
+ * first and then throwing would leave the very row that broke the budget resident, and a caller sizing a container
+ * against `maxScanSegments` off by one row at the worst possible moment.
  */
 export async function drainRegistry(
   registry: IRegistryDriver,

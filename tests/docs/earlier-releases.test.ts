@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { lineOf, unwrap } from '../helpers/prose';
+
 /**
  * The public repo describes the library from `0.10.0` on. No file in it names an earlier CloudBitmaps release: not
  * the docs, the READMEs, the site, the code or its comments (which ship in the `.d.ts` files and sourcemaps), the
@@ -20,7 +22,8 @@ import { describe, expect, it } from 'vitest';
  * - a heading, `## [0.N]` or `## 0.N`.
  *
  * `0.10.0` and later pass. An npm spec such as `pkg@0.N.P` or `pkg@^0.N.P` names another package's version and
- * passes, but not one of ours: in a spec, a CDN URL or a manifest's dependencies, in any quoting, it is refused.
+ * passes, but not one of ours: in a spec, a CDN URL, a manifest's dependencies (quoted, or a YAML key at the start of
+ * a line), or a string split across a `+` join, it is refused.
  * Matching runs across line breaks and the comment or quote marker that starts the next line, so where a line wraps
  * changes nothing. SVG path data (`d="…"`, `points="…"`) is not read.
  *
@@ -52,8 +55,9 @@ const EARLIER_RELEASE = new RegExp(
 const OURS = String.raw`(?:@cloudbitmaps\/[\w.-]+|(?<![\w@.-])(?:cloudbitmaps|cloud-roaring))`;
 const EARLIER = String.raw`[\^~=<>]*v?0\.[1-9](?:\.(?:\d+|x|\*))?(?!\d|\.\d)`;
 const OURS_AT_EARLIER = new RegExp(
-  String.raw`${OURS}@${EARLIER}|["']${OURS}["']?\s*:\s*["']?[^"'\n]*?(?<![\d.])${EARLIER}`,
-  'gi',
+  String.raw`${OURS}@${EARLIER}` +
+    String.raw`|(?:["']${OURS}["']|^[ \t]*${OURS})[ \t]*:[ \t]*["']?[^"'\n]*?(?<![\d.])${EARLIER}`,
+  'gim',
 );
 
 /** A bare `0.N`, plain or marked up, and what the words around it make a release. */
@@ -88,11 +92,15 @@ function trackedFiles(): string[] {
     .sort();
 }
 
-/** Every earlier-release version in `text`, with the line it starts on; two patterns matching one version count once. */
+/**
+ * Every earlier-release version in `text`, with the line it starts on; two patterns matching one version count
+ * once. Two string literals joined by `+` are read as one, so a version split across them is still found.
+ */
 export function earlierReleases(text: string): Array<{ line: number; version: string }> {
+  const { flat, at } = unwrap(text, { joinsOnly: true });
   const spans: Array<{ start: number; end: number; version: string }> = [];
   for (const re of [EARLIER_RELEASE, OURS_AT_EARLIER, BARE_RELEASE]) {
-    for (const m of text.matchAll(re)) {
+    for (const m of flat.matchAll(re)) {
       const start = m.index ?? 0;
       spans.push({ start, end: start + m[0].length, version: m[0].trim().replace(/\s+/g, ' ') });
     }
@@ -100,10 +108,10 @@ export function earlierReleases(text: string): Array<{ line: number; version: st
   spans.sort((x, y) => x.start - y.start || y.end - x.end);
   const found: Array<{ line: number; version: string }> = [];
   let reach = -1;
-  for (const s of spans) {
-    if (s.start < reach) continue;
-    reach = s.end;
-    found.push({ line: text.slice(0, s.start).split('\n').length, version: s.version });
+  for (const sp of spans) {
+    if (sp.start < reach) continue;
+    reach = sp.end;
+    found.push({ line: lineOf(text, at[sp.start] ?? 0), version: sp.version });
   }
   return found;
 }
@@ -196,6 +204,10 @@ describe('no file names a CloudBitmaps release before 0.10.0', () => {
       `"@cloudbitmaps/core": "^${v(10, '.0')} || ^${v(9, '')}"`,
       `'@cloudbitmaps/roaring': ^${v(9, '')}`,
       `"@cloudbitmaps/roaring": "workspace:^${v(9, '')}"`,
+      `cloudbitmaps: ^${v(9, '')}`,
+      `  @cloudbitmaps/roaring: ~${v(9, '')}`,
+      `dependencies:\n  cloudbitmaps: ^${v(9, '')}`,
+      `'written in ' +\n        '${v(9, '')}, and'`,
     ]) {
       expect(earlierReleases(text), text).toHaveLength(1);
     }

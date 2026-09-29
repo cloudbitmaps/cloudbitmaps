@@ -2535,8 +2535,8 @@ section > .lede {
 /* The counter-case: the point past which you should use something else. A DIFFERENT
    colour, never a quieter one — /benchmarks states that the crossover rows carry the
    same weight as the wins, and a faint verdict chip beside a cyan one would make the
-   page contradict itself in the only place that matters. This shared the research
-   chip's rule until the rename exposed it. */
+   page contradict itself in the only place that matters, so it has a rule of its own
+   rather than the research chip's. */
 .status.is-counter {
   color: var(--cb-cache);
 }

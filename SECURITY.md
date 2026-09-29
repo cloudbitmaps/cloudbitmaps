@@ -81,10 +81,10 @@ through a package a consumer installs.
 
 **Currently empty.** No advisory is being ignored — every one the gate sees is either fixed or absent.
 
-`tar` is the example of the rule. It is pulled in only by `roaring`'s **install-time** native-build chain
+`tar` shows the policy at work. It is pulled in only by `roaring`'s **install-time** native-build chain
 (`@mapbox/node-pre-gyp` → `node-gyp`), which uses it to extract `roaring`'s own trusted prebuilt binary, and it is
-never on CloudBitmaps' runtime path. It is still kept on a patched release rather than accepted on those grounds:
-reachability is a reason to **not panic**, never a reason to stay unpatched when a patch exists.
+never on CloudBitmaps' runtime path, yet it is kept on a patched release: reachability is a reason to **not
+panic**, never a reason to stay unpatched when a patch exists.
 
 **The bar for adding an entry here:** a rationale that names the exact path the advisory would have to travel to
 matter, plus a concrete condition under which the entry gets removed. An accepted advisory with no revisit
