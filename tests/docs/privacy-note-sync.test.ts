@@ -5,10 +5,10 @@ import { join } from 'node:path';
  * The privacy note npm publishes says what the repository's says.
  *
  * WHY THIS EXISTS. `packages/roaring/PRIVACY.md` ships in the package, and its header promises it is "kept identical
- * in substance" to the root `PRIVACY.md`. The two drifted twice: a change to the root copy's table of how soon other
- * stores see an erasure reached the root alone, so the page an installer reads kept the old bounds. It differs only
- * where a published file must: the header saying which copy it is, and links written absolute, since a relative link
- * on npm points nowhere.
+ * in substance" to the root `PRIVACY.md`. A change that reaches the root copy alone — to its table of how soon other
+ * stores see an erasure, say — leaves the page an installer reads promising other bounds. The published copy differs
+ * only where a published file must: the header saying which copy it is, and links written absolute, since a relative
+ * link on npm points nowhere.
  */
 const ROOT = join(__dirname, '..', '..');
 const REPO = 'https://github.com/cloudbitmaps/cloudbitmaps/blob/main/';

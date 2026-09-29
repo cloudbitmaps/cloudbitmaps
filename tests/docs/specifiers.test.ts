@@ -53,8 +53,7 @@ function publicFacingFiles(): string[] {
   };
   // Everything under `docs/` is in scope. There is no allowlist: this repo contains only public-bound docs,
   // so every one of them is an instruction a reader will follow, and a stale specifier in any of them is
-  // simply wrong. (An earlier version carried two exemptions for immutable historical records that lived in a
-  // separate, private tree — dead weight here, and removed with it.)
+  // simply wrong.
   walk('docs', (n) => n.endsWith('.md'));
   walk('site', (n) => n.endsWith('.html'));
   walk('.github', (n) => n.endsWith('.md'));

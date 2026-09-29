@@ -10,7 +10,7 @@ import { lineOf, unwrap } from '../helpers/prose';
  * The public repo describes the library from `0.10.0` on. No file in it names an earlier CloudBitmaps release: not
  * the docs, the READMEs, the site, the code or its comments (which ship in the `.d.ts` files and sourcemaps), the
  * tests, the benches, the scripts, or the files every tarball carries. The history before `0.10.0` is not in this
- * repo, and the library is described by what it is, not by what it used to be.
+ * repo, and the library is described by what it is, not by its past.
  *
  * A version is a `0.N.P`, `0.N.x` or `0.N.*` with N from 1 to 9, in any case and with any suffix, or a `v0.N`.
  * A bare `0.N`, plain or marked up as code or bold, is a number, as in `minRetained: 0.5`, unless the words around

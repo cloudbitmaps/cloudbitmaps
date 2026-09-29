@@ -3,10 +3,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The code directories each carry a README that lists every part of them. A README that lists files is exactly
-// the thing this repository keeps being bitten by — a hand-kept list beside the thing it lists, which goes stale
-// the day someone adds a script and nobody re-reads the list. So each README is checked against the directory
-// it describes, in both directions:
+// The code directories each carry a README that lists every part of them. A README that lists files is a
+// hand-kept list beside the thing it lists, which goes stale the day someone adds a script and nobody re-reads
+// the list. So each README is checked against the directory it describes, in both directions:
 //
 //   FORWARD   every file (or directory, or page) that exists has a ROW — its path in the first cell of a table;
 //   BACKWARD  every path in the first cell of a table row exists.
@@ -14,18 +13,18 @@ import { fileURLToPath } from 'node:url';
 // A one-way check would let half the drift through: forward-only lets a README keep describing a deleted script,
 // backward-only lets a new one go undocumented forever.
 //
-// A row, not a mention. The first version accepted a file named anywhere in the README, in backticks — and, failing
-// that, its basename. So a row could be deleted outright and still pass, because the name survived in a sentence
-// or a command elsewhere on the page; and a new `scripts/lib/leak-scan.cjs` passed on the strength of the row for
-// `leak-scan.cjs`. A row is what makes a part findable, so a row is what is required.
+// A row, not a mention. A check that accepts a file named anywhere in the README, in backticks — or, failing that,
+// its basename — passes a row deleted outright, because the name survives in a sentence or a command elsewhere on
+// the page; and it passes a new `scripts/lib/leak-scan.cjs` on the strength of the row for `leak-scan.cjs`. A row
+// is what makes a part findable, so a row is what is required.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * Every file that belongs to the repository — tracked, or new and not ignored — as a repo-relative path.
  *
- * Asked of git, not the filesystem. A filesystem walk reported a rehearsal's git-ignored results file as an
- * undocumented part of `bench/`, and would do the same with a Finder `.DS_Store`: noise that teaches people to
- * route around the gate. A script written but not yet committed is still listed, so it fails before the commit.
+ * Asked of git, not the filesystem. A filesystem walk reports a rehearsal's git-ignored results file as an
+ * undocumented part of `bench/`, and a Finder `.DS_Store` the same way: noise that teaches people to route
+ * around the gate. A script written but not yet committed is still listed, so it fails before the commit.
  * Existence is decided from the same list, so an ignored local file named in a table cannot pass here and then
  * fail in CI, where it does not exist.
  */
@@ -210,8 +209,8 @@ describe('code-directory READMEs describe their directories, in both directions'
       ).toEqual([]);
     });
 
-    // The docs gates are the least discoverable part of the repo — each one is a lesson about a way a document
-    // drifted — so every one of them has its own row, including this one.
+    // The docs gates are the least discoverable part of the repo — each one names a way a document drifts — so
+    // every one of them has its own row, including this one.
     it('gives every documentation gate a row', () => {
       expect(
         gates.filter((g) => !rows.has(g)),

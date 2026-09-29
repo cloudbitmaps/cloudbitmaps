@@ -5,15 +5,13 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 // index", so a new export cannot merge undocumented. Reverse: every identifier-shaped name in that index is
 // really exported, so a *removed* export cannot leave a stale entry behind.
 //
-// The reverse half was added when curating core's main entry from 110 exports produced 29 stale entries in
-// one change. Until then this guard was one-way by design and the comment here said to "prune those in
-// review" — which is to say the doc's accuracy rested on someone noticing, on exactly the change where there
-// was the most to notice. A reader cannot tell a stale entry from a real one; it reads as API that exists.
+// A one-way guard leaves the doc's accuracy resting on someone noticing a removed export, and a change that
+// curates an entry point can remove many at once: exactly the change where there is the most to notice. A
+// reader cannot tell a stale entry from a real one; it reads as API that exists.
 // DERIVED from the workspace, not written down. Every package's `exports` map names its public entries, and
 // each entry maps to `src/<name>/index.ts` or `src/<name>.ts` — the same rule `scripts/build.mjs` uses to pick
-// its esbuild entries. Hardcoding the list meant the driver topology was spelled out in four places (here, the
-// build, each manifest, and `scripts/smoke.cjs`); splitting the drivers into their own packages would have
-// required editing all four, and forgetting this one would have silently stopped guarding three surfaces.
+// its esbuild entries. A hardcoded list here would repeat each manifest's `exports`, so a new package or subpath
+// would mean editing both, and forgetting this one would silently leave that surface unguarded.
 //
 // `./driver-kit` is included deliberately. It is the contract a storage-driver package builds against, so it
 // is public API with the same documentation obligation as anything else — and being a surface nobody imports
@@ -66,12 +64,11 @@ function exportedNames(src: string): string[] {
   }
   // Inline declarations: `export <modifiers> <kind> Name`.
   //
-  // The modifier list is `(declare|abstract|async)*` and the kinds include `enum`, `let` and `var` because
-  // the narrower version saw ONLY `export function`. `export async function`, `export enum`,
-  // `export declare const`, `export let` and `export var` each extracted nothing — so three undocumented
-  // public exports were added to `packages/roaring/src/index.ts` and this gate stayed green. In an
-  // async-first library `export async function` is the likely spelling, which made the gap the common case
-  // rather than an exotic one.
+  // The modifier list is `(declare|abstract|async)*` and the kinds include `enum`, `let` and `var` because a
+  // pattern that sees only `export function` extracts nothing from `export async function`, `export enum`,
+  // `export declare const`, `export let` or `export var`, so an undocumented public export in any of those
+  // spellings keeps this gate green. In an async-first library `export async function` is the likely
+  // spelling, which makes that gap the common case rather than an exotic one.
   for (const decl of code.matchAll(
     /export\s+(?:(?:declare|abstract|async)\s+)*(?:interface|class|type|function|const|let|var|enum)\s+([A-Za-z0-9_$]+)/g,
   )) {
@@ -84,9 +81,9 @@ function exportedNames(src: string): string[] {
 describe('API reference (docs/guide/api-reference.md) is in sync with the exported surface', () => {
   const doc = read(DOC_PATH);
   // The check is scoped to the "Complete export index" section, which the page itself calls the completeness
-  // anchor. Matching the whole page instead let five new exports (`MemoryStorage`, `LocalFsStorage`,
-  // `StorageBackend` and their option types) count as documented purely because they were named in a table or
-  // in prose elsewhere — so the one section whose job is to be exhaustive was the only one not checked.
+  // anchor. Matching the whole page instead lets an export count as documented purely because a table or a
+  // sentence elsewhere names it, so the one section whose job is to be exhaustive would be the only one not
+  // checked.
   const INDEX_HEADING = '## Complete export index';
   const indexStart = doc.indexOf(INDEX_HEADING);
   if (indexStart === -1) throw new Error(`api-reference.md is missing "${INDEX_HEADING}"`);

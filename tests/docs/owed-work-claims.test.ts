@@ -5,12 +5,11 @@ import { fileURLToPath } from 'node:url';
 /**
  * Work the roadmap still lists as **owed** must not be described anywhere else as done.
  *
- * WHY THIS FILE EXISTS. The README listed "fresh loaded-store benchmarks" among what had shipped, while the
- * roadmap marked those same benchmarks **owed**, `docs/benchmarks.md` filed them under "What is still owed",
- * and the README itself said twenty-two lines earlier that the loaded-store equivalents were on the owed
- * list. Three sources against one, and the one that was wrong is the file most readers start at. Nothing
- * caught it: the docs gates check that exports are documented and that links resolve, and neither can see a
- * page contradicting a page.
+ * WHY THIS FILE EXISTS. A list of what has shipped can name "fresh loaded-store benchmarks" while the roadmap
+ * marks those same benchmarks **owed**, `docs/benchmarks.md` files them under "What is still owed", and the
+ * README itself says a screen earlier that the loaded-store equivalents are on the owed list. Three sources
+ * against one, and the one that is wrong is the file most readers start at. The other docs gates check that
+ * exports are documented and that links resolve, and neither can see a page contradicting a page.
  *
  * A measurement claimed before it is taken is the most expensive kind of wrong sentence this repo can print.
  * It is the claim a reader is least able to check and most likely to make a decision on, and this project's
@@ -22,13 +21,12 @@ import { fileURLToPath } from 'node:url';
  * nobody remembers. It fails the same way if the roadmap is merely reworded: a guard that silently stops
  * applying is worse than no guard.
  *
- * THE FIRST VERSION OF THIS FILE DID NOT CATCH ITS OWN DEFECT, and that is worth recording. It scanned
- * LINE by line and required a done-word on the same line. The sentence it was written for —
- * "…as it ran, and fresh loaded-store benchmarks." — carries no done-word at all; the word that made it a
- * claim ("Shipped on the loaded store:") was four wrapped lines earlier. The mutation test that "proved" the
- * guard had quietly added `shipped` to the end of that sentence, so it verified a defect the guard could
- * already see rather than the one that happened. Hence {@link HISTORICAL_DEFECT} below: the real sentence is
- * pinned as a fixture, so this file can never again pass while being blind to the thing it exists for.
+ * A SCAN THAT READS LINE BY LINE MISSES THE CLAIM THIS FILE EXISTS FOR. In the sentence
+ * "…as it ran, and fresh loaded-store benchmarks." there is no done-word at all; the word that makes it a
+ * claim ("Shipped on the loaded store:") is four wrapped lines earlier. A mutation test that adds `shipped`
+ * to the end of that sentence verifies a defect a line scan can already see, not the one prose produces.
+ * Hence {@link HISTORICAL_DEFECT} below: the whole wrapped sentence is pinned as a fixture, so this file
+ * cannot pass while blind to the thing it exists for.
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SKIP = new Set(['node_modules', 'dist', '.git', 'coverage', '.worktrees', 'build', 'golden']);
@@ -40,18 +38,19 @@ const HISTORY = new Set(['CHANGELOG.md']);
 
 const ROADMAP = join('docs', 'ROADMAP.md');
 
-/** Words that assert the work exists. Broadened past the first version's five, which missed "done" and "ran". */
+/** Words that assert the work exists: "done" and "we ran" as well as "shipped" and "published". */
 const ASSERTS_DONE =
   /\b(shipped|ships|published|measured|benchmarked|landed|delivered|done|complete|available now|we ran|here are|results below)\b/i;
 /** The honest phrasings, which must stay legal. */
 const ASSERTS_OWED = /\b(owed|not shipped|not yet|not published|still to come|pending|remain)\b/i;
-/** The phrase, including the possessive form this repo's own README now uses. */
+/** The phrase, including the possessive form this repo's own README uses. */
 const NAMES_THE_WORK =
   /loaded[- ]store(?:'s own)? benchmarks|benchmarks (?:of|for) the loaded store|loaded store's own benchmarks/i;
 
 /**
- * The exact sentence that shipped in the README and was wrong. Pinned so the guard is tested against the
- * defect that happened, not a tidier one — see the docstring above.
+ * A README-shaped sentence that claims the owed work as shipped, its done-word four wrapped lines before the
+ * work it names. Pinned so the guard is tested against a claim wrapped the way prose wraps, not a tidier one —
+ * see the docstring above.
  */
 const HISTORICAL_DEFECT = `Shipped on the loaded store: a single-call \`load()\` with a guard against an upstream query that returned too
 little, a \`rollback()\`, \`exists()\` and \`segments()\` so the registry answers "what do I have?" instead of you
@@ -90,13 +89,13 @@ describe('nothing claims work the roadmap still lists as owed', () => {
 
   /**
    * Sentences, not lines. A markdown paragraph wraps, so the claim and the word that makes it a claim are
-   * routinely on different lines — which is exactly how the original defect slipped through. Newlines are
-   * folded to spaces first, then the text is split on sentence boundaries.
+   * routinely on different lines, where a line scan cannot see them together. Newlines are folded to spaces
+   * first, then the text is split on sentence boundaries.
    */
   function offendingSentences(text: string): string[] {
     // A markdown table row is its own unit. Folding a table into one blob joins unrelated cells into a
-    // pseudo-sentence, which made the roadmap's own status table — whose rows are correctly marked "owed" —
-    // read as a single claim containing every done-word on the page.
+    // pseudo-sentence, which would make the roadmap's own status table — whose rows are correctly marked
+    // "owed" — read as a single claim containing every done-word on the page.
     const units: string[] = [];
     let para: string[] = [];
     const flush = (): void => {
@@ -130,7 +129,7 @@ describe('nothing claims work the roadmap still lists as owed', () => {
       });
   }
 
-  it('catches the sentence that actually shipped (this guard failed to, once)', () => {
+  it('catches the claim when its done-word is lines before the work it names', () => {
     expect(offendingSentences(HISTORICAL_DEFECT)).not.toEqual([]);
   });
 

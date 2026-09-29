@@ -40,16 +40,15 @@ const files = execFileSync(
  * `immutable`/`superseded storage` are listed only in **head-noun position** — followed by punctuation or the
  * end of the line. "the immutable Storage tier" and "superseded Storage generations" are this project's own
  * vocabulary and appear throughout; "deletes superseded storage." is the mass noun standing where a plural
- * count noun belongs. Widening these two to every occurrence flagged six correct sentences and no damage,
+ * count noun belongs. Widened to every occurrence, these two would flag correct sentences and no damage,
  * which is the gate that gets routed around rather than obeyed.
  */
 /*
  * Every multi-word pattern joins on `\s+`, NOT a literal space.
  *
  * These files hard-wrap at about 110 characters, so a damaged phrase lands across a line break as often as
- * not — and a literal space cannot match a newline. Three shipped sentences proved it: `README.md` and
- * `docs/ROADMAP.md` each carried a wrapped "cache\ncache" while this gate ran green over both, which is the
- * exact failure the file's header says it exists to prevent. A pattern that only matches the unwrapped
+ * not — and a literal space cannot match a newline. A wrapped "cache\ncache" would then pass, which is the
+ * exact failure the file's header says it exists to prevent: a pattern that only matches the unwrapped
  * spelling checks whichever half of the prose happens to be short.
  */
 /**
@@ -58,8 +57,7 @@ const files = execFileSync(
  * `\s+` is not sufficient on its own: these phrases appear inside Markdown blockquotes and JSDoc comments,
  * whose continuation lines begin `> ` and `* `. Those markers sit BETWEEN the words, so the gap is not pure
  * whitespace. A pattern joined on `\s+` matches a wrap in flowing prose and silently misses the same wrap one
- * blockquote away — which is the same shape of hole as the literal space this file already replaced, one
- * level in.
+ * blockquote away — the same shape of hole as a literal space, one level in.
  */
 const GAP = String.raw`\s+(?:[>*#]\s*)?`;
 

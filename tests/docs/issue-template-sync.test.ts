@@ -6,11 +6,11 @@ import { join } from 'node:path';
  *
  * WHY THIS EXISTS. The dropdown is the first thing a reporter touches, and it is the only place in the repo
  * where the driver list is written as a set of human labels rather than as code — so nothing else that gates
- * driver claims can see it. It has drifted before: `GcsRegistryDriver` and `AzureBlobRegistryDriver` shipped
- * while the dropdown still offered a registry on S3 and the local filesystem only, so a GCS user reporting a
- * registry bug had nothing truthful to pick.
+ * driver claims can see it. A backend that ships without its options leaves its users nothing truthful to
+ * pick: offered a registry on S3 and the local filesystem only, a GCS user reporting a registry bug cannot say
+ * what they run.
  *
- * It slipped because a `.yml` issue template does not look like documentation. It is the documentation a
+ * A `.yml` issue template does not look like documentation, so it is easy to forget. It is the documentation a
  * reporter reads first.
  *
  * WHY IT IS DERIVED. A hand-maintained list of expected options is a check that cannot fire — you would have to
@@ -52,7 +52,7 @@ describe('the bug report template lists the drivers that actually ship', () => {
     .filter((e) => e.isDirectory() && !e.name.startsWith('_') && e.name !== 'retry')
     .filter((e) => hasSource(join(ROOT, 'packages/core/src/drivers', e.name)))
     .map((e) => e.name);
-  // …plus every driver PACKAGE, which is where the cloud drivers live now. A package is one iff it depends
+  // …plus every driver PACKAGE, which is where the cloud drivers live. A package is one iff it depends
   // on a cloud SDK — derived, so a sixth service package is covered the day it is added.
   const CLOUD_SDK = /^(@aws-sdk\/|aws-sdk$|@google-cloud\/|@azure\/)/;
   const asPackages = readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
@@ -73,8 +73,8 @@ describe('the bug report template lists the drivers that actually ship', () => {
 
   it.each(backends)('offers %s as both a storage and a registry option', (backend) => {
     const label = LABELS[backend] as string;
-    // Both roles, because every backend on disk implements both seams — which is exactly the fact the
-    // template got wrong.
+    // Both roles, because every backend on disk implements both seams, and a template that offers only one
+    // tells that backend's users the other does not exist.
     expect(template, `no "Storage — ${label}" option`).toContain(`Storage — ${label}`);
     expect(template, `no "Registry — ${label}" option`).toContain(`Registry — ${label}`);
   });

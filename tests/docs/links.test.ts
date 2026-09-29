@@ -26,8 +26,8 @@ const SKIP_DIRS = new Set([
 /**
  * Files named one by one, because a hardcoded list is the only way to guard files that don't live under a
  * walked directory. Deliberately NOT filtered by `existsSync`: a renamed or deleted entry must fail loudly.
- * Silently dropping it is exactly how this repo previously lost an ESLint override, two dependency-cruiser
- * rules, and every Stryker target — each pointed at a path that no longer existed and matched nothing.
+ * Dropped silently, it goes on looking guarded: an ESLint override, a dependency-cruiser rule or a Stryker
+ * target pointed at a path that does not exist matches nothing, and nothing says so.
  */
 const NAMED_FILES = [
   'README.md',
@@ -46,14 +46,14 @@ const NAMED_FILES = [
 /**
  * Every tracked `.md` file, the named files above, and every `site/` page.
  *
- * The markdown is DERIVED from git as well as walked. A list of places to look went stale the way hand-kept
- * lists here always do: the READMEs added to `bench/`, `scripts/`, `site/` and `tests/` sat outside it, and five
- * links broken in them on purpose passed. The walks and the named list stay — the named list so that a renamed
- * file fails loudly rather than dropping out.
+ * The markdown is DERIVED from git as well as walked. A list of places to look goes stale the way hand-kept
+ * lists do: a README added to `bench/`, `scripts/`, `site/` or `tests/` sits outside it, and a link broken in it
+ * passes. The walks and the named list stay — the named list so that a renamed file fails loudly rather than
+ * dropping out.
  */
 function filesToCheck(): string[] {
-  // The package READMEs are derived, not named: hardcoding core + roaring left the three new npm landing
-  // pages outside the link check entirely.
+  // The package READMEs are derived, not named: a hardcoded pair would leave every other npm landing page
+  // outside the link check entirely.
   const out: string[] = [
     ...NAMED_FILES,
     ...readdirSync(join(ROOT, 'packages'), { withFileTypes: true })
@@ -103,9 +103,9 @@ function linkTargets(src: string): string[] {
   for (const m of prose.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g))
     targets.push(m[1] as string);
   // REFERENCE-STYLE links: `[text][id]` resolved through a `[id]: target` definition at the foot of the file.
-  // Invisible to the inline pattern above, and the style is already in use here — `CODE_OF_CONDUCT.md` is
-  // written entirely with it. Its targets happen to be absolute today, so nothing was broken; a relative one
-  // would have been unchecked, which is the same hole as a dead inline link with a different spelling.
+  // Invisible to the inline pattern above, and the style is in use here — `CODE_OF_CONDUCT.md` is written
+  // entirely with it. Its targets are absolute, so they are not resolved; without this, a relative one would go
+  // unchecked, which is the same hole as a dead inline link with a different spelling.
   for (const m of prose.matchAll(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)/gm))
     targets.push(m[2] as string);
   // From `prose`, not `src` — otherwise a fenced HTML *example* in a .md file yields a link that must resolve.
@@ -145,9 +145,9 @@ function slugify(heading: string): string {
  * a `https://github.com/cloudbitmaps/cloudbitmaps/blob/main/docs/...` link is not a foreign URL — it is a
  * relative link wearing an absolute spelling, and every one of it can be resolved on disk with no network at
  * all. The five package READMEs have to spell them this way: they are rendered on npmjs.com, where a relative
- * link resolves against npm's own host and 404s. So the repo's most-read pages — the npm landing pages — were
- * the only ones whose links and heading fragments nothing checked, which is the narrower-gate failure this
- * suite exists to prevent.
+ * link resolves against npm's own host and 404s. Without this, the repo's most-read pages — the npm landing
+ * pages — would be the only ones whose links and heading fragments nothing checks, which is the narrower-gate
+ * failure this suite exists to prevent.
  *
  * Returns `undefined` for a genuinely foreign URL and for links to issues, releases or the repo root, which
  * name no file in the tree.
@@ -196,14 +196,12 @@ describe('docs & site links', () => {
 
   // THE INVARIANT: no file in this repository references a document that lives only in the private repo.
   //
-  // Existence on disk was never the test — a link into a tree that is not published resolves for whoever has
-  // both repos checked out and 404s for everyone else, which is exactly how five such links survived the
-  // package split unnoticed. So this asserts the absence of the reference itself, not whether it resolves.
+  // Existence on disk is not the test — a link into a tree that is not published resolves for whoever has
+  // both repos checked out and 404s for everyone else, so it passes on exactly the machine it was written on.
+  // So this asserts the absence of the reference itself, not whether it resolves.
   //
-  // The scope used to be just `site/` and the public roadmap, on the stated grounds that "every other
-  // public-bound file still cites internal docs legitimately pre-launch". That premise is now retired: the
-  // citations are gone from every file — the CHANGELOG's included — so the guard covers everything it can see.
-  // Narrowing it again would mean a reference reappearing somewhere this test deliberately isn't looking.
+  // The guard covers every file it can see, the CHANGELOG included. A narrower scope would let a reference
+  // land somewhere this test deliberately isn't looking.
   const publicSurface = files;
   it.each(publicSurface)('%s — references no document outside this repository', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');
@@ -236,11 +234,10 @@ describe('docs & site links', () => {
     expect(dead).toEqual([]);
   });
 
-  // Resolving the *path* was never the whole invariant. `[x](docs/benchmarks.md#renamed-heading)` passes the
-  // check above and still lands the reader at the top of the page with no indication anything is wrong — which
-  // is how a stale table-of-contents entry, and six links to a heading that had since gained a
-  // `*(gate — ☑ SHIPPED)*` suffix, all survived. Headings drift; fragments pointing at them must fail loudly
-  // when they do.
+  // Resolving the *path* is not the whole invariant. `[x](docs/benchmarks.md#renamed-heading)` passes the
+  // check above and still lands the reader at the top of the page with no indication anything is wrong — as
+  // does a stale table-of-contents entry, or a link to a heading that gains a `*(gate — ☑ SHIPPED)*` suffix.
+  // Headings drift; fragments pointing at them must fail loudly when they do.
   //
   // Only `.md` targets are checked: `site/*.html` fragments resolve against hand-authored `id=`s, and a
   // `#L997-L1015` line range is a GitHub blob-view convention, not a heading.
@@ -278,7 +275,7 @@ describe('docs & site links', () => {
   });
 
   // The npm landing pages spell their links absolutely because npmjs.com renders them off-host, so every check
-  // above — which skips absolute URLs by design — looked straight past them. Resolve the self-referential ones
+  // above — which skips absolute URLs by design — looks straight past them. Resolve the self-referential ones
   // back to disk and hold them to the same standard: the file exists, and the fragment names a real heading.
   it.each(files)('%s — every link back into this repo resolves, path and anchor', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf8');

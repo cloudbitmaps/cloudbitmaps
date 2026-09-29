@@ -21,11 +21,10 @@ import { DEFAULT_TAIL_BYTES, FOOTER_BYTES, PREAMBLE_BYTES } from '@/core/crbm/fo
  *
  * WHY THIS FILE EXISTS. A run report's numbers are the ones a reader has no way to check: they come from a bill for
  * a run nobody else saw, and a report is written by hand, after the run, by someone who wants the numbers to be
- * good. The first explanation of run `2026-09-23-94416` — written from the run's own log — got three of them wrong:
- * it put a load at one GET where the code makes three, called a byte share a chunk share, and gave identical
- * segments 2,000 chunks where the layout has 1,999. A review then found three more in the published draft: object
- * sizes that included the pointer, a measured figure labelled with the expected one's value, and an upload rate
- * described as the uplink's speed. Each read plausibly. None was checkable from the page.
+ * good. The errors such a report makes read plausibly, even written from the run's own log, and none is checkable
+ * from the page: a load put at one GET where the code makes three, a byte share called a chunk share, identical
+ * segments given 2,000 chunks where the layout has 1,999, object sizes that include the pointer, a measured figure
+ * labelled with the expected one's value, an upload rate described as the uplink's speed.
  *
  *   FORWARD   every headline figure `bench/lib/calibration-figures.cjs` derives appears, as a whole figure, in the
  *             text a reader sees — not inside a longer number, and not in a comment;
@@ -340,9 +339,9 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    // Every wrong figure this gate exists because of, planted back into the real report one at a time. Each must
-    // fail it, however plausibly it is written: these are the errors that were made, not the ones imagined.
-    it("fails on every error the run's explanations actually made", () => {
+    // Wrong figures planted into the real report one at a time, each a misreading the run's evidence invites: a
+    // request shape, a share, a count, a size, a label. Each must fail it, however plausibly it is written.
+    it('fails on each misreading of the run planted into its report', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(evidence).toBeDefined();
@@ -361,7 +360,7 @@ describe('calibration reports are held to their evidence', () => {
         '98% of the chunks were skipped.',
         'Each intersect read 10 chunks per operand.',
         "A segment's first store.load() costs $22.80 per million, as measured.",
-        // Two corrections that were themselves wrong, a depth and a price per dollar, and two misreadings of a price.
+        // A depth and a price per dollar, each wrong the way a correction can be, and two misreadings of a price.
         "Of the two objects' bytes, 29.9% were fetched and 70.1% never left S3.",
         'The median cold intersect was about 15 requests deep.',
         'Each of its requests took about 194 ms.',
@@ -374,8 +373,8 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    // A share is read by the words nearest it in its own clause. A byte share in the clause after a semicolon once stood
-    // nearer the chunk share before it than that clause's own chunks, and failed a sentence that was right.
+    // A share is read by the words nearest it in its own clause. Read across the semicolon below, the chunk share that
+    // ends the first clause stands nearer the second clause's payload than its own chunks, and a right sentence fails.
     it('reads each clause of a sentence apart, so neighbouring shares keep their own words', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
@@ -395,9 +394,9 @@ describe('calibration reports are held to their evidence', () => {
       ).not.toEqual([]);
     });
 
-    // A binding in one direction only let the reverse claim through: the object's size called the upload's passed while
-    // the upload's size called the object's failed. Each value that can make two claims now fails both ways, and each
-    // wrong claim below sits beside an honest one with the same number.
+    // A binding in one direction only lets the reverse claim through: the object's size called the upload's passes
+    // while the upload's size called the object's fails. Each value that can make two claims fails both ways, and
+    // each wrong claim below sits beside an honest one with the same number.
     it('binds both directions of a claim that two values can make', () => {
       const report = read(join(DIR, '2026-09-23-94416.md'));
       const evidence = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
@@ -481,10 +480,10 @@ describe('calibration reports are held to their evidence', () => {
     });
   });
 
-  describe('evidence as a later harness writes it', () => {
-    // Run order is the time a run started. The committed run predates the field, and sorted by its date alone it came
-    // after every run started later the same day, since `T` sorts before `|`: a second run that day would never have
-    // become the latest, and the pages would have gone on being checked against the first.
+  describe('evidence with every field the harness records', () => {
+    // Run order is the time a run started. The committed run's file has no start time, and keyed by its date alone it
+    // would sort after every run started later the same day, since `T` sorts before `|`: a second run that day would
+    // never become the latest, and the pages would go on being checked against the first.
     it('puts a run without a start time before a later run the same day', () => {
       const root = mkdtempSync(join(tmpdir(), 'calib-order-'));
       try {
@@ -509,10 +508,11 @@ describe('calibration reports are held to their evidence', () => {
       }
     });
 
-    // A later harness records the object's size apart from what a load uploaded, and a large segment's ids. Its file
-    // of this same run must derive the same figures. The derivation paired the object's size with an upload RATE,
-    // which is the object and its pointer's body a second, and so refused every file the fixed harness would write.
-    it("derives the same figures from a later harness's file of the same run", () => {
+    // The harness records the object's size apart from what a load uploaded, and a large segment's ids; the committed
+    // run's file records neither. The same run with both recorded must derive the same figures. An upload RATE is the
+    // object and its pointer's body a second, so a derivation that pairs it with the object's size refuses every file
+    // that records the two apart.
+    it('derives the same figures from the same run with every field recorded', () => {
       const file = EVIDENCE.find((e) => e.includes('2026-09-23-94416'));
       expect(file).toBeDefined();
       if (file === undefined) return;

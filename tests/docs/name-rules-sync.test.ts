@@ -6,14 +6,12 @@ import { validateSegmentRef } from '@/index';
 // What a name may be is written down in prose in several places, and prose does not compile. This gate makes
 // every restatement of it agree with the code.
 //
-// It exists because the surface drifted TWICE. First the retention docs published dated-bucket examples —
-// `store.segment('active:2026-08-01')`, `sent:daily:${day}` — across the guide, PRIVACY.md and the website,
-// and every one of them THREW: they were written, reviewed, formatted, gate-passed and merged without once
-// being executed, because prose in a fenced block is not run by anything. Then a fix to the guide left the
-// website publishing a character regex the code did not enforce, found only by a reviewer reading every file
-// by hand. The second drift is the one that earns a gate.
+// A name in a fenced example is written, reviewed, formatted and merged without once being executed, because
+// prose in a fenced block is not run by anything. A name rule restated as a character regex drifts page by page:
+// a fix to the guide can leave the website publishing a rule the code does not enforce, and nothing short of a
+// reader going through every file by hand would notice.
 //
-// Two independent claims are checked, because the first sin was an example and the second was a regex:
+// Two independent claims are checked, because an example and a regex go wrong apart:
 //   1. no doc publishes a regex that LOOKS like a name grammar, because a name is any non-empty string, and
 //   2. every segment/namespace name that documentation shows in a fenced example actually validates.
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -53,9 +51,8 @@ describe('documented name rules match the code', () => {
     ).toEqual([]);
   });
 
-  // The original sin was an unrunnable EXAMPLE, not a wrong regex, and that half is the more valuable one: with
-  // validation limited to size, a doc example fails only if it is genuinely malformed, which is exactly the case a
-  // reader would never guess.
+  // The EXAMPLE half is the more valuable one: with validation limited to size, a doc example fails only if it is
+  // genuinely malformed, which is exactly the case a reader would never guess.
   it('every segment/namespace name shown in a documented example actually validates', () => {
     const CALL = /\b(?:store\.)?segment\(\s*'([^']+)'/g;
     const NS = /\bnamespace:\s*'([^']+)'/g;
