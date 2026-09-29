@@ -12,8 +12,9 @@ import { describe, expect, it } from 'vitest';
 import { CloudRoaring, CountingMetricsSink, MemoryStorage, createBackend } from '@/index';
 import type { CloudRoaringOptions, IdRange, Segment } from '@/index';
 import { BudgetExceededError, IntegrityError, NotFoundError, ValidationError } from '@/core/errors';
-import { MemoryStorageChunkSource } from '@/index';
-import { collect } from '../helpers/loaded';
+import { MemoryStorageChunkSource, SegmentEngine } from '@/index';
+import { roaringCodec } from '@/roaring-codec';
+import { collect, seedSegment } from '../helpers/loaded';
 import { SafeBitmap } from '@/roaring-codec';
 
 const K = 65_536;
@@ -72,6 +73,7 @@ const CASES: Array<[string, number | undefined, number | undefined]> = [
   ['a single id', K - 1, K],
   ['across several chunks', 50, 3 * K + 5],
   ['through the last id of a chunk', 10, K - 1],
+  ['through the second-last id of a chunk', 10, K - 2],
   ['through the first id of the next', 10, K],
   ['through the second id of the next', 10, K + 1],
   ['after the last id of a chunk', K - 1, 2 * K + 2],
@@ -774,5 +776,20 @@ describe('an index is untrusted', () => {
     });
     await expect(collect(store.segment('a').iterate())).rejects.toThrow(IntegrityError);
     await expect(collect(store.segment('a').iterate({ after: 0 }))).rejects.toThrow(IntegrityError);
+  });
+});
+
+describe("the engine's own range read, which the facade reaches only with a bound", () => {
+  // The facade reads a segment with no range when it is given none, so only a direct engine call reaches the range
+  // path with an empty range. `SegmentEngine` and `IdRange` are exported, so that call is public.
+  it('an empty range is the whole id space: the first and the last possible id, and no chunk trimmed', async () => {
+    const storage = new MemoryStorageChunkSource();
+    const ids = [0, 1, K - 1, K, U32_MAX - K, U32_MAX - 1, U32_MAX];
+    seedSegment(storage, 'a', ids);
+    const engine = new SegmentEngine({ storage, codec: roaringCodec });
+    expect(await collect(engine.iterate({ segment: 'a' }, {}))).toEqual(ids);
+    expect(
+      await collect(engine.iterate({ segment: 'a' }, { after: undefined, through: undefined })),
+    ).toEqual(ids);
   });
 });
