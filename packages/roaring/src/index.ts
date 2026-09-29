@@ -1030,9 +1030,9 @@ export class CloudRoaring {
    * on either side of the publish: if the rewrite had not published, the id is still there and a re-run erases
    * it; if the publish succeeded and only the **collection** of the old generation failed, the id is already
    * absent from every read and what remains is an object in the bucket that still contains the bit. A re-run
-   * then reports nothing for that segment (the id is not in the current generation), so **that residual is
-   * collected by `gcOrphanGenerations(ref, deps, { keep: 0 })` or the next retention sweep**, not by another
-   * `eraseSubject`. Re-running is otherwise safe and idempotent: a segment the id is no longer in is not listed. Admin-only path;
+   * searches the superseded generations too, so it collects that object and usually reports `erased: true`
+   * against it; {@link SubjectErasureEntry.note} says what else a re-run can report. Re-running is otherwise safe
+   * and idempotent: a segment the id is no longer in is not listed. Admin-only path;
    * `O(registered segments)`, no hot-path cost. Per-subject crypto-shred is infeasible (a subject's bit is
    * co-mingled in a shared container), so this is the single-subject erasure route; whole-segment/tenant erasure
    * is `dropSegment` / the `destroySegment`/`eraseNamespace` free functions.

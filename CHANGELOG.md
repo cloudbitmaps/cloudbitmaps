@@ -242,7 +242,10 @@ Each of these makes a call throw where it used to return, and each fixes a wrong
   the copy npm ships in `@cloudbitmaps/roaring`, said "on return" holds for every segment whose ledger entry is not
   `error: …`. An entry can also say `erased: false, note: 'superseded'`, when a racing writer overtook the rewrite:
   no error, and the id may still be in that segment. The row now says "on return" holds for every segment whose
-  entry says `erased: true`, as the detailed text further down already did.
+  entry says `erased: true`, as the detailed text further down already did. `eraseSubject`'s doc comment also said
+  that after a collection fault a re-run reports nothing for the segment, leaving the old generation to
+  `gcOrphanGenerations` or a sweep; a re-run searches the superseded generations and collects it, as
+  `SubjectErasureEntry.note` says.
 
 - **A pinned handle could read chunks of another generation than the one it pinned.** A live read of the same
   segment on the same store cached each chunk it fetched under the version it had resolved when it began — but if,
