@@ -17,8 +17,8 @@
  *                 `exclude` operands are read only at surviving keys. The *structural* half of that bound is proven
  *                 deterministically in `tests/core/intersect-window-bounded.test.ts`; this file covers what a unit
  *                 test cannot — that nothing accumulates across many combines over time. A run that performed no
- *                 combines is INCONCLUSIVE, never PASS: this harness once reported clean PASSes while issuing zero
- *                 combines, and the RSS gate built on it claimed to bound the window anyway.
+ *                 combines is INCONCLUSIVE, never PASS: a clean PASS from a run that issued zero combines would let
+ *                 the RSS gate built on it claim to bound the window without ever exercising it.
  *   - re-loads    publish a new generation of a live segment. That is what makes the reader cache's generation
  *                 refresh (`cache.genTtlMs`) and the cache's generation-keyed entries do real work: a stale reader
  *                 must be swapped, not stacked, and the old generation's cached chunks must age out. A soak with

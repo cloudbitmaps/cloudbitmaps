@@ -3,14 +3,13 @@
  *
  * WHY THIS EXISTS
  *
- * Three layers carry the argument on the site. Two were measured: residency (`$0.03` at rest against `$346`
- * standing) and idle cost (the published crossovers). The first one — structure — was the only claim with no
- * number under it at all:
+ * Three layers carry the argument on the site. Two are measured by the cost benchmarks: residency (`$0.03` at rest
+ * against `$346` standing) and idle cost (the published crossovers). The first one — structure — is measured here:
  *
  *   "Redis has no Roaring type of its own … So the honest comparison is not us versus Redis: it is Roaring
  *    versus a fixed representation."                                          — site/flavors/roaring.html
  *
- * That is a falsifiable claim about encoded size, and it was published on assertion. This measures it.
+ * That is a falsifiable claim about encoded size, and without a measurement it would stand on assertion alone.
  *
  * WHAT IS COMPARED, AND WHY THESE THREE
  *

@@ -13,8 +13,8 @@ by its run id:
 - **`<runId>.md`, the report.** What the run lets the project publish, each figure labelled measured, derived or
   expected, with what it means and what the run does not establish.
 
-The one file here that predates those rules is `2026-09-23-94416.json`. The harness at commit `e42c27f` wrote it as
-`bench/calibrate-aws-results.json`, and it was moved here unchanged, so its `note` still describes regenerating it.
+`2026-09-23-94416.json` is committed exactly as the harness at commit `e42c27f` wrote it, under another path, so its
+`note` describes regenerating it, which no evidence file here ever is.
 
 [`tests/docs/calibration-reports.test.ts`](../../tests/docs/calibration-reports.test.ts) holds each report to its
 evidence in both directions: every headline figure must appear, and no dollar amount, percentage, duration, byte

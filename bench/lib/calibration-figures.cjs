@@ -129,8 +129,8 @@ function readSources(root) {
  * Every committed run, oldest first. A partial file — a run that did not finish — is not evidence and is skipped.
  * Order is the time a run started where its file records one, and its id otherwise: the id starts with the date,
  * but two runs on one date differ only by a random suffix, which says nothing about which came later. A file from
- * before the start was recorded counts as starting at the beginning of its date. Its bare date once sorted after
- * every later run started the same day, because `T` sorts before `|`.
+ * before the start was recorded counts as starting at the beginning of its date. Keyed by its bare date, it would
+ * sort after every later run started the same day, because `T` sorts before `|`.
  */
 function evidenceFiles(root) {
   const dir = path.join(root, EVIDENCE_DIR);
@@ -331,7 +331,7 @@ function derive(run, src) {
   // A large segment's ids. A later harness records them; for an earlier file they come back from its two rates —
   // ids a second over bytes a second, times the bytes — which is exact to well under one id, and is checked. The
   // rate is of what went UP, the object and its pointer's body, so it is paired with the upload and not with the
-  // object: paired with the object, it refused every file a harness recording the two apart would write.
+  // object: paired with the object, it would refuse every file a harness recording the two apart writes.
   const idsFromRates = (uploadOf(multi) * multi.medianIdsPerSec) / multi.medianBytesPerSec;
   const multipartIds = w.largeIdsPerSegment ?? Math.round(idsFromRates);
   if (Math.abs(idsFromRates - multipartIds) > 0.5) {

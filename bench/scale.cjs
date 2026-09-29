@@ -1,13 +1,10 @@
 /*
- * At-scale load benchmark — turns the production-readiness audit's code-read conclusions
- * into MEASURED evidence at 1K → 10K → 100K segments.
- *
- * The audit's "NOT READY" verdict rested on three concerns, all since fixed: docs honesty, the unbounded
- * reader cache, and fleet-scale admin passes. This harness measures that those fixes
- * actually deliver at scale:
+ * At-scale load benchmark — MEASURED evidence, at 1K → 10K → 100K segments, for what a reading of the code can
+ * only claim: that the reader cache bounds memory however large the fleet grows, and what a fleet-scale admin
+ * pass costs. It measures:
  *   M1  Bounded memory (headline)   reading the WHOLE fleet under a fixed reader-cache cap holds the post-GC
  *                                   LIVE HEAP ~flat as the fleet grows — memory is a function of the cap, not the
- *                                   fleet (the "OOMs a long-running server" claim). (Process RSS also
+ *                                   fleet (the answer to "it OOMs a long-running server"). (Process RSS also
  *                                   grows with the in-process seed phase and isn't the bound — see render().)
  *                                   NB: M1's read loop parses `.crbm` INDICES (JS-heap objects) — it does not
  *                                   decode payloads — so JS heap IS the right metric here; the roaring addon's
@@ -352,8 +349,8 @@ function render(r) {
     `(isolating read-path RSS in a reader-only process is a follow-up). Fleet seeded at ~${seedLo}–${seedHi} ` +
     `durable segments/s (fsync-bound); discovery is LocalFs-filesystem-bound — the \`O(total)\` **shape** is the ` +
     `point, not the absolute ms._`;
-  // The site's markup, not the old site's `.bench-table` — that class no longer exists in
-  // site/cloudbitmaps.css, so injecting it rendered as a bare unstyled table with nothing complaining.
+  // The site's own markup, which site/cloudbitmaps.css styles: a table class the stylesheet does not define
+  // renders as a bare unstyled table, with nothing complaining.
   // Numeric columns take `.num` (tabular, right-aligned) so the fleet sizes and MiB figures line up.
   //
   // The footnote here is deliberately SHORTER than the markdown one: the page already carries a three-row
@@ -448,9 +445,9 @@ function doInject() {
 }
 
 // ── check-only: the published table is exactly what the committed results render ─────────────────────
-// The at-scale table is a measured figure on two pages, and for a while nothing held it to the file it was
+// The at-scale table is a measured figure on two pages, and without a check nothing holds it to the file it is
 // rendered from: a hand edit to either page, or a new results file rendered into one page and not the other,
-// would have shipped. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
+// would ship. `pnpm bench:scale:check` re-renders both copies from bench/scale-results.json and fails on
 // any difference, the way `site-replay.cjs --check` holds the demo's figures to the same file.
 function doCheck() {
   const results = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/scale-results.json'), 'utf8'));

@@ -2,10 +2,9 @@
  * ElastiCache node prices, as bench/sizing.cjs prices Redis bought on a reserved term, and the one reader of AWS's
  * price list (its offer file) that they are checked against.
  *
- * The reader exists because the price list was read wrongly twice. A node type has several products in it: the node
- * itself, its extended-support surcharges, a sync-durability rate, and a Memcached twin at the same price. A join on
- * the instance type and the engine picks among them by chance, and did: once for the on-demand catalogue, and again for
- * these reserved terms, where it priced a `cache.m6g.large` Valkey node at $0.0215 an hour. So a node is found by its
+ * A node type has several products in the price list: the node itself, its extended-support surcharges, a
+ * sync-durability rate, and a Memcached twin at the same price. A join on the instance type and the engine picks
+ * among them by chance, for the on-demand catalogue and for these reserved terms alike. So a node is found by its
  * usage type, `NodeUsage:<type>`, and a type that matches no product, or more than one, is refused rather than read.
  */
 'use strict';

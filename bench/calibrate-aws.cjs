@@ -7,9 +7,9 @@
  * GET and advancing it costs a conditional PUT, and a published bill has to include both. `docs/benchmarks.md`
  * publishes what a run measured and lists what is still owed. This is the tool that measures it.
  *
- * IT SPENDS REAL MONEY, so it is built to be hard to run by accident and impossible to run blind. The guards
- * live in `bench/lib/calibrate-guards.cjs` as pure functions with a regression test each, because every one of
- * them is a bug that actually happened. Read that file before changing anything here.
+ * IT SPENDS REAL MONEY, so it is built to be hard to run by accident and impossible to run blind. The guards live
+ * in `bench/lib/calibrate-guards.cjs` as pure functions, each with a regression test that plants the defect it
+ * exists for. Read that file before changing anything here.
  *
  *   node bench/calibrate-aws.cjs                             projection only; touches nothing
  *   node bench/calibrate-aws.cjs --rehearse                  the workload against MinIO, free — no money guards
@@ -18,14 +18,13 @@
  *   bash bench/calibrate-cloudshell.sh                       --run from AWS CloudShell, against the PUBLISHED
  *                                                            packages — the only way latency means anything
  *
- * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores never re-read
- * their pointers on a timer, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads it); what a
- * client far from the region adds to the bill is transfer out, which this harness does not meter. LATENCY is
- * location-dependent: from outside the region it measures internet transit, which is why the first run of this
- * harness — from a laptop — produced a p50 of 112 ms that describes the
- * network, not the library. So every run now measures its own distance to the region (the round-trip floor of a
- * trivial request) and records it, and the results say whether the latency figures are in-region or not. A
- * number that cannot be told apart from the network is not a latency number.
+ * WHAT A RUN CAN AND CANNOT CLAIM. A request costs the same from anywhere, and the timed stores never re-read their
+ * pointers on a timer, so the request count does too (on the default 2 s pointer refresh, a slow client re-reads
+ * it); what a client far from the region adds to the bill is transfer out, which this harness does not meter.
+ * LATENCY is location-dependent: from outside the region it measures internet transit, and a p50 measured from a
+ * laptop describes the network, not the library. So every run measures its own distance to the region (the
+ * round-trip floor of a trivial request) and records it, and the results say whether the latency figures are
+ * in-region or not. A number that cannot be told apart from the network is not a latency number.
  *
  * WHAT THE REHEARSAL DOES NOT COVER. MinIO is not AWS. It proves the mechanics — stages, metering, teardown
  * order, the probe, the end-of-run projection check, signal handling — but not the money guards. The region,
@@ -89,13 +88,13 @@ const ROOT = resolve(__dirname, '..');
 
 const argv = process.argv.slice(2);
 /**
- * `--rehearse` is a TARGET, not a mode, so it composes with `--cleanup`. It was a mode, and that left the
- * rehearsal — the one you iterate on, and so the one most likely to leave a half-made bucket — with no way to
- * clean up.
+ * `--rehearse` is a TARGET, not a mode, so it composes with `--cleanup`. As a mode it would leave the rehearsal —
+ * the one you iterate on, and so the one most likely to leave a half-made bucket — with no way to clean up.
  */
 const REHEARSE = argv.includes('--rehearse');
-// A rehearsal with `--run` used to run the real identity check — an STS call on whatever credentials were in the
-// environment — before doing its work against MinIO. A rehearsal touches no cloud account, so the pair is refused.
+// Let through, a rehearsal with `--run` would run the real identity check — an STS call on whatever credentials are
+// in the environment — before doing its work against MinIO. A rehearsal touches no cloud account, so the pair is
+// refused.
 if (REHEARSE && argv.includes('--run')) {
   console.error(
     'calibrate: --rehearse and --run are exclusive — a rehearsal touches no cloud account',
@@ -117,9 +116,9 @@ const IDS = resolveSize(process.env.CR_CALIBRATE_IDS, 500_000, 'CR_CALIBRATE_IDS
 const READS = resolveSize(process.env.CR_CALIBRATE_READS, 40, 'CR_CALIBRATE_READS');
 /**
  * Segments large enough to be uploaded MULTIPART — the other half of "load throughput, single-part and
- * multipart". The S3 driver uses a single conditional PUT for anything that fits one 8 MiB part, and the first
- * run's segments were ~450 KB, so it never exercised multipart at all. These are dense (a bitmap container per
- * chunk, 8 KiB each) and never intersected, so they cannot disturb the intersect workload.
+ * multipart". The S3 driver uses a single conditional PUT for anything that fits one 8 MiB part, and the intersect
+ * workload's segments are far smaller, so without these a run never exercises multipart at all. These are dense (a
+ * bitmap container per chunk, 8 KiB each) and never intersected, so they cannot disturb the intersect workload.
  */
 const LARGE = resolveSize(process.env.CR_CALIBRATE_LARGE, 2, 'CR_CALIBRATE_LARGE');
 const LARGE_CHUNKS = 1_536; // x 8 KiB bitmap containers ≈ 12 MiB: two 8 MiB parts
@@ -183,10 +182,10 @@ function projection(pricing, layout) {
 /**
  * Verify the caller's identity — and tell the two kinds of failure apart.
  *
- * The first version caught EVERY error and reported "@aws-sdk/client-sts not installed", so an expired SSO
- * session or a wrong profile would have been blamed on a missing module. And because an account pin compared
- * against that placeholder text, setting `CR_CALIBRATE_EXPECT_ACCOUNT` could never succeed — so the pin went
- * unused, which is how this harness's first real run went unpinned.
+ * Only a missing module is reported as one. Catching EVERY error as "@aws-sdk/client-sts not installed" would blame
+ * an expired SSO session or a wrong profile on a missing module — and an account pin compared against that
+ * placeholder text could never succeed, so setting `CR_CALIBRATE_EXPECT_ACCOUNT` would stop every run, and the pin
+ * would go unused.
  */
 async function identity(region) {
   let sts;
@@ -203,14 +202,14 @@ async function identity(region) {
 
 // A `finally` does not run on a signal, so the handler has to do the teardown itself. It is replaced once there
 // is something to tear down; until then an interrupt simply stops the run, which is the point of the abort
-// window. The first version of this handler printed "tearing down before exit" and did NEITHER — installing a
-// SIGINT handler replaces Node's default exit, so Ctrl-C left the workload running while claiming otherwise.
+// window. Installing a SIGINT handler replaces Node's default exit, so a handler that only prints "tearing down
+// before exit" does NEITHER: Ctrl-C leaves the workload running while claiming otherwise.
 let onInterrupt = async () => {};
 let interrupts = 0;
 // Set once the workload has finished. A signal after that interrupts only teardown, so the run keeps its own exit
 // code.
 let workFinished = false;
-// SIGHUP too: a closed terminal or a dropped CloudShell session sends it, and it used to kill a run with no
+// SIGHUP too: a closed terminal or a dropped CloudShell session sends it, and unhandled it kills a run with no
 // teardown and no results. The terminal's streams are opened first, while there is a terminal (`holdTerminal`).
 holdTerminal();
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -219,7 +218,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     if (sig === 'SIGHUP') silenceTerminal();
     interrupts += 1;
     if (interrupts > 1) {
-      // A second signal during teardown used to kill the process mid-delete, leaking the bucket. Warn instead.
+      // A second signal during teardown must not kill the process mid-delete, leaking the bucket. Warn instead.
       console.error('calibrate: already tearing down — if anything is left, use --cleanup <runId>');
       return;
     }
@@ -362,7 +361,7 @@ async function main() {
 
   /**
    * Teardown, memoised: one promise awaited by every exit path — the `finally`, the signal handler, and the
-   * top-level catch — because they otherwise race, and a racing exit once killed an in-flight delete.
+   * top-level catch — because they otherwise race, and a racing exit can kill an in-flight delete.
    */
   let teardownPromise;
   const teardown = ({ unanswered = false } = {}) => {
@@ -406,8 +405,9 @@ async function main() {
       };
       try {
         // Everything teardown would touch is listed, and checked, before anything is aborted or deleted: an upload
-        // may be someone else's as much as an object may. A foreign upload was once aborted before the objects were
-        // checked, and a foreign key on a later page was found only after a page of objects had gone.
+        // may be someone else's as much as an object may. Checked as it goes, teardown would abort a foreign upload
+        // before the objects were checked, and find a foreign key on a later page only after a page of objects had
+        // gone.
         const uploads = (
           await allPages(await listUploads(), listUploads, (page) => ({
             KeyMarker: page.NextKeyMarker,
@@ -464,9 +464,9 @@ async function main() {
         log(`teardown: removed ${bucket}`);
       } catch (err) {
         // "Already gone" is success, not a leftover — crying wolf trains you to ignore the one real signal. Only
-        // S3's own NoSuchBucket says so: an abort's NoSuchUpload is also a 404, and was once read as this answer.
-        // Unless a request was still unanswered when teardown began: if that was the bucket's creation, the bucket
-        // can appear after teardown looked, and once did, with nothing said.
+        // S3's own NoSuchBucket says so: an abort's NoSuchUpload is also a 404, and is not this answer. Unless a
+        // request was still unanswered when teardown began: if that was the bucket's creation, the bucket can
+        // appear after teardown looked, with nothing else to say so.
         if (!bucketIsGone(err)) leftovers.push(`${bucket}: ${redact(err.message)}`);
         else if (unanswered) {
           leftovers.push(
@@ -487,8 +487,8 @@ async function main() {
   };
 
   // ---- identity, before anything is created or deleted -------------------------------------------------------------
-  // A cleanup is checked too: it permanently deletes every version of every key in the bucket it is given, and the
-  // account pin once held only for the mode that creates.
+  // A cleanup is checked too: it permanently deletes every version of every key in the bucket it is given, so the
+  // account pin holds for it as for the mode that creates.
   if (!REHEARSE && (MODE === 'run' || MODE === 'cleanup')) {
     const expected = process.env.CR_CALIBRATE_EXPECT_ACCOUNT ?? '';
     let who;
@@ -523,8 +523,8 @@ async function main() {
   }
 
   if (MODE === 'cleanup') {
-    // A signal waits for the cleanup it interrupts, which then reports what it left. The default handler exited at
-    // once, mid-delete, with every object still there and nothing said.
+    // A signal waits for the cleanup it interrupts, which then reports what it left. The default handler would exit
+    // at once, mid-delete, with every object still there and nothing said.
     onInterrupt = async () => {
       await teardown();
     };
@@ -607,8 +607,8 @@ async function main() {
   /**
    * The bill and the projection check, then the results — run AFTER teardown, so its requests are in the bill
    * too. Nothing extra ran for the bill: in this topology the pointer reads and conditional PUTs ARE object-store
-   * requests, which the old run could not see. Both exits call this, the `finally` and an interrupt: the
-   * interrupt path once wrote its results without it, losing the one figure the run had already paid for.
+   * requests, which the old run could not see. Both exits call this, the `finally` and an interrupt: an interrupt
+   * path that wrote its results without it would lose the one figure the run had already paid for.
    */
   // Once only: both exits can reach it, the signal handler's and main's own, and the results are the same either way.
   let settled = false;
@@ -657,8 +657,8 @@ async function main() {
   // was measured, and must not relabel the run.
   let running = true;
   try {
-    // Armed BEFORE the bucket exists: an interrupt while `CreateBucket` is in flight used to meet the do-nothing
-    // handler and exit with no teardown. Tearing down a bucket that was never made is a clean NoSuchBucket.
+    // Armed BEFORE the bucket exists: armed after, an interrupt while `CreateBucket` is in flight would meet the
+    // do-nothing handler and exit with no teardown. Tearing down a bucket that was never made is a clean NoSuchBucket.
     // Nothing may still be writing when teardown lists the bucket, and a CreateBucket in flight must land first.
     onInterrupt = async () => {
       await stopThenTearDown({
@@ -722,8 +722,8 @@ async function main() {
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
       const after = snap();
       // Two different byte counts, kept apart. What went up is the object AND the pointer's body, since the meter
-      // counts every request; the object is what the store holds. This harness once recorded the first under the
-      // second's name, which put the pointer's 161 bytes into every figure derived from an object's size.
+      // counts every request; the object is what the store holds. Recorded under the object's name, the first
+      // would put the pointer's bytes into every figure derived from an object's size.
       const uploaded = after.up - before.up;
       loads.push({
         segment,
@@ -768,9 +768,9 @@ async function main() {
     );
 
     // ---- cold intersects: every one fetches from the object store -------------------------------------------------
-    // A FRESH store per intersect, so no cache can answer it. The first run reused one store, so after the first
-    // pass most intersects were served from memory — 107 GETs across 40 reads — and its latency distribution mixed
-    // cache hits with object-store fetches into a single, meaningless p50.
+    // A FRESH store per intersect, so no cache can answer it. With one store reused, most intersects after the
+    // first pass are served from memory, and the latency distribution mixes cache hits with object-store fetches
+    // into a single, meaningless p50.
     const reads = [];
     for (let i = 0; i < READS; i += 1) {
       const a = `seg-${i % SEGMENTS}`;
